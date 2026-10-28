@@ -159,7 +159,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(rows, lint.RULE_NAMES)
 
     def test_the_rule_set_document_names_every_declared_rule(self) -> None:
-        """What the host inlines for a pure leaf. It has to carry the NAME as well as the code —
+        """What the host hands a leaf (a seed of its work tree). It has to carry the NAME as well as the code —
         a code is not a rule to a reader who has not memorized the table — and it has to cover
         the whole selected set, because the leaf is told it is the complete list. Issue #169
         measured the absence: four codes the harness producer must satisfy were stated in no
@@ -608,7 +608,8 @@ class ProseCouplingTests(unittest.TestCase):
          "## 2. The syntax stage"),
         # `skills/workflow-generate-generate/SKILL.md` was a regioned site until Z4 (issue
         # #171) deleted it with the agentic leaf. The producer that replaced it reads
-        # `tools/prompt_templates/pure_generate_generate.txt`, whose lint rules are the Fortran
+        # `tools/prompt_templates/workshop_generate_generate.txt` (the pure template it
+        # replaced went in issue #534 PR-J4-b), whose lint rules are the Fortran
         # fragment row below (and the whole file is in `_whole_file_scan` since issue #316), and
         # the `harness` shape's producer template states the same contract through the Fortran
         # checks-ABI binding's §5 — also a row below. No site is lost.
@@ -646,16 +647,16 @@ class ProseCouplingTests(unittest.TestCase):
     # list with no replacement: it was the every-leaf force-read, and no leaf force-reads.
     _LEAF_READ_FILES = tuple(path for path, _a, _l, _o in _SITES) + (
         "docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
-        "tools/prompt_templates/pure_generate_verify.txt",
-        "tools/prompt_templates/pure_generate_verify_harness.txt",
-        "tools/prompt_templates/pure_generate_generate_harness.txt",
+        "tools/prompt_templates/workshop_generate_verify.txt",
+        "tools/prompt_templates/workshop_generate_verify_harness.txt",
+        "tools/prompt_templates/workshop_generate_generate_harness.txt",
         "spec/component/dynamics/shallow_water/"
         "dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md",
     )
 
     @classmethod
     def _whole_file_scan(cls) -> list[str]:
-        """`_LEAF_READ_FILES` plus every launch-prompt template file — the neutral `pure_*.txt`
+        """`_LEAF_READ_FILES` plus every launch-prompt template file — the neutral `workshop_*.txt`
         templates and the backend fragments composed into them — DERIVED from the directory.
         Every one of them reaches a leaf, and a fragment that moves between backends must not
         leave the scan by moving: issue #316 (R4-c PR-2) moved the OpenMP floor paragraph out of
@@ -680,7 +681,7 @@ class ProseCouplingTests(unittest.TestCase):
             str((Path(root) / name).relative_to(REPO_ROOT))
             for root, _dirs, files in os.walk(REPO_ROOT / "tools" / "prompt_templates")
             for name in files if name.endswith(".txt")}
-        for half in ("tools/prompt_templates/pure_", "tools/prompt_templates/backends/language/",
+        for half in ("tools/prompt_templates/workshop_", "tools/prompt_templates/backends/language/",
                      "tools/prompt_templates/backends/parallel/"):
             self.assertTrue(any(path.startswith(half) for path in templates), half)
         self.assertEqual(templates - scanned, set())

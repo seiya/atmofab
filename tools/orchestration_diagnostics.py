@@ -437,8 +437,7 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
     The conductor pins each leaf's Claude session id to its ``agent_run_id``
     (``claude --session-id <arid>``, workflow_conductor.spawn_leaf), so the leaf's
     transcript is directly addressable as ``<projects-root>/<slug>/<arid>.jsonl``
-    — no host/parent session is involved. Mirrors the wildcard-slug lookup in
-    ``workflow_conductor._claude_session_resumable`` so a leaf that ran under a
+    — no host/parent session is involved. A wildcard slug, so a leaf that ran under a
     slightly different cwd slug is still found; the arid (a uuid) is unique, so the
     wildcard cannot collide across projects. The operator's ``~/.claude`` is searched,
     through the canonical ``claude_leaf_projects_roots`` resolver — since Z4 (issue #171)
@@ -511,8 +510,9 @@ def _sum_pure_attempt_usage(
     """Sum `per_attempt[].usage` token counts and collect the per-attempt models.
 
     Each attempt is `{"agent_run_id", "model": str|None, "model_provenance": str|None,
-    "usage": dict|None}` (conductor `_run_pure_producer_substep` /
-    `_run_pure_reviewer_substep`; this reader ignores `model_provenance`). Missing or
+    "usage": dict|None}` (conductor `_run_workshop_producer_substep` /
+    `_run_pure_reviewer_substep`, and the deleted pure producer loop on an older record; this
+    reader ignores `model_provenance`). Missing or
     malformed `usage` / `model` entries are skipped rather than raising — diagnostics
     degrade, never break (see `_nonneg_int`). `models` preserves attempt order (a repair
     loop may resolve a different model per turn).

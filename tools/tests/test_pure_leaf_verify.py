@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""M-D: Z2 pure-function verify reviewer.
+"""The `generate.verify` reviewer (M-D; a READING workshop leaf since issue #534 PR-J4-b).
 
-Covers the host side of the pure `generate.verify` channel added in
-`tools/workflow_conductor.py` (the reviewer loop, verdict validation, the source_meta.json
+Covers the host side of the `generate.verify` channel in `tools/workflow_conductor.py` (the
+reviewer loop `_run_pure_reviewer_substep`, verdict validation, the source_meta.json
 projection, verdict_meta, the classify_failure verdict route) and the `tools/run_workflow.py`
-gate removal. Mirrors the producer suite
-(`test_pure_leaf_producer.py`), whose fixtures it reuses.
+gate removal. The loop is driven through its workshop seam (`test_workshop_reviewer`'s
+`_ReviewerFake`, via `_reviewer_conductor` below): the leaf writes its verdict into the
+lineage's tree. Mirrors the producer suite (`test_pure_leaf_producer.py`), whose fixtures it
+reuses.
 """
 
 from __future__ import annotations
@@ -94,6 +96,76 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(_REAL_PHASE_02, dest)
     return refs
+
+
+# ======================================================================================
+# The reviewer loop's workshop seam (issue #534 PR-J4-b: every reviewer is a READING workshop
+# leaf, so these rows drive `_run_pure_reviewer_substep` through it)
+# ======================================================================================
+def _reviewer_fake() -> type:
+    """`test_workshop_reviewer._ReviewerFake`: the reviewer loop's workshop seam — the lineage
+    home faked, no wrapper, the leaf scripted by `leaf_actions`. Imported late, because that
+    module imports this one's `_verdict` / `_verify_node`."""
+    from tools.tests.test_workshop_reviewer import _ReviewerFake
+    return _ReviewerFake
+
+
+def _leaf_action(item):
+    """One scripted reviewer launch from what the pure rows scripted.
+
+    A launch that exits 0 (a CLI stdout text, or a rc-0 `ProcResult` carrying one) WRITES the
+    document its envelope's `result` carries, verbatim, into the lineage tree under the
+    reviewer's output name (`verdict.json`; `review.json` for the judge) — on the workshop path
+    the tree is the answer, and the envelope is what the CLI prints after such a session, read
+    by the host for the model, the usage and the session id only. Any other `ProcResult` (a
+    dead or killed leaf) writes nothing and is the launch's result."""
+    def action(c, tree, kwargs):
+        proc = item if isinstance(item, wc.ProcResult) else wc.ProcResult(0, item, "")
+        if proc.returncode == 0 and not proc.timed_out:
+            try:
+                result = json.loads(proc.stdout).get("result")
+            except (ValueError, AttributeError):
+                result = None
+            if isinstance(result, str):
+                request = [cap for sub, cap in c.calls
+                           if sub == "record-launch"][-1]["--request-json"]
+                name = "review.json" if request["step"] == "validate" else "verdict.json"
+                (tree / name).write_text(result, encoding="utf-8")
+        return proc
+    return action
+
+
+def _reviewer_conductor(repo: Path, script, *, cls: type | None = None, llm_config=None,
+                        **kw):
+    """A reviewer fake (`cls`, a subclass of `_reviewer_fake()`, or that class) over `repo`,
+    scripted by `script` (`_leaf_action` items; the last repeats). Backoff sleeps are recorded
+    on `c.slept`, not slept."""
+    (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+    c = (cls or _reviewer_fake())(
+        repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+        llm_config=llm_config if llm_config is not None else _cfg("claude"), env={}, **kw)
+    c.calls = []
+    c.homes = repo / ".homes"
+    c.leaf_actions = [_leaf_action(item) for item in script]
+    c.slept = []
+    c._sleep_backoff = c.slept.append  # type: ignore[method-assign]
+    return c
+
+
+def _run_verify(c, refs: wc.NodeRefs) -> wc.SubstepOutcome:
+    """`generate.verify`'s reviewer loop with the node's own spec — what the deleted seam
+    `_run_pure_verify_substep` bound, and what `run_substep` dispatches a judging pair to."""
+    return c._run_pure_reviewer_substep(
+        refs, "generate", "verify", (),
+        c._pure_reviewer_spec("generate", "verify", c._shape_for_spec(refs, "generate")))
+
+
+def _spawned(c) -> int:
+    return len(c.__dict__.get("spawns", []))
+
+
+def _requests(c) -> list[dict]:
+    return [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"]
 
 
 # ======================================================================================
@@ -295,7 +367,7 @@ class PureVerifyContextTests(unittest.TestCase):
             # The class is taken FROM the template — the pre-existing authority — never spelled
             # again, so the two cannot drift apart. The extraction is self-tested.
             tpl = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
-                   / "pure_generate_verify.txt").read_text(encoding="utf-8")
+                   / "workshop_generate_verify.txt").read_text(encoding="utf-8")
             _, sep, rest = tpl.partition(
                 "can only OVERRULE one kind of claim — a claim about ")
             self.assertTrue(sep, "the template's droppable-class sentence no longer opens with "
@@ -604,10 +676,10 @@ class SeverityRubricSlicerTests(unittest.TestCase):
 
 
 # ======================================================================================
-# _run_pure_verify_substep: happy path, fail verdict, repair, exhaustion, transport
+# The generate.verify reviewer loop: happy path, fail verdict, repair, exhaustion, transport
 # ======================================================================================
 class PureVerifySubstepTests(unittest.TestCase):
-    def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True,
+    def _run(self, envelopes, *, cls=None, stage_checks_contract=True,
              stage_phase_02=True, llm_config=None, unlink=None):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
@@ -616,10 +688,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         if unlink is not None:
             # A repo-relative path, computed from the node's refs, removed after staging.
             (repo / unlink(refs)).unlink()
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                llm_config=llm_config if llm_config is not None else _cfg("claude"), env={})
-        c.envelopes = envelopes
+        c = _reviewer_conductor(repo, envelopes, cls=cls, llm_config=llm_config)
         # Record the run-log rows without suppressing them: the real `emit` still runs, so what a
         # test reads back is what the operator's event stream carries.
         c.events = []  # type: ignore[attr-defined]
@@ -628,7 +697,7 @@ class PureVerifySubstepTests(unittest.TestCase):
             c.events.append({"event": event, **fields})  # type: ignore[attr-defined]
             _real_emit(event, **fields)
         c.emit = _emit  # type: ignore[assignment,method-assign]
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         return c, refs, oc
 
     def tearDown(self) -> None:
@@ -654,7 +723,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
         self.assertIn("pure_checks_contract_document_missing", oc.infra_error[1])
         self.assertEqual(oc.output_refs, [])
-        self.assertEqual(getattr(c, "_spawn", 0), 0)  # no leaf was billed
+        self.assertEqual(_spawned(c), 0)  # no leaf was billed
         base = c.repo_root / refs.source_dir()
         self.assertFalse((base / "source_meta.json").exists())
         self.assertFalse((base / "verdict_meta.json").exists())
@@ -677,7 +746,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
         self.assertIn("pure_severity_rubric_document_missing", oc.infra_error[1])
-        self.assertEqual(getattr(c, "_spawn", 0), 0)  # no leaf was billed
+        self.assertEqual(_spawned(c), 0)  # no leaf was billed
         base = c.repo_root / refs.source_dir()
         self.assertFalse((base / "source_meta.json").exists())
         events = [e for e in c.events if e["event"] == "pure_context_assembly_failed"]
@@ -704,7 +773,7 @@ class PureVerifySubstepTests(unittest.TestCase):
                     self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
                     self.assertIn(marker, oc.infra_error[1])
                     self.assertEqual(oc.output_refs, [])
-                    self.assertEqual(getattr(c, "_spawn", 0), 0)  # no leaf was billed
+                    self.assertEqual(_spawned(c), 0)  # no leaf was billed
                     base = c.repo_root / refs.source_dir()
                     self.assertFalse((base / "source_meta.json").exists())
                     self.assertFalse((base / "verdict_meta.json").exists())
@@ -729,8 +798,8 @@ class PureVerifySubstepTests(unittest.TestCase):
         by issue #176 with the mini-loop that was its only production consumer, so what the
         resolver leaves on this path is the PROBE ITSELF — an operator's record of when this
         attempt started, under the arid of the row it belongs to. This is that probe's only
-        witness on the pure verify loop: without it, a mutation dropping the
-        `_launch_instant` call from `_spawn_pure_turn` is silent.
+        witness on the reviewer loop: without it, a mutation dropping the `_launch_instant`
+        call from `_spawn_workshop_turn` is silent.
         """
         c, _refs, oc = self._run([_envelope(_verdict("pass"))])
         self.assertEqual(oc.status, "pass")
@@ -785,14 +854,31 @@ class PureVerifySubstepTests(unittest.TestCase):
         """Issue #348, the reviewer loop's twin of the producer row: a codex reviewer's
         `per_attempt[].model` records the host-pinned slug (not the streamed value, absent or
         forged) and equals the agent-run row of the same launch."""
+        from tools.tests.test_workshop_producer import _codex_proc
         for label, streamed in (("no streamed model", None), ("forged stream", "forged-model")):
-            class _C(_PureFakeConductor):
-                def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                    return wc.ProcResult(0, json.dumps(_verdict("pass")), "",
-                                         usage={"output_tokens": 10}, model=streamed)
-            with self.subTest(stream=label):
-                c, refs, oc = self._run(
-                    [], cls=_C, llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
+            def _writes_pass(c, tree, kwargs, streamed=streamed):
+                (tree / "verdict.json").write_text(json.dumps(_verdict("pass")),
+                                                   encoding="utf-8")
+                proc = _codex_proc()
+                proc.model = streamed
+                return proc
+            with self.subTest(stream=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = _verify_node(repo)
+                c = _reviewer_conductor(repo, [], llm_config=_cfg(
+                    "codex", agent_model="gpt-5.6-sol"))
+                # The homes OUTSIDE /tmp, as production's are: a codex reading lineage whose
+                # home a codex shell can write is refused (`_codex_shell_writable_root`).
+                homes = tempfile.TemporaryDirectory(dir="/var/tmp")
+                self.addCleanup(homes.cleanup)
+                c.homes = Path(homes.name).resolve() / "homes"
+                # The thread the launch emitted (what the fake recorded), as the session index
+                # would answer it.
+                c._session_id_for_child = (  # type: ignore[assignment]
+                    lambda arid, entry=None, c=c: c.__dict__.get("threads", {}).get(
+                        arid, f"thread-{arid}"))
+                c.leaf_actions = [_writes_pass]
+                oc = _run_verify(c, refs)
                 self.assertEqual(oc.status, "pass", label)
                 vmeta = json.loads(
                     (c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
@@ -802,7 +888,6 @@ class PureVerifySubstepTests(unittest.TestCase):
                 self.assertEqual(vmeta["per_attempt"][0]["model_provenance"],
                                  "codex_launch_pinned", label)
                 self.assertEqual(vmeta["per_attempt"][0]["model"], row["agent_model"], label)
-                self._tmp.cleanup()
 
     def test_fail_verdict_is_substep_fail_with_projected_source_meta(self) -> None:
         c, refs, oc = self._run([_envelope(_verdict("fail", severity="minor",
@@ -829,27 +914,51 @@ class PureVerifySubstepTests(unittest.TestCase):
         """Drive a `minor` verdict with `_LONG_SUMMARIES` through the real routing and read the
         launch request the producer's repair turn RECORDS — via `run_substep`, so the producer
         loop's own seed of `repair_findings` is on the path, not only `build_launch_request`.
-        `resumable=False` is the #209 cold first turn (a provider without warm resume, a GC'd
-        transcript)."""
-        c, refs, oc = self._run([_envelope(_verdict(
+        The producer is a workshop leaf (`test_pure_leaf_producer._WorkshopLeafFake`), whose
+        lineage `child-1` the repair targets: `resumable=True` reopens it warm, `resumable=False`
+        is the #209 cold first turn (a provider without warm resume, a GC'd transcript), a new
+        lineage carrying the findings."""
+        from tools.tests.test_pure_leaf_producer import _workshop_conductor
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _verify_node(repo)
+        producer = _workshop_conductor(repo)
+        producer.envelopes = [_envelope(_valid_bundle())]
+        self.assertEqual(producer.run_substep(refs, "generate", "generate").status, "pass")
+        (target,) = [r["agent_run_id"] for r in _requests(producer)]
+        reviewer = _reviewer_conductor(repo, [_envelope(_verdict(
             "fail", severity="minor", reason="escape handling is incomplete",
             findings=[{"summary": s} for s in self._LONG_SUMMARIES]))])
+        reviewer.homes = repo / ".reviewer_homes"
+        reviewer._n = 100  # its arids (and lineage ids) apart from the producer's
+        oc = _run_verify(reviewer, refs)
         self.assertEqual(oc.status, "fail")
         passed = wc.SubstepOutcome("a", "pass", [])
-        decision = c.classify_failure(refs, "generate", [passed, passed, oc])
+        decision = reviewer.classify_failure(refs, "generate", [passed, passed, oc])
         self.assertEqual((decision.reason, decision.repair_strategy), ("verify_minor", "reuse"))
-        findings = c._read_repair_findings(refs, decision.reason, "generate")
-        repair = c._repair_payload(decision, "producer-1", findings=findings)
-        # The producer repair turn, on the same fake: one valid bundle answers it.
-        c.envelopes = [_envelope(_valid_bundle())]
-        c.calls = []
-        if not resumable:
-            c._claude_session_resumable = (  # type: ignore[method-assign]
-                lambda arid, **kw: False)
-        produced = c.run_substep(refs, "generate", "generate", repair=repair)
+        findings = reviewer._read_repair_findings(refs, decision.reason, "generate")
+        repair = reviewer._repair_payload(decision, target, findings=findings)
+        # What `run_phase` does before a reopened producer attempt
+        # (`_ensure_fresh_producer_id`): a new source directory holding only what the host
+        # places in it.
+        runner = producer._runner_basename(refs)
+        text = (repo / refs.source_dir() / "src" / runner).read_text(encoding="utf-8")
+        refs = wc.NodeRefs(target_id=refs.target_id, node_key=refs.node_key,
+                           spec_path=refs.spec_path, ir_id=refs.ir_id,
+                           pipeline_id=refs.pipeline_id, source_id=refs.source_id + "_reopen")
+        (repo / refs.source_dir() / "src").mkdir(parents=True)
+        (repo / refs.source_dir() / "src" / runner).write_text(text, encoding="utf-8")
+        # The producer repair turn, on the producer's fake: one valid bundle answers it.
+        producer.calls = []
+        producer.resumable = resumable
+        evidence = producer.__dict__.setdefault("evidence", {})
+        with mock.patch.object(
+                wc_ort, "_read_launch_request_payload",
+                lambda repo_root, oid, *, agent_run_id: evidence.get(
+                    f"{agent_run_id}.request.input.json")):
+            produced = producer.run_substep(refs, "generate", "generate", repair=repair)
         self.assertEqual(produced.status, "pass")
-        launches = [captured["--request-json"] for sub, captured in c.calls
-                    if sub == "record-launch"]
+        launches = _requests(producer)
         self.assertEqual(len(launches), 1)
         return launches[0]
 
@@ -909,142 +1018,109 @@ class PureVerifySubstepTests(unittest.TestCase):
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         c, refs, oc = self._run([_envelope({"verification_status": "pass"})])
         self.assertEqual(oc.status, "fail")
-        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(_spawned(c), MAX_BUNDLE_REPAIR_TURNS + 1)
         self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
         vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
         self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
         self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
 
-    def test_unparseable_reply_categorized(self) -> None:
+    def test_an_unparseable_verdict_document_is_the_schema_category(self) -> None:
+        """A `verdict.json` that is not JSON at all is a schema violation of the reviewer's
+        document, repaired and exhausted under `verdict_schema_violation` (the pure leaf's
+        `pure_response_unparseable` was the category of a reply text that held no document,
+        which the workshop path does not read), and no projection is written."""
         c, refs, oc = self._run([_envelope("not a verdict at all")])
-        self.assertEqual(oc.status, "fail")
+        self.assertEqual((oc.status, oc.leaf_returncode), ("fail", 0))
+        self.assertFalse((c.repo_root / refs.source_dir() / "source_meta.json").exists())
         vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
-        self.assertEqual(vmeta["failure_category"], "pure_response_unparseable")
+        self.assertEqual(vmeta["failure_category"], wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
 
     def test_transport_error_routes_fail_closed(self) -> None:
-        class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                return wc.ProcResult(1, "", "usage limit reached")
-        c, refs, oc = self._run([_envelope(_verdict("pass"))], cls=_C)
+        c, refs, oc = self._run([wc.ProcResult(1, "", "usage limit reached")])
         self.assertEqual(oc.status, "fail")
         self.assertNotEqual(oc.leaf_returncode, 0)   # forces run_phase's fail_closed branch
         # A transport failure has no fixable verdict — not repaired (one attempt only).
         self.assertEqual(oc.attempts, 1)
         self.assertFalse((c.repo_root / refs.source_dir() / "source_meta.json").exists())
 
-    def test_a_timed_out_reviewer_is_a_leaf_timeout_and_never_waits_out_a_quota(self) -> None:
-        """The pure loops are where the field hang happened, and they classify the dead leaf
-        themselves. A leaf the conductor KILLED must be tagged from `ProcResult.timed_out` — if
-        this site classified the captured text instead, the throttle notice a wedged leaf had
-        printed before it stopped answering would read as `llm_usage_limit`, and with
-        `--wait-usage-reset` on the conductor would sleep for hours and re-launch a leaf it had
-        killed itself: the multi-hour silent block the cap exists to remove."""
+    def test_a_timed_out_reviewer_is_ended_by_its_bound_and_never_waits_out_a_quota(self) -> None:
+        """Where the field hang happened, the loop classifies the dead leaf itself. A leaf the
+        conductor KILLED must be read from `ProcResult.timed_out` — if this site classified the
+        captured text instead, the throttle notice a wedged leaf had printed before it stopped
+        answering would read as `llm_usage_limit`, and with `--wait-usage-reset` on the
+        conductor would sleep for hours and re-launch a leaf it had killed itself: the
+        multi-hour silent block the cap exists to remove.
+
+        On the reviewer's workshop lineage (issue #534 PR-J4-b) a killed launch is ENDED by its
+        bound (`ended_by: lineage_timeout`, its own exit on `leaf_rc`), and with no schema-valid
+        `fail` in its tree it is an unfinished review, run again from the seeds until the
+        repair budget is spent — never a transport death, so never a quota wait. (The pure loop
+        ended at once with `infra_error: leaf_timeout`; the workshop rule is pinned whole by
+        `test_workshop_reviewer`'s `test_a_pass_never_finished_exhausts_into_the_schema_category`.)"""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         marker = wc._leaf_timeout_marker(7200, 7203.0)
-
-        spawn_kwargs: list = []
-
-        class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                spawn_kwargs.append(kwargs)
-                return wc.ProcResult(
-                    -9, "", "You've hit your session limit · resets 3pm (Asia/Tokyo)\n" + marker,
-                    timed_out=True)
-
-            def _sleep_backoff(self, seconds):  # type: ignore[override]
-                self.slept.append(seconds)
-
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         # wait_usage_reset ON: the opt-in that would otherwise park the run for hours.
-        c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
-        c.slept = []
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
-        self.assertEqual(oc.status, "fail")
-        self.assertEqual(oc.leaf_returncode, -9)
-        self.assertEqual(oc.infra_error[0], "leaf_timeout")
-        self.assertEqual(oc.attempts, 1)             # not repaired, not retried...
-        self.assertEqual(c.slept, [])                # ...and never parked for a reset
+        c = _reviewer_conductor(repo, [wc.ProcResult(
+            -9, "", "You've hit your session limit · resets 3pm (Asia/Tokyo)\n" + marker,
+            timed_out=True)], wait_usage_reset=True)
+        events: list = []
+        c.emit = lambda event, **f: events.append(event)  # type: ignore[assignment]
+        oc = _run_verify(c, refs)
+        spawn_kwargs = c.spawns
+        self.assertEqual((oc.status, oc.leaf_returncode, oc.infra_error), ("fail", 0, None))
+        self.assertEqual(c.slept, [])                # ...never parked for a reset
+        self.assertEqual([e for e in events if e.startswith("leaf_usage_limit")], [])
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["failure_category"], wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
+        self.assertEqual([(a["ended_by"], a["leaf_rc"]) for a in vmeta["per_attempt"]],
+                         [("lineage_timeout", -9)] * (MAX_BUNDLE_REPAIR_TURNS + 1))
         # The event has to NAME the wedged leaf; only the caller knows node/step/substep.
         self.assertEqual(spawn_kwargs[0]["timeout_context"],
                          {"node_key": refs.node_key, "step": "generate", "substep": "verify",
-                          "agent_run_id": spawn_kwargs[0]["child_arid"]})
-
-    class _WaitingC(_PureFakeConductor):
-        # Every launch past the scripted ones would repeat the LAST script entry forever; a wait
-        # that never counts its budget would then loop until the harness `timeout` kills the
-        # run, which no assertion reports. Refusing here turns that regression into a red row.
-        MAX_SPAWNS_PAST_SCRIPT = 2
-
-        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-            self._spawn = getattr(self, "_spawn", 0)
-            if self._spawn >= len(self.procs) + self.MAX_SPAWNS_PAST_SCRIPT:
-                raise AssertionError(
-                    f"launch {self._spawn + 1} past a {len(self.procs)}-entry script: the loop "
-                    f"is re-launching without bound")
-            proc = self.procs[min(self._spawn, len(self.procs) - 1)]
-            self._spawn += 1
-            return proc
-
-        def _sleep_backoff(self, seconds):  # type: ignore[override]
-            self.slept.append(seconds)
+                          "agent_run_id": spawn_kwargs[0]["child_arid"],
+                          "leaf_mode": "workshop"})
 
     def _waiting(self, *procs: wc.ProcResult, flag: bool = True,
-                 record: bool = False) -> tuple[_WaitingC, wc.NodeRefs]:
-        """A REAL `_run_pure_verify_substep` driver: `procs` are the scripted leaf results (the
-        last one repeats), a passing verdict is appended when only one is given. `record=True`
-        captures every launch request on `c.requests` and every spawn's kwargs on `c.spawn_kwargs`;
-        events land on `c.events` either way (so a flag-off run can assert it emitted nothing)."""
+                 record: bool = False) -> tuple:
+        """A reviewer-loop driver (`_run_verify`): `procs` are the scripted leaf results (the
+        last one repeats; the fake refuses a launch far past the script, so a wait that never
+        counts its budget is a red row rather than a hang), a passing verdict is appended when
+        only one is given. Every launch request is on `_requests(c)` and every spawn's kwargs
+        on `c.spawns` (`record` is kept for the callers that say they read them); events land
+        on `c.events` either way (so a flag-off run can assert it emitted nothing)."""
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = self._WaitingC(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                           llm_config=_cfg("claude"), env={}, wait_usage_reset=flag)
-        c.procs = list(procs) + ([wc.ProcResult(0, _envelope(_verdict("pass")), "")]
-                                 if len(procs) == 1 else [])
-        c.slept = []
+        c = _reviewer_conductor(
+            repo, list(procs) + ([wc.ProcResult(0, _envelope(_verdict("pass")), "")]
+                                 if len(procs) == 1 else []), wait_usage_reset=flag)
         c.events = []
         c.emit = lambda event, **f: c.events.append((event, f))  # type: ignore[assignment]
-        if record:
-            c.requests, c.spawn_kwargs = [], []
-            orig_rec, orig_spawn = c.record_launch, c.spawn_leaf
-
-            def _rec(child_arid, request, entry=None, **kw):
-                c.requests.append(request)
-                return orig_rec(child_arid, request)
-
-            def _spawn(prompt_text, child_env, entry=None, **kwargs):
-                c.spawn_kwargs.append(dict(kwargs))
-                return orig_spawn(prompt_text, child_env, entry, **kwargs)
-
-            c.record_launch = _rec          # type: ignore[assignment]
-            c.spawn_leaf = _spawn           # type: ignore[assignment]
         return c, refs
 
     _QUOTA = wc.ProcResult(1, "", "Claude AI usage limit reached")
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
 
     def test_a_missing_lineage_home_on_a_warm_repair_falls_back_to_a_cold_repair_of_the_same_verdict(self) -> None:
-        """The reviewer twin of the producer's
-        `test_a_missing_lineage_home_on_a_warm_seed_falls_back_carrying_the_prior_document`
-        (issue #508). `_spawn_pure_turn` returns None when a warm codex resume has no lineage
-        home to run in (issue #245); the loop then sets `cold_repair_target =
-        resume_session_id` so the NEXT turn is still a `reuse` repair of the reviewer's own
-        schema-violating verdict — findings, prior document, full context — rather than a
-        fresh review that forgets what it was repairing. The two loops are separate copies of
-        that line, and the producer's row left the reviewer's unwitnessed: with it dropped,
-        the fallback launch here renders with `repair_strategy: none`.
+        """The reviewer twin of the producer's missing-home row (issue #508).
+        `_spawn_workshop_turn` returns None when a warm resume has no lineage home to run in
+        (issue #245; `workshop_lineage_home_missing`); the loop keeps its repair target, so the
+        NEXT turn is still a `reuse` repair of the reviewer's own schema-violating verdict —
+        findings and full context — rather than a fresh review that forgets what it was
+        repairing. The two loops are separate copies of that line, and the producer's row left
+        the reviewer's unwitnessed: with it dropped, the fallback launch here renders with
+        `repair_strategy: none`. (The pure loop's fallback also re-sent the prior verdict as
+        `prior_document`; with the home gone a workshop lineage has no snapshot to seed it from,
+        so the fallback is seeded from the seeds alone.)
 
         The missing home is faked where production detects it (`record_launch`'s
-        `codex_lineage_home_missing`, which the runtime's record-launch returns before it
+        `workshop_lineage_home_missing`, which the runtime's record-launch returns before it
         writes any launch state and so before any leaf is spawned; the fake runs the real
         record first and then adds the flag, so the dead warm turn's request stays
-        observable), on the claude
-        fake, where a session id is the child's arid — so, as in the producer's row, the codex
-        thread-id spelling of the target is not this row's subject.
+        observable), on the claude fake, where a session id is the child's arid.
         """
         c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
@@ -1055,51 +1131,59 @@ class PureVerifySubstepTests(unittest.TestCase):
             rec = real_record(child_arid, request, entry, **kw)
             if request.get("warm_resume") and not vanished:
                 vanished.append(True)
-                return {**rec, "codex_lineage_home_missing": True}
+                return {**rec, "workshop_lineage_home_missing": True}
             return rec
 
         c.record_launch = _vanish_once  # type: ignore[assignment]
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
         self.assertEqual(vanished, [True])
         # Three requests built: cold, the warm repair that died to the missing home, the cold
         # repair that replaced it. Two spawned: the dead warm turn never reached the leaf.
-        self.assertEqual([r["repair_strategy"] for r in c.requests], ["none", "reuse", "reuse"])
-        self.assertTrue(c.requests[1].get("warm_resume"))
-        self.assertNotIn("prior_document", c.requests[1])       # warm turns do not send it
-        self.assertFalse(c.requests[2].get("warm_resume"))
-        self.assertEqual(c.requests[2]["repair_target_agent_run_id"], "child-1")
-        self.assertTrue(c.requests[2].get("repair_findings"))
-        self.assertEqual(json.loads(c.requests[2]["prior_document"]),
-                         {"verification_status": "pass"})
-        self.assertTrue(c.requests[2].get("pure_context"))
-        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
+        requests = _requests(c)
+        self.assertEqual([r["repair_strategy"] for r in requests], ["none", "reuse", "reuse"])
+        self.assertTrue(requests[1].get("warm_resume"))
+        self.assertFalse(requests[2].get("warm_resume"))
+        self.assertEqual(requests[2]["repair_target_agent_run_id"], "child-1")
+        self.assertTrue(requests[2].get("repair_findings"))
+        self.assertTrue(requests[2].get("pure_context"))
+        self.assertNotEqual(requests[2]["workshop_lineage_id"], "child-1")
+        self.assertEqual([k.get("resume_session_id") for k in c.spawns], [None, None])
         self.assertEqual(oc.attempts, 2)
         self.assertTrue(any(ev == "resume_session_unavailable"
-                            and f.get("reason") == "codex_lineage_home_missing"
+                            and f.get("reason") == "workshop_lineage_home_missing"
                             for ev, f in c.events), c.events)
 
     def test_a_repair_whose_session_is_not_resumable_is_built_and_spawned_cold(self) -> None:
-        """The reviewer loop computes `warm` in its own copy of the producer's line —
-        `resume_session_id is not None and _pure_session_resumable(...)` — and the producer's
-        (d) row does not reach this copy (issue #508, round 1: dropping the resumability half
-        here left the suite green). A schema-violating verdict whose claude session is gone must
-        be repaired COLD: the request carries the findings, the prior verdict and the full
-        context, and the spawn names no session to resume. Warm instead, the repair would be a
-        context-free `--resume` of a transcript that no longer exists."""
+        """The reviewer loop decides `warm` in its own lineage machine
+        (`_WorkshopLineageMachine.next_launch`, asking `_workshop_session_resumable`), and the
+        producer's row does not reach this copy (issue #508, round 1: dropping the resumability
+        half left the suite green). A schema-violating verdict whose session is gone must be
+        repaired COLD: the request carries the findings and the full context, the new lineage's
+        tree carries the prior verdict (seeded from the old lineage's snapshot — what the pure
+        loop's `prior_document` carried), and the spawn names no session to resume. Warm
+        instead, the repair would be a `--resume` of a transcript that no longer exists."""
         c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
-        c._claude_session_resumable = lambda session_id: False  # type: ignore[assignment]
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        c.resumable = False
+        carried: list = []
+        write_first, write_second = c.leaf_actions
+
+        def _reads_the_carried_verdict(conductor, tree, kwargs):
+            carried.append(json.loads((tree / "verdict.json").read_text(encoding="utf-8")))
+            return write_second(conductor, tree, kwargs)
+
+        c.leaf_actions = [write_first, _reads_the_carried_verdict]
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
-        self.assertEqual([r["repair_strategy"] for r in c.requests], ["none", "reuse"])
-        self.assertFalse(c.requests[1].get("warm_resume"))
-        self.assertEqual(c.requests[1]["repair_target_agent_run_id"], "child-1")
-        self.assertTrue(c.requests[1].get("repair_findings"))
-        self.assertEqual(json.loads(c.requests[1]["prior_document"]),
-                         {"verification_status": "pass"})
-        self.assertTrue(c.requests[1].get("pure_context"))
-        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
+        requests = _requests(c)
+        self.assertEqual([r["repair_strategy"] for r in requests], ["none", "reuse"])
+        self.assertFalse(requests[1].get("warm_resume"))
+        self.assertEqual(requests[1]["repair_target_agent_run_id"], "child-1")
+        self.assertTrue(requests[1].get("repair_findings"))
+        self.assertEqual(carried, [{"verification_status": "pass"}])
+        self.assertTrue(requests[1].get("pure_context"))
+        self.assertEqual([k.get("resume_session_id") for k in c.spawns], [None, None])
 
     def test_every_reviewer_launch_names_the_target_language(self) -> None:
         """The generate reviewer's template carries `{{language:<name>}}` markers, and the
@@ -1108,11 +1192,11 @@ class PureVerifySubstepTests(unittest.TestCase):
         and repair turn both — the render in the unit tests builds its own requests."""
         c, refs = self._waiting(wc.ProcResult(0, _envelope("nope"), ""),
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
-        self.assertGreaterEqual(len(c.requests), 2)
+        self.assertGreaterEqual(len(_requests(c)), 2)
         import tools.orchestration_runtime as ort
-        for request in c.requests:
+        for request in _requests(c):
             self.assertEqual(request.get("pure_language"), c.target.toolchain["language"])
             # ...and the parallel backend its `{{parallel:<name>}}` markers are (issue #316).
             self.assertEqual(request.get("pure_parallel"), c.target.parallel_backend)
@@ -1124,9 +1208,9 @@ class PureVerifySubstepTests(unittest.TestCase):
         re-launched, rather than fail-closing. The wait is not a repair turn (attempts stays the
         reviewer's repair count)."""
         c, refs = self._waiting(wc.ProcResult(1, "", "usage limit reached"))
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
-        self.assertEqual(c._spawn, 2)
+        self.assertEqual(_spawned(c), 2)
         self.assertEqual(oc.attempts, 2)             # launch count (the wait launch is counted)
         self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
         self.assertTrue((c.repo_root / refs.source_dir() / "source_meta.json").exists())
@@ -1149,7 +1233,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         c._read_usage_reset = (  # type: ignore[assignment]
             lambda entry, arid: asked.append(entry) or usage_reset.ResetReading(
                 None, None, usage_reset.FAILURE_PROBE_FAILED, "stub"))
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
         self.assertEqual([e.model for e in asked], ["per-substep-sentinel"])
 
@@ -1178,9 +1262,9 @@ class PureVerifySubstepTests(unittest.TestCase):
         for shape, stdout in (("bare", bare), ("enveloped", enveloped)):
             with self.subTest(shape=shape):
                 c, refs = self._waiting(wc.ProcResult(1, stdout, ""))
-                oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+                oc = _run_verify(c, refs)
                 self.assertEqual(oc.status, "pass")
-                self.assertEqual(c._spawn, 2)                # waited, then relaunched
+                self.assertEqual(_spawned(c), 2)                # waited, then relaunched
                 self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
 
     def test_the_reviewer_wait_budget_is_the_schedule_then_fails_closed(self) -> None:
@@ -1191,10 +1275,10 @@ class PureVerifySubstepTests(unittest.TestCase):
         count. Without this row `usage_waits += 1` could be dropped at this site with the suite
         green — a lasting quota would then park `generate.verify` 900 s forever."""
         c, refs = self._waiting(*([self._QUOTA] * (wc.MAX_USAGE_LIMIT_WAITS + 1)))
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "llm_usage_limit")
-        self.assertEqual(c._spawn, wc.MAX_USAGE_LIMIT_WAITS + 1)
+        self.assertEqual(_spawned(c), wc.MAX_USAGE_LIMIT_WAITS + 1)
         self.assertEqual(oc.attempts, wc.MAX_USAGE_LIMIT_WAITS + 1)
         self.assertEqual(c.slept, list(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS))
         waits = [f for e, f in c.events if e == "leaf_usage_limit_wait"]
@@ -1214,7 +1298,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         emitted on the flag-off path would make that reading false for a run that never opted
         in; the flag check is the FIRST thing `_usage_limit_wait` does, and this pins it."""
         c, refs = self._waiting(self._QUOTA, flag=False)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "llm_usage_limit")
         self.assertEqual(c.slept, [])
@@ -1227,12 +1311,12 @@ class PureVerifySubstepTests(unittest.TestCase):
         `leaf_usage_limit_wait` whose `tag` is what the death carried — which is why the tag is
         taken from `infra_error` rather than spelled inside `_usage_limit_wait`."""
         c, refs = self._waiting(self._FLAKE)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
         self.assertEqual(c.slept, [2.0])                                  # transient backoff
         self.assertEqual([e for e, _ in c.events if e.startswith("leaf_usage_limit")], [])
         c, refs = self._waiting(wc.ProcResult(1, "", "API Error: 400 invalid_request_error"))
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "llm_client_error")
         self.assertEqual(c.slept, [])
@@ -1243,7 +1327,10 @@ class PureVerifySubstepTests(unittest.TestCase):
         (1) a wait on a cold first attempt re-launches COLD — `repair_strategy: none`, no
         `resume_session_id` on the spawn — and the following schema violation still gets its
         repair turn (a wait that spent one would refuse it and fail closed); (2) a wait that
-        interrupts a REPAIR turn re-runs that turn against the same session, not the dead one.
+        interrupts a REPAIR turn re-runs that repair — still a `reuse` with the same findings —
+        but, on the workshop lineage, COLD in a new lineage seeded from the seeds alone: a dead
+        session is never resumed, since it would continue a half-written turn (issue #534 step
+        3; `test_workshop_reviewer`'s `test_a_dead_warm_repair_is_retried_cold_never_resumed`).
         Asserted on the launch request and the spawn kwargs, not on the absence of a carrier a
         transport death never sets."""
         # (1) quota on the cold attempt, then EVERY repair turn the budget allows is needed:
@@ -1254,30 +1341,33 @@ class PureVerifySubstepTests(unittest.TestCase):
         malformed = [wc.ProcResult(0, _envelope("nope"), "")] * MAX_BUNDLE_REPAIR_TURNS
         c, refs = self._waiting(self._QUOTA, *malformed,
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
-        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual(_spawned(c), MAX_BUNDLE_REPAIR_TURNS + 2)
         self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
-        self.assertEqual([r["repair_strategy"] for r in c.requests],
+        self.assertEqual([r["repair_strategy"] for r in _requests(c)],
                          ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
         # each repair resumes the attempt before it, starting from the cold RE-launch
         # (`child-2`): the dead attempt (`child-1`) is never a resume target
-        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs],
+        self.assertEqual([k.get("resume_session_id") for k in c.spawns],
                          [None, None] + [f"child-{n + 2}" for n in range(MAX_BUNDLE_REPAIR_TURNS)])
         # (2) malformed verdict, quota on the repair turn, then the repair passes.
         c, refs = self._waiting(wc.ProcResult(0, _envelope("nope"), ""), self._QUOTA,
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
-        self.assertEqual(c._spawn, 3)
-        self.assertEqual([r["repair_strategy"] for r in c.requests],
+        self.assertEqual(_spawned(c), 3)
+        self.assertEqual([r["repair_strategy"] for r in _requests(c)],
                          ["none", "reuse", "reuse"])
-        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs],
-                         [None, "child-1", "child-1"])  # same target before and after the wait
+        # The repair resumes the reviewer's own session; its re-run after the wait resumes none.
+        self.assertEqual([k.get("resume_session_id") for k in c.spawns],
+                         [None, "child-1", None])
+        self.assertEqual([r["workshop_lineage_id"] for r in _requests(c)],
+                         ["child-1", "child-1", "child-3"])
         # ...and the same FINDINGS: the transport death neither overwrote the carriers (the
         # guard above the wait) nor did the wait clear them — a leaf's 160-char evidence line
         # must never become the next repair prompt's findings.
-        findings = [str(r.get("repair_findings", "")) for r in c.requests[1:]]
+        findings = [str(r.get("repair_findings", "")) for r in _requests(c)[1:]]
         self.assertEqual(findings[0], findings[1])
         self.assertTrue(findings[1])
         self.assertNotIn("usage limit", findings[1].lower())
@@ -1288,16 +1378,17 @@ class PureVerifySubstepTests(unittest.TestCase):
         turn: the retry must not spend the repair budget, and the launch count, the outcome's
         `attempts` and `verdict_meta` must all count the flake, `MAX_BUNDLE_REPAIR_TURNS + 2`.
         (2) The connection drops on the first repair turn instead: the retry re-runs that repair
-        against the same session with the same findings, and still spends no budget."""
+        with the same findings, and still spends no budget — cold, in a new lineage seeded from
+        the seeds alone, never resuming the dead session (the workshop lineage's rule)."""
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
         c, refs = self._waiting(self._FLAKE, *([malformed] * (MAX_BUNDLE_REPAIR_TURNS + 1)),
                                 record=True)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(c.slept, [2.0])
-        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
-        self.assertEqual([r["repair_strategy"] for r in c.requests],
+        self.assertEqual(_spawned(c), MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual([r["repair_strategy"] for r in _requests(c)],
                          ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
         self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 2)
         vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
@@ -1306,15 +1397,18 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 2)
         c, refs = self._waiting(malformed, self._FLAKE, *([malformed] * MAX_BUNDLE_REPAIR_TURNS),
                                 record=True)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "fail")
-        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
-        self.assertEqual([r["repair_strategy"] for r in c.requests],
+        self.assertEqual(_spawned(c), MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual([r["repair_strategy"] for r in _requests(c)],
                          ["none"] + ["reuse"] * (MAX_BUNDLE_REPAIR_TURNS + 1))
-        # the flaked repair (child-2) and its retry (child-3) resume the same session
-        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs][:3],
-                         [None, "child-1", "child-1"])
-        findings = [str(r.get("repair_findings", "")) for r in c.requests[1:3]]
+        # the flaked repair (child-2) resumes the reviewer's session; its retry (child-3)
+        # resumes none, in a lineage of its own
+        self.assertEqual([k.get("resume_session_id") for k in c.spawns][:3],
+                         [None, "child-1", None])
+        self.assertEqual([r["workshop_lineage_id"] for r in _requests(c)][:3],
+                         ["child-1", "child-1", "child-3"])
+        findings = [str(r.get("repair_findings", "")) for r in _requests(c)[1:3]]
         self.assertEqual(findings[0], findings[1])
         self.assertTrue(findings[1])
 
@@ -1334,15 +1428,15 @@ class PureVerifySubstepTests(unittest.TestCase):
             rec = recorded(child_arid, request, entry, **kw)
             if request.get("warm_resume") and not vanished:
                 vanished.append(True)
-                return {**(rec or {}), "codex_lineage_home_missing": True}
+                return {**(rec or {}), "workshop_lineage_home_missing": True}
             return rec
 
         c.record_launch = _vanish_once  # type: ignore[assignment]
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(vanished, [True])
-        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
-        self.assertEqual(len(c.requests), MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual(_spawned(c), MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(_requests(c)), MAX_BUNDLE_REPAIR_TURNS + 2)
         self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
         vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
         self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
@@ -1356,9 +1450,9 @@ class PureVerifySubstepTests(unittest.TestCase):
         One dropped connection, then a passing verdict: two launches, and every record says 2.
         Only a re-launch in the history separates `len(per_attempt)` from `attempt + 1`."""
         c, refs = self._waiting(self._FLAKE)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
-        self.assertEqual(c._spawn, 2)
+        self.assertEqual(_spawned(c), 2)
         self.assertEqual(oc.attempts, 2)
         base = c.repo_root / refs.source_dir()
         vmeta = json.loads((base / "verdict_meta.json").read_text())
@@ -1380,10 +1474,10 @@ class PureVerifySubstepTests(unittest.TestCase):
         still held in the repair carrier."""
         c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
                                 self._QUOTA, flag=False, record=True)
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.leaf_returncode, 1)
-        stale = c.requests[1]["repair_findings"]      # the schema finding the carrier holds
+        stale = _requests(c)[1]["repair_findings"]      # the schema finding the carrier holds
         self.assertTrue(stale)
         vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
         self.assertEqual(vmeta["failure_category"], "pure_transport")
@@ -1411,7 +1505,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         # Codex review (defect 2): the exhaustion-path verdict_meta write must be guarded like the
         # accepted path — a host-write failure recovers as a fail_closed transport outcome, never
         # an uncaught exception escaping run_substep.
-        class _C(_PureFakeConductor):
+        class _C(_reviewer_fake()):  # type: ignore[misc]
             def _write_verdict_meta(self, *a, **k):  # type: ignore[override]
                 raise OSError(28, "No space left on device")
         bad = {"verification_status": "pass"}  # persistently schema-invalid -> exhaustion
@@ -1426,19 +1520,16 @@ class PureVerifySubstepTests(unittest.TestCase):
         refs = _verify_node(repo)
         observed: dict[str, bool] = {}
 
-        class _C(_PureFakeConductor):
+        class _C(_reviewer_fake()):  # type: ignore[misc]
             def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 base = self.repo_root / refs.source_dir()
                 observed["meta_exists_at_finalize"] = (base / "source_meta.json").exists()
                 return super().finalize_child(child_arid, reply_text, agent_run_json)
 
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               llm_config=_cfg("claude"), env={})
-        c.envelopes = [_envelope(_verdict("pass"))]
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        c = _reviewer_conductor(repo, [_envelope(_verdict("pass"))], cls=_C)
+        oc = _run_verify(c, refs)
         self.assertEqual(oc.status, "pass")
-        # The window was closed BEFORE source_meta.json was authored (empty write_roots).
+        # The window was closed BEFORE source_meta.json was authored.
         self.assertFalse(observed["meta_exists_at_finalize"])
         self.assertTrue((c.repo_root / refs.source_dir() / "source_meta.json").exists())
 
@@ -1448,7 +1539,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         refs = _verify_node(repo)
         finalized: dict[str, bool] = {}
 
-        class _C(_PureFakeConductor):
+        class _C(_reviewer_fake()):  # type: ignore[misc]
             def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 finalized["did"] = True
                 return super().finalize_child(child_arid, reply_text, agent_run_json)
@@ -1456,11 +1547,8 @@ class PureVerifySubstepTests(unittest.TestCase):
             def _write_verify_source_meta(self, refs, verdict, *, attempts):  # type: ignore[override]
                 raise OSError(28, "No space left on device")
 
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               llm_config=_cfg("claude"), env={})
-        c.envelopes = [_envelope(_verdict("pass"))]
-        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        c = _reviewer_conductor(repo, [_envelope(_verdict("pass"))], cls=_C)
+        oc = _run_verify(c, refs)
         self.assertTrue(finalized.get("did"))
         self.assertEqual(oc.status, "fail")
         self.assertNotEqual(oc.leaf_returncode, 0)
@@ -1471,10 +1559,10 @@ class PureVerifySubstepTests(unittest.TestCase):
         # attempt arid (a "child-N" minted in this loop), never an external/producer arid.
         resumes: list = []
 
-        class _C(_PureFakeConductor):
+        class _C(_reviewer_fake()):  # type: ignore[misc]
             def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 resumes.append(kwargs.get("resume_session_id"))
-                return super().spawn_leaf(prompt_text, child_env, **kwargs)
+                return super().spawn_leaf(prompt_text, child_env, entry, **kwargs)
         bad = {"verification_status": "pass"}
         c, refs, oc = self._run([_envelope(bad), _envelope(_verdict("pass"))], cls=_C)
         self.assertEqual(oc.status, "pass")
@@ -1546,10 +1634,9 @@ class PureVerifyRoutingTests(unittest.TestCase):
 class PureVerifyRoutingDriftTests(unittest.TestCase):
     def test_routing_categories_match_pure_leaf_constants(self) -> None:
         # parallel_review (glm): the routing table must key on the SAME category strings the loop
-        # assigns from pure_leaf, or a constant rename would silently mis-route. Pin the identity.
-        from tools.pure_leaf import RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED
-        self.assertIn(RESPONSE_UNPARSEABLE, wc.GENERATE_VERDICT_FAILURE_ROUTING)
-        self.assertIn(RESPONSE_TRUNCATED, wc.GENERATE_VERDICT_FAILURE_ROUTING)
+        # assigns, or a constant rename would silently mis-route. Pin the identity. (The pure
+        # reply extractor's two categories, `pure_leaf.RESPONSE_*`, went with it in issue #534
+        # PR-J4-b; the reviewer loop assigns the two below.)
         self.assertIn(wc.GENERATE_VERDICT_SCHEMA_VIOLATION, wc.GENERATE_VERDICT_FAILURE_ROUTING)
         self.assertEqual(wc.GENERATE_VERDICT_FAILURE_ROUTING[wc.WORKSHOP_CUT_READ],
                          ("generate", "restart"))
@@ -1561,27 +1648,26 @@ class PureVerifyRoutingDriftTests(unittest.TestCase):
 class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
     def test_cold_fallback_repair_with_surrogate_does_not_crash(self) -> None:
         # parallel_review (glm §5.3): a verdict carrying an unpaired surrogate goes to the
-        # verdict_schema_violation repair path; on a COLD fallback (session not resumable) its
-        # prior_document is echoed into the repair prompt that record_launch writes as UTF-8. It
-        # must be normalized so the write does not raise UnicodeEncodeError mid-repair.
-        class _C(_PureFakeConductor):
-            def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
-                return False  # force the cold-fallback repair branch on every turn
+        # verdict_schema_violation repair path; on a COLD fallback (session not resumable) the
+        # repair request that record_launch writes as UTF-8 carries what the violation says of
+        # it (the pure loop also echoed the verdict itself as `prior_document`; a workshop
+        # lineage carries it as a file in the new tree). It must be normalized so the write
+        # does not raise UnicodeEncodeError mid-repair.
+        class _C(_reviewer_fake()):  # type: ignore[misc]
+            resumable = False  # force the cold-fallback repair branch on every turn
+
             def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 # Emulate the real record_launch's UTF-8 prompt persistence to surface any
-                # non-encodable prior_document as the real path would.
+                # non-encodable request field as the real path would.
                 json.dumps(request, ensure_ascii=False).encode("utf-8")
-                return {"launch_prompt_text": "PROMPT"}
+                return super().record_launch(child_arid, request, entry, **kwargs)
         bad = {"verification_status": "fail", "issue_severity": "major",
                "last_fail_reason": "\ud800", "findings": [{"summary": "x"}]}
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-            c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   llm_config=_cfg("claude"), env={})
-            c.envelopes = [_envelope(bad)]
-            oc = c._run_pure_verify_substep(refs, "generate", "verify", ())  # must not raise
+            c = _reviewer_conductor(repo, [_envelope(bad)], cls=_C)
+            oc = _run_verify(c, refs)  # must not raise
             self.assertEqual(oc.status, "fail")
 
     def test_surrogate_in_findings_does_not_crash_repair_or_meta(self) -> None:
@@ -1592,20 +1678,18 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
         from unittest import mock
         import tools.pure_leaf as pl
 
-        class _C(_PureFakeConductor):
+        class _C(_reviewer_fake()):  # type: ignore[misc]
             def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 json.dumps(request, ensure_ascii=False).encode("utf-8")  # emulate prompt persist
-                return {"launch_prompt_text": "PROMPT"}
+                return super().record_launch(child_arid, request, entry, **kwargs)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-            c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   llm_config=_cfg("claude"), env={})
-            c.envelopes = [_envelope({"verification_status": "pass"})]  # schema-invalid -> repair
+            # schema-invalid -> repair
+            c = _reviewer_conductor(repo, [_envelope({"verification_status": "pass"})], cls=_C)
             with mock.patch.object(pl, "verify_verdict_violations",
                                    return_value=["bad field value \ud800 here"]):
-                oc = c._run_pure_verify_substep(refs, "generate", "verify", ())  # must not raise
+                oc = _run_verify(c, refs)  # must not raise
             self.assertEqual(oc.status, "fail")
             # verdict_meta persisted cleanly (excerpt normalized), and its write did not fail_close.
             vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
@@ -1618,10 +1702,14 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
 # ======================================================================================
 class PureVerifyLaunchRequestTests(unittest.TestCase):
     def test_pure_verify_request_shape(self) -> None:
+        """The verify request `build_launch_request` builds for a reviewer leaf: a workshop
+        request (issue #534 PR-J4-b) stamped with the one prompt contract version, no leaf
+        write set, no skill, the context present. A host-rendered request that names no
+        lineage or provider is refused at the builder."""
         with tempfile.TemporaryDirectory() as tmp:
             refs = _verify_node(Path(tmp))
-            req = wc.build_launch_request(
-                refs, step="generate", substep="verify", orchestration_id="o",
+            kwargs = dict(
+                step="generate", substep="verify", orchestration_id="o",
                 orchestration_agent_run_id="orch", child_agent_run_id="c",
                 agent_model="opus", workflow_mode="dev",
                 runner_host_authored=True,
@@ -1630,12 +1718,21 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
                               "ir_document": "ir",
                               "checks_module_contract_document": "## 1. The fixed ABI",
                               "bundle_document": "b"})
-            self.assertEqual(req["leaf_mode"], "pure")
+            req = wc.build_launch_request(refs, workshop_lineage_id="c",
+                                          workshop_provider="claude_cli", **kwargs)
+            self.assertEqual(req["leaf_mode"], "workshop")
             self.assertEqual(req["substep"], "verify")
             self.assertEqual(req["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+            self.assertNotIn("workshop_prompt_contract_version", req)
             self.assertEqual(req["allowed_output_paths"], [])
             self.assertEqual(req["skill_name"], "")
             self.assertIn("pure_context", req)
+            for missing in ("workshop_lineage_id", "workshop_provider"):
+                with self.subTest(missing=missing), self.assertRaises(ValueError):
+                    wc.build_launch_request(refs, **kwargs, **{
+                        k: v for k, v in (("workshop_lineage_id", "c"),
+                                          ("workshop_provider", "claude_cli"))
+                        if k != missing})
 
 
 # ======================================================================================
@@ -1674,7 +1771,8 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         import tools.orchestration_runtime as ort
         texts = []
         for extra in self._VERIFY_REQUESTS:
-            req = {"leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
+            req = {"leaf_mode": "workshop", "workshop_provider": "claude_cli",
+                   "pure_language": "fortran", "pure_parallel": "openmp",
                    "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION, **extra}
             # The `Output contract` paragraph of each verify launch template, read where the
             # cold repair reads it: the composed template itself (issue #510).
@@ -1706,7 +1804,8 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         verify request."""
         import tools.orchestration_runtime as ort
         for extra in self._VERIFY_REQUESTS:
-            req = {"leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
+            req = {"leaf_mode": "workshop", "workshop_provider": "claude_cli",
+                   "pure_language": "fortran", "pure_parallel": "openmp",
                    "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                    "repair_findings": "verdict JSON did not parse", **extra}
             with self.subTest(request=extra):
@@ -1734,14 +1833,16 @@ class PureVerifyOutputContractTests(unittest.TestCase):
 # Full pure generate phase through the real step_result validator (subagent review round 1)
 # ======================================================================================
 class PureStepResultValidationTests(unittest.TestCase):
-    """A passing pure generate phase must clear `_validate_step_result_payload`.
+    """A passing generate phase whose two leaves were PURE must clear
+    `_validate_step_result_payload` — the records a pure leaf wrote before issue #534 PR-J4-b
+    retired it are still read (a record reader keeps reading old rows).
 
-    The pure producer AND the pure verify reviewer both finalize with output_refs==[] (the host
-    authors model/checks/source_meta after the child windows close). Without the pure carve-out
-    the per-step-result validator raises — `substep must publish non-empty output_refs` and
-    `required_outputs must be satisfied by substep output_refs` — so a pure-leaf node
-    could never certify. This exercises the real validator end-to-end (the unit loops stub
-    the runtime, so they miss this)."""
+    The pure producer AND the pure verify reviewer both finalized with output_refs==[] (the
+    host authors model/checks/source_meta after the child windows close). Without the
+    host-rendered carve-out the per-step-result validator raises — `substep must publish
+    non-empty output_refs` and `required_outputs must be satisfied by substep output_refs` — so
+    such a node could never certify. This exercises the real validator end-to-end (the unit
+    loops stub the runtime, so they miss this)."""
 
     def _setup(self, tmp: str):
         import tools.orchestration_runtime as ort
@@ -1805,48 +1906,48 @@ class PureStepResultValidationTests(unittest.TestCase):
 
 
 class WorkshopStepResultValidationTests(PureStepResultValidationTests):
-    """The same phase with its PRODUCER a workshop leaf (issue #534): its terminal row also
-    carries output_refs == [], and the step-result validator vouches its host-written
-    deliverables by existence exactly as it does a pure producer's. The verify reviewer stays
-    pure, so this row is what tells a workshop producer apart."""
+    """The same phase with both leaves workshop leaves (issue #534; every leaf since PR-J4-b):
+    their terminal rows also carry output_refs == [], and the step-result validator vouches the
+    host-written deliverables by existence exactly as it did for the pure leaves'."""
 
     def _setup(self, tmp: str):
         ort, repo, oid, refs, payload, required = super()._setup(tmp)
-        path = (repo / "workspace" / "orchestrations" / oid / "launches"
-                / "gen-pure-1.request.json")
-        path.write_text(json.dumps({"leaf_mode": "workshop", "step": "generate",
-                                    "substep": "generate"}), encoding="utf-8")
+        for arid, substep in (("gen-pure-1", "generate"), ("ver-pure-1", "verify")):
+            path = (repo / "workspace" / "orchestrations" / oid / "launches"
+                    / f"{arid}.request.json")
+            path.write_text(json.dumps({"leaf_mode": "workshop", "step": "generate",
+                                        "substep": substep}), encoding="utf-8")
         return ort, repo, oid, refs, payload, required
 
 
 class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
     """The reviewer loop's copy of the transient wall-clock budget.
 
-    The rule has two pure implementations, and this repository's own history says a rule with two
+    The rule has two implementations (the producer loop's and the reviewer loop's), and this
+    repository's own history says a rule with two
     implementations drifts at the untested one: the producer loop's copy was pinned first and the
     reviewer's was not, so the budget could be removed here outright — or the accumulator hoisted
     back above the transport branch, which is the exact defect the producer side was fixed for —
     with the whole suite still green."""
 
-    class _C(_PureFakeConductor):
-        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-            index = getattr(self, "_spawn", 0)
-            self.clock[0] += self.seconds[min(index, len(self.seconds) - 1)]
-            self._spawn = index + 1
-            return self.procs[min(index, len(self.procs) - 1)]
-
-        def _sleep_backoff(self, seconds):  # type: ignore[override]
-            self.slept.append(seconds)
+    @staticmethod
+    def _clocked() -> type:
+        """The reviewer fake whose every launch advances the fixture's monotonic clock by its
+        scripted duration (`seconds`, the last repeating)."""
+        class _C(_reviewer_fake()):  # type: ignore[misc]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+                index = len(self.__dict__.get("spawns", []))
+                self.clock[0] += self.seconds[min(index, len(self.seconds) - 1)]
+                return super().spawn_leaf(prompt_text, child_env, entry, **kwargs)
+        return _C
 
     def _run(self, procs: list, seconds: "list[float]", **kw):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = self._C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                    llm_config=_cfg("claude"), env={}, **kw)
-        c.procs, c.slept, c.seconds = procs, [], seconds
+        c = _reviewer_conductor(repo, procs, cls=self._clocked(), **kw)
+        c.seconds = seconds
         c.clock = [1_752_200_000.0]
         events: list = []
         c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
@@ -1854,7 +1955,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
         # fixture that moved both clocks together could not tell the two readings apart — which
         # is how the producer-side pin missed that the pure loops were reading a wall clock.
         with mock.patch.object(wc.time, "monotonic", lambda: c.clock[0]):
-            oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+            oc = _run_verify(c, refs)
         return c, oc, events
 
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
@@ -1871,7 +1972,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
             [2.0], wait_usage_reset=True)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "llm_transport_flake")
-        self.assertEqual(c._spawn, 4)                       # flake, flake, quota, flake — done
+        self.assertEqual(_spawned(c), 4)                       # flake, flake, quota, flake — done
         self.assertEqual(c.slept, [2.0, 10.0, wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
         self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 2)
 
@@ -1880,7 +1981,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
         c, oc, events = self._run(
             [self._FLAKE, wc.ProcResult(0, _envelope(_verdict("pass")), "")], [613.0])
         self.assertEqual(oc.status, "fail")
-        self.assertEqual(c._spawn, 1)
+        self.assertEqual(_spawned(c), 1)
         declined = [e for e in events if e["event"] == "leaf_transient_retry_declined"]
         self.assertEqual(len(declined), 1)
         self.assertEqual(declined[0]["reason"], "wall_clock_budget")
@@ -1892,7 +1993,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
             [self._FLAKE, self._FLAKE, wc.ProcResult(0, _envelope(_verdict("pass")), "")],
             [350.0, 350.0, 5.0])
         self.assertEqual(oc.status, "fail")
-        self.assertEqual(c._spawn, 2)
+        self.assertEqual(_spawned(c), 2)
         declined = [e for e in events if e["event"] == "leaf_transient_retry_declined"]
         self.assertEqual(len(declined), 1)
         self.assertAlmostEqual(declined[0]["spent_seconds"], 350.0)
@@ -1902,7 +2003,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
         c, oc, events = self._run(
             [self._FLAKE, wc.ProcResult(0, _envelope(_verdict("pass")), "")], [2.0, 3.0])
         self.assertEqual(oc.status, "pass")
-        self.assertEqual(c._spawn, 2)
+        self.assertEqual(_spawned(c), 2)
         self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
 
     def test_a_slow_verdict_repair_turn_does_not_spend_the_transient_budget(self) -> None:
@@ -1923,7 +2024,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
 # The `harness` bundle shape's reviewer (issue #169) — driven through the loop
 # ======================================================================================
 class PureHarnessVerifyWiringTests(unittest.TestCase):
-    """The reviewer half of the second shape, driven through `_run_pure_verify_substep` and
+    """The reviewer half of the second shape, driven through the reviewer loop and
     `run_substep` rather than by calling `_pure_reviewer_spec` directly.
 
     Choosing the spec and WIRING the choice into the two call sites are different things: a
@@ -1955,10 +2056,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         src.mkdir(parents=True, exist_ok=True)
         (src / "codegen_bundle.json").write_text(
             json.dumps(_harness_bundle()), encoding="utf-8")
-        (self.repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        self.c = _PureFakeConductor(
-            repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            llm_config=_cfg("claude"), env={})
+        self.c = _reviewer_conductor(self.repo, [_envelope(_verdict("pass"))])
 
     def _last_request(self) -> dict:
         return [cap["--request-json"] for sub, cap in self.c.calls
@@ -2028,18 +2126,19 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         """Issue #467, driven through the production loop for this shape too: the bundle under
         review gone, a recorded `pure_context_assembly_failed`, no `record-launch`."""
         (self.repo / self.refs.source_dir() / "codegen_bundle.json").unlink()
-        self.c.envelopes = [_envelope(_verdict("pass"))]
-        oc = self.c._run_pure_verify_substep(self.refs, "generate", "verify", ())
+        oc = _run_verify(self.c, self.refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
         self.assertIn("pure_bundle_document_missing", oc.infra_error[1])
-        self.assertEqual(getattr(self.c, "_spawn", 0), 0)
+        self.assertEqual(_spawned(self.c), 0)
         self.assertEqual([sub for sub, _ in getattr(self.c, "calls", [])
                           if sub == "record-launch"], [])
 
-    def test_the_verify_seam_wires_the_harness_shape_through(self) -> None:
-        self.c.envelopes = [_envelope(_verdict("pass"))]
-        oc = self.c._run_pure_verify_substep(self.refs, "generate", "verify", ())
+    def test_the_reviewer_loop_wires_the_harness_shape_through(self) -> None:
+        """The harness shape's CONTEXT reaches the reviewer's request. Driven through
+        `run_substep`, the one call site left since the `_run_pure_verify_substep` seam went in
+        issue #534 PR-J4-b."""
+        oc = self.c.run_substep(self.refs, "generate", "verify")
         self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
         request = self._last_request()
         self.assertEqual(request["pure_shape"], "harness")
@@ -2053,18 +2152,18 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         self.assertIn("runner_output_contract_document", request["pure_context"])
 
     def test_run_substep_dispatches_the_reviewer_with_the_shape(self) -> None:
-        """The other call site: `run_substep`'s pure branch resolves the shape itself."""
-        self.c.envelopes = [_envelope(_verdict("pass"))]
+        """`run_substep`'s reviewer dispatch resolves the shape itself."""
         oc = self.c.run_substep(self.refs, "generate", "verify")
         self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
         self.assertEqual(self._last_request()["pure_shape"], "harness")
 
     def test_run_substep_dispatches_the_producer_with_the_shape(self) -> None:
-        from tools.tests.test_pure_leaf_producer import _harness_bundle
-        self.c.envelopes = [_envelope(_harness_bundle())]
-        oc = self.c.run_substep(self.refs, "generate", "generate")
+        from tools.tests.test_pure_leaf_producer import _harness_bundle, _workshop_conductor
+        producer = _workshop_conductor(self.repo)
+        producer.envelopes = [_envelope(_harness_bundle())]
+        oc = producer.run_substep(self.refs, "generate", "generate")
         self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
-        request = self._last_request()
+        request = _requests(producer)[-1]
         self.assertEqual(request["pure_shape"], "harness")
         self.assertIn("runner_output_contract_document", request["pure_context"])
 
@@ -2090,7 +2189,8 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         self.assertNotIn("whole execution", perf_doc)
         self.assertNotIn("per single case execution", perf_doc)
         self.assertIn("RUNNER_OUTPUT_CONTRACT.md` §2", perf_doc)
-        for name in ("pure_generate_generate_harness.txt", "pure_generate_verify_harness.txt"):
+        for name in ("workshop_generate_generate_harness.txt",
+                     "workshop_generate_verify_harness.txt"):
             with self.subTest(template=name):
                 text = (real_root / "tools" / "prompt_templates" / name).read_text(
                     encoding="utf-8")
@@ -2108,11 +2208,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-            c = _PureFakeConductor(
-                repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                llm_config=_cfg("claude"), env={})
-            c.envelopes = [_envelope(_verdict("pass"))]
+            c = _reviewer_conductor(repo, [_envelope(_verdict("pass"))])
             c.run_substep(refs, "generate", "verify")
             request = [cap["--request-json"] for sub, cap in c.calls
                        if sub == "record-launch"][-1]

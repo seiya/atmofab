@@ -1,4 +1,12 @@
-"""Unit tests for the HTTP pure-leaf transport (`tools/llm_http_leaf.py`, issue #28).
+"""Unit tests for the shared HTTP layer (`tools/llm_http_leaf.py`, issue #28): POST and
+server-sent-event reads, their bounds, API-key handling and redaction, usage normalization.
+
+Since issue #534 PR-J4-b this module's one caller is the host tool-use loop of an HTTP
+`workshop leaf` (`tools/llm_workshop_loop.run_workshop_loop`), so a row that pins a property of
+the layer AS THE RUN SEES IT drives one launch of that loop (`_launch`, a reply with no tool
+call, so one request); a row about a single function calls it directly. These rows were written
+for the HTTP PURE leaf (`run_pure_http_leaf`, its request builders and response readers), which
+went with the pure path; what each one pinned of the shared layer is re-driven here unchanged.
 
 The module has no filesystem side effects and spawns nothing, so a fake `opener` is the whole
 test seam: it captures the request that would have gone out and returns the body the provider
@@ -7,15 +15,16 @@ would have sent back. That makes the two things worth pinning testable exactly �
 1. **the request shape**, per provider, because a wrong header or a renamed field is a
    run-time-only failure against a real endpoint; and
 2. **the error taxonomy**, because every one of these has to come back as `transport_error`
-   rather than as an exception or, worse, as an empty-but-successful answer that the validators
+   rather than as an exception or, worse, as an empty-but-successful answer that the loop
    would then blame the model for.
 
 Plus the one property that is a security claim rather than a behavior: the API key's VALUE
-never appears in anything this module returns.
+never appears in anything the loop returns from this layer.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import http.client
 import io
 import json
@@ -32,8 +41,10 @@ import pytest
 
 from tools import llm_config as lc
 from tools import llm_http_leaf as hl
+from tools import llm_workshop_loop as loop
 from tools import workflow_conductor as wc
-from tools.pure_leaf import PURE_SYSTEM_PROMPT
+from tools.pure_leaf import HTTP_FILE_TOOL_DECLARATIONS
+from tools.tests.llm_samples import workshop_yaml
 
 KEY_ENV = "ATMOFAB_TEST_HTTP_KEY"
 KEY_VALUE = "sk-test-do-not-log-me"
@@ -58,6 +69,31 @@ def _entry(provider: str = "openai_compatible", **kw) -> lc.ResolvedLeafEntry:
     )
     base.update(kw)
     return lc.ResolvedLeafEntry(**base)
+
+
+SYSTEM = "SYSTEM"
+TOOLS = [dict(d) for d in HTTP_FILE_TOOL_DECLARATIONS]
+
+
+def _no_tool(name: str, args: dict) -> dict:
+    raise AssertionError(f"no reply in this file makes a tool call ({name})")
+
+
+def _launch(entry: lc.ResolvedLeafEntry, *, opener=None, env=None,
+            timeout_s: float | None = None, prompt: str = "P",
+            deadline_s: float = 3600.0) -> loop.LoopResult:
+    """One launch of the host loop on `entry` — the production caller of `_api_key`,
+    `_post_json` / `_post_stream`, the usage normalizers and `_redact` — answered by `opener`
+    (None: the module's `_default_opener`). `env` None reads the process environment, as the
+    layer does. `timeout_s` is the entry's per-request bound; the lineage deadline is far away,
+    so the request's own deadline is the one that binds (`response_deadline_exceeded` is then a
+    transport error, not the lineage's timeout)."""
+    if timeout_s is not None:
+        entry = dataclasses.replace(entry, timeout_s=timeout_s)
+    return loop.run_workshop_loop(
+        entry, system=SYSTEM, history=loop.LoopHistory(), prompt=prompt, tools=TOOLS,
+        call_tool=_no_tool, deadline=time.monotonic() + deadline_s,
+        deadline_name="lineage_timeout_s", env=env, opener=opener)
 
 
 def _sse(*frames: "tuple[str, str]", terminator: str = "") -> str:
@@ -179,10 +215,13 @@ class RequestShapeTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_openai_request_shape(self) -> None:
+        """What `_build_post` and the loop's endpoint put on the wire: the URL, the method, the
+        bearer header, the content type, the model and the entry's output ceiling. (The system
+        channel was the pure transport's fixed prompt; on this path it is the caller's, and
+        `test_llm_workshop_loop.py` pins the body's messages.)"""
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "PROMPT"}],
-            max_output_tokens=4096, opener=_opener(_OPENAI_OK, seen))
+        _launch(_entry(max_output_tokens=4096), opener=_opener(_OPENAI_OK, seen),
+                prompt="PROMPT")
         req = seen[0]
         self.assertEqual(req["url"], "http://localhost:8000/v1/chat/completions")
         self.assertEqual(req["method"], "POST")
@@ -190,137 +229,144 @@ class RequestShapeTests(unittest.TestCase):
         self.assertEqual(req["headers"]["content-type"], "application/json")
         self.assertEqual(req["body"]["model"], "test-model")
         self.assertEqual(req["body"]["max_tokens"], 4096)
-        self.assertEqual(req["body"]["messages"][0],
-                         {"role": "system", "content": PURE_SYSTEM_PROMPT})
         self.assertEqual(req["body"]["messages"][1], {"role": "user", "content": "PROMPT"})
 
     def test_anthropic_request_shape(self) -> None:
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry("anthropic_api"), [{"role": "user", "content": "PROMPT"}],
-            max_output_tokens=8192, opener=_opener(_ANTHROPIC_OK, seen))
+        _launch(_entry("anthropic_api", max_output_tokens=8192),
+                opener=_opener(_ANTHROPIC_OK, seen))
         req = seen[0]
         self.assertEqual(req["url"], f"{lc.ANTHROPIC_DEFAULT_BASE_URL}/v1/messages")
+        self.assertEqual(req["method"], "POST")
         self.assertEqual(req["headers"]["x-api-key"], KEY_VALUE)
         self.assertEqual(req["headers"]["anthropic-version"], hl.ANTHROPIC_VERSION)
-        # The system channel is pinned by the transport, not by the caller — the same fixed
-        # prompt the CLI pure leaf gets via `--system-prompt`.
-        self.assertEqual(req["body"]["system"], PURE_SYSTEM_PROMPT)
-        self.assertEqual(req["body"]["messages"], [{"role": "user", "content": "PROMPT"}])
+        self.assertEqual(req["headers"]["content-type"], "application/json")
+        self.assertNotIn("authorization", req["headers"])
+        self.assertEqual(req["body"]["model"], "test-model")
         self.assertEqual(req["body"]["max_tokens"], 8192)
 
     def test_a_configured_effort_reaches_the_request_body(self) -> None:
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(effort="high"), [{"role": "user", "content": "P"}],
-            opener=_opener(_OPENAI_OK, seen))
+        _launch(_entry(effort="high"), opener=_opener(_OPENAI_OK, seen))
         self.assertEqual(seen[0]["body"]["reasoning_effort"], "high")
 
     def test_an_absent_effort_is_not_put_on_the_wire(self) -> None:
         """Some servers reject a field they do not implement, so "no level" must mean the key
         is absent rather than empty."""
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK, seen))
+        _launch(_entry(), opener=_opener(_OPENAI_OK, seen))
         self.assertNotIn("reasoning_effort", seen[0]["body"])
 
-    def test_a_repair_turn_sends_the_prior_conversation(self) -> None:
+    def test_the_entrys_own_limits_are_used(self) -> None:
+        """The entry's `max_output_tokens` reaches the body and its `timeout_s` the open call
+        (the lineage deadline is far away, so it does not shorten the request's)."""
         seen: list = []
-        history = [
-            {"role": "user", "content": "FIRST"},
-            {"role": "assistant", "content": "BAD DOCUMENT"},
-            {"role": "user", "content": "REPAIR: it was malformed"},
-        ]
-        hl.run_pure_http_leaf(_entry(), history, opener=_opener(_OPENAI_OK, seen))
-        self.assertEqual(seen[0]["body"]["messages"][1:], history)
-
-    def test_the_entrys_own_limits_are_used_when_the_caller_gives_none(self) -> None:
-        seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(max_output_tokens=777, timeout_s=12.5),
-            [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK, seen))
+        _launch(_entry(max_output_tokens=777, timeout_s=12.5),
+                opener=_opener(_OPENAI_OK, seen))
         self.assertEqual(seen[0]["body"]["max_tokens"], 777)
         self.assertEqual(seen[0]["timeout"], 12.5)
 
-    def test_base_url_trailing_slash_does_not_double(self) -> None:
+    def test_an_entry_naming_no_timeout_gets_the_layers_default(self) -> None:
+        """`DEFAULT_HTTP_TIMEOUT_SECONDS` is the one request's bound when the entry states no
+        `timeout_s` (and the lineage's remaining time is longer)."""
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(base_url="http://localhost:8000/v1/"),
-            [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK, seen))
-        self.assertEqual(seen[0]["url"], "http://localhost:8000/v1/chat/completions")
+        _launch(_entry(), opener=_opener(_OPENAI_OK, seen))
+        self.assertGreater(3600.0, hl.DEFAULT_HTTP_TIMEOUT_SECONDS)   # `_launch`'s deadline
+        self.assertEqual(seen[0]["timeout"], hl.DEFAULT_HTTP_TIMEOUT_SECONDS)
+
+    def test_base_url_trailing_slash_does_not_double(self) -> None:
+        for provider, path in (("openai_compatible", "/chat/completions"),
+                               ("anthropic_api", "/v1/messages")):
+            with self.subTest(provider=provider):
+                seen: list = []
+                _launch(_entry(provider, base_url="http://localhost:8000/v1/"),
+                        opener=_opener(_ANTHROPIC_OK if provider == "anthropic_api"
+                                       else _OPENAI_OK, seen))
+                self.assertEqual(seen[0]["url"], "http://localhost:8000/v1" + path)
+
+
+#: What the loop adds to a launch's usage: the number of requests it summed (one, here).
+_ONE_REQUEST = {"provider_details": {"requests": 1}}
 
 
 class ResponseReadingTests(unittest.TestCase):
+    """A buffered reply as the run sees it: the text, the reported model, the usage in the
+    one shape every leaf backend records (`_normalized_usage` over `_openai_usage` /
+    `_anthropic_usage`), the provider's truncation verdict, and the raw body for
+    persistence."""
+
     def setUp(self) -> None:
         patcher = patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def test_openai_response_is_read_and_usage_normalized(self) -> None:
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK))
+        out = _launch(_entry(), opener=_opener(_OPENAI_OK))
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
         self.assertEqual(out.model, "test-model-resolved")
         self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22,
-                                     "total_tokens": 33, "usage_source": "http_provider"})
+                                     "total_tokens": 33, "usage_source": "http_provider",
+                                     **_ONE_REQUEST})
         self.assertFalse(out.truncated)
 
     def test_anthropic_response_is_read_and_usage_normalized(self) -> None:
-        out = hl.run_pure_http_leaf(
-            _entry("anthropic_api"), [{"role": "user", "content": "P"}],
-            opener=_opener(_ANTHROPIC_OK))
+        out = _launch(_entry("anthropic_api"), opener=_opener(_ANTHROPIC_OK))
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
         self.assertEqual(out.model, "claude-opus-5-resolved")
         self.assertEqual(out.usage, {"input_tokens": 33, "output_tokens": 44,
-                                     "total_tokens": 77, "usage_source": "http_provider"})
+                                     "total_tokens": 77, "usage_source": "http_provider",
+                                     **_ONE_REQUEST})
 
     def test_the_openai_reasoning_and_cache_splits_survive(self) -> None:
-        """The reality this transport was blind to. On `orch_20260807T002410Z_acf2b996` the
-        `verify` leaf reported 23,538 completion tokens of which 23,438 (99.6%) were reasoning —
-        the answer was ~100 tokens — and two otherwise identical `generate` calls reported 64 vs
-        32,832 cached prompt tokens. Reading `output_tokens` alone is reading a number that is
-        mostly reasoning without knowing it, which is how `max_output_tokens` gets sized wrong."""
-        body = dict(_OPENAI_OK, usage={
-            "prompt_tokens": 33_000, "completion_tokens": 23_538,
-            "completion_tokens_details": {"reasoning_tokens": 23_438},
-            "prompt_tokens_details": {"cached_tokens": 32_832}})
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        """The reality the HTTP transport was once blind to. On `orch_20260807T002410Z_acf2b996`
+        the `verify` leaf reported 23,538 completion tokens of which 23,438 (99.6%) were
+        reasoning — the answer was ~100 tokens — and two otherwise identical `generate` calls
+        reported 64 vs 32,832 cached prompt tokens. Reading `output_tokens` alone is reading a
+        number that is mostly reasoning without knowing it, which is how `max_output_tokens`
+        gets sized wrong."""
+        raw = {"prompt_tokens": 33_000, "completion_tokens": 23_538,
+               "completion_tokens_details": {"reasoning_tokens": 23_438},
+               "prompt_tokens_details": {"cached_tokens": 32_832}}
+        out = _launch(_entry(), opener=_opener(dict(_OPENAI_OK, usage=raw)))
         self.assertEqual(out.usage["reasoning_tokens"], 23_438)
         self.assertEqual(out.usage["cached_tokens"], 32_832)
         # SUBSETS of completion / prompt — counting them again would double the bill.
         self.assertEqual(out.usage["total_tokens"], 33_000 + 23_538)
-        # ...and the provider's own detail objects travel too, so a count not modelled here is
-        # still on disk instead of recoverable only from the multi-MB raw SSE capture.
-        self.assertEqual(out.usage["provider_details"], {
+        # ...and `_openai_usage` hands the provider's own detail objects on, so a count not
+        # modelled here can still be recorded instead of recoverable only from the raw capture.
+        mapped = hl._openai_usage(raw)
+        self.assertEqual(mapped["provider_details"], {
             "completion_tokens_details": {"reasoning_tokens": 23_438},
             "prompt_tokens_details": {"cached_tokens": 32_832}})
+        self.assertEqual(hl._normalized_usage(mapped)["provider_details"],
+                         mapped["provider_details"])
 
     def test_a_string_valued_detail_field_is_dropped_before_it_can_be_persisted(self) -> None:
         """`provider_details` is persisted (the agent_runs row, the per-attempt metadata)
         WITHOUT passing through `_redact` — unlike every other provider-supplied string this
         module returns. So only COUNTS may travel: a provider that echoes the API key into a
         detail object it controls must not put it on disk."""
-        body = dict(_OPENAI_OK, usage={
-            "prompt_tokens": 11, "completion_tokens": 22,
-            "completion_tokens_details": {"reasoning_tokens": 4, "note": "key=" + KEY_VALUE},
-            "prompt_tokens_details": {"cached_tokens": 2}})
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
-        self.assertEqual(out.usage["provider_details"], {
+        raw = {"prompt_tokens": 11, "completion_tokens": 22,
+               "completion_tokens_details": {"reasoning_tokens": 4, "note": "key=" + KEY_VALUE},
+               "prompt_tokens_details": {"cached_tokens": 2}}
+        self.assertEqual(hl._openai_usage(raw)["provider_details"], {
             "completion_tokens_details": {"reasoning_tokens": 4},
             "prompt_tokens_details": {"cached_tokens": 2}})
+        self.assertNotIn(KEY_VALUE, json.dumps(hl._normalized_usage(hl._openai_usage(raw))))
+        out = _launch(_entry(), opener=_opener(dict(_OPENAI_OK, usage=raw)))
         self.assertNotIn(KEY_VALUE, json.dumps(out.usage))
 
     def test_a_provider_that_sends_no_detail_objects_stays_clean(self) -> None:
         """Most `openai_compatible` endpoints (vLLM, llama.cpp, Ollama) send neither object.
         Their rows must carry the plain pair, not keys with `None` in them."""
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK))
+        self.assertEqual(hl._openai_usage(_OPENAI_OK["usage"]),
+                         {"input_tokens": 11, "output_tokens": 22})
+        out = _launch(_entry(), opener=_opener(_OPENAI_OK))
         self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22,
-                                     "total_tokens": 33, "usage_source": "http_provider"})
+                                     "total_tokens": 33, "usage_source": "http_provider",
+                                     **_ONE_REQUEST})
 
     def test_the_anthropic_cache_classes_survive(self) -> None:
         """`cache_read_input_tokens` / `cache_creation_input_tokens` are ADDITIONAL prompt
@@ -329,11 +375,20 @@ class ResponseReadingTests(unittest.TestCase):
         body = dict(_ANTHROPIC_OK, usage={
             "input_tokens": 33, "output_tokens": 44,
             "cache_read_input_tokens": 14_278, "cache_creation_input_tokens": 5_849})
-        out = hl.run_pure_http_leaf(
-            _entry("anthropic_api"), [{"role": "user", "content": "P"}], opener=_opener(body))
+        out = _launch(_entry("anthropic_api"), opener=_opener(body))
         self.assertEqual(out.usage["cache_read_input_tokens"], 14_278)
         self.assertEqual(out.usage["cache_creation_input_tokens"], 5_849)
         self.assertEqual(out.usage["total_tokens"], 33 + 44 + 14_278 + 5_849)
+
+    def test_a_malformed_usage_count_is_dropped_not_coerced(self) -> None:
+        """`_anthropic_usage` is a filter: a count that is not an int is dropped, never coerced,
+        so a recorded number is one the provider sent."""
+        self.assertEqual(hl._anthropic_usage({"input_tokens": "33", "output_tokens": 44,
+                                              "cache_read_input_tokens": None}),
+                         {"output_tokens": 44})
+        self.assertEqual(hl._anthropic_usage("not a dict"), {})
+        self.assertIsNone(hl._normalized_usage({}))
+        self.assertIsNone(hl._normalized_usage(None))
 
     def test_anthropic_text_blocks_are_concatenated_not_sampled(self) -> None:
         body = dict(_ANTHROPIC_OK, content=[
@@ -341,33 +396,30 @@ class ResponseReadingTests(unittest.TestCase):
             {"type": "thinking", "thinking": "ignored"},
             {"type": "text", "text": ' "b": 2}'},
         ])
-        out = hl.run_pure_http_leaf(
-            _entry("anthropic_api"), [{"role": "user", "content": "P"}], opener=_opener(body))
+        out = _launch(_entry("anthropic_api"), opener=_opener(body))
         self.assertEqual(out.text, '{"a": 1, "b": 2}')
 
     def test_openai_truncation_is_reported_by_the_provider(self) -> None:
         body = dict(_OPENAI_OK, choices=[
             {"message": {"content": '{"partial": '}, "finish_reason": "length"}])
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        out = _launch(_entry(), opener=_opener(body))
         self.assertTrue(out.truncated)
         self.assertIsNone(out.transport_error)   # truncation is a CONTENT outcome, repairable
 
     def test_anthropic_truncation_is_reported_by_the_provider(self) -> None:
         body = dict(_ANTHROPIC_OK, stop_reason="max_tokens")
-        out = hl.run_pure_http_leaf(
-            _entry("anthropic_api"), [{"role": "user", "content": "P"}], opener=_opener(body))
+        out = _launch(_entry("anthropic_api"), opener=_opener(body))
         self.assertTrue(out.truncated)
+        self.assertIsNone(out.transport_error)
 
     def test_the_configured_model_is_the_fallback_when_the_response_names_none(self) -> None:
         body = {k: v for k, v in _OPENAI_OK.items() if k != "model"}
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        out = _launch(_entry(), opener=_opener(body))
         self.assertEqual(out.model, "test-model")
+        self.assertFalse(out.model_reported)
 
     def test_the_raw_body_is_returned_for_persistence(self) -> None:
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK))
+        out = _launch(_entry(), opener=_opener(_OPENAI_OK))
         self.assertEqual(json.loads(out.raw_response), _OPENAI_OK)
 
 
@@ -381,8 +433,8 @@ class ErrorTaxonomyTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _error(self, opener, provider: str = "openai_compatible") -> str:
-        out = hl.run_pure_http_leaf(
-            _entry(provider), [{"role": "user", "content": "P"}], opener=opener)
+        out = _launch(
+            _entry(provider), opener=opener)
         self.assertIsNotNone(out.transport_error)
         self.assertEqual(out.text, "")
         self.assertFalse(out.truncated)
@@ -448,9 +500,8 @@ class ErrorTaxonomyTests(unittest.TestCase):
             raise urllib.error.URLError(TimeoutError("timed out"))
         for stream in (False, True):
             with self.subTest(stream=stream):
-                out = hl.run_pure_http_leaf(
-                    _entry(stream=stream), [{"role": "user", "content": "P"}],
-                    opener=_stalled_connect, timeout_s=0.1)
+                out = _launch(
+                    _entry(stream=stream), opener=_stalled_connect, timeout_s=0.1)
                 self.assertEqual(out.transport_error, "response_deadline_exceeded")
 
     def test_deadline_and_oversize_are_terminal_by_design(self) -> None:
@@ -497,25 +548,17 @@ class ErrorTaxonomyTests(unittest.TestCase):
     def test_openai_body_missing_choices(self) -> None:
         self.assertIn("response_missing_choices", self._error(_opener({"model": "m"})))
 
-    def test_openai_body_missing_message_content(self) -> None:
-        self.assertIn("response_missing_message_content",
-                      self._error(_opener({"choices": [{"message": {}}]})))
-
     def test_anthropic_body_missing_content(self) -> None:
         self.assertIn("response_missing_content",
                       self._error(_opener({"model": "m"}), "anthropic_api"))
-
-    def test_anthropic_body_with_no_text_block(self) -> None:
-        self.assertIn("response_has_no_text_block",
-                      self._error(_opener({"content": [{"type": "thinking"}]}), "anthropic_api"))
 
     def test_missing_api_key_is_caught_before_the_request_is_sent(self) -> None:
         def _must_not_be_called(*_a, **_k):
             raise AssertionError("a request was sent without a key")
         env = {k: v for k, v in __import__("os").environ.items() if k != KEY_ENV}
         with patch.dict("os.environ", env, clear=True):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_must_not_be_called)
+            out = _launch(
+                _entry(), opener=_must_not_be_called)
         self.assertIn("missing_api_key", str(out.transport_error))
         self.assertIn(KEY_ENV, str(out.transport_error))
 
@@ -525,15 +568,15 @@ class ErrorTaxonomyTests(unittest.TestCase):
         seen: list = []
         env = {KEY_ENV: "sk-from-the-run"}
         with patch.dict("os.environ", {KEY_ENV: "sk-from-the-process"}, clear=False):
-            hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], env=env,
+            _launch(
+                _entry(), env=env,
                 opener=_opener(_OPENAI_OK, seen))
         self.assertEqual(seen[0]["headers"]["authorization"], "Bearer sk-from-the-run")
 
     def test_a_key_absent_from_the_supplied_environment_is_missing(self) -> None:
         with patch.dict("os.environ", {KEY_ENV: "sk-from-the-process"}, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], env={},
+            out = _launch(
+                _entry(), env={},
                 opener=_opener(_OPENAI_OK))
         self.assertIn("missing_api_key", str(out.transport_error))
 
@@ -583,11 +626,6 @@ class ErrorTaxonomyTests(unittest.TestCase):
             hl._env_proxies({"HTTPS_PROXY": "http://p:1", "no_proxy": "localhost"}),
             {"https": "http://p:1", "no": "localhost"})
 
-    def test_an_unsupported_provider_is_a_transport_error_not_a_crash(self) -> None:
-        entry = lc.ResolvedLeafEntry(provider="claude_cli", model="opus")
-        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}])
-        self.assertIn("unsupported_http_provider", str(out.transport_error))
-
 
 class KeySecrecyTests(unittest.TestCase):
     """The config names the environment VARIABLE; the value must not travel any further than
@@ -598,8 +636,8 @@ class KeySecrecyTests(unittest.TestCase):
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
             for provider, body in (("openai_compatible", _OPENAI_OK),
                                    ("anthropic_api", _ANTHROPIC_OK)):
-                out = hl.run_pure_http_leaf(
-                    _entry(provider), [{"role": "user", "content": "P"}], opener=_opener(body))
+                out = _launch(
+                    _entry(provider), opener=_opener(body))
                 self.assertNotIn(KEY_VALUE, json.dumps(list(out)), msg=provider)
 
     def test_a_provider_that_echoes_the_key_back_does_not_get_it_persisted(self) -> None:
@@ -612,8 +650,8 @@ class KeySecrecyTests(unittest.TestCase):
             raise urllib.error.HTTPError("http://x", 401, "Unauthorized", {}, io.BytesIO(body))
 
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_echoing_401)
+            out = _launch(
+                _entry(), opener=_echoing_401)
         self.assertNotIn(KEY_VALUE, json.dumps(list(out)))
         self.assertIn("[redacted-api-key]", out.raw_response)
         self.assertIn("HTTP 401", str(out.transport_error))
@@ -627,8 +665,8 @@ class KeySecrecyTests(unittest.TestCase):
         body = dict(_OPENAI_OK, choices=[
             {"message": {"content": '{"leaked": "%s"}' % KEY_VALUE}, "finish_reason": "stop"}])
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+            out = _launch(
+                _entry(), opener=_opener(body))
         self.assertNotIn(KEY_VALUE, out.raw_response)
         self.assertIn("[redacted-api-key]", out.raw_response)
 
@@ -645,8 +683,8 @@ class KeySecrecyTests(unittest.TestCase):
                 "choices": [{"message": {"content": '{"ok": 1}'}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
         with patch.dict("os.environ", {KEY_ENV: "test"}, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+            out = _launch(
+                _entry(), opener=_opener(body))
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": 1}')            # the document is untouched
         self.assertEqual(out.model, "[redacted-api-key]-model")
@@ -663,8 +701,8 @@ class KeySecrecyTests(unittest.TestCase):
                 io.BytesIO(("x" * 380 + secret).encode("utf-8")))
 
         with patch.dict("os.environ", env, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_straddle)
+            out = _launch(
+                _entry(), opener=_straddle)
         for length in range(8, len(secret) + 1):
             self.assertNotIn(secret[:length], out.raw_response, msg=f"prefix of {length}")
             self.assertNotIn(secret[:length], str(out.transport_error))
@@ -676,8 +714,8 @@ class KeySecrecyTests(unittest.TestCase):
         substring of one."""
         body = dict(_OPENAI_OK, model=f"gpt-{KEY_VALUE}")
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+            out = _launch(
+                _entry(), opener=_opener(body))
         self.assertNotIn(KEY_VALUE, out.model)
         self.assertIn("[redacted-api-key]", out.model)
         self.assertEqual(out.text, '{"ok": true}')      # the answer is untouched
@@ -690,8 +728,8 @@ class KeySecrecyTests(unittest.TestCase):
                 "http://x", 401, f"bad key {KEY_VALUE}", {}, io.BytesIO(b""))
 
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_reason_only)
+            out = _launch(
+                _entry(), opener=_reason_only)
         self.assertNotIn(KEY_VALUE, str(out.transport_error))
         self.assertIn("HTTP 401", str(out.transport_error))
 
@@ -701,16 +739,29 @@ class KeySecrecyTests(unittest.TestCase):
             raise OSError(f"cannot connect to http://user:{KEY_VALUE}@host/v1")
 
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_boom)
+            out = _launch(
+                _entry(), opener=_boom)
         self.assertNotIn(KEY_VALUE, str(out.transport_error))
+
+    def test_redact_secret_removes_the_entrys_key_read_from_the_supplied_environment(
+            self) -> None:
+        """`redact_secret` is what the conductor applies to the model's answer channel before
+        persisting it (the value itself cannot be redacted: a key that is a common substring
+        would corrupt it). It reads the key the way the request did — from the supplied
+        environment, not the process's."""
+        text = f"echo {KEY_VALUE} and sk-from-the-process"
+        with patch.dict("os.environ", {KEY_ENV: "sk-from-the-process"}, clear=False):
+            self.assertEqual(hl.redact_secret(text, _entry(), {KEY_ENV: KEY_VALUE}),
+                             "echo [redacted-api-key] and sk-from-the-process")
+            # No key in the supplied environment: nothing to redact, nothing invented.
+            self.assertEqual(hl.redact_secret(text, _entry(), {}), text)
 
     def test_an_error_naming_the_variable_does_not_carry_its_value(self) -> None:
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
             def _refuse(*_a, **_k):
                 raise OSError("Connection refused")
-            out = hl.run_pure_http_leaf(
-                _entry(), [{"role": "user", "content": "P"}], opener=_refuse)
+            out = _launch(
+                _entry(), opener=_refuse)
         self.assertNotIn(KEY_VALUE, str(out.transport_error))
 
 
@@ -739,9 +790,8 @@ class TransportBoundsTests(unittest.TestCase):
                 time.sleep(0.02)
                 return b" "          # never EOF
 
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}],
-            timeout_s=0.1, opener=lambda *_a, **_k: _Trickle())
+        out = _launch(
+            _entry(), timeout_s=0.1, opener=lambda *_a, **_k: _Trickle())
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
         self.assertEqual(out.text, "")
 
@@ -771,9 +821,8 @@ class TransportBoundsTests(unittest.TestCase):
                 return b" "
 
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}],
-            timeout_s=0.1, opener=lambda *_a, **_k: _LikeHTTPResponse())
+        out = _launch(
+            _entry(), timeout_s=0.1, opener=lambda *_a, **_k: _LikeHTTPResponse())
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
         self.assertLess(time.monotonic() - started, 5.0,
                         msg="the read was not bounded by the deadline")
@@ -791,9 +840,8 @@ class TransportBoundsTests(unittest.TestCase):
             read1 = None                     # explicitly absent
 
         body = json.dumps(_OPENAI_OK).encode("utf-8")
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}],
-            opener=lambda *_a, **_k: _PlainRead(body))
+        out = _launch(
+            _entry(), opener=lambda *_a, **_k: _PlainRead(body))
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
 
@@ -838,7 +886,7 @@ class TransportBoundsTests(unittest.TestCase):
         against a 2 s bound)."""
         entry = _entry(base_url=self._silent_after_one_byte(b"HTTP/1.1 503 Unavailable"))
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=0.5)
+        out = _launch(entry, timeout_s=0.5)
         elapsed = time.monotonic() - started
         self.assertIn("HTTP 503", str(out.transport_error))
         # An un-narrowed socket would wait a full extra timeout from t=0.4 -> ~0.9s. The bound
@@ -849,7 +897,7 @@ class TransportBoundsTests(unittest.TestCase):
     def test_a_success_body_that_goes_silent_ends_at_the_deadline(self) -> None:
         entry = _entry(base_url=self._silent_after_one_byte(b"HTTP/1.1 200 OK"))
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=0.5)
+        out = _launch(entry, timeout_s=0.5)
         elapsed = time.monotonic() - started
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
         self.assertLess(elapsed, 0.7, msg=f"took {elapsed:.2f}s for a 0.5s deadline")
@@ -890,8 +938,8 @@ class TransportBoundsTests(unittest.TestCase):
 
         entry = _entry(base_url=f"http://127.0.0.1:{srv.getsockname()[1]}/v1")
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(
-            entry, [{"role": "user", "content": "P"}], timeout_s=0.5)
+        out = _launch(
+            entry, timeout_s=0.5)
         elapsed = time.monotonic() - started
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
         # Comfortably under 2x (=1.0s), which is what an un-narrowed per-receive timeout would
@@ -909,9 +957,8 @@ class TransportBoundsTests(unittest.TestCase):
             def read(self, n=65536):
                 return b"x" * n
 
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}],
-            opener=lambda *_a, **_k: _Flood())
+        out = _launch(
+            _entry(), opener=lambda *_a, **_k: _Flood())
         self.assertIn("response_too_large", str(out.transport_error))
 
     def test_an_error_body_is_bounded_by_the_same_deadline(self) -> None:
@@ -930,8 +977,8 @@ class TransportBoundsTests(unittest.TestCase):
             raise _TricklingError()
 
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], timeout_s=0.1, opener=_raise)
+        out = _launch(
+            _entry(), timeout_s=0.1, opener=_raise)
         self.assertLess(time.monotonic() - started, 5.0)
         # The STATUS still reaches the classifier — that is what makes a 503 retryable.
         self.assertIn("HTTP 503", str(out.transport_error))
@@ -950,8 +997,8 @@ class TransportBoundsTests(unittest.TestCase):
         def _raise(*_a, **_k):
             raise _FloodError()
 
-        out = hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_raise)
+        out = _launch(
+            _entry(), opener=_raise)
         self.assertIn("HTTP 500", str(out.transport_error))
         self.assertIn("response_too_large", str(out.transport_error))
         self.assertLess(len(out.raw_response), hl._MAX_ERROR_BODY_BYTES)
@@ -963,7 +1010,7 @@ class TransportBoundsTests(unittest.TestCase):
                 "http://x", 429, "Too Many Requests", {},
                 io.BytesIO(b'{"error": "slow down"}'))
 
-        out = hl.run_pure_http_leaf(_entry(), [{"role": "user", "content": "P"}], opener=_raise)
+        out = _launch(_entry(), opener=_raise)
         self.assertIn("slow down", str(out.transport_error))
         self.assertIn("slow down", out.raw_response)
 
@@ -1009,8 +1056,8 @@ class TransportBoundsTests(unittest.TestCase):
         thread.start()
         self.addCleanup(lambda: (server.shutdown(), thread.join(timeout=5)))
         base = f"http://127.0.0.1:{server.server_address[1]}/v1"
-        out = hl.run_pure_http_leaf(
-            _entry(base_url=base), [{"role": "user", "content": "P"}], timeout_s=10)
+        out = _launch(
+            _entry(base_url=base), timeout_s=10)
         self.assertIsNotNone(out.transport_error)
         self.assertIn("redirect refused", str(out.transport_error))
         # The key reached the CONFIGURED endpoint (correct) and exactly once.
@@ -1022,8 +1069,8 @@ class TransportBoundsTests(unittest.TestCase):
         servers `openai_compatible` exists for, which reject the request outright — as a
         client error, so on the FIRST attempt and without a retry."""
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK, seen))
+        _launch(
+            _entry(), opener=_opener(_OPENAI_OK, seen))
         self.assertEqual(seen[0]["body"]["max_tokens"], hl.DEFAULT_MAX_OUTPUT_TOKENS)
         self.assertLessEqual(hl.DEFAULT_MAX_OUTPUT_TOKENS, 32768)
         # And large enough for the artifact: the biggest CodegenBundle in this repository is
@@ -1047,19 +1094,20 @@ class StreamingRequestTests(unittest.TestCase):
         with `HTTP 504` while the entry's own 2400 s `timeout_s` never fired."""
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "llm.yaml"
-            path.write_text(
+            # `workshop_yaml` fills the other substeps' entries and the bounds; it never writes
+            # `stream`, so the value read below is the loader's default.
+            path.write_text(workshop_yaml(
                 "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: openai_compatible\n"
                 "        base_url: http://localhost:8000/v1\n"
-                f"        api_key_env: {KEY_ENV}\n        model: test-model\n",
+                f"        api_key_env: {KEY_ENV}\n        model: test-model\n"),
                 encoding="utf-8")
             entry = lc.load_llm_config(path).entry_for("generate", "generate")
         self.assertIs(entry.stream, True)
         seen: list = []
-        hl.run_pure_http_leaf(
-            entry, [{"role": "user", "content": "P"}],
-            opener=_stream_opener(
+        _launch(
+            entry, opener=_stream_opener(
                 _sse(("", _openai_chunk('{"ok": true}', finish_reason="stop"))),
                 seen))
         self.assertIs(seen[0]["body"]["stream"], True)
@@ -1068,9 +1116,8 @@ class StreamingRequestTests(unittest.TestCase):
         """An OpenAI-shaped stream carries no usage unless asked, and usage is what reaches the
         `agent_runs` row the operator's cost comparison is read out of."""
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(
+        _launch(
+            _entry(stream=True), opener=_stream_opener(
                 _sse(("", _openai_chunk("x", finish_reason="stop"))), seen))
         self.assertIs(seen[0]["body"]["stream"], True)
         self.assertEqual(seen[0]["body"]["stream_options"], {"include_usage": True})
@@ -1079,9 +1126,8 @@ class StreamingRequestTests(unittest.TestCase):
     def test_the_anthropic_streaming_request_sets_stream_and_accept(self) -> None:
         """No `stream_options` counterpart: this API reports usage in the stream natively."""
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry("anthropic_api", stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(_ANTHROPIC_STREAM, seen))
+        _launch(_entry("anthropic_api", stream=True),
+                opener=_stream_opener(_ANTHROPIC_STREAM, seen))
         self.assertIs(seen[0]["body"]["stream"], True)
         self.assertNotIn("stream_options", seen[0]["body"])
         self.assertEqual(seen[0]["headers"]["accept"], "text/event-stream")
@@ -1091,9 +1137,8 @@ class StreamingRequestTests(unittest.TestCase):
         existed — not `"stream": false`. The escape hatch exists for an endpoint that rejects
         what it does not implement, so the hatch must not itself be a new key to reject."""
         seen: list = []
-        hl.run_pure_http_leaf(
-            _entry(stream=False), [{"role": "user", "content": "P"}],
-            opener=_opener(_OPENAI_OK, seen))
+        _launch(
+            _entry(stream=False), opener=_opener(_OPENAI_OK, seen))
         self.assertNotIn("stream", seen[0]["body"])
         self.assertNotIn("stream_options", seen[0]["body"])
         self.assertNotIn("accept", seen[0]["headers"])
@@ -1108,9 +1153,8 @@ class SseFramingTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _run(self, body: str, *, slices: int = 1, provider: str = "openai_compatible"):
-        return hl.run_pure_http_leaf(
-            _entry(provider, stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(body, slices=slices))
+        return _launch(
+            _entry(provider, stream=True), opener=_stream_opener(body, slices=slices))
 
     def test_a_frame_split_across_receives_is_reassembled(self) -> None:
         """A receive boundary is the network's business, not the message's. Parsing per receive
@@ -1134,9 +1178,8 @@ class SseFramingTests(unittest.TestCase):
         first = raw.index(b"\r\n\r\n")
         for cut in range(first + 1, first + 4):     # inside the separator, all three positions
             with self.subTest(cut=cut - first):
-                out = hl.run_pure_http_leaf(
-                    _entry(stream=True), [{"role": "user", "content": "P"}],
-                    opener=lambda *_a, **_k: _ChunkedResponse([raw[:cut], raw[cut:]]))
+                out = _launch(
+                    _entry(stream=True), opener=lambda *_a, **_k: _ChunkedResponse([raw[:cut], raw[cut:]]))
                 self.assertIsNone(out.transport_error)
                 self.assertEqual(out.text, "AB")
 
@@ -1165,9 +1208,8 @@ class SseFramingTests(unittest.TestCase):
         half = len(payload) // 2
         # One frame, the JSON split over two `data:` lines, exactly as the format permits.
         body = f"data: {payload[:half]}\ndata: {payload[half:]}\n\n"
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(body))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(body))
         # The join introduces a newline INSIDE the JSON, which is legal whitespace there.
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, "z")
@@ -1195,11 +1237,22 @@ class SseFramingTests(unittest.TestCase):
         self.assertEqual(out.text, "good")
 
 
+def _anthropic_block(index: int, kind: str, text: str) -> list[tuple[str, str]]:
+    """One Messages-API content block as its three events: start, one delta, stop. The
+    reader folds a block per `index` from its start to its stop, as the API sends it."""
+    delta = ({"type": "text_delta", "text": text} if kind == "text"
+             else {"type": "thinking_delta", "thinking": text})
+    start = {"type": "text", "text": ""} if kind == "text" else {"type": "thinking",
+                                                                "thinking": ""}
+    return [("content_block_start", json.dumps({"index": index, "content_block": start})),
+            ("content_block_delta", json.dumps({"index": index, "delta": delta})),
+            ("content_block_stop", json.dumps({"index": index}))]
+
+
 _ANTHROPIC_STREAM = _sse(
     ("message_start", json.dumps({"message": {"model": "claude-opus-5-resolved",
                                               "usage": {"input_tokens": 33}}})),
-    ("content_block_delta", json.dumps({"delta": {"type": "text_delta",
-                                                  "text": '{"ok": true}'}})),
+    *_anthropic_block(0, "text", '{"ok": true}'),
     ("message_delta", json.dumps({"delta": {"stop_reason": "end_turn"},
                                   "usage": {"output_tokens": 44}})),
     ("message_stop", json.dumps({"type": "message_stop"})),
@@ -1213,9 +1266,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def _run(self, body: str):
-        return hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(body))
+        return _launch(
+            _entry(stream=True), opener=_stream_opener(body))
 
     def test_an_openai_stream_concatenates_its_content_deltas(self) -> None:
         out = self._run(_sse(("", _openai_chunk('{"o')), ("", _openai_chunk('k": true}')),
@@ -1235,7 +1287,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, "x")
         self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22,
-                                     "total_tokens": 33, "usage_source": "http_provider"})
+                                     "total_tokens": 33, "usage_source": "http_provider",
+                                     **_ONE_REQUEST})
 
     def test_the_streamed_usage_chunk_carries_the_reasoning_and_cache_splits(self) -> None:
         """The streaming reader must not be the poorer twin: production runs stream, so a split
@@ -1251,8 +1304,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         self.assertEqual(out.usage["total_tokens"], 33_000 + 23_538)
 
     def test_an_openai_stream_finishing_on_length_is_reported_truncated(self) -> None:
-        """The provider's own verdict, which the caller routes as `pure_response_truncated`
-        without consulting the extractor — same authority as the buffered path's."""
+        """The provider's own verdict, which the loop routes as a cut reply (its calls never
+        run) without inspecting the text — same authority as the buffered path's."""
         out = self._run(_sse(("", _openai_chunk("cut", finish_reason="length")),
                              terminator="[DONE]"))
         self.assertIsNone(out.transport_error)
@@ -1279,7 +1332,7 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         """Mirrors the buffered reader's `response_missing_choices` exactly. A well-terminated
         stream of nothing but the `include_usage` chunk (`choices: []`) and `[DONE]` would
         otherwise be a SUCCESS with empty text, and the empty answer would be spent as a
-        bundle-repair turn instead of being named."""
+        repair turn instead of being named."""
         out = self._run(_sse(("", _openai_chunk(usage={"prompt_tokens": 1,
                                                        "completion_tokens": 0})),
                              terminator="[DONE]"))
@@ -1298,9 +1351,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         deterministic misconfiguration that reproduces on every launch. Worded so it does NOT
         classify as a transient flake — three billed re-launches of a config error is the exact
         waste this whole change was written to stop — and naming the remedy."""
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(json.dumps(_OPENAI_OK)))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(json.dumps(_OPENAI_OK)))
         self.assertIn("response_not_an_event_stream", str(out.transport_error))
         self.assertIn("stream: false", str(out.transport_error))
         self.assertIsNone(wc._leaf_infra_error(wc.ProcResult(1, "", out.transport_error)))
@@ -1311,9 +1363,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         misconfiguration."""
         body = json.dumps({"model": "m", "choices": [
             {"message": {"content": "see data: x"}, "finish_reason": "stop"}]})
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(body))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(body))
         self.assertIn("response_not_an_event_stream", str(out.transport_error))
 
     def test_a_stream_severed_inside_its_very_first_line_is_a_retryable_severance(self) -> None:
@@ -1323,9 +1374,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         would fail closed non-retryably, while the SAME severance one frame later was retried."""
         opening = _sse(("", _openai_chunk("half an ans")))[:40]
         self.assertTrue(opening.startswith("data: "))
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(opening))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(opening))
         self.assertIn("stream interrupted", str(out.transport_error))
         self.assertEqual(wc._leaf_infra_error(wc.ProcResult(1, "", out.transport_error))[0],
                          "llm_transport_flake")
@@ -1340,9 +1390,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
                       terminator="[DONE]")
         for prime in ("\n", "\r\n", "\n\n\n"):
             with self.subTest(prime=repr(prime)):
-                out = hl.run_pure_http_leaf(
-                    _entry(stream=True), [{"role": "user", "content": "P"}],
-                    opener=_stream_opener(prime + answer))
+                out = _launch(
+                    _entry(stream=True), opener=_stream_opener(prime + answer))
                 self.assertIsNone(out.transport_error)
                 self.assertEqual(out.text, '{"ok": true}')
 
@@ -1357,9 +1406,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
                       terminator="[DONE]")
         for chunk_bytes in (4096, 2, 1):
             with self.subTest(chunk_bytes=chunk_bytes):
-                out = hl.run_pure_http_leaf(
-                    _entry(stream=True), [{"role": "user", "content": "P"}],
-                    opener=_stream_opener("﻿" + answer, chunk_bytes=chunk_bytes))
+                out = _launch(
+                    _entry(stream=True), opener=_stream_opener("﻿" + answer, chunk_bytes=chunk_bytes))
                 self.assertIsNone(out.transport_error)
                 self.assertEqual(out.text, "first second")
 
@@ -1368,9 +1416,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         so a frame-arrival test declared it a severed stream and bought three re-launches of a
         deterministic misconfiguration. What it does NOT have is an event-stream opening line."""
         page = "<html>\n\n<body>502 Bad Gateway</body>\n\n</html>\n"
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(page))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(page))
         self.assertIn("response_not_an_event_stream", str(out.transport_error))
         self.assertIsNone(wc._leaf_infra_error(wc.ProcResult(1, "", out.transport_error)))
 
@@ -1393,9 +1440,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         case streaming was introduced for. It contains no `data:` at all, so a body-substring
         test called it a wrong content type and failed the run closed NON-retryably, while the
         identical severance over a chunked connection was retried. It is a transport fault."""
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(": keepalive\n\n: keepalive\n\n"))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(": keepalive\n\n: keepalive\n\n"))
         self.assertIn("stream interrupted", str(out.transport_error))
         self.assertEqual(wc._leaf_infra_error(wc.ProcResult(1, "", out.transport_error))[0],
                          "llm_transport_flake")
@@ -1418,8 +1464,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         real_iter = hl._iter_bounded
         with patch.object(hl, "_iter_bounded",
                           lambda r, d, max_bytes=ceiling: real_iter(r, d, ceiling)):
-            out = hl.run_pure_http_leaf(
-                _entry(stream=True), [{"role": "user", "content": "P"}], timeout_s=30,
+            out = _launch(
+                _entry(stream=True), timeout_s=30,
                 opener=_stream_opener(answer + "x" * 4096, chunk_bytes=16))
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
@@ -1432,8 +1478,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
         real_iter = hl._iter_bounded
         with patch.object(hl, "_iter_bounded",
                           lambda r, d, max_bytes=ceiling: real_iter(r, d, ceiling)):
-            out = hl.run_pure_http_leaf(
-                _entry(stream=True), [{"role": "user", "content": "P"}], timeout_s=30,
+            out = _launch(
+                _entry(stream=True), timeout_s=30,
                 opener=_stream_opener(answer + "x" * 4096, chunk_bytes=16))
         self.assertIn("response_too_large", str(out.transport_error))
 
@@ -1447,9 +1493,8 @@ class OpenAiStreamReadingTests(unittest.TestCase):
             "type": "invalid_request_error",
             "message": f"Incorrect API key provided: {KEY_VALUE}"}})),
             terminator="[DONE]")
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(body))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(body))
         self.assertNotIn(KEY_VALUE, str(out.transport_error))
         self.assertIn("[redacted-api-key]", str(out.transport_error))
         self.assertNotIn(KEY_VALUE, out.raw_response)
@@ -1478,15 +1523,16 @@ class OpenAiStreamReadingTests(unittest.TestCase):
 
 
 class AnthropicStreamReadingTests(unittest.TestCase):
+    """A Messages-API event stream through `_post_stream` (`_SseBuffer`, `_parse_sse_frame`) and
+    the loop's reader."""
+
     def setUp(self) -> None:
         patcher = patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
 
     def _run(self, body: str):
-        return hl.run_pure_http_leaf(
-            _entry("anthropic_api", stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(body))
+        return _launch(_entry("anthropic_api", stream=True), opener=_stream_opener(body))
 
     def test_an_anthropic_stream_concatenates_text_and_both_usage_halves(self) -> None:
         """Input tokens arrive in `message_start`, output tokens in `message_delta`; a reader
@@ -1496,7 +1542,8 @@ class AnthropicStreamReadingTests(unittest.TestCase):
         self.assertEqual(out.text, '{"ok": true}')
         self.assertEqual(out.model, "claude-opus-5-resolved")
         self.assertEqual(out.usage, {"input_tokens": 33, "output_tokens": 44,
-                                     "total_tokens": 77, "usage_source": "http_provider"})
+                                     "total_tokens": 77, "usage_source": "http_provider",
+                                     **_ONE_REQUEST})
 
     def test_an_anthropic_stream_takes_the_whole_input_side_from_message_start(self) -> None:
         """`message_start` carries the uncached input AND both cache classes; only
@@ -1507,7 +1554,7 @@ class AnthropicStreamReadingTests(unittest.TestCase):
                 "model": "claude-opus-5-resolved",
                 "usage": {"input_tokens": 33, "cache_read_input_tokens": 14_278,
                           "cache_creation_input_tokens": 5_849}}})),
-            ("content_block_delta", json.dumps({"delta": {"type": "text_delta", "text": "x"}})),
+            *_anthropic_block(0, "text", "x"),
             ("message_delta", json.dumps({"delta": {"stop_reason": "end_turn"},
                                           "usage": {"output_tokens": 44}})),
             ("message_stop", json.dumps({"type": "message_stop"})),
@@ -1522,15 +1569,14 @@ class AnthropicStreamReadingTests(unittest.TestCase):
         """Mirrors the buffered reader, which concatenates only `type == "text"` blocks."""
         body = _sse(
             ("message_start", json.dumps({"message": {"model": "m"}})),
-            ("content_block_delta", json.dumps({"delta": {"type": "thinking_delta",
-                                                          "thinking": "hmm"}})),
-            ("content_block_delta", json.dumps({"delta": {"type": "text_delta", "text": "ok"}})),
+            *_anthropic_block(0, "thinking", "hmm"),
+            *_anthropic_block(1, "text", "ok"),
             ("message_stop", "{}"))
         self.assertEqual(self._run(body).text, "ok")
 
     def test_an_anthropic_stream_stopped_at_max_tokens_is_reported_truncated(self) -> None:
         body = _sse(
-            ("content_block_delta", json.dumps({"delta": {"type": "text_delta", "text": "cut"}})),
+            *_anthropic_block(0, "text", "cut"),
             ("message_delta", json.dumps({"delta": {"stop_reason": "max_tokens"}})),
             ("message_stop", "{}"))
         out = self._run(body)
@@ -1538,30 +1584,16 @@ class AnthropicStreamReadingTests(unittest.TestCase):
         self.assertTrue(out.truncated)
 
     def test_an_anthropic_stream_without_message_stop_is_a_transport_error(self) -> None:
-        body = _sse(
-            ("content_block_delta", json.dumps({"delta": {"type": "text_delta",
-                                                          "text": "half"}})))
+        body = _sse(*_anthropic_block(0, "text", "half"))
         out = self._run(body)
         self.assertEqual(out.text, "")
         self.assertIn("stream interrupted", str(out.transport_error))
-
-    def test_a_completed_stream_carrying_no_text_block_is_not_a_success(self) -> None:
-        """The mirror of the buffered reader's `response_has_no_text_block`, and of the OpenAI
-        stream reader's `response_missing_choices`. A Messages-API stream that reaches
-        `message_stop` having sent only thinking deltas gave no answer; reported as a success it
-        would spend a bundle-repair turn on an empty document."""
-        body = _sse(
-            ("message_start", json.dumps({"message": {"model": "m"}})),
-            ("content_block_delta", json.dumps({"delta": {"type": "thinking_delta",
-                                                          "thinking": "hmm"}})),
-            ("message_stop", "{}"))
-        self.assertEqual(self._run(body).transport_error, "response_has_no_text_block")
 
     def test_an_error_event_after_a_200_beats_a_message_stop(self) -> None:
         """This API really does answer 200 and then fail mid-stream. A `message_stop` that
         follows must not launder that into a successful empty answer."""
         body = _sse(
-            ("content_block_delta", json.dumps({"delta": {"type": "text_delta", "text": "x"}})),
+            *_anthropic_block(0, "text", "x"),
             ("error", json.dumps({"error": {"type": "overloaded_error",
                                             "message": "Overloaded"}})),
             ("message_stop", "{}"))
@@ -1611,8 +1643,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
         reasoning model can legitimately think for minutes before its first token, and an idle
         bound tight enough to be useful would kill the request this change exists to save."""
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}], timeout_s=0.3,
+        out = _launch(
+            _entry(stream=True), timeout_s=0.3,
             opener=lambda *_a, **_k: _StallingStream())
         elapsed = time.monotonic() - started
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
@@ -1627,8 +1659,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
         `memcpy` instead: measured, this exact case took over 30 s to reach a ceiling it now
         reaches in well under one. The refusal was never in doubt; WHEN it arrived was."""
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}], timeout_s=30,
+        out = _launch(
+            _entry(stream=True), timeout_s=30,
             opener=lambda *_a, **_k: _FloodingStream())
         elapsed = time.monotonic() - started
         self.assertIn("response_too_large", str(out.transport_error))
@@ -1644,8 +1676,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
             raise urllib.error.HTTPError(
                 request.full_url, 504, "Gateway Time-out", {}, io.BytesIO(page))
 
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}], opener=_open)
+        out = _launch(
+            _entry(stream=True), opener=_open)
         self.assertIn("HTTP 504", str(out.transport_error))
         self.assertEqual(wc._leaf_infra_error(wc.ProcResult(1, "", out.transport_error))[0],
                          "llm_transport_flake")
@@ -1654,9 +1686,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
         """Unlike the buffered path, which returns an empty body on a failed read. A stream that
         died at 90% has no other record of where it died, and that record is what gets persisted
         under `launches/`."""
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(_sse(("", _openai_chunk("partial")))))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(_sse(("", _openai_chunk("partial")))))
         self.assertIn("stream interrupted", str(out.transport_error))
         self.assertIn("partial", out.raw_response)
 
@@ -1664,9 +1695,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
         """The raw stream is persisted verbatim, so the redaction contract has to cover text
         this module did not write — a debug gateway echoing the request headers back."""
         body = _sse(("", _openai_chunk(f"seen {KEY_VALUE}", finish_reason="stop")))
-        out = hl.run_pure_http_leaf(
-            _entry(stream=True), [{"role": "user", "content": "P"}],
-            opener=_stream_opener(body))
+        out = _launch(
+            _entry(stream=True), opener=_stream_opener(body))
         self.assertNotIn(KEY_VALUE, out.raw_response)
         self.assertIn("[redacted-api-key]", out.raw_response)
 
@@ -1716,9 +1746,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
             with self.subTest(stream=stream):
                 base = self._serve_raw(b"", stall=True)
                 started = time.monotonic()
-                out = hl.run_pure_http_leaf(
-                    _entry(base_url=base, stream=stream), [{"role": "user", "content": "P"}],
-                    timeout_s=0.5)
+                out = _launch(
+                    _entry(base_url=base, stream=stream), timeout_s=0.5)
                 self.assertGreaterEqual(time.monotonic() - started, 0.5)
                 self.assertEqual(out.transport_error, "response_deadline_exceeded")
                 self.assertIsNone(wc._leaf_infra_error(
@@ -1737,9 +1766,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
             b"Transfer-Encoding: chunked\r\n\r\n"
             + b"20\r\ndata: {\"choices\":[{\"delta\":{}}]}\r\n\r\n",   # a chunk, then FIN
             cut=True)
-        out = hl.run_pure_http_leaf(
-            _entry(base_url=base, stream=True), [{"role": "user", "content": "P"}],
-            timeout_s=10)
+        out = _launch(
+            _entry(base_url=base, stream=True), timeout_s=10)
         self.assertIn("stream interrupted", str(out.transport_error))
         self.assertEqual(wc._leaf_infra_error(wc.ProcResult(1, "", out.transport_error))[0],
                          "llm_transport_flake")
@@ -1756,9 +1784,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
             b"Transfer-Encoding: chunked\r\n\r\n"
             + f"{len(frames):x}\r\n".encode() + frames + b"\r\n",     # no 0-chunk, then FIN
             cut=True)
-        out = hl.run_pure_http_leaf(
-            _entry(base_url=base, stream=True), [{"role": "user", "content": "P"}],
-            timeout_s=10)
+        out = _launch(
+            _entry(base_url=base, stream=True), timeout_s=10)
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
 
@@ -1773,9 +1800,8 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
             b"Connection: close\r\n\r\n" + answer,
             stall=True)
-        out = hl.run_pure_http_leaf(
-            _entry(base_url=base, stream=True), [{"role": "user", "content": "P"}],
-            timeout_s=0.5)
+        out = _launch(
+            _entry(base_url=base, stream=True), timeout_s=0.5)
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
 

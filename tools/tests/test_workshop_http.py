@@ -32,6 +32,7 @@ from tools.tests.http_stand_ins import (
     chat_call,
     tool_use,
 )
+from tools.tests.llm_samples import workshop_yaml
 from tools.tests.test_pure_leaf_compile import _assembled_ir, _write_compile_node
 from tools.tests.test_pure_leaf_judge import _review, _write_run_node
 from tools.tests.test_pure_leaf_producer import _valid_bundle
@@ -45,15 +46,19 @@ FILES = list(pure_leaf.HTTP_FILE_TOOLS)
 
 
 def _config(repo: Path, provider: str, base_url: str, phase: str, substep: str,
-            producing: bool) -> lc.LlmConfig:
+            producing: bool, extra: str = "") -> lc.LlmConfig:
+    """The HTTP entry of `(phase, substep)` on the loopback `base_url`; `extra` is more flow
+    fields of that entry (`stream: false`, `max_output_tokens: 4096`)."""
     bounds = "max_wrapper_calls: 30, lineage_timeout_s: 2700" if producing \
         else "lineage_timeout_s: 2700"
+    if extra:
+        bounds += ", " + extra
     path = repo / f"llm_http_{phase}_{substep}.yaml"
-    path.write_text(
+    path.write_text(workshop_yaml(
         "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
         f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: {provider}, model: m, "
-        f"base_url: '{base_url}', api_key_env: HTTP_KEY, leaf: workshop, {bounds}"
-        "}}}}\n", encoding="utf-8")
+        f"base_url: '{base_url}', api_key_env: HTTP_KEY, {bounds}"
+        "}}}}\n"), encoding="utf-8")
     return lc.load_llm_config(path)
 
 
@@ -162,7 +167,10 @@ def _bundle_writes() -> list[tuple[str, str, dict]]:
 # --- MH2: the producing substeps ---------------------------------------------------------
 
 
-class _GenerateProducer(_Dialect):
+class _GenerateHarness(_Dialect):
+    """The `generate.generate` HTTP workshop fixture with no rows of its own, so
+    `test_llm_http_wiring.py` drives the same conductor without re-running the rows below."""
+
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -184,14 +192,15 @@ class _GenerateProducer(_Dialect):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def conductor(self, script: list) -> _HttpProducerFake:
+    def conductor(self, script: list, *, extra: str = "",
+                  env: dict | None = None) -> _HttpProducerFake:
         self.api = self.server(script)
         self.addCleanup(self.api.close)
         c = _HttpProducerFake(
             repo_root=self.repo, orchestration_id=_ORCH, orchestration_agent_run_id="orch",
             llm_config=_config(self.repo, self.PROVIDER, self.api.base_url, "generate",
-                               "generate", True),
-            env={"HTTP_KEY": SECRET})
+                               "generate", True, extra),
+            env={"HTTP_KEY": SECRET} if env is None else env)
         c.homes = self.repo.parent / (self.repo.name + "_homes")
         self.addCleanup(lambda: shutil.rmtree(c.homes, ignore_errors=True))
         c.leaf_actions = []
@@ -214,6 +223,8 @@ class _GenerateProducer(_Dialect):
         return [c[1]["--request-json"] for c in getattr(self.c, "calls", [])
                 if c[0] == "record-launch"]
 
+
+class _GenerateProducer(_GenerateHarness):
     def test_a_bundle_written_through_the_loop_passes(self) -> None:
         self.conductor([self.calls(*_bundle_writes()),
                         self.calls(("d", "derive", {})),

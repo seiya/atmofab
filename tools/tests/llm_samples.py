@@ -41,37 +41,42 @@ def sample_config_with(backend: str = "claude", agent_model: str = "",
         sample_config(backend or "claude"), model=agent_model, command=llm_command)
 
 
-@functools.lru_cache(maxsize=None)
-def agentic_only_config(backend: str = "claude") -> lc.LlmConfig:
-    """The sample configuration with `pure` REMOVED from every LLM leaf, so every one of them
-    runs the agentic loop. `defaults` keeps it — see the note at the return.
+#: The bounds `workshop_yaml` gives an LLM substep entry that states none: the samples' values.
+SAMPLE_LINEAGE_TIMEOUT_S = 2700
+SAMPLE_MAX_WRAPPER_CALLS = 30
 
-    A test whose subject is the shared agentic leaf loop needs a leaf that runs it. Four of the
-    five LLM leaves now dispatch to a pure loop instead whenever their provider holds `pure`
-    (`Conductor._pure_leaf_substep`), so a test that reaches the agentic loop by naming
-    `compile.verify` reached it by accident of what had been migrated — and stopped reaching it
-    when Z1 migrated the two compile leaves (issue #168).
 
-    The restriction is the config file's own `capabilities:` key, which may only narrow a
-    provider's declared set (`llm_config.PROVIDER_CAPABILITIES` is the single source), so this
-    is the SAME mechanism an operator uses to keep a leaf on the agentic path — and the one the
-    A/B baseline arm of issue #168 uses. It is not a test-only back door.
-    """
-    def narrowed(entry: lc.ResolvedLeafEntry) -> lc.ResolvedLeafEntry:
-        # Only `pure` is dropped. Narrowing all the way to `{agentic}` would also drop
-        # `warm_resume`, which is a DIFFERENT capability and is what the agentic loop's own
-        # slim-repair turn is gated on — so a fixture written to reach the agentic loop would
-        # silently stop exercising its warm resume.
-        return dataclasses.replace(
-            entry, capabilities=frozenset(entry.capabilities) - {lc.CAP_PURE})
+def workshop_yaml(text: str) -> str:
+    """`text` — a leaf-LLM configuration a test writes by hand — completed into one the loader
+    accepts since issue #534 PR-J4-b: every LLM substep is written under
+    `phases.<phase>.substeps.<substep>` and states its own bounds (`lineage_timeout_s`; a
+    producing one `max_wrapper_calls` as well), and `defaults` states `lineage_timeout_s`.
 
-    base = sample_config(backend or "claude")
-    # `defaults` is NOT narrowed. It serves the escalate diagnostician, a reading workshop leaf
-    # since issue #534 PR-J4-a, and a configuration whose `defaults` cannot run one is refused
-    # at load (`llm_config_defaults_not_workshop`) — so narrowing it here would describe a document an
-    # operator cannot write, which is the one thing this helper's docstring promises it is not.
-    # The LEAF entries are what decides which loop a substep runs, and they are narrowed.
-    return dataclasses.replace(
-        base,
-        entries={key: narrowed(entry) for key, entry in base.entries.items()},
-    )
+    What it adds, and nothing else: a missing substep entry (as `{}`, so it inherits what the
+    document's `defaults` / phase level say, as the loader resolves it), a missing bound on an
+    entry (the samples' values), and the `defaults` bound. A `leaf:` key is DROPPED rather than
+    refused, because what these fixtures said with `leaf: workshop` is now what every entry is.
+    It never changes a field the text states — a test that writes a bound, a provider or a
+    capability gets exactly that — so a test of a CONFIGURATION rule must not use it: it would
+    hide the rule under test. Those tests write their document whole."""
+    import yaml
+
+    doc = yaml.safe_load(text) or {}
+    defaults = doc.setdefault("defaults", {})
+    defaults.pop("leaf", None)
+    defaults.setdefault("lineage_timeout_s", SAMPLE_LINEAGE_TIMEOUT_S)
+    phases = doc.setdefault("phases", {})
+    for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+        phase_doc = phases.get(phase)
+        if phase_doc is None:
+            phase_doc = phases[phase] = {}
+        phase_doc.pop("leaf", None)
+        substeps = phase_doc.setdefault("substeps", {})
+        entry = substeps.get(substep)
+        if entry is None:
+            entry = substeps[substep] = {}
+        entry.pop("leaf", None)
+        entry.setdefault("lineage_timeout_s", SAMPLE_LINEAGE_TIMEOUT_S)
+        if (phase, substep) in lc.WORKSHOP_PRODUCING_SUBSTEPS:
+            entry.setdefault("max_wrapper_calls", SAMPLE_MAX_WRAPPER_CALLS)
+    return yaml.safe_dump(doc, sort_keys=False)

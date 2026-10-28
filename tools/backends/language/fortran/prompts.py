@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The Fortran authoring and review rules the pure `generate` prompts carry (issue #289, R4-b PR-2).
 
-The `prompt_fragments` capability. The neutral templates (`tools/prompt_templates/pure_*.txt`)
+The `prompt_fragments` capability. The neutral templates (`tools/prompt_templates/workshop_*.txt`)
 state the contract every language shares and mark the places a language's rules go with
 `{{language:<name>}}`; the fragment files under `tools/prompt_templates/backends/language/fortran/`
 hold what goes there for Fortran — the lint and syntax idioms, the lowering of neutral signature
@@ -27,7 +27,7 @@ FRAGMENT_DIR = (Path(__file__).resolve().parents[3]
 
 @cache
 def fragments(template: str) -> dict[str, str]:
-    """The fragments for the neutral template `template` (its file stem without `pure_`, e.g.
+    """The fragments for the neutral template `template` (its file stem without `workshop_`, e.g.
     `generate_generate`). A template this language has no fragment file for raises: the
     composer only asks for a template whose text carries a marker, so a missing file is a
     declaration that lied."""

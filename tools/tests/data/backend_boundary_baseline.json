@@ -132,9 +132,6 @@
       "fortran-suffix": 10,
       "make-control-file": 6
     },
-    "tools/pure_leaf.py": {
-      "fortran": 1
-    },
     "tools/structured_signatures.py": {
       "fortran-subroutine": 6
     },
@@ -152,7 +149,7 @@
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-suffix": 17,
-      "make-control-file": 57,
+      "make-control-file": 56,
       "make-variable": 9
     }
   }

@@ -16091,14 +16091,15 @@ end program shallow_water2d_runner
             "_validate_parallel_presence_floor", phase_02,
             "phase_02 no longer names the emitting checker (doc<->gate drift guard)",
         )
-        # The PRODUCER half. The punished side is the `m3c` pure producer — the floor runs on
-        # a `component` / `problem` node and on no other kind — so its template is where the
+        # The PRODUCER half. The punished side is the `m3c` producer — the floor runs on a
+        # `component` / `problem` node and on no other kind — so its template is where the
         # rule has to be. The `harness` shape's template carries no floor statement and needs
         # none: that shape is an `infrastructure` node, which the floor exempts.
         # COMPOSED for the target (issues #289, #316): the neutral half of rule (7) stays in the
-        # template and the floor half is the OpenMP fragment, and the leaf reads both.
+        # template and the floor half is the OpenMP fragment, and the leaf reads both. The
+        # template is the workshop one since issue #534 PR-J4-b deleted the pure twin.
         from tools.tests.target_fixtures import composed_pure_template
-        generate_prompt = composed_pure_template("pure generate.generate")
+        generate_prompt = composed_pure_template("workshop generate.generate")
         for rule in (
             # The target binds, not data to read past. (Until R4-a PR-3, issue #284, the binding
             # side was the IR's Compile-authored knobs, read "by MEANING, not by key name"; the
@@ -16118,7 +16119,8 @@ end program shallow_water2d_runner
         ):
             self.assertIn(
                 rule, generate_prompt,
-                f"the pure generate.generate template no longer states {rule!r} — the producer "
+                f"the workshop generate.generate template no longer states {rule!r} — the "
+                "producer "
                 "would be punished by a rule only the reviewer is told (issue #22)",
             )
 
@@ -17126,14 +17128,17 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
             self.assertIsNone(prepared.get("skill_name"))
             self.assertIsNone(prepared.get("skill_ref"))
             self.assertEqual(prepared.get("skill_must_read_refs"), "")
-        # The LEAF path (a pure `validate.judge`) carries none either.
+        # The LEAF path (a workshop `validate.judge`, the one leaf model since issue #534
+        # PR-J4-b) carries none either.
         judge = wc.build_launch_request(
             refs, step="validate", substep="judge", orchestration_id="o",
             orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
             workflow_mode="dev", pure_leaf=True,
-            pure_context=_pure_judge_context_for_marker_test())
+            pure_context=_pure_judge_context_for_marker_test(),
+            workshop_lineage_id="c", workshop_provider="claude_cli")
+        self.assertEqual(judge.get("leaf_mode"), "workshop")
         prepared_judge = prepare_launch_request_payload(judge)
-        # The pure override EMPTIES the three fields rather than dropping them, where the
+        # The host-rendered override EMPTIES the three fields rather than dropping them, where the
         # deterministic arm above never sets them at all; both are "carries no skill", and
         # asserting the spelling of each is what keeps that difference visible.
         for key in ("skill_name", "skill_ref", "skill_must_read_refs"):
@@ -17158,7 +17163,7 @@ class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
     # prompt. What it defended is now stronger and lives one layer up:
     # `test_validate_rejects_forged_deterministic_on_leaf_step` above refuses the payload
     # outright at `_validate_launch_request_payload`, and `_render_launch_prompt_template`
-    # refuses to render anything that is neither deterministic nor pure.
+    # refuses to render anything that is neither deterministic nor workshop.
 
     def test_deterministic_prompt_satisfies_reduced_markers(self) -> None:
         import tools.workflow_conductor as wc
@@ -28218,10 +28223,17 @@ class IrFixtureShapeTests(unittest.TestCase):
 
 
 class PureLaunchRecordSweepTest(unittest.TestCase):
-    """M-B: the launch-record sweep's Z2 pure-leaf checks — request/prompt agreement, the
-    reduced pure marker set, the ABSENCE of an output manifest, and the pure_readonly / empty
-    write_roots capability shape. Built by converting the minimal orchestration tree's
-    generate.generate substep into a pure record, then mutating each invariant."""
+    """M-B: the launch-record sweep's host-rendered leaf checks — request/prompt agreement, the
+    reduced marker set, the contract version, the sandbox profile (or, for an HTTP leaf, its
+    absence) and the PASS row's empty `output_refs`. Built by converting the minimal
+    orchestration tree's generate.generate substep into a WORKSHOP record (`_make_workshop`,
+    the one leaf model since issue #534 PR-J4-b) or into the record the retired PURE leaf wrote
+    (`_make_pure`, a literal: no renderer produces one any more), then mutating each invariant.
+
+    The pure rows are TOLERANCE rows: an orchestration resumed across PR-J4-b still holds the
+    records its pure leaves wrote (stamped `pure-84`, the value the one surviving counter keeps),
+    and the audit still reads them through its pure arm, so each check that arm runs keeps its
+    pin."""
 
     _ORCH = "orch_test_001"
     _ARID = "substep_run_generate_generate_001"
@@ -28252,10 +28264,12 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         return repo_root / "workspace" / "orchestrations" / self._ORCH
 
     def _make_pure(self, repo_root: Path, *, pure_prompt: bool = True) -> None:
-        """Convert the generate.generate substep launch record into a pure record."""
-        from tools.orchestration_runtime import (
-            prepare_launch_request_payload, render_launch_prompt_text)
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        """Convert the generate.generate substep launch record into the record the retired
+        pure leaf wrote (tolerance fixture): `leaf_mode: pure` with the contract version it
+        stamped, its prompt opening with the pure sentinel and carrying the identity block, and
+        the read-only sandbox profile. The prompt is a LITERAL — the pure renderer went in issue
+        #534 PR-J4-b — holding exactly what the audit reads of it: line 0 and the markers."""
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
         orch_root = self._orch_root(repo_root)
         req_path = orch_root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
@@ -28264,26 +28278,16 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         if pure_prompt:
-            pure_render_req = prepare_launch_request_payload({
-                "leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
-                "agent_model": "opus", "agent_role": "substep",
-                "node_key": self._NODE, "step": "generate", "substep": "generate",
-                "orchestration_id": self._ORCH, "agent_run_id": self._ARID,
-                "parent_agent_run_id": "orch_run_001",
-                "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/x_001",
-                "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/x_001",
-                "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/x_001/spec.ir.yaml",
-                "source_id": "src_20260415_001",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
-                "allowed_output_paths": [],
-                "pure_context": {"harness_capabilities": "{}", "target_profile": "t",
-                                 "ir_document": "i", "tests_document": "t",
-                                 "runner_document": "program r\nend program\n"},
-            })
-            prompt = render_launch_prompt_text(pure_render_req)
+            prompt = (
+                f"{PURE_PROMPT_SENTINEL}: you are the `generate.generate` producer of the "
+                "atmofab workflow, run as a host-mediated pure function.\n\n"
+                f"Target node_key: {self._NODE}\nTarget step: generate\n"
+                f"Target substep: generate\norchestration_id: {self._ORCH}\n"
+                f"agent_run_id: {self._ARID}\n"
+                f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}\n")
             (orch_root / "launches" / f"{self._ARID}.prompt.txt").write_text(
                 prompt, encoding="utf-8")
-        # The read-only sandbox profile — the ONE document a real pure launch persists about
+        # The read-only sandbox profile — the ONE document a real pure launch persisted about
         # itself since PR-2 of issue #171. The capability and the read manifest this fixture
         # also wrote went with the audit that read them (`_make_pr2_pure` below removes the
         # directories the minimal-tree builder may still create).
@@ -28301,6 +28305,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 if "pure launch" in v or "pure-launch mismatch" in v]
 
     def test_consistent_pure_record_has_no_pure_violation(self) -> None:
+        """Tolerance: a record the retired pure leaf wrote still passes the audit."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
@@ -28310,8 +28315,9 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     def _make_http(self, repo_root: Path, *, keep_profile: bool = False,
                    backend: str = "openai_compatible",
                    transport: str = "http") -> None:
-        """Turn the pure record into the shape `record_launch` writes for an HTTP pure leaf:
-        the response marks the transport and the provider, and NO sandbox profile exists."""
+        """Turn the record into the shape `record_launch` writes for an HTTP leaf (the retired
+        pure one, or a workshop one through `_make_http_workshop`): the response marks the
+        transport and the provider, and NO sandbox profile exists."""
         orch_root = self._orch_root(repo_root)
         resp_path = orch_root / "launches" / f"{self._ARID}.response.json"
         resp = json.loads(resp_path.read_text(encoding="utf-8"))
@@ -28341,8 +28347,9 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         runs.write_text("\n".join(out) + "\n", encoding="utf-8")
 
     def test_an_http_pure_launch_needs_no_sandbox_profile(self) -> None:
-        """An HTTP pure leaf is answered from the conductor's own process, so `record_launch`
-        writes no profile. Demanding one failed this gate for every such run — as
+        """Tolerance (a record the retired HTTP pure leaf wrote; the workshop twin is
+        `test_an_http_workshop_record_passes_the_sweep`). An HTTP leaf is answered from the
+        conductor's own process, so `record_launch` writes no profile. Demanding one failed this gate for every such run — as
         `unrecoverable`, at Validate, after the whole pipeline was paid for, naming a file the
         operator cannot create."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -28368,7 +28375,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                               require_orchestration=True))
 
     def test_an_http_exemption_with_a_profile_still_on_disk_is_flagged(self) -> None:
-        """A genuine HTTP launch writes none, so one existing alongside the claim is how a
+        """Tolerance (the workshop twin is `test_an_http_workshop_record_with_a_profile_is_flagged`).
+        A genuine HTTP launch writes none, so one existing alongside the claim is how a
         tampered CLI record would escape the profile-content audit."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -28379,6 +28387,17 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                              if "sandbox_profiles/" in v and "exists" in v])
 
     def test_an_http_exemption_needs_the_row_to_agree_with_the_response(self) -> None:
+        """On a workshop record (the one leaf model since issue #534 PR-J4-b) and, as
+        tolerance, on a record the retired pure leaf wrote."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_http_workshop(repo_root)
+            self.assertEqual([v for v in self._workshop_violations(repo_root)
+                              if "agent_backend must be an http provider" in v], [])
+            self._patch_row(repo_root, agent_backend="claude")
+            self.assertTrue([v for v in self._workshop_violations(repo_root)
+                             if "agent_backend must be an http provider" in v])
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
@@ -28389,7 +28408,18 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                              if "agent_backend must be an http provider" in v])
 
     def test_a_cli_pure_launch_still_needs_one(self) -> None:
-        """The control: the exemption is not "a missing profile is fine"."""
+        """The control: the exemption is not "a missing profile is fine" — for a CLI workshop
+        record, and as tolerance for a record the retired pure leaf wrote."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            self.assertEqual([v for v in self._workshop_violations(repo_root)
+                              if "sandbox profile missing" in v], [])
+            (self._orch_root(repo_root) / "sandbox_profiles"
+             / f"{self._ARID}.json").unlink()
+            self.assertTrue([v for v in self._workshop_violations(repo_root)
+                             if "sandbox profile missing" in v])
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
@@ -28400,9 +28430,18 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                              if "sandbox profile missing" in v])
 
     def test_the_exemption_needs_both_the_transport_and_an_http_provider(self) -> None:
-        """Either half alone is a CLI launch that dropped its profile."""
+        """Either half alone is a CLI launch that dropped its profile — on a workshop record,
+        and as tolerance on a record the retired pure leaf wrote."""
         for kwargs in ({"backend": "claude"},                    # transport claimed, CLI token
                        {"transport": "cli"}):                    # HTTP token, no transport mark
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_workshop(repo_root)
+                self._make_http(repo_root, **kwargs)
+                self.assertTrue(
+                    [v for v in self._workshop_violations(repo_root)
+                     if "sandbox profile missing" in v], msg=f"workshop {kwargs}")
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
                 self._build_tree(repo_root)
@@ -28413,7 +28452,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                      if "sandbox profile missing" in v], msg=str(kwargs))
 
     def test_an_http_pure_launch_may_not_reference_a_profile(self) -> None:
-        """A response claiming both is incoherent: it says nothing was confined and then points
+        """Tolerance (the workshop twin is the second half of
+        `test_an_http_workshop_record_with_a_profile_is_flagged`). A response claiming both is incoherent: it says nothing was confined and then points
         at the confinement."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -28431,24 +28471,20 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
 
     def _make_workshop(self, repo_root: Path, *, workshop_prompt: bool = True,
                        profile: dict | None = None, provider: str = "claude_cli") -> None:
-        """Turn the pure record into a WORKSHOP record (issue #534 PR-2): the request declares
-        `leaf_mode: workshop` with its lineage and contract version, the prompt is rendered
-        from a stand-in workshop template (PR-3 ships the real one), and the sandbox profile is
-        the writable lineage profile `record_launch` writes."""
-        from unittest import mock
-
+        """Turn the generate.generate record into a WORKSHOP record, as a launch writes one
+        since issue #534 PR-J4-b: the request declares `leaf_mode: workshop` with its lineage,
+        its provider and the ONE contract version (`PURE_PROMPT_CONTRACT_VERSION`), the prompt
+        is the real `workshop generate.generate` template rendered for the request, the
+        response names the wrapper endpoint a producing launch is served, and the sandbox
+        profile is the writable lineage profile `record_launch` writes."""
         from tools import orchestration_runtime as ort
-        from tools.pure_leaf import (
-            WORKSHOP_PROMPT_CONTRACT_VERSION,
-            WORKSHOP_PROMPT_SENTINEL,
-        )
-        self._make_pure(repo_root)
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         root = self._orch_root(repo_root)
         req_path = root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
         req.update(leaf_mode="workshop", workshop_lineage_id=self._ARID,
                    workshop_provider=provider,
-                   prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION)
+                   prompt_contract_version=PURE_PROMPT_CONTRACT_VERSION)
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         # A producing launch records the wrapper endpoint it was served
         # (`Conductor._launch_setting_surface`).
@@ -28457,28 +28493,18 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         resp["claude_mcp_config"] = [{"server": "wrapper", "url": "http://127.0.0.1:5/mcp"}]
         resp_path.write_text(json.dumps(resp, ensure_ascii=False), encoding="utf-8")
         if workshop_prompt:
-            template = (f"{WORKSHOP_PROMPT_SENTINEL}: stand-in.\n\n<tests_document>\n\n"
-                        "Target node_key: <node_key>\nTarget step: <step>\n"
-                        "Target substep: <substep>\norchestration_id: <orchestration_id>\n"
-                        "agent_run_id: <agent_run_id>\n"
-                        "prompt_contract_version: <prompt_contract_version>\n")
-            real = ort._load_launch_prompt_templates()
-            with mock.patch.object(ort, "_load_launch_prompt_templates",
-                                   lambda: {**real, "workshop generate.generate": template}), \
-                    mock.patch.object(ort, "_PROMPT_TEMPLATE_FILES",
-                                      {**ort._PROMPT_TEMPLATE_FILES,
-                                       "workshop generate.generate": "workshop_x.txt"}):
-                prompt = ort.render_launch_prompt_text(ort.prepare_launch_request_payload({
-                    "leaf_mode": "workshop", "workshop_lineage_id": self._ARID,
-                    "workshop_provider": provider, "agent_model": "opus", "agent_role": "substep", "node_key": self._NODE,
-                    "step": "generate", "substep": "generate", "orchestration_id": self._ORCH,
-                    "agent_run_id": self._ARID, "parent_agent_run_id": "orch_run_001",
-                    "source_id": "src_20260415_001",
-                    "prompt_contract_version": WORKSHOP_PROMPT_CONTRACT_VERSION,
-                    "allowed_output_paths": [],
-                    "pure_context": {"harness_capabilities": "{}", "target_profile": "t",
-                                     "ir_document": "i", "tests_document": "t",
-                                     "runner_document": "r"}}))
+            prompt = ort.render_launch_prompt_text(ort.prepare_launch_request_payload({
+                "leaf_mode": "workshop", "workshop_lineage_id": self._ARID,
+                "workshop_provider": provider, "agent_model": "opus", "agent_role": "substep",
+                "node_key": self._NODE, "step": "generate", "substep": "generate",
+                "orchestration_id": self._ORCH, "agent_run_id": self._ARID,
+                "parent_agent_run_id": "orch_run_001", "source_id": "src_20260415_001",
+                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "allowed_output_paths": [], "pure_language": "fortran",
+                "pure_parallel": "openmp",
+                "pure_context": {"harness_capabilities": "{}", "target_profile": "t",
+                                 "ir_document": "i", "tests_document": "t",
+                                 "runner_document": "r"}}))
             (root / "launches" / f"{self._ARID}.prompt.txt").write_text(prompt,
                                                                        encoding="utf-8")
         home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
@@ -28489,8 +28515,9 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             "workdir": f"{home}/tree", "env": {"CLAUDE_CONFIG_DIR": f"{home}/config"},
             "runtime_rw_credential_mapping": ["/operator/.credentials.json",
                                               f"{home}/config/.credentials.json"]}
-        (root / "sandbox_profiles" / f"{self._ARID}.json").write_text(json.dumps(body),
-                                                                     encoding="utf-8")
+        sbx_dir = root / "sandbox_profiles"
+        sbx_dir.mkdir(parents=True, exist_ok=True)
+        (sbx_dir / f"{self._ARID}.json").write_text(json.dumps(body), encoding="utf-8")
 
     def _make_http_workshop(self, repo_root: Path, provider: str = "anthropic_api",
                             **response: object) -> None:
@@ -28519,7 +28546,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
 
     def test_an_http_workshop_record_passes_the_sweep(self) -> None:
         """Issue #534 PR-J3-b: no profile, the lineage stamps and the producing pair's tool
-        surface — on both HTTP providers, and against the same tree as a pure record."""
+        surface — on both HTTP providers, and against the same tree as a CLI workshop record,
+        so the conversion adds nothing rather than the filter hiding everything."""
         for provider in ("anthropic_api", "openai_compatible"):
             with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp, \
                     tempfile.TemporaryDirectory() as tmp2:
@@ -28529,7 +28557,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self.assertEqual(self._workshop_violations(repo_root), [])
                 control = Path(tmp2)
                 self._build_tree(control)
-                self._make_pure(control)
+                self._make_workshop(control)
                 self.assertEqual(self._all_violations(repo_root),
                                  self._all_violations(control))
 
@@ -28600,6 +28628,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             [])
 
     def test_a_pure_http_record_is_not_held_to_the_workshop_stamps(self) -> None:
+        """Tolerance: a record the retired HTTP pure leaf wrote carries no lineage stamps and
+        no tool surface, and is not refused for it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
@@ -28615,10 +28645,11 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 or "launch-prompt template markers" in v]
 
     def test_a_consistent_workshop_record_passes_the_sweep(self) -> None:
-        """The persisted shape of a workshop launch passes the gate `Generate.gate` runs, so
-        the gate cannot fail closed on the record alone — compared against the SAME tree as a
-        pure record, so this asserts the conversion adds nothing rather than that the filter
-        hides everything."""
+        """The persisted shape of a workshop launch — its prompt rendered from the real
+        `workshop generate.generate` template — passes the gate `Generate.gate` runs, so the
+        gate cannot fail closed on the record alone. Compared against the SAME tree holding a
+        record the retired pure leaf wrote, so this asserts the conversion adds nothing rather
+        than that the filter hides everything, and that the two kinds pass alike."""
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as tmp2:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
@@ -28697,18 +28728,47 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self.assertTrue(any("workshop-launch mismatch" in v
                                 for v in self._workshop_violations(repo_root)))
 
-    def test_a_workshop_record_carrying_the_pure_contract_version_is_flagged(self) -> None:
+    def test_a_workshop_record_carrying_the_retired_workshop_counter_is_flagged(self) -> None:
+        """The `--resume` barrier of issue #534 PR-J4-b: a workshop record carried its own
+        counter (`workshop-N`) through PR-J4-a, and the audit now holds every record to the one
+        surviving constant, so a `workshop-9` record in the current orchestration is a violation
+        — in the request and, independently, in the prompt line. `workshop-9` is a frozen
+        history literal: the constant that held it is gone."""
         from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        self.assertNotEqual(PURE_PROMPT_CONTRACT_VERSION, "workshop-9")
+        # The control: the record as written now passes the version checks.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
             self._make_workshop(repo_root)
-            req_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json"
-            req = json.loads(req_path.read_text(encoding="utf-8"))
-            req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
-            req_path.write_text(json.dumps(req), encoding="utf-8")
-            self.assertTrue(any("workshop launch request prompt_contract_version" in v
-                                for v in self._workshop_violations(repo_root)))
+            self.assertEqual([v for v in self._workshop_violations(repo_root)
+                              if "prompt_contract_version" in v], [])
+        # The request alone stamped with the retired counter.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            self._edit_launch(repo_root, "request", prompt_contract_version="workshop-9")
+            found = [v for v in self._workshop_violations(repo_root)
+                     if "prompt_contract_version" in v]
+            self.assertEqual(len(found), 1, found)
+            self.assertIn("workshop launch request prompt_contract_version must be "
+                          f"{PURE_PROMPT_CONTRACT_VERSION!r} (got 'workshop-9')", found[0])
+        # The prompt line alone stamped with it (the request is current).
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            prompt_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.prompt.txt"
+            text = prompt_path.read_text(encoding="utf-8")
+            line = f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}"
+            self.assertIn(line, text)
+            prompt_path.write_text(text.replace(line, "prompt_contract_version: workshop-9"),
+                                   encoding="utf-8")
+            found = [v for v in self._workshop_violations(repo_root)
+                     if "prompt_contract_version" in v]
+            self.assertEqual(len(found), 1, found)
+            self.assertIn(f"must carry {line!r}", found[0])
 
     def test_a_workshop_record_with_another_profile_shape_is_flagged(self) -> None:
         home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
@@ -28915,6 +28975,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         self.assertEqual(vps._HTTP_LEAF_BACKENDS, frozenset(_HTTP_PROVIDER_TOKENS))
 
     def test_pure_request_with_nonpure_prompt_flagged(self) -> None:
+        """Tolerance: the request/prompt agreement still holds a pure record to it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
@@ -28925,6 +28986,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                     for v in self._pure_violations(repo_root)))
 
     def test_pure_record_obsolete_contract_version_flagged(self) -> None:
+        # Tolerance (the workshop twin is
+        # `test_a_workshop_record_carrying_the_retired_workshop_counter_is_flagged`).
         # The audit re-checks the prompt_contract_version VALUE (request + prompt), not just the
         # marker name — an obsolete/forged version in a persisted record must be caught.
         with tempfile.TemporaryDirectory() as tmp:
@@ -28951,7 +29014,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 any("prompt_contract_version" in v for v in self._pure_violations(repo_root)))
 
     def test_pure_record_writable_sandbox_profile_flagged(self) -> None:
-        # A pure launch provisioned through the generic (writable/non-readonly) sandbox path
+        # Tolerance: the audit's pure arm still holds a record the retired pure leaf wrote to
+        # the read-only profile. A pure launch provisioned through the generic (writable/non-readonly) sandbox path
         # must be caught.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -28987,6 +29051,30 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                     and "prompt_contract_version:" in v
                     for v in violations))
 
+    def test_workshop_record_missing_marker_flagged(self) -> None:
+        """The workshop twin of the row above: the marker set the audit requires of a workshop
+        record (`_required_launch_prompt_markers_for_role(workshop=True)`) is checked on the
+        real rendered prompt — each non-sentinel identity marker stripped alone is named."""
+        from tools.validate_pipeline_semantics import _required_launch_prompt_markers_for_role
+        from tools.pure_leaf import WORKSHOP_PROMPT_SENTINEL
+        markers = _required_launch_prompt_markers_for_role("substep", workshop=True)
+        self.assertEqual(markers[0], WORKSHOP_PROMPT_SENTINEL)
+        for marker in markers[1:]:
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_workshop(repo_root)
+                prompt_path = (self._orch_root(repo_root) / "launches"
+                               / f"{self._ARID}.prompt.txt")
+                lines = prompt_path.read_text(encoding="utf-8").splitlines()
+                kept = [ln for ln in lines if not ln.startswith(marker)]
+                self.assertLess(len(kept), len(lines), marker)
+                prompt_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+                self.assertTrue(
+                    any("missing launch-prompt template markers" in v and marker in v
+                        for v in self._workshop_violations(repo_root)),
+                    self._workshop_violations(repo_root))
+
     # ----------------------------------------------------------------------------------
     # PR-2 of Z4 (issue #171): the records this sweep used to demand are no longer written.
     #
@@ -29001,18 +29089,37 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     # (`readonly`, `write_roots == []`), which the kernel enforces through bwrap, and the
     # terminal row's `output_refs == []`, which is the claim the host's own bundle writer
     # contradicts if it is wrong.
+    #
+    # Since issue #534 PR-J4-b no pure record is written; these rows hold the audit's pure arm
+    # to the records a pure leaf wrote before it (tolerance), and the absent-directory and
+    # `output_refs` rows also drive a workshop record, whose audit shares both checks.
     # ----------------------------------------------------------------------------------
 
-    def _make_pr2_pure(self, repo_root: Path) -> None:
-        """The pure record as PR-2 writes it: no capability, no manifests, no audit dirs."""
+    def _drop_pr2_record_dirs(self, repo_root: Path) -> None:
+        """Remove the directories PR-2 of issue #171 stopped writing: no capability, no
+        manifests, no audit dirs."""
         import shutil
-        self._make_pure(repo_root)
         orch_root = self._orch_root(repo_root)
         for name in ("capabilities", "read_manifests", "output_manifests",
                      "access_policies", "access_logs", "violations", "gates"):
             shutil.rmtree(orch_root / name, ignore_errors=True)
 
+    def _make_pr2_pure(self, repo_root: Path) -> None:
+        """The pure record as PR-2 wrote it: no capability, no manifests, no audit dirs."""
+        self._make_pure(repo_root)
+        self._drop_pr2_record_dirs(repo_root)
+
+    def _make_pr2_workshop(self, repo_root: Path) -> None:
+        """A workshop record in a tree without those directories, as every launch leaves it."""
+        self._make_workshop(repo_root)
+        self._drop_pr2_record_dirs(repo_root)
+
     def test_hierarchy_validator_ignores_absent_record_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pr2_workshop(repo_root)
+            self.assertEqual(self._workshop_violations(repo_root), [])
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._build_tree(repo_root)
@@ -29041,31 +29148,44 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                         self._pure_violations(repo_root))
 
     def test_a_pure_pass_row_must_still_declare_no_output_refs_without_them(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._build_tree(repo_root)
-            self._make_pr2_pure(repo_root)
-            runs = self._orch_root(repo_root) / "agent_runs.jsonl"
-            lines = []
-            forged = False
-            for line in runs.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    row = json.loads(line)
-                    if row.get("agent_run_id") == self._ARID:
-                        row["output_refs"] = ["workspace/forged.txt"]
-                        forged = True
-                    line = json.dumps(row, ensure_ascii=False)
-                lines.append(line)
-            self.assertTrue(forged, "the pure row was not found in agent_runs.jsonl")
-            runs.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            # NOT `_pure_violations`: that filter matches "pure launch", and this arm's
-            # message opens "pure pass row". Reading the whole list is also what makes the
-            # row a real pin — the mutated workspace must produce this violation and no
-            # other, so a deletion that silences the arm shows up either way.
-            violations = validate(repo_root=repo_root, workspace_root="workspace",
-                                  require_orchestration=True)
-            self.assertTrue(
-                any("output_refs of exactly []" in v for v in violations), violations)
+        """The PASS row's `output_refs` is exactly `[]` — on a workshop record (the host
+        writes every artifact from the tree's snapshot after the child window) and, as
+        tolerance, on a record the retired pure leaf wrote."""
+        for label, make in (("workshop", self._make_pr2_workshop),
+                            ("pure", self._make_pr2_pure)):
+            with self.subTest(record=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                make(repo_root)
+                # The control: the row stating `output_refs: []` is not flagged (the minimal
+                # tree's row states none, which the same arm refuses).
+                self._patch_row(repo_root, output_refs=[])
+                self.assertFalse(
+                    [v for v in validate(repo_root=repo_root, workspace_root="workspace",
+                                         require_orchestration=True)
+                     if "output_refs of exactly []" in v], label)
+                runs = self._orch_root(repo_root) / "agent_runs.jsonl"
+                lines = []
+                forged = False
+                for line in runs.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        row = json.loads(line)
+                        if row.get("agent_run_id") == self._ARID:
+                            self.assertEqual(str(row.get("status")).lower(), "pass")
+                            row["output_refs"] = ["workspace/forged.txt"]
+                            forged = True
+                        line = json.dumps(row, ensure_ascii=False)
+                    lines.append(line)
+                self.assertTrue(forged, "the leaf row was not found in agent_runs.jsonl")
+                runs.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                # NOT `_pure_violations`: that filter matches "pure launch", and this arm's
+                # message opens "pure pass row". Reading the whole list is also what makes the
+                # row a real pin — the mutated workspace must produce this violation, so a
+                # deletion that silences the arm shows up either way.
+                violations = validate(repo_root=repo_root, workspace_root="workspace",
+                                      require_orchestration=True)
+                self.assertTrue(
+                    any("output_refs of exactly []" in v for v in violations), violations)
 
 
 class DirectExecutionBootstrapTests(unittest.TestCase):

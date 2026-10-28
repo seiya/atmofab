@@ -7,36 +7,30 @@
 #
 #     cp docs/examples/llm_openai_compatible.example.yaml llm.yaml
 #
-# WHY EVERY LEAF. `openai_compatible` has no session to reopen, so as a PURE leaf — one closed
-# context in, one JSON document out, which since Z4 (issue #171) every leaf can be — it is one
-# request and one response. Each leaf below is pure; any of them may instead run as a WORKSHOP
-# leaf (issue #534 PR-J3-b), where the HOST runs the tool-use loop: it declares five file tools
-# (`read_file`, `write_file`, `edit_file`, `list_files`, `grep_file`) over the lineage's work
-# tree — and on a producing substep the host's operations — as `tools` of the request,
-# executes every tool call a reply makes (whatever its `finish_reason`), and asks again until
-# the model answers with no tool call. The server must support tool calling. The entry states
-# the leaf model and its bounds on the substep only. On a PRODUCING substep
-# (`compile.generate`, `generate.generate`), the same block under each:
+# WHY EVERY LEAF. Every LLM leaf is a WORKSHOP leaf (issue #534), and on an HTTP provider the
+# HOST runs its tool-use loop (issue #534 PR-J3-b): it declares five file tools (`read_file`,
+# `write_file`, `edit_file`, `list_files`, `grep_file`) over the lineage's work tree — and on a
+# producing substep the host's operations — as `tools` of the request, executes every tool call
+# a reply makes (whatever its `finish_reason`), and asks again until the model answers with no
+# tool call. The server must support tool calling. Each entry states its bounds on the substep
+# only. On a PRODUCING substep (`compile.generate`, `generate.generate`), the block reads:
 #
 #       generate:
 #         provider: openai_compatible
 #         base_url: http://localhost:8000/v1
 #         api_key_env: LOCAL_LLM_API_KEY
 #         model: qwen2.5-coder-32b-instruct
-#         leaf: workshop
 #         max_wrapper_calls: 30      # host-operation calls per lineage (cold launch + repairs)
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 #
-# On a JUDGING substep (`compile.verify`, `generate.verify`, `validate.judge`), with the
-# substep's own name in place of `judge` — no host operation is served, so `max_wrapper_calls`
-# is refused there:
+# On a JUDGING substep (`compile.verify`, `generate.verify`, `validate.judge`) no host operation
+# is served, so `max_wrapper_calls` is refused there:
 #
 #       judge:
 #         provider: openai_compatible
 #         base_url: http://localhost:8000/v1
 #         api_key_env: LOCAL_LLM_API_KEY
 #         model: qwen2.5-coder-32b-instruct
-#         leaf: workshop
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 #
 # On a workshop entry `max_output_tokens` bounds ONE reply, and a reply that writes a file
@@ -59,17 +53,18 @@
 # (`llm_config_no_cli_backend`, refused at run start). It is why `defaults` here is the CLI
 # provider rather than the endpoint every leaf uses.
 #
-# The two GENERATE pure leaves are additionally gated at run time on the node having a
-# CodegenBundle SHAPE (`Conductor._bundle_shape`: `m3c` for a physics node, `harness` for an
-# `infrastructure` self-test since issue #169). Every node the spec catalog holds has one, so a
-# pure-only provider has a pure path everywhere; a hand-crafted IR with no shape fails that node
-# closed (`node_has_no_bundle_shape`) — since Z4 (issue #171) there is no agentic session to fall
-# back to on any provider. The two COMPILE pure
-# leaves carry no such condition — the Compile contract does not depend on the node kind.
+# The two GENERATE leaves are additionally gated at run time on the node having a CodegenBundle
+# SHAPE (`Conductor._bundle_shape`: `m3c` for a physics node, `harness` for an `infrastructure`
+# self-test since issue #169). Every node the spec catalog holds has one; a hand-crafted IR with
+# no shape fails that node closed (`node_has_no_bundle_shape`). The two COMPILE leaves carry no
+# such condition — the Compile contract does not depend on the node kind.
 #
-# EVERY phase, substep and provider is written out, even though the resolution rules would let
-# the unmentioned leaves inherit `defaults`. The file is the answer to "what runs where" — a
-# reader should get that answer by reading it, not by re-deriving it from an inheritance chain.
+# EVERY phase, substep and provider is written out. The substep entries are REQUIRED: each
+# states its own bounds (`lineage_timeout_s`, and `max_wrapper_calls` on a producing substep),
+# which no level inherits, so a substep left out is refused at load
+# (`llm_config_workshop_bound_missing`). The provider would inherit from `defaults`; it is
+# written out anyway because the file is the answer to "what runs where" — a reader should get
+# that answer by reading it, not by re-deriving it from an inheritance chain.
 #
 #   base_url         MUST carry the API version segment: the request appends /chat/completions.
 #                    (`anthropic_api` is the opposite — it appends /v1/messages, so give that one
@@ -188,6 +183,8 @@ phases:
         # pair moves together (doubled with the ceiling), this endpoint has not been measured,
         # and the value is generous rather than derived.
         timeout_s: 4800
+        max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.
       verify:
         provider: openai_compatible
@@ -199,6 +196,7 @@ phases:
         # the same caveat with it: on a reasoning model this sits below the reasoning floor.
         max_output_tokens: 16384
         timeout_s: 1800
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
   generate:
     substeps:
@@ -227,6 +225,8 @@ phases:
         # 36.4 tok/s sustained. The rates in `docs/ORCHESTRATION.md`, on another endpoint and
         # another model, are 17.6 to 59.8 tok/s. 2400 asks 13.7 tok/s. Re-measure your own.
         timeout_s: 2400
+        max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # PURE: the verdict reviewer over the bundle above.
       verify:
         provider: openai_compatible
@@ -244,6 +244,7 @@ phases:
         # 17.6-19.8 loaded band `docs/ORCHESTRATION.md` records — i.e. the default is a
         # coin toss there rather than a margin. 1200 asks 13.7 tok/s, as the writer does.
         timeout_s: 1200
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
   validate:
     substeps:
@@ -267,3 +268,4 @@ phases:
         # with `finish_reason: length`, not a short answer.
         max_output_tokens: 16384
         timeout_s: 1800
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch

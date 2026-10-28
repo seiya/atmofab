@@ -34,6 +34,7 @@ from tools.orchestration_runtime import (
 )
 from tools.pure_leaf import workshop_mcp_config_json
 from tools.tests.test_pure_leaf_producer import _PureFakeConductor
+from tools.tests.llm_samples import workshop_yaml
 from tools.tests.test_pure_leaf_wiring import _mark_dependencies_ready, _spawn_response
 from tools.tests.test_workshop_launch import (
     _ORCH,
@@ -48,10 +49,10 @@ _MCP = workshop_mcp_config_json("http://127.0.0.1:4242/mcp")
 
 def _codex_config(tmp: Path) -> lc.LlmConfig:
     path = tmp / "llm_codex_workshop.yaml"
-    path.write_text(
+    path.write_text(workshop_yaml(
         "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
         "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
-        "effort: medium, leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+        "effort: medium, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -106,14 +107,6 @@ class CodexLineageHomeTests(_CodexEnv):
         self.assertIsNone(self._prepare_codex("lin_gone", resume=True))
         self.assertFalse((self.homes / _ORCH / "codex" / "lin_gone").exists())
         self.assertEqual(self._prepare_codex("lin_a", resume=True)["lineage_id"], "lin_a")
-
-    def test_a_pure_and_a_workshop_lineage_share_the_container(self) -> None:
-        pure = ort._prepare_codex_workflow_home(self.repo, _ORCH, "lin_pure", resume=False)
-        workshop = self._prepare_codex("lin_ws", resume=False)
-        self.assertEqual(Path(pure["home"]).parent, Path(workshop["home"]).parent)
-        # The pure lineage home IS its CODEX_HOME; the workshop one holds it as `config/`.
-        self.assertEqual(Path(pure["config"]).name, "config.toml")
-        self.assertEqual(Path(workshop["config"]), Path(workshop["home"]) / "config")
 
     def test_the_backend_is_one_of_the_lineage_backends(self) -> None:
         self.assertTrue(set(workshop_tree.LINEAGE_BACKENDS)
@@ -198,6 +191,24 @@ class CodexWorkshopProfileTests(_CodexEnv):
                     render_bwrap_command(profile=broken, command_argv=["codex"])
 
 
+    def test_the_renderer_refuses_the_retired_readonly_profile(self) -> None:
+        """The read-only profile the pure leaf ran under — no `leaf_mode`, `readonly: True`,
+        workdir at `repo_root`, no credential mapping — is refused BY NAME since issue #534
+        PR-J4-b; until then the renderer accepted it as the non-workshop shape. Both callers
+        build a workshop profile (`record_launch` from `WORKSHOP_PROFILE_KWARGS`, and
+        `spawn_leaf` refuses any other first), so this pins the renderer's own rule
+        (round-0 mutation survivor)."""
+        profile, _iso = self._profile()
+        retired = json.loads(json.dumps(profile))
+        retired.pop("leaf_mode")
+        retired.pop("runtime_rw_credential_mapping", None)
+        retired.update(readonly=True, workdir=str(self.repo))
+        with self.assertRaises(ValueError) as ctx:
+            render_bwrap_command(profile=retired, command_argv=["codex"])
+        self.assertIn("every leaf runs in a workshop lineage", str(ctx.exception))
+        self.assertIn("got None", str(ctx.exception))
+
+
 class CodexAdmissionTests(_CodexEnv):
     """`_admissible_leaf_profile`: a codex workshop profile for a codex workshop entry, and
     neither family's profile for the other's entry."""
@@ -235,9 +246,10 @@ class CodexAdmissionTests(_CodexEnv):
 
     def _claude_yaml(self) -> Path:
         path = self.repo / "llm_claude_ws.yaml"
-        path.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: {substeps: "
-                        "{generate: {leaf: workshop, max_wrapper_calls: 3, "
-                        "lineage_timeout_s: 60}}}}\n", encoding="utf-8")
+        path.write_text(workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: "
+            "{substeps: {generate: {max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n"),
+            encoding="utf-8")
         return path
 
 
@@ -253,7 +265,7 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
             "backend": "codex",
             "checks": [{"name": n, "pass": True} for n in (
                 "codex_version_available", "codex_exec_json_streaming",
-                "codex_exec_pure_isolation_flags", "codex_exec_resume", "codex_prompt_stdin",
+                "codex_exec_resume", "codex_prompt_stdin",
                 "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
                 "sandbox_bwrap_exec")]})
         _with_test_templates(self)
@@ -288,7 +300,7 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
         response = json.loads((self._base() / "launches/ar_cx_cold.response.json").read_text())
         self.assertEqual(response["workshop_lineage_id"], "ar_cx_cold")
         self.assertEqual(response["codex_workflow_home"], str(home))
-        # The pure thread-lineage layout was NOT prepared for this launch.
+        # Nothing of the pure thread-lineage layout (retired in issue #534 PR-J4-b) is here.
         self.assertNotIn("codex_lineage_id", response)
         self.assertFalse((home / "config.toml").exists())
         import tools.validate_pipeline_semantics as vps
@@ -318,13 +330,6 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
             self._launch("ar_cx_cold", self._request("ar_cx_cold"), prepare=False)
         self.assertFalse((self._base() / "launches/ar_cx_cold.request.json").exists())
 
-    def test_a_pure_codex_lineage_id_on_a_workshop_launch_is_refused(self) -> None:
-        self._prepare_codex("ar_cx_cold", resume=False)
-        with self.assertRaises(ValueError):
-            self._launch("ar_cx_cold", self._request("ar_cx_cold"),
-                         codex_lineage_id="ar_cx_cold")
-        self.assertFalse((self._base() / "launches/ar_cx_cold.request.json").exists())
-
     def test_the_request_names_this_launch_s_provider(self) -> None:
         with self.assertRaises(ValueError):
             self._launch("ar_cx_cold", _workshop_request("ar_cx_cold", agent_model="gpt-x"))
@@ -343,6 +348,15 @@ class CodexPreflightTests(unittest.TestCase):
             text = mcp_help if "mcp" in argv else exec_help
             return subprocess.CompletedProcess(argv, rc, text, "")
         return run
+
+    def test_an_unrunnable_cli_fails_the_row_rather_than_the_preflight(self) -> None:
+        """A `--help` that cannot run at all is a failed capability row, named, not an
+        exception out of the preflight."""
+        def gone(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        check = ort._codex_workshop_flag_set_check("/nonexistent/codex", gone)
+        self.assertIs(check["pass"], False)
+        self.assertIn("FileNotFoundError", check["detail"])
 
     def test_the_row_requires_each_option_the_mode_and_the_url_route(self) -> None:
         check = ort._codex_workshop_flag_set_check
@@ -409,10 +423,10 @@ class CodexPreflightTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm.yaml"
-            path.write_text(
-                "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: {substeps: {generate: "
-                "{provider: codex_cli, model: gpt-x, leaf: workshop, max_wrapper_calls: 3, "
-                "lineage_timeout_s: 60}}}}\n", encoding="utf-8")
+            path.write_text(workshop_yaml(
+                "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: "
+                "{substeps: {generate: {provider: codex_cli, model: gpt-x, max_wrapper_calls: "
+                "3, lineage_timeout_s: 60}}}}\n"), encoding="utf-8")
             with mock.patch.object(ort, "probe_execution_platform", probe), \
                     mock.patch.object(ort, "_preflight_allows_agent_launch", lambda p: True), \
                     mock.patch.object(ort, "_claude_workshop_flag_set_check",
@@ -472,10 +486,10 @@ class CodexLeafCommandTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         path = Path(tmp.name) / "llm_codex_reading.yaml"
-        path.write_text(
+        path.write_text(workshop_yaml(
             "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
             "phases: {validate: {substeps: {judge: {provider: codex_cli, model: gpt-x, "
-            "effort: medium, leaf: workshop, lineage_timeout_s: 2700}}}}\n", encoding="utf-8")
+            "effort: medium, lineage_timeout_s: 2700}}}}\n"), encoding="utf-8")
         c = _PureFakeConductor(repo_root=Path(tmp.name), orchestration_id="o",
                                orchestration_agent_run_id="orch", env={},
                                llm_config=lc.load_llm_config(path))
@@ -495,11 +509,14 @@ class CodexLeafCommandTests(unittest.TestCase):
              *overrides, "--json", "-"])
 
     def test_the_entry_and_the_endpoint_must_agree(self) -> None:
+        """The launch's KIND and its endpoint agree, both ways: a producing launch without its
+        wrapper's endpoint and a reading one given an endpoint are refused (before issue #534
+        PR-J4-b the second half was a PURE entry given one)."""
         with self.assertRaises(ValueError):
             wc.Conductor.leaf_command(self.c, self.entry)
         with self.assertRaises(ValueError):
             wc.Conductor.leaf_command(self.c, self.c.entry_for("compile", "verify"),
-                                      mcp_config_json=_MCP)
+                                      mcp_config_json=_MCP, reading=True)
 
     def test_the_endpoint_must_be_a_loopback_wrapper_url(self) -> None:
         for bad in ("{}", "not json", json.dumps({"mcpServers": {"wrapper": {
@@ -739,23 +756,6 @@ class CodexWarmUsageTests(unittest.TestCase):
                         side_effect=OSError("locked")):
             self.assertIsNone(self.c._codex_thread_resumed_usage("t1", "child-2"))
 
-    def test_a_warm_pure_codex_turn_records_its_own_usage(self) -> None:
-        """Through `_spawn_pure_turn`, the transport every pure codex repair turn takes."""
-        from tools.tests.test_pure_leaf_wiring import _pure_request
-        c, entry = self.c, self.c.entry_for("generate", "verify")
-        c.spawn_leaf = lambda *a, **k: self._proc(  # type: ignore[assignment]
-            {"input_tokens": 250, "output_tokens": 30})
-        c._codex_lineage_for_session = lambda sid, entry=None: "child-1"  # type: ignore
-        c._codex_thread_resumed_usage = (  # type: ignore[assignment]
-            lambda tid, arid: ("child-1", {"input_tokens": 200, "output_tokens": 20}))
-        turn = c._spawn_pure_turn(_pure_request("verify", agent_run_id="child-2"), entry,
-                                  child_arid="child-2", phase="generate", substep="verify",
-                                  node_key="n", resume_session_id="t1", warm=True)
-        self.assertEqual((turn.usage["input_tokens"], turn.usage["output_tokens"]), (50, 10))
-        cold = c._spawn_pure_turn(_pure_request("verify", agent_run_id="child-3"), entry,
-                                  child_arid="child-3", phase="generate", substep="verify",
-                                  node_key="n")
-        self.assertEqual(cold.usage["input_tokens"], 250)
 
 if __name__ == "__main__":
     unittest.main()

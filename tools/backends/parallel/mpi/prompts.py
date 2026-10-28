@@ -29,7 +29,7 @@ FRAGMENT_DIR = (Path(__file__).resolve().parents[3]
 
 @cache
 def fragments(template: str) -> dict[str, str]:
-    """The fragments for the neutral template `template` (its file stem without `pure_`, e.g.
+    """The fragments for the neutral template `template` (its file stem without `workshop_`, e.g.
     `generate_generate`). A template this model has no fragment file for raises: the composer
     only asks for a template whose text carries a `{{parallel:…}}` marker, so a missing file is
     a declaration that lied."""

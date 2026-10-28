@@ -705,7 +705,7 @@ WORKSHOP_ROLLOUT_UNREADABLE = "workshop_rollout_unreadable"
 # DEVIATION (documented): the plan sketched `("verify","reuse")`, but a phase reopen hands its
 # repair to substep index 0 (the producer) only — `verify` is index 4 and cannot be the reopen
 # target, so a cross-phase "reuse the verify session" is structurally impossible. The in-session
-# reuse (warm-resume of the same reviewer) already happened inside `_run_pure_verify_substep` and
+# reuse (warm-resume of the same reviewer) already happened inside `_run_pure_reviewer_substep` and
 # is what the budget bounds; once exhausted, reusing that same broken session again is pointless,
 # and threading a "your verdict was malformed" excerpt to the producer would risk perturbing a
 # GOOD bundle. A cold restart is therefore both the only valid and the safest recovery. The
@@ -1158,57 +1158,6 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
     return "\n".join(lines[start:stop]).rstrip("\n")
 
 
-_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
-#: A fence line: three or more backticks or tildes after at most three spaces (four or more
-#: make an indented code line, never a fence), and what follows the run.
-_MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-
-
-def _markdown_heading_sections(text: str, headings: tuple[str, ...], *, subject: str) -> str:
-    """Return the sections of `text` whose heading lines are EXACTLY `headings`, joined in
-    document order by one blank line. A section is its heading line and its own body: it ends
-    at the next heading line of ANY level, so a subsection is included only by naming it.
-
-    FENCE-AWARE: a line inside a fenced block is never a heading — the compile phase contract's
-    schema block is YAML, whose comment lines may begin with `#`. A fence opens on a run of
-    three or more backticks or tildes indented at most three spaces (an info string may follow)
-    and closes only on a bare run of the same character at least as long, so a longer fence
-    may quote a shorter one and a ```` ```yaml ```` line inside a fence is content. A heading
-    is matched unindented; HTML comments are not recognised. These follow CommonMark for the
-    shapes a repository document uses, not in every corner. Every heading must occur
-    exactly once outside a fence, else `ValueError`: a renamed or duplicated heading is a
-    contract change that must stop the launch, not shorten or widen what the leaf reads. A
-    slice is a pure-leaf input, so changing what one spans needs a
-    `PURE_PROMPT_CONTRACT_VERSION` bump, as `_numbered_section_range`'s docstring states."""
-    lines = text.splitlines()
-    starts: list[int] = []
-    fence = ""
-    for index, line in enumerate(lines):
-        run = _MARKDOWN_FENCE_RE.match(line)
-        if run and not fence:
-            fence = run.group(1)
-            continue
-        if run and fence:
-            if (run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence)
-                    and not run.group(2).strip()):
-                fence = ""
-            continue
-        if not fence and _MARKDOWN_HEADING_RE.match(line):
-            starts.append(index)
-    found: dict[str, list[int]] = {}
-    for index in starts:
-        found.setdefault(lines[index].rstrip(), []).append(index)
-    slices: list[tuple[int, str]] = []
-    for heading in headings:
-        at = found.get(heading, [])
-        if len(at) != 1:
-            raise ValueError(f"{subject} has {len(at)} {heading!r} heading line(s); expected 1")
-        begin = at[0]
-        end = next((i for i in starts if i > begin), len(lines))
-        slices.append((begin, "\n".join(lines[begin:end]).strip("\n")))
-    return "\n\n".join(body for _, body in sorted(slices))
-
-
 def _checks_contract_abi_sections(text: str) -> str:
     """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — or of a language's binding of
     it (`docs/backends/language/<id>/CHECKS_ABI.md`, numbered section for section like it,
@@ -1268,7 +1217,6 @@ def _checks_contract_gate_guards_section(text: str) -> str:
     return "\n".join(lines[start:]).rstrip("\n")
 
 
-
 # The runner-output contract's two evidence sections — §1 (`diagnostics.json`) and §3 (`raw/`
 # primary evidence) — as they reach the pure `validate.judge` reviewer (issue #169). They are
 # what a judge needs to read the two documents it is given about the run's own output: what
@@ -1300,7 +1248,6 @@ def _runner_output_contract_sections(text: str) -> str:
     return "\n\n".join(
         _numbered_section_range(text, begin, end, subject="runner-output contract")
         for begin, end in _RUNNER_OUTPUT_CONTRACT_SECTIONS)
-
 
 
 # The `Generate.verify` severity rubric — the `#### Severity of a finding` subsection of
@@ -1443,7 +1390,7 @@ def _diagnosis_document(node_key: str, phase: str, failed_arids: list[str],
 
     The persona, the directive schema and the decision criteria are the launch template's
     static body (`workshop_escalate_diagnose.txt` since issue #534 PR-J4-a, its pure twin
-    `pure_escalate_diagnose.txt` before; both hashed by the prompt-contract drift guards);
+    `pure_escalate_diagnose.txt` before it; hashed by the prompt-contract drift guard);
     everything that varies with the failure is here — seeded as `diagnosis.json`. The artifacts keep
     `_bounded_context_json`'s per-artifact budget and the caller's ordering, so the failed
     phase's own evidence still gets the large slices.
@@ -1459,27 +1406,6 @@ def _diagnosis_document(node_key: str, phase: str, failed_arids: list[str],
         indent=2, ensure_ascii=False)
 
 
-def _last_json_object(text: str) -> Any:
-    """Return the last balanced top-level {...} that parses as JSON, or None."""
-    best = None
-    depth = 0
-    start: int | None = None
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif ch == "}" and depth > 0:
-            depth -= 1
-            if depth == 0 and start is not None:
-                try:
-                    best = json.loads(text[start:i + 1])
-                except json.JSONDecodeError:
-                    pass
-                start = None
-    return best
-
-
 # The only rollback targets the diagnostician may name (the LLM-authored producers the
 # conductor can regenerate). `build` / `validate` are deterministic phases the conductor cannot
 # re-run in place to fix a defect, so an out-of-contract target -> None -> fail_closed rather
@@ -1487,18 +1413,11 @@ def _last_json_object(text: str) -> Any:
 _DIAGNOSTICIAN_TARGET_PHASES: frozenset[str] = frozenset({"compile", "generate"})
 
 
-def _parse_directive(stdout: str) -> RouteDecision | None:
-    """Parse + validate the diagnostician's JSON directive into a RouteDecision: the last
-    balanced `{...}` of a reply text (the pure arm). Returns None on any malformed /
-    out-of-vocabulary directive (caller fails closed)."""
-    return _directive_from_object(_last_json_object(stdout or ""))
-
-
 def _directive_from_object(obj: Any) -> RouteDecision | None:
-    """Validate one parsed directive object into a RouteDecision (`_parse_directive`'s rules).
-    The reading arm's `directive.json` is parsed whole and validated here directly: a round
-    trip through `_parse_directive`'s brace scanner, which does not know about strings, would
-    refuse a valid directive whose `reason` holds an unbalanced brace (issue #534 PR-J4-a)."""
+    """Validate the diagnostician's directive — `directive.json`, parsed whole — into a
+    RouteDecision. Returns None on any malformed / out-of-vocabulary directive (caller fails
+    closed). The reply-text parse the pure arm used (`_parse_directive`, a brace scanner that
+    did not know about strings) went with that arm in issue #534 PR-J4-b."""
     if not isinstance(obj, dict):
         return None
     action = obj.get("action")
@@ -1569,7 +1488,7 @@ def resolve_severity_directive(decision: RouteDecision) -> RouteDecision:
     if decision.action == "fail_closed" or not decision.severity:
         return decision
     if decision.repair_strategy == "re_execute":
-        # Never carried by a diagnostician directive (`_parse_directive` emits only
+        # Never carried by a diagnostician directive (`_directive_from_object` emits only
         # None / reuse / restart) and its one producer always names `validate`, so this
         # passthrough never meets the null-target rule below.
         return decision
@@ -1961,11 +1880,7 @@ def build_launch_request(
     # Rendered through the same `<dependency_facts>` placeholder (compile branch of
     # `_build_dependency_facts`). compile.verify reads the same snapshot as the
     # `dependency_surface.json` file itself (`dependency_surface_document`), not through this.
-    # Not on the `verification` part (issue #526): it transcribes no operation name, its
-    # template has no `<dependency_facts>` slot, and a declaration naming the catalog is not
-    # admissible there, so a catalog on its request would be a payload nothing renders.
-    if (dependency_surface and step == "compile" and substep == "generate"
-            and pure_shape != "verification"):
+    if dependency_surface and step == "compile" and substep == "generate":
         req["dependency_surface"] = list(dependency_surface)
     # R5: a conductor-resolved certified sibling exemplar, injected ONLY for the sole authoring
     # leaf (generate.generate). Prior art to raise first-attempt pass rate; the `<exemplar>`
@@ -1999,38 +1914,34 @@ def build_launch_request(
             and rep.get("repair_strategy") == "reuse"
             and str(rep.get("repair_findings", "")).strip()):
         req["warm_resume"] = True
-    # Z2 pure-function producer variant (M-C): the leaf is a host-mediated pure function with no
-    # write authority, so it carries `leaf_mode=pure`, the exact transport contract version, the
-    # host-assembled `pure_context` (each inlined document a data-fenced string), and EMPTY
-    # write/skill fields. `allowed_output_paths` is forced empty (the host writes files[] + the
-    # bundle + the Makefile AFTER the child window closes — see run_substep's pure branch), and
+    # The host-rendered LLM leaf — a `workshop leaf` (issue #534; the only leaf model since
+    # PR-J4-b): no repository write authority, so it carries `leaf_mode=workshop`, the exact
+    # leaf contract version, the host-assembled `pure_context` (each document seeded into the
+    # lineage's tree), the lineage the launch belongs to and the provider whose tool surface its
+    # prompt states, and EMPTY write/skill fields. `allowed_output_paths` is forced empty (the
+    # host writes every artifact from the tree's snapshot AFTER the child window closes), and
     # the three skill fields are declared empty (no SKILL exists to read). Applied LAST so it
-    # overrides the generate branch's leaf-authored output set. On a warm-resume repair the session
-    # already holds the context, so pure_context is omitted (the validator exempts it for a
-    # warm+reuse+findings request); a cold launch/fallback carries it.
+    # overrides the generate branch's leaf-authored output set. On a warm-resume repair the
+    # lineage already holds the context, so pure_context is omitted (the validator exempts it
+    # for a warm+reuse+findings request); a cold launch carries it. A host-rendered request
+    # without a lineage was the pure leaf's, and is refused here: no launch shape serves it.
     if workshop_lineage_id is not None and not pure_leaf:
         raise ValueError("build_launch_request: a workshop lineage belongs to a host-rendered "
                          "(pure_leaf=True) request")
     if (workshop_lineage_id is None) != (workshop_provider is None):
         raise ValueError("build_launch_request: a workshop request names its lineage and its "
                          "provider together (workshop_lineage_id, workshop_provider)")
+    if pure_leaf and workshop_lineage_id is None:
+        raise ValueError("build_launch_request: a host-rendered LLM request is a workshop "
+                         "request and names its lineage (workshop_lineage_id); the pure leaf "
+                         "it would otherwise describe went in issue #534 PR-J4-b")
     if pure_leaf:
-        from tools.pure_leaf import (
-            PURE_LEAF_MODE,
-            PURE_PROMPT_CONTRACT_VERSION,
-            WORKSHOP_LEAF_MODE,
-            WORKSHOP_PROMPT_CONTRACT_VERSION,
-        )
-        req["leaf_mode"] = PURE_LEAF_MODE
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_LEAF_MODE
+        req["leaf_mode"] = WORKSHOP_LEAF_MODE
         req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
-        if workshop_lineage_id is not None:
-            # A `workshop leaf` (issue #534): the same closed context, seeded into a work tree
-            # rather than inlined, and the lineage the launch belongs to.
-            req["leaf_mode"] = WORKSHOP_LEAF_MODE
-            req["prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
-            req["workshop_lineage_id"] = workshop_lineage_id
-            # The provider whose tool surface the prompt states (`<tool_surface>`, step 2).
-            req["workshop_provider"] = workshop_provider
+        req["workshop_lineage_id"] = workshop_lineage_id
+        # The provider whose tool surface the prompt states (`<tool_surface>`, step 2).
+        req["workshop_provider"] = workshop_provider
         req["allowed_output_paths"] = []
         req["skill_name"] = ""
         req["skill_ref"] = ""
@@ -2076,9 +1987,9 @@ def build_launch_request(
 # leaves actually run.
 LEAF_MAX_OUTPUT_TOKENS = 128000
 
-# A claude leaf is launched with `--tools ""` (`pure_leaf.pure_leaf_flags`): no tool at all.
-# The `--tools <allowlist>` of issue #71 went with the agentic leaf in Z4 (issue #171). What
-# remains that reads the argv is `_launch_setting_surface`, which records the tool VALUES.
+# A claude leaf is launched with the `--tools` allowlist of its workshop kind
+# (`pure_leaf.workshop_leaf_flags`). What reads the argv is `_launch_setting_surface`, which
+# records the tool VALUES.
 #
 # PLACEMENT RULE for the variadic flags on this argv (`--tools <tools...>`): a variadic flag
 # keeps consuming tokens until one starts with `-`, so its value must be followed by an OPTION
@@ -2305,10 +2216,14 @@ def _wait_for_leaf_exit(process: Any, deadline: float | None,
             continue
 
 
+#: The named refusal of a read-only / lineage-less sandbox profile at `spawn_leaf`.
+_LEAF_PROFILE_NOT_A_LINEAGE = "leaf_profile_not_a_workshop_lineage"
+
+
 def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
                              repo_root: Path | None = None) -> bool:
-    """Whether `spawn_leaf` may launch a leaf under `profile`: a READ-ONLY profile (every pure
-    leaf's), or a WORKSHOP lineage's (issue #534) for a workshop entry — `leaf_mode:
+    """Whether `spawn_leaf` may launch a leaf under `profile`: a WORKSHOP lineage's (issue
+    #534), the one profile any leaf runs under since issue #534 PR-J4-b — `leaf_mode:
     workshop`, `readonly: False`, and rw binds that are EXACTLY two sibling directories of one
     lineage home, `config` and `tree`, spelled as normalized absolute paths outside the
     checkout (`repo_root`), with the tree as the working directory and the ENTRY's CLI home
@@ -2316,13 +2231,11 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
     `config/.credentials.json` for claude, `CODEX_HOME` with `auth.json` and `config.toml`
     remounted read-only into it and no credential read-write for codex (issue #534 step 2
     PR-2), and the other family's home undeclared. Fail-closed: any other shape answers
-    False."""
-    if profile.get("readonly") is True:
-        # A WORKSHOP entry under a read-only profile is refused too: its edits would land on
-        # the sandbox's own tmpfs and vanish, and the snapshot would read an empty tree.
-        return profile.get("leaf_mode") is None and not getattr(entry, "is_workshop", False)
-    if not (getattr(entry, "is_workshop", False)
-            and profile.get("leaf_mode") == "workshop" and profile.get("readonly") is False):
+    False — the READ-ONLY profile (`readonly: True`, no `leaf_mode`) every pure leaf ran under
+    included: no in-tree launch shape builds one since the pure path went (issue #534
+    PR-J4-b), and a leaf under it would edit the sandbox's own tmpfs and leave an empty tree
+    to snapshot. `spawn_leaf` names that refusal (`_LEAF_PROFILE_NOT_A_LINEAGE`)."""
+    if not (profile.get("leaf_mode") == "workshop" and profile.get("readonly") is False):
         return False
     rw = profile.get("runtime_rw_bind_paths")
     if not (isinstance(rw, list) and len(rw) == 2 and all(isinstance(p, str) for p in rw)):
@@ -3106,27 +3019,17 @@ class ProcResult:
     # conductor's own act, and routing it back through a regex over leaf-written text would let
     # any leaf claim it (see `_LEAF_INFRA_ERROR_PATTERNS`).
     timed_out: bool = False
-    # What to PERSIST in place of `stdout`. Two users, both cases where the value the
-    # consumers must read is not the value the record should keep:
-    #   - the HTTP transport redacts the API key from every provider-supplied string, but the
-    #     model's answer channel cannot be redacted in the value itself: the validators parse
-    #     it, and a key that is a common substring would corrupt a legitimate document (a real
-    #     defect, measured). The validators read `stdout`, the artifact gets this.
-    #   - it also served an AGENTIC claude leaf, whose envelope was lifted at the capture
-    #     boundary (`_unwrap_agentic_envelope`, deleted in Z4 — issue #171) so that `stdout`
-    #     was the model's text while this kept the whole envelope for
-    #     `dialogs/leaf.stdout.log`. A pure claude leaf's stdout IS the envelope and is never
-    #     lifted, so that user is gone and only the HTTP one above is live.
+    # What to PERSIST in place of `stdout`: the HTTP host loop redacts the API key from every
+    # provider-supplied string, but the model's last reply cannot be redacted in the value
+    # itself (a key that is a common substring would corrupt it, a real defect measured on the
+    # pure transport). The loop reads `stdout`, the artifact gets this.
     persist_stdout: str | None = None
-    # An HTTP provider reported its own answer cut off at the output-token ceiling
-    # (`finish_reason == "length"` / `stop_reason == "max_tokens"`). Authoritative, so the pure
-    # loops classify it as `pure_response_truncated` without asking the extractor to infer it
-    # from a partial document — which it can only do heuristically.
-    response_truncated: bool = False
     # HTTP providers only: where `model` came from — `"http_response"` (the model name the
     # provider's response reported) or `"configured_entry"` (the response named none, or the
-    # request failed, and `model` is the entry's configured name). Read into each pure attempt's
+    # request failed, and `model` is the entry's configured name). Read into each attempt's
     # `per_attempt[].model_provenance` (issue #348); the CLI providers derive theirs elsewhere.
+    # (A cut last reply is the loop result's `truncated`, read off the turn; the pure loops'
+    # `response_truncated` went with them in issue #534 PR-J4-b.)
     model_provenance: str | None = None
 
 
@@ -3272,9 +3175,9 @@ def _leaf_usage_row(
     parse it themselves, which since Z4 (issue #171) is every claude leaf there is.
 
     `resumed` is `(resumed_agent_run_id, its persisted result envelope)` for a warm-resumed
-    claude turn, passed by `_spawn_pure_turn` and by `_spawn_workshop_turn` (a warm launch of a
-    `workshop leaf` lineage, issue #534). On CLI 2.1.278 and later such a
-    turn's `modelUsage` and `total_cost_usd` are the resumed session's running total, while
+    claude turn, passed by `_spawn_workshop_turn` (a warm launch of a `workshop leaf` lineage,
+    issue #534; the pure loop's `_spawn_pure_turn` passed it too until issue #534 PR-J4-b).
+    On CLI 2.1.278 and later such a turn's `modelUsage` and `total_cost_usd` are the resumed session's running total, while
     the top-level `usage` stays this turn's primary-model block (issue #281). Three cases:
 
     - the `modelUsage` totals, or one model's row, equal `usage` in all four classes — a
@@ -4139,147 +4042,6 @@ class Conductor:
             raise RuntimeError(f"new_agent_run_id failed: {proc.stderr.strip()}")
         return proc.stdout.strip()
 
-    def _resolve_reuse_resume(self, repair: dict[str, str] | None,
-                              phase: str, substep: str | None) -> str | None:
-        """The producer session id to warm-`--resume`, or None for a cold launch.
-
-        Resolved BEFORE building the launch request (not after) so the slim-vs-full prompt
-        choice, what `record_launch` persists, and what `spawn_leaf` actually sends all stay
-        consistent. Warm resume is ALWAYS active for a `reuse` repair (Claude and Codex): resume the
-        producer leaf's session so the repair inherits its context (and design intent) instead
-        of cold-starting. The warm/cold choice is therefore driven by the failure
-        classification's `repair_strategy`: deterministic-gate findings (lint/static/
-        compile_static) route `reuse` -> warm; `restart` stays cold (no resume) to avoid
-        anchoring on the defective reasoning — that strategy-driven selection is intentionally
-        preserved (LLM verify-attributed restarts stay cold; reuse repairs warm-resume). The
-        producer's session id == its agent_run_id (pinned via --session-id at its own launch),
-        so it is addressable by repair_target_agent_run_id. Warm-resume only if the producer's
-        session transcript still exists (Claude Code may have expired/GC'd it); if it is gone,
-        fall back to a cold launch (return None) rather than letting `claude --resume <missing>`
-        fail the leaf and fail-close the phase."""
-        if not (repair is not None and repair.get("repair_strategy") == "reuse"):
-            return None
-        target = str(repair.get("repair_target_agent_run_id") or "").strip()
-        if not target or target == "none":
-            return None
-        entry = self.entry_for(phase, substep)
-        if not entry.supports(CAP_WARM_RESUME):
-            # No session to reopen on this provider (an HTTP leaf holds no session at all).
-            # Same outcome as a GC'd transcript: the caller falls back to a cold turn — for
-            # the pure PRODUCER loop a cold REPAIR, carrying the findings and the prior
-            # document (issue #209).
-            self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                      target=target)
-            return None
-        if entry.provider == "claude_cli" and self._claude_session_resumable(target):
-            return target
-        if entry.provider == "codex_cli":
-            from tools.orchestration_runtime import _read_session_run_index_consistent
-            # A recorded Codex thread is resumable only from the LINEAGE home it was
-            # created in (`<container>/<codex_lineage_id>/`, issue #245), so the row must
-            # carry the lineage and the directory must still be there. Nothing is
-            # prepared or created at resume selection: this is an unlocked existence
-            # read, and `record_launch` re-asks the same question under the metadata lock
-            # before any durable LAUNCH mutation (`codex_lineage_home_missing`; the
-            # container and its metadata entry are re-established on every preparation,
-            # a warm one included). Since issue #64
-            # the tree is durable (`~/.atmofab/homes/<oid>/codex/`), so "gone" means an
-            # operator pruned it or lost the filesystem, not a /tmp sweep. A row from a run
-            # recorded before lineage homes has no `codex_lineage_id` and is cold-only.
-            index = _read_session_run_index_consistent(
-                self.repo_root, self.orchestration_id
-            )
-            for row in index.get("entries", []):
-                if not isinstance(row, dict) or row.get("agent_run_id") != target:
-                    continue
-                session = row.get("agent_session_id")
-                lineage = row.get("codex_lineage_id")
-                if (isinstance(session, str) and session.strip() and session.strip() != target
-                        and isinstance(lineage, str) and lineage.strip()
-                        and self._codex_lineage_home_exists(lineage.strip())):
-                    return session.strip()
-        self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
-        return None
-
-    def _codex_lineage_home_exists(self, lineage_id: str) -> bool:
-        """Whether `<orchestration_meta.json#codex_workflow_home>/<lineage_id>` is on disk.
-
-        Deliberately existence-only and deliberately unlocked, in the same spirit as
-        `_orchestration_meta_path_exists`: this decides whether a warm turn is worth
-        BUILDING, and the answer that counts is `record_launch`'s, taken under the
-        metadata lock before any durable launch mutation. A lineage id that is not a plain path
-        token answers False rather than being joined onto a path.
-        """
-        from tools.orchestration_runtime import _is_safe_path_id, _read_json
-        if not _is_safe_path_id(lineage_id):
-            return False
-        meta = _read_json(self.repo_root / "workspace" / "orchestrations"
-                          / self.orchestration_id / "orchestration_meta.json")
-        container = meta.get("codex_workflow_home") if isinstance(meta, dict) else None
-        if not isinstance(container, str) or not container.strip():
-            return False
-        try:
-            return (Path(container) / lineage_id).is_dir()
-        except (OSError, ValueError):
-            return False
-
-    def _claude_session_resumable(self, session_id: str) -> bool:
-        """True if a claude session transcript for `session_id` still exists under
-        `~/.claude/projects/*/<session_id>.jsonl`. Used to decide whether a warm
-        `--resume` is viable or must fall back to a cold launch (the session may have
-        been expired/GC'd by Claude Code).
-
-        THE HOME THIS LAUNCH WILL USE, and only that one. `--resume` is served from the
-        launching process's `CLAUDE_CONFIG_DIR`, and a pure leaf sets none: `record_launch`
-        prepares no private home for it, and its `--session-id` transcript is written to —
-        and served from — the operator's `~/.claude/projects`. `--restricted` ignores the
-        settings files there and not the transcripts (issue #453). MEASURED: the real
-        `pure_leaf_flags()` set plus `--session-id` does write
-        `<config-home>/projects/<slug>/<sid>.jsonl`, and a `--resume <sid> --fork-session`
-        under it answers (issue #453).
-
-        Until Z4 (issue #171) this took a `pure` argument and searched this orchestration's
-        private home for the agentic shape. That home is gone with the shape; searching a
-        second root is what a reviewer and an independent Codex pass both found wrong (it
-        answered True for a transcript the launching home never held), and narrowing to the
-        private home for BOTH shapes is what silently retired warm resume for every pure leaf.
-        One shape, one root, no argument to get wrong."""
-        if not isinstance(session_id, str) or not session_id.strip():
-            return False
-        root = Path.home() / ".claude" / "projects"
-        try:
-            return bool(sorted(root.glob(f"*/{session_id.strip()}.jsonl")))
-        except OSError:
-            return False
-
-    def _pure_session_resumable(self, session_id: str,
-                                entry: ResolvedLeafEntry | None = None,
-                                phase: str | None = None,
-                                substep: str | None = None) -> bool:
-        """Whether this leaf's prior turn can be reopened for the pure repair loop.
-
-        For an HTTP provider the reopen is the IN-MEMORY conversation (`_run_http_leaf` replays
-        the prior user prompt and assistant answer), so a repair turn is warm exactly while
-        that history exists — which is the whole of one producer loop (one substep run; one
-        per core and per part for `compile.generate`, issue #526). Answering False instead
-        would make every repair render the COLD fallback: the full closed context re-inlined
-        plus `prior_document`, on top of a replay already carrying both, so attempt N would
-        ship N copies of the node's spec/IR/tests and each prior bundle twice. The history does
-        not survive the process, so a CROSS-RESTART reopen still degrades to the cold path —
-        that decision is `_resolve_reuse_resume`'s, which keys on `warm_resume` and stays
-        False here."""
-        entry = entry if entry is not None else self.entry_for(None, None)
-        if entry.is_http:
-            return bool(getattr(self, "_http_history", {}).get((phase or "", substep or "")))
-        if not entry.supports(CAP_WARM_RESUME):
-            return False
-        if entry.provider == "claude_cli":
-            return self._claude_session_resumable(session_id)
-        # Codex exposes no safe local transcript-presence probe.  A thread id
-        # emitted by this process is authoritative; `codex exec resume` remains
-        # the final capability check and its failure is handled as transport.
-        return entry.provider == "codex_cli" and bool(session_id and session_id.strip())
-
     def _session_id_for_child(self, child_arid: str,
                               entry: ResolvedLeafEntry | None = None) -> str | None:
         entry = entry if entry is not None else self.entry_for(None, None)
@@ -4296,35 +4058,6 @@ class Conductor:
                     return value.strip()
         return None
 
-    def _codex_lineage_for_session(self, session_id: str | None,
-                                   entry: ResolvedLeafEntry | None = None) -> str | None:
-        """Return the lineage id whose isolated home owns a Codex thread, or None.
-
-        A thread is resumable only inside the lineage home it was created in
-        (`<container>/<codex_lineage_id>/`, issue #245). The value is read off the
-        session-index row that recorded the thread and carried to record-launch as a
-        transaction precondition; a missing home there turns the pending launch cold
-        before any child bookkeeping is created. None means the row does not say — a
-        thread recorded before lineage homes existed — and the caller treats that as
-        not resumable rather than launching a warm turn with no precondition at all.
-        """
-        entry = entry if entry is not None else self.entry_for(None, None)
-        if (entry.provider != "codex_cli" or not isinstance(session_id, str)
-                or not session_id.strip()):
-            return None
-        from tools.orchestration_runtime import _read_session_run_index_consistent
-        index = _read_session_run_index_consistent(
-            self.repo_root, self.orchestration_id
-        )
-        for row in index.get("entries", []):
-            if not isinstance(row, dict):
-                continue
-            if row.get("agent_session_id") != session_id.strip():
-                continue
-            lineage = row.get("codex_lineage_id")
-            if isinstance(lineage, str) and lineage.strip():
-                return lineage.strip()
-        return None
 
     def _codex_pinned_model(self, entry: ResolvedLeafEntry | None = None) -> str:
         """Return the operator-selected Codex model for THIS leaf, never a mutable leaf claim."""
@@ -4341,7 +4074,7 @@ class Conductor:
         """The model a codex leaf is recorded as having run, and the provenance that says why.
 
         One source for both records of a codex launch — its `agent_runs.jsonl` row
-        (`_agent_run_json`) and its pure loop's `per_attempt[]` row (`_spawn_pure_turn`) — so
+        (`_agent_run_json`) and its loop's `per_attempt[]` row (`_spawn_workshop_turn`) — so
         the two cannot disagree (issue #348: the per-attempt row read the streamed JSONL model,
         which the observed success events never carry, and recorded `null`). The slug is the
         operator's configured one the host puts on the argv, not a provider-resolved version."""
@@ -4378,60 +4111,33 @@ class Conductor:
         on the active_child marker (= the new arid), not the session, so the resumed
         repair is still evaluated against its own manifest.
 
-        `pure=True` (Z2) launches a HOST-MEDIATED PURE FUNCTION rather than an agentic
-        session: `tools/pure_leaf.pure_leaf_flags()` disables every tool, MCP server, and
-        slash command and selects the JSON result envelope, so the model returns exactly one
-        typed document and holds no write path.  Codex runs a tool-bearing CLI inside the
-        read-only sandbox (`--sandbox read-only` under the read-only bwrap profile) and the
-        host parses its one reply: semantic validation and output publication stay host-side.
-        `session_id` is used by the claude arm alone (`--session-id`); the codex arm reads
-        it for nothing since issue #230 retired the per-child output-schema file.
         `entry` names THIS leaf's resolved model. It defaults to the `defaults` entry only so a
         caller with genuinely no phase/substep (and the test suite) need not spell it out; every
         production launch passes its own, which
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
 
-        `mcp_config_json` selects the WORKSHOP launch (issue #534): an entry whose `leaf` is
-        `workshop` takes `pure_leaf.workshop_leaf_flags(mcp_config_json)` in place of
-        `pure_leaf_flags()` — the same `--model` / `--effort` / `--resume --fork-session` /
-        `--session-id` prefix and trailing `-p` — and the JSON names this launch's wrapper
-        endpoint. A workshop entry without it, or a pure entry with it, is refused: the two
-        must agree, or a leaf would hold the wrapper under a pure contract or lack it under a
-        workshop one.
-
-        `reading` is the KIND of a workshop launch (issue #534 step 3), passed in by the caller
-        because `ResolvedLeafEntry` carries no `(phase, substep)`: a READING launch (a judging
-        substep) is served no endpoint, so it takes NO `mcp_config_json` and the reading flag
-        set (`pure_leaf.workshop_leaf_flags(None, reading=True)`); a PRODUCING launch takes its
-        endpoint. Either combination the other way round is refused, and so is `reading` on a
-        pure entry.
+        Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), and
+        `reading` is the KIND of the launch, passed in by the caller because
+        `ResolvedLeafEntry` carries no `(phase, substep)`. A PRODUCING launch takes its
+        wrapper's endpoint as `mcp_config_json` (`pure_leaf.workshop_leaf_flags`,
+        `pure_leaf.codex_workshop_overrides`); a READING launch (a judging substep, or the
+        diagnostician) is served no endpoint, so it takes none and the reading flag set. Either
+        combination the other way round is refused: a leaf would hold the wrapper under a
+        reading contract or lack it under a producing one.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         base = _provider_command_base(entry)
-        workshop = bool(getattr(entry, "is_workshop", False))
-        if reading and not workshop:
-            raise ValueError("leaf_command: only a workshop entry launches a reading lineage")
-        if workshop and reading == (mcp_config_json is not None):
+        if reading == (mcp_config_json is not None):
             raise ValueError(
                 "leaf_command: a producing workshop launch takes its wrapper's mcp_config_json "
                 "and a reading one takes none (reading="
                 f"{reading!r}, mcp_config_json="
                 f"{'given' if mcp_config_json is not None else 'absent'})")
-        if not workshop and mcp_config_json is not None:
-            raise ValueError(
-                "leaf_command: a workshop entry takes its wrapper's mcp_config_json and a pure "
-                f"entry takes none (leaf={getattr(entry, 'leaf', 'pure')!r}, "
-                f"mcp_config_json={'given' if mcp_config_json is not None else 'absent'})")
-        if workshop and entry.provider not in ("claude_cli", "codex_cli"):
-            raise ValueError(f"provider {entry.provider!r} runs no workshop leaf")
         if entry.provider == "claude_cli":
-            # `-p` runs non-interactively, and `pure_leaf_flags()` below is the whole of the
-            # leaf's surface: no tools, no MCP servers, no slash commands, no customizations
-            # (`--safe-mode`), no settings file (`--restricted`), and the JSON result
-            # envelope. Since Z4 (issue #171) there is no
-            # second arm here — the agentic launch that carried `--setting-sources user`, a
-            # private CLAUDE_CONFIG_DIR, an MCP configuration and a tool allowlist is gone, and
-            # so is everything that existed to confine it.
+            # `-p` runs non-interactively, and `workshop_leaf_flags` below is the whole of the
+            # leaf's surface beyond the model selection: the file tools its kind is served, the
+            # wrapper endpoint of a producing launch, no customizations (`--safe-mode` is NOT
+            # among them — it would disable the endpoint), no settings file (`--restricted`).
             flags: list[str] = []
             # `--model` ONLY for a model the configuration FILE names. An operator who wrote
             # `model: haiku` for a substep means that leaf to run haiku, and recording it while
@@ -4452,9 +4158,8 @@ class Conductor:
                 flags += ["--resume", resume_session_id, "--fork-session"]
             if session_id:
                 flags += ["--session-id", session_id]
-            from tools.pure_leaf import pure_leaf_flags, workshop_leaf_flags
-            flags += (workshop_leaf_flags(mcp_config_json, reading=reading) if workshop
-                      else pure_leaf_flags())
+            from tools.pure_leaf import workshop_leaf_flags
+            flags += workshop_leaf_flags(mcp_config_json, reading=reading)
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
@@ -4466,59 +4171,27 @@ class Conductor:
             # flag; the reasoning level is a config override on both subcommands.
             effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
                             if entry.effort else [])
-            # CODEX_HOME is already an orchestration-private directory. Its config.toml marks
-            # this checkout untrusted, which is what keeps this repository's DEV-layer
-            # `.codex/hooks.json` — written for an operator's own session — out of the leaf's
-            # hook set. Since Z4 (issue #171) the leaf brings no hooks of its own: what
-            # confines it is this read-only sandbox. No `--output-schema`: codex-cli sends a
-            # schema to the Responses API with `strict: true` hardcoded, strict mode refuses
-            # the only schema the host could author for a free-form document, and every pure
-            # codex turn died at its first request (issue #230). The host's own parse of the
-            # one reply (`extract_json_document` and the per-document validators) is the
-            # shape check.
-            # `--skip-git-repo-check`: the sandbox holds no checkout — `render_bwrap_command`
-            # puts an empty tmpfs at `repo_root` (issue #227) — and codex refuses an untrusted
-            # non-git cwd before any API call without it (measured on codex-cli 0.154.0: `Not
-            # inside a trusted directory and --skip-git-repo-check was not specified.`, rc 1).
-            # The cwd stays `repo_root` so the private `CODEX_HOME`'s trust key and `TMPDIR`
-            # are unchanged; only the git check is waived.
-            pure_flags = ["--ignore-rules", "--sandbox", "read-only",
-                          "--skip-git-repo-check"]
-            # `codex exec resume` and `codex exec` do NOT accept the same options: resume has
-            # no `--sandbox` (only the never-used
-            # `--dangerously-bypass-approvals-and-sandbox`), so the read-only policy is
-            # re-pinned through the `--config` override both subcommands share rather than
-            # inherited implicitly from the resumed thread. Passing `--sandbox` here aborts the
-            # repair turn at argv parsing — before any `thread.started` — which makes EVERY
-            # repair a transport death (warm resume is how both pure loops run every repair
-            # attempt). `--config`, not the `-c` alias, for the reason above.
-            pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
-                                 "--skip-git-repo-check"]
+            # codex's `workspace-write` sandbox: its shell and patch tool write inside the
+            # working directory, which the lineage profile makes the tree (issue #534 step 2
+            # PR-2), and the wrapper's endpoint on a producing launch
+            # (`pure_leaf.codex_workshop_overrides`). No `--output-schema` (issue #230: codex-cli
+            # sends it with `strict: true` hardcoded). `--skip-git-repo-check`: the tree is not
+            # a git checkout, and codex refuses an untrusted non-git cwd before any API call
+            # without it (measured on codex-cli 0.154.0, rc 1). `codex exec resume` has no
+            # `--sandbox`, so resume re-pins the policy through the `sandbox_mode` override both
+            # subcommands share; passing `--sandbox` there aborts the turn at argv parsing.
             # `-` is the documented stdin sentinel for the positional prompt on BOTH
-            # subcommands. Spelled explicitly rather than omitted: `codex exec` reads stdin
-            # when the prompt is absent, but `codex exec resume` documents only the `-`
-            # form, and an omitted positional there would be read as the session id.
-            if workshop:
-                # A `workshop leaf` (issue #534 step 2 PR-2): the same argv with codex's
-                # `workspace-write` sandbox in place of `read-only` — its shell and patch tool
-                # write inside the working directory, which the profile makes the tree — and the
-                # wrapper's endpoint (`pure_leaf.codex_workshop_overrides`). Resume re-pins the
-                # policy through `sandbox_mode`, for the reason the pure resume does.
-                from tools.pure_leaf import codex_workshop_overrides
-                overrides = codex_workshop_overrides(mcp_config_json, reading=reading)
-                if resume_session_id:
-                    return [*base, "exec", "resume", "--model", model, resume_session_id,
-                            *effort_flags, "--ignore-rules",
-                            "--config", 'sandbox_mode="workspace-write"',
-                            "--skip-git-repo-check", *overrides, "--json", "-"]
-                return [*base, "exec", "--model", model, *effort_flags,
-                        "--ignore-rules", "--sandbox", "workspace-write",
-                        "--skip-git-repo-check", *overrides, "--json", "-"]
+            # subcommands; an omitted positional on `resume` would be read as the session id.
+            from tools.pure_leaf import codex_workshop_overrides
+            overrides = codex_workshop_overrides(mcp_config_json, reading=reading)
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
-                        *effort_flags, *pure_resume_flags, "--json", "-"]
-            return [*base, "exec", "--model", model,
-                    *effort_flags, *pure_flags, "--json", "-"]
+                        *effort_flags, "--ignore-rules",
+                        "--config", 'sandbox_mode="workspace-write"',
+                        "--skip-git-repo-check", *overrides, "--json", "-"]
+            return [*base, "exec", "--model", model, *effort_flags,
+                    "--ignore-rules", "--sandbox", "workspace-write",
+                    "--skip-git-repo-check", *overrides, "--json", "-"]
         raise ValueError(
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
             f"backend); this substep must not have reached spawn_leaf")
@@ -4574,96 +4247,6 @@ class Conductor:
         closed at launch rather than running it. The method is retained as a single seam for
         the call sites; it always returns True."""
         return True
-
-    def _http_history_key(self, timeout_context: dict[str, str] | None) -> tuple[str, str]:
-        ctx = timeout_context or {}
-        return (str(ctx.get("step", "")), str(ctx.get("substep", "")))
-
-    def reset_http_history(self, phase: str, substep: str | None) -> None:
-        """Drop the in-memory conversation for one substep, at the start of its loop."""
-        getattr(self, "_http_history", {}).pop((phase, substep or ""), None)
-
-    def _run_http_leaf(
-        self,
-        prompt_text: str,
-        entry: ResolvedLeafEntry,
-        *,
-        child_env: dict[str, str] | None = None,
-        child_arid: str,
-        timeout_context: dict[str, str] | None,
-    ) -> ProcResult:
-        """One HTTP pure-leaf turn, returned in the `ProcResult` shape the loops already read.
-
-        **Repair replay.** The CLI pure loops repair by reopening the prior session
-        (`--resume --fork-session`); an HTTP provider has no session to reopen, so the
-        conversation is kept HERE, in memory, for the life of one producer loop (a substep run;
-        one per core and per part for `compile.generate`, issue #526): each turn sends
-        the prior user prompts and assistant replies plus this turn's prompt. That is the same
-        thing a forked resume gives the model — its own prior answer and the critique of it —
-        so the repair turn renders the WARM (slim) prompt rather than re-inlining a context the
-        replay already carries (`_pure_session_resumable` reports warm exactly while this
-        history exists). The history does not survive the PROCESS, so a cross-restart reopen
-        degrades to the cold fallback — full context re-sent with `prior_document` — which is a
-        correct, if more expensive, repair turn.
-
-        The raw response body is persisted under `launches/` before anything is parsed, so an
-        answer the validators reject is still on disk in the form it arrived in."""
-        from tools.llm_http_leaf import run_pure_http_leaf
-
-        histories: dict[tuple[str, str], list[dict[str, str]]] = getattr(
-            self, "_http_history", {})
-        key = self._http_history_key(timeout_context)
-        history = histories.get(key, [])
-        messages = [*history, {"role": "user", "content": prompt_text}]
-
-        # Neither ceiling is passed from here: `LEAF_MAX_OUTPUT_TOKENS` is the Claude CLI's,
-        # and `_leaf_timeout_seconds()` caps a PROCESS. The transport owns both defaults for
-        # its own shape (`DEFAULT_MAX_OUTPUT_TOKENS`, `DEFAULT_HTTP_TIMEOUT_SECONDS`) and the
-        # entry overrides them; passing the CLI values here made the entry's own defaults
-        # unreachable and asked every endpoint for 128000 output tokens — which the local
-        # servers this provider exists for reject outright, as a NON-retryable client error on
-        # the first attempt.
-        # `child_env`, not the process environment: it is what every spawned leaf receives,
-        # and it is where a run's own API key lives. Reading the global one would take a
-        # credential this run did not choose, or miss one it did. It carries no proxy family
-        # (`LEAF_ENV_NAMED_EXCLUSIONS`), so the request goes direct — the route the HTTP
-        # preflight probe takes too (issue #83).
-        response = run_pure_http_leaf(entry, messages, env=child_env)
-
-        # `.txt`, NOT `.json`: this is the provider's body verbatim, and the case it most
-        # needs to preserve is the one where that body is NOT JSON (an HTML 502 page, a
-        # proxy error). `validate_workspace_root` parses every `workspace/**/*.json`, so a
-        # `.json` name would turn the evidence for a transport failure into an `invalid
-        # json` workspace violation that outlives it and can block a later resume.
-        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                / "launches" / f"{child_arid}.http_response.txt")
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(response.raw_response or "", encoding="utf-8")
-        except OSError as exc:
-            # Evidence, not control flow: losing the copy must not lose the answer.
-            self.emit("http_leaf_response_unpersisted", agent_run_id=child_arid,
-                      error=str(exc)[:200])
-
-        if response.transport_error is not None:
-            self.emit("http_leaf_transport_error", agent_run_id=child_arid,
-                      provider=entry.provider, error=response.transport_error[:400])
-            return ProcResult(1, "", response.transport_error[:4000], model=entry.model or None,
-                              model_provenance="configured_entry" if entry.model else None)
-
-        histories[key] = [*messages, {"role": "assistant", "content": response.text}]
-        self._http_history = histories
-        # `persist_stdout` carries the redacted answer: the loop below parses `stdout` (which
-        # must be the provider's exact document) while the artifact on disk holds a copy with
-        # the API key removed, closing the one channel the transport's own redaction cannot.
-        from tools.llm_http_leaf import redact_secret
-        return ProcResult(
-            0, response.text, "", usage=response.usage,
-            model=response.model or entry.model or None,
-            model_provenance=("http_response" if response.model_reported
-                              else "configured_entry" if entry.model else None),
-            response_truncated=response.truncated,
-            persist_stdout=redact_secret(response.text, entry, child_env))
 
     def _sandbox_profile_for(self, child_arid: str) -> dict[str, Any] | None:
         """The bwrap profile record-launch wrote for this child, or None."""
@@ -4727,14 +4310,11 @@ class Conductor:
             raise ValueError(f"spawn_leaf cancel_event is a CLI leaf's (provider "
                              f"{entry.provider!r})")
         if entry.is_http:
-            # No process, so nothing below applies: no codex feature cache, no bwrap profile
-            # (an HTTP pure leaf runs no model-directed tool — see tools/llm_http_leaf.py), no
-            # process group to reap. The reply comes back in the same `ProcResult` shape, so
-            # every consumer downstream — persistence, envelope, validators, repair — is
-            # unchanged.
-            return self._run_http_leaf(prompt_text, entry, child_env=child_env,
-                                       child_arid=child_arid,
-                                       timeout_context=timeout_context)
+            # An HTTP entry has no process to spawn: its workshop leaf runs in the host's own
+            # tool-use loop (`_spawn_workshop_turn` -> `tools/llm_workshop_loop.py`). The pure
+            # HTTP transport this used to hand it to went in issue #534 PR-J4-b.
+            raise ValueError(f"spawn_leaf launches a CLI leaf; provider {entry.provider!r} "
+                             f"runs in the host loop")
         if timeout_seconds is not None and (
                 isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
                 or timeout_seconds < 1):
@@ -4770,25 +4350,25 @@ class Conductor:
                     "bwrap enforcement is mandatory but no usable sandbox profile is "
                     f"available for this leaf (child_arid={child_arid!r}); refusing to "
                     "launch unconfined (fail-closed)")
-            # Z4 (issue #171): every CLI leaf but one is a PURE leaf, which has no repository
-            # write authority at all, so its profile is the read-only one. Asserted at the
-            # spawn site rather than left to follow from "only the pure loops call this": a
-            # guard that rests on today's caller set goes quiet the moment a sixth caller
-            # appears, and what it protects is the FS-diff-free write model — nothing
-            # attributes a write from this window, because nothing in this window may write
-            # under the checkout.
-            #
-            # The one other admitted profile is a WORKSHOP leaf's (issue #534), and it is
-            # admitted by its exact shape, fail-closed: `leaf_mode: workshop`, an entry that
-            # IS a workshop entry, and rw binds that are exactly the lineage's own `config/`
-            # and `tree/` — siblings under one lineage home, outside the checkout — with the
-            # tree as its working directory. Anything else writable is refused.
+            # The one admitted profile is a WORKSHOP lineage's (issue #534), admitted by its
+            # exact shape, fail-closed: `leaf_mode: workshop` and rw binds that are exactly the
+            # lineage's own `config/` and `tree/` — siblings under one lineage home, outside the
+            # checkout — with the tree as its working directory. Asserted at the spawn site
+            # rather than left to follow from today's callers: a guard that rests on the caller
+            # set goes quiet the moment a new caller appears. The READ-ONLY profile of the
+            # deleted pure leaf (issue #534 PR-J4-b) is refused by name, so a caller that still
+            # builds one fails here rather than launching a leaf whose edits vanish.
+            if profile.get("readonly") is True or profile.get("leaf_mode") is None:
+                raise SandboxEnforcementError(
+                    f"{_LEAF_PROFILE_NOT_A_LINEAGE}: the sandbox profile for {child_arid!r} is "
+                    "the read-only profile of the retired pure leaf (readonly: true, no "
+                    "leaf_mode); every leaf runs in a workshop lineage since issue #534 "
+                    "PR-J4-b, so a profile without one is a host defect (fail-closed)")
             if not _admissible_leaf_profile(profile, entry, self.repo_root):
                 raise SandboxEnforcementError(
-                    f"the sandbox profile for {child_arid!r} is neither read-only nor a "
-                    "workshop lineage's (exactly its config/ and tree/ writable, for a "
-                    "workshop entry); a leaf has no repository write authority, so any other "
-                    "writable profile is a host defect (fail-closed)")
+                    f"the sandbox profile for {child_arid!r} is not a workshop lineage's "
+                    "(exactly its config/ and tree/ writable); a leaf has no repository write "
+                    "authority, so any other writable profile is a host defect (fail-closed)")
             from tools.orchestration_runtime import render_bwrap_command
             try:
                 argv = render_bwrap_command(profile=profile, command_argv=argv)
@@ -5752,15 +5332,15 @@ class Conductor:
 
     def record_launch(self, child_arid: str, request: dict[str, Any],
                       entry: ResolvedLeafEntry | None = None, *,
-                      codex_lineage_id: str | None = None,
                       workshop_lineage_id: str | None = None,
                       mcp_config_json: str | None = None) -> dict[str, Any]:
         """Record one launch (`orchestration_runtime record-launch`).
 
         A WORKSHOP launch (issue #534) passes its wrapper endpoint as `mcp_config_json` (it is
         recorded in the launch's setting surface) and, on a WARM resume only, the lineage it
-        resumes as `workshop_lineage_id` — the twin of `codex_lineage_id`: a lineage home that
-        is gone answers `workshop_lineage_home_missing` and nothing is recorded."""
+        resumes as `workshop_lineage_id`: a lineage home that is gone answers
+        `workshop_lineage_home_missing` and nothing is recorded. (The pure codex leaf's twin,
+        `codex_lineage_id`, went with the pure path in issue #534 PR-J4-b.)"""
         # The derivation key of the phase attempt this launch belongs to (issue #250), stamped
         # here — the ONE funnel every launch passes through — rather than in
         # `build_launch_request`, so the request builder stays a pure function of `refs` and
@@ -5810,8 +5390,6 @@ class Conductor:
             # second thing to keep true.
             "--child-env-from-stdin",
         ]
-        if codex_lineage_id is not None:
-            argv += ["--codex-lineage-id", codex_lineage_id]
         if workshop_lineage_id is not None:
             argv += ["--workshop-lineage-id", workshop_lineage_id]
         return self.runtime(argv, input=json.dumps(
@@ -5824,18 +5402,17 @@ class Conductor:
 
         Since Z4 (issue #171) that is one field: the TOOLS the leaf was launched with. The
         `--setting-sources` layer choice and the `.mcp.json` server set went with the agentic
-        leaf — a pure leaf takes `--restricted` (no settings file; issue #453), `--safe-mode`
-        (no customizations), `--strict-mcp-config` with no configuration, and `--tools ""`.
-        None of them is recorded per launch: they are constants of `pure_leaf_flags`, whose
-        golden (`test_pure_leaf.py`) is the record, and `repo_revision` names the set.
+        leaf — a workshop leaf takes `--restricted` (no settings file; issue #453),
+        `--strict-mcp-config`, `--disable-slash-commands` and its kind's `--tools` allowlist.
+        The constants are not recorded per launch: they are `workshop_leaf_flags`', whose
+        goldens in the suite are the record, and `repo_revision` names the set.
 
         `claude_tools` stays because it is still written down nowhere else: the persisted
         `sandbox_command` renders `command_argv` as the executable alone, so the tool set a
         leaf was actually launched with is not recoverable from any artifact, and it is the
-        enforcement boundary a later audit of "could this leaf have done that" turns on. A pure
-        claude leaf records `[""]` — the CLI's spelling for "no tools at all" — which is the
-        honest description of its argv rather than an absence indistinguishable from a codex
-        leaf's.
+        enforcement boundary a later audit of "could this leaf have done that" turns on. (A pure
+        claude leaf, before issue #534 PR-J4-b, recorded `[""]` — the CLI's spelling for "no
+        tools at all".)
 
         DERIVED FROM THE ARGV, by re-deriving it here rather than re-reading the constants
         `leaf_command` used. `leaf_command` is a deterministic function of the entry, so this
@@ -5843,9 +5420,9 @@ class Conductor:
         cannot leave the record describing the old argv. The same reasoning already pins
         `backend_command` to `leaf_command(entry)[0]`.
 
-        Two launches are declined outright, because they have no argv to describe at all — a
-        pure HTTP leaf (no process) and a deterministic substep (in-process). A workshop HTTP
-        leaf has no argv either and records `http_tool_surface` instead (issue #534 PR-J3-b).
+        A deterministic substep (in-process) is declined outright, because it has no argv to
+        describe at all. An HTTP leaf has no argv either and records `http_tool_surface`
+        instead (issue #534 PR-J3-b).
 
         A WORKSHOP leaf (issue #534) records one more field, `claude_mcp_config` (codex:
         `codex_mcp_config`, issue #534 step 2 PR-2): the server name and URL its `--mcp-config`
@@ -5866,15 +5443,11 @@ class Conductor:
             # HTTP `defaults` the branch below would record a tool surface it was never given.
             return {}
         if entry.is_http:
-            # There is no CLI leaf and no argv: `spawn_leaf` returns on this same predicate
-            # before it reaches `leaf_command`, which refuses a non-spawnable provider
-            # outright. Nothing about CLI settings layers is true of an HTTP leaf, so a pure one
-            # is recorded about nothing rather than about "". A WORKSHOP one (issue #534
-            # PR-J3-b) records the tools the host loop declares to it — the five file tools,
-            # plus the pair's operations on a producing pair (`WORKSHOP_OPS_BY_PAIR`) — which
-            # the launch-record audit compares against the kind's surface.
-            if not getattr(entry, "is_workshop", False):
-                return {}
+            # There is no CLI leaf and no argv (`spawn_leaf` refuses an HTTP entry). An HTTP
+            # workshop leaf (issue #534 PR-J3-b) records the tools the host loop declares to it
+            # — the five file tools, plus the pair's operations on a producing pair
+            # (`WORKSHOP_OPS_BY_PAIR`) — which the launch-record audit compares against the
+            # kind's surface.
             return {"http_tool_surface": self._http_workshop_tool_names(
                 request.get("step"), request.get("substep"))}
         # `session_id=child_arid` because the claude argv carries it (`--session-id`), and this
@@ -5885,8 +5458,7 @@ class Conductor:
         # The KIND of a workshop launch is its request's pair (a judging pair reads; issue #534
         # step 3), never the entry, which names no pair.
         from tools.pure_leaf import is_workshop_reading_pair
-        reading = bool(getattr(entry, "is_workshop", False)) and is_workshop_reading_pair(
-            request.get("step"), request.get("substep"))
+        reading = is_workshop_reading_pair(request.get("step"), request.get("substep"))
         argv = self.leaf_command(entry, session_id=child_arid, mcp_config_json=mcp_config_json,
                                  reading=reading)
         surface: dict[str, Any] = {}
@@ -7119,42 +6691,18 @@ class Conductor:
                 names.append(logical.strip())
         return names
 
-    def _pure_bundle_prior_document(self, record: dict[str, Any]) -> str | None:
-        """The bundle the repair target's attempt returned, read back from the artifact
-        `_write_pure_bundle_artifacts` wrote for it, as the cold repair turn's `prior_document`.
-
-        `record` is that attempt's own launch request (`launches/<arid>.request.json`), which is
-        the only non-heuristic way to name the directory it wrote into: `_ensure_fresh_producer_id`
-        has since rotated `refs.source_id` to a fresh empty one, so `refs` no longer points at it.
-        The file already holds the accepted document in the serialization the loop's own
-        carry-forward uses, so it is passed through as text rather than re-serialized.
-
-        NEVER raises: the seed that calls it runs outside the loop's context-assembly guard, and a
-        missing or unreadable prior artifact is a degradation (the repair turn then carries the
-        findings alone), not a phase failure. Absent for the routes that reopen WITHOUT an accepted
-        artifact (bundle-repair exhaustion)."""
-        pipeline_ref = str(record.get("pipeline_ref") or "").strip()
-        source_id = str(record.get("source_id") or "").strip()
-        if not pipeline_ref or not source_id:
-            return None
-        try:
-            path = self.repo_root / pipeline_ref / "source" / source_id / "codegen_bundle.json"
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError, ValueError):
-            return None
-        return text.strip() or None
 
     def _write_bundle_meta(self, refs: NodeRefs, *, result: str,
                            failure_category: str | None, failure_excerpt: str | None,
                            attempts: int, per_attempt: list[dict[str, Any]],
-                           leaf_mode: str = "pure") -> None:
+                           leaf_mode: str = "workshop") -> None:
         """Author `<source_dir>/bundle_meta.json` — the pure producer's terminal record and the
         freshness-gated deliverable of the pure `generate.generate` substep. Carries the outcome
         (`result` pass/fail), the terminal `failure_category` + `failure_excerpt` on exhaustion
         (`_read_repair_findings` reads the excerpt for the outer repair route), the attempt count,
         the prompt-contract version (an A7 observable event), and per-attempt model/usage with the
-        model's provenance (`_spawn_pure_turn`: claude's CLI result envelope, codex's host-pinned
-        slug, an HTTP provider's response or configured entry). A re-derivable value is not
+        model's provenance (`_spawn_workshop_turn`: claude's CLI result envelope, codex's
+        host-pinned slug, an HTTP provider's response or configured entry). A re-derivable value is not
         introduced beyond what only the transcript would otherwise hold."""
         from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
@@ -7164,17 +6712,13 @@ class Conductor:
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
-        if leaf_mode == "workshop":
-            # A `workshop leaf` (issue #534). `prompt_contract_version` stays the pure one: it
-            # names the bundle RULES the document answers (the workshop templates carry the pure
-            # template's rules verbatim, `test_workshop_producer`), which is what the exemplar
-            # selector reads it for (`_exemplar_contract_version_matches`); the workshop
-            # template's own counter is recorded beside it.
-            from tools.pure_leaf import WORKSHOP_PROMPT_CONTRACT_VERSION
-            meta["leaf_mode"] = "workshop"
-            meta["workshop_prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
-        elif leaf_mode != "pure":
-            raise ValueError(f"bundle_meta leaf_mode must be pure or workshop (got {leaf_mode!r})")
+        # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
+        # the record names one contract version (the workshop template counter it also carried
+        # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
+        # `workshop_prompt_contract_version`; its readers keep accepting both.
+        if leaf_mode != "workshop":
+            raise ValueError(f"bundle_meta leaf_mode must be workshop (got {leaf_mode!r})")
+        meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
         path = self.repo_root / refs.source_dir() / "bundle_meta.json"
@@ -7461,7 +7005,7 @@ class Conductor:
                         ("the document carries both an `ir` and a `compile_fail`, and they are "
                          "two different answers: return the IR with `compile_fail` null, or "
                          "declare with `ir` null"))
-            return self._compile_fail_violation(declaration, "")
+            return self._compile_fail_violation(declaration)
         ir = doc.get("ir")
         if not isinstance(ir, dict):
             return (COMPILE_IR_DOCUMENT_VIOLATION,
@@ -7562,34 +7106,21 @@ class Conductor:
         return None
 
     @staticmethod
-    def _compile_fail_inputs(shape: str) -> tuple[str, ...]:
+    def _compile_fail_inputs() -> tuple[str, ...]:
         """The names a `compile_fail` declaration may give as its `input`: the documents the host
-        inlines for this launch shape (`PURE_CONTEXT_REQUIRED_KEYS`'s keys, `_document` dropped)
+        seeds for `compile.generate` (`PURE_CONTEXT_REQUIRED_KEYS`'s keys, `_document` dropped)
         plus `published_operations`, the `<dependency_facts>` catalog the renderer appends. The
         list is defined here and nowhere else; the template's enumeration is coupled to it by
-        `test_pure_leaf_compile`.
-
-        The `verification` part (issue #526) is shown four of those documents plus two values
-        that are not inputs of the phase: the IR core, which is this phase's own output (a
-        core that lacks what a test needs is refused by `Compile.static` on the assembled IR and
-        authored again, so it is never the operator's to repair), and the test ids the host
-        assigned. Neither is admissible, and the part receives no catalog. Its phase contract
-        is an excerpt (`_VERIFICATION_PHASE_CONTRACT_HEADINGS`) but still that input."""
-        from tools.orchestration_runtime import (PURE_CONTEXT_REQUIRED_KEYS,
-                                                 PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
-        if shape == "verification":
-            keys = PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("compile", "generate", shape)]
-            return tuple(k.removesuffix("_document") for k in keys
-                         if k not in ("ir_core_document", "verification_tests_document"))
-        if shape:
-            raise ValueError(f"no compile.generate shape {shape!r}")
+        `test_pure_leaf_compile`. (The `verification` part of issue #526, whose admissible set
+        was narrower, went with the part split in issue #534 PR-J4-b.)"""
+        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         keys = PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]
         return tuple(k.removesuffix("_document") for k in keys) + ("published_operations",)
 
     @classmethod
-    def _compile_fail_violation(cls, value: Any, shape: str) -> tuple[str, str] | None:
+    def _compile_fail_violation(cls, value: Any) -> tuple[str, str] | None:
         """None when `value` is a well-formed declaration — an object of EXACTLY `input` (one of
-        `_compile_fail_inputs(shape)`), `where` and `what` (non-empty strings) — else the
+        `_compile_fail_inputs()`), `where` and `what` (non-empty strings) — else the
         document violation whose text tells the leaf the only two answers it has.
 
         The point of the structure is the classification (issue #526): a declaration that names
@@ -7600,7 +7131,7 @@ class Conductor:
         substep passing — the run stops `fail_closed` — but the record then blames a sound input,
         which is why the finding text below says what a declaration claims; the host has no
         check that tells it from a real one."""
-        admissible = cls._compile_fail_inputs(shape)
+        admissible = cls._compile_fail_inputs()
         finding = (
             "`compile_fail` must be JSON null, or an object of EXACTLY the keys `input` (one of: "
             + ", ".join(f"`{name}`" for name in admissible)
@@ -7668,562 +7199,6 @@ class Conductor:
         target.write_text(self._pure_ir_yaml(doc["ir"]), encoding="utf-8")
         self._write_ir_meta(refs, verification_status="pending", last_fail_reason=None,
                             issue_severity=None, attempts=attempts)
-
-    def _pure_ir_prior_document(self, record: dict[str, Any]) -> str | None:
-        """The IR document the repair target's attempt returned, read back from the
-        `spec.ir.yaml` `_write_pure_ir_artifacts` wrote for it, as the cold repair turn's
-        `prior_document`.
-
-        `record` is that attempt's own launch request (`launches/<arid>.request.json`): the
-        directory it wrote into is named there and nowhere else once `_ensure_fresh_producer_id`
-        has rotated `refs.ir_ref` to a fresh empty one. The producer's document is
-        `{ir, compile_fail}` (`_pure_ir_document_violations`) and only the `ir` half is
-        persisted, so the other half is reconstructed: an accepted IR has no declared failure, so
-        `compile_fail` is null. `_pure_ir_yaml`'s round trip is probed before any document is
-        accepted, so re-reading it reproduces the object the leaf returned. The serialization is
-        the loop's own (`json.dumps(..., indent=2, ensure_ascii=False)`).
-
-        NEVER raises — see `_pure_bundle_prior_document`. `TypeError` / `ValueError` cover an IR
-        an AGENTIC leaf wrote (reachable only when `llm.yaml` changed across a `--resume`), which
-        carries no round-trip guarantee and may hold values `json.dumps` refuses."""
-        ir_ref = str(record.get("ir_ref") or "").strip()
-        if not ir_ref:
-            return None
-        try:
-            ir = yaml.safe_load((self.repo_root / ir_ref / "spec.ir.yaml")
-                                .read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError, yaml.YAMLError):
-            return None
-        if not isinstance(ir, dict):
-            return None
-        try:
-            return json.dumps({"ir": ir, "compile_fail": None}, indent=2,
-                              ensure_ascii=False)
-        except (TypeError, ValueError):
-            return None
-
-    #: The three per-test lists of `io_contract` (issue #526). The core producer leaves them out;
-    #: each `verification` part authors the entries of its group of tests, and the host
-    #: assembles them.
-    _PURE_IR_VERIFICATION_LISTS: tuple[str, ...] = (
-        "test_evidence_requirements", "test_predicates", "primary_predicates")
-    #: The bound on one `verification` part's tests, in UTF-8 bytes of their `tests.md`
-    #: definitions (`_tests_md_test_block_bytes`): consecutive tests share a part until the next
-    #: one would take it past this. A test larger than the bound is a part of its own. The
-    #: output a part writes, not its input, is what the split bounds (issue #526), and the
-    #: definition size is the host's proxy for it, calibrated on the node that needed the split:
-    #: `shallow_water2d_channel@0.2.5`'s 16 definitions are 41 KB for an estimated 160k output
-    #: tokens (≈ 3.9 per byte), so 10 KB is ≈ 39k tokens, half the smallest per-model maximum
-    #: measured for one reply (79k). A node whose entries are smaller per byte (a harness wrote
-    #: ≈ 0.25 tokens per byte) gets fewer, larger parts — each part re-sends the whole shared
-    #: context, which is the cost this bound exists to cap.
-    _VERIFICATION_PART_BUDGET_BYTES: ClassVar[int] = 10_000
-    #: The headings of `phase_01_compile.md` whose sections a `verification` part is shown, in
-    #: document order: the schema block (its own body; the `###` subsections under it are about
-    #: `algorithm` and the sidecar), the producer's own substep, the reviewer's and the static
-    #: gate's rules on case coverage, `io_contract` and input routing, and the two sections that
-    #: govern the producer's own `compile_fail` (On-failure: guessed completion is forbidden and
-    #: a self-check invariant is no ground to declare; Acceptance of retry: a declaration is not
-    #: a repair note). The rest — the phase overview, `ir_meta.json`, the algorithm /
-    #: dependency / public-surface checks, the severity rubric — is about sections the part
-    #: neither writes nor is judged on. A heading that is missing is a context-assembly
-    #: failure, never a shorter excerpt.
-    _VERIFICATION_PHASE_CONTRACT_HEADINGS: tuple[str, ...] = (
-        "## `spec.ir.yaml` schema",
-        "### 1-1. Compile.generate substep",
-        "#### V1. case coverage",
-        "#### V3. io_contract consistency",
-        "#### V9. case input routing",
-        "#### Verification tools",
-        "## On-failure behavior",
-        "## Acceptance of retry from Validate",
-    )
-    #: `io_contract`'s key order in the phase contract's schema block; the assembled section
-    #: follows it, and any key it does not name follows in the core's own order.
-    _PURE_IR_IO_CONTRACT_ORDER: tuple[str, ...] = (
-        "inputs", "outputs", "raw_requirements", "test_evidence_requirements",
-        "diagnostics_contract", "semantic_dependency", "test_predicates", "primary_predicates")
-
-    def _pure_ir_core_violations(self, refs: NodeRefs, doc: Any) -> tuple[str, str] | None:
-        """The core producer's document: `_pure_ir_document_violations`, and on an accepted IR
-        an `io_contract` object that does NOT carry the three per-test lists. A core that
-        carried them would have its entries silently replaced (or duplicated) by the parts', so
-        it is refused as the one-turn repair it is."""
-        found = self._pure_ir_document_violations(refs, doc)
-        if found is not None or doc.get("compile_fail") is not None:
-            return found
-        io_contract = doc["ir"].get("io_contract")
-        if not isinstance(io_contract, dict):
-            return (COMPILE_IR_DOCUMENT_VIOLATION,
-                    ("`ir.io_contract` must be a JSON object; got "
-                     f"{type(io_contract).__name__}"))
-        carried = [k for k in self._PURE_IR_VERIFICATION_LISTS if k in io_contract]
-        if carried:
-            return (COMPILE_IR_DOCUMENT_VIOLATION,
-                    (f"`ir.io_contract` carries {', '.join(f'`{k}`' for k in carried)}: the "
-                     "three per-test verification lists are authored by separate turns over "
-                     "groups of tests and assembled by the host, so this IR must leave them "
-                     "out"))
-        return None
-
-    def _pure_ir_verification_violations(
-            self, test_ids: tuple[str, ...]) -> Callable[[NodeRefs, Any], tuple[str, str] | None]:
-        """The validator of ONE `verification` part's document, for the tests it was assigned.
-
-        The shape alone, as for the core: the envelope `{verification, compile_fail}`, a
-        declaration by `_compile_fail_violation`'s rule for this shape, the three lists, every
-        entry an object naming one of THESE tests, and for each of them one evidence entry and
-        one predicate entry (the schema holds one of each per test) and at least one primary
-        predicate, and the serialize/parse round trip. What the entries MEAN — the grammar, the coverage, the
-        target cases — is `Compile.static`'s, on the assembled IR; repeating it here would be a
-        second gate (the principle `_pure_ir_document_violations` states)."""
-        lists = self._PURE_IR_VERIFICATION_LISTS
-        assigned = ", ".join(repr(t) for t in test_ids)
-
-        def violations(refs: NodeRefs, doc: Any) -> tuple[str, str] | None:
-            if not isinstance(doc, dict):
-                return (COMPILE_IR_DOCUMENT_VIOLATION, "the reply is not a JSON object")
-            if set(doc) != {"verification", "compile_fail"}:
-                return (COMPILE_IR_DOCUMENT_VIOLATION,
-                        ("the document must carry EXACTLY the keys `verification` and "
-                         "`compile_fail`; got "
-                         + (", ".join(sorted(map(str, doc))) or "none")))
-            declaration = doc.get("compile_fail")
-            if declaration is not None:
-                if doc.get("verification") is not None:
-                    return (COMPILE_IR_DOCUMENT_VIOLATION,
-                            ("the document carries both a `verification` and a "
-                             "`compile_fail`, and they are two different answers: return the "
-                             "entries with `compile_fail` null, or declare with "
-                             "`verification` null"))
-                return self._compile_fail_violation(declaration, "verification")
-            body = doc.get("verification")
-            if not isinstance(body, dict) or set(body) != set(lists):
-                got = (", ".join(sorted(map(str, body))) or "none") if isinstance(body, dict) \
-                    else type(body).__name__
-                return (COMPILE_IR_DOCUMENT_VIOLATION,
-                        ("`verification` must be a JSON object of EXACTLY the keys "
-                         + ", ".join(f"`{k}`" for k in lists) + f"; got {got}"))
-            for key in lists:
-                entries = body[key]
-                if not isinstance(entries, list):
-                    return (COMPILE_IR_DOCUMENT_VIOLATION,
-                            f"`verification.{key}` must be a JSON array; got "
-                            f"{type(entries).__name__}")
-                for i, entry in enumerate(entries):
-                    if not isinstance(entry, dict) or entry.get("test_id") not in test_ids:
-                        got = (entry.get("test_id") if isinstance(entry, dict)
-                               else type(entry).__name__)
-                        return (COMPILE_IR_DOCUMENT_VIOLATION,
-                                (f"`verification.{key}[{i}]` must be an object whose `test_id` "
-                                 f"is one of the tests this turn authors ({assigned}); got "
-                                 f"{got!r}"))
-                for test_id in test_ids:
-                    count = sum(1 for entry in entries if entry["test_id"] == test_id)
-                    if key == "primary_predicates" and not count:
-                        return (COMPILE_IR_DOCUMENT_VIOLATION,
-                                ("`verification.primary_predicates` must hold at least one "
-                                 f"entry for {test_id!r}: every condition of the test needs a "
-                                 "corroborant"))
-                    if key != "primary_predicates" and count != 1:
-                        return (COMPILE_IR_DOCUMENT_VIOLATION,
-                                (f"`verification.{key}` must hold EXACTLY one entry for each "
-                                 f"test this turn authors; {test_id!r} has {count}"))
-            try:
-                round_tripped = yaml.safe_load(self._pure_ir_yaml(body))
-            except Exception as exc:  # noqa: BLE001 — any serializer/parser refusal is the finding
-                return (COMPILE_IR_DOCUMENT_VIOLATION,
-                        ("`verification` cannot be serialized as part of the IR document the "
-                         f"host writes ({type(exc).__name__}: {exc}); re-emit it using plain "
-                         "JSON values only"))
-            if round_tripped != body:
-                return (COMPILE_IR_DOCUMENT_VIOLATION,
-                        ("`verification` does not survive the host's serialize/parse round "
-                         "trip unchanged; re-emit it using plain JSON values only (no value "
-                         "whose text form re-reads as a different type)"))
-            return None
-
-        return violations
-
-    def _pure_ir_core_prior_document(self, record: dict[str, Any]) -> str | None:
-        """The core's cold-repair `prior_document`: `_pure_ir_prior_document` with the three
-        per-test lists taken out of `io_contract`. The file it reads is the ASSEMBLED IR, and
-        the core is refused for carrying those lists (`_pure_ir_core_violations`), so handing
-        them back as "your prior document — correct it" would spend a repair turn on removing
-        what the leaf never wrote. NEVER raises; None when the base reader returns None."""
-        text = self._pure_ir_prior_document(record)
-        if text is None:
-            return None
-        doc = json.loads(text)
-        io_contract = doc["ir"].get("io_contract")
-        if isinstance(io_contract, dict):
-            for key in self._PURE_IR_VERIFICATION_LISTS:
-                io_contract.pop(key, None)
-        return json.dumps(doc, indent=2, ensure_ascii=False)
-
-    def _pure_ir_verification_prior_document(
-            self, test_ids: tuple[str, ...]) -> Callable[[dict[str, Any]], str | None]:
-        """The `prior_document` of one part's cold repair: the IR the repair target's attempt
-        wrote, its three lists filtered to the part's `test_ids`. The same file `_pure_ir_prior_document`
-        reads, because the assembled IR is the only place a part's entries were persisted.
-        NEVER raises; None when the file, the section or the lists are not there."""
-        lists = self._PURE_IR_VERIFICATION_LISTS
-
-        def prior(record: dict[str, Any]) -> str | None:
-            ir_ref = str(record.get("ir_ref") or "").strip()
-            if not ir_ref:
-                return None
-            try:
-                ir = yaml.safe_load((self.repo_root / ir_ref / "spec.ir.yaml")
-                                    .read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, ValueError, yaml.YAMLError):
-                return None
-            io_contract = ir.get("io_contract") if isinstance(ir, dict) else None
-            if not isinstance(io_contract, dict):
-                return None
-            body = {key: [e for e in (io_contract.get(key) or [])
-                          if isinstance(e, dict) and e.get("test_id") in test_ids]
-                    for key in lists}
-            if not any(body.values()):
-                return None
-            try:
-                return json.dumps({"verification": body, "compile_fail": None}, indent=2,
-                                  ensure_ascii=False)
-            except (TypeError, ValueError):
-                return None
-
-        return prior
-
-    def _assemble_pure_ir(self, core: dict[str, Any], parts: list[dict[str, Any]],
-                          test_ids: list[str]) -> dict[str, Any]:
-        """The IR the host writes: the core with each part's three lists concatenated into its
-        `io_contract`, every list ordered by `test_ids` (the tests document's order; a part may
-        list its own tests' entries in any order, and entries of one test keep theirs), and
-        `io_contract`'s keys in the schema block's order. The core is not modified."""
-        ir = json.loads(json.dumps(core))
-        io_contract = ir["io_contract"]
-        rank = {test_id: i for i, test_id in enumerate(test_ids)}
-        for key in self._PURE_IR_VERIFICATION_LISTS:
-            io_contract[key] = sorted((entry for part in parts for entry in part[key]),
-                                      key=lambda entry: rank[entry["test_id"]])
-        order = [k for k in self._PURE_IR_IO_CONTRACT_ORDER if k in io_contract]
-        order += [k for k in io_contract if k not in order]
-        ir["io_contract"] = {k: io_contract[k] for k in order}
-        return ir
-
-    def _run_pure_compile_producer(self, refs: NodeRefs, repair: dict[str, str] | None,
-                                   resolved_dependencies: tuple[dict[str, str], ...],
-                                   dependency_surface: tuple[dict[str, Any], ...]
-                                   ) -> "SubstepOutcome":
-        """Run `compile.generate` as 1 + P pure producer loops (issue #526): the IR CORE, then
-        one `verification` part per group of consecutive tests of the node's tests document
-        (`_verification_part_groups`), in its order. The host assembles the IR from them and
-        writes it once, after the last part passes; the deterministic `Compile.static` gate then
-        runs on the whole IR exactly as before.
-
-        Each loop is `_run_pure_producer_substep` unchanged, so each has its own bounded warm
-        repair. The first loop that does not pass ends the substep with ITS outcome: a declared
-        fail, an exhausted document repair or a transport death is reported for the part that
-        produced it, and no later loop runs. `compile_generate_meta.json` is written once, by
-        whichever loop ended the substep or by the assembly: `per_attempt` is every loop's rows
-        concatenated (each tagged with its `part`), `attempts` their count, and `parts[]` one
-        row per loop that ran.
-
-        A reopen re-runs every loop. The core may change on a repair, and every part reads it,
-        so a part kept from the previous run could name a case or variable the new core does
-        not declare. A loop that repairs, repairs ITS OWN previous attempt, and which loops repair
-        follows from what the findings are about (`_compile_part_repair`). The core resumes its
-        session where the provider and the transcript allow, and takes the cold repair
-        otherwise; a part always takes the cold repair, whose re-stated launch body carries the
-        core this reopen produced (`reopen_warm`)."""
-        from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
-        from tools.validate_pipeline_semantics import (_parse_test_ids_from_tests_md,
-                                                       _tests_md_test_block_bytes)
-        # The part list is a fact of the context, so a tests document the host cannot read, or
-        # one that declares no test id, is the context-assembly failure the producer loop
-        # reports for any other document (no leaf runs): the same outcome, its own name.
-        # The four documents every part is shown are read HERE, once, for the same reason: a
-        # part's context then holds nothing that can fail to assemble, so the failure arrives
-        # before any leaf has run rather than after the core and earlier parts launched (whose
-        # attempts no meta would then record).
-        try:
-            part_documents = {
-                k: v for k, v in self._build_pure_compile_context(refs).items()
-                if k in ("controlled_spec_document", "tests_document",
-                         "phase_contract_document", "checks_module_contract_document")}
-            try:
-                part_documents["phase_contract_document"] = _markdown_heading_sections(
-                    part_documents["phase_contract_document"],
-                    self._VERIFICATION_PHASE_CONTRACT_HEADINGS,
-                    subject=WORKFLOW_PHASE_DOC_BY_STEP["compile"])
-            except ValueError as exc:
-                raise RuntimeError(f"pure_phase_contract_document_unsliceable: {exc}") from exc
-            test_ids = _parse_test_ids_from_tests_md(
-                self.repo_root / refs.spec_path / "tests.md")
-            groups = self._verification_part_groups(
-                test_ids, _tests_md_test_block_bytes(part_documents["tests_document"]))
-            if not test_ids:
-                raise RuntimeError(
-                    f"pure_tests_document_no_test_ids: {refs.spec_path}/tests.md declares no "
-                    "test id the host reads (a `### <n>-<m>. `<id>`` heading or a "
-                    "`- `test_id`: `<id>`` bullet), so there is no verification part to run")
-        except Exception as exc:  # noqa: BLE001 — the loop's own context-assembly recovery
-            self.emit("pure_context_assembly_failed", node_key=refs.node_key,
-                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
-            return SubstepOutcome(
-                self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
-        shared_attempts: list[dict[str, Any]] = []
-        parts: list[dict[str, Any]] = []
-        core_ir: dict[str, Any] = {}
-        entries: dict[tuple[str, ...], dict[str, Any]] = {}
-        previous_parts = self._previous_compile_parts(repair)
-
-        def collect_meta(name: str, group: tuple[str, ...] | None) -> Callable[..., None]:
-            def write_meta(refs: NodeRefs, *, result: str, failure_category: str | None,
-                           failure_excerpt: str | None, attempts: int,
-                           per_attempt: list[dict[str, Any]]) -> None:
-                shared_attempts.extend({**row, "part": name} for row in per_attempt)
-                parts.append({"part": name,
-                              "test_ids": list(group) if group is not None else None,
-                              "agent_run_id": per_attempt[-1]["agent_run_id"],
-                              "attempts": attempts, "result": result,
-                              "failure_category": failure_category})
-                if result != "pass":
-                    self._write_compile_generate_meta(
-                        refs, result=result, failure_category=failure_category,
-                        failure_excerpt=failure_excerpt, attempts=len(shared_attempts),
-                        per_attempt=shared_attempts, parts=parts)
-            return write_meta
-
-        def write_declared_fail(refs: NodeRefs, reason: str, *, attempts: int) -> None:
-            self._write_declared_compile_fail(refs, reason,
-                                              attempts=len(shared_attempts) + attempts)
-
-        def stash_core(refs: NodeRefs, doc: dict[str, Any], *, attempts: int) -> None:
-            core_ir.update(doc["ir"])
-
-        def stash_part(group: tuple[str, ...]) -> Callable[..., None]:
-            def stash(refs: NodeRefs, doc: dict[str, Any], *, attempts: int) -> None:
-                entries[group] = doc["verification"]
-            return stash
-
-        def ended(outcome: SubstepOutcome, rows_before: int) -> SubstepOutcome:
-            # The loop's outcome, counting every launch of the substep rather than the last
-            # loop's: `attempts` is the substep's launch count on every exit, as on the pass.
-            # A loop that recorded its rows (`collect_meta`) is in `shared_attempts` already;
-            # one whose host write raised before that (a declared fail's projection) is not,
-            # and its own count is added.
-            recorded = len(parts) > rows_before
-            return replace(outcome, attempts=len(shared_attempts)
-                           + (0 if recorded else outcome.attempts))
-
-        base = self._pure_producer_spec("compile")
-        core_spec = base._replace(
-            violations=self._pure_ir_core_violations, write_artifacts=stash_core,
-            write_meta=collect_meta("core", None), write_declared_fail=write_declared_fail,
-            prior_document=self._pure_ir_core_prior_document, accept_noun="IR core")
-        outcome = self._run_pure_producer_substep(
-            refs, "compile", "generate", self._compile_part_repair(repair, previous_parts, None),
-            resolved_dependencies, core_spec, dependency_surface)
-        if outcome.status != "pass":
-            return ended(outcome, 0)
-        core_text = json.dumps(core_ir, indent=2, ensure_ascii=False)
-        for group in groups:
-            # The part's label is its first test: groups are consecutive and disjoint, so the
-            # first id names one part, and a one-test part keeps the label it always had.
-            label = group[0]
-            part_spec = base._replace(
-                build_context=(lambda refs, group=group: {
-                    **part_documents, "ir_core_document": core_text,
-                    "verification_tests_document": "\n".join(group)}),
-                violations=self._pure_ir_verification_violations(group),
-                write_artifacts=stash_part(group),
-                write_meta=collect_meta(label, group),
-                write_declared_fail=write_declared_fail,
-                prior_document=self._pure_ir_verification_prior_document(group),
-                non_object_findings=("the reply parsed to a non-object JSON value (expected "
-                                     "the verification document)"),
-                accept_noun=f"verification part {label}",
-                pure_shape="verification", reopen_warm=False, pure_part=label)
-            rows_before = len(parts)
-            outcome = self._run_pure_producer_substep(
-                refs, "compile", "generate",
-                self._compile_part_repair(repair, previous_parts, group),
-                resolved_dependencies, part_spec)
-            if outcome.status != "pass":
-                return ended(outcome, rows_before)
-        try:
-            ir = self._assemble_pure_ir(core_ir, [entries[g] for g in groups], test_ids)
-            doc = {"ir": ir, "compile_fail": None}
-            # The host's own consistency check on what it assembled: every part passed its
-            # own validator, so a violation here is the assembly's defect, not a leaf's.
-            found = self._pure_ir_document_violations(refs, doc)
-            if found is not None:
-                raise RuntimeError(f"the assembled IR fails its own shape check: {found[1]}")
-            self._write_pure_ir_artifacts(refs, doc, attempts=len(shared_attempts))
-            self._write_compile_generate_meta(
-                refs, result="pass", failure_category=None, failure_excerpt=None,
-                attempts=len(shared_attempts), per_attempt=shared_attempts, parts=parts)
-        except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
-            return SubstepOutcome(outcome.agent_run_id, "fail", [], 1,
-                                  ("pure_compile_host_write_failed",
-                                   f"{type(exc).__name__}: {exc}"),
-                                  len(shared_attempts))
-        return SubstepOutcome(outcome.agent_run_id, "pass", [], 0, None, len(shared_attempts))
-
-    def _verification_part_groups(self, test_ids: list[str],
-                                  sizes: dict[str, int]) -> list[tuple[str, ...]]:
-        """`test_ids` cut into consecutive groups, one per `verification` part: a test joins the
-        current group unless its definition (`sizes`, UTF-8 bytes; 0 when absent) would take the
-        group past `_VERIFICATION_PART_BUDGET_BYTES`, and a test that alone exceeds the bound
-        is a group of its own. Every test is in exactly one group, in `test_ids`' order."""
-        groups: list[list[str]] = []
-        total = 0
-        for test_id in test_ids:
-            size = sizes.get(test_id, 0)
-            if not groups or total + size > self._VERIFICATION_PART_BUDGET_BYTES:
-                groups.append([])
-                total = 0
-            groups[-1].append(test_id)
-            total += size
-        return [tuple(group) for group in groups]
-
-    class _PreviousCompileRun(NamedTuple):
-        """What a reopened `compile.generate` reads back of the run it reopens."""
-
-        #: `{test_ids: agent_run_id}` of each loop's last attempt — a part under the tuple of
-        #: its tests, the core under `None`.
-        arids: dict[tuple[str, ...] | None, str]
-        #: The `test_ids` of the loop that ENDED that run by failing (`None` for the core), or
-        #: `_PASSED` when every loop passed and the reopen comes from a gate on the whole IR.
-        failed: Any
-        #: The IR that run assembled and wrote, when it got that far; else `{}`.
-        ir: dict[str, Any]
-
-    #: `_PreviousCompileRun.failed` when no loop failed.
-    _PASSED: ClassVar[object] = object()
-
-    def _previous_compile_parts(self, repair: dict[str, str] | None
-                                ) -> "Conductor._PreviousCompileRun":
-        """On a `reuse` reopen, the previous run's `compile_generate_meta.json#parts[]` and IR,
-        read from the directory the repair target's own launch record names
-        (`_ensure_fresh_producer_id` has rotated `refs` away from it). The rows are keyed by
-        their `test_ids` rather than by the `part` label, because a test may be called `core`
-        (the tests.md grammar reserves no id), and a label key would let that part's row stand
-        for the core's. A row written before parts covered groups (`pure-82`) carries one
-        `test_id` and reads as that one-test group. A part of this run whose group differs from
-        every previous row's (the grouping bound changed between the two) therefore finds no
-        row and starts cold. Empty when there is no such reopen, no record, or no readable
-        `parts[]`."""
-        empty = self._PreviousCompileRun({}, self._PASSED, {})
-        if not (repair and str(repair.get("repair_strategy", "")).strip() == "reuse"):
-            return empty
-        target = str(repair.get("repair_target_agent_run_id") or "").strip()
-        if not target or target == "none":
-            return empty
-        from tools.orchestration_runtime import _read_launch_request_payload
-        record = _read_launch_request_payload(
-            self.repo_root, self.orchestration_id, agent_run_id=target)
-        ir_ref = str((record or {}).get("ir_ref") or "").strip()
-        if not ir_ref:
-            return empty
-        try:
-            meta = json.loads((self.repo_root / ir_ref / "compile_generate_meta.json")
-                              .read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError):
-            return empty
-        rows = meta.get("parts") if isinstance(meta, dict) else None
-        def key(row: dict[str, Any]) -> tuple[str, ...] | None:
-            ids = row["test_ids"] if "test_ids" in row else (
-                None if row["test_id"] is None else [row["test_id"]])
-            return None if ids is None else tuple(ids)
-
-        def readable(row: Any) -> bool:
-            if not isinstance(row, dict):
-                return False
-            if "test_ids" in row:
-                ids = row["test_ids"]
-                return ids is None or (isinstance(ids, list) and bool(ids)
-                                       and all(isinstance(t, str) for t in ids))
-            return "test_id" in row and (row["test_id"] is None
-                                         or isinstance(row["test_id"], str))
-
-        rows = [row for row in (rows if isinstance(rows, list) else [])
-                if readable(row)
-                and isinstance(row.get("agent_run_id"), str) and row["agent_run_id"].strip()]
-        if not rows:
-            return empty
-        failed = key(rows[-1]) if rows[-1].get("result") != "pass" else self._PASSED
-        try:
-            ir = yaml.safe_load((self.repo_root / ir_ref / "spec.ir.yaml")
-                                .read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError, yaml.YAMLError):
-            ir = {}
-        return self._PreviousCompileRun({key(row): row["agent_run_id"] for row in rows},
-                                        failed, ir if isinstance(ir, dict) else {})
-
-    def _compile_part_repair(self, repair: dict[str, str] | None,
-                             previous: "Conductor._PreviousCompileRun",
-                             test_ids: tuple[str, ...] | None) -> dict[str, str] | None:
-        """The `repair` one loop of a reopened `compile.generate` runs with — `test_ids` None for
-        the core: the outer repair with its target replaced by THAT loop's own last attempt from
-        the previous run, so each loop repairs its own document.
-
-        WHICH loops get it follows from what the findings are about. When a loop ENDED the
-        previous run by failing, the findings are that loop's own refusal (its document
-        violation), so only that loop repairs, and every other loop starts fresh: a findings
-        text about one test's document handed to another as "correct exactly these violations"
-        is an instruction its own validator refuses. When every loop passed, the findings were
-        raised on the whole assembled IR — by `Compile.static`, the reviewer, a later phase or
-        a revocation — and may name an entry by its index in the assembled lists without
-        saying which turn wrote it; every loop with a previous attempt
-        repairs, and a part's findings close with the host's note of where its own entries sat
-        (`_verification_locator`), so it can tell its findings from another part's.
-
-        A loop with no row of its own runs WITHOUT the repair (a cold launch), because the outer
-        target is another loop's session. That is a part the previous run never reached, and
-        every loop when the previous run left no `parts[]` — except the core in that last case,
-        which keeps the outer repair: a run from before issue #526 had one loop, the core's
-        predecessor, and its target is that loop's."""
-        if repair is None:
-            return None
-        if not previous.arids:
-            return repair if test_ids is None else None
-        if test_ids not in previous.arids:
-            return None
-        if previous.failed is not self._PASSED and previous.failed != test_ids:
-            return None
-        repaired = {**repair, "repair_target_agent_run_id": previous.arids[test_ids]}
-        findings = str(repair.get("repair_findings") or "").strip()
-        locator = (self._verification_locator(previous.ir, test_ids)
-                   if test_ids is not None and previous.failed is self._PASSED else None)
-        if findings and locator:
-            repaired["repair_findings"] = f"{findings}\n\n{locator}"
-        return repaired
-
-    def _verification_locator(self, ir: dict[str, Any],
-                              test_ids: tuple[str, ...]) -> str | None:
-        """The host's note of where the entries of `test_ids` sat in the assembled IR a gate
-        finding was raised on: their indices in each of the three lists. None when the IR holds
-        none of them."""
-        io_contract = ir.get("io_contract") if isinstance(ir, dict) else None
-        if not isinstance(io_contract, dict):
-            return None
-        places = []
-        for key in self._PURE_IR_VERIFICATION_LISTS:
-            entries = io_contract.get(key)
-            at = [i for i, e in enumerate(entries if isinstance(entries, list) else [])
-                  if isinstance(e, dict) and e.get("test_id") in test_ids]
-            if at:
-                places.append(f"io_contract.{key}[{', '.join(map(str, at))}]")
-        if not places:
-            return None
-        named = ", ".join(repr(t) for t in test_ids)
-        return (f"Host note: in the assembled IR these findings were raised on, the entries of "
-                f"{'test' if len(test_ids) == 1 else 'tests'} {named} were "
-                + "; ".join(places) + ". A finding about any other index of those lists is "
-                "about another part's entries.")
 
     def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
                                      attempts: int) -> None:
@@ -8299,8 +7274,7 @@ class Conductor:
                                  failure_category: str | None, failure_excerpt: str | None,
                                  attempts: int, per_attempt: list[dict[str, Any]],
                                  parent: str | None = None,
-                                 parts: list[dict[str, Any]] | None = None,
-                                 leaf_mode: str = "pure") -> None:
+                                 leaf_mode: str = "workshop") -> None:
         """Author `<parent>/<basename>` — the per-attempt record of a pure substep, `<ir_ref>` by
         default. Byte for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
         `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. For the compile
@@ -8315,22 +7289,15 @@ class Conductor:
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
-        if leaf_mode == "workshop":
-            # A `workshop leaf` (issue #534 step 2), recorded as `_write_bundle_meta` records it:
-            # `prompt_contract_version` names the rules the document answers, the workshop
-            # template's own counter beside it.
-            from tools.pure_leaf import WORKSHOP_PROMPT_CONTRACT_VERSION
-            meta["leaf_mode"] = "workshop"
-            meta["workshop_prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
-        elif leaf_mode != "pure":
-            raise ValueError(f"{basename} leaf_mode must be pure or workshop (got {leaf_mode!r})")
+        # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
+        # the record names one contract version (the workshop template counter it also carried
+        # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
+        # `workshop_prompt_contract_version`; its readers keep accepting both.
+        if leaf_mode != "workshop":
+            raise ValueError(f"{basename} leaf_mode must be workshop (got {leaf_mode!r})")
+        meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
-        # `compile.generate`'s loops, one row each (issue #526). Added, not reshaping a key, so
-        # `_read_repair_findings` reads the file unchanged; `_summarize_one_pure_meta` reads it
-        # to count one first launch per loop rather than one in all.
-        if parts is not None:
-            meta["parts"] = parts
         path = self.repo_root / (parent or refs.ir_ref) / basename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -8488,8 +7455,6 @@ class Conductor:
             build_context=self._build_pure_judge_context,
             write_project_meta=self._write_semantic_review,
             write_meta=self._write_judge_meta,
-            non_object_findings=(
-                "the reply parsed to a non-object JSON value (expected a semantic review)"),
             repair_reason="pure_semantic_review_repair",
             attempt_failed_event="pure_semantic_review_attempt_failed",
             summary_prefix="pure_judge",
@@ -8507,19 +7472,18 @@ class Conductor:
                 "validate", "judge", "", SEMANTIC_REVIEW_DOCUMENT_VIOLATION),
         )
 
-    # --- the two pure loops, parametrised ------------------------------------
-    # `_run_pure_producer_substep` / `_run_pure_reviewer_substep` are PHASE-INDEPENDENT: the
-    # spawn / validate / bounded-warm-repair / finalize / host-write shape is identical for the
+    # --- the two leaf loops, parametrised ------------------------------------
+    # `_run_workshop_producer_substep` / `_run_pure_reviewer_substep` are PHASE-INDEPENDENT: the
+    # spawn / validate / bounded-repair / finalize / host-write shape is identical for the
     # `generate` CodegenBundle pair (M-C / M-D) and the `compile` IR pair (Z1, issue #168). What
     # differs is the context builder, the document validator, the host writers, the failure
     # category vocabulary and the emit / summary names — so those are the fields of these two
-    # records, and each loop exists exactly once. A COPY of the 850 lines would be the second
+    # records, and each loop exists exactly once. A COPY of either loop would be the second
     # defended class of `AGENTS.md` §Development premises (a defect introduced by a change made
-    # here) written down deliberately; the two thin wrappers below keep the existing test seams
-    # (`_run_pure_generate_substep` / `_run_pure_verify_substep`) unchanged.
+    # here) written down deliberately.
 
     class _PureProducerSpec(NamedTuple):
-        """The phase-specific half of the pure PRODUCER loop."""
+        """The phase-specific half of the PRODUCER loop (`_run_workshop_producer_substep`)."""
 
         #: refs -> the closed context (`pure_context`). RAISES on a missing host document.
         build_context: Callable[[NodeRefs], dict[str, str]]
@@ -8532,12 +7496,9 @@ class Conductor:
         #: The category a document that parses but cannot be UTF-8-encoded is reported under.
         schema_category: str
         unencodable_findings: str
-        non_object_findings: str
         #: The `repair_reason` of an in-loop repair turn.
         repair_reason: str
         attempt_failed_event: str
-        #: The `result_summary` prefix (`pure_generate` / `pure_compile`).
-        summary_prefix: str
         #: The noun the pass summary names ("bundle" / "IR").
         accept_noun: str
         #: The transport fail_closed reason a host write after the window raises under.
@@ -8548,11 +7509,6 @@ class Conductor:
         #: reader (deleted in Z4, issue #171), so it must carry the node's real value, not the
         #: shape the phase happened to have when it went pure.
         runner_host_authored: Callable[[NodeRefs], bool]
-        #: (launch record of the repair target) -> the document that producer attempt returned,
-        #: re-serialized as the loop's `prior_document`, or None when the artifact is absent or
-        #: unreadable. NEVER raises. The loop names neither the artifact nor its location; the
-        #: phase half does.
-        prior_document: Callable[[dict[str, Any]], str | None]
         #: The `pure_shape` the launch request carries, or "" for the default (shape-less)
         #: template and required-key table. Only the non-default shapes name themselves.
         pure_shape: str = ""
@@ -8565,19 +7521,7 @@ class Conductor:
         #: The category recorded for that exit. Deliberately absent from the routing table.
         declared_fail_category: str = ""
         declared_fail_event: str = ""
-        #: Whether an OUTER reopen may warm-resume the repair target's session. False where the
-        #: document's inputs may have changed since that session ran: a `compile.generate`
-        #: verification part reads the IR core, which the same reopen re-authors first, and a
-        #: resumed session holds the OLD core (a warm repair re-sends no context). Such a loop's
-        #: first turn is the cold repair instead, which re-states the whole launch body. The
-        #: loop's own repair turns are unaffected: inside one loop the inputs do not move.
-        reopen_warm: bool = True
-        #: The label of a `compile.generate` verification part — the first of the tests it
-        #: authors — stamped on every launch request of the loop (`pure_part`) so a record's
-        #: reader can tell the part's launches from a retry. "" for every other loop.
-        pure_part: str = ""
-        # --- the workshop half (issue #534): read by the workshop loop and the wrapper freeze
-        # only. A pure loop ignores every field below.
+        # --- the workshop half (issue #534): read by the workshop loop and the wrapper freeze.
         #: The files the leaf writes at its tree root that the host reads back as the document
         #: (`bundle.yaml`; `spec.ir.yaml` and `compile_fail.json`). Never seeds, never snapshot-
         #: excluded.
@@ -8606,14 +7550,13 @@ class Conductor:
             MappingProxyType({}))
 
     class _PureReviewerSpec(NamedTuple):
-        """The phase-specific half of the pure REVIEWER loop."""
+        """The phase-specific half of the REVIEWER loop (`_run_pure_reviewer_substep`)."""
 
         build_context: Callable[[NodeRefs], dict[str, str]]
         #: (refs, verdict) -> project the verdict onto the phase's stage meta.
         write_project_meta: Callable[..., None]
         #: The per-attempt terminal record (`verdict_meta.json` / `compile_verify_meta.json`).
         write_meta: Callable[..., None]
-        non_object_findings: str
         repair_reason: str
         attempt_failed_event: str
         summary_prefix: str
@@ -8638,8 +7581,7 @@ class Conductor:
         #: The `pure_shape` the launch request carries; see the producer spec.
         pure_shape: str = ""
         # --- the workshop half (issue #534 step 3): the READING kind of workshop leaf. Read by
-        # the reviewer loop's workshop branch and the lineage machine only; a pure loop ignores
-        # every field below. The names are the producer spec's, because `_workshop_seeds` and
+        # the reviewer loop and the lineage machine. The names are the producer spec's, because `_workshop_seeds` and
         # `_workshop_lineage_from_seeds` read either spec; a reviewer stages nothing, derives no
         # control file, seeds no host source and is served no operation
         # (`workshop_freeze_context` None is what makes a spec the reading kind).
@@ -8658,139 +7600,15 @@ class Conductor:
         workshop_freeze_context: Callable[..., Any] | None = None
         workshop_stage_closure: Callable[..., tuple[str, ...]] | None = None
 
-    class _PureTurn(NamedTuple):
-        """One recorded pure launch and everything read back off it."""
-
-        proc: Any
-        #: `pure_leaf.ResultEnvelope`, named `Any` because that module is imported lazily.
-        envelope: Any
-        model: str | None
-        #: Where `model` came from: `"result_envelope"` (claude), `"codex_launch_pinned"`
-        #: (codex, `_codex_model_provenance`), the HTTP transport's `ProcResult.model_provenance`,
-        #: or None when there is no model to record.
-        model_provenance: str | None
-        usage: dict[str, Any] | None
-        #: A monotonic reading used only for durations. There is no wall-clock twin: the
-        #: pure path has no freshness gate, and the only reader the instant ever had on this
-        #: path was `SubstepOutcome.launched_at`, deleted by issue #176. `_launch_instant` is
-        #: still CALLED below, for the durable per-attempt probe it writes.
-        launched_monotonic: float
-        #: Seconds from `launched_monotonic` to the turn's return: the conductor's own bracket
-        #: of the launch, transport-neutral (a codex leaf has no envelope duration). Recorded
-        #: on every `per_attempt` row as `leaf_wall_s`.
-        leaf_wall_s: float | None = None
-
-    def _spawn_pure_turn(self, request: dict[str, Any], entry: Any, *, child_arid: str,
-                         phase: str, substep: str | None, node_key: str,
-                         resume_session_id: str | None = None,
-                         warm: bool = False) -> "Conductor._PureTurn | None":
-        """`record_launch` -> `spawn_leaf(pure=True)` -> persist -> envelope -> usage.
-
-        The connected steps every pure launch makes, in one place: the two loops
-        (`_run_pure_producer_substep` / `_run_pure_reviewer_substep`) and the escalate
-        diagnostician call it.
-
-        Returns None when a warm codex resume has no lineage home to run in: the row that
-        recorded the thread names no lineage (a run from before issue #245), or the
-        lineage home it names is gone by the time `record_launch` looks, under the lock.
-        Either way nothing was launched, and the caller retries the turn cold.
-        """
-        from tools.pure_leaf import _MISSING, ResultEnvelope, parse_result_envelope
-        codex_lineage_id: str | None = None
-        if warm and entry.provider == "codex_cli":
-            codex_lineage_id = self._codex_lineage_for_session(resume_session_id, entry)
-            if codex_lineage_id is None:
-                # NOT a warm launch with no precondition: `codex exec resume` against a
-                # home that does not hold the thread fails before its first request
-                # (measured, codex-cli 0.154.0: `no rollout found for thread id`), which
-                # would be a transport death on a turn the loop can still run cold.
-                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                          target=resume_session_id or "",
-                          reason="codex_lineage_home_missing")
-                return None
-        rec = (self.record_launch(child_arid, request, entry,
-                                  codex_lineage_id=codex_lineage_id)
-               if codex_lineage_id is not None
-               else self.record_launch(child_arid, request, entry))
-        if rec.get("codex_lineage_home_missing"):
-            self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                      target=resume_session_id or "", reason="codex_lineage_home_missing")
-            return None
-        # Called for the per-attempt launch-instant probe it writes beside the child's
-        # bookkeeping (an operator's record of when this attempt started). Its RETURN is
-        # unused on the pure path — there is no freshness gate here.
-        self._launch_instant(child_arid)
-        # A monotonic reading, purely for measuring how long this attempt ran.
-        launched_monotonic = time.monotonic()
-        proc = self.spawn_leaf(
-            rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
-            session_id=child_arid,
-            resume_session_id=(resume_session_id if warm else None),
-            child_arid=child_arid,
-            timeout_context={"node_key": node_key, "step": phase,
-                             "substep": substep or "", "agent_run_id": child_arid})
-        self._persist_leaf_output(child_arid, proc)
-
-        envelope = (parse_result_envelope(proc.stdout)
-                    if entry.provider == "claude_cli" else
-                    ResultEnvelope(True, proc.stdout, False,
-                                   proc.model if proc.model else _MISSING,
-                                   proc.usage if proc.usage is not None else _MISSING,
-                                   self._session_id_for_child(child_arid, entry) or _MISSING,
-                                   None, None))
-        model = None if envelope.model is _MISSING else envelope.model
-        # The recorded model and its provenance. Codex records the host-pinned slug, never the
-        # streamed value: the stream is the leaf's to write and its success events carry none
-        # (issue #348), and `_agent_run_json` records the same pair for the same launch.
-        model_provenance: str | None
-        if entry.provider == "codex_cli":
-            model, model_provenance = self._codex_model_provenance(entry)
-        elif entry.provider == "claude_cli":
-            model_provenance = "result_envelope" if model is not None else None
-        else:
-            model_provenance = proc.model_provenance if model is not None else None
-        # Every backend's usage converges on the one recorded shape here, and a launch that
-        # produced no numbers records WHY instead of leaving the field absent (issue #47).
-        # The claude envelope is the one parsed just above — this loop owns it, unlike the
-        # agentic path where the capture boundary already consumed it; the other providers'
-        # numbers arrive normalized on `proc` itself.
-        # A warm claude turn's envelope may be the resumed session's running total (issue
-        # #281); the resumed turn's own envelope, persisted by its launch, is the baseline.
-        # `warm` is the post-GC-check value, so a cold fallback carries no `resumed`.
-        resumed = None
-        if warm and entry.provider == "claude_cli" and resume_session_id:
-            resumed = (resume_session_id, self._persisted_result_envelope(resume_session_id))
-        elif warm and entry.provider == "codex_cli" and resume_session_id:
-            resumed = self._codex_warm_resumed(resume_session_id, child_arid)
-        usage = _leaf_usage_row(
-            proc, entry,
-            envelope=envelope if entry.provider == "claude_cli" else None,
-            resumed=resumed)
-        return self._PureTurn(proc, envelope, model, model_provenance, usage,
-                              launched_monotonic,
-                              round(time.monotonic() - launched_monotonic, 3))
-
-    def _run_pure_generate_substep(self, refs: NodeRefs, phase: str, substep: str | None,
-                                   repair: dict[str, str] | None,
-                                   resolved_dependencies: tuple[dict[str, str], ...]
-                                   ) -> "SubstepOutcome":
-        """Run `generate.generate` as a Z2 pure-function CodegenBundle producer.
-
-        The loop itself is `_run_pure_producer_substep`; this wrapper binds the generate half
-        (context, bundle validation, host writers, names) and is kept as the seam the existing
-        producer tests drive."""
-        return self._run_pure_producer_substep(
-            refs, phase, substep, repair, resolved_dependencies,
-            self._pure_producer_spec("generate", self._bundle_shape(refs)))
-
     def _pure_producer_spec(self, phase: str,
                             shape: str | None = None) -> "Conductor._PureProducerSpec":
         """The phase-specific half of the pure producer loop.
 
         `shape` is the node's CodegenBundle shape (`_bundle_shape`) and is consulted only for
         `generate`, where the two shapes differ in what the leaf is shown and what it authors.
-        The compile spec is the IR core's base; `_run_pure_compile_producer` derives the core's
-        and each `verification` part's spec from it (issue #526)."""
+        The compile spec is the whole IR's: a workshop `compile.generate` leaf authors the WHOLE
+        IR in its tree (issue #534 step 2; the pure core/part split of issue #526 went in
+        PR-J4-b)."""
         from tools import workshop_tree
         if phase == "compile":
             return self._PureProducerSpec(
@@ -8802,16 +7620,12 @@ class Conductor:
                 unencodable_findings=(
                     "the document contains characters that cannot be encoded as UTF-8 (e.g. an "
                     "unpaired surrogate); re-emit it with valid text"),
-                non_object_findings=(
-                    "the reply parsed to a non-object JSON value (expected the IR document)"),
                 repair_reason="pure_ir_document_repair",
                 attempt_failed_event="pure_ir_document_attempt_failed",
-                summary_prefix="pure_compile",
                 accept_noun="IR",
                 host_write_failed_reason="pure_compile_host_write_failed",
                 wants_exemplar=False,
                 runner_host_authored=_runner_host_authored_m3c,
-                prior_document=self._pure_ir_prior_document,
                 declared_fail=self._pure_ir_declared_fail,
                 write_declared_fail=self._write_declared_compile_fail,
                 declared_fail_category=COMPILE_DECLARED_FAIL,
@@ -8836,16 +7650,12 @@ class Conductor:
                 unencodable_findings=(
                     "the bundle contains characters that cannot be encoded as UTF-8 (e.g. an "
                     "unpaired surrogate); re-emit the bundle with valid text"),
-                non_object_findings=(
-                    "the reply parsed to a non-object JSON value (expected a bundle)"),
                 repair_reason="pure_bundle_repair",
                 attempt_failed_event="pure_bundle_attempt_failed",
-                summary_prefix="pure_generate",
                 accept_noun="bundle",
                 host_write_failed_reason="pure_host_write_failed",
                 wants_exemplar=False,
                 runner_host_authored=self._node_runner_host_authored,
-                prior_document=self._pure_bundle_prior_document,
                 pure_shape="harness",
                 workshop_outputs=(workshop_tree.BUNDLE_MANIFEST_NAME,),
                 workshop_document_seeds=self._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["generate"],
@@ -8864,16 +7674,12 @@ class Conductor:
             unencodable_findings=(
                 "the bundle contains characters that cannot be encoded as UTF-8 (e.g. an "
                 "unpaired surrogate); re-emit the bundle with valid text"),
-            non_object_findings=(
-                "the reply parsed to a non-object JSON value (expected a bundle)"),
             repair_reason="pure_bundle_repair",
             attempt_failed_event="pure_bundle_attempt_failed",
-            summary_prefix="pure_generate",
             accept_noun="bundle",
             host_write_failed_reason="pure_host_write_failed",
             wants_exemplar=True,
             runner_host_authored=_runner_host_authored_m3c,
-            prior_document=self._pure_bundle_prior_document,
             workshop_outputs=(workshop_tree.BUNDLE_MANIFEST_NAME,),
             workshop_document_seeds=self._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["generate"],
             workshop_seeds_host_sources=True,
@@ -8892,489 +7698,6 @@ class Conductor:
         self._write_pure_bundle_artifacts(
             refs, doc, self._build_pure_bundle_graph(refs, doc))
 
-    def _run_pure_producer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
-                                   repair: dict[str, str] | None,
-                                   resolved_dependencies: tuple[dict[str, str], ...],
-                                   spec: "Conductor._PureProducerSpec",
-                                   dependency_surface: tuple[dict[str, Any], ...] = ()
-                                   ) -> "SubstepOutcome":
-        """Run a pure-function PRODUCER substep: launch a backend-specific
-        closed-context leaf (Claude tool-free transport or Codex's read-only sandbox) that
-        returns ONE JSON document, validate it, repair a violation in a
-        bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row,
-        and ONLY THEN write that document's artifacts host-side.
-
-        WHICH document and WHICH artifacts are the `spec`'s, not this loop's: `generate` returns
-        a CodegenBundle (validated and assembly-preflighted by `_pure_bundle_violations`, written
-        as `files[]` + `codegen_bundle.json` + the control file + `bundle_meta.json`), `compile`
-        returns `{ir, compile_fail}` (shape-validated by `_pure_ir_document_violations`, and
-        since issue #526 run as an IR core and `verification` parts over groups of tests, whose
-        specs hold their documents for `_run_pure_compile_producer` to assemble and write as
-        `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below names
-        either.
-
-        The finalize-before-write ordering is kept, and its REASON changed with issue #171
-        PR-2. It used to be load-bearing against the terminal FS-diff: the pure capability's
-        empty write_roots made any write inside the child window an unauthorized write, so
-        writing before `finalize_child` attributed the HOST's writes to the dying leaf and
-        failed the run closed. That audit is deleted. What the ordering still buys is that the
-        artifacts appear only once the leaf is recorded as finished, so a reader never sees a
-        deliverable attributed to a window that is still open — and a leaf cannot be resumed
-        into a tree the host has already rewritten. Pinned by a conformance test."""
-        from tools.pure_leaf import (
-            extract_json_document, MAX_BUNDLE_REPAIR_TURNS,
-            RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
-        # THE model this substep runs on, resolved once at the top of the loop and threaded
-        # through every launch/record/provenance call below, so a mixed config cannot record one
-        # provider and launch another.
-        entry = self.entry_for(phase, substep)
-        # A fresh conversation per substep RUN (HTTP transport only): a reopen of this substep
-        # must not inherit the previous run's turns, which is what a fresh session gives the
-        # CLI path.
-        self.reset_http_history(phase, substep)
-        # Assembling the context reads host-owned artifacts and RAISES on a missing one — which
-        # ones, and under which reason names, is the `spec`'s builder's own docstring
-        # (`_build_pure_context` raises `pure_runner_document_missing` and, for its IR and
-        # tests, `pure_ir_document_missing` / `pure_tests_document_missing`;
-        # `_build_pure_compile_context` raises one `pure_<name>_document_missing` per spec
-        # artifact, repository document and host-derived sidecar it reads).
-        # run_substep's callers must never see an exception —
-        # recover it as the same fail_closed transport outcome a failed `_write_runner` produces.
-        # A host artifact the conductor itself renders cannot be repaired by a generate retry, so
-        # fail_closed (operator --resume) is the correct terminus, not a reopen. No leaf has been
-        # spawned yet, so the arid here names no child window; it only labels the outcome row.
-        try:
-            pure_context = spec.build_context(refs)
-        except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
-            self.emit("pure_context_assembly_failed", node_key=refs.node_key,
-                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
-            return SubstepOutcome(
-                self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
-        # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
-        # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
-        # the host authors nothing for must not stamp a constant.
-        runner_host_authored = spec.runner_host_authored(refs)
-        per_attempt: list[dict[str, Any]] = []
-        resume_session_id: str | None = None
-        cold_repair_target: str | None = None
-        prior_document: str | None = None
-        last_excerpt: str | None = None
-        # An OUTER cross-phase reopen (run_phase routed a terminal bundle failure to
-        # (generate, reuse)) threads the prior producer's arid + its bundle_meta findings excerpt
-        # here. Seed the loop so the FIRST attempt warm-resumes that session (when still
-        # resumable) and carries the diagnosis, rather than cold-restarting and re-deriving
-        # everything from pure_context — the M-C carry-forward contract. When there is no session
-        # to resume (a provider without CAP_WARM_RESUME, a GC'd claude transcript, a rotated codex
-        # home), the first attempt is instead a COLD repair on the same repair template: it
-        # carries the findings and the prior document, and re-sends pure_context. So is it for a
-        # spec whose `reopen_warm` is False (a `compile.generate` verification part, whose inputs
-        # the reopen re-authored), whatever the session's state. Two reopens still
-        # render the full launch prompt, and only two: one with NO findings excerpt, and one whose
-        # target the launch validator would refuse (`usable`, below) (issue #209).
-        if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
-            target = self._resolve_reuse_resume(repair, phase, substep)
-            # The outer-reopen excerpt is threaded into the first repair turn's
-            # `repair_findings` (a UTF-8-persisted prompt). Its writers under the pure executor
-            # (bundle_meta / source_meta) are already surrogate-safe, so this is safe by that
-            # invariant today; normalize at capture anyway so the seed is safe by construction
-            # (identity on clean text) rather than relying on every upstream writer staying so.
-            seed = str(repair.get("repair_findings", "")).strip() or None
-            # The arid of the attempt being repaired. `_validate_launch_request_payload` refuses a
-            # reuse repair whose target is empty or `"none"`, so a target spelled either way names
-            # no repair turn at all: nothing would render a prior document, and the reopen keeps
-            # today's cold LAUNCH with the findings dropped — the one route that still cannot
-            # carry them. One guard, consulted by both readers below, so the two cannot disagree
-            # about which targets are usable.
-            target_arid = str(repair.get("repair_target_agent_run_id") or "").strip()
-            usable = bool(target_arid) and target_arid != "none"
-            if seed is not None:
-                last_excerpt = seed.encode("utf-8", "backslashreplace").decode("utf-8")
-            if seed is not None and usable:
-                # The document that attempt returned, read back from the artifact the host wrote
-                # for it — its location is named by the target's OWN launch record, because
-                # `_ensure_fresh_producer_id` has already rotated `refs` to a fresh empty
-                # directory. Resolved for BOTH branches below: a warm turn does not send it, but
-                # the codex lineage-home-missing fallback (`turn is None`) turns a warm seed cold.
-                from tools.orchestration_runtime import _read_launch_request_payload
-                record = _read_launch_request_payload(
-                    self.repo_root, self.orchestration_id, agent_run_id=target_arid)
-                prior = spec.prior_document(record) if record is not None else None
-                prior_document = (prior.encode("utf-8", "backslashreplace").decode("utf-8")
-                                  if prior is not None else None)
-            if (target and spec.reopen_warm
-                    and self._pure_session_resumable(target, entry, phase, substep)):
-                resume_session_id = target
-            elif seed is not None:
-                # No session, but a diagnosis to carry: make the first attempt a cold repair.
-                if usable:
-                    cold_repair_target = target_arid
-                self.emit("pure_reopen_cold", node_key=refs.node_key, substep=substep or "",
-                          target=target_arid,
-                          findings_carried=cold_repair_target is not None,
-                          prior_document_carried=prior_document is not None)
-        # R5: resolve the certified sibling exemplar ONCE, above the loop — it is
-        # attempt-invariant (the selector never raises; a failure just omits it), mirroring the
-        # agentic path. It is attached per-attempt only when that attempt renders the LAUNCH
-        # template: a repair turn renders no exemplar (`pure_bundle_repair.txt` has no
-        # `<exemplar>` slot, and a cold repair's re-stated launch body is rendered without one,
-        # `orchestration_runtime._pure_launch_body`), so attaching it to a repair turn would ship
-        # the payload with nothing rendering it.
-        exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None
-        attempt = 0
-        usage_waits = 0
-        transient_retries = 0
-        # Wall-clock spent on transient attempts that already died, against
-        # `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`.
-        transient_spent = 0.0
-        while True:
-            child_arid = self.new_agent_run_id()
-            warm = (resume_session_id is not None
-                    and self._pure_session_resumable(
-                        resume_session_id, entry, phase, substep))
-            # A repair turn is any turn with a session to resume (an inner repair — resume_session_id
-            # was set to the prior attempt below — or the seeded outer reopen). `warm` may still be
-            # False if that session has since been GC'd, in which case the repair renders as a
-            # cold fallback (prior_document + re-inlined context) but keeps the reuse repair shape.
-            repair_payload: dict[str, str] | None = None
-            repair_target = resume_session_id or cold_repair_target
-            if repair_target is not None:
-                repair_payload = {
-                    "issue_severity": "major",
-                    "repair_strategy": "reuse",
-                    "repair_target_agent_run_id": repair_target,
-                    "repair_reason": spec.repair_reason,
-                }
-                if last_excerpt:
-                    repair_payload["repair_findings"] = last_excerpt
-            # Same predicate the render dispatch uses to choose the launch vs repair template
-            # (`_render_launch_prompt_template`): a repair payload WITHOUT findings still renders
-            # the full launch prompt. True for a cold first attempt and for an outer reopen seeded
-            # with no findings excerpt (which also re-sends pure_context) — both want the
-            # exemplar; every inner repair turn carries findings and does not.
-            renders_launch_prompt = (
-                repair_payload is None
-                or not str(repair_payload.get("repair_findings", "")).strip())
-            request = build_launch_request(
-                refs, step=phase, substep=substep,
-                orchestration_id=self.orchestration_id,
-                orchestration_agent_run_id=self.orchestration_agent_run_id,
-                child_agent_run_id=child_arid,
-                agent_model=entry.model, workflow_mode=self.workflow_mode,
-                runner_host_authored=runner_host_authored,
-                repair=repair_payload,
-                resolved_dependencies=resolved_dependencies,
-                dependency_surface=dependency_surface,
-                exemplar=(exemplar if renders_launch_prompt else None),
-                warm_resume=warm,
-                pure_leaf=True,
-                pure_shape=spec.pure_shape,
-                pure_language=self._pure_language(phase),
-                pure_parallel=self._pure_parallel(phase),
-                # On a warm reuse repair the resumed session already holds the context, so it is
-                # omitted — but ONLY when the validator's exemption holds (warm + reuse +
-                # findings). A cold launch, or a cold-fallback repair (session GC'd), carries the
-                # full context; the cold fallback also carries the prior document to correct.
-                pure_context=(None if (warm and repair_payload is not None
-                                       and repair_payload.get("repair_findings"))
-                              else pure_context),
-            )
-            if repair_payload is not None and not warm and prior_document:
-                request["prior_document"] = prior_document
-            if spec.pure_part:
-                request["pure_part"] = spec.pure_part
-            turn = self._spawn_pure_turn(
-                request, entry, child_arid=child_arid, phase=phase, substep=substep,
-                node_key=refs.node_key, resume_session_id=resume_session_id, warm=warm)
-            if turn is None:
-                # Keep the semantic repair carrier while dropping only the
-                # unusable transport session.  The next request is a full cold
-                # reuse repair, including findings and prior_document.
-                cold_repair_target = resume_session_id
-                resume_session_id = None
-                continue
-            proc, envelope = turn.proc, turn.envelope
-            model, usage = turn.model, turn.usage
-            launched_monotonic = turn.launched_monotonic
-            attempt_record: dict[str, Any] = {
-                "agent_run_id": child_arid, "model": model,
-                "model_provenance": turn.model_provenance, "usage": usage,
-                # The exemplar THIS attempt was shown, or None (a repair turn renders none; a
-                # node with no certified sibling gets none). An advisory input, recorded per
-                # attempt and never part of the derivation key (issue #250).
-                "exemplar_ref": (exemplar.get("source_ref")
-                                 if renders_launch_prompt and isinstance(exemplar, dict)
-                                 else None),
-                "leaf_wall_s": turn.leaf_wall_s}
-            per_attempt.append(attempt_record)
-
-            infra_error: tuple[str, str] | None = None
-            category: str | None = None
-            findings: str | None = None
-            # The parsed document (whatever json.loads produced), kept for the prior-document
-            # carry-forward even when it later fails validation; `accepted_doc` is set ONLY when
-            # the bundle passes every layer.
-            parsed_bundle: dict[str, Any] | None = None
-            accepted_doc: dict[str, Any] | None = None
-            if proc.returncode != 0:
-                # A nonzero leaf exit is a transport/infra failure (not a content defect the
-                # bundle repair can fix): finalize fail and let run_phase route it fail_closed.
-                infra_error = _leaf_infra_error(proc)
-                category = "pure_transport"
-                findings = self._leaf_failure_summary(proc)
-            elif proc.response_truncated:
-                # The PROVIDER said the answer was cut off (HTTP transport). Authoritative:
-                # a partial document that happens to parse must not be accepted, and one that
-                # does not must not be blamed on the model's formatting.
-                category = RESPONSE_TRUNCATED
-                findings = ("the provider reported the reply was cut off at the output-token "
-                            "ceiling; answer with a smaller document")
-            elif not envelope.parsed or envelope.is_error is True:
-                category = RESPONSE_UNPARSEABLE
-                findings = ("the CLI result envelope was unparseable or reported is_error: "
-                            + (str(envelope.parse_error or "")[:400] or "no result document"))
-            else:
-                extracted, extract_category = extract_json_document(envelope.result)
-                if extract_category is not None:
-                    category = extract_category
-                    findings = ("the reply was not a single parseable JSON document "
-                                f"({extract_category})")
-                elif not isinstance(extracted, dict):
-                    category = RESPONSE_UNPARSEABLE
-                    findings = spec.non_object_findings
-                else:
-                    parsed_bundle = extracted
-                    result = spec.violations(refs, extracted)
-                    if result is not None:
-                        category, findings = result
-                    else:
-                        # A bundle can pass every content layer yet not be persistable:
-                        # `json.loads` accepts a lone surrogate (e.g. `"\ud800"` inside a
-                        # files[].content or a metadata string), but UTF-8-encoding it to author
-                        # codegen_bundle.json / src/<file> (`_write_pure_bundle_artifacts`,
-                        # ensure_ascii=False) raises. Catch that HERE as a schema violation
-                        # (repairable — the producer re-emits valid text) rather than accepting it
-                        # and letting the later host-write raise, which the pass branch's except
-                        # would mis-route through pure_host_write_failed (a transport fail_closed)
-                        # instead of a bounded repair. Mirrors the verify reviewer's check.
-                        try:
-                            json.dumps(extracted, ensure_ascii=False).encode("utf-8")
-                        except UnicodeEncodeError:
-                            category = spec.schema_category
-                            findings = spec.unencodable_findings
-                        else:
-                            accepted_doc = extracted
-
-            # The THIRD exit: a schema-VALID document can still carry the leaf's own
-            # declaration that this phase cannot be completed from the inputs it was given
-            # (`compile.generate`'s `compile_fail`, naming an input). It is neither a pass nor a
-            # repairable document defect, so `category` stays None (nothing to repair, nothing to
-            # route) while the substep's status is `fail`.
-            declared_fail = (
-                spec.declared_fail(accepted_doc)
-                if (accepted_doc is not None and spec.declared_fail is not None) else None)
-            status = "pass" if (category is None and declared_fail is None) else "fail"
-            # Guarded on `category`, not on `status`: the declared-fail exit has no failure
-            # category, no repair carriers and no attempt-failure row — it is the leaf ANSWERING,
-            # not failing. (For every phase without a declaration the two guards are the same
-            # predicate.)
-            if category is not None:
-                # A transport death ("pure_transport") has NO fixable document, so it must not
-                # overwrite the repair carriers (`prior_document` / `last_excerpt`). Today transport
-                # is terminal so this never mattered; --wait-usage-reset makes a repair turn
-                # reachable AFTER a transport wait, and a repair turn that shipped "Connection closed
-                # mid-response" as its `repair_findings` would mislead the producer. So only a
-                # CONTENT failure updates the carriers; a transport attempt leaves the prior content
-                # failure's carriers intact for the retry that follows the wait (a fresh cold launch
-                # when there was none).
-                if category != "pure_transport":
-                    # Carry the prior document into a cold-fallback repair: re-serialize the parsed
-                    # bundle (even though it failed validation), else the raw reply text.
-                    prior_document = (json.dumps(parsed_bundle, indent=2, ensure_ascii=False)
-                                      if parsed_bundle is not None
-                                      else (envelope.result if isinstance(envelope.result, str)
-                                            else None))
-                    # Both `last_excerpt` (-> the repair turn's `repair_findings` AND bundle_meta's
-                    # failure_excerpt) and `prior_document` (-> the cold-fallback repair prompt) are
-                    # echoed into a request/meta persisted as UTF-8. Leaf-derived text can carry an
-                    # unpaired surrogate (the encodability case caught above, or a raw reply the CLI
-                    # passed through), which would raise UnicodeEncodeError at that write — a crash
-                    # instead of a repair turn / fail_closed. Normalize any non-encodable code point
-                    # to its readable backslash escape at capture so every downstream write is safe
-                    # by construction. Mirrors the verify reviewer.
-                    last_excerpt = (findings.encode("utf-8", "backslashreplace").decode("utf-8")
-                                    if findings is not None else None)
-                    if prior_document is not None:
-                        prior_document = prior_document.encode(
-                            "utf-8", "backslashreplace").decode("utf-8")
-                # Record why THIS attempt failed on its own per_attempt row (observability only —
-                # ADDITIVE fields; the terminal top-level failure_excerpt stays the repair carrier
-                # `_read_repair_findings` reads). A superseded attempt is otherwise a bare
-                # arid/model/usage row that says nothing about the failure it burned a turn on. The
-                # excerpt here is computed LOCALLY from this attempt's findings so a transport row
-                # is still labeled without touching the repair carriers above.
-                this_excerpt = (findings.encode("utf-8", "backslashreplace").decode("utf-8")
-                                if findings is not None else None)
-                attempt_record["failure_category"] = category
-                attempt_record["failure_excerpt"] = (
-                    this_excerpt[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
-                self.emit(spec.attempt_failed_event, node_key=refs.node_key,
-                          substep=substep, attempt=len(per_attempt), failure_category=category,
-                          detail=(this_excerpt or "")[:200])
-
-            reply = (f"status: {status}\nleaf rc={proc.returncode}\n"
-                     f"category: {category or 'none'}")
-            # A pure row carries EMPTY output_refs, so `result_summary` is the ONLY thing that can
-            # speak for it: `_validate_agent_summary_text` requires a terminal row with no
-            # output_refs to explain itself (a rule written for fail rows, but a pure PASS is
-            # equally output-less and must satisfy it). Leaving this None on pass makes
-            # finalize-child reject every passing pure leaf — the executor cannot complete.
-            result_summary = (
-                (f"{spec.summary_prefix}_fail: {spec.declared_fail_category}: "
-                 f"{declared_fail[:300]}") if declared_fail is not None
-                else f"{spec.summary_prefix}_fail: {category}" if status != "pass"
-                else (f"{spec.summary_prefix}_pass: {spec.accept_noun} accepted "
-                      f"(attempts={len(per_attempt)})")
-            )
-            # Finalize the attempt FIRST (close the child FS-diff window) — the pure terminal row
-            # carries an EMPTY output_refs (the host has written nothing yet). ONLY AFTER this may
-            # the host write the bundle artifacts.
-            self.finalize_child(
-                child_arid, reply,
-                self._agent_run_json(refs, phase, substep, child_arid, status,
-                                     [], result_summary, entry=entry,
-                                     agent_model_override=model,
-                                     usage=usage, resume_mode=proc.resume_mode))
-
-            if declared_fail is not None:
-                # The leaf declared the phase uncompletable. The host writes the phase's
-                # declared-fail projection (its stage meta, carrying the reason and the severity
-                # the phase rubric assigns an input-side defect) and the per-attempt record with
-                # the OFF-TABLE category, so `classify_failure` recognizes the token, declines the
-                # document routing table, and terminalizes the phase `fail_closed` in both modes
-                # (issue #355). rc stays 0: nothing crashed.
-                assert spec.write_declared_fail is not None
-                self.emit(spec.declared_fail_event, node_key=refs.node_key,
-                          substep=substep, detail=declared_fail[:200])
-                try:
-                    spec.write_declared_fail(refs, declared_fail, attempts=len(per_attempt))
-                    spec.write_meta(
-                        refs, result="fail", failure_category=spec.declared_fail_category,
-                        failure_excerpt=declared_fail[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS],
-                        attempts=len(per_attempt), per_attempt=per_attempt)
-                except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
-                    return SubstepOutcome(
-                        child_arid, "fail", [], 1,
-                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        len(per_attempt))
-                return SubstepOutcome(child_arid, "fail", [], proc.returncode,
-                                      None, len(per_attempt))
-
-            if status == "pass":
-                assert accepted_doc is not None
-                try:
-                    spec.write_artifacts(refs, accepted_doc, attempts=len(per_attempt))
-                    spec.write_meta(
-                        refs, result="pass", failure_category=None, failure_excerpt=None,
-                        attempts=len(per_attempt), per_attempt=per_attempt)
-                except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
-                    # finalize_child ALREADY recorded this attempt as a passing terminal `substep`
-                    # row, but a host-side write AFTER the window closed failed (ENOSPC, a
-                    # permission/IO error, or a late assembly RuntimeError). No step_result will be
-                    # written, so without recovery this passing row is an UN-VOUCHED orphan the
-                    # completion gate (`_validate_orchestration_completion_for_pass`) rejects on the
-                    # eventual resume (which rotates to a fresh source_id and never revisits it).
-                    # Tombstone the earlier repair attempts here (as the pass/fail branches do) and
-                    # route fail_closed via a non-zero leaf_returncode — run_phase's transport branch
-                    # then tombstones THIS child_arid orphan too and fail-closes for an operator
-                    # resume, rather than auto-retrying a write that a full disk would only repeat.
-                    return SubstepOutcome(
-                        child_arid, "fail", [], 1,
-                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        len(per_attempt))
-                # A repaired pass leaves earlier attempts terminal and un-vouched: each was
-                # finalized as a `substep` row, but only THIS (passing) arid goes into the
-                # step_result's substep_agent_run_ids. Since issue #177 that is simply what a
-                # failed attempt looks like — the completion vouch reads the artifact chain and
-                # the LATEST attempt's result, so nothing has to tombstone them.
-                return SubstepOutcome(child_arid, "pass", [], proc.returncode,
-                                      None, len(per_attempt))
-
-            # --wait-usage-reset (opt-in): an `llm_usage_limit` death is waited out — until the
-            # reset instant THIS substep's provider reports, else on the fixed schedule — and the
-            # SAME turn re-launched, rather than falling to the terminal fail branch for a next-day
-            # --resume. ARMED by the classified TAG alone — `pure_transport` is set for ANY nonzero
-            # leaf exit, so the tag is required explicitly, and nothing about the dead leaf's
-            # output or its stream is consulted. `entry` is this substep's own, so a per-substep
-            # provider override is the provider asked. `attempt` and
-            # `resume_session_id` are UNCHANGED (a wait is not a repair turn): a cold first attempt
-            # retries cold; an interrupted repair turn re-runs against the same carriers (which the
-            # bookkeeping guard above kept intact). per_attempt keeps the dead attempt's row.
-            if (category == "pure_transport" and infra_error is not None
-                    and infra_error[0] == "llm_usage_limit"
-                    and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
-                                               child_arid=child_arid, waits_done=usage_waits,
-                                               infra_error=infra_error, entry=entry)):
-                usage_waits += 1
-                continue
-            # A transient transport failure (a rate limit, an overloaded provider, a dropped
-            # connection) is re-launched in place rather than fail-closing a run that has
-            # already paid for every earlier phase. `attempt` and the repair carriers are
-            # UNCHANGED — a retry is not a repair turn — exactly as the usage wait above.
-            if category == "pure_transport":
-                # Charged HERE, inside the transport branch, and nowhere else: the budget bounds
-                # what TRANSIENT deaths cost, so a content-repair turn — which reaches this point
-                # having produced a document, and which for this workload legitimately runs ten
-                # minutes — must not spend it. Accumulating above this branch made one slow
-                # repair turn refuse the very next cheap flake, which is the opposite of the
-                # rule. MONOTONIC, not `time.time()`: a suspended host or an NTP step would
-                # otherwise be billed to the budget as time the model spent working, and this
-                # repository has already been bitten once by reading a wall clock as elapsed
-                elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
-                spent_before = transient_spent
-                # Accumulated whether the retry is granted or refused: a refused attempt ran too.
-                transient_spent += elapsed_s
-                if self._pure_transient_retry(
-                        refs=refs, phase=phase, substep=substep, infra_error=infra_error,
-                        child_arid=child_arid, retries_done=transient_retries,
-                        elapsed_s=elapsed_s, spent_s=spent_before):
-                    transient_retries += 1
-                    continue
-            # A content violation within budget: warm-resume the SAME producer session for a
-            # bounded repair. A transport failure ("pure_transport") is NOT bundle-repairable —
-            # it has no fixable document — so it is excluded here and routed fail_closed by
-            # run_phase's transport branch (leaf_returncode != 0).
-            can_repair = (category is not None and category != "pure_transport"
-                          and attempt < MAX_BUNDLE_REPAIR_TURNS)
-            if not can_repair:
-                # Terminal: record bundle_meta with THIS (final) attempt's category/excerpt for the
-                # outer route (_read_repair_findings). `category`/`this_excerpt` are used rather than
-                # the `last_*` repair carriers: on a transport terminal the carriers were deliberately
-                # NOT overwritten (the bookkeeping guard above), so `last_excerpt` may hold a prior
-                # content failure's text — the meta must describe the transport death that actually
-                # terminated the substep, not a stale carrier (and for a content exhaustion the two
-                # are identical). Earlier producer attempts stay as they are; the completion
-                # vouch does not ask after an un-vouched arid. The bundle_meta write is the LAST host action
-                # here; it can still fail (ENOSPC, or a leaf-controlled failure_excerpt that is not
-                # UTF-8 encodable), so guard it the same way the pass path guards its writes — a
-                # host-write failure must recover as a fail_closed transport outcome, never escape
-                # run_substep uncaught and crash the conductor. Mirrors the verify reviewer.
-                try:
-                    spec.write_meta(
-                        refs, result="fail", failure_category=category,
-                        failure_excerpt=this_excerpt, attempts=len(per_attempt),
-                        per_attempt=per_attempt)
-                except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
-                    return SubstepOutcome(
-                        child_arid, "fail", [], 1,
-                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
-                        len(per_attempt))
-                return SubstepOutcome(child_arid, "fail", [], proc.returncode,
-                                      infra_error, len(per_attempt))
-            # Set up the next (repair) turn: resume this attempt's session.
-            resume_session_id = self._session_id_for_child(child_arid, entry)
-            cold_repair_target = None
-            attempt += 1
 
     # --- the workshop producer (issue #534) -------------------------------------
     # `docs/design/producer_workshop_leaf.md`: a PRODUCING leaf may run as a `workshop leaf` —
@@ -9455,7 +7778,7 @@ class Conductor:
         #: The `item.completed` events of a codex launch's JSONL (its tool calls and messages;
         #: codex reports no turn count). None on claude, which reports `num_turns`.
         items_completed: int | None = None
-        #: As `_PureTurn.leaf_wall_s`: launch to return, the snapshot included.
+        #: Launch to return, the snapshot included.
         leaf_wall_s: float | None = None
         #: A codex launch's `ProcResult.command_outputs` (what each command printed, from the
         #: host's own capture). None on claude.
@@ -9658,8 +7981,9 @@ class Conductor:
     def _workshop_session_resumable(self, paths: Any, session_id: str | None) -> bool:
         """Whether the session `session_id` is in THIS lineage's CLI home — the home a warm
         launch of the lineage is served from. Claude: its transcript,
-        `<config>/projects/*/<sid>.jsonl` (the twin of `_claude_session_resumable`, whose root is
-        the operator's `~/.claude`, which a workshop leaf never writes). Codex: the thread's
+        `<config>/projects/*/<sid>.jsonl` (never the operator's `~/.claude`, which a workshop
+        leaf never writes; the pure leaf's `_claude_session_resumable` searched that root until
+        issue #534 PR-J4-b). Codex: the thread's
         rollout, `<config>/sessions/<yyyy>/<mm>/<dd>/rollout-<timestamp>-<thread_id>.jsonl`
         (measured on codex-cli 0.164.0, MX4; `exec resume` reads it from there). HTTP: the
         lineage's conversation is in THIS process's memory (`_workshop_http_histories`, issue
@@ -9753,8 +8077,7 @@ class Conductor:
                                 timeout_seconds: int, timeout_name: str) -> tuple[Any, Any]:
         """One launch of an HTTP workshop lineage through the host loop (issue #534 PR-J3-b):
         `(ProcResult, LoopResult)`. The `ProcResult` is synthesized in the shape the turn's tail
-        reads — `returncode` 1 on a transport error (its message in `stderr`, as
-        `_run_http_leaf` puts it), `timed_out` when the deadline ended the launch, `usage`
+        reads — `returncode` 1 on a transport error (its message in `stderr`), `timed_out` when the deadline ended the launch, `usage`
         summed over the launch's requests — so the tail ends the lineage, records the launch
         and snapshots the tree as it does for a CLI leaf.
 
@@ -9830,7 +8153,6 @@ class Conductor:
             usage=result.usage, model=result.model or entry.model or None,
             timed_out=result.timed_out,
             persist_stdout=redact_secret(result.text, entry, env),
-            response_truncated=bool(result.truncated),
             model_provenance=("http_response" if result.model_reported
                               else "configured_entry" if entry.model else None))
         return proc, result
@@ -9890,7 +8212,7 @@ class Conductor:
         reading = self._workshop_spec_reads(spec)
         # An HTTP entry (issue #534 PR-J3-b) runs the host loop in this process: no endpoint is
         # started (the loop calls the wrapper's operations in-process) and `spawn_leaf` is not
-        # reached — its HTTP branch is the PURE request path.
+        # reached — it refuses an HTTP entry (the pure HTTP request path went in PR-J4-b).
         http = bool(getattr(entry, "is_http", False))
         cancel: threading.Event | None = None
         server: Any = None
@@ -10005,7 +8327,7 @@ class Conductor:
             raw = envelope.raw if isinstance(envelope.raw, dict) else {}
             turns = raw.get("num_turns")
         else:
-            # Codex: the synthetic envelope `_spawn_pure_turn` builds (the CLI has none), the
+            # Codex: a synthetic envelope (the CLI has none), the
             # host-pinned model (issue #348), its turn event's usage, and no turn count — the
             # number of completed items its JSONL reported stands beside it.
             envelope = ResultEnvelope(
@@ -10380,7 +8702,12 @@ class Conductor:
                     mode = "cold_reuse"
             self.emit("workshop_reopen", node_key=refs.node_key, substep=substep or "",
                       target=target_arid, mode=mode,
-                      findings_carried=last_excerpt is not None)
+                      # What the FIRST launch carries: findings ride a repair payload, and a
+                      # reopen naming no usable target (`none`) builds none, so its findings
+                      # are not carried, and the event must not say they are (the pure
+                      # loop's `pure_reopen_cold` row pinned this until issue #534 PR-J4-b).
+                      findings_carried=(last_excerpt is not None
+                                        and repair_target is not None))
         # The lineage state from here on is the machine's, started from the reopen's answer.
         machine = self._WorkshopLineageMachine(
             self, refs, entry, spec, lineage=lineage, prior=prior,
@@ -10527,7 +8854,7 @@ class Conductor:
                                      agent_model_override=turn.model,
                                      usage=turn.usage, resume_mode=proc.resume_mode))
             if declared_fail is not None:
-                # As `_run_pure_producer_substep` takes it: the declared-fail projection and the
+                # The declared-fail exit (issue #355): the declared-fail projection and the
                 # per-attempt record under the off-table category, fail_closed by
                 # `classify_failure` (issue #355). Nothing will continue the lineage, and no new one
                 # takes its work over: it is ended `declared_fail`, not `superseded`.
@@ -10924,7 +9251,7 @@ class Conductor:
     def _write_verdict_meta(self, refs: NodeRefs, *, result: str,
                             failure_category: str | None, failure_excerpt: str | None,
                             attempts: int, per_attempt: list[dict[str, Any]],
-                            leaf_mode: str = "pure") -> None:
+                            leaf_mode: str = "workshop") -> None:
         """Author `<source_dir>/verdict_meta.json` — the pure reviewer's per-attempt record. It
         mirrors bundle_meta.json: the outcome (`result` = whether a schema-valid verdict was
         obtained, NOT the pass/fail of that verdict), the terminal `failure_category`/
@@ -10942,15 +9269,13 @@ class Conductor:
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
-        if leaf_mode == "workshop":
-            # A reading `workshop leaf` (issue #534 step 3), recorded as its twins record it
-            # (`_write_pure_attempt_meta`): the rules version above, the template counter here.
-            from tools.pure_leaf import WORKSHOP_PROMPT_CONTRACT_VERSION
-            meta["leaf_mode"] = "workshop"
-            meta["workshop_prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
-        elif leaf_mode != "pure":
-            raise ValueError(f"verdict_meta.json leaf_mode must be pure or workshop (got "
-                             f"{leaf_mode!r})")
+        # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
+        # the record names one contract version (the workshop template counter it also carried
+        # through PR-J4-a is retired). An older record may still say `leaf_mode: pure`, or carry
+        # `workshop_prompt_contract_version`; its readers keep accepting both.
+        if leaf_mode != "workshop":
+            raise ValueError(f"verdict_meta.json leaf_mode must be workshop (got {leaf_mode!r})")
+        meta["leaf_mode"] = "workshop"
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
         path = self.repo_root / refs.source_dir() / "verdict_meta.json"
@@ -10983,16 +9308,6 @@ class Conductor:
         (src_dir / "source_meta.json").write_text(
             json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    def _run_pure_verify_substep(self, refs: NodeRefs, phase: str, substep: str | None,
-                                 resolved_dependencies: tuple[dict[str, str], ...]
-                                 ) -> "SubstepOutcome":
-        """Run `generate.verify` as a Z2 pure-function verdict reviewer.
-
-        The loop itself is `_run_pure_reviewer_substep`; this wrapper binds the generate half
-        and is kept as the seam the existing reviewer tests drive."""
-        return self._run_pure_reviewer_substep(
-            refs, phase, substep, resolved_dependencies,
-            self._pure_reviewer_spec("generate", "verify", self._bundle_shape(refs)))
 
     # The verify-verdict half of a reviewer spec, shared by the two phases that review one.
     # Bound as functions so the loop asks the SPEC what a document means instead of reading
@@ -11126,8 +9441,6 @@ class Conductor:
                 build_context=self._build_pure_compile_verify_context,
                 write_project_meta=self._write_verify_ir_meta,
                 write_meta=self._write_compile_verify_meta,
-                non_object_findings=(
-                    "the reply parsed to a non-object JSON value (expected a verdict)"),
                 repair_reason="pure_ir_verdict_repair",
                 attempt_failed_event="pure_ir_verdict_attempt_failed",
                 summary_prefix="pure_compile_verify",
@@ -11147,8 +9460,6 @@ class Conductor:
                 build_context=self._build_pure_harness_verify_context,
                 write_project_meta=self._write_verify_source_meta,
                 write_meta=self._write_verdict_meta,
-                non_object_findings=(
-                    "the reply parsed to a non-object JSON value (expected a verdict)"),
                 repair_reason="pure_verdict_repair",
                 attempt_failed_event="pure_verdict_attempt_failed",
                 summary_prefix="pure_verify",
@@ -11168,8 +9479,6 @@ class Conductor:
             build_context=self._build_pure_verify_context,
             write_project_meta=self._write_verify_source_meta,
             write_meta=self._write_verdict_meta,
-            non_object_findings=(
-                "the reply parsed to a non-object JSON value (expected a verdict)"),
             repair_reason="pure_verdict_repair",
             attempt_failed_event="pure_verdict_attempt_failed",
             summary_prefix="pure_verify",
@@ -11241,19 +9550,17 @@ class Conductor:
                                    resolved_dependencies: tuple[dict[str, str], ...],
                                    spec: "Conductor._PureReviewerSpec"
                                    ) -> "SubstepOutcome":
-        """Run a pure-function REVIEWER substep: launch a backend-specific
-        closed-context reviewer (Claude tool-free transport or Codex's read-only sandbox) that
-        returns one verify verdict, validate it, repair a schema violation in a
-        bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row, and
-        ONLY THEN author the phase's stage meta host-side — `source_meta.json` for `generate`,
-        `ir_meta.json` for `compile`; the `spec` decides, and nothing below names either.
+        """Run a REVIEWER substep as a READING `workshop leaf` (issue #534 step 3; the only leaf
+        model since PR-J4-b): seed the context into a lineage's tree, let the leaf write its one
+        document there, validate it, repair a schema violation in a bounded loop, finalize the
+        accepted attempt with an EMPTY output_refs row, and ONLY THEN author the phase's stage
+        meta host-side — `source_meta.json` for `generate`, `ir_meta.json` for `compile`; the
+        `spec` decides, and nothing below names either.
 
-        PERSONA SEPARATION (operator hard rule): the reviewer always spawns a FRESH `--session-id`
-        and the only session ever warm-resumed is the reviewer's OWN prior attempt (assigned
-        `resume_session_id = self._session_id_for_child(child_arid, entry)` inside this loop —
-        the child's arid on claude, the thread id its row recorded on codex, whose lineage
-        home is then the reviewer's own). It never seeds from an external arid —
-        in particular never from the producer session — so a resumed turn is structurally
+        PERSONA SEPARATION (operator hard rule): the reviewer's lineage is its own cold
+        launch's, and the only lineage ever warm-resumed is that one
+        (`_WorkshopLineageMachine`, started empty). It never seeds from an external arid — in
+        particular never from the producer's lineage — so a resumed turn is structurally
         guaranteed to be a verify session, and the generate↔verify context is never shared. (On a
         cross-phase reopen the reviewer is dispatched with repair=None anyway — run_phase hands the
         phase repair to the producer at index 0 — so there is no external seed to accept.)
@@ -11265,16 +9572,11 @@ class Conductor:
         terminal FS-diff, the pure capability's empty write_roots making any write in the
         window an unauthorized one; that diff is gone and the ordering is not.)
 
-        A `leaf: workshop` entry (issue #534 step 3; adopted 2026-10-25) runs the same loop with the
-        reviewer as a READING `workshop leaf`: the context is seeded into a lineage's tree
-        (`spec.workshop_document_seeds`), the leaf writes its one document at the tree root, and
-        the snapshot's assembly (`spec.workshop_assemble`) stands where the reply's parse
-        stands; the validation, the finalize-then-write order and the host writes are this
-        loop's, unchanged. The lineage state is `_WorkshopLineageMachine`'s, started empty:
-        the reviewer's lineage is its own cold launch's, its warm turn resumes that lineage
-        alone, and its home is under `config/` of that lineage, never the operator's
-        `~/.claude` (`_pure_session_resumable` is not consulted). Four rules are the workshop
-        branch's own. The result envelope's checks (`response_truncated`, `is_error`) do not
+        The context is seeded into the lineage's tree (`spec.workshop_document_seeds`), the leaf
+        writes its one document at the tree root, and the snapshot's assembly
+        (`spec.workshop_assemble`) is what is validated. The lineage's home is under `config/` of
+        that lineage, never the operator's `~/.claude`. Four rules follow from the tree being the
+        answer. The result envelope's checks (`response_truncated`, `is_error`) do not
         apply. A launch a bound ended is judged by its tree only when the tree holds a
         schema-valid `fail`; anything else there is an UNFINISHED review, not repaired but run
         again as a fresh cold launch from the seeds alone (a provisional document written before
@@ -11292,11 +9594,8 @@ class Conductor:
         repaired on its own counter by a cold launch from the seeds alone (`after_cut_read`),
         and a launch
         whose rollout cannot be read is `WORKSHOP_ROLLOUT_UNREADABLE`, fail_closed."""
-        from tools.pure_leaf import (
-            extract_json_document,
-            MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         entry = self.entry_for(phase, substep)
-        self.reset_http_history(phase, substep)
         # Assembling the reviewer's context RAISES on any document it cannot read, and WHICH
         # documents those are belongs to the `spec`'s builder, not to this loop: the generate
         # reviewer reads node artifacts and repository documents, the compile reviewer five
@@ -11318,21 +9617,14 @@ class Conductor:
         # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
         runner_host_authored = spec.runner_host_authored(refs)
-        workshop = bool(entry.is_workshop)
-        machine = (self._WorkshopLineageMachine(self, refs, entry, spec) if workshop
-                   else None)
-        #: The workshop branch's repair target: the attempt whose document is under repair.
+        machine = self._WorkshopLineageMachine(self, refs, entry, spec)
+        #: The repair target: the attempt whose document is under repair.
         workshop_repair_target: str | None = None
         #: The `repair_reason` of the next repair turn: the spec's, or the cut-read repair's.
         repair_reason = spec.repair_reason
         #: Cut-read repair turns taken (issue #547): their own bound, apart from `attempt`.
         cut_read_turns = 0
-        #: The per-attempt record names the leaf model of a workshop attempt.
-        leaf_mode_kw: dict[str, str] = {"leaf_mode": "workshop"} if workshop else {}
         per_attempt: list[dict[str, Any]] = []
-        resume_session_id: str | None = None
-        cold_repair_target: str | None = None
-        prior_document: str | None = None
         last_excerpt: str | None = None
         attempt = 0
         usage_waits = 0
@@ -11342,14 +9634,8 @@ class Conductor:
         transient_spent = 0.0
         while True:
             child_arid = self.new_agent_run_id()
-            if machine is not None:
-                warm = machine.next_launch()
-                repair_target = workshop_repair_target
-            else:
-                warm = (resume_session_id is not None
-                        and self._pure_session_resumable(
-                            resume_session_id, entry, phase, substep))
-                repair_target = resume_session_id or cold_repair_target
+            warm = machine.next_launch()
+            repair_target = workshop_repair_target
             repair_payload: dict[str, str] | None = None
             if repair_target is not None:
                 repair_payload = {
@@ -11380,109 +9666,54 @@ class Conductor:
                 pure_context=(None if (warm and repair_payload is not None
                                        and repair_payload.get("repair_findings"))
                               else pure_context),
-                workshop_lineage_id=(machine.lineage_id(warm, child_arid)
-                                     if machine is not None else None),
-                workshop_provider=(entry.provider if machine is not None else None),
+                workshop_lineage_id=machine.lineage_id(warm, child_arid),
+                workshop_provider=entry.provider,
             )
-            turn: Any
-            if machine is not None:
-                # The workshop branch: the reviewer's own lineage. A cold launch opens one,
-                # seeded from the context (and, for a schema-repair cold reuse, the prior
-                # lineage's snapshot — the document under repair). The repair template carries
-                # the launch body and no `<prior_document>`: the document is in the tree.
-                if not warm:
-                    try:
-                        machine.open_cold(pure_context, request, child_arid)
-                    except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
-                        self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
-                                  detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
-                        return SubstepOutcome(
-                            child_arid, "fail", [], 1,
-                            ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)),
-                            max(1, len(per_attempt)))
-                assert machine.lineage is not None
-                turn = self._spawn_workshop_turn(
-                    refs, request, entry, machine.lineage, child_arid=child_arid,
-                    phase=phase, substep=substep,
-                    resume_session_id=machine.resume_session_id, warm=warm, spec=spec)
-                if turn is None:
-                    machine.home_gone()
-                    continue
-            else:
-                if repair_payload is not None and not warm and prior_document:
-                    request["prior_document"] = prior_document
-                turn = self._spawn_pure_turn(
-                    request, entry, child_arid=child_arid, phase=phase, substep=substep,
-                    node_key=refs.node_key, resume_session_id=resume_session_id, warm=warm)
-                if turn is None:
-                    cold_repair_target = resume_session_id
-                    resume_session_id = None
-                    continue
-            proc, envelope = turn.proc, turn.envelope
+            # The reviewer's own lineage. A cold launch opens one, seeded from the context (and,
+            # for a schema-repair cold reuse, the prior lineage's snapshot — the document under
+            # repair). The repair template carries the launch body: the document is in the tree.
+            if not warm:
+                try:
+                    machine.open_cold(pure_context, request, child_arid)
+                except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
+                    self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
+                              detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)),
+                        max(1, len(per_attempt)))
+            assert machine.lineage is not None
+            turn = self._spawn_workshop_turn(
+                refs, request, entry, machine.lineage, child_arid=child_arid,
+                phase=phase, substep=substep,
+                resume_session_id=machine.resume_session_id, warm=warm, spec=spec)
+            if turn is None:
+                machine.home_gone()
+                continue
+            proc = turn.proc
             model, usage = turn.model, turn.usage
             launched_monotonic = turn.launched_monotonic
-            attempt_record: dict[str, Any] = (
-                machine.attempt_row(turn, warm, child_arid) if machine is not None else {
-                    "agent_run_id": child_arid, "model": model,
-                    "model_provenance": turn.model_provenance, "usage": usage,
-                    "leaf_wall_s": turn.leaf_wall_s})
+            attempt_record: dict[str, Any] = machine.attempt_row(turn, warm, child_arid)
             per_attempt.append(attempt_record)
 
-            infra_error: tuple[str, str] | None = None
-            category: str | None = None
-            findings: str | None = None
-            parsed_verdict: dict[str, Any] | None = None
             accepted_verdict: dict[str, Any] | None = None
-            #: The one JSON object to validate: the reply's on the pure path, the tree's on the
-            #: workshop branch.
-            extracted: Any = None
-            #: A `pass` left by a launch its bound ended (the workshop branch only).
+            #: A `pass` left by a launch its bound ended.
             unfinished_review = False
             #: A codex reading launch's cut reads (issue #547): `(lines, unreadable)`, None when
             #: the launch is not scanned.
             cut_read: tuple[list[str], str | None] | None = None
-            if machine is not None:
-                # The tree is the answer, whatever the leaf said or however a bound ended it.
-                category, findings, extracted, infra_error = machine.assemble(turn)
-                if machine.lineage.paths.backend == "codex":
-                    # Recorded on every codex reading attempt: null on a transport death,
-                    # whose thread may be absent and whose retry is the transport rule's.
-                    attempt_record["cut_outputs"] = None
-                    if category != "pure_transport":
-                        cut_read = self._codex_cut_reads(turn, child_arid, entry,
-                                                         machine.lineage.paths)
-                        attempt_record["cut_outputs"] = (
-                            len(cut_read[0]) if cut_read[1] is None or cut_read[0] else None)
-            elif proc.returncode != 0:
-                # A nonzero reviewer exit is a transport/infra failure (not a verdict the repair can
-                # fix): finalize fail and let run_phase route it fail_closed.
-                infra_error = _leaf_infra_error(proc)
-                category = "pure_transport"
-                findings = self._leaf_failure_summary(proc)
-            elif proc.response_truncated:
-                # The PROVIDER said the answer was cut off (HTTP transport). Authoritative:
-                # a partial document that happens to parse must not be accepted, and one that
-                # does not must not be blamed on the model's formatting.
-                category = RESPONSE_TRUNCATED
-                findings = ("the provider reported the reply was cut off at the output-token "
-                            "ceiling; answer with a smaller document")
-            elif not envelope.parsed or envelope.is_error is True:
-                category = RESPONSE_UNPARSEABLE
-                findings = ("the CLI result envelope was unparseable or reported is_error: "
-                            + (str(envelope.parse_error or "")[:400] or "no result document"))
-            else:
-                extracted, extract_category = extract_json_document(envelope.result)
-                if extract_category is not None:
-                    category = extract_category
-                    findings = ("the reply was not a single parseable JSON document "
-                                f"({extract_category})")
-                    extracted = None
-                elif not isinstance(extracted, dict):
-                    category = RESPONSE_UNPARSEABLE
-                    findings = spec.non_object_findings
-                    extracted = None
+            # The tree is the answer, whatever the leaf said or however a bound ended it.
+            category, findings, extracted, infra_error = machine.assemble(turn)
+            if machine.lineage.paths.backend == "codex":
+                # Recorded on every codex reading attempt: null on a transport death,
+                # whose thread may be absent and whose retry is the transport rule's.
+                attempt_record["cut_outputs"] = None
+                if category != "pure_transport":
+                    cut_read = self._codex_cut_reads(turn, child_arid, entry,
+                                                     machine.lineage.paths)
+                    attempt_record["cut_outputs"] = (
+                        len(cut_read[0]) if cut_read[1] is None or cut_read[0] else None)
             if category is None and isinstance(extracted, dict):
-                parsed_verdict = extracted
                 violations = spec.violations(extracted)
                 if not violations:
                     # A verdict can be schema-sound yet not persistable: `json.loads` accepts a
@@ -11501,9 +9732,7 @@ class Conductor:
                             "(e.g. an unpaired surrogate); re-emit the verdict with valid text"]
                 if violations:
                     category = spec.schema_category
-                    findings = "; ".join(violations)[:1000]
-                    if machine is not None:
-                        findings = machine.ended_note(findings, turn)
+                    findings = machine.ended_note("; ".join(violations)[:1000], turn)
                 else:
                     accepted_verdict = extracted
             if (cut_read is not None and not proc.timed_out
@@ -11536,7 +9765,7 @@ class Conductor:
                                 f"re-run test_bwrap_simulation.CodexReadingLeafCliTests, "
                                 f"MR5-e)")[:1000]
                     accepted_verdict = None
-            if (machine is not None and (proc.timed_out or turn.truncated)
+            if ((proc.timed_out or turn.truncated)
                     and not (accepted_verdict is not None
                              and spec.status_of(accepted_verdict) == "fail")):
                 # A reading launch its BOUND ended (`lineage_timeout` / `leaf_timeout`) — or,
@@ -11588,7 +9817,8 @@ class Conductor:
                         refs, accepted_verdict, attempts=len(per_attempt))
                     spec.write_meta(
                         refs, result="pass", failure_category=None, failure_excerpt=None,
-                        attempts=len(per_attempt), per_attempt=per_attempt, **leaf_mode_kw)
+                        attempts=len(per_attempt), per_attempt=per_attempt,
+                        leaf_mode="workshop")
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
                     # A host-side write AFTER the window closed failed (ENOSPC, IO error). The
                     # attempt is already a terminal `substep` row, so without recovery it is an
@@ -11602,39 +9832,19 @@ class Conductor:
                         len(per_attempt))
                 # Earlier reviewer attempts of a repaired verdict stay as they are (each earlier attempt
                 # was finalized as a terminal `substep` row, but only THIS arid is vouched).
-                # A workshop document accepted from the tree returns 0 whatever the leaf's
-                # exit (a bound may have ended it): its route is the verdict's, not transport's.
-                return SubstepOutcome(child_arid, verify_status, [],
-                                      0 if machine is not None else proc.returncode,
-                                      None, len(per_attempt))
+                # A document accepted from the tree returns 0 whatever the leaf's exit (a bound
+                # may have ended it): its route is the verdict's, not transport's.
+                return SubstepOutcome(child_arid, verify_status, [], 0, None, len(per_attempt))
 
-            # A malformed / transport reply. Record the terminal record fields and carry the prior
-            # document into a cold-fallback repair (re-serialize the parsed verdict if any, else the
-            # raw reply text). A transport death ("pure_transport") has NO fixable verdict, so it
-            # must not overwrite the repair carriers (`prior_document` / `last_excerpt`) — mirrors
-            # the producer, so a repair turn that follows a --wait-usage-reset wait carries the prior
-            # SCHEMA failure's findings, not the transport summary.
-            if category != "pure_transport" and machine is None:
-                prior_document = (json.dumps(parsed_verdict, indent=2, ensure_ascii=False)
-                                  if parsed_verdict is not None
-                                  else (envelope.result if isinstance(envelope.result, str)
-                                        else None))
-                # Both `last_excerpt` (-> the repair turn's `repair_findings` AND verdict_meta's
-                # failure_excerpt) and `prior_document` (-> the cold-fallback repair prompt) are
-                # echoed into a request/meta that is persisted as UTF-8. Leaf-derived diagnostic text
-                # can carry an unpaired surrogate (the `verdict_schema_violation` case the UTF-8
-                # check above catches), which would raise UnicodeEncodeError at that write — a crash
-                # instead of a repair turn / a fail_closed. Normalize any non-encodable code point to
-                # its readable backslash escape at capture so every downstream write is safe by
-                # construction.
-                last_excerpt = (findings.encode("utf-8", "backslashreplace").decode("utf-8")
-                                if findings is not None else None)
-                if prior_document is not None:
-                    prior_document = prior_document.encode(
-                        "utf-8", "backslashreplace").decode("utf-8")
-            elif category != "pure_transport":
-                # The workshop branch carries the findings; the document under repair is in the
-                # tree a cold reuse is seeded from, so no `prior_document` is threaded.
+            # A malformed / transport reply. A transport death ("pure_transport") has NO fixable
+            # verdict, so it must not overwrite the repair carrier (`last_excerpt`) — mirrors the
+            # producer, so a repair turn that follows a --wait-usage-reset wait carries the prior
+            # SCHEMA failure's findings, not the transport summary. The document under repair is
+            # in the tree a cold reuse is seeded from, so no document is threaded. `last_excerpt`
+            # (-> the repair turn's `repair_findings` AND verdict_meta's failure_excerpt) is
+            # persisted as UTF-8, and leaf-derived diagnostic text can carry an unpaired
+            # surrogate, so any non-encodable code point is normalized to its backslash escape.
+            if category != "pure_transport":
                 last_excerpt = (findings.encode("utf-8", "backslashreplace").decode("utf-8")
                                 if findings is not None else None)
             # Record why THIS reviewer attempt failed on its own per_attempt row (observability only —
@@ -11675,8 +9885,7 @@ class Conductor:
                                                child_arid=child_arid, waits_done=usage_waits,
                                                infra_error=infra_error, entry=entry)):
                 usage_waits += 1
-                if machine is not None:
-                    machine.after_transport()
+                machine.after_transport()
                 continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
             # connection) is re-launched in place rather than fail-closing a run that has
@@ -11700,8 +9909,7 @@ class Conductor:
                         child_arid=child_arid, retries_done=transient_retries,
                         elapsed_s=elapsed_s, spent_s=spent_before):
                     transient_retries += 1
-                    if machine is not None:
-                        machine.after_transport()
+                    machine.after_transport()
                     continue
             # A schema violation within budget: warm-resume the SAME reviewer session for a bounded
             # repair. A transport failure ("pure_transport") has no fixable verdict, so it is
@@ -11714,7 +9922,7 @@ class Conductor:
                                                    WORKSHOP_ROLLOUT_UNREADABLE)
                               and attempt < MAX_BUNDLE_REPAIR_TURNS)
             if not can_repair:
-                if machine is not None and unfinished_review and turn.truncated:
+                if unfinished_review and turn.truncated:
                     # An HTTP reading launch whose cut last reply exhausted the budget: no bound
                     # ended its lineage (rc 0, not timed out), and nothing continues it — the
                     # reviewer's machine starts empty — so it is ended and its conversation
@@ -11736,7 +9944,7 @@ class Conductor:
                     spec.write_meta(
                         refs, result="fail", failure_category=category,
                         failure_excerpt=this_excerpt, attempts=len(per_attempt),
-                        per_attempt=per_attempt, **leaf_mode_kw)
+                        per_attempt=per_attempt, leaf_mode="workshop")
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
@@ -11747,21 +9955,20 @@ class Conductor:
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
                         (WORKSHOP_ROLLOUT_UNREADABLE, this_excerpt or ""), len(per_attempt))
-                # A workshop schema exhaustion is routed by its category, like the pure one,
-                # whatever exit the last launch had; a transport death keeps its rc.
+                # A schema exhaustion is routed by its category whatever exit the last launch
+                # had; a transport death keeps its rc.
                 return SubstepOutcome(
                     child_arid, "fail", [],
-                    (0 if (machine is not None and category != "pure_transport")
-                     else proc.returncode),
+                    0 if category != "pure_transport" else proc.returncode,
                     infra_error, len(per_attempt))
-            if machine is not None and unfinished_review:
+            if unfinished_review:
                 # An unfinished `pass` (above): a fresh cold launch from the seeds alone, with
                 # the whole launch prompt and no repair turn, carrying nothing of this lineage.
                 workshop_repair_target = None
                 machine.after_transport()
                 attempt += 1
                 continue
-            if machine is not None and category == WORKSHOP_CUT_READ:
+            if category == WORKSHOP_CUT_READ:
                 # The cut-read repair turn: a cold launch from the seeds alone carrying the
                 # findings (`_WorkshopLineageMachine.after_cut_read`).
                 workshop_repair_target = child_arid
@@ -11769,18 +9976,11 @@ class Conductor:
                 machine.after_cut_read()
                 cut_read_turns += 1
                 continue
-            if machine is not None:
-                # The repair turn: warm over the reviewer's own lineage while it is open, else a
-                # cold reuse from its snapshot (`_WorkshopLineageMachine.next_launch`).
-                workshop_repair_target = child_arid
-                repair_reason = spec.repair_reason
-                machine.after_repair(turn, child_arid)
-                attempt += 1
-                continue
-            # Set up the next (repair) turn: resume this attempt's OWN reviewer session (persona
-            # separation — never an external/producer arid).
-            resume_session_id = self._session_id_for_child(child_arid, entry)
-            cold_repair_target = None
+            # The repair turn: warm over the reviewer's own lineage while it is open, else a
+            # cold reuse from its snapshot (`_WorkshopLineageMachine.next_launch`).
+            workshop_repair_target = child_arid
+            repair_reason = spec.repair_reason
+            machine.after_repair(turn, child_arid)
             attempt += 1
 
     def write_step_result(self, node_key: str, step: str, executor_arid: str,
@@ -12026,19 +10226,17 @@ class Conductor:
             # `~/.claude`, and a leaf being handed PAST-RUN state, both of which the workflow
             # forbids outright.
             #
-            # KEPT after Z4 (issue #171) although every claude leaf now passes `--safe-mode`,
-            # which closes this path on its own: the variable and the flag are two independent
-            # arms of the same predicate, and this one costs one environment entry. Its
-            # measurement was taken against the agentic launch that no longer exists, so what
-            # it is today is defense in depth for a documented CLI behaviour, not the only
-            # thing closing the path — which the comment claimed before and after being
-            # corrected once already. Set here rather than on the argv because the CLI exposes
+            # KEPT after Z4 (issue #171), when every claude leaf passed `--safe-mode`, which
+            # closes this path on its own: the variable and the flag are two independent arms
+            # of the same predicate, and this one costs one environment entry. A workshop leaf
+            # (issue #534; every leaf since PR-J4-b) does NOT pass `--safe-mode`, which would
+            # disable the wrapper's endpoint, so this arm is no longer redundant with it. Its
+            # measurement was taken against the agentic launch that no longer exists. Set here rather than on the argv because the CLI exposes
             # no flag for it.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-            # CLAUDE_CONFIG_DIR is deliberately NOT set here: a pure leaf has no private home to
-            # name (`record_launch` prepares none), and naming one here would point the leaf at a configuration surface
-            # nothing prepared, hashed or recorded. A WORKSHOP leaf (issue #534) does have one,
-            # and it reaches the leaf the way a codex lineage home does — through the profile's
+            # CLAUDE_CONFIG_DIR is deliberately NOT set here: naming a home here would point the
+            # leaf at a configuration surface nothing prepared, hashed or recorded. A WORKSHOP
+            # leaf (issue #534) has its own, and it reaches the leaf the way a codex lineage home does — through the profile's
             # `env_overrides` and `--setenv` alone (`claude_workshop_profile_kwargs`); the pop
             # below keeps this dict from carrying a second spelling of it.
         elif entry.provider == "codex_cli":
@@ -12053,7 +10251,7 @@ class Conductor:
                 raise SandboxEnforcementError("CODEX_HOME and deprecated ATMOFAB_HOME conflict")
             # No promotion of `legacy` into CODEX_HOME here. The home the leaf reads is
             # the one `record_launch` PREPARED and the bwrap profile `--setenv`s
-            # (`codex_isolation_profile_kwargs`); a host-side spelling could name a
+            # (`_prepare_codex_workshop_lineage`); a host-side spelling could name a
             # different home than the one whose settings were SHA-pinned, and no
             # host-side reader consumes `child_env["CODEX_HOME"]`.
         elif entry.is_http:
@@ -15440,11 +13638,11 @@ class Conductor:
                     dependency_surface: tuple[dict[str, Any], ...] = ()) -> SubstepOutcome:
         """Run one substep. Two shapes exist, and since Z4 (issue #171) only two.
 
-        * An LLM leaf runs as a host-mediated PURE FUNCTION — one typed document in, one JSON
-          document out, no tools, no write authority — through `_run_pure_producer_substep` /
+        * An LLM leaf runs as a `workshop leaf` (issue #534; the only leaf model since PR-J4-b)
+          — a producing one through `_run_workshop_producer_substep`, a reading one through
           `_run_pure_reviewer_substep`, each of which owns its own spawn/validate/repair/
-          finalize/write loop. The shared AGENTIC leaf loop that used to live here, and every
-          retry/warm-resume/exemplar decision it needed, went with it.
+          finalize/write loop. The leaf holds no write authority: the host writes every
+          artifact from the snapshot of its tree.
         * A DETERMINISTIC substep (Build, Compile.static, Generate.gate, Validate.pre_judge /
           execute / post_judge) runs in-process below. It still takes an agent_run_id, a
           recorded launch and a finalize-child, so the integrity validators read it as an
@@ -15452,7 +13650,7 @@ class Conductor:
           none of the transient-death, usage-limit or warm-resume paths the old loop carried
           could ever fire for it, so the loop is gone too.
 
-        A node with no CodegenBundle shape has no pure path for the two `generate` pairs
+        A node with no CodegenBundle shape has no leaf path for the two `generate` pairs
         (`_pure_leaf_substep`), and there is no longer a second loop to fall through to, so it
         fails CLOSED here. No in-tree node reaches it (issue #169 made the `infrastructure`
         harness self-test the `harness` shape); it is the fail-safe for a hand-crafted IR."""
@@ -15461,8 +13659,8 @@ class Conductor:
         if not deterministic:
             if not self._pure_leaf_substep(refs, phase, substep):
                 detail = (
-                    f"{phase}.{substep or ''} runs as a pure-function leaf and this node has "
-                    f"no pure path: it has no CodegenBundle shape (`Conductor._bundle_shape` "
+                    f"{phase}.{substep or ''} runs as a workshop leaf and this node has "
+                    f"no leaf path: it has no CodegenBundle shape (`Conductor._bundle_shape` "
                     f"reads its node_key and its IR's toolchain, and answered none). Give the "
                     f"node a shape the bundle backends express, or run this phase on a node "
                     f"that has one.")
@@ -15472,7 +13670,7 @@ class Conductor:
                     self.new_agent_run_id(), "fail", [], 1,
                     ("node_has_no_bundle_shape", detail), 1)
             if substep in ("verify", "judge"):
-                # The pure reviewer: its own spawn/validate/repair/finalize loop, host-authors
+                # The reviewer: its own spawn/validate/repair/finalize loop, host-authors
                 # the phase's stage meta from the returned document after the child window
                 # closes. `judge` joined it in Z3 — a judge reviews a run where a verify reviews
                 # an artifact, and the loop is the same shape either way; what differs is the
@@ -15480,24 +13678,12 @@ class Conductor:
                 return self._run_pure_reviewer_substep(
                     refs, phase, substep, resolved_dependencies,
                     self._pure_reviewer_spec(phase, substep, self._shape_for_spec(refs, phase)))
-            # The pure producer. `dependency_surface` is threaded through for the compile
-            # producer, whose `<dependency_facts>` block is the published-operation catalog it
-            # must transcribe verbatim; `build_launch_request` attaches it to that substep only.
-            if entry.is_workshop:
-                # A `leaf: workshop` entry (issue #534): the same producer half, the leaf editing
-                # a host-seeded work tree instead of returning the document. Before the compile
-                # branch below: a workshop `compile.generate` leaf authors the WHOLE IR in its
-                # tree (step 2), and the part split is a pure entry's.
-                return self._run_workshop_producer_substep(
-                    refs, phase, substep, repair, resolved_dependencies,
-                    self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),
-                    dependency_surface)
-            # Compile runs as a core and one part per group of tests, and the host assembles
-            # the IR.
-            if phase == "compile":
-                return self._run_pure_compile_producer(
-                    refs, repair, resolved_dependencies, dependency_surface)
-            return self._run_pure_producer_substep(
+            # The producer: the leaf edits a host-seeded work tree (issue #534); a
+            # `compile.generate` leaf authors the WHOLE IR in its tree (step 2).
+            # `dependency_surface` is threaded through for the compile producer, whose
+            # `<dependency_facts>` block is the published-operation catalog it must transcribe
+            # verbatim; `build_launch_request` attaches it to that substep only.
+            return self._run_workshop_producer_substep(
                 refs, phase, substep, repair, resolved_dependencies,
                 self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),
                 dependency_surface)
@@ -17089,12 +15275,10 @@ class Conductor:
                                 self.workflow_mode))
 
     def _diagnose_request(self, refs: NodeRefs, phase: str, entry: ResolvedLeafEntry,
-                          child_arid: str, diagnosis_document: str, *,
-                          pure: bool = False) -> dict[str, Any]:
+                          child_arid: str, diagnosis_document: str) -> dict[str, Any]:
         """The request of one diagnose launch over `diagnosis_document`: a READING workshop
         launch (issue #534 PR-J4-a) — its lineage is its own (`child_arid`) and the provider is
-        the entry's — or, with `pure`, the pure launch it replaced (`judge_replay`'s second arm
-        alone, until the pure path is deleted)."""
+        the entry's."""
         from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
         return build_launch_request(
             refs, step=phase, substep=DIAGNOSE_SUBSTEP,
@@ -17104,8 +15288,8 @@ class Conductor:
             agent_model=entry.model, workflow_mode=self.workflow_mode,
             pure_leaf=True,
             pure_context={"diagnosis_document": diagnosis_document},
-            workshop_lineage_id=(None if pure else child_arid),
-            workshop_provider=(None if pure else entry.provider),
+            workshop_lineage_id=child_arid,
+            workshop_provider=entry.provider,
         )
 
     #: The diagnostician's one output file and its seed (issue #534 PR-J4-a).
@@ -17129,7 +15313,6 @@ class Conductor:
 
         return self._PureReviewerSpec(
             build_context=_unused, write_project_meta=_unused, write_meta=_unused,
-            non_object_findings="the directive is not one JSON object",
             repair_reason="diagnose_no_repair", attempt_failed_event="diagnose_launch_failed",
             summary_prefix="diagnose", host_write_failed_reason="diagnose_no_host_write",
             runner_host_authored=lambda _refs: False,
@@ -17152,19 +15335,18 @@ class Conductor:
         usage: dict[str, Any] | None
         #: The directive, or None when it did not arrive (conservatively terminal).
         decision: RouteDecision | None
-        #: The diagnostician's lineage (None on the pure arm).
+        #: The diagnostician's lineage.
         lineage_id: str | None
-        #: Launch to return (`_PureTurn.leaf_wall_s` / `_WorkshopTurn.leaf_wall_s`).
+        #: Launch to return (`_WorkshopTurn.leaf_wall_s`).
         leaf_wall_s: float | None = None
 
     def _diagnose_turn(self, refs: NodeRefs, request: dict[str, Any], entry: ResolvedLeafEntry,
-                       child_arid: str, phase: str, *, pure: bool = False
-                       ) -> Conductor._DiagnoseTurn | None:
+                       child_arid: str, phase: str) -> Conductor._DiagnoseTurn | None:
         """Launch the diagnostician once over `request` and read its directive: `escalate`'s
         launch, and `judge_replay`'s for a diagnose row. Raises what the setup or the launch
         raises (`escalate` folds it); None when no launch happened.
 
-        The READING arm (issue #534 PR-J4-a): a cold lineage of its own seeded with
+        A READING workshop leaf (issue #534 PR-J4-a): a cold lineage of its own seeded with
         `diagnosis.json`, one launch through `_spawn_workshop_turn` (no endpoint; on an HTTP
         entry the host loop with the reader tools), then the directive read from the snapshot's
         `directive.json`. A launch that did not FINISH — killed at a bound (`timed_out`; the
@@ -17180,24 +15362,6 @@ class Conductor:
         TAIL after the leaf ran (a lineage record the tail cannot read) is the residual the
         two loops share."""
         from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
-        if pure:
-            # A fresh conversation per launch on the HTTP transport: `_run_http_leaf`'s history
-            # is keyed by `(step, substep)`, so without the reset a second pure diagnose launch
-            # of one phase replays the first one's diagnosis and directive as prior turns.
-            self.reset_http_history(phase, DIAGNOSE_SUBSTEP)
-            turn = self._spawn_pure_turn(
-                request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
-                node_key=refs.node_key)
-            if turn is None:
-                return None
-            proc, envelope = turn.proc, turn.envelope
-            decision = (None if (proc.timed_out or proc.returncode != 0
-                                 or proc.response_truncated
-                                 or not envelope.parsed or envelope.is_error is True)
-                        else _parse_directive(envelope.result
-                                              if isinstance(envelope.result, str) else ""))
-            return self._DiagnoseTurn(proc, turn.model, turn.usage, decision, None,
-                                      turn.leaf_wall_s)
         spec = self._diagnose_spec()
         machine = self._WorkshopLineageMachine(self, refs, entry, spec)
         machine.open_cold(request["pure_context"], request, child_arid)
@@ -17273,7 +15437,7 @@ class Conductor:
     def escalate(self, refs: NodeRefs, phase: str, outcome: PhaseOutcome) -> RouteDecision:
         """One-shot LLM diagnostician for a failure the decision tables cannot
         classify. Seeds the failure-artifact content into a READING workshop leaf's tree
-        (issue #534 PR-J4-a; a pure launch before it), launches it once, and reads its routing
+        (issue #534 PR-J4-a), launches it once, and reads its routing
         directive from the tree (`_diagnose_turn`). An unparsable/invalid/killed directive is
         conservatively terminal (fail_closed)."""
         # The diagnostician carries no phase/substep of its own, so it runs on `defaults` —
@@ -17683,7 +15847,7 @@ class Conductor:
             # untrustworthy — the defect the null-target clear in `resolve_severity_directive`
             # was written to close, arriving by the resume boundary instead. A revocation
             # written before the grade was recorded carries none, and defaults to `major` the
-            # way `_parse_directive` does.
+            # way `_directive_from_object` does.
             severity = cert.get("revocation_severity") or "major"
             # G5's FORCED mappings win over anything recorded; only `major`, which the policy
             # leaves to the decision, takes the recorded strategy. Reading the record first

@@ -1,0 +1,719 @@
+{
+  "agent_role": "substep",
+  "node_key": "problem/shallow_water2d_channel@0.2.5",
+  "step": "generate",
+  "orchestration_id": "orch_20261026T085505Z_d87e8903",
+  "agent_run_id": "7c02cd4e-3c2f-4ae6-95a8-a612b5862280",
+  "parent_agent_run_id": "5b372a8a-aa0b-4b5a-ae1e-9b918d4b2412",
+  "agent_model": "gpt-6.1-sol",
+  "workflow_mode": "dev",
+  "ir_ref": "workspace/ir/problem__shallow_water2d_channel__0.2.5/shallow-water2d-channel_20261026_001",
+  "pipeline_ref": "workspace/pipelines/problem__shallow_water2d_channel__0.2.5/fortran_cpu/shallow-water2d-channel_20261026_001",
+  "substep": "verify",
+  "runner_host_authored": true,
+  "source_id": "src_20261026_001",
+  "dependency_ref": "workspace/ir/problem__shallow_water2d_channel__0.2.5/shallow-water2d-channel_20261026_001",
+  "allowed_output_paths": [],
+  "resolved_dependencies": [
+    {
+      "node_key": "component/dynamics_shallow_water_boundary_2d_channel_mirror@0.2.0",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_boundary_2d_channel_mirror__0.2.0/fortran_cpu/dynamics-shallow-water-boundary-2d-channel-mirror_20261023_001",
+      "run_id": "run_20261023_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_boundary_2d_channel_mirror__0.2.0/fortran_cpu/dynamics-shallow-water-boundary-2d-channel-mirror_20261023_001/runs/run_20261023_001/component__dynamics_shallow_water_boundary_2d_channel_mirror__0.2.0/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_boundary_2d_channel_mirror__apply",
+          "interface": "subroutine dynamics_shallow_water_boundary_2d_channel_mirror__apply(nx, ny, ng, nx_total,  ny_total, wall_axis, odd_at_wall, U_in, U_out, grid_valid)",
+          "argument_order": [
+            "nx",
+            "ny",
+            "ng",
+            "nx_total",
+            "ny_total",
+            "wall_axis",
+            "odd_at_wall",
+            "U_in",
+            "U_out",
+            "grid_valid"
+          ],
+          "arguments": [
+            {
+              "name": "nx",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ng",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "nx_total",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny_total",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "wall_axis",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "odd_at_wall",
+              "type": "logical",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "U_in",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx_total, ny_total"
+            },
+            {
+              "name": "U_out",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 2,
+              "dimension": "nx_total, ny_total"
+            },
+            {
+              "name": "grid_valid",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ],
+      "interface_language": "fortran"
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_flux_2d_rusanov@0.1.1",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_flux_2d_rusanov__0.1.1/fortran_cpu/dynamics-shallow-water-flux-2d-rusanov_20261023_001",
+      "run_id": "run_20261023_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_flux_2d_rusanov__0.1.1/fortran_cpu/dynamics-shallow-water-flux-2d-rusanov_20261023_001/runs/run_20261023_001/component__dynamics_shallow_water_flux_2d_rusanov__0.1.1/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_flux_2d_rusanov__compute_flux",
+          "interface": "subroutine dynamics_shallow_water_flux_2d_rusanov__compute_flux(U_L, U_R, U_B, U_T, g,  F_star, G_star, a_x, a_y, guard_ok)",
+          "argument_order": [
+            "U_L",
+            "U_R",
+            "U_B",
+            "U_T",
+            "g",
+            "F_star",
+            "G_star",
+            "a_x",
+            "a_y",
+            "guard_ok"
+          ],
+          "arguments": [
+            {
+              "name": "U_L",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "U_R",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "U_B",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "U_T",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "g",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "F_star",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "G_star",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 1,
+              "dimension": "3"
+            },
+            {
+              "name": "a_x",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "a_y",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "guard_ok",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ],
+      "interface_language": "fortran"
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_reconstruction_2d_muscl_mc@0.1.1",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_reconstruction_2d_muscl_mc__0.1.1/fortran_cpu/dynamics-shallow-water-reconstruction-2d-muscl-mc_20261023_001",
+      "run_id": "run_20261023_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_reconstruction_2d_muscl_mc__0.1.1/fortran_cpu/dynamics-shallow-water-reconstruction-2d-muscl-mc_20261023_001/runs/run_20261023_001/component__dynamics_shallow_water_reconstruction_2d_muscl_mc__0.1.1/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct",
+          "interface": "subroutine dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct(nx, ny, ng,  nx_total, ny_total, U_in, U_L, U_R, U_B, U_T, grid_valid)",
+          "argument_order": [
+            "nx",
+            "ny",
+            "ng",
+            "nx_total",
+            "ny_total",
+            "U_in",
+            "U_L",
+            "U_R",
+            "U_B",
+            "U_T",
+            "grid_valid"
+          ],
+          "arguments": [
+            {
+              "name": "nx",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ng",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "nx_total",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny_total",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "U_in",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx_total, ny_total"
+            },
+            {
+              "name": "U_L",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 2,
+              "dimension": "nx + 1, ny"
+            },
+            {
+              "name": "U_R",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 2,
+              "dimension": "nx + 1, ny"
+            },
+            {
+              "name": "U_B",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 2,
+              "dimension": "nx, ny + 1"
+            },
+            {
+              "name": "U_T",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 2,
+              "dimension": "nx, ny + 1"
+            },
+            {
+              "name": "grid_valid",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ],
+      "interface_language": "fortran"
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_source_2d_coriolis@0.2.0",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_source_2d_coriolis__0.2.0/fortran_cpu/dynamics-shallow-water-source-2d-coriolis_20261023_001",
+      "run_id": "run_20261023_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_source_2d_coriolis__0.2.0/fortran_cpu/dynamics-shallow-water-source-2d-coriolis_20261023_001/runs/run_20261023_001/component__dynamics_shallow_water_source_2d_coriolis__0.2.0/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_source_2d_coriolis__apply",
+          "interface": "subroutine dynamics_shallow_water_source_2d_coriolis__apply(ncomp, nx, ny, f, U, S,  guard_pass)",
+          "argument_order": [
+            "ncomp",
+            "nx",
+            "ny",
+            "f",
+            "U",
+            "S",
+            "guard_pass"
+          ],
+          "arguments": [
+            {
+              "name": "ncomp",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "nx",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "f",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx, ny"
+            },
+            {
+              "name": "U",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "S",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "guard_pass",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ],
+      "interface_language": "fortran"
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_source_2d_tc4_forcing@0.2.0",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_source_2d_tc4_forcing__0.2.0/fortran_cpu/dynamics-shallow-water-source-2d-tc4-forcing_20261023_001",
+      "run_id": "run_20261023_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_source_2d_tc4_forcing__0.2.0/fortran_cpu/dynamics-shallow-water-source-2d-tc4-forcing_20261023_001/runs/run_20261023_001/component__dynamics_shallow_water_source_2d_tc4_forcing__0.2.0/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_source_2d_tc4_forcing__apply",
+          "interface": "subroutine dynamics_shallow_water_source_2d_tc4_forcing__apply(ncomp, nx, ny, along_axis,  x, y, t, f, dfdr, ubar, dubar, hbar, g, L_along, psi0, R_low, c_tr, s_c0, r_c, S,  guard_pass)",
+          "argument_order": [
+            "ncomp",
+            "nx",
+            "ny",
+            "along_axis",
+            "x",
+            "y",
+            "t",
+            "f",
+            "dfdr",
+            "ubar",
+            "dubar",
+            "hbar",
+            "g",
+            "L_along",
+            "psi0",
+            "R_low",
+            "c_tr",
+            "s_c0",
+            "r_c",
+            "S",
+            "guard_pass"
+          ],
+          "arguments": [
+            {
+              "name": "ncomp",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "nx",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "along_axis",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "x",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "nx"
+            },
+            {
+              "name": "y",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 1,
+              "dimension": "ny"
+            },
+            {
+              "name": "t",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "f",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx, ny"
+            },
+            {
+              "name": "dfdr",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx, ny"
+            },
+            {
+              "name": "ubar",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx, ny"
+            },
+            {
+              "name": "dubar",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx, ny"
+            },
+            {
+              "name": "hbar",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 2,
+              "dimension": "nx, ny"
+            },
+            {
+              "name": "g",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "L_along",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "psi0",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "R_low",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "c_tr",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "s_c0",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "r_c",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "S",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "guard_pass",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "interface_source": "certified_source"
+        }
+      ],
+      "interface_language": "fortran"
+    },
+    {
+      "node_key": "component/dynamics_shallow_water_time_update_2d_rk4@0.1.1",
+      "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_time_update_2d_rk4__0.1.1/fortran_cpu/dynamics-shallow-water-time-update-2d-rk4_20261026_001",
+      "run_id": "run_20261026_001",
+      "aggregate_verdict_ref": "workspace/pipelines/component__dynamics_shallow_water_time_update_2d_rk4__0.1.1/fortran_cpu/dynamics-shallow-water-time-update-2d-rk4_20261026_001/runs/run_20261026_001/component__dynamics_shallow_water_time_update_2d_rk4__0.1.1/aggregate_verdict.json",
+      "published_operations": [
+        {
+          "operation": "dynamics_shallow_water_time_update_2d_rk4__advance",
+          "interface": "subroutine dynamics_shallow_water_time_update_2d_rk4__advance(  ncomp, nx, ny, U_n, rhs, t, dt, U_np1, guard_pass)",
+          "argument_order": [
+            "ncomp",
+            "nx",
+            "ny",
+            "U_n",
+            "rhs",
+            "t",
+            "dt",
+            "U_np1",
+            "guard_pass"
+          ],
+          "arguments": [
+            {
+              "name": "ncomp",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "nx",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "ny",
+              "type": "integer",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "U_n",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "rhs",
+              "type": "procedure(dynamics_shallow_water_time_update_2d_rk4_rhs)",
+              "intent": null,
+              "rank": 0,
+              "dimension": null,
+              "procedure_interface": "dynamics_shallow_water_time_update_2d_rk4_rhs"
+            },
+            {
+              "name": "t",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "dt",
+              "type": "real(dp)",
+              "intent": "in",
+              "rank": 0,
+              "dimension": null
+            },
+            {
+              "name": "U_np1",
+              "type": "real(dp)",
+              "intent": "out",
+              "rank": 3,
+              "dimension": "ncomp, nx, ny"
+            },
+            {
+              "name": "guard_pass",
+              "type": "logical",
+              "intent": "out",
+              "rank": 0,
+              "dimension": null
+            }
+          ],
+          "procedure_interfaces": {
+            "dynamics_shallow_water_time_update_2d_rk4_rhs": [
+              "subroutine dynamics_shallow_water_time_update_2d_rk4_rhs(ncomp, nx, ny, t, U, dUdt)",
+              "integer, intent(in) :: ncomp, nx, ny",
+              "real(dp), intent(in) :: t, U(ncomp, nx, ny)",
+              "real(dp), intent(out) :: dUdt(ncomp, nx, ny)"
+            ]
+          },
+          "interface_source": "certified_source"
+        }
+      ],
+      "interface_language": "fortran"
+    },
+    {
+      "node_key": "infrastructure/harness_fortran_cpu@0.8.0",
+      "pipeline_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.8.0/fortran_cpu/harness-fortran-cpu_20261023_001",
+      "run_id": "run_20261023_001",
+      "aggregate_verdict_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.8.0/fortran_cpu/harness-fortran-cpu_20261023_001/runs/run_20261023_001/infrastructure__harness_fortran_cpu__0.8.0/aggregate_verdict.json"
+    }
+  ],
+  "issue_severity": "none",
+  "repair_strategy": "none",
+  "repair_target_agent_run_id": "none",
+  "repair_reason": "none",
+  "leaf_mode": "workshop",
+  "prompt_contract_version": "workshop-7",
+  "workshop_lineage_id": "7c02cd4e-3c2f-4ae6-95a8-a612b5862280",
+  "workshop_provider": "codex_cli",
+  "skill_name": "",
+  "skill_ref": "",
+  "skill_must_read_refs": "",
+  "pure_language": "fortran",
+  "pure_parallel": "openmp",
+  "pure_context": {
+    "controlled_spec_document": "<redacted: 32974 bytes sha256:490e6e5ec701956b96a8f52397bfcad2c566b9110fe31363585103a2fb39b3ea>",
+    "tests_document": "<redacted: 109802 bytes sha256:01236056422e583c22eb7741646ba201c9d9796dd3203c9eeb73a8fc798188ad>",
+    "ir_document": "<redacted: 918360 bytes sha256:88e90b122b5ab85c457ec9142b86184420329b63dd0cb47021b2df11a9e877a9>",
+    "target_profile": "<redacted: 517 bytes sha256:f037029363c7606f732d2506fbb7bcc3d52f3bd6a2e69578e9c8e3133bf7c2a2>",
+    "checks_module_contract_document": "<redacted: 20002 bytes sha256:1c2a9459c3f13f63d475d4feffac833ab1986d93a47cfd54f16aca5535d9acd0>",
+    "severity_rubric_document": "<redacted: 2762 bytes sha256:e8aae7c7a1d458f535d045612b363602220dbaef993b21711843a52b9dcf34e1>",
+    "bundle_document": "<redacted: 99301 bytes sha256:91ce96a0dec0e5f8dedb9ed7f3c40abdb8c3f3a4f0acf22896fc3aad813dce01>"
+  },
+  "derivation_key": "sha256:49a29f30a820f1a4a494d7d516a90ef0c46412426c95c8dc390cbe4035bf4b5f",
+  "launch_prompt_full": "<redacted: 18335 bytes sha256:6f3a6034bd37adeaf1ff0481c80e487f9c43803a67e0f818704935d520043cf4>",
+  "launch_prompt_ref": "workspace/orchestrations/orch_20261026T085505Z_d87e8903/launches/7c02cd4e-3c2f-4ae6-95a8-a612b5862280.prompt.txt",
+  "_resolved_build_system": "make",
+  "_resolved_makefile_host_authored": true,
+  "sandbox_profile_ref": "workspace/orchestrations/orch_20261026T085505Z_d87e8903/sandbox_profiles/7c02cd4e-3c2f-4ae6-95a8-a612b5862280.json",
+  "_capture_source": {
+    "path": "workspace/orchestrations/orch_20261026T085505Z_d87e8903/launches/7c02cd4e-3c2f-4ae6-95a8-a612b5862280.request.json",
+    "bytes": 1259156,
+    "sha256": "af29193bce84ee08a89dee35f70aeb6c6e1a0047b64a9fb61c4ea6356fce8ccd"
+  }
+}

@@ -11,7 +11,6 @@ workshop request by `test_workshop_launch.py`, and the real templates by the row
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -25,6 +24,7 @@ import yaml
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
+from tools.tests import llm_samples
 from tools import pure_leaf, workshop_tree
 from tools.tests.test_pure_leaf_producer import (
     _PureFakeConductor,
@@ -39,9 +39,10 @@ _ORCH = "o"
 def _config(repo: Path, extra: str = "") -> lc.LlmConfig:
     path = repo / "llm_workshop.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
-        "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
-        f"leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700{extra}" + "}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
+            "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
+            f"max_wrapper_calls: 30, lineage_timeout_s: 2700{extra}" + "}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -67,7 +68,7 @@ class _FakeEndpoint:
 
 
 class _WorkshopFakeConductor(_PureFakeConductor):
-    """The pure fake, with the lineage home, the wrapper context and the endpoint faked and the
+    """`_PureFakeConductor`, with the lineage home, the wrapper context and the endpoint faked and the
     leaf scripted: `self.leaf_actions[i](conductor, tree, kwargs)` runs as launch i and returns
     a `ProcResult` (default: an empty envelope, rc 0)."""
 
@@ -208,7 +209,7 @@ class _Base(unittest.TestCase):
 
 
 class HappyPathTests(_Base):
-    def test_a_tree_holding_a_clean_bundle_passes_and_is_written_as_the_pure_path_writes(
+    def test_a_tree_holding_a_clean_bundle_passes_and_is_written(
             self) -> None:
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
@@ -222,11 +223,12 @@ class HappyPathTests(_Base):
         self.assertEqual(meta["result"], "pass")
         self.assertEqual(meta["leaf_mode"], "workshop")
         self.assertEqual(meta["prompt_contract_version"], pure_leaf.PURE_PROMPT_CONTRACT_VERSION)
-        self.assertEqual(meta["workshop_prompt_contract_version"],
-                         pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION)
+        # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
+        self.assertNotIn("workshop_prompt_contract_version", meta)
         row = meta["per_attempt"][0]
         self.assertEqual((row["lineage_id"], row["model_turns"], row["wrapper_calls"],
                           row["ended_by"], row["warm"]), ("child-1", 3, 0, None, False))
+        self.assertIsInstance(row["leaf_wall_s"], float)
 
     def test_the_launch_is_a_workshop_launch_of_its_own_lineage(self) -> None:
         self.run_substep()
@@ -234,7 +236,8 @@ class HappyPathTests(_Base):
         self.assertEqual(request["leaf_mode"], "workshop")
         self.assertEqual(request["workshop_lineage_id"], "child-1")
         self.assertEqual(request["prompt_contract_version"],
-                         pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION)
+                         pure_leaf.PURE_PROMPT_CONTRACT_VERSION)
+        self.assertNotIn("workshop_prompt_contract_version", request)
         self.assertIn("pure_context", request)
         (spawn,) = self.c.spawns
         self.assertEqual(spawn["mcp_config_json"],
@@ -710,7 +713,11 @@ _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harn
               "workshop_escalate_diagnose.txt")
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
-#: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
+#: HISTORY, frozen (issue #534 PR-J4-b): the retired `WORKSHOP_PROMPT_CONTRACT_VERSION` -> the
+#: digest that shipped under it. Nothing recomputes these any more and nothing asserts over the
+#: literal — the workshop leaf's contract is pinned by `test_pure_prompt_contract_drift`, whose
+#: tuple is the union of this pin's members and the pure pin's. Kept as the record of what
+#: shipped. Each was a sha256 over the workshop templates,
 #: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
 #: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`; from `workshop-6`,
 #: `orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` and the verdict repair's
@@ -751,99 +758,12 @@ _WORKSHOP_CONTRACT_DIGESTS = {
 }
 
 
-def _workshop_digest() -> str:
-    h = hashlib.sha256()
-    for name in _TEMPLATES:
-        h.update(name.encode() + b"\0" + (_DIR / name).read_bytes() + b"\0")
-    h.update(pure_leaf.WORKSHOP_SYSTEM_PROMPT.encode("utf-8"))
-    h.update(json.dumps(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT, sort_keys=True).encode("utf-8"))
-    # Step 3: the reading kind's system prompt and tool surface (`workshop-4` onward).
-    h.update(pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT.encode("utf-8"))
-    h.update(json.dumps(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT,
-                        sort_keys=True).encode("utf-8"))
-    # Issue #547 (`workshop-6` onward): the cut-read repair turn's `<repair_scope>` paragraph,
-    # a reading leaf's contract text that lives in the runtime rather than in a template.
-    h.update(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH.encode("utf-8"))
-    h.update(json.dumps([ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
-                         ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS],
-                        sort_keys=True).encode("utf-8"))
-    # Issue #534 PR-J3-a (`workshop-7` onward): the codex reading helper, a seed the leaf runs.
-    h.update(pure_leaf.CODEX_READ_HELPER_NAME.encode("utf-8") + b"\0"
-             + pure_leaf.CODEX_READ_HELPER_TEXT.encode("utf-8"))
-    # Issue #534 PR-J3-b (`workshop-8` onward): the five file tools an HTTP workshop leaf is
-    # declared — their names, descriptions and schemas are what the model reads.
-    h.update(json.dumps(list(pure_leaf.HTTP_FILE_TOOL_DECLARATIONS),
-                        sort_keys=True).encode("utf-8"))
-    return h.hexdigest()
-
-
 class TemplateTests(unittest.TestCase):
-    def test_the_workshop_contract_is_pinned_to_its_version(self) -> None:
-        self.assertEqual(_WORKSHOP_CONTRACT_DIGESTS[pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION],
-                         _workshop_digest(),
-                         "a workshop template or WORKSHOP_SYSTEM_PROMPT changed: bump "
-                         "WORKSHOP_PROMPT_CONTRACT_VERSION and pin the new digest")
-        self.assertEqual(len(set(_WORKSHOP_CONTRACT_DIGESTS.values())),
-                         len(_WORKSHOP_CONTRACT_DIGESTS))
-
     def test_each_opens_with_the_workshop_sentinel(self) -> None:
         for name in _TEMPLATES:
             with self.subTest(template=name):
                 self.assertTrue((_DIR / name).read_text().startswith(
                     pure_leaf.WORKSHOP_PROMPT_SENTINEL))
-
-    def test_the_producer_rules_are_the_pure_templates_verbatim(self) -> None:
-        """Every line of a pure producer template after its persona — the output contract, the
-        rules, the input labels, the language and parallel markers, the identity block — is in
-        its workshop twin, in order, except the document slots, which the twin replaces with
-        the seed's tree name. So a rule edited in one and not the other fails here (and the
-        bundle_meta's `prompt_contract_version` keeps naming the rules both answer)."""
-        for pure_name, workshop_name in (
-                ("pure_generate_generate.txt", "workshop_generate_generate.txt"),
-                ("pure_generate_generate_harness.txt",
-                 "workshop_generate_generate_harness.txt")):
-            with self.subTest(template=workshop_name):
-                pure = (_DIR / pure_name).read_text().split("\n")[2:]
-                workshop = (_DIR / workshop_name).read_text().split("\n")
-                kept = [ln for ln in pure if not ort._PURE_PLACEHOLDER_RE.fullmatch(ln)]
-                position = 0
-                for line in kept:
-                    self.assertIn(line, workshop[position:], line[:80])
-                    position = workshop.index(line, position) + 1
-
-    def test_the_compile_rules_are_the_pure_templates_verbatim_but_the_part_split(self) -> None:
-        """Issue #534 step 2: the compile twin carries every unit of `pure_compile_generate.txt`
-        after its persona — each line, and each numbered rule of the one-line authoring rules —
-        in order and verbatim, except EXACTLY the three units that exist for the part split of
-        issue #526 (the output contract, which leaves the per-test lists out; the "Repair turns
-        on the whole IR" paragraph; rule (5), which says who authors them). The whole-IR rule
-        (5) it carries instead holds the verification part's predicate rules verbatim, so a
-        rule edited in either pure template and not here fails."""
-        import re as _re
-        pure = (_DIR / "pure_compile_generate.txt").read_text().split("\n")[2:]
-        twin = (_DIR / "workshop_compile_generate.txt").read_text()
-        units: list[str] = []
-        for line in pure:
-            if ort._PURE_PLACEHOLDER_RE.fullmatch(line) or not line:
-                continue
-            units += (_re.split(r" (?=\(\d\) )", line) if line.startswith("Authoring rules")
-                      else [line])
-        missing, position = [], 0
-        for unit in units:
-            found = twin.find(unit, position)
-            if found == -1:
-                missing.append(unit[:30])
-            else:
-                position = found + len(unit)
-        self.assertEqual(missing, [
-            "Output contract (IR document):"[:30],
-            "Repair turns on the whole IR: the"[:30],
-            "(5) Author `io_contract.diagnostics"[:30]])
-        part = (_DIR / "pure_compile_generate_verification.txt").read_text().split("\n")
-        rules = next(ln for ln in part if ln.startswith("Authoring rules"))
-        predicate_rules = rules[rules.index("Alongside each test's predicate"):]
-        self.assertIn(predicate_rules, twin)
-        self.assertNotIn("WITHOUT the three per-test verification lists", twin)
 
     def test_no_document_is_inlined(self) -> None:
         for phase, names in (("generate", _TEMPLATES[:2]),
@@ -1308,9 +1228,10 @@ class Round3Tests(_Base):
 def _codex_config(repo: Path) -> lc.LlmConfig:
     path = repo / "llm_codex_workshop.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
-        "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
-        "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
+            "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
+            "max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -1428,9 +1349,10 @@ if __name__ == "__main__":
 def _compile_config(repo: Path) -> lc.LlmConfig:
     path = repo / "llm_workshop_compile.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
-        "phases: {compile: {substeps: {generate: {provider: claude_cli, model: opus, "
-        "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
+            "phases: {compile: {substeps: {generate: {provider: claude_cli, model: opus, "
+            "max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -1468,7 +1390,7 @@ _SURFACE = ({"node_key": "component/dep@0.1.0",
 class WorkshopCompileProducerTests(unittest.TestCase):
     """The loop on a `compile.generate` workshop entry: the leaf authors the WHOLE IR in its
     tree (`spec.ir.yaml`, or `compile_fail.json` instead), and the host takes it through the
-    pure IR producer's own checks, writers, routing and declared-fail exit. The wrapper's
+    IR document checks, writers, routing and declared-fail exit. The wrapper's
     context is the REAL `_freeze_ir_check_context` (no subprocess), the endpoint the fake."""
 
     def setUp(self) -> None:
@@ -1502,7 +1424,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         return json.loads((self.repo / self.refs.ir_ref
                            / "compile_generate_meta.json").read_text())
 
-    def test_a_tree_holding_the_whole_ir_passes_and_is_written_as_the_pure_path_writes(
+    def test_a_tree_holding_the_whole_ir_passes_and_is_written(
             self) -> None:
         from tools.tests.test_pure_leaf_compile import _assembled_ir
         outcome = self.run_substep()
@@ -1513,15 +1435,15 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual(json.loads((ir_dir / "ir_meta.json").read_text())
                          ["verification_status"], "pending")
         meta = self.meta()
-        self.assertEqual((meta["result"], meta["leaf_mode"],
-                          meta["workshop_prompt_contract_version"],
-                          meta["prompt_contract_version"]),
-                         ("pass", "workshop", pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION,
-                          pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        self.assertEqual((meta["result"], meta["leaf_mode"], meta["prompt_contract_version"]),
+                         ("pass", "workshop", pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
+        self.assertNotIn("workshop_prompt_contract_version", meta)
         self.assertNotIn("parts", meta)
         row = meta["per_attempt"][0]
         self.assertEqual((row["lineage_id"], row["warm"], row["ended_by"]),
                          ("child-1", False, None))
+        self.assertIsInstance(row["leaf_wall_s"], float)
         # The part split did not run: one launch, one lineage.
         self.assertEqual(len(self.requests()), 1)
         self.assertEqual(json.loads(
@@ -1727,20 +1649,15 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                                    {}, bad)
         self.assertIn("named after an output file", str(ctx.exception))
 
-    def test_the_pure_entry_still_runs_the_part_split(self) -> None:
-        """Dispatch: the workshop branch precedes the compile one only for a workshop entry."""
-        with mock.patch.object(wc.Conductor, "_run_pure_compile_producer",
-                               return_value="PURE") as pure, \
-                mock.patch.object(wc.Conductor, "_run_workshop_producer_substep",
-                                  return_value="WORKSHOP") as workshop:
+    def test_compile_generate_dispatches_to_the_workshop_producer(self) -> None:
+        """Dispatch: `compile.generate` runs the workshop producer loop with its tool surface.
+        (Its pure half — a pure entry running the part split — went with the part split in
+        issue #534 PR-J4-b.)"""
+        with mock.patch.object(wc.Conductor, "_run_workshop_producer_substep",
+                               return_value="WORKSHOP") as workshop:
             self.assertEqual(self.run_substep(), "WORKSHOP")
             self.assertEqual(workshop.call_args.args[-1], _SURFACE)
-            pure_c = _WorkshopFakeConductor(
-                repo_root=self.repo, orchestration_id=_ORCH,
-                orchestration_agent_run_id="orch",
-                llm_config=lc.load_llm_config(_write_pure_config(self.repo)), env={})
-            self.assertEqual(pure_c.run_substep(self.refs, "compile", "generate"), "PURE")
-        self.assertEqual((pure.call_count, workshop.call_count), (1, 1))
+        self.assertEqual(workshop.call_count, 1)
 
 
 class WorkshopSpecTests(_Base):
@@ -1768,10 +1685,8 @@ class WorkshopSpecTests(_Base):
         req = wc.build_launch_request(self.refs, **base, workshop_lineage_id="c",
                                       workshop_provider="claude_cli")
         self.assertEqual(req["workshop_provider"], "claude_cli")
-        self.assertNotIn("workshop_provider", wc.build_launch_request(self.refs, **base))
-
-
-def _write_pure_config(repo: Path) -> Path:
-    path = repo / "llm_pure.yaml"
-    path.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n", encoding="utf-8")
-    return path
+        # Neither named: since issue #534 PR-J4-b no launch shape serves a host-rendered
+        # request without a lineage (the pure leaf's), so the builder refuses it.
+        with self.assertRaises(ValueError) as ctx:
+            wc.build_launch_request(self.refs, **base)
+        self.assertIn("names its lineage (workshop_lineage_id)", str(ctx.exception))

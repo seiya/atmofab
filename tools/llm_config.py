@@ -16,12 +16,11 @@ table row instead of a new branch.
 
 **Capabilities are declared, never inferred.** `PROVIDER_CAPABILITIES` below is the single
 source of truth; a config's own `capabilities:` list may only RESTRICT a provider's set (to
-model an endpoint that, say, cannot be warm-resumed), never extend it. Since Z4 (issue #171)
-the pure leaf is the one leaf model every LLM leaf has, so a `leaf: pure` entry — the default —
-requires `pure`, which is what makes an HTTP provider admissible everywhere, and a pure entry
-narrowed away from `pure` is admissible nowhere (`llm_config_capability_insufficient_for_
-substep`). A `leaf: workshop` entry (issue #534) requires `workshop` instead, on the pairs
-`WORKSHOP_LEAF_SUBSTEPS` names. Neither is a `provider == "openai_compatible"` branch.
+model an endpoint that, say, cannot be warm-resumed), never extend it. Since issue #534 PR-J4-b
+the `workshop leaf` is the one leaf model every LLM leaf has, so every entry requires
+`workshop`, which every declared provider has, and an entry narrowed away from it is admissible
+nowhere (`llm_config_capability_insufficient_for_substep`). It is not a
+`provider == "openai_compatible"` branch.
 
 Stdlib + PyYAML only, and deliberately importing nothing from `tools.orchestration_runtime` /
 `tools.workflow_conductor`: both of those import (or will import) this module, and the
@@ -107,12 +106,6 @@ def _is_loopback(host: str) -> bool:
 
 # The capability vocabulary. These are the questions the conductor actually asks of a leaf's
 # provider; each one replaces a `backend == ...` branch:
-#   pure         the provider can run a Z2 host-mediated PURE leaf (one typed document in,
-#                one JSON document out; `write_roots: []`, no tools, no hooks, no MCP). Since
-#                Z4 (issue #171) this is the transport of every entry but a `leaf: workshop`
-#                one: the agentic loop — a
-#                tool-holding session in the checkout, driven by a launch prompt — is gone,
-#                and with it the `agentic` capability that selected it.
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
 #                context (claude `--resume --fork-session`, codex `exec resume`).
 #   workshop     the provider can run a `workshop leaf` (issue #534): a leaf that works in a
@@ -121,12 +114,12 @@ def _is_loopback(host: str) -> bool:
 #                leaf returns. The two CLI providers run it with their own tools (launch shapes
 #                measured: `pure_leaf.workshop_leaf_flags`, `pure_leaf.codex_workshop_overrides`)
 #                and the wrapper's MCP endpoint; the two HTTP providers through the host's
-#                tool-use loop (`tools/llm_workshop_loop.py`, issue #534 PR-J3-b).
-CAP_PURE = "pure"
+#                tool-use loop (`tools/llm_workshop_loop.py`, issue #534 PR-J3-b). Since issue
+#                #534 PR-J4-b it is the leaf model of every LLM leaf.
 CAP_WARM_RESUME = "warm_resume"
 CAP_WORKSHOP = "workshop"
 
-# `agentic`, `mcp_tools` and `usage_probe` are deliberately absent rather than
+# `pure`, `agentic`, `mcp_tools` and `usage_probe` are deliberately absent rather than
 # accepted-and-ignored: a configuration still spelling one is refused at `capabilities:` parse
 # time (`llm_config_invalid_field`, naming the accepted set), rather than resolving to a
 # transport or a grant that no longer exists. `mcp_tools` said a leaf could be granted build-runtime MCP tools; no leaf
@@ -135,18 +128,19 @@ CAP_WORKSHOP = "workshop"
 # issue #170 made the usage-limit wait tag-driven. Issue #405 has the wait ask the provider
 # for its reset instant again, but the source is the per-provider table
 # `tools/usage_reset.RESET_READERS` — which is both the declaration and the dispatch to the
-# reader — not a capability, so `usage_probe` stays refused.
+# reader — not a capability, so `usage_probe` stays refused. `pure` named the host-mediated
+# pure-function transport, deleted with the pure path in issue #534 PR-J4-b.
 KNOWN_CAPABILITIES: frozenset[str] = frozenset({
-    CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP,
+    CAP_WARM_RESUME, CAP_WORKSHOP,
 })
 
 # THE capability authority. A config may restrict a provider's set; it may never exceed it.
 PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
-    "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
-    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
+    "claude_cli": frozenset({CAP_WARM_RESUME, CAP_WORKSHOP}),
+    "codex_cli": frozenset({CAP_WARM_RESUME, CAP_WORKSHOP}),
     # HTTP providers: no session to reopen; the host loop serves the tools of a workshop leaf.
-    "openai_compatible": frozenset({CAP_PURE, CAP_WORKSHOP}),
-    "anthropic_api": frozenset({CAP_PURE, CAP_WORKSHOP}),
+    "openai_compatible": frozenset({CAP_WORKSHOP}),
+    "anthropic_api": frozenset({CAP_WORKSHOP}),
 }
 
 SUPPORTED_PROVIDERS: frozenset[str] = frozenset(PROVIDER_CAPABILITIES)
@@ -170,14 +164,14 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
 
 # --- mirror tables (guarded copies) --------------------------------------------------
 
-# The five substeps that run as an LLM leaf, ALL of which run as pure leaves (Z4, issue #171 —
-# there is no second transport for one of them to run on). Mirror of
+# The five substeps that run as an LLM leaf, ALL of which run as workshop leaves (issue #534
+# PR-J4-b — there is no second leaf model for one of them to run on). Mirror of
 # `workflow_conductor.SUBSTEPS` minus `Conductor._is_deterministic_substep`; guarded by
 # `test_llm_leaf_substeps_matches_conductor`.
 #
 # NOTE the dispatch in `Conductor._pure_leaf_substep` additionally gates the two GENERATE pairs
 # on the node having a bundle SHAPE at all (`Conductor._bundle_shape`: `m3c` or, since issue
-# #169, `harness`). No in-tree node answers None; a hand-crafted IR with no shape has no pure
+# #169, `harness`). No in-tree node answers None; a hand-crafted IR with no shape has no leaf
 # path for those two pairs, and since Z4 there is nothing to fall through to, so the conductor
 # fails that closed at run time (`node_has_no_bundle_shape`) — which config validation cannot
 # see, because it cannot see a node. The two COMPILE pairs (Z1, issue #168) carry no shape
@@ -201,20 +195,16 @@ LLM_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
 LLM_LEAF_PHASES: frozenset[str] = frozenset(p for p, _ in LLM_LEAF_SUBSTEPS)
 
 
-# The leaf models an entry may select with `leaf:`. `pure` is the default and the only model
-# every LLM leaf has; `workshop` is admissible on the pairs `WORKSHOP_LEAF_SUBSTEPS` names.
-LEAF_PURE = "pure"
-LEAF_WORKSHOP = "workshop"
-LEAF_MODELS: frozenset[str] = frozenset({LEAF_PURE, LEAF_WORKSHOP})
-
-# The pairs a `workshop leaf` may serve, by KIND (`docs/design/producer_workshop_leaf.md`
+# The pairs a `workshop leaf` serves, by KIND (`docs/design/producer_workshop_leaf.md`
 # §Migration order). PRODUCING: both producing substeps (steps 1 and 2), served the wrapper's
 # operations. READING: the three judging substeps (step 3; adopted 2026-10-25), served no
 # operation — a seeded tree, file tools and one output document. Mirrors of
 # `pure_leaf.WORKSHOP_PRODUCING_PAIRS` / `WORKSHOP_READING_PAIRS` (the launch validator's
 # tables), compared by `test_llm_config`. The validator's reading set also holds the `escalate`
 # diagnostician's pairs (`pure_leaf.WORKSHOP_DIAGNOSE_PAIRS`, issue #534 PR-J4-a), which no entry
-# here assigns: `defaults` serves that launch (`_defaults_entry`).
+# here assigns: `defaults` serves that launch (`_defaults_entry`). The union is
+# `LLM_LEAF_SUBSTEPS` (`test_llm_config`): there is no `leaf:` field selecting the model since
+# issue #534 PR-J4-b, and a written one is refused `llm_config_unknown_key`.
 WORKSHOP_PRODUCING_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("generate", "generate"), ("compile", "generate")})
 WORKSHOP_READING_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
@@ -229,15 +219,14 @@ WORKSHOP_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = (
 WORKSHOP_READING_PROVIDERS: frozenset[str] = frozenset({
     "claude_cli", "codex_cli", "anthropic_api", "openai_compatible"})
 
-# The entry fields of the workshop leaf. SUBSTEP-SCOPED: admissible only at
-# `phases.<phase>.substeps.<substep>`, so no level inherits one and no question of inheritance
-# across a provider switch arises. The bounds have NO default: a workshop entry states the ones
-# its KIND is served — `lineage_timeout_s` on every workshop entry, `max_wrapper_calls` on a
+# The bounds of the workshop leaf. SUBSTEP-SCOPED: admissible only at
+# `phases.<phase>.substeps.<substep>` (and `lineage_timeout_s` at `defaults`, for the
+# diagnostician `defaults` itself serves), so no level inherits one and no question of
+# inheritance across a provider switch arises. The bounds have NO default: every substep entry
+# states the ones its KIND is served — `lineage_timeout_s` on every entry, `max_wrapper_calls` on a
 # producing one only (a reading lineage is served no operation, so a call budget would bound
 # nothing; `_validate_assignment` refuses it there, because only it knows the substep).
-WORKSHOP_ENTRY_FIELDS: frozenset[str] = frozenset({
-    "leaf", "max_wrapper_calls", "lineage_timeout_s"})
-WORKSHOP_BOUND_FIELDS: tuple[str, ...] = ("max_wrapper_calls", "lineage_timeout_s")
+WORKSHOP_ENTRY_FIELDS: frozenset[str] = frozenset({"max_wrapper_calls", "lineage_timeout_s"})
 #: The bounds a workshop entry of each kind must state.
 WORKSHOP_BOUND_FIELDS_BY_KIND: Mapping[str, tuple[str, ...]] = {
     "producing": ("max_wrapper_calls", "lineage_timeout_s"),
@@ -245,14 +234,14 @@ WORKSHOP_BOUND_FIELDS_BY_KIND: Mapping[str, tuple[str, ...]] = {
 }
 
 
-def required_capabilities(phase: str, substep: str, leaf: str = LEAF_PURE) -> frozenset[str]:
-    """The capabilities an entry MUST have to run `(phase, substep)` as the `leaf` model.
+def required_capabilities(phase: str, substep: str) -> frozenset[str]:
+    """The capabilities an entry MUST have to run `(phase, substep)`.
 
-    Every LLM leaf has the pure transport (Z4, issue #171), so `pure` is what a `leaf: pure`
-    entry requires; a `leaf: workshop` entry requires `workshop` instead (issue #534)."""
+    Every LLM leaf is a workshop leaf (issue #534 PR-J4-b), so `workshop` is what every entry
+    of an LLM leaf requires."""
     caps: set[str] = set()
     if (phase, substep) in LLM_LEAF_SUBSTEPS:
-        caps.add(CAP_WORKSHOP if leaf == LEAF_WORKSHOP else CAP_PURE)
+        caps.add(CAP_WORKSHOP)
     return frozenset(caps)
 
 
@@ -394,16 +383,11 @@ class ResolvedLeafEntry:
     # a per-substep one deliberately pinned to the same string, and a run-wide override must
     # move the first and leave the second.
     declared: frozenset[str] = frozenset()
-    # The leaf model (`leaf:`; `LEAF_MODELS`) and, for a workshop entry, its two bounds:
-    # `max_wrapper_calls` wrapper calls and `lineage_timeout_s` seconds per lineage. Both are
-    # None on a pure entry and both set on a workshop one (`_finalize_entry`).
-    leaf: str = LEAF_PURE
+    # The workshop leaf's two bounds: `max_wrapper_calls` wrapper calls (a producing entry's
+    # only) and `lineage_timeout_s` seconds per lineage (every entry's; `_validate_assignment`,
+    # `_defaults_entry`).
     max_wrapper_calls: int | None = None
     lineage_timeout_s: float | None = None
-
-    @property
-    def is_workshop(self) -> bool:
-        return self.leaf == LEAF_WORKSHOP
 
     def supports(self, capability: str) -> bool:
         """Fail-closed capability test: an unknown capability name is NOT supported.
@@ -433,14 +417,12 @@ class ResolvedLeafEntry:
             "command": self.command,
             "effort": self.effort,
         }
-        # Named only on a workshop entry, so the row of every pure entry — which every recorded
-        # invocation carries — stays what it was.
-        if self.is_workshop:
-            row["leaf"] = self.leaf
-            # A judging (reading) entry states no call budget (issue #534 step 3): the row
-            # names the bounds the entry has, never a `"None"` it does not.
-            if self.max_wrapper_calls is not None:
-                row["max_wrapper_calls"] = str(self.max_wrapper_calls)
+        # The bounds the entry has, never a `"None"` it does not: a judging (reading) entry
+        # states no call budget (issue #534 step 3). A row recorded before issue #534 PR-J4-b
+        # may also carry `leaf`, which named the leaf model when an entry selected one.
+        if self.max_wrapper_calls is not None:
+            row["max_wrapper_calls"] = str(self.max_wrapper_calls)
+        if self.lineage_timeout_s is not None:
             row["lineage_timeout_s"] = str(self.lineage_timeout_s)
         return row
 
@@ -477,21 +459,17 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in raw.items():
         if key not in _ENTRY_FIELDS:
+            # `leaf:` is the one key an operator's pre-PR-J4-b file (and a stale document)
+            # still writes, so its refusal names the migration.
+            retired = ("; `leaf:` was retired in issue #534 PR-J4-b (every LLM leaf is a "
+                       "workshop leaf): delete the line" if key == "leaf" else "")
             raise LlmConfigError(
                 "llm_config_unknown_key",
-                f"unknown key {key!r}; accepted: {', '.join(sorted(_ENTRY_FIELDS))}",
+                f"unknown key {key!r}; accepted: {', '.join(sorted(_ENTRY_FIELDS))}{retired}",
                 where=f"{where}.{key}")
         loc = f"{where}.{key}"
         if key in ("provider", "model", "command", "base_url", "api_key_env", "effort"):
             out[key] = _clean_str(value, loc)
-        elif key == "leaf":
-            leaf = _clean_str(value, loc).lower()
-            if leaf not in LEAF_MODELS:
-                raise LlmConfigError(
-                    "llm_config_invalid_field",
-                    f"leaf {value!r} is not a leaf model; accepted: "
-                    f"{', '.join(sorted(LEAF_MODELS))}", where=loc)
-            out[key] = leaf
         elif key == "max_wrapper_calls":
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise LlmConfigError(
@@ -665,32 +643,6 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 where=f"{where}.capabilities")
         capabilities = frozenset(declared)
 
-    leaf = str(fields.get("leaf") or LEAF_PURE)
-    if leaf == LEAF_WORKSHOP:
-        if CAP_WORKSHOP not in capabilities:
-            raise LlmConfigError(
-                "llm_config_workshop_unsupported_on_provider",
-                f"`leaf: workshop` needs a provider with the {CAP_WORKSHOP!r} capability; "
-                f"provider {provider!r} has "
-                f"{', '.join(sorted(capabilities)) or '(none)'} (the providers that run one: "
-                f"{', '.join(sorted(p for p, caps in PROVIDER_CAPABILITIES.items() if CAP_WORKSHOP in caps))})",
-                where=f"{where}.leaf")
-        # The bound every kind states. `max_wrapper_calls` is decided per kind by
-        # `_validate_assignment`, which knows the substep.
-        if fields.get("lineage_timeout_s") is None:
-            raise LlmConfigError(
-                "llm_config_workshop_bound_missing",
-                "a `leaf: workshop` entry must state lineage_timeout_s (missing: "
-                "lineage_timeout_s); there is no default bound", where=where)
-    else:
-        present = [f for f in WORKSHOP_BOUND_FIELDS if f in fields]
-        if present:
-            raise LlmConfigError(
-                "llm_config_workshop_bound_on_pure_entry",
-                f"{', '.join(present)} bound(s) a workshop leaf and this entry is "
-                f"`leaf: {leaf}`; a pure leaf makes no wrapper call and has no lineage",
-                where=f"{where}.{present[0]}")
-
     base_url = str(fields.get("base_url") or "")
     if provider == "anthropic_api" and not base_url:
         base_url = ANTHROPIC_DEFAULT_BASE_URL
@@ -736,10 +688,9 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
         stream=bool(fields.get("stream", True)),
         effort=effort,
         capabilities=capabilities,
-        leaf=leaf,
-        max_wrapper_calls=fields.get("max_wrapper_calls") if leaf == LEAF_WORKSHOP else None,
-        lineage_timeout_s=(float(fields["lineage_timeout_s"]) if leaf == LEAF_WORKSHOP
-                           else None),
+        max_wrapper_calls=fields.get("max_wrapper_calls"),
+        lineage_timeout_s=(float(fields["lineage_timeout_s"])
+                           if fields.get("lineage_timeout_s") is not None else None),
     )
 
 
@@ -871,52 +822,46 @@ class LlmConfig:
 def _validate_assignment(phase: str, substep: str, entry: ResolvedLeafEntry, where: str) -> None:
     """Reject an entry that cannot run the substep it was assigned to.
 
-    Three rules. A `leaf: workshop` entry is admissible only on a pair `WORKSHOP_LEAF_SUBSTEPS`
-    names (issue #534), states the bounds its KIND is served (`WORKSHOP_BOUND_FIELDS_BY_KIND`:
-    a producing entry `max_wrapper_calls` and `lineage_timeout_s`; a reading entry
-    `lineage_timeout_s` and NOT `max_wrapper_calls`, a budget of calls no operation is served
-    to), and on a reading pair names a provider in `WORKSHOP_READING_PROVIDERS`. And an entry
-    must have the capability its leaf model requires
-    (`required_capabilities`): every LLM leaf has the pure transport, so a pure entry narrowed
-    away from `pure` can run nothing. Stated as a capability comparison rather than a provider
-    name test — the declared set is the authority, and `capabilities:` may narrow it."""
-    if entry.is_workshop and (phase, substep) not in WORKSHOP_LEAF_SUBSTEPS:
-        raise LlmConfigError(
-            "llm_config_workshop_substep_inadmissible",
-            f"`leaf: workshop` is admissible on "
-            f"{', '.join(f'{p}.{s}' for p, s in sorted(WORKSHOP_LEAF_SUBSTEPS))} only; "
-            f"{phase}.{substep} runs as a pure-function leaf", where=f"{where}.leaf")
-    if entry.is_workshop:
-        reading = (phase, substep) in WORKSHOP_READING_SUBSTEPS
-        if reading and entry.max_wrapper_calls is not None:
-            raise LlmConfigError(
-                "llm_config_workshop_bound_not_served",
-                f"max_wrapper_calls bounds a workshop leaf's wrapper operations, and "
-                f"{phase}.{substep} is a judging substep: a judging lineage is served no "
-                f"operation, so the bound would bound nothing; state lineage_timeout_s alone",
-                where=f"{where}.max_wrapper_calls")
-        if not reading and entry.max_wrapper_calls is None:
-            raise LlmConfigError(
-                "llm_config_workshop_bound_missing",
-                f"a `leaf: workshop` entry on the producing substep {phase}.{substep} must "
-                f"state {' and '.join(WORKSHOP_BOUND_FIELDS_BY_KIND['producing'])} (missing: "
-                f"max_wrapper_calls); there is no default bound", where=where)
-        if reading and entry.provider not in WORKSHOP_READING_PROVIDERS:
-            raise LlmConfigError(
-                "llm_config_workshop_reading_unsupported_on_provider",
-                f"`leaf: workshop` on the judging substep {phase}.{substep} runs on "
-                f"{', '.join(sorted(WORKSHOP_READING_PROVIDERS))} only; provider "
-                f"{entry.provider!r} has no reading tool surface",
-                where=f"{where}.leaf")
-    for cap in sorted(required_capabilities(phase, substep, entry.leaf)):
+    Every LLM leaf is a workshop leaf (issue #534 PR-J4-b). An entry must have the capability
+    that requires (`required_capabilities`), stated as a capability comparison rather than a
+    provider name test — the declared set is the authority, and `capabilities:` may narrow it.
+    It states the bounds its KIND is served (`WORKSHOP_BOUND_FIELDS_BY_KIND`: a producing entry
+    `max_wrapper_calls` and `lineage_timeout_s`; a reading entry `lineage_timeout_s` and NOT
+    `max_wrapper_calls`, a budget of calls no operation is served to), and on a reading pair it
+    names a provider in `WORKSHOP_READING_PROVIDERS`."""
+    for cap in sorted(required_capabilities(phase, substep)):
         if not entry.supports(cap):
             raise LlmConfigError(
                 "llm_config_capability_insufficient_for_substep",
-                f"substep {phase}.{substep} as a `leaf: {entry.leaf}` entry requires "
-                f"capability {cap!r}, which provider {entry.provider!r} does not have (it has "
-                f"{', '.join(sorted(entry.capabilities)) or '(none)'}); a pure entry needs "
-                f"`pure`, the one leaf model every LLM leaf has, and a workshop entry needs "
-                f"`workshop`", where=where)
+                f"substep {phase}.{substep} requires capability {cap!r}, which provider "
+                f"{entry.provider!r} does not have here (it has "
+                f"{', '.join(sorted(entry.capabilities)) or '(none)'}); every LLM leaf is a "
+                f"workshop leaf", where=where)
+    reading = (phase, substep) in WORKSHOP_READING_SUBSTEPS
+    missing = [f for f in WORKSHOP_BOUND_FIELDS_BY_KIND["reading" if reading else "producing"]
+               if getattr(entry, f) is None]
+    if missing:
+        kind = "judging" if reading else "producing"
+        raise LlmConfigError(
+            "llm_config_workshop_bound_missing",
+            f"the {kind} substep {phase}.{substep} must state "
+            f"{' and '.join(WORKSHOP_BOUND_FIELDS_BY_KIND['reading' if reading else 'producing'])}"
+            f" under phases.{phase}.substeps.{substep} (missing: {', '.join(missing)}); there "
+            f"is no default bound, and no level inherits one",
+            where=f"phases.{phase}.substeps.{substep}")
+    if reading and entry.max_wrapper_calls is not None:
+        raise LlmConfigError(
+            "llm_config_workshop_bound_not_served",
+            f"max_wrapper_calls bounds a workshop leaf's wrapper operations, and "
+            f"{phase}.{substep} is a judging substep: a judging lineage is served no "
+            f"operation, so the bound would bound nothing; state lineage_timeout_s alone",
+            where=f"{where}.max_wrapper_calls")
+    if reading and entry.provider not in WORKSHOP_READING_PROVIDERS:
+        raise LlmConfigError(
+            "llm_config_workshop_reading_unsupported_on_provider",
+            f"the judging substep {phase}.{substep} runs on "
+            f"{', '.join(sorted(WORKSHOP_READING_PROVIDERS))} only; provider "
+            f"{entry.provider!r} has no reading tool surface", where=f"{where}.provider")
 
 
 #: The workshop field `defaults` states for ITS OWN launch, the `escalate` diagnostician (issue
@@ -927,7 +872,9 @@ DEFAULTS_WORKSHOP_FIELDS: frozenset[str] = frozenset({"lineage_timeout_s"})
 
 def _refuse_workshop_fields_outside_a_substep(fields: Mapping[str, Any], where: str) -> None:
     """`WORKSHOP_ENTRY_FIELDS` are substep-scoped: refused at a phase, and at `defaults` except
-    `DEFAULTS_WORKSHOP_FIELDS`, which bound the diagnostician `defaults` itself serves."""
+    `DEFAULTS_WORKSHOP_FIELDS`, which bound the diagnostician `defaults` itself serves.
+    `leaf` is no member since issue #534 PR-J4-b: it is refused everywhere, as an unknown entry
+    key (`_layer_fields`)."""
     exempt = DEFAULTS_WORKSHOP_FIELDS if where == "defaults" else frozenset()
     present = sorted((set(fields) & WORKSHOP_ENTRY_FIELDS) - exempt)
     if present:
@@ -935,22 +882,22 @@ def _refuse_workshop_fields_outside_a_substep(fields: Mapping[str, Any], where: 
             "llm_config_workshop_field_not_substep_scoped",
             f"{', '.join(present)} may be written only under phases.<phase>.substeps.<substep>"
             f" (`defaults` takes lineage_timeout_s alone, the escalate diagnostician's bound): "
-            f"they select and bound one substep's leaf model, and no level inherits them",
+            f"they bound one substep's lineage, and no level inherits them",
             where=f"{where}.{present[0]}")
 
 
 def _inheritable_default_fields(default_fields: Mapping[str, Any]) -> dict[str, Any]:
     """The `defaults` fields a substep entry inherits: every one but `DEFAULTS_WORKSHOP_FIELDS`.
     `_merge_layers` copies every layer-0 field not provider-scoped into every entry, so without
-    this the diagnostician's bound would reach each substep entry (and be refused on a pure one
-    as `llm_config_workshop_bound_on_pure_entry`)."""
+    this the diagnostician's bound would reach each substep entry, which then would not state
+    its own (`llm_config_workshop_bound_missing` is what keeps every bound substep-scoped)."""
     return {k: v for k, v in default_fields.items() if k not in DEFAULTS_WORKSHOP_FIELDS}
 
 
 def _defaults_entry(default_fields: Mapping[str, Any]) -> ResolvedLeafEntry:
-    """The resolved `defaults` entry: the diagnostician's, a READING workshop leaf by
-    construction (issue #534 PR-J4-a) — `leaf` is set here, never written by the operator
-    (refused at `defaults`), and `lineage_timeout_s` is required."""
+    """The resolved `defaults` entry: the diagnostician's, a READING workshop leaf (issue #534
+    PR-J4-a) — `lineage_timeout_s` is required and `max_wrapper_calls` refused
+    (`_refuse_workshop_fields_outside_a_substep`)."""
     declared = frozenset(default_fields)
     base = _finalize_entry(_inheritable_default_fields(default_fields), "defaults", declared)
     if not base.supports(CAP_WORKSHOP) or base.provider not in WORKSHOP_READING_PROVIDERS:
@@ -968,7 +915,7 @@ def _defaults_entry(default_fields: Mapping[str, Any]) -> ResolvedLeafEntry:
             "`defaults` must state lineage_timeout_s (missing: lineage_timeout_s): it bounds "
             "the `escalate` diagnostician's lineage, which `defaults` serves; there is no "
             "default bound, and no substep entry inherits it", where="defaults")
-    return _finalize_entry({**default_fields, "leaf": LEAF_WORKSHOP}, "defaults", declared)
+    return _finalize_entry(dict(default_fields), "defaults", declared)
 
 
 def load_llm_config(path: str | Path, *, content: bytes | None = None) -> LlmConfig:

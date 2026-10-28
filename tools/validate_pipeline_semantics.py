@@ -56,7 +56,6 @@ try:
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
-        WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
         is_workshop_request as _pure_leaf_is_workshop_request,
@@ -103,7 +102,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
-        WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
         is_workshop_request as _pure_leaf_is_workshop_request,
@@ -3624,27 +3622,6 @@ def _parse_test_ids_from_tests_md(tests_path: Path) -> list[str]:
     return test_ids
 
 
-def _tests_md_test_block_bytes(text: str) -> dict[str, int]:
-    """The UTF-8 size of each test's definition in a `tests.md` text, keyed by test id in
-    `_parse_test_ids_from_tests_md`'s order. A definition runs from its id declaration (either
-    form) to the next declaration or `## ` heading, as `_parse_cross_target_judged_test_ids`
-    reads it; a repeated id adds its second block to the first's size. The bullet form starts
-    its block at the bullet, so a heading above it counts toward the test before — a size, not
-    a boundary any reader relies on."""
-    sizes: dict[str, int] = {}
-    current: str | None = None
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        match = TEST_ID_HEADING_PATTERN.match(line) or TEST_ID_BULLET_PATTERN.match(line)
-        if match:
-            current = match.group(1).strip() or None
-            if current is not None:
-                sizes.setdefault(current, 0)
-        elif line.startswith("## "):
-            current = None
-        if current is not None:
-            sizes[current] += len(raw_line.encode("utf-8")) + 1
-    return sizes
 
 
 def _parse_cross_target_judged_test_ids(tests_path: Path) -> set[str] | None:
@@ -8142,10 +8119,11 @@ def _validate_orchestration_hierarchy(
                                         req_payload_for_launch.get("prompt_contract_version")
                                         if isinstance(req_payload_for_launch, dict) else None
                                     )
-                                    # A workshop record carries its own counter (issue #534).
-                                    expected_version = (WORKSHOP_PROMPT_CONTRACT_VERSION
-                                                        if is_workshop
-                                                        else PURE_PROMPT_CONTRACT_VERSION)
+                                    # ONE counter since issue #534 PR-J4-b: a workshop record
+                                    # carried its own (`workshop-N`) through PR-J4-a, and one
+                                    # stamped so fails here — the `--resume` barrier the
+                                    # retirement is (docs/RUNBOOK.md).
+                                    expected_version = PURE_PROMPT_CONTRACT_VERSION
                                     mode_word = "workshop" if is_workshop else "pure"
                                     if req_version != expected_version:
                                         violations.append(

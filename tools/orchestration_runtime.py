@@ -95,7 +95,6 @@ try:
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
-        WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
@@ -145,7 +144,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
-        WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
@@ -4855,12 +4853,6 @@ def _write_json_transaction(
             )
         response["agent_session_id"] = thread_id
         response["session_id"] = thread_id
-        raw_lineage = response.get("codex_lineage_id")
-        lineage = (
-            raw_lineage.strip()
-            if isinstance(raw_lineage, str) and raw_lineage.strip()
-            else None
-        )
         transaction_updates = {expected_targets[0]: response}
         session_index = _read_session_run_index_from_path(expected_targets[1])
         _upsert_session_run_index_entry(
@@ -4870,7 +4862,6 @@ def _write_json_transaction(
             context_id=context_id,
             agent_role=agent_role,
             status=status,
-            codex_lineage_id=lineage,
         )
         transaction_updates[expected_targets[1]] = session_index
         targets = list(expected_targets)
@@ -5352,7 +5343,6 @@ def _append_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
-    codex_lineage_id: str | None = None,
     workshop_lineage_id: str | None = None,
 ) -> None:
     transaction_dir = _orchestration_root(repo_root, orchestration_id)
@@ -5366,7 +5356,6 @@ def _append_session_run_index_entry(
             context_id=context_id,
             agent_role=agent_role,
             status=status,
-            codex_lineage_id=codex_lineage_id,
             workshop_lineage_id=workshop_lineage_id,
         )
         _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
@@ -5380,14 +5369,14 @@ def _upsert_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
-    codex_lineage_id: str | None = None,
     workshop_lineage_id: str | None = None,
 ) -> None:
     """Update ``doc`` with one normalized session/run binding without writing it.
 
-    A lineage id (`codex_lineage_id`, or a workshop leaf's `workshop_lineage_id`, issue #534)
-    is recorded when given and kept when an update omits it: the launches of one lineage are
-    the rows carrying its id."""
+    A workshop leaf's lineage id (`workshop_lineage_id`, issue #534) is recorded when given and
+    kept when an update omits it: the launches of one lineage are the rows carrying its id. (A
+    row written before issue #534 PR-J4-b may carry the pure codex leaf's `codex_lineage_id`,
+    which an update keeps as it keeps any field it does not name.)"""
     entries_obj = doc.get("entries")
     entries = entries_obj if isinstance(entries_obj, list) else []
     normalized_run_id = agent_run_id.strip()
@@ -5405,8 +5394,6 @@ def _upsert_session_run_index_entry(
         item["context_id"] = normalized_context_id
         item["agent_role"] = normalized_role
         item["status"] = normalized_status
-        if codex_lineage_id is not None:
-            item["codex_lineage_id"] = codex_lineage_id
         if workshop_lineage_id is not None:
             item["workshop_lineage_id"] = workshop_lineage_id
         item["updated_at"] = _utc_now_iso()
@@ -5420,8 +5407,6 @@ def _upsert_session_run_index_entry(
             "status": normalized_status,
             "recorded_at": _utc_now_iso(),
         }
-    if codex_lineage_id is not None:
-        entry["codex_lineage_id"] = codex_lineage_id
     if workshop_lineage_id is not None:
         entry["workshop_lineage_id"] = workshop_lineage_id
     entries.append(entry)
@@ -7419,7 +7404,7 @@ def _runtime_ro_bind_paths() -> list[str]:
 # names, and a name absent here is absent from the child. What this closes is the PROCESS
 # environment only. A claude leaf's `HOME` is the operator's, and an `env` block in the
 # settings file under it set both names again (measured; issue #453) until the leaf
-# launched with `--restricted`, which ignores that file (`pure_leaf.pure_leaf_flags`). An
+# launched with `--restricted`, which ignores that file (`pure_leaf.workshop_leaf_flags`). An
 # `env` block in the CLI's GLOBAL config under it still sets them: that channel is not
 # closed but refused, by preflight (`claude_global_config_env_absent`).
 #
@@ -8035,47 +8020,37 @@ def build_readonly_bwrap_profile(
     leaf_mode: str | None = None,
     credential_rw_mapping: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
-    """A bwrap profile for a READ-ONLY leaf that has no capability / write_roots.
+    """The bwrap profile of a `workshop leaf` lineage (issue #534) — the one profile any leaf
+    runs under since issue #534 PR-J4-b. (The function keeps the name of the READ-ONLY profile
+    the pure leaf ran under, `readonly: True` and no `leaf_mode`; that profile is refused here
+    and at `render_bwrap_command`, and `Conductor.spawn_leaf` refuses it by name.)
 
-    THE WORKSHOP VARIANT (issue #534) is the same profile with four parameters: `leaf_mode=
-    "workshop"`, `readonly=False`, `workdir=<the lineage's tree>` and `credential_rw_mapping=
-    (<the operator's claude credentials file>, <config>/.credentials.json)`, with
-    `backend_rw_override=[<config>, <tree>]` and `env_overrides={"CLAUDE_CONFIG_DIR": <config>}`
-    (`claude_workshop_profile_kwargs`). Both rw binds are OUTSIDE the checkout (the lineage home,
-    `_prepare_claude_workshop_home`), so `write_roots` stays empty and the checkout is still an
-    empty tmpfs: what a workshop leaf can write is its own tree and its own CLI home, and the
-    one file mapping is the credential the CLI refreshes in place (it writes through a bind of
-    a single file — measured on CLI 2.1.309 with `.claude.json` bound the same way, which the
-    CLI writes with the same file writer: the write landed on the host file; the credential
-    write itself happens only on a token refresh, which an unbilled run cannot provoke). The `readonly`
-    the spawn seam checks is therefore False on this profile, and `Conductor.spawn_leaf`
-    admits it only with exactly those two rw paths. Nothing else of this function changes.
+    Four parameters make it a lineage's: `leaf_mode="workshop"`, `readonly=False`,
+    `workdir=<the lineage's tree>` and, for claude, `credential_rw_mapping=(<the operator's
+    claude credentials file>, <config>/.credentials.json)`, with `backend_rw_override=[<config>,
+    <tree>]` and `env_overrides` naming the CLI home (`claude_workshop_profile_kwargs`,
+    `codex_workshop_profile_kwargs`). Both rw binds are OUTSIDE the checkout (the lineage home),
+    so `write_roots` stays empty and the checkout is an empty tmpfs (issue #227): what a
+    workshop leaf can write is its own tree and its own CLI home, and the one file mapping is
+    the credential the claude CLI refreshes in place (it writes through a bind of a single file
+    — measured on CLI 2.1.309 with `.claude.json` bound the same way, which the CLI writes with
+    the same file writer: the write landed on the host file; the credential write itself
+    happens only on a token refresh, which an unbilled run cannot provoke).
+    `Conductor.spawn_leaf` admits it only with exactly those two rw paths.
 
-    The profile every leaf runs under — a pure leaf's as below, a workshop leaf's with the four
-    parameters of the paragraph before this one. Its sole production caller is `record_launch`'s
-    child-process branch. The checkout is NOT
-    bound (issue #227): an empty tmpfs sits at `repo_root`, so a tool-bearing codex leaf finds
-    neither the artifact trees nor `tools/` / `docs/` / `spec/` — a pure leaf's whole context
-    is inlined in its launch prompt and it needs no repository file. What IS bound: the
+    Its sole production caller is `record_launch`'s child-process branch. The checkout is NOT
+    bound: an empty tmpfs sits at `repo_root`, so a leaf finds neither the artifact trees nor
+    `tools/` / `docs/` / `spec/`; its documents are seed files of its tree. What IS bound: the
     system directories and the backend CLI's install root (ro, `runtime_ro_bind_paths`), the
-    backend's config/credential home (rw, auth/session, outside repo_root), and the leaf's
-    own two scratch roots (rw): `workspace/tmp/<arid>` and this profile's `tmp_dir`,
-    `sandboxes/<arid>/tmp` under the orchestration. There are NO write_roots and NO read-root
-    file pins.
-
-    Nothing inside the repository is reachable EXCEPT those two roots, the leaf's own scratch
-    — bound rw below, under the tmpfs, so the leaf's `TMPDIR` resolves. OUTSIDE the repository
-    the codex home a leaf is bound is its own thread's LINEAGE home, holding that thread's
-    rollout and nothing of any other thread's (issue #245; the WHY comment at the `--tmpfs`
-    emission in `render_bwrap_command`). Nothing an artifact
-    could be written to is writable, so a leaf has
-    nothing to attribute and the FS-diff is trivially empty; an artifact write it attempts is
-    refused by bwrap itself. (The round-2 review caught this sentence claiming the stronger,
-    false thing.) The
-    per-orchestration `hooks/` and `audit/` binds that used to sit here were for the leaf's own
-    PreToolUse/PostToolUse hooks to persist their event log and first-read state — the leaf
-    runs no hook now, so binding them writable would open the only repository-writable surface
-    this profile has, for nothing.
+    lineage's two rw directories, and the leaf's own two scratch roots (rw):
+    `workspace/tmp/<arid>` and this profile's `tmp_dir`, `sandboxes/<arid>/tmp` under the
+    orchestration. There are NO write_roots and NO read-root file pins. Nothing inside the
+    repository is reachable EXCEPT those two scratch roots — bound rw below, under the tmpfs,
+    so the leaf's `TMPDIR` resolves — and nothing an artifact could be written to is writable,
+    so an artifact write the leaf attempts is refused by bwrap itself. The per-orchestration
+    `hooks/` and `audit/` binds that used to sit here were for an agentic leaf's own hooks —
+    the leaf runs no hook now, so binding them writable would open a repository-writable
+    surface for nothing.
     """
     sandbox_root = _orchestration_root(repo_root, orchestration_id) / "sandboxes" / agent_run_id
     tmp_root = sandbox_root / "tmp"
@@ -8094,35 +8069,26 @@ def build_readonly_bwrap_profile(
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
     if env_overrides:
         child_env.update(env_overrides)
-    workshop = leaf_mode == WORKSHOP_PROFILE_LEAF_MODE
-    if leaf_mode is not None and not workshop:
+    if leaf_mode != WORKSHOP_PROFILE_LEAF_MODE or readonly is not False:
         raise ValueError(
-            f"profile leaf_mode must be {WORKSHOP_PROFILE_LEAF_MODE!r} when given (a pure "
-            f"profile names none); got {leaf_mode!r}")
-    if workshop != (not readonly):
+            f"a leaf profile is a workshop lineage's (leaf_mode={WORKSHOP_PROFILE_LEAF_MODE!r}, "
+            f"readonly=False); got leaf_mode={leaf_mode!r}, readonly={readonly!r} — the "
+            "read-only profile of the pure leaf went in issue #534 PR-J4-b")
+    family = workshop_profile_family(env_overrides or {})
+    if workdir is None:
+        raise ValueError("a workshop profile needs its tree as workdir")
+    # The claude CLI refreshes its OAuth token in place, so its credential is bound
+    # read-write; codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
+    # kwargs`), and a codex workshop profile binding a credential read-write is refused.
+    if (credential_rw_mapping is not None) != (family == "claude"):
         raise ValueError(
-            "a workshop profile is the one writable profile and a writable profile is a "
-            f"workshop one (leaf_mode={leaf_mode!r}, readonly={readonly!r})")
-    if (credential_rw_mapping is not None or workdir is not None) and not workshop:
-        raise ValueError("workdir and credential_rw_mapping belong to a workshop profile only")
-    if workshop:
-        family = workshop_profile_family(env_overrides or {})
-        if workdir is None:
-            raise ValueError("a workshop profile needs its tree as workdir")
-        # The claude CLI refreshes its OAuth token in place, so its credential is bound
-        # read-write; codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
-        # kwargs`), and a codex workshop profile binding a credential read-write is refused.
-        if (credential_rw_mapping is not None) != (family == "claude"):
-            raise ValueError(
-                f"a {family} workshop profile "
-                + ("needs its credential mapping" if family == "claude"
-                   else "binds no credential read-write"))
-    profile_extra: dict[str, Any] = {}
-    if workshop:
-        profile_extra = {"leaf_mode": WORKSHOP_PROFILE_LEAF_MODE}
-        if credential_rw_mapping is not None:
-            profile_extra["runtime_rw_credential_mapping"] = [str(credential_rw_mapping[0]),
-                                                              str(credential_rw_mapping[1])]
+            f"a {family} workshop profile "
+            + ("needs its credential mapping" if family == "claude"
+               else "binds no credential read-write"))
+    profile_extra: dict[str, Any] = {"leaf_mode": WORKSHOP_PROFILE_LEAF_MODE}
+    if credential_rw_mapping is not None:
+        profile_extra["runtime_rw_credential_mapping"] = [str(credential_rw_mapping[0]),
+                                                          str(credential_rw_mapping[1])]
     return {
         "orchestration_id": orchestration_id,
         "agent_run_id": agent_run_id,
@@ -8140,10 +8106,10 @@ def build_readonly_bwrap_profile(
         # NOTHING under the repository is writable to this leaf.
         "runtime_rw_rel_paths": [],
         "runtime_rw_file_paths": [],
-        "workdir": str(workdir) if workshop else str(repo_root),
+        "workdir": str(workdir),
         "env": child_env,
         "generated_at": _utc_now_iso(),
-        "readonly": not workshop,
+        "readonly": False,
         **profile_extra,
     }
 
@@ -8264,35 +8230,30 @@ def render_bwrap_command(
     # one declares `CODEX_HOME` and remounts its two host files read-only into it (step 2
     # PR-2). Each names a path the profile's own rw binds hold, so none can reach a path the
     # mount set above does not already grant.
+    # Since issue #534 PR-J4-b it is the ONLY profile: the read-only one the pure leaf ran
+    # under (no `leaf_mode`, `readonly: True`, workdir at `repo_root`) is refused.
     leaf_mode = profile.get("leaf_mode")
     workshop = leaf_mode == WORKSHOP_PROFILE_LEAF_MODE
-    if leaf_mode is not None and not workshop:
-        raise ValueError(f"profile leaf_mode must be {WORKSHOP_PROFILE_LEAF_MODE!r} when present "
-                         f"(got {leaf_mode!r})")
+    if not workshop:
+        raise ValueError(f"profile leaf_mode must be {WORKSHOP_PROFILE_LEAF_MODE!r} (got "
+                         f"{leaf_mode!r}): every leaf runs in a workshop lineage since issue "
+                         "#534 PR-J4-b")
     rw_paths = [str(item).strip() for item in profile.get("runtime_rw_bind_paths", [])
                 if isinstance(item, str) and item.strip()]
     workdir = str(profile.get("workdir") or repo_root).strip()
-    if workshop:
-        if profile.get("readonly") is not False or workdir not in rw_paths:
-            raise ValueError(
-                "a workshop profile is writable and its workdir is one of its rw binds "
-                f"(readonly={profile.get('readonly')!r}, workdir={workdir!r})")
-    elif workdir != repo_root:
-        raise ValueError(f"profile workdir must be repo_root on a non-workshop profile "
-                         f"(got {workdir!r})")
+    if profile.get("readonly") is not False or workdir not in rw_paths:
+        raise ValueError(
+            "a workshop profile is writable and its workdir is one of its rw binds "
+            f"(readonly={profile.get('readonly')!r}, workdir={workdir!r})")
     credential = profile.get("runtime_rw_credential_mapping")
-    if credential is not None and not workshop:
-        raise ValueError("runtime_rw_credential_mapping belongs to a workshop profile only")
     cred_src = cred_dst = ""
-    family = ""
-    if workshop:
-        env_of_profile = profile.get("env") if isinstance(profile.get("env"), dict) else {}
-        family = workshop_profile_family(env_of_profile)
-        cli_home = str(env_of_profile.get(WORKSHOP_PROFILE_HOME_ENV[family]) or "")
-        if cli_home not in rw_paths or cli_home == workdir:
-            raise ValueError(
-                f"a {family} workshop profile's {WORKSHOP_PROFILE_HOME_ENV[family]} is one of its "
-                f"rw binds and not its tree (got {cli_home!r})")
+    env_of_profile = profile.get("env") if isinstance(profile.get("env"), dict) else {}
+    family = workshop_profile_family(env_of_profile)
+    cli_home = str(env_of_profile.get(WORKSHOP_PROFILE_HOME_ENV[family]) or "")
+    if cli_home not in rw_paths or cli_home == workdir:
+        raise ValueError(
+            f"a {family} workshop profile's {WORKSHOP_PROFILE_HOME_ENV[family]} is one of its "
+            f"rw binds and not its tree (got {cli_home!r})")
     if family == "claude":
         if not (isinstance(credential, list) and len(credential) == 2
                 and all(isinstance(part, str) and part.strip() for part in credential)):
@@ -8508,7 +8469,6 @@ def render_bwrap_command(
     cmd.append("--")
     cmd.extend([str(part) for part in command_argv])
     return cmd
-
 
 
 # --- the wrapper's runs (a `workshop leaf`'s second sandbox row, issue #534) ---------------
@@ -8885,7 +8845,7 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "codex_version_available",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
     "sandbox_bwrap_exec", "codex_exec_json_streaming",
-    "codex_exec_pure_isolation_flags", "codex_exec_resume", "codex_prompt_stdin",
+    "codex_exec_resume", "codex_prompt_stdin",
 })
 CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
     "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
@@ -8897,15 +8857,15 @@ REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
     "claude": CLAUDE_REQUIRED_LAUNCH_CHECKS,
 }
 
-# Every option `Conductor.leaf_command` puts on a codex warm-resume argv, checked against
+# Every option `Conductor.leaf_command` puts on a codex warm-resume argv (a workshop lineage's
+# resume, the one codex resume since issue #534 PR-J4-b), checked against
 # `codex exec resume --help` by the `codex_exec_resume` probe. The `exec` and `exec resume`
 # subcommands do NOT take the same options — notably `resume` has no `--sandbox`, so the
-# pure read-only policy is re-pinned there via `-c sandbox_mode=...` instead. Probing the
-# `exec` help alone would pass on a CLI where the resume argv aborts at parsing, before any
-# `thread.started`, turning every pure repair turn into a transport death. Keep this in sync
-# with the resume branch of `leaf_command` (pinned by `tools/tests/test_pure_leaf.py`
-# `LeafCommandPureBranchTest.test_codex_resume_argv_options_are_all_preflight_certified`,
-# which asserts the emitted option set equals this one).
+# `workspace-write` policy is re-pinned there via `--config sandbox_mode=...` instead. Probing
+# the `exec` help alone would pass on a CLI where the resume argv aborts at parsing, before any
+# `thread.started`, turning every repair turn into a transport death. Keep this in sync with
+# the resume branch of `leaf_command` (a suite row asserts the emitted option set equals this
+# one). The cold argv's options are `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS`.
 CODEX_EXEC_RESUME_REQUIRED_FLAGS = (
     "--model", "--json", "--ignore-rules", "--config",
     # The sandbox holds no checkout (issue #227: an empty tmpfs at `repo_root`), and codex
@@ -9107,11 +9067,13 @@ def _reprobe_recorded_providers(
                     "checks": probe.get("checks", []),
                     "launchable": _preflight_allows_agent_launch(probe),
                 }
-                if surface.get("workshop") is True:
-                    check = _workshop_flag_set_check(
-                        str(token), probed["probe_command"], subprocess.run)
-                    probed["checks"] = list(probed["checks"]) + [check]
-                    probed["launchable"] = bool(probed["launchable"]) and check["pass"] is True
+                # Unconditional for a CLI surface since issue #534 PR-J4-b (`probe_all_providers`).
+                # A row recorded before it carries no `workshop` stamp; the `--resume` barrier
+                # refuses such an orchestration at start, and this re-probes it if one gets here.
+                check = _workshop_flag_set_check(
+                    str(token), probed["probe_command"], subprocess.run)
+                probed["checks"] = list(probed["checks"]) + [check]
+                probed["launchable"] = bool(probed["launchable"]) and check["pass"] is True
             else:
                 probed = _probe_http_provider({
                     "backend": str(token), "provider": provider_type,
@@ -9123,7 +9085,8 @@ def _reprobe_recorded_providers(
                 "probe_command": str(surface.get("probe_command") or ""),
                 "base_url": str(surface.get("base_url") or ""),
                 "api_key_env": str(surface.get("api_key_env") or ""),
-                **({"workshop": True} if surface.get("workshop") is True else {}),
+                **({"workshop": True}
+                   if provider_type in ("claude_cli", "codex_cli") else {}),
             }]
             if merged is None:
                 merged = probed
@@ -9327,58 +9290,35 @@ def _is_placeholder_ref(value: str) -> bool:
 # rendered prompt and holds no read path of its own.
 #
 # The `step agent` / `substep agent` / `common boilerplate` trio that stood at the head of this
-# table was the AGENTIC leaf's prompt, and went with it in Z4 (issue #171). Everything left is
-# a PURE leaf prompt, plus the deterministic identity prompt, which is assembled in code rather
-# than from a file.
+# table was the AGENTIC leaf's prompt, and went with it in Z4 (issue #171); the PURE leaf's
+# `pure_*.txt` rows went with it in issue #534 PR-J4-b. Everything left is a WORKSHOP leaf
+# prompt, plus the deterministic identity prompt, which is assembled in code rather than from a
+# file.
 _PROMPT_TEMPLATE_DIR = Path(__file__).resolve().parent / "prompt_templates"
 _PROMPT_TEMPLATE_FILES = {
-    # Z2 pure-function leaf prompts (host-mediated closed context). Claude's transport is
-    # tool-free; Codex runs inside a read-only sandbox. One per migrated
-    # (step, substep); the repair template is substep-agnostic. Their line 0 is
-    # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
-    "pure compile.generate": "pure_compile_generate.txt",
-    # The `compile.generate` VERIFICATION part (issue #526): the leaf that authors a group of
-    # tests' three verification lists against the IR core the default-shape leaf returned. The
-    # host runs it once per group of consecutive tests of the node's tests document and
-    # assembles the IR.
-    "pure compile.generate.verification": "pure_compile_generate_verification.txt",
-    "pure compile.verify": "pure_compile_verify.txt",
-    "pure generate.generate": "pure_generate_generate.txt",
-    "pure generate.verify": "pure_generate_verify.txt",
-    # The second GENERATE bundle shape (issue #169): an `infrastructure` node's self-test, where
-    # the leaf authors the executable entry instead of a checks module. A SHAPE-keyed name, so a
-    # request that declares `pure_shape` renders the template for that shape.
-    "pure generate.generate.harness": "pure_generate_generate_harness.txt",
-    "pure generate.verify.harness": "pure_generate_verify_harness.txt",
-    "pure validate.judge": "pure_validate_judge.txt",
-    "pure bundle repair": "pure_bundle_repair.txt",
-    # The `workshop leaf` (issue #534): the producer's rules and output contract verbatim, the
-    # documents as seed files of its work tree instead of inlined, and the tree contract in
-    # place of the one-reply instruction. Line 0 is WORKSHOP_PROMPT_SENTINEL.
+    # The `workshop leaf` (issue #534): the producer's rules and output contract, the documents
+    # as seed files of its work tree, and the tree contract. Line 0 is WORKSHOP_PROMPT_SENTINEL.
+    # A SHAPE-keyed name (`.harness`, issue #169) is the template of a request that declares
+    # `pure_shape`.
     "workshop generate.generate": "workshop_generate_generate.txt",
     "workshop generate.generate.harness": "workshop_generate_generate_harness.txt",
     "workshop bundle repair": "workshop_bundle_repair.txt",
-    # Step 2 of the same issue: the `compile.generate` producer authors the WHOLE IR in its tree
-    # (the part split of issue #526 is a pure entry's), and has its own repair turn.
+    # Step 2 of the same issue: the `compile.generate` producer authors the WHOLE IR in its tree,
+    # and has its own repair turn.
     "workshop compile.generate": "workshop_compile_generate.txt",
     "workshop ir repair": "workshop_ir_repair.txt",
     # Step 3: the three judging substeps as READING workshop leaves (adopted 2026-10-25). The
     # judge's rules and output contract verbatim, each document a seed file of its tree, and one
-    # output document at the tree root in place of the one-reply instruction. One repair turn for
-    # the three, as the pure verdict pairs share one.
+    # output document at the tree root. One repair turn for the three.
     "workshop compile.verify": "workshop_compile_verify.txt",
     "workshop generate.verify": "workshop_generate_verify.txt",
     "workshop generate.verify.harness": "workshop_generate_verify_harness.txt",
     "workshop validate.judge": "workshop_validate_judge.txt",
     "workshop verdict repair": "workshop_verdict_repair.txt",
-    # The escalate diagnostician: one template, four (step, substep) keys, because the pair is
-    # what the renderer looks up and the prompt does not vary with the failed phase (the phase
-    # is a field of the diagnosis document).
-    **{f"pure {step}.{substep}": "pure_escalate_diagnose.txt"
-       for step, substep in sorted(DIAGNOSE_LAUNCH_PAIRS)},
-    # ...as a READING workshop leaf (issue #534 PR-J4-a): the same rules verbatim, the
-    # diagnosis document a seed of its tree, and one output document (`directive.json`) at the
-    # tree root in place of the final-line reply. One launch, no repair turn.
+    # The escalate diagnostician as a READING workshop leaf (issue #534 PR-J4-a): one template,
+    # four (step, substep) keys, because the pair is what the renderer looks up and the prompt
+    # does not vary with the failed phase (the phase is a field of the diagnosis document, seeded
+    # as `diagnosis.json`). One output document (`directive.json`), one launch, no repair turn.
     **{f"workshop {step}.{substep}": "workshop_escalate_diagnose.txt"
        for step, substep in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
@@ -9872,11 +9812,10 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
 #: request that declares one of these uses the by-shape tables instead. A closed vocabulary: an
 #: unknown value is refused rather than falling back to the default, because the shape decides
 #: which template the leaf is sent and which context keys it must carry.
-#: Two families share it. The shapes declared on the `generate` pairs are kept equal to the
-#: non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance layer's vocabulary — by
-#: `test_pure_leaf_wiring`; `verification` is a `compile.generate` part (issue #526),
-#: which has no bundle and is declared on that pair alone.
-PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness", "verification"})
+#: Kept equal to the non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance
+#: layer's vocabulary — by `test_pure_leaf_wiring`. (`verification`, the `compile.generate` part
+#: of issue #526, went with the pure part split in issue #534 PR-J4-b.)
+PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness"})
 
 #: Required `pure_context` keys for a `(step, substep, pure_shape)` that declares a shape. The
 #: pairs listed here are exactly the pairs a shape may be declared on; a `pure_shape` on any
@@ -9900,17 +9839,6 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
                                         "ir_document", "target_profile",
                                         "runner_output_contract_document",
                                         "severity_rubric_document", "bundle_document"),
-    # One `compile.generate` verification part (issue #526): the four documents the default
-    # compile producer is shown that bear on a test's verification lists (the phase contract as
-    # the excerpt `Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS` names), then the IR core the
-    # host accepted from that producer and the test ids this part authors. The two per-part
-    # values come LAST, in template slot order, so every part of a node renders the same prompt
-    # prefix.
-    ("compile", "generate", "verification"): ("controlled_spec_document", "tests_document",
-                                              "phase_contract_document",
-                                              "checks_module_contract_document",
-                                              "ir_core_document",
-                                              "verification_tests_document"),
 }
 
 
@@ -9968,31 +9896,23 @@ def _substitute_pure_placeholders(template: str, subs: dict[str, str]) -> str:
 
 
 def _pure_launch_template_name(request_payload: dict[str, Any]) -> str:
-    """The template key for a pure launch: `pure <step>.<substep>`, with the declared
+    """The template key for a workshop launch: `workshop <step>.<substep>`, with the declared
     `pure_shape` appended when the request carries one. The validator has already refused any
     `pure_shape` outside `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, so a name built here always
     resolves in `_PROMPT_TEMPLATE_FILES` (a KeyError would be the two tables disagreeing, which
-    `test_pure_leaf_wiring` pins)."""
+    `test_pure_leaf_wiring` pins). The `pure <step>.<substep>` family went with the pure leaf
+    in issue #534 PR-J4-b."""
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
     shape = str(request_payload.get("pure_shape", "")).strip().lower()
-    # A WORKSHOP request (issue #534) renders its own family, `workshop <step>.<substep>`: the
-    # same document slots and identity block, the tree contract in place of the one-reply one.
-    family = "workshop" if _pure_leaf_is_workshop_request(request_payload) else "pure"
-    return f"{family} {step}.{substep}.{shape}" if shape else f"{family} {step}.{substep}"
+    return f"workshop {step}.{substep}.{shape}" if shape else f"workshop {step}.{substep}"
 
 
 def _fragment_template_stem(template_file: str) -> str:
     """The stem a backend's prompt fragments are keyed by: the template file without its family
-    prefix and suffix. A `workshop leaf`'s template (issue #534) carries the pure template's
-    rules verbatim, so it is composed from the SAME fragments as its pure twin:
-    `workshop_generate_generate.txt` and `pure_generate_generate.txt` both ask for
-    `generate_generate`."""
-    stem = template_file.removesuffix(".txt")
-    for family in ("pure_", "workshop_"):
-        if stem.startswith(family):
-            return stem[len(family):]
-    return stem
+    prefix and suffix — `workshop_generate_generate.txt` asks for `generate_generate`. (The
+    pure templates, which shared those fragments, went in issue #534 PR-J4-b.)"""
+    return template_file.removesuffix(".txt").removeprefix("workshop_")
 
 
 #: A neutral template's marker for a place the target LANGUAGE's rules go (issue #289, R4-b
@@ -10114,13 +10034,14 @@ def _pure_launch_template(request_payload: dict[str, Any]) -> str:
 
 
 def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
-    """Render a cold pure-function launch prompt from its `pure_{step}_{substep}.txt` template.
+    """Render a cold workshop launch prompt from its `workshop_{step}_{substep}.txt` template.
 
     Byte-stable order (static persona/output-contract prefix first, variable ids last): the
-    template holds the static body and `<key>` tokens; this fills them from `pure_context`
-    (each inlined document fenced as data), the reused dependency-facts / exemplar renderers,
-    and the identity block. No `_template_placeholder_values` (no gate runbook / task card /
-    capability paths — a pure leaf runs no gate and writes nothing)."""
+    template holds the static body and `<key>` tokens; this fills the `<tool_surface>` row of
+    the request's provider and the identity block. The documents are NOT inlined: they are seed
+    files of the lineage's tree (`Conductor._workshop_seeds`), and no workshop template has a
+    document slot. (The pure leaf's renderer inlined each `pure_context` value fenced as data,
+    and the dependency facts and exemplar beside them; that went in issue #534 PR-J4-b.)"""
     name = _pure_launch_template_name(request_payload)
     try:
         template = _pure_launch_template(request_payload)
@@ -10134,49 +10055,27 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
         # validator a few lines later. Deleting that renderer moved the failure here, so the
         # naming moves with it.
         raise ValueError(
-            f"pure launch request names no rendered prompt: no template for {name!r} "
+            f"launch request names no rendered prompt: no template for {name!r} "
             f"(step={request_payload.get('step')!r} substep={request_payload.get('substep')!r} "
             f"pure_shape={request_payload.get('pure_shape')!r})") from None
-    pure_context = request_payload.get("pure_context")
     subs: dict[str, str] = {}
-    if isinstance(pure_context, dict):
-        for key, value in pure_context.items():
-            subs[str(key)] = _fence_pure_doc(str(value))
-    # `dependency_facts` and `exemplar` are spliced UNFENCED — they are host-composed
-    # orientation, not an inlined document — so each is sanitized against the PURE fence
-    # markers on the way in. Without that, a marker inside either could pair with a later
-    # legitimate fence END and make the span between them read as data the host did not author
-    # (or, for a forged BEGIN, as a fence the host did not open).
-    #
-    # The exemplar used to be exempt here, "stripped wholesale by the scan carve-out" — the
-    # gate-allowlist lint's `_strip_exemplar_regions`, deleted in Z4 (issue #171). The round-2
-    # security review found the exemption outliving its reason, and measured the consequence: a
-    # certified sibling's SOURCE carrying the literal PURE markers renders straight through into
-    # a `generate.generate` prompt, 7 END markers against 6 BEGIN. (Written without the language's
-    # file suffix on purpose: this module is `neutral core`, and the sentence needs no more than
-    # "a source file the previous producer authored" to be true.) `_sanitize_exemplar_body`
-    # already breaks the EXEMPLAR markers in that same body for the identical reason, so the two
-    # tokens are now treated alike rather than one being defended and the other argued away.
-    subs["dependency_facts"] = _sanitize_pure_doc_body(_build_dependency_facts(request_payload))
-    subs["exemplar"] = _sanitize_pure_doc_body(_build_exemplar(request_payload))
     subs["node_key"] = str(request_payload.get("node_key", ""))
     subs["step"] = str(request_payload.get("step", ""))
     subs["substep"] = str(request_payload.get("substep", ""))
     subs["orchestration_id"] = str(request_payload.get("orchestration_id", ""))
     subs["agent_run_id"] = str(request_payload.get("agent_run_id", ""))
     subs["prompt_contract_version"] = str(request_payload.get("prompt_contract_version", ""))
-    if _pure_leaf_is_workshop_request(request_payload):
-        # The one sentence of a workshop contract that differs by transport: what the leaf
-        # holds besides the wrapper (issue #534 step 2). A NAMED refusal for a provider with no
-        # row, for the reason a missing template is one above: the render runs before
-        # `_validate_pure_launch_request_payload`, which refuses the same request.
-        provider = request_payload.get("workshop_provider")
-        surface = _workshop_tool_surface_table(request_payload)
-        if not (isinstance(provider, str) and provider in surface):
-            raise ValueError(
-                f"workshop launch request must name its provider in workshop_provider, one of "
-                f"{', '.join(sorted(surface))}; got {provider!r}")
-        subs["tool_surface"] = surface[provider]
+    # The one sentence of a workshop contract that differs by transport: what the leaf holds
+    # besides the wrapper (issue #534 step 2). A NAMED refusal for a provider with no row, for
+    # the reason a missing template is one above: the render runs before
+    # `_validate_pure_launch_request_payload`, which refuses the same request.
+    provider = request_payload.get("workshop_provider")
+    surface = _workshop_tool_surface_table(request_payload)
+    if not (isinstance(provider, str) and provider in surface):
+        raise ValueError(
+            f"workshop launch request must name its provider in workshop_provider, one of "
+            f"{', '.join(sorted(surface))}; got {provider!r}")
+    subs["tool_surface"] = surface[provider]
     return _substitute_pure_placeholders(template, subs)
 
 
@@ -10286,36 +10185,27 @@ def _workshop_tool_surface_table(request_payload: dict[str, Any]) -> dict[str, s
 
 
 def _pure_repair_template_name(request_payload: dict[str, Any]) -> str:
-    """The template key of a host-rendered repair turn. A workshop producer's repair turn is its
+    """The template key of a host-rendered repair turn. A producer's repair turn is its
     substep's — the IR's on `compile`, the bundle's otherwise (issue #534 step 2), and a
-    workshop REVIEWER's is the verdict repair whatever its step (step 3); a pure one has one
-    template for every producer and reviewer."""
-    if _pure_leaf_is_workshop_request(request_payload):
-        if _pure_leaf_is_workshop_reading_pair(request_payload.get("step"),
-                                               request_payload.get("substep")):
-            return "workshop verdict repair"
-        if str(request_payload.get("step", "")).strip().lower() == "compile":
-            return "workshop ir repair"
-        return "workshop bundle repair"
-    return "pure bundle repair"
+    REVIEWER's is the verdict repair whatever its step (step 3)."""
+    if _pure_leaf_is_workshop_reading_pair(request_payload.get("step"),
+                                           request_payload.get("substep")):
+        return "workshop verdict repair"
+    if str(request_payload.get("step", "")).strip().lower() == "compile":
+        return "workshop ir repair"
+    return "workshop bundle repair"
 
 
 def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
-    """Render a bounded pure schema-repair turn (`pure_bundle_repair.txt`).
+    """Render a bounded repair turn (`workshop_{bundle,ir,verdict}_repair.txt`).
 
-    The findings excerpt is wrapped in the same data-only fence as an inlined document so the
-    single scan carve-out covers it. On a WARM repair the resumed session already holds the
-    launch prompt and the prior document under repair, so `<prior_document>` and `<launch_body>`
-    are empty. On the COLD fallback there is no prior turn at all — the session was GC'd, the
-    codex home rotated under it, or (since issue #209) the provider never had one to resume and
-    this is the FIRST turn of an outer `reuse` reopen — so the repair re-inlines the model's PRIOR
-    document under repair (`prior_document`, threaded by the repair loop — the parsed document
-    re-serialized, the raw unparseable reply text, or, when the cold turn is the reopen's first,
-    the failed attempt's own artifact read back from disk by the loop's seed) and then re-states
-    the launch prompt's whole body (`_pure_launch_body`): the output contract, every rule
-    paragraph, the host-resolved `dependency_facts`, and each `pure_context` document under the
-    label paragraph the launch template gives it (issue #510; it replaced a by-prefix lift of
-    named paragraphs plus a bare-key re-inline of the context)."""
+    The findings excerpt is wrapped in the data-only fence. On a WARM repair the resumed
+    lineage already holds the launch prompt and its document is in the tree, so `<launch_body>`
+    is empty. On a COLD repair (a fresh lineage seeded from the prior one's snapshot, the
+    document under repair among its files) the repair re-states the launch prompt's whole body
+    (`_pure_launch_body`; issue #510) beside the `<tool_surface>` row. (The pure leaf's cold
+    repair re-inlined its prior document as `<prior_document>`; that went in issue #534
+    PR-J4-b.)"""
     templates = _load_launch_prompt_templates()
     repair_key = _pure_repair_template_name(request_payload)
     if repair_key not in templates:
@@ -10352,10 +10242,6 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
                     if subs["repair_scope"] == WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
                     else WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS)
     if not request_payload.get("warm_resume"):
-        prior = str(request_payload.get("prior_document", "")).strip()
-        subs["prior_document"] = (
-            "**Your prior document under repair (correct it — do not restart from scratch):**\n"
-            + _fence_pure_doc(prior)) if prior else ""
         subs["launch_body"] = _pure_launch_body(request_payload)
         # The launch body starts after the persona line, which carries a workshop prompt's
         # `<tool_surface>`; every workshop repair template states it beside the body — the
@@ -10364,10 +10250,8 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
         # a cut reply, which the findings' fence may only diagnose). `_pure_launch_body` has
         # already refused a provider with no row.
         subs["tool_surface"] = (
-            _workshop_tool_surface_table(request_payload)[request_payload["workshop_provider"]]
-            if _pure_leaf_is_workshop_request(request_payload) else "")
+            _workshop_tool_surface_table(request_payload)[request_payload["workshop_provider"]])
     else:
-        subs["prior_document"] = ""
         subs["launch_body"] = ""
         subs["tool_surface"] = ""
     return _substitute_pure_placeholders(template, subs)
@@ -10381,26 +10265,26 @@ def _render_launch_prompt_template(request_payload: dict[str, Any]) -> str:
     * DETERMINISTIC — the minimal identity prompt for an in-process substep, which no leaf
       reads (it exists so a deterministic launch records the same kind of artifact as any
       other).
-    * PURE — the host-mediated closed context, per `(step, substep)` and declared shape, with
-      its own repair variant.
+    * WORKSHOP — the host-rendered contract of a `workshop leaf` (issue #534), per
+      `(step, substep)` and declared shape, with its own repair variants.
 
-    Anything else is refused. The `step agent` / `substep agent` / `common boilerplate`
+    Anything else is refused — a PURE request (`leaf_mode: pure`) included: the pure leaf and
+    its templates went in issue #534 PR-J4-b, so a request still naming it is a host defect. The `step agent` / `substep agent` / `common boilerplate`
     templates, the slim warm-resume repair renderer, the Gate Runbook and the Task Card all
     served the agentic leaf and went with it; a request that reaches this line is neither
     shape, which is a host defect rather than a third prompt to invent.
     """
     if request_payload.get("deterministic"):
         return _render_deterministic_launch_prompt(request_payload)
-    # A WORKSHOP request (issue #534) is rendered by the same two functions from its own
-    # template family (`_pure_launch_template_name`, the repair key).
-    if _pure_leaf_is_host_rendered_request(request_payload):
+    if _pure_leaf_is_workshop_request(request_payload):
         if str(request_payload.get("repair_findings", "")).strip():
             return _render_pure_repair_prompt(request_payload)
         return _render_pure_launch_prompt(request_payload)
     raise ValueError(
-        "launch request is neither deterministic nor pure, and there is no third leaf "
-        f"model to render a prompt for (step={request_payload.get('step')!r} "
-        f"substep={request_payload.get('substep')!r})")
+        "launch request is neither deterministic nor workshop, and there is no other leaf "
+        f"model to render a prompt for (leaf_mode={request_payload.get('leaf_mode')!r} "
+        f"step={request_payload.get('step')!r} substep={request_payload.get('substep')!r}); "
+        "the pure leaf went in issue #534 PR-J4-b")
 
 
 def build_launch_prompt_text(request_payload: dict[str, Any]) -> str:
@@ -10681,8 +10565,8 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
         # An empty marker set means one of two things, and they must not share an exit.
         # (a) NO STEP: the orchestration agent's own self-prompt, rendered from no template,
         #     with nothing to preserve. That is what the early return below is for.
-        # (b) A STEP that is NEITHER deterministic NOR pure. Since Z4 (issue #171) there is no
-        #     third shape. The renderer refuses to RENDER one — but `prepare_launch_request_payload`
+        # (b) A STEP that is NEITHER deterministic NOR workshop (pure until issue #534 PR-J4-b).
+        #     There is no third shape. The renderer refuses to RENDER one — but `prepare_launch_request_payload`
         #     force-renders only when `pure or not explicit_prompt_present`, so a caller that
         #     supplies `launch_prompt_full` ITSELF never meets the renderer, and this validator
         #     is the only thing in front of an arbitrary prompt body on a real step. Returning
@@ -10715,9 +10599,10 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
             raise ValueError(
                 f"launch request declares step={step!r} "
                 f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-                "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
-                "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
-                '"pure"` with a `pure_context` for an LLM leaf'
+                "workshop. A launch is one of those two shapes (the pure leaf went in issue "
+                "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
+                "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
+                "and a `workshop_provider` for an LLM leaf"
             )
         return
     missing_markers = [marker for marker in required_markers if marker not in prompt_text]
@@ -11173,8 +11058,8 @@ def default_agent_model_for_backend(backend: str) -> str:
     which is the only reading the row can rely on.
 
     WHAT DECIDES A CLAUDE LEAF'S MODEL — the one statement of it; other sites point here.
-    The declared `--model` when the entry names one, else the CLI's own default. A pure
-    leaf launches with `--restricted` (`pure_leaf.pure_leaf_flags`), so no user, project or
+    The declared `--model` when the entry names one, else the CLI's own default. A
+    leaf launches with `--restricted` (`pure_leaf.workshop_leaf_flags`), so no user, project or
     local settings file applies: neither a settings `model` key, nor an `env` block's
     `ANTHROPIC_MODEL`, nor an `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remap of a declared
     `opus` reaches the leaf (measured, with the endpoint as a fourth row; the flag ignores
@@ -11298,29 +11183,26 @@ def _validate_pass_output_refs_against_launch(
 
 
 def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> None:
-    """Validate the pure-leaf-specific shape of a launch request (`leaf_mode == "pure"`).
+    """Validate the leaf-specific shape of a host-rendered launch request.
 
-    Enforced (fail-closed): the accepted `leaf_mode` values are `"pure"` and, since issue #534,
-    `"workshop"` (its three differences are stated in the body); pure is confined to
-    the migrated (generate, generate) / (generate, verify) substeps; it is mutually exclusive
-    with `deterministic`; `prompt_contract_version` matches the transport's contract EXACTLY;
-    `allowed_output_paths` is empty (the leaf has no write authority — the host writes after the
-    child window closes); the three skill fields are empty (no SKILL is read); and the required
-    `pure_context` keys are present on a cold launch. A warm-resume repair (`warm_resume` +
-    `repair_findings`) may omit `pure_context` — the resumed session already holds it — but a
-    cold repair fallback still requires it."""
+    Enforced (fail-closed): the one accepted `leaf_mode` is `"workshop"` (issue #534; the
+    `"pure"` leaf went in PR-J4-b, and a NEW request naming it is refused here — a RECORD naming
+    it is still read by `is_host_rendered_request`'s readers); the pair is one a workshop leaf
+    serves (`WORKSHOP_LAUNCH_PAIRS`); it is mutually exclusive with `deterministic`; the request
+    names its lineage and the provider whose tool surface its prompt states;
+    `prompt_contract_version` matches the leaf contract EXACTLY; `allowed_output_paths` is empty
+    (the leaf has no write authority — the host writes after the child window closes); the
+    three skill fields are empty (no SKILL is read); and the required `pure_context` keys are
+    present on a cold launch. A warm-resume repair (`warm_resume` + `repair_findings`) may omit
+    `pure_context` — the resumed lineage already holds it — but a cold repair still requires
+    it."""
     leaf_mode = str(request_payload.get("leaf_mode", "")).strip().lower()
-    # The WORKSHOP leaf (issue #534) is validated HERE, by the same rules, parametrised by the
-    # three things that differ: the pairs it may serve (`WORKSHOP_LAUNCH_PAIRS`), its own
-    # prompt-contract version, and the lineage it names. Every other rule — no write path, no
-    # skill, the required context keys, the shapes — is the pure leaf's, because the workshop
-    # leaf is handed the same documents (as seeds of its tree) and writes nothing either.
-    if leaf_mode not in (PURE_LEAF_MODE, WORKSHOP_LEAF_MODE):
+    if leaf_mode != WORKSHOP_LEAF_MODE:
         raise ValueError(
-            f"launch request leaf_mode must be {PURE_LEAF_MODE!r} or {WORKSHOP_LEAF_MODE!r} "
-            f"when present; got {request_payload.get('leaf_mode')!r}"
-        )
-    workshop = leaf_mode == WORKSHOP_LEAF_MODE
+            f"launch request leaf_mode must be {WORKSHOP_LEAF_MODE!r} when present; got "
+            f"{request_payload.get('leaf_mode')!r}"
+            + (" (the pure leaf went in issue #534 PR-J4-b)" if leaf_mode == PURE_LEAF_MODE
+               else ""))
     if request_payload.get("deterministic"):
         raise ValueError(
             f"launch request must not set both leaf_mode={leaf_mode} and deterministic=True"
@@ -11329,35 +11211,27 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
     substep = str(request_payload.get("substep", "")).strip().lower()
     key = (step, substep)
     lineage = request_payload.get("workshop_lineage_id")
-    if workshop:
-        if key not in WORKSHOP_LAUNCH_PAIRS:
-            admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(WORKSHOP_LAUNCH_PAIRS))
-            raise ValueError(
-                f"leaf_mode=workshop is only valid for {admissible}; "
-                f"got (step={step!r}, substep={substep!r})")
-        # Not observed by any test: `record_launch`, the one caller, checks the same field
-        # with the same pattern before it gets here. Kept so the validator states the whole
-        # shape on its own.
-        if not (isinstance(lineage, str) and _AGENT_RUN_ID_RE.match(lineage.strip())):
-            raise ValueError(
-                "workshop launch request must name its lineage in workshop_lineage_id (a plain "
-                f"[A-Za-z0-9_-] token: the agent_run_id of the lineage's cold launch); got "
-                f"{lineage!r}")
-        # The provider whose tool surface the prompt states (`<tool_surface>`): one with a row
-        # in the table of the request's KIND (a reading lineage's table names fewer providers).
-        provider = request_payload.get("workshop_provider")
-        surface = _workshop_tool_surface_table(request_payload)
-        if not (isinstance(provider, str) and provider in surface):
-            raise ValueError(
-                f"workshop launch request must name its provider in workshop_provider, one of "
-                f"{', '.join(sorted(surface))}; got {provider!r}")
-    elif lineage is not None:
+    if key not in WORKSHOP_LAUNCH_PAIRS:
+        admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(WORKSHOP_LAUNCH_PAIRS))
         raise ValueError(
-            f"launch request carries workshop_lineage_id={lineage!r} and is not a workshop "
-            "request; only a workshop leaf has a lineage")
-    elif request_payload.get("workshop_provider") is not None:
+            f"leaf_mode=workshop is only valid for {admissible}; "
+            f"got (step={step!r}, substep={substep!r})")
+    # Not observed by any test: `record_launch`, the one caller, checks the same field
+    # with the same pattern before it gets here. Kept so the validator states the whole
+    # shape on its own.
+    if not (isinstance(lineage, str) and _AGENT_RUN_ID_RE.match(lineage.strip())):
         raise ValueError(
-            "launch request carries workshop_provider and is not a workshop request")
+            "workshop launch request must name its lineage in workshop_lineage_id (a plain "
+            f"[A-Za-z0-9_-] token: the agent_run_id of the lineage's cold launch); got "
+            f"{lineage!r}")
+    # The provider whose tool surface the prompt states (`<tool_surface>`): one with a row
+    # in the table of the request's KIND (a reading lineage's table names fewer providers).
+    provider = request_payload.get("workshop_provider")
+    surface = _workshop_tool_surface_table(request_payload)
+    if not (isinstance(provider, str) and provider in surface):
+        raise ValueError(
+            f"workshop launch request must name its provider in workshop_provider, one of "
+            f"{', '.join(sorted(surface))}; got {provider!r}")
     # A declared bundle SHAPE selects a different template and a different required-key set, so
     # it is validated before either is looked up: the vocabulary is closed, and the shape must be
     # declared on a pair that HAS one. An unknown value never falls back to the default.
@@ -11400,38 +11274,35 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_parallel must be a non-empty string when present; "
             f"got {parallel!r}")
-    # The label of a `compile.generate` verification part (issue #526) — the first test it
-    # authors — on EVERY request of that part: a warm repair carries no `pure_context`, so the
-    # context's test ids cannot say which part a record belongs to. Read by the records' readers (the audit's repeated-substep
-    # table, the attempt-cost report), never by the renderer. Only that shape carries it.
+    # The label of a `compile.generate` verification part (issue #526) went with the pure part
+    # split (issue #534 PR-J4-b); a new request carrying one is refused rather than recorded as
+    # a part no loop runs. Records that carry it keep their readers (the audit's repeated-
+    # substep table, the attempt-cost report).
     part = request_payload.get("pure_part")
-    if part is not None and not (isinstance(part, str) and part.strip()
-                                 and shape_key == ("compile", "generate", "verification")):
+    if part is not None:
         raise ValueError(
-            f"pure launch request pure_part must be a non-empty string, on a "
-            f"(compile, generate, verification) request only; got {part!r} on "
-            f"(step={step!r}, substep={substep!r}, pure_shape={shape!r})")
+            f"launch request carries pure_part={part!r}: the compile.generate part split went "
+            "with the pure leaf in issue #534 PR-J4-b")
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
         # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
         # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.
         admissible = ", ".join(f"({s}, {ss})" for s, ss in sorted(PURE_CONTEXT_REQUIRED_KEYS))
         raise ValueError(
-            f"leaf_mode=pure is only valid for {admissible}; "
+            f"a host-rendered launch request is only valid for {admissible}; "
             f"got (step={step!r}, substep={substep!r})"
         )
     version = request_payload.get("prompt_contract_version")
-    expected_version = (WORKSHOP_PROMPT_CONTRACT_VERSION if workshop
-                        else PURE_PROMPT_CONTRACT_VERSION)
-    if version != expected_version:
+    if version != PURE_PROMPT_CONTRACT_VERSION:
         raise ValueError(
             f"{leaf_mode} launch request prompt_contract_version must be exactly "
-            f"{expected_version!r}; got {version!r}"
+            f"{PURE_PROMPT_CONTRACT_VERSION!r}; got {version!r}"
         )
     aop = request_payload.get("allowed_output_paths")
     if aop not in (None, []):
         raise ValueError(
-            "pure launch request allowed_output_paths must be empty — a pure leaf writes "
-            f"nothing (the host writes after the child window closes); got {aop!r}"
+            "launch request allowed_output_paths must be empty — a workshop leaf writes "
+            f"nothing in the checkout (the host writes after the child window closes); got "
+            f"{aop!r}"
         )
     for field in ("skill_name", "skill_ref", "skill_must_read_refs"):
         value = request_payload.get(field)
@@ -11681,16 +11552,17 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # placement and this arm is no longer what prevents it. The prompt-text arm stays, because a request can
     # declare a shape its prompt does not carry.
     # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
-    # marker set on a real step IS "neither deterministic nor pure" (its own comment says so),
+    # marker set on a real step IS "neither deterministic nor workshop" (its own comment says so),
     # so the two refusals cannot answer differently.
     if (isinstance(step, str) and step.strip()
             and not _required_launch_prompt_markers(request_payload)):
         raise ValueError(
             f"launch request declares step={step!r} "
             f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-            "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
-            "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
-            '"pure"` with a `pure_context` for an LLM leaf'
+            "workshop. A launch is one of those two shapes (the pure leaf went in issue "
+            "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
+            "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
+            "and a `workshop_provider` for an LLM leaf"
         )
     if not is_verify_substep:
         return
@@ -13405,21 +13277,6 @@ def _secure_backend_home_file(
             os.close(fd)
 
 
-def codex_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
-    """The bwrap profile kwargs a prepared Codex home implies — ONE spelling."""
-    return {
-        "backend_ro_mappings": [
-            (isolation["auth"], isolation["auth_destination"]),
-            # The home itself stays writable for Codex session/state persistence, but the
-            # project-layer exclusion config must remain immutable — a leaf that could rewrite
-            # it could mark this checkout trusted and pull in the DEV hook layer.
-            (isolation["config"], isolation["config"]),
-        ],
-        "backend_rw_override": [isolation["home"]],
-        "env_overrides": {"CODEX_HOME": isolation["home"]},
-    }
-
-
 def codex_workshop_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
     """The bwrap profile kwargs a prepared codex WORKSHOP lineage home implies — ONE spelling,
     the codex twin of `claude_workshop_profile_kwargs` (issue #534 step 2 PR-2). `config/` (the
@@ -13441,21 +13298,22 @@ def codex_workshop_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any
 
 
 def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage_id: str,
-                                 *, resume: bool, workshop: bool = False
+                                 *, resume: bool, workshop: bool = True
                                  ) -> dict[str, str] | None:
-    """Prepare the private Codex home for ONE THREAD LINEAGE of an orchestration.
+    """Prepare the private Codex home of ONE `workshop leaf` lineage of an orchestration (issue
+    #534 step 2 PR-2): the lineage home is `workshop_tree.LineagePaths(backend="codex").home` —
+    `config/` (0700, the leaf's `CODEX_HOME`, holding the `config.toml` that marks the TREE
+    untrusted and the `auth.json` placeholder) beside the work directories `make_work_dirs`
+    creates (`tree/`, `staged/`, `syntax/`, `snapshot/`). A cold preparation is the CONDUCTOR's
+    (`Conductor._open_workshop_lineage`, before the launch is recorded, as for claude);
+    `record_launch` prepares it warm on both of the lineage's launches. Returns `{home, config,
+    tree, auth, auth_destination, config_toml, lineage_id, homes_root}`
+    (`_prepare_codex_workshop_lineage`).
 
-    ``workshop=True`` prepares a `workshop leaf`'s lineage instead (issue #534 step 2 PR-2):
-    the same container and the same cold/warm rules, but the lineage home is
-    `workshop_tree.LineagePaths(backend="codex").home` — `config/` (0700, the leaf's
-    `CODEX_HOME`, holding the `config.toml` that marks the TREE untrusted and the `auth.json`
-    placeholder) beside the work directories `make_work_dirs` creates (`tree/`, `staged/`,
-    `syntax/`, `snapshot/`). The two layouts share the container and cannot collide: a lineage
-    id is an `agent_run_id`, minted once, and names one directory under it whichever kind it
-    is. A cold workshop preparation is the CONDUCTOR's (`Conductor._open_workshop_lineage`,
-    before the launch is recorded, as for claude); `record_launch` prepares it warm on both of
-    the lineage's launches. Returns `{home, config, tree, auth, auth_destination, config_toml,
-    lineage_id, homes_root}`.
+    `workshop` must be True. The pure codex leaf's THREAD lineage — a bare `CODEX_HOME` at
+    `<container>/<lineage_id>/`, bound rw whole — was the other layout this prepared, and it
+    went with the pure leaf in issue #534 PR-J4-b; asking for it is refused rather than
+    answered with the workshop layout.
 
     Two levels, and the leaf sees only the lower one:
 
@@ -13463,61 +13321,34 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
         `orchestration_meta.json#codex_workflow_home`, carries the owner marker in its
         parent, and goes with the whole `<oid>/` entry when `tools/prune_workflow_homes.py`
         removes one. It is NOT bound into any leaf and is NOT `CODEX_HOME`.
-      * `<container>/<lineage_id>/` is the LINEAGE HOME — the `CODEX_HOME` of one thread:
-        the cold launch that started it plus every warm `codex exec resume` of it. It is
-        the only directory `codex_isolation_profile_kwargs` binds rw, so what the CLI
-        writes there (measured on codex-cli 0.154.0 with an unbilled loopback launch: the
-        rollout under `sessions/`, the `state_*` / `thread_history_*` / `memories_*` /
-        `logs_*` / `goals_*` / `queue_*` sqlite files with their `-wal`/`-shm`,
-        `installation_id`, `skills/`, `tmp/`, `shell_snapshots/`, `thread-writer-locks/` —
-        the marker prompt in three of them; a billed launch on this host additionally
-        left `cache/`, `plugins/` and `models_cache.json`, which is why the bind is the
-        whole directory and nothing is enumerated by name) is reachable by that thread's
-        attempts and by nothing else. A second lineage's
-        leaf cannot list, let alone read, a sibling: the sibling is simply not mounted
-        (`test_bwrap_simulation.test_a_second_codex_leaf_cannot_read_the_first_leafs_rollout_anywhere_under_its_home`).
-        This is what closed the shared per-orchestration home TODO recorded from issue
-        #227 (issue #245): a VERIFY leaf could read the producer's whole rollout, and a
-        repair turn the previous verdict, through its own shell tool.
+      * `<container>/<lineage_id>/` is the LINEAGE HOME of one lineage: its cold launch plus
+        every warm `codex exec resume` of it. A second lineage's leaf cannot list, let alone
+        read, a sibling: the sibling is simply not mounted. This is what closed the shared
+        per-orchestration home TODO recorded from issue #227 (issue #245).
 
-    `lineage_id` is the `agent_run_id` of the attempt that STARTED the thread — the
-    child's own id on a cold launch, the row's `codex_lineage_id` on a warm one — and it
-    becomes a path segment outside the repository, so it is refused unless it is a plain
-    token (`_is_safe_path_id`), the same wall `_workflow_backend_home_path` puts before the
+    `lineage_id` is the `agent_run_id` of the lineage's cold launch, and it becomes a path
+    segment outside the repository, so it is refused unless it is a plain token
+    (`_is_safe_path_id`), the same wall `_workflow_backend_home_path` puts before the
     orchestration id. `record_launch` refuses a malformed one first; this is the second wall.
 
-    ``resume`` decides what a lineage directory's presence means:
+    ``resume`` decides what a lineage directory's presence means: cold, the lineage home is
+    created EXCLUSIVELY (one already there is refused, not adopted); warm, it must ALREADY
+    exist, and when it does not this returns ``None`` — the sentinel `record_launch` turns into
+    `workshop_lineage_home_missing` BEFORE any durable launch mutation. It is never created on
+    a warm preparation: a `codex exec resume` against an empty home fails before its first
+    request (measured: `no rollout found for thread id`).
 
-      * ``resume=False`` (cold): the lineage home is created EXCLUSIVELY. One already
-        there is refused, not adopted — it would hand this launch another thread's
-        rollout, and an `agent_run_id` is minted once, so nothing legitimate creates it
-        twice.
-      * ``resume=True`` (warm): the lineage home must ALREADY exist, and when it does not
-        this returns ``None`` — the sentinel `record_launch` turns into the
-        `codex_lineage_home_missing` cold-fallback answer BEFORE any durable launch
-        mutation. It is never created here: a `codex exec resume` against an empty home
-        fails before its first request (measured: `no rollout found for thread id`), so
-        creating one would only move that failure past the point where the conductor can
-        still rebuild the turn cold. This existence check replaces the integer "home
-        generation" that guarded the same property from issue #64 until issue #245: a
-        vanished home used to be re-created at the same path and threads told apart by a
-        counter; a lineage home is never re-created, so presence IS the precondition, and
-        it is decided under the same lock, at the same position, as the counter was.
-
-    The container part is unchanged from the per-orchestration design: its path is
-    persisted so the same tree is reused across `--resume`, a vanished container (an
-    operator prune, a lost filesystem) is re-created at the same path — with no lineage
-    inside, so every recorded thread is cold-fallback only — and an existing one has its
-    mode, ancestors and owner marker re-asserted on every preparation.
-
-    Each lineage home carries a `config.toml` marking this checkout untrusted — which is
-    what keeps this repository's DEV-layer `.codex/hooks.json`, written for an operator's
-    own session, out of the leaf's hook set — remounted read-only over the writable home
-    bind, and an `auth.json` placeholder the bwrap profile binds the operator's real
-    credential over read-only. Authentication is deliberately *not* copied. Until Z4
-    (issue #171) the home also carried a SHA-pinned copy of `leaf_config/codex/hooks.json`;
-    the leaf brings no hooks now.
+    The container part is unchanged from the per-orchestration design: its path is persisted
+    so the same tree is reused across `--resume`, a vanished container (an operator prune, a
+    lost filesystem) is re-created at the same path — with no lineage inside, so every
+    recorded lineage is cold-fallback only — and an existing one has its mode, ancestors and
+    owner marker re-asserted on every preparation. Authentication is deliberately *not*
+    copied: the bwrap profile binds the operator's `auth.json` read-only over the placeholder.
     """
+    if workshop is not True:
+        raise ValueError(
+            "isolated Codex home: only a workshop lineage is prepared; the pure codex thread "
+            "lineage went with the pure leaf in issue #534 PR-J4-b")
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
     if not _is_safe_path_id(lineage_token):
         raise ValueError(
@@ -13568,60 +13399,8 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
             meta["codex_workflow_home"] = str(container)
             _write_json(meta_path, meta)
         home = container / lineage_token
-        if workshop:
-            return _prepare_codex_workshop_lineage(
-                repo_root, orchestration_id, container, home, lineage_token, resume=resume)
-        if resume:
-            try:
-                home.lstat()
-            except FileNotFoundError:
-                return None
-            # Same refusals as the container: a symlink or a foreign uid at the lineage
-            # path is a disagreement, and a drifted mode is tightened.
-            _require_secure_backend_home(home, "Codex", tighten=True)
-        else:
-            try:
-                os.mkdir(home, 0o700)
-            except FileExistsError as exc:
-                raise ValueError(
-                    f"isolated Codex lineage home already exists: {home}. A lineage is "
-                    "created once, by the cold launch of the attempt whose agent_run_id "
-                    f"names it ({lineage_token}), and the conductor never launches an "
-                    "agent_run_id twice, so a directory already there was made by hand or "
-                    "left by a run that crashed between creating it and recording the "
-                    "launch. Inspect it; if it is debris, remove that one directory (the "
-                    "orchestration's other lineages are not involved) and re-run — the "
-                    "conductor mints a fresh agent_run_id, whose lineage does not exist yet."
-                ) from exc
-            except OSError as exc:
-                raise ValueError(
-                    f"cannot create isolated Codex lineage home {home}: {exc}") from exc
-            os.chmod(home, 0o700)
-            # `tighten` stays False immediately after creation: here the check exists to
-            # catch a chmod that did not take.
-            _require_secure_backend_home(home, "Codex")
-        # EVERY file of the lineage home is populated under the same lock as the home
-        # itself. `_secure_backend_home_file` is create-exclusive-then-write, so a
-        # concurrent preparer that observed a created-but-not-yet-written file would take
-        # the content-comparison branch and fail with "differs from its verified source".
-        # TOML basic strings use JSON escaping for these path strings.
-        config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
-        config_path = home / "config.toml"
-        _secure_backend_home_file(config_path, config.encode("utf-8"))
-        auth = codex_origin_home() / "auth.json"
-        if not auth.is_file():
-            raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
-        auth_destination = home / "auth.json"
-        # bwrap needs an existing destination for a file bind. This empty regular
-        # file is hidden by the read-only source bind before Codex starts.
-        _secure_backend_home_file(auth_destination)
-    return {
-        "home": str(home.resolve()),
-        "auth": str(auth.resolve()),
-        "auth_destination": str(auth_destination.resolve()),
-        "config": str(config_path.resolve()),
-        "lineage_id": lineage_token,
-    }
+        return _prepare_codex_workshop_lineage(
+            repo_root, orchestration_id, container, home, lineage_token, resume=resume)
 
 def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, container: Path,
                                     home: Path, lineage_token: str, *, resume: bool
@@ -13687,7 +13466,7 @@ def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, cont
 
 def claude_workshop_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
     """The bwrap profile kwargs a prepared claude workshop lineage home implies — ONE spelling,
-    the twin of `codex_isolation_profile_kwargs`."""
+    the twin of `codex_workshop_profile_kwargs`."""
     return {
         "backend_rw_override": [isolation["config"], isolation["tree"]],
         "env_overrides": {"CLAUDE_CONFIG_DIR": isolation["config"]},
@@ -14054,19 +13833,6 @@ def _probe_codex_backend(
             "detail": exec_help_detail,
         },
         {
-            "name": "codex_exec_pure_isolation_flags",
-            "pass": (
-                exec_help_proc.returncode == 0
-                and "--sandbox" in exec_help_text
-                and "--ignore-rules" in exec_help_text
-                # The pure launch runs from an empty cwd (issue #227); see
-                # `CODEX_EXEC_RESUME_REQUIRED_FLAGS` for the refusal a CLI without this
-                # flag emits.
-                and "--skip-git-repo-check" in exec_help_text
-            ),
-            "detail": exec_help_detail,
-        },
-        {
             "name": "codex_exec_resume",
             "pass": (
                 resume_help_proc.returncode == 0
@@ -14207,7 +13973,7 @@ def _probe_claude_backend(
             "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
         {
-            # `pure_leaf_flags()` opens with `--restricted`, which keeps the operator's
+            # `workshop_leaf_flags()` opens with `--restricted`, which keeps the operator's
             # settings files out of the leaf (issue #453). A CLI that does not know the flag
             # refuses the whole argv, so every leaf would die as a transport failure; this
             # moves that to preflight. Matched as an OPTION LINE of the help — the flag at
@@ -14221,7 +13987,7 @@ def _probe_claude_backend(
             "detail": ("`--help` names `--restricted` as an option"
                        if _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout)
                        else "`--help` names no `--restricted` option; this CLI cannot run a "
-                            "pure leaf (issue #453)") + "\n" + help_probe_detail,
+                            "leaf (issue #453)") + "\n" + help_probe_detail,
         },
         _claude_global_config_env_check(backend_token),
     ]
@@ -14235,21 +14001,17 @@ def _probe_claude_backend(
 _CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(
     r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--restricted(?![\w-])")
 
-def _workshop_only_options() -> tuple[str, ...]:
-    """The options `pure_leaf.workshop_leaf_flags` carries that `pure_leaf_flags` does not —
-    DERIVED, so a flag added to the workshop launch is checked by preflight without a second
-    list to keep in step."""
-    from tools.pure_leaf import pure_leaf_flags, workshop_leaf_flags
-    pure = {flag for flag in pure_leaf_flags() if flag.startswith("--")}
-    return tuple(dict.fromkeys(flag for flag in workshop_leaf_flags("{}")
-                               if flag.startswith("--") and flag not in pure))
-
-
-#: The options a `workshop leaf`'s argv carries beyond the pure leaf's (issue #534). A CLI
-#: missing one refuses the whole argv, so every workshop launch would die as a transport
-#: failure; `claude_workshop_flag_set_available` moves that to preflight, for a configuration
-#: that has a workshop entry. (The options both argvs carry are the pure leaf's own checks'.)
-CLAUDE_WORKSHOP_REQUIRED_OPTIONS: tuple[str, ...] = _workshop_only_options()
+#: Every option a claude `workshop leaf`'s argv carries (`pure_leaf.workshop_leaf_flags`, the
+#: producing and the reading kind; issue #534). A CLI missing one refuses the whole argv, so
+#: every launch would die as a transport failure; `claude_workshop_flag_set_available` moves
+#: that to preflight. An EXPLICIT tuple since issue #534 PR-J4-b: it was the workshop flags
+#: minus the pure leaf's, whose `pure_leaf_flags` is gone. A suite row derives the argv's
+#: option set and compares it to this one, so a flag added to the launch without being added
+#: here is a red row rather than an unprobed option.
+CLAUDE_WORKSHOP_REQUIRED_OPTIONS: tuple[str, ...] = (
+    "--restricted", "--system-prompt", "--tools", "--mcp-config", "--strict-mcp-config",
+    "--permission-mode", "--permission-prompts", "--allowedTools",
+    "--disable-slash-commands", "--output-format")
 
 
 def _claude_option_line_re(option: str) -> re.Pattern[str]:
@@ -14603,19 +14365,15 @@ def probe_all_providers(
     cfg = apply_defaults_overrides(
         config, model=model_override, command=command_override)
     providers: dict[str, dict[str, Any]] = {}
-    # The (backend token, command) surfaces some `leaf: workshop` entry launches through: only
-    # those take their CLI's workshop row (`claude_workshop_flag_set_available` /
-    # `codex_workshop_flag_set_available`), and their recorded surface says so, so
-    # the TTL re-probe (`_reprobe_recorded_providers`) keeps requiring it. `defaults` is among
-    # them: it serves the `escalate` diagnostician, a reading workshop leaf (issue #534
-    # PR-J4-a), on a surface no substep entry need share.
-    workshop_surfaces = {(e.backend_token, e.command)
-                         for e in [cfg.defaults, *cfg.entries.values()]
-                         if getattr(e, "is_workshop", False)}
+    # Every CLI surface takes its CLI's workshop row (`claude_workshop_flag_set_available` /
+    # `codex_workshop_flag_set_available`): every leaf is a workshop leaf since issue #534
+    # PR-J4-b (`defaults` included — it serves the `escalate` diagnostician), so the row is no
+    # longer conditional on an entry selecting `leaf: workshop`. The recorded surface keeps
+    # its `workshop` stamp, which records that the row was run.
     for row in describe_providers(cfg):
         token = row["backend"]
-        workshop = (token, row["command"]) in workshop_surfaces
-        if row["provider"] in ("claude_cli", "codex_cli"):
+        workshop = row["provider"] in ("claude_cli", "codex_cli")
+        if workshop:
             probe = probe_execution_platform(
                 backend=token, agent_command=row["command"] or None,
                 runner=runner, repo_root=repo_root)
@@ -15167,7 +14925,6 @@ def record_launch(
     request_payload: dict[str, Any],
     response_payload: dict[str, Any],
     relation_type: str = "launch",
-    codex_lineage_id: str | None = None,
     child_env: Mapping[str, str] | None = None,
     workshop_lineage_id: str | None = None,
 ) -> dict[str, Any]:
@@ -15244,14 +15001,15 @@ def record_launch(
     # and a write-authorized capability with no sandbox at all. Raising here leaves no
     # agent-graph edge and no session-index row behind.
     #
-    # A WORKSHOP request is admitted too (issue #534 PR-J3-b): its tools are the host loop's,
-    # run in the conductor's process on the lineage's tree, and like a pure leaf it holds no
-    # write authority under the checkout (the host writes every artifact from the snapshot).
+    # A WORKSHOP request is what it admits (issue #534 PR-J3-b; the pure leaf it also admitted
+    # went in PR-J4-b): its tools are the host loop's, run in the conductor's process on the
+    # lineage's tree, and it holds no write authority under the checkout (the host writes every
+    # artifact from the snapshot).
     if (backend_token in _HTTP_PROVIDER_TOKENS
-            and not _pure_leaf_is_host_rendered_request(request_payload)):
+            and not _pure_leaf_is_workshop_request(request_payload)):
         raise RuntimeError(
             f"record-launch: provider {backend_token!r} runs no confined child process and is "
-            f"admissible only for a pure or a workshop leaf; this launch is neither")
+            f"admissible only for a workshop leaf; this launch is not one")
 
     # A WORKSHOP leaf's lineage (issue #534): a claude or codex launch in the lineage's private
     # home,
@@ -15290,11 +15048,6 @@ def record_launch(
                 f"{', '.join(sorted(WORKSHOP_HOME_PREPARERS))} (providers "
                 f"{', '.join(sorted(WORKSHOP_LINEAGE_BACKENDS))}); this launch names "
                 f"workshop_provider {named!r} on {_launch_backend or backend_token!r}")
-        if codex_lineage_id is not None:
-            # A workshop lineage is named by `workshop_lineage_id` on both CLIs; the pure codex
-            # thread lineage is a different home layout under the same container.
-            raise ValueError("codex_lineage_id names a pure codex thread lineage; a workshop "
-                             "launch names its lineage with workshop_lineage_id")
         # The provider the prompt's `<tool_surface>` was rendered for is THIS launch's: a
         # prompt stating another transport's tools would describe a surface the leaf lacks.
         if PROVIDER_BACKEND_TOKENS.get(named) != backend_token:
@@ -15339,39 +15092,6 @@ def record_launch(
             return {
                 "workshop_lineage_home_missing": True,
                 "workshop_lineage_id": workshop_lineage_id,
-            }
-
-    # A Codex warm-resume target lives in one LINEAGE HOME — `<container>/<lineage_id>/`,
-    # the `CODEX_HOME` of the thread it resumes (`_prepare_codex_workflow_home`). Prepare
-    # it at the beginning of the launch transaction and answer a missing one *before*
-    # writing launch artifacts, a session-index row or an active child marker: the
-    # conductor then rebuilds the turn cold, exactly as it did for the integer "home
-    # generation" this check replaced (issue #245). The conductor's resume selection
-    # already checked existence unlocked; this is the check that counts, under the
-    # metadata lock. What it establishes is that the lineage home the HOST created for
-    # that thread is still there — a lineage is never re-created by this code, so a
-    # directory at that path is the one the thread was started in. A directory an
-    # operator put there by hand (an empty `mkdir` after a prune) passes it, and the
-    # resume then dies inside the CLI (`no rollout found for thread id`, measured) rather
-    # than going cold here; the container is bound into no leaf, so nothing but the
-    # operator can make that directory.
-    codex_isolation: dict[str, str] | None = None
-    if codex_lineage_id is not None:
-        if backend_token != "codex":
-            raise ValueError("codex_lineage_id is valid only for the Codex backend")
-        if (not isinstance(codex_lineage_id, str)
-                or not _AGENT_RUN_ID_RE.match(codex_lineage_id.strip())):
-            raise ValueError(
-                f"record-launch: codex_lineage_id contains invalid characters "
-                f"(got {codex_lineage_id!r}); only alphanumerics, hyphens, and underscores "
-                "are allowed")
-        codex_lineage_id = codex_lineage_id.strip()
-        codex_isolation = _prepare_codex_workflow_home(
-            repo_root, orchestration_id, codex_lineage_id, resume=True)
-        if codex_isolation is None:
-            return {
-                "codex_lineage_home_missing": True,
-                "codex_lineage_id": codex_lineage_id,
             }
 
     # The Claude backend enforces sequential child launch via the active file. The existence
@@ -15737,9 +15457,9 @@ def record_launch(
                 # cross-phase loop here only handles existence + pass-state
                 # of the generation referenced from the cross-phase audit
                 # log path (build step's Make-only path).
-        # An HTTP pure leaf (issue #28) runs in the conductor's own process over HTTPS: there is
-        # no child process to confine, no codex home to isolate, and no `backend_command` to
-        # pin. The launch record written BELOW — the `launches/` files, the session-index row,
+        # An HTTP leaf (issue #28; a workshop leaf's host loop since issue #534 PR-J3-b) runs in
+        # the conductor's own process over HTTPS: there is no child process to confine, no CLI
+        # home to isolate, and no `backend_command` to pin. The launch record written BELOW — the `launches/` files, the session-index row,
         # the hook entry, the agent-graph edge — is written for it too, because those describe
         # the LAUNCH, which is as real as any other. Only the process-sandbox layer is
         # skipped, and it is marked so
@@ -15790,49 +15510,26 @@ def record_launch(
                 _backend_family = _resolve_backend_type(
                     _resp_backend if isinstance(_resp_backend, str) else "",
                     backend_command)
-                if _backend_family == "codex" and not is_workshop:
-                    # A warm launch prepared its lineage home before any durable
-                    # mutation and is not re-prepared here (a second preparation
-                    # could not create anything, but it would be a second existence
-                    # answer for one launch). A COLD launch starts a NEW lineage, named by
-                    # the child's own id: the exclusive creation refuses a directory that
-                    # is already there, which an `agent_run_id` minted once never is.
-                    if codex_isolation is None:
-                        codex_isolation = _prepare_codex_workflow_home(
-                            repo_root, orchestration_id, child_agent_run_id, resume=False)
-                    # The LINEAGE home — the directory bound as this leaf's `CODEX_HOME` —
-                    # not the orchestration's container. `codex_lineage_id` is what the
-                    # session-index row carries so a later warm resume of this thread
-                    # is recorded against the same home.
-                    response_payload["codex_workflow_home"] = codex_isolation["home"]
-                    response_payload["codex_lineage_id"] = codex_isolation["lineage_id"]
-                # NO claude private home for a PURE leaf. Issue #63 prepared one for the AGENTIC
-                # leaf to keep the operator's configuration out; Z4 (issue #171) retired that
-                # leaf, and a pure claude leaf takes `--safe-mode` — no customizations, no tools,
-                # no hooks — and `--restricted`, which keeps out the operator's settings files,
-                # the other thing a private home kept out (issue #453;
-                # `default_agent_model_for_backend`). A WORKSHOP leaf (issue #534) has one per
-                # lineage, which the host prepares before this launch is recorded (above).
-                profile_kwargs: dict[str, Any] = {}
-                if codex_isolation is not None:
-                    profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
-                if is_workshop:
-                    # The family the profile is built for is the one whose home was prepared
-                    # above: the same resolver answers both, or the record would describe one
-                    # CLI's home under another's profile.
-                    if _backend_family != backend_token or lineage_backend != backend_token:
-                        raise ValueError(
-                            f"a workshop launch's profile is its backend's ({backend_token!r}); "
-                            f"the command resolves to {_backend_family!r} and the lineage home "
-                            f"is {lineage_backend!r}")
-                    # Its lineage home was found above, cold and warm alike, and stamped.
-                    assert workshop_isolation is not None
-                    profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
-                # Every CLI leaf is pure (Z4, issue #171), so there is one profile builder.
-                # The read-write arm that stood beside it built a profile carrying the
-                # capability's `write_roots` as `--bind` mounts; with no capability and no
-                # write authority to carry, `build_bwrap_profile` had no reachable caller and
-                # went with it in PR-2. What the profile binds and why — the checkout is NOT
+                # Every CLI leaf is a WORKSHOP leaf (issue #534; the pure leaf, whose read-only
+                # profile and codex thread lineage this branch also built, went in PR-J4-b). A
+                # request that is not one cannot have reached here — the renderer refuses it —
+                # and is refused again rather than given a profile.
+                if not is_workshop:
+                    raise ValueError(
+                        "a CLI launch is a workshop launch; this request is not one "
+                        f"(leaf_mode={request_payload.get('leaf_mode')!r})")
+                # The family the profile is built for is the one whose home was prepared
+                # above: the same resolver answers both, or the record would describe one
+                # CLI's home under another's profile.
+                if _backend_family != backend_token or lineage_backend != backend_token:
+                    raise ValueError(
+                        f"a workshop launch's profile is its backend's ({backend_token!r}); "
+                        f"the command resolves to {_backend_family!r} and the lineage home "
+                        f"is {lineage_backend!r}")
+                # Its lineage home was found above, cold and warm alike, and stamped.
+                assert workshop_isolation is not None
+                profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
+                # One profile builder. What the profile binds and why — the checkout is NOT
                 # among it (issue #227) — is stated once, in `build_readonly_bwrap_profile`'s
                 # docstring and at the `--tmpfs` emission in `render_bwrap_command`.
                 profile = build_readonly_bwrap_profile(
@@ -18019,10 +17716,10 @@ def _project_terse_result(command: str, result: Any) -> Any:
     fields = _TERSE_RESULT_FIELDS.get(command)
     if fields is None or not isinstance(result, dict):
         return result
-    # A missing Codex lineage home is not a completed launch: return its
-    # transaction sentinel intact so the conductor can rebuild the request cold.
-    if command == "record-launch" and (result.get("codex_lineage_home_missing")
-                                        or result.get("workshop_lineage_home_missing")):
+    # A missing workshop lineage home is not a completed launch: return its sentinel intact
+    # so the conductor can rebuild the request cold (the pure codex leaf's
+    # `codex_lineage_home_missing` went with it in issue #534 PR-J4-b).
+    if command == "record-launch" and result.get("workshop_lineage_home_missing"):
         return result
     projected: dict[str, Any] = {key: result[key] for key in fields if key in result}
     for key in _TERSE_ALWAYS_KEEP:
@@ -18229,13 +17926,6 @@ def main(argv: list[str] | None = None) -> int:
               "and delivers the same dict the leaf actually runs under. On STDIN, not "
               "argv: the values would otherwise be readable in `ps` for every process "
               "on the host."))
-    launch_parser.add_argument(
-        "--codex-lineage-id",
-        help=("For a Codex warm resume, the lineage whose isolated CODEX_HOME the resumed "
-              "thread lives in (the agent_run_id of the attempt that started it, read from "
-              "the session-index row). A missing lineage home returns a cold-fallback "
-              "sentinel before recording a launch; it is never created here."),
-    )
     launch_parser.add_argument(
         "--workshop-lineage-id",
         help=("For a workshop leaf's warm resume (issue #534), the lineage whose private "
@@ -18722,7 +18412,6 @@ def main(argv: list[str] | None = None) -> int:
                 request_payload=request_payload,
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
-                codex_lineage_id=args.codex_lineage_id,
                 workshop_lineage_id=args.workshop_lineage_id,
                 child_env=child_env_payload,
             )

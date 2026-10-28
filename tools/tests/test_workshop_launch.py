@@ -31,10 +31,11 @@ from tools.orchestration_runtime import (
     render_bwrap_command,
 )
 from tools.pure_leaf import (
-    WORKSHOP_PROMPT_CONTRACT_VERSION,
+    PURE_PROMPT_CONTRACT_VERSION,
     WORKSHOP_PROMPT_SENTINEL,
     workshop_mcp_config_json,
 )
+from tools.tests.llm_samples import workshop_yaml
 from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.test_pure_leaf_producer import _PureFakeConductor
 from tools.tests.test_pure_leaf_wiring import (
@@ -80,7 +81,7 @@ def _with_test_templates(test: unittest.TestCase) -> None:
 
 def _workshop_request(child: str, lineage: str | None = None, **overrides) -> dict:
     req = _pure_request("generate", leaf_mode="workshop",
-                        prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION,
+                        prompt_contract_version=PURE_PROMPT_CONTRACT_VERSION,
                         agent_run_id=child, workshop_lineage_id=lineage or child,
                         workshop_provider="claude_cli")
     req.update(overrides)
@@ -222,8 +223,9 @@ class WorkshopProfileTests(_Env):
                        {"workdir": None}, {"credential_rw_mapping": None}):
             with self.subTest(broken=broken), self.assertRaises(ValueError):
                 build_readonly_bwrap_profile(**base, **{**kwargs, **broken})
-        # A pure profile takes neither a workdir nor a credential mapping.
-        for extra in ({"workdir": iso["tree"]},
+        # A profile that is not a workshop lineage's — the read-only one the pure leaf ran
+        # under, with or without the workshop fields — is refused since issue #534 PR-J4-b.
+        for extra in ({}, {"workdir": iso["tree"]},
                       {"credential_rw_mapping": (iso["credentials"],
                                                  iso["credentials_destination"])},
                       {"readonly": False}):
@@ -322,7 +324,7 @@ class WorkshopRecordLaunchTests(_Env):
         self.assertEqual(request["allowed_output_paths"], [])
         prompt = (self._base() / "launches/ar_ws_cold.prompt.txt").read_text()
         self.assertTrue(prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
-        self.assertIn(f"prompt_contract_version: {WORKSHOP_PROMPT_CONTRACT_VERSION}", prompt)
+        self.assertIn(f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}", prompt)
         # The workshop profile passes the persisted-record audit the validator runs.
         import tools.validate_pipeline_semantics as vps
         self.assertEqual(vps._workshop_profile_violations(profile), [])
@@ -358,13 +360,16 @@ class WorkshopRecordLaunchTests(_Env):
                 _workshop_request("ar_x", "ar_a"), {"workshop_lineage_id": "ar_b"}),
             "a warm launch resuming itself": (
                 _workshop_request("ar_x", "ar_x"), {"workshop_lineage_id": "ar_x"}),
+            # The two pure-request rows are refused for their leaf_mode since issue #534
+            # PR-J4-b, before the lineage is read: no request but a workshop one is recorded.
             "a lineage id on a pure request": (
                 _pure_request("generate", agent_run_id="ar_x"), {"workshop_lineage_id": "ar_a"}),
             "a lineage field on a pure request": (
                 _pure_request("generate", agent_run_id="ar_x", workshop_lineage_id="ar_x"), {}),
-            "the pure contract version": (
-                _workshop_request("ar_x", prompt_contract_version=
-                                  pure_leaf.PURE_PROMPT_CONTRACT_VERSION), {}),
+            # The retired workshop counter (issue #534 PR-J4-b: one constant, `pure-84`, stamps
+            # every request; a request carrying the counter's last value is not this contract).
+            "the retired workshop contract version": (
+                _workshop_request("ar_x", prompt_contract_version="workshop-9"), {}),
             "a write path": (_workshop_request("ar_x", allowed_output_paths=["x"]), {}),
             "an HTTP provider named by the response": (
                 _workshop_request("ar_x"),
@@ -403,8 +408,10 @@ class WorkshopRecordLaunchTests(_Env):
                 ("a provider with no surface row",
                  _workshop_request("ar_x", workshop_provider="made_up_provider"),
                  "must name its provider in workshop_provider"),
+                # Since issue #534 PR-J4-b no request but a workshop one is a leaf request, so a
+                # pure one carrying the field is refused for its leaf_mode before the field.
                 ("on a pure request", _pure_request("generate", workshop_provider="claude_cli"),
-                 "carries workshop_provider and is not a workshop request")):
+                 "the pure leaf went in issue #534 PR-J4-b")):
             with self.subTest(case=label):
                 with self.assertRaises(ValueError) as ctx:
                     ort._validate_pure_launch_request_payload(req)
@@ -463,10 +470,16 @@ class WorkshopRecordLaunchTests(_Env):
                 self.assertNotIn('"failed_phase"', prompt)
 
     def test_the_prompt_and_the_request_must_agree_on_the_leaf_model(self) -> None:
+        """Both directions of the sentinel AND. No pure prompt is RENDERED since issue #534
+        PR-J4-b (the renderer refuses a pure request), so the pure-shaped prompt is the
+        workshop render under the pure sentinel — what a record of the old leaf carries."""
         workshop = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
-        pure = ort.prepare_launch_request_payload(_pure_request("generate"))
-        pure_prompt = ort.render_launch_prompt_text(pure)
+        # Unprepared: preparing renders, and the renderer refuses a pure request.
+        pure = _pure_request("generate")
         workshop_prompt = ort.render_launch_prompt_text(workshop)
+        self.assertTrue(workshop_prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
+        pure_prompt = (pure_leaf.PURE_PROMPT_SENTINEL
+                       + workshop_prompt[len(WORKSHOP_PROMPT_SENTINEL):])
         with self.assertRaises(ValueError):
             ort._validate_launch_prompt_text(workshop, pure_prompt)
         with self.assertRaises(ValueError):
@@ -510,9 +523,17 @@ def _clear_active_child(repo: Path) -> None:
 
 
 class PreflightTests(unittest.TestCase):
-    _HELP = ("Usage: claude\n  --mcp-config <configs...>  x\n"
+    # The option lines of every flag a claude workshop argv carries, spelled as CLI 2.1.309's
+    # `--help` spells them (a long alias after the flag, a wrapped description line below).
+    _HELP = ("Usage: claude\n  --allowedTools, --allowed-tools <tools...>  x\n"
+             "  --disable-slash-commands  x\n"
+             "  --mcp-config <configs...>  x\n"
+             "  --output-format <format>  x\n"
              "  --permission-mode <mode>  x\n  --permission-prompts <target>  x\n"
-             "  --allowedTools, --allowed-tools <tools...>  x\n")
+             "  --restricted  x\n"
+             "                                        --strict-mcp-config to skip MCP servers\n"
+             "  --strict-mcp-config  x\n"
+             "  --system-prompt <prompt>  x\n  --tools <tools...>  x\n")
 
     def _runner(self, help_text: str, rc: int = 0):
         import subprocess
@@ -520,17 +541,6 @@ class PreflightTests(unittest.TestCase):
         def run(argv, **kw):
             return subprocess.CompletedProcess(argv, rc, help_text, "")
         return run
-
-    def test_the_required_options_are_the_workshop_argv_beyond_the_pure_one(self) -> None:
-        """Derived from the two flag sets, and the derivation reads them: the set is exactly
-        the four options today, and a flag added to the workshop argv joins it."""
-        self.assertEqual(ort.CLAUDE_WORKSHOP_REQUIRED_OPTIONS,
-                         ("--mcp-config", "--permission-mode", "--permission-prompts",
-                          "--allowedTools"))
-        original = pure_leaf.workshop_leaf_flags
-        with mock.patch.object(pure_leaf, "workshop_leaf_flags",
-                               lambda j: [*original(j), "--new-flag", "x"]):
-            self.assertIn("--new-flag", ort._workshop_only_options())
 
     def test_the_check_requires_every_option_as_an_option_line(self) -> None:
         self.assertIs(ort._claude_workshop_flag_set_check("claude", self._runner(self._HELP))
@@ -547,13 +557,24 @@ class PreflightTests(unittest.TestCase):
         self.assertIs(ort._claude_workshop_flag_set_check(
             "claude", self._runner(self._HELP, rc=1))["pass"], False)
 
-    def test_only_a_surface_a_workshop_entry_launches_through_takes_the_check(self) -> None:
-        """A CLI surface takes its workshop row when some workshop entry launches through it.
-        `defaults` is one since issue #534 PR-J4-a (the diagnostician, a reading workshop
+    def test_an_unrunnable_cli_fails_the_row_rather_than_the_preflight(self) -> None:
+        """A `--help` that cannot run at all is a failed capability row, named, not an
+        exception out of the preflight."""
+        def gone(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        check = ort._claude_workshop_flag_set_check("/nonexistent/claude", gone)
+        self.assertIs(check["pass"], False)
+        self.assertIn("FileNotFoundError", check["detail"])
+
+    def test_every_cli_surface_an_entry_launches_through_takes_the_check(self) -> None:
+        """A CLI surface takes its workshop row when some workshop entry launches through it —
+        since issue #534 PR-J4-b every entry is one, so every CLI surface an entry names takes
+        it. `defaults` is one since issue #534 PR-J4-a (the diagnostician, a reading workshop
         leaf), so a claude `defaults` takes the check with no substep entry of its own (review
         finding 1 of the PR-J4 plan: the probe read `cfg.entries` alone, so a `defaults` on a
         surface no substep shares launched an argv nothing had certified); a claude surface
-        only PURE substep entries use — beside a codex `defaults` — takes none."""
+        only substep entries use — beside a codex `defaults` — takes it too (before PR-J4-b
+        such entries could be pure, and their surface took none)."""
         def probe(**kw):
             return {"probe_command": kw.get("agent_command") or "claude", "checks": [],
                     "status": "pass"}
@@ -563,17 +584,17 @@ class PreflightTests(unittest.TestCase):
                                 True),
             "claude defaults and a workshop entry": (
                 ("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n"
-                 "phases: {generate: {substeps: {generate: {leaf: workshop, "
+                 "phases: {generate: {substeps: {generate: {"
                  "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n"), True),
-            "pure claude entries beside a codex defaults": (
+            "claude substep entries beside a codex defaults": (
                 ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
                  "phases: {generate: {substeps: {generate: {provider: claude_cli}}}}\n"),
-                False),
+                True),
         }
         with tempfile.TemporaryDirectory() as tmp:
             for label, (body, workshop) in cases.items():
                 path = Path(tmp) / f"llm_{len(label)}.yaml"
-                path.write_text(body, encoding="utf-8")
+                path.write_text(workshop_yaml(body), encoding="utf-8")
                 with self.subTest(case=label), \
                         mock.patch.object(ort, "probe_execution_platform", probe), \
                         mock.patch.object(ort, "_preflight_allows_agent_launch",
@@ -606,10 +627,10 @@ class _WorkshopConfig:
     @staticmethod
     def config(tmp: Path) -> lc.LlmConfig:
         path = tmp / "llm_workshop.yaml"
-        path.write_text(
+        path.write_text(workshop_yaml(
             "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
             "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
-            "effort: medium, leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+            "effort: medium, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n"),
             encoding="utf-8")
         return lc.load_llm_config(path)
 
@@ -642,11 +663,15 @@ class LeafCommandTests(unittest.TestCase):
         self.assertLess(i, argv.index("--restricted"))
 
     def test_the_entry_and_the_endpoint_must_agree(self) -> None:
+        """The launch's KIND and its endpoint agree, both ways: a producing launch without its
+        wrapper's endpoint and a reading one given an endpoint are refused (before issue #534
+        PR-J4-b the second half was a PURE entry given one)."""
         with self.assertRaises(ValueError):
             wc.Conductor.leaf_command(self.c, self.entry, session_id="s")
-        pure = self.c.entry_for("generate", "verify")
+        reader = self.c.entry_for("generate", "verify")
         with self.assertRaises(ValueError):
-            wc.Conductor.leaf_command(self.c, pure, session_id="s", mcp_config_json=self.mcp)
+            wc.Conductor.leaf_command(self.c, reader, session_id="s", mcp_config_json=self.mcp,
+                                      reading=True)
 
     def test_the_setting_surface_records_the_endpoint(self) -> None:
         surface = wc.Conductor._launch_setting_surface(
@@ -655,25 +680,28 @@ class LeafCommandTests(unittest.TestCase):
         self.assertEqual(surface["claude_mcp_config"],
                          [{"server": "wrapper", "url": "http://127.0.0.1:4242/mcp"}])
         self.assertEqual(surface["claude_tools"], ["Read,Write,Edit,Glob,Grep"])
-        pure = wc.Conductor._launch_setting_surface(
+        reader = wc.Conductor._launch_setting_surface(
             self.c, "child", {"step": "generate", "substep": "verify"},
             self.c.entry_for("generate", "verify"))
-        self.assertNotIn("claude_mcp_config", pure)
+        self.assertNotIn("claude_mcp_config", reader)
 
     def test_a_command_prefix_carrying_its_own_mcp_config_is_recorded_as_before(self) -> None:
-        """Round 1 (a regression against origin/main): a PURE entry whose `command:` carries
+        """Round 1 (a regression against origin/main): an entry whose `command:` carries
         `--mcp-config <file>` raised JSONDecodeError here, failing every launch at
-        record-launch; origin/main records `claude_tools` alone."""
+        record-launch; origin/main records `claude_tools` alone. The entry was a PURE one
+        (`[""]`) until issue #534 PR-J4-b; a reading workshop launch records its file tools,
+        and the prefix's own `--mcp-config` is still not read as the wrapper's endpoint."""
         cfg = self.repo / "llm_cmd.yaml"
-        cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli, command: claude --mcp-config "
-                       "/etc/x.json}\n", encoding="utf-8")
+        cfg.write_text(workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, command: claude "
+            "--mcp-config /etc/x.json}\n"), encoding="utf-8")
         c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",
                                orchestration_agent_run_id="orch", env={},
                                llm_config=lc.load_llm_config(cfg))
         entry = c.entry_for("generate", "verify")
         self.assertEqual(wc.Conductor._launch_setting_surface(
             c, "child", {"step": "generate", "substep": "verify"}, entry),
-            {"claude_tools": [""]})
+            {"claude_tools": [",".join(pure_leaf.WORKSHOP_FILE_TOOLS)]})
 
     def test_record_launch_passes_the_lineage_only_when_given(self) -> None:
         seen: list[list[str]] = []
@@ -806,7 +834,7 @@ class SpawnTimeoutTests(unittest.TestCase):
 
     def test_a_cancelled_leaf_that_exits_zero_is_still_a_failed_launch(self) -> None:
         """A leaf that answers the termination with a clean exit and a whole envelope must not
-        read as a finished turn: the pure loops accept on `returncode == 0`."""
+        read as a finished turn: a loop that accepts on `returncode == 0` would take it."""
         import threading
         script = "trap 'echo ANSWERED; exit 0' TERM; sleep 60 & wait"
         with tempfile.TemporaryDirectory() as tmp:
@@ -840,8 +868,10 @@ class SpawnTimeoutTests(unittest.TestCase):
         import threading
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "llm.yaml"
-            cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: anthropic_api, model: m, api_key_env: K}\n"
-                           "phases: {generate: {provider: claude_cli}}\n", encoding="utf-8")
+            cfg.write_text(workshop_yaml(
+                "defaults: {lineage_timeout_s: 2700, provider: anthropic_api, model: m, "
+                "api_key_env: K}\nphases: {generate: {provider: claude_cli}}\n"),
+                encoding="utf-8")
             c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))
@@ -1144,7 +1174,9 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             cfg = repo / "llm.yaml"
-            cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            cfg.write_text(workshop_yaml(
+                "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"),
+                encoding="utf-8")
             c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))
@@ -1166,7 +1198,9 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             cfg = repo / "llm.yaml"
-            cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            cfg.write_text(workshop_yaml(
+                "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"),
+                encoding="utf-8")
             c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))

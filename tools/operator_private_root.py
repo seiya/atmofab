@@ -160,11 +160,9 @@ def claude_leaf_projects_roots(repo_root: Path,
       * `orchestration_diagnostics._locate_leaf_transcript` (post-mortem of a dangling
         leaf).
 
-    `workflow_conductor._claude_session_resumable` is deliberately NOT one of them and must not
-    be added: a resume is served from the ONE home the launch uses, so the version that searched
-    both called a pre-move session resumable and threw `--resume` at a home that never held it.
-    `dual-read-pairs.md:22` is canonical for that split. (This list named it as a consumer until
-    issue #137; it was already wrong, and the docstring is where a maintainer looks before
-    changing the resolver.)
+    The pure leaf's resume check (`workflow_conductor._claude_session_resumable`, deleted with
+    the pure leaf in issue #534 PR-J4-b) was deliberately NOT one of them: a resume is served
+    from the ONE home the launch uses, and a workshop lineage's is its own `config/`
+    (`Conductor._workshop_session_resumable`), never this root.
     """
     return (_home_dir() / ".claude" / "projects",)

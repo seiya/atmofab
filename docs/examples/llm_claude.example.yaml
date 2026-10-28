@@ -9,11 +9,13 @@
 # asserts the leaf argv it produces, so it cannot drift silently the way an untested YAML file in
 # this repository has before.
 #
-# EVERY phase, substep, provider, model and effort is written out, even though the resolution
-# rules would let all five leaves inherit one `defaults` block. The file is the answer to
-# "what runs where, and how hard does it think" — a reader should get that answer by reading it,
-# not by re-deriving it from an inheritance chain. Omission still works and is the right choice
-# once the copy is yours to edit; it is the wrong choice for the sample.
+# EVERY phase, substep, provider, model and effort is written out. The substep entries are
+# REQUIRED: each states its own bounds (`lineage_timeout_s`, and `max_wrapper_calls` on a
+# producing substep), which no level inherits, so a substep left out is refused at load
+# (`llm_config_workshop_bound_missing`). Provider, model and effort would inherit from
+# `defaults`; they are written out anyway because the file is the answer to "what runs where,
+# and how hard does it think" — a reader should get that answer by reading it, not by
+# re-deriving it from an inheritance chain.
 #
 # The five entries below are the complete set of LLM leaves. Every other substep
 # (compile.static, generate.gate, validate.pre_judge / execute / post_judge, and the whole
@@ -24,8 +26,7 @@
 #            recorded on its `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus`. Delete the `model:` lines and no `--model` is passed,
 #            which hands the choice to the CLI's own default (admin-managed settings
-#            aside). Every leaf launches with `--restricted` (a pure
-#            leaf since Z4, issue #171, and a workshop leaf alike), so the operator's own
+#            aside). Every leaf launches with `--restricted`, so the operator's own
 #            `~/.claude/settings.json` takes no part: neither its `model` key nor an `env`
 #            block remap of an alias such as `opus` reaches the leaf (issue #453).
 #   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
@@ -69,61 +70,34 @@
 # table — reasoning from it is the mistake this comment exists to prevent.
 #
 # To move one leaf elsewhere, replace its block. HTTP providers (`openai_compatible`,
-# `anthropic_api`) are admissible on every LLM leaf: all five run as host-mediated pure
-# functions. `llm_openai_compatible.example.yaml` and `llm_anthropic_api.example.yaml` in this
-# directory are worked examples of each.
+# `anthropic_api`) are admissible on every LLM leaf, through the host's tool-use loop.
+# `llm_openai_compatible.example.yaml` and `llm_anthropic_api.example.yaml` in this directory
+# are worked examples of each.
 #
 # `capabilities:` narrows what a provider may be used for. The key is RESTRICT-ONLY — it may
-# name a subset of what the provider has (`claude_cli`: pure, warm_resume, workshop)
-# and never more, or the load is refused with
-# `llm_config_capability_exceeds_provider`. Every substep leaf of this sample is a pure leaf,
-# the default leaf model of every substep (`defaults` serves the diagnostician, a reading
-# workshop leaf, so it keeps `workshop`), so a pure entry
-# narrowed away from `pure` can run nothing and is refused with
-# `llm_config_capability_insufficient_for_substep`. No sample sets the key.
+# name a subset of what the provider has (`claude_cli`: warm_resume, workshop) and never more,
+# or the load is refused with `llm_config_capability_exceeds_provider`. Every LLM leaf is a
+# WORKSHOP leaf (issue #534), so an entry narrowed away from `workshop` can run nothing and is
+# refused with `llm_config_capability_insufficient_for_substep`. No sample sets the key.
 #
-# The two producing substeps, `compile.generate` and `generate.generate`, may instead run as a
-# WORKSHOP leaf (issue #534): the leaf edits a host-seeded work tree instead of returning one
-# document. `generate.generate` asks the host to derive, compile, lint, syntax-check and run its
-# bundle; `compile.generate` writes the WHOLE IR in its tree (no part split) and asks the host
-# to check it the way `Compile.static` will. The entry states the leaf model and both bounds,
-# which have no default and are written on the substep only — the same block under
-# `phases.compile.substeps` and under `phases.generate.substeps`:
-#
-#       generate:
-#         provider: claude_cli
-#         model: opus
-#         effort: medium
-#         leaf: workshop
-#         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
-#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
+# A workshop leaf works in a host-seeded tree. The two producing substeps, `compile.generate`
+# and `generate.generate`, edit that tree: `generate.generate` asks the host to derive, compile,
+# lint, syntax-check and run its bundle; `compile.generate` writes the WHOLE IR in its tree and
+# asks the host to check it the way `Compile.static` will. Their entries state both bounds,
+# `max_wrapper_calls` (wrapper calls per lineage: its cold launch and resumes) and
+# `lineage_timeout_s` (seconds per lineage, from its cold launch). The three judging substeps,
+# `compile.verify`, `generate.verify` and `validate.judge`, read the documents seeded in their
+# tree and write their one verdict document there; they are served no host operation, so they
+# state `lineage_timeout_s` alone and `max_wrapper_calls` is refused on them. The bounds have
+# no default and are written on the substep only: no level inherits one.
 #
 # A bound that runs out ends the lineage with its tree as it stands. A repair, a transient
 # retry and a usage-limit wait each start a fresh lineage with fresh counters, so one substep
 # run may open up to 8 lineages (1 + 2 repair turns + 2 transient retries + 3 usage waits; 5
 # without --wait-usage-reset): up to max_wrapper_calls x 8 calls and lineage_timeout_s x 8
-# seconds, and more across an outer reopen. Neither derivation key names the leaf model: on a
-# node whose Compile or Generate is already certified, a workshop entry reuses it unless the
-# run passes --rederive (compile,generate,build,validate for both; generate,build,validate for
-# Generate alone). The leaf runs in a private config home under
+# seconds, and more across an outer reopen. The leaf runs in a private config home under
 # its lineage home, over which `~/.claude/.credentials.json` is bound, so that file must exist
 # (`docs/ORCHESTRATION.md` §workshop leaf; `docs/RUNBOOK.md` §0-2).
-#
-# The three judging substeps, `compile.verify`, `generate.verify` and `validate.judge`, may run
-# as a READING workshop leaf (issue #534 step 3; adopted 2026-10-25): the documents the pure
-# judge is shown inline are seed files of its tree, and it writes its one verdict document
-# there. It is served no host operation, so its entry states `lineage_timeout_s` alone —
-# `max_wrapper_calls` is refused on a judging substep — and it runs on any provider (the HTTP
-# providers through the host's tool-use loop; their samples carry their own blocks).
-# The same block under each judging substep, with the substep's own name in place of `judge`
-# (and the model that substep runs on):
-#
-#       judge:
-#         provider: claude_cli
-#         model: opus
-#         effort: medium
-#         leaf: workshop
-#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 defaults:
   provider: claude_cli
   model: opus
@@ -144,6 +118,8 @@ phases:
         provider: claude_cli
         model: opus
         effort: medium
+        max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # PURE (issue #168): the IR reviewer. Semantic cross-reference (V1/V3/V5) over a
       # deterministically-clean IR, returning one verdict document. The cheapest leaf to be
       # wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read the
@@ -153,6 +129,7 @@ phases:
         provider: claude_cli
         model: sonnet
         effort: medium
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
   generate:
     substeps:
@@ -162,12 +139,15 @@ phases:
         provider: claude_cli
         model: opus
         effort: medium
+        max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # The verdict reviewer, reached only on a source the deterministic gate already accepted —
       # but it re-ran in 12 of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
       verify:
         provider: claude_cli
         model: opus
         effort: medium
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
   validate:
     substeps:
@@ -177,3 +157,4 @@ phases:
         provider: claude_cli
         model: opus
         effort: medium
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch

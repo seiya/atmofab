@@ -1,25 +1,18 @@
 #!/usr/bin/env python3
-"""Pure-function leaf transport (Z2) — host-mediated pure-leaf helpers.
+"""Leaf-contract helpers shared by every LLM leaf — since issue #534 PR-J4-b, every one a
+`workshop leaf`.
 
-A *pure leaf* is an LLM stage run as a host-mediated pure function
-(`docs/design/zero_base_architecture.md` A2): the host assembles a closed context, the
-model returns exactly one typed JSON document, and the host validates and writes it. The
-model holds no workflow-gate or repository-write authority. Claude launches with tools and
-slash commands disabled and returns through the `--output-format json` result envelope;
-Codex runs a tool-bearing CLI inside a read-only sandbox and the host parses its one reply.
-
-This module is the STAGE-AGNOSTIC substrate of that channel: the launch flag set, the
-result-envelope parser, the single-document extractor with its truncation classifier, and
-the verify verdict contract. It is deliberately free of any `generate`-specific knowledge
-(the `CodegenBundle` producer lives in `tools/workflow_conductor.py`; the bundle contract
-in `tools/codegen_bundle.py`). Z1 (`compile.generate` / `compile.verify`, issue #168) reuses
-this transport unchanged, which is what it was written stage-agnostic for; Z3
-(`validate.judge`) is still to come.
-
-**Inert at introduction (M-A).** No caller passes `pure=True` yet; `Conductor.leaf_command`
-grows the branch, the producer/verify inversions arrive in M-C/M-D. The functions here are
-pure and unit-tested ahead of the wiring so the transport is settled before the dominant
-leaf depends on it.
+The module began as the PURE-FUNCTION leaf's transport (Z2; `docs/design/
+zero_base_architecture.md` A2): a host-assembled closed context, one typed JSON document
+returned, no tools. That leaf model, its launch flag set (`pure_leaf_flags`), its fixed system
+prompt and its reply-text extractor went in PR-J4-b; the module keeps its name until the
+mechanical renames of J4-d. What it holds now is STAGE-AGNOSTIC: the leaf contract version
+(`PURE_PROMPT_CONTRACT_VERSION`, a derivation-key input), the workshop leaf's launch flags and
+tool-surface tables, the result-envelope parser, the verify verdict and semantic-review
+contracts, and the record predicates (`is_pure_request` and the pure sentinel stay so a
+record written by the pure leaf is still read). It is deliberately free of any
+`generate`-specific knowledge (the `CodegenBundle` producer lives in
+`tools/workflow_conductor.py`; the bundle contract in `tools/codegen_bundle.py`).
 
 Idiom (`tools/codegen_bundle.py`, `tools/meta_contracts.py`): stdlib only, pure functions,
 an explicit `_MISSING` sentinel so a present JSON `null` is never confused with an absent
@@ -29,33 +22,19 @@ key, and prefix-free violation clauses the caller frames in its own reporting id
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Sequence
 from typing import Any, NamedTuple
 
-# The prompt-contract version stamped into `bundle_meta.json` and the launch record, so a
-# contract change is an observable event (A7). Bumped when the pure prompt templates, the
-# fixed `PURE_SYSTEM_PROMPT`, or the transport's request shape change in a way that affects
-# producer behavior.
+# The leaf prompt-contract version stamped into every launch request, `bundle_meta.json` and
+# its twins, and hashed into the compile / generate / validate derivation keys
+# (`tools/derivation.py`), so a contract change is an observable event (A7). Bumped when any
+# text a leaf reads changes — a workshop template, a fragment, a document slice, a tool-surface
+# row, a system prompt — in a way that affects leaf behaviour; the drift pin
+# (`tools/tests/test_pure_prompt_contract_drift.py`) names what it hashes. ONE counter since
+# issue #534 PR-J4-b: the workshop leaf's own (`WORKSHOP_PROMPT_CONTRACT_VERSION`, `workshop-1`
+# through `workshop-9`, which entered no key) is retired, and the VALUE stays `pure-84` (no key
+# moves); the next bump writes `leaf-85`.
 PURE_PROMPT_CONTRACT_VERSION = "pure-84"
-
-# Claude's pure leaf system prompt is REPLACED with this fixed string via `--system-prompt`. The
-# default Claude Code system prompt injects per-machine DYNAMIC sections (cwd, environment,
-# memory paths, git status); `--exclude-dynamic-system-prompt-sections` only relocates them
-# into the first user message (still host-varying). A fixed `--system-prompt` takes them out
-# of the system prompt, but not out of the request: the CLI still adds text of its own, so the
-# model's total input is NOT a byte-stable function of the host-assembled `-p` body alone.
-# `docs/ORCHESTRATION.md` §pure-function leaf ("What the model receives, per transport") is
-# canonical for what the CLI adds and what that costs (issue #454).
-# Deliberately minimal: the full persona, output contract, and inlined context live in the `-p`
-# body (rendered in M-B); this string is the host's part of the system channel and states the
-# pure-function shape. A change here is a prompt-contract change
-# (bump `PURE_PROMPT_CONTRACT_VERSION`).
-PURE_SYSTEM_PROMPT = (
-    "You are a host-mediated pure function. You have no tools, no filesystem, and no shell. "
-    "The user message is a complete, self-contained task. Return exactly one JSON document as "
-    "your entire reply, with no surrounding prose or explanation."
-)
 
 # Schema-violation repair is a bounded in-conversation continuation (warm `--resume
 # --fork-session`): the producer sees its own prior answer plus the violation excerpt and
@@ -163,30 +142,16 @@ def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
             str(substep or "").strip().lower()) in WORKSHOP_READING_LAUNCH_PAIRS
 
 
-#: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
-#: field the pure request uses for its own). Its own counter, so a workshop template change
-#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-9`: the `escalate`
-#: diagnostician as a reading workshop leaf (`workshop_escalate_diagnose.txt`, issue #534
-#: PR-J4-a; `workshop-8` shipped with PR-J3-b's PR #554, main 7a153ade). `workshop-8`: the two HTTP
-#: providers' rows (`HTTP_PRODUCER_TOOL_SURFACE_TEXT`, `HTTP_READER_TOOL_SURFACE_TEXT`) and the
-#: five file tools they declare (`HTTP_FILE_TOOL_DECLARATIONS`); the producer system prompt and
-#: the producing templates name the host's operations without the MCP transport, which is a CLI
-#: transport's (issue #534 PR-J3-b). `workshop-7`: the `codex_cli`
-#: reader row leads with the host's reading helper (`CODEX_READ_HELPER_TEXT`, a seed of every
-#: codex reading tree) at the lowered `CODEX_READ_ADVICE_BYTES` (issue #534 PR-J3-a). `workshop-6`: the `codex_cli`
-#: reader row names every output budget and the host's refusal of a cut read; the cut-read
-#: repair's scope paragraph; and the verdict repair template's instruction slot, which renders a
-#: schema repair as before on both providers (issue #547; `workshop-5` shipped with step 3 PR-J2,
-#: main bb119b5a).
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-9"
-
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
 #: models it was written for and the validators compare that against the request.
 WORKSHOP_PROMPT_SENTINEL = "Workshop leaf turn (host-seeded work tree)"
 
-#: The system prompt a workshop leaf runs under (`--system-prompt`), for the reason
-#: `PURE_SYSTEM_PROMPT` replaces the CLI's default: the default carries per-machine sections.
+#: The system prompt a workshop leaf runs under (`--system-prompt`), which replaces the CLI's
+#: default because the default carries per-machine DYNAMIC sections (cwd, environment, memory
+#: paths, git status). It takes them out of the system prompt but not out of the request: the
+#: CLI still adds text of its own (`docs/ORCHESTRATION.md`, issue #454). A change here is a
+#: prompt-contract change (`PURE_PROMPT_CONTRACT_VERSION`).
 WORKSHOP_SYSTEM_PROMPT = (
     "You are the producer of a host-mediated workflow, working in a host-seeded work tree. "
     "Your file tools reach that tree and nothing else; you hold no shell. The host runs the "
@@ -223,7 +188,7 @@ _PATH_PROPERTY = {"type": "string",
 
 #: What the model reads of the five file tools: name, description and JSON schema, in one table
 #: both dialects serialize (`llm_workshop_loop`). Leaf-read contract text: a change here is a
-#: prompt-contract change (`WORKSHOP_PROMPT_CONTRACT_VERSION`).
+#: prompt-contract change (`PURE_PROMPT_CONTRACT_VERSION`).
 HTTP_FILE_TOOL_DECLARATIONS: tuple[dict[str, Any], ...] = (
     {"name": "read_file",
      "description": (
@@ -573,101 +538,8 @@ _MISSING = object()
 
 
 # --------------------------------------------------------------------------------------
-# Response-failure categories. `extract_json_document` returns one of these when the model's
-# answer is not a single parseable JSON document; the caller (M-C) routes every category to a
-# bounded repair turn and records the terminal one in `bundle_meta.json`. Keeping the two
-# transport-level categories here (not as magic strings at the call site) lets the extractor
-# and its tests agree on the exact tokens.
-# --------------------------------------------------------------------------------------
-
-RESPONSE_UNPARSEABLE = "pure_response_unparseable"
-RESPONSE_TRUNCATED = "pure_response_truncated"
-RESPONSE_CATEGORIES: tuple[str, ...] = (RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED)
-
-
-# --------------------------------------------------------------------------------------
 # Launch flags
 # --------------------------------------------------------------------------------------
-
-def pure_leaf_flags() -> list[str]:
-    """The `claude -p` flags that turn a leaf into a pure function.
-
-    A fresh list per call (never a shared constant) so a caller that splices it into an
-    argv cannot mutate the canonical set. The set is the load-bearing contract:
-
-    - `--restricted`       ignores the user, project and local SETTINGS FILES (managed
-                            settings and `--settings` still apply; the leaf passes no
-                            `--settings`). The leaf's `HOME` is the operator's, so without it
-                            the operator's `~/.claude/settings.json` decided an unpinned
-                            leaf's model, remapped a declared alias through its `env` block,
-                            and redirected the endpoint (measured on CLI 2.1.294 against a
-                            loopback endpoint; issues #446, #453). It does not touch the
-                            CLI's credential store or the session transcript under
-                            `~/.claude`, which are not settings files: subscription OAuth and
-                            the warm `--resume` both work under it (measured, issue #453). A
-                            credential the SETTINGS file supplies — `apiKeyHelper`, an `env`
-                            block's `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` — is ignored
-                            with the rest of the file, so a leaf authenticates through the
-                            credential store or not at all ("Not logged in", measured). Nor
-                            does it touch the CLI's global config (`~/.claude.json`, or the
-                            legacy `~/.claude/.config.json`), whose `env` block still reaches
-                            the leaf; preflight refuses one
-                            (`claude_global_config_env_absent`, issue #453). Its other
-                            effects — removing the code-running built-in tools, confining
-                            the file tools — are already moot under `--tools ""`.
-    - `--safe-mode`        disables ALL ambient customizations — `CLAUDE.md`, skills,
-                            plugins, MCP servers, custom commands/agents, and crucially the
-                            configured HOOKS (the `UserPromptSubmit`
-                            hook would otherwise fire on the `-p` prompt and inject context
-                            or run side effects). This closes the customization half of
-                            the context (A2): without it, `claude -p` loads `CLAUDE.md` and
-                            runs the configured hooks. The text the CLI itself adds is not a
-                            customization and stays (`docs/ORCHESTRATION.md` §pure-function
-                            leaf, "What the model receives, per transport"). It disables
-                            customizations, not settings (that is `--restricted`'s half).
-                            Auth works normally — so subscription billing is preserved
-                            (this is why `--safe-mode`, not `--bare`, which forces API-key auth
-                            and would break subscription billing).
-    - `--system-prompt <PURE_SYSTEM_PROMPT>` replaces the default system prompt, which
-                            otherwise carries per-machine DYNAMIC sections (cwd, env, memory
-                            paths, git status). `--safe-mode` does not remove those (they are
-                            the base prompt, not a customization); replacing the system prompt
-                            omits them from the system prompt. It does NOT make the input a
-                            function of the `-p` body alone: the CLI still adds text of its
-                            own (`docs/ORCHESTRATION.md` §pure-function leaf, "What the
-                            model receives, per transport"; issue #454).
-    - `--tools ""`         no file/shell/gate/write tool is available to the model
-                            (`--safe-mode` disables customizations, not the built-in tools).
-    - `--strict-mcp-config` defense-in-depth: no ambient MCP server even if a future
-                            `--safe-mode` narrows its scope (the build-runtime server is a
-                            deterministic-stage concern, never the producer's).
-    - `--disable-slash-commands` defense-in-depth: no skill/slash command injects behavior.
-    - `--output-format json` the answer arrives in a machine-parseable result envelope,
-                            which is how the host reads `result` / `model` / `usage`
-                            without touching the session transcript (~/.claude is not read).
-
-    WHAT THIS SET DOES NOT DO, and it is deliberate: a pure leaf takes NO
-    `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. `--safe-mode` disables the
-    customizations a private home existed to keep out (CLAUDE.md, skills, hooks, MCP
-    servers, …) and `--restricted` the settings files, and preflight refuses an `env` block
-    in the CLI's global config, so what the leaf still reads from the operator's home is
-    the CLI's credential store, its global state and its own transcript — which is why
-    `HOME` stays on `LEAF_ENV_ALLOWLIST`. An unpinned leaf therefore runs the
-    CLI's own default model, and a declared alias stays the CLI's alias
-    (`orchestration_runtime.default_agent_model_for_backend`). Admin-managed settings
-    still apply; they are the operator's machine and out of scope.
-
-    `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the trailing `-p`
-    are added by `Conductor.leaf_command` around this set. `-p` takes no prompt argument:
-    the prompt is written to the leaf's stdin, because a single argv element is capped at
-    128 KiB and a node's prompt exceeds it. `--bare` and
-    `--no-session-persistence` are intentionally NOT here: `--bare` forces API-key auth
-    (breaking the subscription billing the operator requires), and
-    `--no-session-persistence` would break the warm-resume repair path.
-    """
-    return ["--restricted", "--safe-mode", "--system-prompt", PURE_SYSTEM_PROMPT, "--tools", "",
-            "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"]
-
 
 def workshop_leaf_flags(mcp_config_json: str | None, *, reading: bool = False) -> list[str]:
     """The `claude -p` flags of a `workshop leaf` (issue #534). A fresh list per call.
@@ -921,168 +793,6 @@ def parse_result_envelope(stdout: Any) -> ResultEnvelope:
         raw=envelope,
         parse_error=None,
     )
-
-
-# --------------------------------------------------------------------------------------
-# Single-document extraction + truncation classification
-# --------------------------------------------------------------------------------------
-
-def _object_from_unique_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """`json.loads` `object_pairs_hook` that REJECTS a duplicate key instead of silently
-    keeping the last value.
-
-    The model document is the trust boundary, and a stock parse of
-    `{"verification_status": "fail", …, "verification_status": "pass"}` collapses to a
-    passing dict — a duplicate key could suppress a failure the validators would otherwise
-    catch. Raising here turns an ambiguous document into a parse failure, routing it to
-    bounded repair rather than letting the last value win. Checked at every nesting level
-    (the hook fires per object)."""
-    obj: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in obj:
-            raise ValueError(f"duplicate JSON object key {key!r}")
-        obj[key] = value
-    return obj
-
-
-def _reject_non_finite_constant(name: str) -> float:
-    """`json.loads` `parse_constant` hook: reject the non-standard bare constants `NaN`,
-    `Infinity`, `-Infinity` that Python's parser accepts by default but strict JSON forbids.
-
-    A non-finite value would survive `validate_bundle` (a lowering-plan section like
-    `precision` is an intentionally open object) and then serialize to non-standard JSON, so
-    it is refused at the parse boundary and routed to bounded repair instead."""
-    raise ValueError(f"non-finite JSON constant {name!r} is not allowed")
-
-
-def _finite_float(token: str) -> float:
-    """`json.loads` `parse_float` hook: reject a float TOKEN that overflows to a non-finite
-    value (`1e999` → `inf`), which `parse_constant` does not see (it is a number, not a bare
-    `Infinity`). Finite floats pass through unchanged."""
-    value = float(token)
-    if not math.isfinite(value):
-        raise ValueError(f"non-finite JSON number {token!r} is not allowed")
-    return value
-
-
-def _loads_strict(text: str) -> Any:
-    """`json.loads` hardened for the model-document trust boundary: duplicate object keys
-    rejected (`_object_from_unique_pairs`) and non-finite values rejected (bare
-    `NaN`/`Infinity` via `parse_constant`, overflow floats via `parse_float`)."""
-    return json.loads(
-        text,
-        object_pairs_hook=_object_from_unique_pairs,
-        parse_constant=_reject_non_finite_constant,
-        parse_float=_finite_float,
-    )
-
-
-def _fenced_json_payload(text: str) -> tuple["str | None", "str | None"]:
-    """Isolate a single fenced JSON block from `text`.
-
-    Returns `(payload, None)` when the reply is exactly one fenced block spanning the whole
-    reply (only whitespace outside), `(None, None)` when there is no fence (parse the whole
-    text), or `(None, category)` when the fencing is a failure: a fence opened but never closed
-    is a cut-off answer (`pure_response_truncated`); content before the opening fence, content
-    after the closing fence, or an empty block is ambiguous (`pure_response_unparseable`).
-
-    The outer fence is parsed STRUCTURALLY — anchored on the leading fence line and the FINAL
-    ``` — never by counting every ``` in the text. A JSON string value may legitimately contain
-    a ``` sequence (a CodegenBundle source file, a verdict message), and a marker count would
-    misread such a valid single document as truncated/unparseable. Because the payload runs to
-    the LAST ```, an in-string ``` stays inside the payload and parses as string data.
-
-    The whole-reply span (nothing outside the fence) closes a multi-document trust hole: this
-    path is reached only when the WHOLE text failed to parse (parse-first ran first), so a bare
-    document followed by a fenced one lands here, and returning just the fenced payload would
-    silently drop the bare document — object, array, OR scalar like `"fail"` — so a bare `fail`
-    followed by a fenced `pass` must not read as pass. Rejecting any content outside the fence
-    covers every competing document AND stray prose without a fragile "is this prose a document"
-    heuristic; the system prompt tells the model to emit no surrounding prose, so a preamble
-    reply is false-rejected into a bounded repair — the safe direction for a trust boundary.
-    """
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        # A fence anywhere but the start means content precedes it (a competing document or
-        # prose); no fence at all means "parse the whole text" (the caller then classifies).
-        return (None, RESPONSE_UNPARSEABLE) if "```" in stripped else (None, None)
-    newline = stripped.find("\n")
-    if newline == -1:
-        # "```json" with no newline: opened, no content, never closed.
-        return None, RESPONSE_TRUNCATED
-    if "```" in stripped[3:newline]:
-        # A one-line "```json ... ```" opening is malformed.
-        return None, RESPONSE_UNPARSEABLE
-    rest = stripped[newline + 1:]
-    if "```" not in rest:
-        return None, RESPONSE_TRUNCATED          # opened, never closed
-    if not rest.endswith("```"):
-        return None, RESPONSE_UNPARSEABLE         # closed, then trailing content
-    payload = rest[:-3]
-    if not payload.strip():
-        return None, RESPONSE_UNPARSEABLE
-    return payload, None
-
-
-def _classify_json_failure(payload: str) -> str:
-    """Classify a `json.loads` failure on `payload` as truncated vs unparseable.
-
-    Truncation (the model hit the output-token ceiling) shows as an unbalanced container —
-    more `{`/`[` opened than closed — or a decode error at the very end of the input. Either
-    signal returns `pure_response_truncated`; anything else is `pure_response_unparseable`.
-    The two categories both route to a bounded repair turn, so a borderline misclassification
-    only mislabels the operator's diagnosis excerpt, never changes the control flow. Brace
-    counting is over the raw text (a string literal could hold an unbalanced brace), which is
-    why the tie is broken toward the safe, bounded repair rather than a hard reject.
-    """
-    if payload.count("{") > payload.count("}") or payload.count("[") > payload.count("]"):
-        return RESPONSE_TRUNCATED
-    try:
-        json.loads(payload)
-    except RecursionError:
-        # Deeply nested balanced input the brace count did not catch: over-limit output.
-        return RESPONSE_TRUNCATED
-    except json.JSONDecodeError as exc:
-        if exc.pos >= len(payload.rstrip()):
-            return RESPONSE_TRUNCATED
-    return RESPONSE_UNPARSEABLE
-
-
-def extract_json_document(result_text: Any) -> tuple[Any, "str | None"]:
-    """Extract the single JSON document a pure leaf returns in its `result` text.
-
-    Returns `(doc, None)` on success (doc is whatever `json.loads` produced — the caller's
-    schema validator checks its type), or `(None, category)` where category is one of
-    `RESPONSE_CATEGORIES`. A `_MISSING` result (absent key), a JSON `null` result, a
-    non-string result, and an empty string are all `pure_response_unparseable` — there is no
-    document to read.
-
-    PARSE-FIRST: the whole (stripped) text is tried as JSON before any fence handling, so a
-    clean document that merely mentions a ```` ``` ```` fence inside a STRING value — a
-    verdict `last_fail_reason`, a Fortran comment in a bundle file — is never rejected by
-    fence bookkeeping. Fence extraction is the FALLBACK for a markdown-wrapped answer,
-    reached only when the whole text is not itself valid JSON; exactly one ```json fence is
-    tolerated there.
-    """
-    if result_text is _MISSING or result_text is None or not isinstance(result_text, str):
-        return None, RESPONSE_UNPARSEABLE
-    text = result_text.strip()
-    if not text:
-        return None, RESPONSE_UNPARSEABLE
-    try:
-        return _loads_strict(text), None
-    except (ValueError, RecursionError):
-        pass
-    payload, fence_category = _fenced_json_payload(text)
-    if fence_category is not None:
-        return None, fence_category
-    if payload is None:
-        # No fence, and the whole-text parse above already failed.
-        return None, _classify_json_failure(text)
-    try:
-        return _loads_strict(payload), None
-    except (ValueError, RecursionError):
-        return None, _classify_json_failure(payload)
 
 
 # --------------------------------------------------------------------------------------
