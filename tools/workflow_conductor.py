@@ -8212,7 +8212,7 @@ class Conductor:
         reading = self._workshop_spec_reads(spec)
         # An HTTP entry (issue #534 PR-J3-b) runs the host loop in this process: no endpoint is
         # started (the loop calls the wrapper's operations in-process) and `spawn_leaf` is not
-        # reached — its HTTP branch is the PURE request path.
+        # reached — it refuses an HTTP entry (the pure HTTP request path went in PR-J4-b).
         http = bool(getattr(entry, "is_http", False))
         cancel: threading.Event | None = None
         server: Any = None

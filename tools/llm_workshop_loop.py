@@ -343,7 +343,7 @@ def _anthropic_stream_reply(frames: Sequence[tuple[str, str]]
     `content_block_stop`; a `tool_use` block's `input_json_delta` fragments are parsed ONLY at
     its stop, so a partial argument is never a call. A stream with no `message_stop`, or with a
     block left unstopped, is a transport error (`stream interrupted`), and an `error` event wins
-    over a `message_stop` (as in `llm_http_leaf._read_anthropic_stream`)."""
+    over a `message_stop` (the rule the deleted pure HTTP reader also applied)."""
     blocks: dict[int, dict[str, Any]] = {}
     partial: dict[int, list[str]] = {}
     stopped: set[int] = set()
@@ -488,7 +488,7 @@ def _openai_stream_reply(frames: Sequence[tuple[str, str]]
                          ) -> tuple[_Reply | None, str | None]:
     """A Chat-Completions event stream folded into the buffered message: `delta.content`,
     `delta.reasoning_content` and each `delta.tool_calls[i]` accumulated per index. Complete on
-    a `finish_reason` or `[DONE]` (the union, as `llm_http_leaf._read_openai_stream` takes it);
+    a `finish_reason` or `[DONE]` (the union: servers disagree about which they send);
     an `error` chunk wins."""
     text: list[str] = []
     reasoning: list[str] = []

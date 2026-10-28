@@ -878,7 +878,7 @@ def _refuse_workshop_fields_outside_a_substep(fields: Mapping[str, Any], where: 
             "llm_config_workshop_field_not_substep_scoped",
             f"{', '.join(present)} may be written only under phases.<phase>.substeps.<substep>"
             f" (`defaults` takes lineage_timeout_s alone, the escalate diagnostician's bound): "
-            f"they select and bound one substep's leaf model, and no level inherits them",
+            f"they bound one substep's lineage, and no level inherits them",
             where=f"{where}.{present[0]}")
 
 

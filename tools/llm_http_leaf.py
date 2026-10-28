@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """The shared HTTP layer of the HTTP providers (issue #28): POST / server-sent-event reads,
-usage normalization, API-key handling and redaction. Its one caller since issue #534 PR-J4-b
-is the host tool-use loop of an HTTP `workshop leaf` (`tools/llm_workshop_loop.py`, PR-J3-b),
+usage normalization, API-key handling and redaction. Its request-and-reply caller since issue
+#534 PR-J4-b is the host tool-use loop of an HTTP `workshop leaf` (`tools/llm_workshop_loop.py`, PR-J3-b),
 which builds the request and reads the reply of each turn; the HTTP PURE leaf this module was
 written for — one closed context in, one JSON document out, with its request builders,
-response readers and `run_pure_http_leaf` — went in PR-J4-b.
+response readers and `run_pure_http_leaf` — went in PR-J4-b. The conductor's redaction and the
+preflight's endpoint probe use its helpers too.
 
 **Egress.** The conductor originates outbound HTTPS to an operator-configured `base_url`. This
 module asks urllib to honour the proxy variables of the environment it is HANDED — the leaf's,
