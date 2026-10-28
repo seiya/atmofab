@@ -1,7 +1,9 @@
 # CodegenBundle contract (`bundle_schema_version` 1.2.0)
 
-> **Scope note.** Under `Z2` (`docs/design/zero_base_architecture.md`) the pure
-> `Generate.generate` leaf produces exactly one `CodegenBundle`; the host validates
+> **Scope note.** The `Generate.generate` leaf — a `workshop leaf` since
+> [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, the `Z2` pure-function
+> leaf (`docs/design/zero_base_architecture.md`) before it — produces exactly one
+> `CodegenBundle`, which the host assembles from the leaf's tree snapshot; the host validates
 > it with `validate_bundle` (the post-generate gate), writes the declared files, and
 > assembles the build graph. Since issue #169 **every node the spec catalog holds is
 > expressible as a bundle**, in one of two SHAPES:
@@ -15,7 +17,7 @@
 > document and cannot know the node. It is the acceptance layer's argument
 > (`tools/codegen_bundle.py:pure_bundle_contract_violation`, `shape`), resolved by the twin
 > readers `Conductor._bundle_shape` / `validate_pipeline_semantics._ir_bundle_shape`. A node
-> with neither shape has no pure path and FAILS CLOSED: `Conductor.run_substep` emits
+> with neither shape has no producer path and FAILS CLOSED: `Conductor.run_substep` emits
 > `node_has_no_bundle_shape` and returns `fail`. It ran the shared agentic `Generate.generate`
 > leaf until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted that leaf;
 > no such node is in the catalog, so the fall-back was never taken in tree.
@@ -55,7 +57,7 @@ optimization boundary.
   build/script file), the capability vocabulary, and every cross-field invariant. Validation itself
   reads only the module constants, so a missing or unreadable schema file cannot fail-open
   a running gate; the unit suite enforces that the two copies agree.
-- Out of scope: how a bundle is requested from a model (the pure-leaf launch prompt,
+- Out of scope: how a bundle is requested from a model (the workshop leaf's launch prompt,
   `docs/workflow/LAUNCH_PROMPT_REFERENCE.md`), how repair turns are routed
   (`docs/ORCHESTRATION.md`), and how the build graph is turned into commands (a
   target-backend concern).
@@ -150,7 +152,7 @@ still accepts.
 
 `optimization_unit.members` is an ordered list of `node_key`
 (`<spec_kind>/<spec_id>@<spec_version>`), of length at least 1, without duplicates. A
-single-member unit is the default and is the only shape the pure `Generate.generate`
+single-member unit is the default and is the only shape the `Generate.generate`
 producer emits on a live workflow; assembly rejects a multi-node unit
 (`bundle_shape_unsupported`). A multi-node unit is exercised by the validator unit
 suite only.
@@ -523,7 +525,7 @@ for one declared state). The same `state_variable` name on two distinct members 
 the identity is the pair, not the name.
 
 Since 1.2.0 (`Z6`, [issue #255](https://github.com/seiya/atmofab/issues/255)) the array is
-**required on the `m3c` shape** and its content is fixed by the IR: the pure acceptance
+**required on the `m3c` shape** and its content is fixed by the IR: the acceptance
 contract (`pure_bundle_contract_violation`, the layer both the producer's gate and the
 post-generate tamper gate run) requires exactly one entry per IR snapshot variable
 (`io_contract.raw_requirements.required_evidence[state_snapshots].schema.variables[]` —
@@ -691,7 +693,7 @@ worth stating: its sole call site is guarded by `not self._pure_leaf_substep(ref
 derived object order against it, and because narrowing a renderer's reachability is not
 the same claim as it being dead (`atmofab-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
 `derive_build_graph(...)["link"]["objects"]` against the object list parsed out of the
-`_write_makefile`-authored control file. Under `Z2` a pure `M3c` node renders its control
+`_write_makefile`-authored control file. Since `Z2` an `M3c` node renders its control
 file from this derived graph (`_render_pure_makefile_from_graph`, the build system's
 `control_file.render_from_graph`) while `_write_makefile` is unchanged, so the two renders are
 **not** byte-identical. What both must agree on is the derived build graph — the object set

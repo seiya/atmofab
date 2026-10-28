@@ -23,6 +23,12 @@ isolation level (`/usr/bin/grep -rn sandboxed_structured_approximation tools` is
 the commit of this note). The bullets below are kept as the record of what this plan
 proposed.
 
+Status note, 2026-10-29: superseded by [issue #534](https://github.com/seiya/atmofab/issues/534)
+PR-J4-b ([PR #557](https://github.com/seiya/atmofab/pull/557)). No pure codex leaf
+exists: every codex launch is a `workshop leaf` under `--sandbox workspace-write`
+(`docs/ORCHESTRATION.md` §workshop leaf), and §Pure Generate CLI approximation is
+history.
+
 ## Requirements
 
 ### Backend-neutral leaf execution

@@ -99,9 +99,10 @@
 #                    read it as "do not spend a run tuning this before re-measuring", not as
 #                    "the field does nothing". The entries below still set it, for an endpoint
 #                    that honours it.
-#   timeout_s        Client-side WALL-CLOCK bound on the whole request, default 900. It is not
-#                    bounded from above by the conductor's per-leaf process cap, which applies
-#                    to a CLI leaf and not to an HTTP request. MOVE IT WITH
+#   timeout_s        Client-side WALL-CLOCK bound on each request, default 900. A request in
+#                    flight is also bounded by what remains of the lineage's
+#                    `lineage_timeout_s`; when that is the binding term the launch ends as the
+#                    lineage's timeout rather than a transport error. MOVE IT WITH
 #                    `max_output_tokens`: raising the ceiling alone converts a truncation into
 #                    a timeout. Size it on the endpoint's LOADED throughput, not its idle one
 #                    — one measured endpoint halved within a single evening. Canonical, with
@@ -137,44 +138,40 @@ defaults:
 phases:
   compile:
     substeps:
-      # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
-      # declaration and the phase contract; the leaf returns one JSON document holding the IR
-      # without its per-test verification lists, and one further call per group of tests
-      # returns those tests' entries (issue #526). Such a call is shown the controlled spec, the
-      # tests, an excerpt of the phase contract, the checks-module contract and the IR core (about 60 KB on the
-      # channel node), so its context is the producer's minus the dependency declaration, the
-      # profile specification, the dependency graph, the example documents and the
-      # published-operations catalog, plus the core. THE CONTEXT IS LARGE, and these are BOUNDS rather than constants: most of the total is
-      # `docs/workflow/phases/phase_01_compile.md` inlined in full, so it moves whenever that
-      # document is edited, and the reviewer's additionally carries the IR under review, so it
-      # moves per node AND per attempt. Measured on `problem/shallow_water2d@0.4.0` with
-      # `phase_01_compile.md` at 63,222 B: the producer is 127,273 bytes for every one of the
-      # 7 IR directories on disk (it does not read the IR), and the reviewer ranges 150,912 to
+      # The IR producer. The host seeds the controlled spec, the tests, the dependency
+      # declaration and the phase contract into its tree; the leaf writes the whole IR there as
+      # `spec.ir.yaml` (or `compile_fail.json`) and checks it with `check_ir`. Every seed page
+      # it reads stays in the conversation each later request re-sends, so its seeds are the
+      # floor of its context. THE SEEDS ARE LARGE, and these are BOUNDS rather than constants:
+      # most of their bytes are `docs/workflow/phases/phase_01_compile.md`, seeded in full, so
+      # they move whenever that document is edited, and the reviewer's additionally carry the
+      # IR under review, so they move per node AND per attempt. Measured on
+      # `problem/shallow_water2d@0.4.0` with `phase_01_compile.md` at 63,222 B (as the context a
+      # pure leaf was given inline): the producer is 127,273 bytes for every one of the 7 IR
+      # directories on disk (it does not read the IR), and the reviewer ranges 150,912 to
       # 171,200 across them. Re-measure rather than trusting these — build a `Conductor` and
       # sum `len(v.encode()) for v in c._build_pure_compile_context(refs).values()`, and the
-      # same for `_build_pure_compile_verify_context`. An endpoint with a 32k-token context
-      # window cannot run either leaf; check the window first.
+      # same for `_build_pure_compile_verify_context`; their values are the seeds. An endpoint
+      # with a 32k-token context window cannot run either leaf; check the window first.
       generate:
         provider: openai_compatible
         base_url: http://localhost:8000/v1
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
-        # Sizes the ARTIFACT, over a NAMED population: the 7 `shallow_water2d` IRs under the
+        # Bounds ONE reply, and a reply that writes `spec.ir.yaml` carries what it writes
+        # whole. The artifact, over a NAMED population: the 7 `shallow_water2d` IRs under the
         # live `workspace/` run 42,721 to 63,009 bytes of YAML, the largest being
         # `workspace/ir/problem__shallow_water2d__0.4.0/shallow-water2d_20260805_001`. (Widen
         # the scope to the archived `workspace_2026*/` snapshots and it is 25 IRs from 20,850;
-        # the MAXIMUM — the number that sizes this cap — is 63,009 either way.) The JSON
-        # document carrying one is larger again, since the YAML is what the host writes from
-        # it. Since issue #526 one call writes the IR WITHOUT its per-test verification lists
-        # (each group of tests' entries is a call of its own, far smaller), and that core is what
-        # sizes this cap: the `shallow_water2d_channel` 0.2.4 IR measured 60,447 bytes of core
-        # JSON (its per-test verification lists, measured one test at a time, sum to 89,685).
-        # That whole IR, 168,735 bytes of JSON, was written at 85,325 output tokens as the
-        # CLI result envelope reported them (claude-opus-5-5), so the
-        # core is roughly 30k on that ratio — at the 32768 this entry carried before, with no
-        # headroom left. A truncated IR is a wasted turn, not a repairable one, so
-        # 65536 is a BOUND taken from that measurement and not a requirement — re-measure
+        # the MAXIMUM is 63,009 either way.) The `shallow_water2d_channel` 0.2.4 IR is larger:
+        # 168,735 bytes of JSON, written at 85,325 output tokens as the CLI result envelope
+        # reported them (claude-opus-5-5) — more than one reply at this cap holds, so on a node
+        # that size the leaf builds the file across replies with `edit_file`, as its tool
+        # surface tells it to. 65536 was taken from the part-split leaf that wrote that IR's
+        # 60,447-byte core in one call, roughly 30k tokens on that ratio (issue #526; the split
+        # went with the pure leaf in PR #557). A reply cut at the limit runs none of its tool
+        # calls and is a wasted turn, so 65536 is a BOUND and not a requirement — re-measure
         # against the node and the model you run, and read the writer's budget note under
         # `generate.generate` below, which explains why a reasoning model needs more than the
         # artifact's own size.
@@ -185,7 +182,8 @@ phases:
         timeout_s: 4800
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-      # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.
+      # The IR reviewer. Writes `verdict.json`, the same verdict document the generate
+      # reviewer writes.
       verify:
         provider: openai_compatible
         base_url: http://localhost:8000/v1
@@ -200,16 +198,22 @@ phases:
 
   generate:
     substeps:
-      # PURE: the CodegenBundle producer. One typed document in, one JSON document out.
+      # The CodegenBundle producer: writes the bundle's files and `bundle.yaml` in its tree,
+      # one file per reply, and builds, lints and runs them through the host's operations.
       generate:
         provider: openai_compatible
         base_url: http://localhost:8000/v1
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
-        # 32768 sizes the ARTIFACT, and that is the whole budget only because the model named
-        # here does not stream `reasoning_content`. A PROBE against a reasoning model at this
-        # same 32768 spent all of it on reasoning and emitted a zero-character bundle on every
+        # 32768 sizes ONE reply; a workshop leaf writes each bundle file through a
+        # `write_file` / `edit_file` call, and whether one reply holds the largest single file
+        # is not measured on the workshop path (the largest bundle under this checkout's
+        # `workspace/` on 2026-10-29 was 137,294 B, one file of it 119,237 B; ~45 kB was the
+        # largest when a pure leaf returned the whole bundle in one reply). It is the whole
+        # budget only because the model named here does not stream `reasoning_content`. A PROBE against a
+        # reasoning model at this same 32768 (a pure leaf, before PR #557) spent all of it on
+        # reasoning and emitted a zero-character bundle on every
         # effort level; SEPARATELY, a production closure on that model ended at 98304. Two
         # different measurements, kept apart on purpose — `docs/ORCHESTRATION.md` is canonical
         # for which is which. Re-size against the model you run.
@@ -227,7 +231,7 @@ phases:
         timeout_s: 2400
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-      # PURE: the verdict reviewer over the bundle above.
+      # The verdict reviewer over the bundle above, seeded in its tree; writes `verdict.json`.
       verify:
         provider: openai_compatible
         base_url: http://localhost:8000/v1
@@ -248,13 +252,16 @@ phases:
 
   validate:
     substeps:
-      # PURE since Z3: the independent semantic check, and the last leaf of the run. Its
-      # context is the largest of the five in artifact terms and the most VARIABLE: the run's
-      # own documents plus the raw-evidence excerpt, which grows with (test x case x variable).
-      # Measured on `problem/shallow_water2d@0.4.0`'s recorded `run_20260802_001`, the excerpt
-      # alone is 52,001 bytes (from 13,019,745 bytes of `raw/`) and the whole context is about
-      # 150 KB. Re-measure rather than trusting that — build a `Conductor` and sum
-      # `len(v.encode()) for v in c._build_pure_judge_context(refs).values()`.
+      # The independent semantic check, and the last leaf of the run: it reads the seeds and
+      # writes `review.json`. Its seeds are the largest of the five in artifact terms and the
+      # most VARIABLE: the run's own documents plus the raw-evidence excerpt
+      # (`raw_evidence_excerpt.json`), which grows with (test x case x variable). Every page it
+      # reads is re-sent in each later request. Measured on `problem/shallow_water2d@0.4.0`'s
+      # recorded `run_20260802_001`, the excerpt alone is 52,001 bytes (from 13,019,745 bytes of
+      # `raw/`) and the whole seed set is about 150 KB. Re-measure rather than trusting that —
+      # build a `Conductor` and sum
+      # `len(v.encode()) for v in c._build_pure_judge_context(refs).values()`, whose values
+      # are the seeds (a `.json` one re-indented one value per line).
       judge:
         provider: openai_compatible
         base_url: http://localhost:8000/v1

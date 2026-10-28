@@ -103,38 +103,38 @@ defaults:
 phases:
   compile:
     substeps:
-      # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
-      # declaration and the phase contract; the leaf returns one JSON document holding the IR
-      # without its per-test verification lists, and one further call per group of tests
-      # returns those tests' entries (issue #526), shown the core in place of the dependency declaration, the
-      # profile specification, the dependency graph, the example documents and the catalog. The inlined context is a BOUND, not a constant: most of it is
+      # The IR producer. The host seeds the controlled spec, the tests, the dependency
+      # declaration and the phase contract into its tree; the leaf writes the whole IR there as
+      # `spec.ir.yaml` (or `compile_fail.json`) and checks it with `check_ir`. Every seed page it
+      # reads stays in the conversation each later request re-sends, so the seeds are the floor
+      # of its context, and a BOUND, not a constant: most of their bytes are
       # `docs/workflow/phases/phase_01_compile.md` in full (so it moves whenever that document
-      # is edited) and the reviewer's also carries the IR under review (so it moves per node and
+      # is edited) and the reviewer's also carry the IR under review (so they move per node and
       # per attempt). Measured on `problem/shallow_water2d@0.4.0` with that document at
-      # 63,222 B: 127,273 bytes for this leaf across all 7 IR directories on disk, and 150,912
-      # to 171,200 for the reviewer below. This endpoint's window accommodates it; a 32k-token
-      # one does not.
+      # 63,222 B, as the context a pure leaf was given inline: 127,273 bytes for this leaf across
+      # all 7 IR directories on disk, and 150,912 to 171,200 for the reviewer below. This
+      # endpoint's window accommodates it; a 32k-token one does not.
       generate:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
-        # Sizes the ARTIFACT, over a NAMED population: the 7 `shallow_water2d` IRs under the
-        # live `workspace/` run 42,721 to 63,009 bytes of YAML (widen the scope to the
-        # archived `workspace_2026*/` snapshots and it is 25 from 20,850; the MAXIMUM is
-        # 63,009 either way). The JSON document carrying one is larger again. Since issue #526
-        # one call writes the IR without its per-test verification lists (each group of tests'
-        # entries is a call of its own), and that core sizes this cap: the
-        # `shallow_water2d_channel` 0.2.4 core measured 60,447 bytes of JSON; the whole IR
-        # (168,735 bytes) was written at 85,325 output tokens as the CLI result envelope
-        # reported them, so
-        # the core is roughly 30k on that ratio, at the old 32768 with no headroom.
-        # 65536 is a BOUND taken from that measurement, not a requirement —
-        # re-measure against the node you run. The timeout moves with it.
+        # Bounds ONE reply, and a reply that writes `spec.ir.yaml` carries what it writes whole.
+        # The artifact, over a NAMED population: the 7 `shallow_water2d` IRs under the live
+        # `workspace/` run 42,721 to 63,009 bytes of YAML (widen the scope to the archived
+        # `workspace_2026*/` snapshots and it is 25 from 20,850; the MAXIMUM is 63,009 either
+        # way). The larger `shallow_water2d_channel` 0.2.4 IR, 168,735 bytes of JSON, was
+        # written at 85,325 output tokens as the CLI result envelope reported them — more than
+        # one reply at this cap holds, so on a node that size the leaf builds the file across
+        # replies with `edit_file`, as its tool surface tells it to. 65536 is a BOUND taken from
+        # the part-split leaf that wrote 60,447 bytes of that IR in one call (issue #526; the
+        # split went with the pure leaf in PR #557), not a requirement — re-measure against the
+        # node you run. The timeout moves with it.
         max_output_tokens: 65536
         timeout_s: 4800
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-      # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.
+      # The IR reviewer. Writes `verdict.json`, the same verdict document the generate
+      # reviewer writes.
       verify:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
@@ -145,7 +145,8 @@ phases:
 
   generate:
     substeps:
-      # PURE: the CodegenBundle producer. One typed document in, one JSON document out.
+      # The CodegenBundle producer: writes the bundle's files and `bundle.yaml` in its tree,
+      # one file per reply, and builds, lints and runs them through the host's operations.
       generate:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
@@ -153,7 +154,7 @@ phases:
         max_output_tokens: 32768
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-      # PURE: the verdict reviewer over the bundle above.
+      # The verdict reviewer over the bundle above, seeded in its tree; writes `verdict.json`.
       verify:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
@@ -163,13 +164,16 @@ phases:
 
   validate:
     substeps:
-      # PURE since Z3: the independent semantic check, and the last leaf of the run. Its
-      # context is the largest of the five in artifact terms and the most VARIABLE: the run's
-      # own documents plus the raw-evidence excerpt, which grows with (test x case x variable).
-      # Measured on `problem/shallow_water2d@0.4.0`'s recorded `run_20260802_001`, the excerpt
-      # alone is 52,001 bytes (from 13,019,745 bytes of `raw/`) and the whole context is about
-      # 150 KB. Re-measure rather than trusting that — build a `Conductor` and sum
-      # `len(v.encode()) for v in c._build_pure_judge_context(refs).values()`.
+      # The independent semantic check, and the last leaf of the run: it reads the seeds and
+      # writes `review.json`. Its seeds are the largest of the five in artifact terms and the
+      # most VARIABLE: the run's own documents plus the raw-evidence excerpt
+      # (`raw_evidence_excerpt.json`), which grows with (test x case x variable). Every page it
+      # reads is re-sent in each later request. Measured on `problem/shallow_water2d@0.4.0`'s
+      # recorded `run_20260802_001`, the excerpt alone is 52,001 bytes (from 13,019,745 bytes of
+      # `raw/`) and the whole seed set is about 150 KB. Re-measure rather than trusting that —
+      # build a `Conductor` and sum
+      # `len(v.encode()) for v in c._build_pure_judge_context(refs).values()`, whose values
+      # are the seeds (a `.json` one re-indented one value per line).
       judge:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
