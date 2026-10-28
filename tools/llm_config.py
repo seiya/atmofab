@@ -459,9 +459,13 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in raw.items():
         if key not in _ENTRY_FIELDS:
+            # `leaf:` is the one key an operator's pre-PR-J4-b file (and a stale document)
+            # still writes, so its refusal names the migration.
+            retired = ("; `leaf:` was retired in issue #534 PR-J4-b (every LLM leaf is a "
+                       "workshop leaf): delete the line" if key == "leaf" else "")
             raise LlmConfigError(
                 "llm_config_unknown_key",
-                f"unknown key {key!r}; accepted: {', '.join(sorted(_ENTRY_FIELDS))}",
+                f"unknown key {key!r}; accepted: {', '.join(sorted(_ENTRY_FIELDS))}{retired}",
                 where=f"{where}.{key}")
         loc = f"{where}.{key}"
         if key in ("provider", "model", "command", "base_url", "api_key_env", "effort"):

@@ -1462,6 +1462,13 @@ class WorkshopEntryTests(_Tmp):
                     err = self.assert_rule("llm_config_unknown_key", text)
                     self.assertEqual(err.where, where)
                     self.assertNotIn("leaf", lc._ENTRY_FIELDS)
+                    # The refusal names the migration (a stale document still says to write it).
+                    self.assertIn("retired in issue #534 PR-J4-b", str(err))
+                    self.assertIn("delete the line", str(err))
+        # Another unknown key is not told about `leaf:`.
+        err = self.assert_rule("llm_config_unknown_key",
+                               _doc(phase_fields={"generate": "flavour: x"}))
+        self.assertNotIn("retired", str(err))
 
     def test_the_bounds_are_typed(self) -> None:
         for bounds in ("max_wrapper_calls: 0, lineage_timeout_s: 10",
