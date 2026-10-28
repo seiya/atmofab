@@ -23,7 +23,7 @@ historical pin. The assertions catch three drift directions:
 The pin set is deliberately NARROW (a churn magnet if widened): the launch template files and the
 fragment files composed into them, the two workshop system prompts (the `--system-prompt`
 strings), the leaf-read tables that sit in code (the `<tool_surface>` rows, the cut-read
-paragraph, the verdict-repair slots, the codex reading helper, the HTTP file-tool declarations),
+and schema-repair scope paragraphs, the repair prompt's document fence, the verdict-repair slots, the codex reading helper, the HTTP file-tool declarations),
 the checks-ABI constants the
 templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths), and — since
 issue #142 — the §1-4 slice of `docs/workflow/CHECKS_MODULE_CONTRACT.md` and — since issue #143 —
@@ -1095,11 +1095,12 @@ PINNED: dict[str, str] = {
     # `_workshop_digest`, `workshop-1` .. `workshop-9`, kept there as a frozen history literal).
     # Members moved: the ten pure templates out and the eleven workshop templates in;
     # `PURE_SYSTEM_PROMPT` out and both workshop system prompts in; the two tool-surface
-    # tables, the cut-read scope paragraph, the verdict-repair slot tables, the codex reading
-    # helper and the HTTP file-tool declarations in; the four `compile_verification_*` members
+    # tables, the cut-read scope paragraph, the schema-repair scope paragraph and the document
+    # fence, the verdict-repair slot tables, the codex reading helper and the HTTP file-tool
+    # declarations in; the four `compile_verification_*` members
     # out with the part split they pinned (the workshop `compile.generate` leaf is seeded the
     # whole phase contract document, whose text neither pin hashed).
-    "pure-84": "1223242e8700fc5247c180b35c62cc00ab5927ae667fab3f633e71285c4c84a6",
+    "pure-84": "5968beec76c7f51167626f671926df56e49c6fddc7af161fa785c5580cab8f91",
 }
 
 
@@ -1131,6 +1132,11 @@ def _contract_tuple() -> dict[str, object]:
         # A cut-read repair turn's `<repair_scope>` paragraph and the verdict repair's
         # instruction-slot tables: reading-leaf contract text that lives in the runtime.
         "cut_read_scope_paragraph": ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH,
+        # A schema-repair turn's `<repair_scope>` paragraph (the one that forbids repairing a
+        # verdict's substance) and the data-only fence the repair prompt puts around a quoted
+        # document: rendered into every reading leaf's repair turn.
+        "repair_scope_paragraph": ort.PURE_REPAIR_SCOPE_PARAGRAPH,
+        "doc_fence": [pure_leaf.PURE_DOC_FENCE_BEGIN, pure_leaf.PURE_DOC_FENCE_END],
         "verdict_repair_slots": [ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
                                  ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS],
         # The codex reading helper, a seed every codex reading tree carries and the leaf runs.
@@ -1299,7 +1305,8 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
             f"({len(_TEMPLATE_FILES)} workshop_*.txt templates, a fragment file under "
             "prompt_templates/backends/, the two workshop system prompts, a <tool_surface> row, "
-            "the cut-read paragraph or verdict-repair slots, the codex reading helper, the HTTP "
+            "the cut-read or schema-repair scope paragraph, the document fence, the "
+            "verdict-repair slots, the codex reading helper, the HTTP "
             "file-tool declarations, the language backends' checks-ABI constants, lint rules, "
             "gate-guard and binding sections or exemplar note, or an inlined document slice — "
             "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
@@ -1386,6 +1393,10 @@ class PurePromptContractDriftTests(unittest.TestCase):
                     pure_leaf, "HTTP_FILE_TOOL_DECLARATIONS", ({"name": "changed"},))),
                 ("cut-read paragraph", mock.patch.object(
                     ort, "WORKSHOP_CUT_READ_SCOPE_PARAGRAPH", "changed")),
+                ("schema-repair scope paragraph", mock.patch.object(
+                    ort, "PURE_REPAIR_SCOPE_PARAGRAPH", "changed")),
+                ("document fence", mock.patch.object(
+                    pure_leaf, "PURE_DOC_FENCE_END", "changed")),
                 ("lint rule set", mock.patch.object(lint, "lint_rules_document",
                                                     lambda: "changed")),
                 ("checks-ABI binding", mock.patch.object(
