@@ -2599,6 +2599,8 @@ would deterministically fail on `.f90`; the compiler/linker is now validated aga
 
 ## Z2 — Host-mediated `generate.generate` + `generate.verify` (pure-function leaf) (LANDED 2026-07-16)
 
+> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+
 `zero_base_architecture.md` Z2. The Z0-pinned `CodegenBundle` contract now has a producer: the dominant-cost Generate
 leaves run as **pure-function leaves** (`claude -p` with tools disabled, the host inlining a fully closed context, the
 model returning exactly one JSON document) under an opt-in `generate-executor` selection. The default remained `legacy`
@@ -2789,6 +2791,8 @@ usage channel existed and failed.
 
 ## Z2 first billed A/B E2E — the pure executor had never run: one fixed defect, two information gaps (FILED 2026-07-16; defects FIXED 2026-07-17 — flux A/B established 2026-07-17, `shallow_water2d` P arm passed 2026-07-18; see "Z2 adoption" below)
 
+> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+
 `Z2` above is recorded `LANDED`, and its unit suite is green, but the `pure` `generate-executor` had never executed
 against the real runtime. The first billed A/B E2E ran it and it failed twice, for three distinct reasons. `LANDED`
 there means "code merged", not "adopted": the billed A/B and the default flip were always the acceptance gate, and this
@@ -2966,6 +2970,8 @@ information gap surfaced within the run and is recorded below.
 
 ## Z2 pure `generate.generate` — `state_bindings` on an IR that declares no state (FIXED 2026-07-17)
 
+> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+
 **Symptom.** In the flux P arm the first pipeline (`src_20260717_001`) was terminated with
 `bundle_state_binding_mismatch` after exhausting its repair budget:
 `state_bindings[0].state_variable 'u' is not an IR algorithm.state_variable (declared: [])`. A cold restart accepted on
@@ -3063,6 +3069,8 @@ shape; the narrowing is the leaf's projection of it.
 Regression coverage registers a SECOND harness manifest, since that is the only way to reach the branch, and asserts
 the leaf is shown its own harness alone; each test was confirmed to FAIL against the pre-fix context assembly.
 ## Z2 pure `generate.generate` — the checks-module ABI was never shown to the producer (FIXED 2026-07-17)
+
+> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
 
 **Symptom.** The `shallow_water2d` P arm (`orch_20260717T061125Z_a508d4df`, commit `951c7ea` = `pure-3`) was
 terminated `retry_budget_exhausted` / `generate exceeded 3`. Every attempt died at the `Generate.gate` syntax check on the
@@ -3238,6 +3246,8 @@ observed so far has been warm), but the transport should move the `-p` body to s
 or a longer spec_id lands.
 
 ## Z2 adoption — the billed A/B passed on both target nodes; `pure` is the default `generate-executor` (ADOPTED 2026-07-18)
+
+> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
 
 The acceptance gate the `Z2` section set — an operator-run billed A/B (L arm `legacy` vs P arm `pure`) over a single
 kernel and a dependency-bearing multi-module node, adopted only at `aggregate_verdict=pass` with equal-or-better
