@@ -566,7 +566,7 @@ class PreflightTests(unittest.TestCase):
         self.assertIs(check["pass"], False)
         self.assertIn("FileNotFoundError", check["detail"])
 
-    def test_only_a_surface_a_workshop_entry_launches_through_takes_the_check(self) -> None:
+    def test_every_cli_surface_an_entry_launches_through_takes_the_check(self) -> None:
         """A CLI surface takes its workshop row when some workshop entry launches through it —
         since issue #534 PR-J4-b every entry is one, so every CLI surface an entry names takes
         it. `defaults` is one since issue #534 PR-J4-a (the diagnostician, a reading workshop
