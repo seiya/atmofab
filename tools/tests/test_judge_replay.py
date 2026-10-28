@@ -7,8 +7,8 @@ snapshot, `preflight`, each runtime command run in-process), the REAL `record_la
 the replayed request carries the recorded dependency facts verbatim, that the lineage's tree
 holds the recorded (or mutated) context under the seed names, that a mutation applies exactly
 once or nothing runs, that `--check` answers the dependency gate's `derivation_key_mismatch`,
-that a record the retired pure leaf wrote is refused (`judge_replay_source_pure_retired`, issue
-#534 PR-J4-b), and that a replay leaves `workspace/ir`, `pipelines` and `runs` byte-identical,
+that a record the retired pure leaf wrote is still replayed on the workshop leaf (issue #534
+PR-J4-b), and that a replay leaves `workspace/ir`, `pipelines` and `runs` byte-identical,
 writes no step result and no reservation, and is invisible to the source's A/B rollup, to
 `--resume`'s latest-orchestration choice and to the audit. (Through PR-J4-a the tool had a
 second arm, the pure leaf, whose rendered prompt was compared with the record's; that arm and
@@ -587,21 +587,21 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
                 self.assertIn("loop_turns.jsonl", doc["detail"])
                 self.assertEqual(self._replays(), [])
 
-    def test_a_record_of_the_pure_leaf_is_refused_before_any_orchestration(self) -> None:
-        """MJ2 (issue #534 PR-J4-b): a source record the retired pure leaf wrote
-        (`leaf_mode: pure`) is refused by name, before any replay orchestration exists,
-        `--check` included — its context was assembled for templates that no longer exist."""
+    def test_a_record_of_the_pure_leaf_is_replayed_on_the_workshop_leaf(self) -> None:
+        """Issue #534 PR-J4-b (round 1, reversing the plan's MJ2 refusal): a source record the
+        retired pure leaf wrote (`leaf_mode: pure`) carries the same closed context the
+        workshop leaf is seeded, so it replays as the judge A/B replayed it, and the row says
+        which leaf the source was."""
         path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
                 / f"{_SRC_ARID}.request.json")
         request = json.loads(path.read_text(encoding="utf-8"))
         path.write_text(json.dumps({**request, "leaf_mode": "pure"}), encoding="utf-8")
-        for extra in ((), ("--check",)):
-            with self.subTest(extra=extra):
-                rc, out = self._main(*extra)
-                self.assertEqual((rc, json.loads(out)["reason"]),
-                                 (2, "judge_replay_source_pure_retired"))
-                self.assertEqual(self._replays(), [])
-                self.assertEqual(self.leaf.calls, [])
+        rc, out = self._main()
+        self.assertEqual(rc, 0, out)
+        [replay] = self._replays()
+        [row] = self._rows(replay)
+        self.assertEqual((row["status"], row["source_leaf_mode"]), ("pass", "pure"))
+        self.assertEqual(row["document"], _REVIEW)
 
 
 _DIAGNOSE_ARID = "99999999-2222-4333-8444-555555555555"
@@ -770,9 +770,9 @@ class SourceRefusalTests(unittest.TestCase):
     def test_only_a_judging_pair_with_its_current_context_is_replayed(self) -> None:
         jr.check_source(self._source())
         jr.check_source(self._source(leaf_mode="workshop"))
+        # A record of the retired pure leaf is admitted on the same checks (issue #534 PR-J4-b).
+        jr.check_source(self._source(leaf_mode="pure"))
         for request, code in (
-                # MJ2 (issue #534 PR-J4-b): a record of the retired pure leaf, refused first.
-                ({"leaf_mode": "pure"}, "judge_replay_source_pure_retired"),
                 ({"step": "generate", "substep": "generate"}, "judge_replay_pair_not_admitted"),
                 ({"step": "build", "substep": "deterministic_gate"},
                  "judge_replay_pair_not_admitted"),

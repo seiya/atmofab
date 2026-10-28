@@ -17,8 +17,9 @@ reviewer substep, with its schema repairs, as a reading `workshop leaf` on the c
 entry for that substep (the configuration file is the only thing that says what a leaf
 launches). Through PR-J4-a the tool replayed either of two leaf models (`--leaf pure|workshop`),
 which was the judge A/B; the pure leaf went in PR-J4-b, and with it `--leaf`. A source record
-the pure leaf wrote (`leaf_mode: pure`) is refused (`judge_replay_source_pure_retired`): its
-context was assembled for templates that no longer exist.
+the pure leaf wrote (`leaf_mode: pure`) is still replayed on the workshop leaf, as the A/B did:
+its `pure_context` is the closed context the workshop arm seeds, so it is admitted on the same
+key-set check as any other record, and the row's `source_leaf_mode` says which leaf it was.
 
 `--mutate` is a JSON object `{document_key: [{"old": "...", "new": "..."}, ...]}` (or
 `@<path>` to a file holding one): each
@@ -37,8 +38,7 @@ must not be run on one: it composes the SOURCE run's directories from the record
 Refusals print `{"status": "refused", "reason": <code>, "detail": ...}` and exit 2, before
 any launch. Before the orchestration is created: `judge_replay_repeat_invalid` (`--repeat` below
 1); `judge_replay_source_unreadable` / `judge_replay_source_ambiguous` (no such record, or an
-arid prefix naming several); `judge_replay_source_pure_retired` (a record of the pure leaf);
-`judge_replay_pair_not_admitted` (not one of the three judging pairs or the four diagnose
+arid prefix naming several); `judge_replay_pair_not_admitted` (not one of the three judging pairs or the four diagnose
 pairs); `judge_replay_no_context` (no `pure_context`, or a non-string value: a warm repair
 turn — replay its cold launch); `judge_replay_shape_unknown` (a `pure_shape` the current tables
 do not declare); `judge_replay_context_keys_moved` (the key set is not the CURRENT one);
@@ -184,17 +184,11 @@ def load_source(repo_root: Path, orchestration_id: str, agent_run_id: str) -> So
 
 
 def check_source(source: SourceLaunch) -> None:
-    """Refuse a row the replay cannot carry: a record of the retired pure leaf, not a judging
-    pair, not a cold launch with its whole context, or a context whose key set is not the
-    CURRENT one."""
+    """Refuse a row the replay cannot carry: not a judging pair, not a cold launch with its
+    whole context, or a context whose key set is not the CURRENT one. Which leaf wrote the
+    record is not a refusal: a pure record's context is what the workshop leaf is seeded."""
     from tools.orchestration_runtime import (
         PURE_CONTEXT_REQUIRED_KEYS, PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
-    from tools.pure_leaf import is_pure_request
-    if is_pure_request(source.request):
-        raise ReplayRefused(
-            "judge_replay_source_pure_retired",
-            "the record was written by the pure leaf (leaf_mode: pure), which went in issue "
-            "#534 PR-J4-b; replay a workshop record")
     if source.pair not in ADMITTED_PAIRS:
         raise ReplayRefused(
             "judge_replay_pair_not_admitted",
