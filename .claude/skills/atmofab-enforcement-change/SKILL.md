@@ -647,8 +647,8 @@ recipes are in `references/input-surfaces.md`:
   `leaf_contract_doc_refs`' own docstring names that leaf as the reason not to gate the injection
   on node shape. **Rule: before changing a leaf's transport, enumerate what the OLD transport
   delivered — the SKILL, each `leaf_contract_doc_refs` entry, each must-read the request built,
-  each inlined context value, each seed file — and say for each where it goes now.** Three answers are legitimate (inlined as context,
-  restated in the template, genuinely not needed) and a fourth is the defect (nowhere). **The
+  each inlined context value, each seed file — and say for each where it goes now.** Three answers are legitimate (delivered as context — a `seed` file of the
+  work tree since issue #534 PR-J4-b, inlined before it —, restated in the template, genuinely not needed) and a fourth is the defect (nowhere). **The
   tell is that nothing fails**: the gate still runs, the suite is green, and the cost is a leaf
   that cannot satisfy a rule it was never shown — a pass-rate defect that reads as model
   weakness — and the count you quote has to say what it counted: measured at issue #169's round-3
@@ -668,8 +668,9 @@ recipes are in `references/input-surfaces.md`:
   would have failed the phase on every attempt. It stayed invisible for a whole round because
   the PURE path inlines that same file as context: the contract was true, the delivery was not,
   and both paths' tests were green. **Rule: when you change what a contract TELLS a leaf to read,
-  count how that thing reaches EACH transport that receives the contract — the must-read set, the
-  inlined context, the template's own words — and name the one for each.** The tell is a corrected
+  count how that thing reaches EACH transport that receives the contract — the seed set (the
+  context builders and the seed names; the must-read set and the inlined context were the routes
+  before), the template's own words — and name the one for each.** The tell is a corrected
   sentence that names a file, in a commit with no diff to the code that assembles what the leaf is
   handed. Same question as the paragraph above, asked from the other end: there the transport
   moved and the contract did not, here the contract moved and the transport did not.
