@@ -168,7 +168,7 @@ and `tools/tests/suite_env_guard.py` are canonical.
 | `docs/WORKFLOW.md` | workflow entry point; `docs/workflow/WORKFLOW_CORE.md` and `docs/workflow/phases/` hold the contracts |
 | `docs/SPEC.md` | overall policy, `spec` management requirements, registry requirements |
 | `docs/RUNBOOK.md` | operational procedure, preflight, recovery |
-| `docs/ORCHESTRATION.md` | orchestration design and contract, including the `pure-function leaf` every judging LLM substep runs as and the `workshop leaf` |
+| `docs/ORCHESTRATION.md` | orchestration design and contract, including the `workshop leaf` every LLM substep runs as and the history of the `pure-function leaf` it replaced |
 | `docs/AGENT_SKILLS.md` | phase-to-`SKILL` mapping |
 | `docs/GLOSSARY.md` | canonical terminology and artifact definitions |
 | `docs/BACKEND_BOUNDARY.md` | where knowledge of a concrete target-stack technology may live, and which `axis` selects it |
