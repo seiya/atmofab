@@ -3456,6 +3456,11 @@ class RunWorkflowTests(unittest.TestCase):
                     ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"])
                 self.assertEqual(code, 2, out)
                 self.assertIn(rule, json.dumps(out))
+                # The remedy is a fresh run, not an edit of the recorded file (which would only
+                # be refused next as `llm_config_changed_since_launch`).
+                self.assertIn("cannot be resumed: start a fresh run", out["detail"])
+                self.assertIn(oid, out["detail"])
+                self.assertEqual(out["detail"].count(rule), 1)
                 # Refused before the runtime is asked to re-init the orchestration.
                 self.assertEqual([c for c in calls if c and c[0] == "init"], [])
 

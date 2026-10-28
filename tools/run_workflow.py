@@ -2826,7 +2826,21 @@ def _run_main(
             # below prints as `invalid_startup_input`, naming the path and the `cp` that
             # creates it, before anything is launched.
             llm_config_path = resolve_default_config_path(repo_root)
-        llm_config = load_llm_config(llm_config_path)
+        try:
+            llm_config = load_llm_config(llm_config_path)
+        except LlmConfigError as exc:
+            if not (resume_mode and recorded_pin.get("path")):
+                raise
+            # A resume loads the bytes it recorded, which nobody may edit
+            # (`llm_config_changed_since_launch`); a recorded file this tree refuses is an
+            # orchestration launched under rules the tree has since retired (issue #534 PR-J4-b
+            # refuses every pre-J4-b file), so the remedy is a fresh run, not an edit.
+            raise LlmConfigError(
+                exc.rule,
+                f"{str(exc).removeprefix(exc.rule + ': ')}; this is the configuration "
+                f"orchestration {orchestration_id} recorded at launch, so the orchestration "
+                f"cannot be resumed: start a fresh run (certified nodes are reused) with an "
+                f"llm.yaml migrated per docs/RUNBOOK.md") from exc
         llm_config.validate_runnable()
         # Downstream (preflight, the recorded invocation, the closure driver) still speaks the
         # single-backend vocabulary; derive it FROM the config, which is now its only source.
