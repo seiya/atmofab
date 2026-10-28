@@ -162,7 +162,7 @@ workspace/
 
 | path | generated | writer | reader | note |
 |---|---|---|---|---|
-| `launches/<arid>.prompt.txt` | `record-launch` | runtime | **unreadable by any leaf** (it holds no tool; the `read_manifest_read_guard` that forbade it went with issue #171 PR-2) | the canonical artifact 1-to-1 with the leaf launch prompt input (for audit / replay) |
+| `launches/<arid>.prompt.txt` | `record-launch` | runtime | **unreadable by any leaf** (a `workshop leaf`'s tools reach its own work tree and scratch roots alone, under an empty tmpfs at the checkout path; the `read_manifest_read_guard` that forbade it went with issue #171 PR-2) | the canonical artifact 1-to-1 with the leaf launch prompt input (for audit / replay) |
 | `launches/<arid>.reply.txt` | `record-launch` (provisional) → `record-reply` (overwrite) | runtime | runtime / validator / parent orchestration agent | the leaf final response |
 | `launches/<arid>.request.input.json` | before `record-launch` | conductor | operator (audit) | the payload passed as `--request-json-file` (a single argv element is capped at 128 KiB). Kept, never cleaned up: if `record-launch` itself fails there is no sibling `.request.json`, and that lone file is the only record of what was sent |
 | `launches/<arid>.agent_run.input.json` | before `finalize-child` | conductor | operator (audit) | the payload passed as `--agent-run-json-file`; the reply text goes over stdin and is persisted by the runtime as `.reply.txt` |
