@@ -251,7 +251,7 @@ class PureJudgeContextTests(_Fixture):
         NOT because a blank value would reach the leaf — it would not, and an earlier version of
         this docstring said so wrongly, which is the same false sentence round 2 corrected in
         the code and the reference doc and missed HERE, in the file that is this disposition's
-        canonical pin. `_validate_pure_launch_request_payload` counts a whitespace-only
+        canonical pin. `_validate_leaf_launch_request_payload` counts a whitespace-only
         `pure_context` value as missing. What degrading actually buys is a refusal one frame
         later, inside `record_launch`, escaping this loop's named `pure_context_assembly_failed`
         branch and aborting the conductor instead."""

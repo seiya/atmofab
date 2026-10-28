@@ -375,7 +375,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
     290-526 KB, almost all of it the inlined `pure_context` and the rendered
     `launch_prompt_full`, so what is tracked is a REDACTION: every field the builder produces is
     verbatim, and those two carry a size + sha256 placeholder per value, keeping the
-    `pure_context` KEY SET (which `_validate_pure_launch_request_payload` requires per pair and
+    `pure_context` KEY SET (which `_validate_leaf_launch_request_payload` requires per pair and
     shape) without the content. What the comparison below pins, then: every field the builder
     DERIVES — the role, the `ir_ref` / `pipeline_ref` layout, `dependency_ref` per step, the
     deterministic output lists, the pure branch's empty output list and three skill empties,

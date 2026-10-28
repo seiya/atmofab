@@ -985,7 +985,7 @@ PINNED: dict[str, str] = {
     # scope sentence counts four items with no deterministic backstop (V4c-iii added).
     "pure-75": "0864c29cc21a8ec3b5ee7f9edee58498adbc477dc3d19769252ae2d413060b66",
     # pure-76 (issue #510): a cold-fallback repair re-states the launch prompt's whole body
-    # (`_pure_launch_body`) instead of lifting named paragraphs by prefix and re-inlining
+    # (`_leaf_launch_body`) instead of lifting named paragraphs by prefix and re-inlining
     # `pure_context` under bare keys, so every label paragraph and the persona sentence reach a
     # cold repair. Members moved: `templates["pure_bundle_repair.txt"]` (line 1 gains "You have
     # no gate or repository write authority."; the five slots `<output_contract>` …

@@ -634,7 +634,7 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
     """True when a recorded launch_prompt body is shaped like a Z2 pure-function leaf turn.
 
     Anchored on the sentinel's POSITION (first line), mirroring _is_slim_launch_prompt_text: the
-    pure renderer (orchestration_runtime._render_pure_launch_prompt / _render_pure_repair_prompt)
+    pure renderer (orchestration_runtime._render_leaf_launch_prompt / _render_leaf_repair_prompt)
     always emits PURE_PROMPT_SENTINEL as line 0. A NECESSARY but not SUFFICIENT signal — the
     authoritative signal is the structured request (_launch_request_is_pure); a record is treated
     as pure only when both agree, and a disagreement is itself a violation."""

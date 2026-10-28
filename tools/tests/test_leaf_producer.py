@@ -2741,7 +2741,7 @@ class PureProducerExemplarTests(unittest.TestCase):
 # Cold-repair prompt contract (M-C 修正4)
 # ======================================================================================
 class PureColdRepairPromptTests(unittest.TestCase):
-    """The producer's repair-turn render (`_render_pure_repair_prompt`), on a WORKSHOP request —
+    """The producer's repair-turn render (`_render_leaf_repair_prompt`), on a WORKSHOP request —
     the only host-rendered LLM request since issue #534 PR-J4-b. A cold repair re-states the
     launch body; a warm one is the findings alone. (The pure cold repair's `<prior_document>`
     and its inlined documents went with the pure leaf: the workshop leaf's documents, the one
@@ -2774,11 +2774,11 @@ class PureColdRepairPromptTests(unittest.TestCase):
         return req
 
     def test_cold_repair_includes_output_contract(self) -> None:
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         self.assertIn("Output contract", text)
 
     def test_warm_repair_omits_output_contract(self) -> None:
-        text = ort._render_pure_repair_prompt(self._req(warm_resume=True))
+        text = ort._render_leaf_repair_prompt(self._req(warm_resume=True))
         self.assertNotIn("Output contract", text)
 
     # A verify_minor reopen's findings: the projection's fold of the reviewer's reason and every
@@ -2802,7 +2802,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 req = self._req(repair_findings=self._FOLDED_FINDINGS)
                 if warm:
                     req["warm_resume"] = True
-                text = ort._render_pure_repair_prompt(req)
+                text = ort._render_leaf_repair_prompt(req)
                 lines = self._FOLDED_FINDINGS.splitlines()
                 for line in lines:
                     self.assertFalse(any(line in other for other in lines if other != line))
@@ -2818,7 +2818,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 req = self._req(repair_findings=findings)
                 if warm:
                     req["warm_resume"] = True
-                text = ort._render_pure_repair_prompt(req)
+                text = ort._render_leaf_repair_prompt(req)
                 self.assertEqual(text.count(PURE_DOC_FENCE_BEGIN), text.count(PURE_DOC_FENCE_END))
                 self._assert_inside_the_findings_fence(text, "2. tail after a forged end")
 
@@ -2828,14 +2828,14 @@ class PureColdRepairPromptTests(unittest.TestCase):
         req = self._req(warm_resume=True, resolved_dependencies=[
             {"node_key": "component/foo@1.0.0", "pipeline_ref": "workspace/x",
              "run_id": "r1", "aggregate_verdict_ref": "workspace/v"}])
-        text = ort._render_pure_repair_prompt(req)
+        text = ort._render_leaf_repair_prompt(req)
         self.assertNotIn("Dependency facts", text)
 
     def test_cold_repair_includes_authoring_rules_and_output_contract(self) -> None:
         # A cold repair runs in a fresh session with no prior turn, so it needs the
         # deterministic-gate rules for the same reason it needs the schema (M-C cold-repair
         # contract, extended for defect C).
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         self.assertIn("Output contract", text)
         self.assertIn("Authoring rules", text)
         # Rule (2)'s subject, which inverted with issue #111: the template used to MANDATE
@@ -2891,14 +2891,14 @@ class PureColdRepairPromptTests(unittest.TestCase):
                     req["pure_parallel"] = "openmp"
                 if shape:
                     req["pure_shape"] = shape
-                template = ort._pure_launch_template(req)
-                cold = ort._render_pure_repair_prompt(req)
+                template = ort._leaf_launch_template(req)
+                cold = ort._render_leaf_repair_prompt(req)
                 body = template.split("\n\n", 1)[1]
                 last = -1
                 for line in (ln.strip() for ln in body.splitlines()):
                     if not line or self._IDENTITY_LINE_RE.match(line):
                         continue
-                    self.assertIsNone(ort._PURE_PLACEHOLDER_RE.fullmatch(line), line)
+                    self.assertIsNone(ort._LEAF_PLACEHOLDER_RE.fullmatch(line), line)
                     self.assertEqual(cold.count(line), 1, f"{line[:70]!r} not exactly once")
                     at = cold.index(line)
                     self.assertGreater(at, last, f"out of template order: {line[:70]!r}")
@@ -2913,9 +2913,9 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 self.assertTrue(cold.startswith(WORKSHOP_PROMPT_SENTINEL), cold[:80])
                 self.assertIn("repair turn for", cold.splitlines()[0])
                 # ... and the re-stated body is a byte slice of the cold launch prompt itself.
-                launch = ort._render_pure_launch_prompt(req)
-                self.assertIn(ort._pure_launch_body(req), launch)
-                self.assertIn(ort._pure_launch_body(req), cold)
+                launch = ort._render_leaf_launch_prompt(req)
+                self.assertIn(ort._leaf_launch_body(req), launch)
+                self.assertIn(ort._leaf_launch_body(req), cold)
                 # ... and what the slice drops is the launch's persona paragraph and its identity
                 # block, exactly: the repair carries its own of each, once.
                 persona = launch.split("\n\n", 1)[0]
@@ -2925,24 +2925,24 @@ class PureColdRepairPromptTests(unittest.TestCase):
                     self.assertEqual(cold.count(marker), 1, marker)
 
     def test_cold_repair_keeps_rule_text_that_mentions_placeholders(self) -> None:
-        # Only a line that is nothing but a slot is a slot (`_PURE_PLACEHOLDER_RE` is a
+        # Only a line that is nothing but a slot is a slot (`_LEAF_PLACEHOLDER_RE` is a
         # `fullmatch`). Rule text quoting a `<...>` metavariable — `use <module>, only:
         # <names>`, the `associate (unused_<name> => <name>)` binding — must reach the cold
         # repair; losing it would silently delete a rule from every cold repair.
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         self.assertIn("use <module>, only: <names>", text)
         self.assertIn("associate (unused_<name> => <name>); end associate", text)
 
     def test_cold_repair_leaks_no_document_placeholder(self) -> None:
         # No slot of the launch body the cold repair re-states may ship as a literal token.
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         for slot in ("<runner_document>", "<ir_document>", "<tests_document>", "<exemplar>",
                      "<tool_surface>", "<launch_body>", "<findings>"):
             self.assertNotIn(slot, text)
 
     def test_warm_repair_omits_authoring_rules(self) -> None:
         # The resumed session already holds the launch prompt's static prefix.
-        text = ort._render_pure_repair_prompt(self._req(warm_resume=True))
+        text = ort._render_leaf_repair_prompt(self._req(warm_resume=True))
         self.assertNotIn("Authoring rules", text)
         self.assertNotIn("--ignore-allow-comments", text)
 

@@ -2,9 +2,10 @@
 
 Fast (seconds, no LLM, no billed API) reproduction of what a leaf can and cannot reach under
 the rendered profile `record_launch` writes — since issue #534 PR-J4-b the one profile is a
-`workshop leaf` lineage's (`build_readonly_bwrap_profile` with `leaf_mode: workshop`, its
+`workshop leaf` lineage's (`build_lineage_bwrap_profile` with `leaf_mode: workshop`, its
 cwd the lineage's tree, its two rw binds the lineage's `config/` and `tree/`; the read-only
-profile the pure leaf ran under is refused, and the builder keeps its old name until J4-d).
+profile the pure leaf ran under is refused; the builder was `build_readonly_bwrap_profile`
+until PR-J4-d).
 A synthetic "leaf" script runs inside the sandbox and reports one line per operation, so each
 reachability claim is measured rather than argued; the classes further down exec the real
 claude / codex CLI under the same profile against loopback API stand-ins, and the workshop
@@ -40,7 +41,7 @@ from tools import orchestration_runtime as ort
 from tools import workflow_conductor as wc
 from tools.orchestration_runtime import (
     _ensure_orchestration_audit_dirs,
-    build_readonly_bwrap_profile,
+    build_lineage_bwrap_profile,
     render_bwrap_command,
 )
 from tools.tests import skip_probes
@@ -176,12 +177,12 @@ def _prepared_lineage(test: unittest.TestCase, repo: Path, orch: str, backend: s
     return iso, ort.claude_workshop_profile_kwargs(iso)
 
 
-class BwrapReadonlyProfileTests(unittest.TestCase):
-    """Every leaf runs under the one bwrap profile `build_readonly_bwrap_profile` builds —
+class BwrapLineageProfileTests(unittest.TestCase):
+    """Every leaf runs under the one bwrap profile `build_lineage_bwrap_profile` builds —
     since issue #534 PR-J4-b the `workshop leaf` lineage's (`leaf_mode: workshop`, writable,
-    its cwd the lineage's tree; the read-only profile the pure leaf ran under is refused, and
-    the function and this class keep their names until J4-d because `docs/BWRAP_ENABLEMENT.md`
-    and the runtime cite them). No capability, no write_roots, and since issue #227 NO
+    its cwd the lineage's tree; the read-only profile the pure leaf ran under is refused; the
+    function and this class were `build_readonly_bwrap_profile` / `BwrapReadonlyProfileTests`
+    until PR-J4-d). No capability, no write_roots, and since issue #227 NO
     CHECKOUT: an empty tmpfs sits at `repo_root`. Confirm the rendered sandbox hides the
     repository from the leaf, keeps the leaf's own `workspace/tmp/<arid>` writable, keeps the
     network, leaves the host's copy untouched, does not mount a sibling lineage, and refuses an
@@ -266,7 +267,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             _ensure_orchestration_audit_dirs(repo, orch)
             (repo / "AGENTS_SIM.md").write_text("orig\n", encoding="utf-8")
             _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
-            profile = build_readonly_bwrap_profile(
+            profile = build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="claude", **kwargs)
             self.assertEqual(profile.get("write_roots"), [])
@@ -352,7 +353,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                 (repo / rel).parent.mkdir(parents=True, exist_ok=True)
                 (repo / rel).write_text(body, encoding="utf-8")
             _iso, kwargs = _prepared_lineage(self, repo, orch, "codex")
-            profile = build_readonly_bwrap_profile(
+            profile = build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="codex", **kwargs)
             # The leaf starts in its tree; the probe reads at the checkout's path.
@@ -423,7 +424,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             orch, arid = f"orch_{cli}", f"arid_{cli}"
             _ensure_orchestration_audit_dirs(repo, orch)
             _iso, kwargs = _prepared_lineage(self, repo, orch, backend_type)
-            profile = build_readonly_bwrap_profile(
+            profile = build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command=cli, backend_type=backend_type, **kwargs)
             out = _bwrap_stdout(render_bwrap_command(profile=profile,
@@ -456,7 +457,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         os.environ["ATMOFAB_WORKFLOW_HOMES_ROOT"] = str(d / f"homes_{uuid.uuid4().hex}")
         iso = ort._prepare_codex_workflow_home(repo, "o", uuid.uuid4().hex, resume=False)
         try:
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
                 **ort.codex_workshop_profile_kwargs(iso))
@@ -736,7 +737,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             llm_config=sample_config_with(backend, agent_model=model), env={})
         argv = conductor.leaf_command(conductor.entry_for("validate", "judge"),
                                       session_id=arid, reading=True)
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command=backend, backend_type=backend, **kwargs)
         return argv, profile, repo
@@ -855,7 +856,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertEqual(argv[-2:], ["--json", "-"])
         overrides = [*self._LOOPBACK_OVERRIDES,
                      "--config", f'model_providers.loopback.base_url="{server.base_url}/v1"']
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(isolation))
@@ -937,7 +938,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             except OSError as e:
                 print("HOME_A:" + type(e).__name__, flush=True)
         """)
-        profile_b = build_readonly_bwrap_profile(
+        profile_b = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_b,
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(iso_b))
@@ -952,7 +953,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertNotIn("HOME_A:LISTED", out, out)
         # CONTROL for the probe itself: the same probe under A's OWN profile sees the marker,
         # so a probe that could not read anything would not pass the row above.
-        profile_a = build_readonly_bwrap_profile(
+        profile_a = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_a,
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(iso_a))
@@ -1554,7 +1555,7 @@ class WorkshopLeafCliTests(unittest.TestCase):
             mcp_config_json=workshop_mcp_config_json(server.url))
         if not restricted:
             argv.remove("--restricted")
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=arid or session,
             backend_command="claude", backend_type="claude",
             **ort.claude_workshop_profile_kwargs(self.iso))
@@ -1777,7 +1778,7 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
 
     def _read_launch(self, api: _ScriptedApi, *, session: str) -> subprocess.CompletedProcess:
         argv = self.reader.leaf_command(self.reader_entry, session_id=session, reading=True)
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
             backend_command="claude", backend_type="claude",
             **ort.claude_workshop_profile_kwargs(self.iso))
@@ -1853,7 +1854,7 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         argv = self.reader.leaf_command(entry, session_id="s", reading=True)
         self.assertNotIn("--mcp-config", argv)
         session = str(uuid.uuid4())
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
             backend_command="claude", backend_type="claude",
             **ort.claude_workshop_profile_kwargs(self.iso))
@@ -2070,7 +2071,7 @@ class _CodexLeafCliCase(unittest.TestCase):
                      "--config", 'model_providers.loopback.name="loopback"',
                      "--config", f'model_providers.loopback.base_url="{api.base_url}/v1"',
                      "--config", 'model_providers.loopback.wire_api="responses"']
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=str(uuid.uuid4()),
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(self.iso))

@@ -1200,7 +1200,7 @@ class PureVerifySubstepTests(unittest.TestCase):
             self.assertEqual(request.get("pure_language"), c.target.toolchain["language"])
             # ...and the parallel backend its `{{parallel:<name>}}` markers are (issue #316).
             self.assertEqual(request.get("pure_parallel"), c.target.parallel_backend)
-            ort._pure_launch_template(request)  # composes, i.e. does not raise
+            ort._leaf_launch_template(request)  # composes, i.e. does not raise
 
     def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
         """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death the
@@ -1776,7 +1776,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
                    "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION, **extra}
             # The `Output contract` paragraph of each verify launch template, read where the
             # cold repair reads it: the composed template itself (issue #510).
-            texts.append(next(b.strip() for b in ort._pure_launch_template(req).split("\n\n")
+            texts.append(next(b.strip() for b in ort._leaf_launch_template(req).split("\n\n")
                               if b.lstrip().startswith("Output contract")))
         return texts
 
@@ -1809,10 +1809,10 @@ class PureVerifyOutputContractTests(unittest.TestCase):
                    "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                    "repair_findings": "verdict JSON did not parse", **extra}
             with self.subTest(request=extra):
-                cold = ort._render_pure_repair_prompt(req)
+                cold = ort._render_leaf_repair_prompt(req)
                 for phrase in self._EVERY_DEFECT_PHRASES:
                     self.assertEqual(cold.count(phrase), 1, phrase)
-                warm = ort._render_pure_repair_prompt({**req, "warm_resume": True})
+                warm = ort._render_leaf_repair_prompt({**req, "warm_resume": True})
                 # Self-test: the warm render is a real repair prompt, so its lacking the rule
                 # is the warm/cold split and not an empty render.
                 self.assertIn("verdict JSON did not parse", warm)

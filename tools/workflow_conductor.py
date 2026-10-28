@@ -1898,7 +1898,7 @@ def build_launch_request(
     # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
     # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
     # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
-    # branch, and `_validate_pure_launch_request_payload` REFUSES a pure request whose list is
+    # branch, and `_validate_leaf_launch_request_payload` REFUSES a pure request whose list is
     # non-empty. So the narrowing above is dead for both verify substeps, which are pure; it
     # survives for a deterministic launch, where `_allowed_output_paths_for_launch` checks the
     # list against the phase contract at record-launch (NOT `post_<phase>` validation, which
@@ -6281,7 +6281,7 @@ class Conductor:
         ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
         tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
         # The runner RAISES on an unreadable file, as the ir/tests reads above do.
-        # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
+        # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
         # that the blank would reach the leaf and ship a prompt with an empty ABI section — was
         # false, for this site and for every other pure pair. The caller converts the raise
         # into a fail_closed transport outcome (no leaf spawned). The ir/tests reads degraded to
@@ -6745,7 +6745,7 @@ class Conductor:
 
         A degradation to `""` would not be a degradation: every key the pure builders return is
         declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
-        `_validate_pure_launch_request_payload` refuses an empty declared key — inside
+        `_validate_leaf_launch_request_payload` refuses an empty declared key — inside
         `record_launch`, whose `runtime` helper raises `RuntimeError` on a non-zero exit, from a
         call the pure loop does NOT guard. So an empty value here does not ship a blind prompt;
         it aborts the conductor with a launch-validation error instead of producing the named
@@ -6770,7 +6770,7 @@ class Conductor:
         Raising is what makes the failure RECOVERABLE, and the alternative is not a blank
         prompt: every key this function feeds is a DECLARED one (set identity is pinned by
         `test_the_key_source_table_covers_every_declared_key`), and
-        `_validate_pure_launch_request_payload` refuses a declared key that is empty rather than
+        `_validate_leaf_launch_request_payload` refuses a declared key that is empty rather than
         merely absent — inside `record_launch`, from a call the pure loop does not guard, so the
         `RuntimeError` would escape `run_substep` and abort the conductor. An empty string
         therefore never ships a prompt with a blank contract, example or schema section; it
@@ -9020,7 +9020,7 @@ class Conductor:
         slice and the rubric below — and the caller converts it into a
         `pure_context_assembly_failed` fail_closed transport outcome; no leaf is spawned. Not for
         the reason recorded here until issue #169's review measured it: a blank value does NOT
-        reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only
+        reach the leaf — `_validate_leaf_launch_request_payload` counts a whitespace-only
         `pure_context` value as missing and raises — so what degrading buys is a refusal one
         frame later, out of `record_launch`, escaping the loop's named
         `pure_context_assembly_failed` branch and aborting the conductor.
@@ -9189,7 +9189,7 @@ class Conductor:
         below is evidence the judge weighs, and a judge that cannot see `diagnostics.json` has no
         basis for `pass` and would be answering about the absence. The REASON given here was
         wrong until a review round measured it — a blank value does NOT reach the leaf, because
-        `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as
+        `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as
         missing and raises. What degrading actually buys is a refusal one frame too LATE: a
         `ValueError` out of `record_launch`, escaping this loop's named
         `pure_context_assembly_failed` branch and aborting the conductor instead — the issue #168

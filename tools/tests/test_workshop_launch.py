@@ -24,7 +24,7 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools import operator_private_root, leaf_contract
 from tools.orchestration_runtime import (
-    build_readonly_bwrap_profile,
+    build_lineage_bwrap_profile,
     claude_workshop_profile_kwargs,
     init_orchestration,
     record_launch,
@@ -186,7 +186,7 @@ class WorkshopProfileTests(_Env):
     def _profile(self, **over) -> tuple[dict, dict]:
         iso = self._prepare("lin_a", resume=False)
         kwargs = {**claude_workshop_profile_kwargs(iso), **over}
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_a",
             backend_command="claude", backend_type="claude", **kwargs)
         return profile, iso
@@ -222,7 +222,7 @@ class WorkshopProfileTests(_Env):
         for broken in ({"readonly": True}, {"leaf_mode": None}, {"leaf_mode": "agentic"},
                        {"workdir": None}, {"credential_rw_mapping": None}):
             with self.subTest(broken=broken), self.assertRaises(ValueError):
-                build_readonly_bwrap_profile(**base, **{**kwargs, **broken})
+                build_lineage_bwrap_profile(**base, **{**kwargs, **broken})
         # A profile that is not a workshop lineage's — the read-only one the pure leaf ran
         # under, with or without the workshop fields — is refused since issue #534 PR-J4-b.
         for extra in ({}, {"workdir": iso["tree"]},
@@ -230,7 +230,7 @@ class WorkshopProfileTests(_Env):
                                                  iso["credentials_destination"])},
                       {"readonly": False}):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
-                build_readonly_bwrap_profile(**base, **extra)
+                build_lineage_bwrap_profile(**base, **extra)
 
     def test_the_renderer_refuses_each_workshop_field_off_a_workshop_profile(self) -> None:
         profile, iso = self._profile()
@@ -414,13 +414,13 @@ class WorkshopRecordLaunchTests(_Env):
                  "the pure leaf went in issue #534 PR-J4-b")):
             with self.subTest(case=label):
                 with self.assertRaises(ValueError) as ctx:
-                    ort._validate_pure_launch_request_payload(req)
+                    ort._validate_leaf_launch_request_payload(req)
                 self.assertIn(needle, str(ctx.exception))
                 if label != "on a pure request":
                     with self.assertRaises(ValueError) as rendered:
                         ort.prepare_launch_request_payload(dict(req))
                     self.assertIn(needle, str(rendered.exception))
-        ort._validate_pure_launch_request_payload(_workshop_request("ar_x"))
+        ort._validate_leaf_launch_request_payload(_workshop_request("ar_x"))
 
     def test_a_workshop_request_on_another_pair_is_refused(self) -> None:
         """Refused twice: the renderer finds no workshop template for the pair (it renders

@@ -772,7 +772,7 @@ class TemplateTests(unittest.TestCase):
                 "runner_document", "dependency_facts", "exemplar"}
             for name in names:
                 with self.subTest(template=name):
-                    slots = set(ort._PURE_PLACEHOLDER_RE.findall((_DIR / name).read_text()))
+                    slots = set(ort._LEAF_PLACEHOLDER_RE.findall((_DIR / name).read_text()))
                     self.assertEqual(slots & documents, set())
                     self.assertIn("tool_surface", slots)
 

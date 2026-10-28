@@ -24623,7 +24623,7 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             if payload.get("leaf_mode") == "workshop":
                 # A capture carries the contract version of ITS run and the validator demands
-                # the current one exactly (`_validate_pure_launch_request_payload`); the
+                # the current one exactly (`_validate_leaf_launch_request_payload`); the
                 # substitution is made HERE, in the test, so the tracked fixture stays a capture
                 # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`) — and
                 # the provider a `workshop-1` capture predates.
@@ -26873,7 +26873,7 @@ def _hand_workshop_profile_fields(root: Path) -> dict:
 
 
 def _workshop_build_kwargs(test: unittest.TestCase, backend_type: str = "claude") -> dict:
-    """The `build_readonly_bwrap_profile` kwargs of a `backend_type` workshop lineage — the
+    """The `build_lineage_bwrap_profile` kwargs of a `backend_type` workshop lineage — the
     only profile the builder builds since issue #534 PR-J4-b — spelled by the production
     `claude_workshop_profile_kwargs` / `codex_workshop_profile_kwargs` over a lineage layout
     created under a fresh temporary directory (outside any checkout a caller builds for)."""
@@ -27261,7 +27261,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         so the refusal can never fire on a profile production builds."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
-        profile = ort.build_readonly_bwrap_profile(
+        profile = ort.build_lineage_bwrap_profile(
             repo_root=d, orchestration_id="orch_x", agent_run_id="arid_x",
             backend_command="claude", backend_type="claude", **_workshop_build_kwargs(self))
         for field in ort._UNRENDERED_PROFILE_GRANTS:
@@ -27428,7 +27428,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         authored = {"PATH": "/a/bin", "HOME": "/a/home", "LANG": "C.UTF-8",
                     "ATMOFAB_ORCHESTRATION_ID": "o", "ATMOFAB_CHILD_AGENT_RUN_ID": "A"}
         with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude", child_env=authored,
                 **_workshop_build_kwargs(self))
@@ -27447,7 +27447,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                           ("ATMOFAB_CHILD_AGENT_RUN_ID", "other-arid")):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
-                    ort.build_readonly_bwrap_profile(
+                    ort.build_lineage_bwrap_profile(
                         repo_root=Path(d), orchestration_id="o", agent_run_id="A",
                         backend_command="claude", backend_type="claude",
                         child_env={"PATH": "/a", name: bad})
@@ -27473,7 +27473,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ID": "OTHER-ORCH",
                                           "ATMOFAB_CHILD_AGENT_RUN_ID": "PARENT-ARID",
                                           "PATH": "/usr/bin"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o",
                 agent_run_id="CHILD-ARID", backend_command="claude",
                 backend_type="claude", **_workshop_build_kwargs(self))
@@ -27544,7 +27544,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                          "ATMOFAB_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
             with self.subTest(ambient=sorted(ambient)):
                 with mock.patch.dict(os.environ, {**ambient, "PATH": "/usr/bin"}):
-                    profile = ort.build_readonly_bwrap_profile(
+                    profile = ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", **_workshop_build_kwargs(self))
@@ -27562,14 +27562,14 @@ class LeafEnvClosureTests(unittest.TestCase):
         for bad in ([("PATH", "/b")], "PATH=/b", 42):
             with self.subTest(child_env=bad):
                 with self.assertRaises(ValueError):
-                    ort.build_readonly_bwrap_profile(
+                    ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", child_env=bad)
         for bad_entry in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
             with self.subTest(entry=bad_entry):
                 with self.assertRaises(ValueError):
-                    ort.build_readonly_bwrap_profile(
+                    ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", child_env=bad_entry)
@@ -27611,7 +27611,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}), \
                 self.assertRaises(ValueError) as ctx:
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn("contains the checkout", str(ctx.exception))
@@ -27630,7 +27630,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         ort._ensure_orchestration_audit_dirs(repo, "o")
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
                 **_workshop_build_kwargs(self, "codex"))
@@ -27656,7 +27656,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{home / 'x' / 'bin'}:{os.environ['PATH']}"}), \
                 self.assertRaises(ValueError) as ctx:
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn("is the same directory as", str(ctx.exception))
@@ -27683,14 +27683,14 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{home / 'tools' / 'bin'}:{os.environ['PATH']}"}), \
                 self.assertRaises(ValueError) as ctx:
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn("lies inside the checkout", str(ctx.exception))
         # The exemption: the same wrapper reached by its own in-checkout spelling.
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
                 **_workshop_build_kwargs(self, "codex"))
@@ -27710,7 +27710,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         ort._ensure_orchestration_audit_dirs(repo, "o")
         with mock.patch.dict(os.environ, {"HOME": str(home), "PATH": "/usr/bin"}), \
                 self.assertRaises(ValueError):
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude",
                 backend_ro_extra=[str(d / "alias")])
@@ -27757,7 +27757,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PATH": f"{dotted}:{os.environ['PATH']}"}):
             os.environ.pop("HOME", None)
             with self.assertRaises(ValueError) as ctx:
-                ort.build_readonly_bwrap_profile(
+                ort.build_lineage_bwrap_profile(
                     repo_root=repo, orchestration_id="o", agent_run_id="A",
                     backend_command="cli-sim", backend_type="codex")
         self.assertIn("lies inside the checkout", str(ctx.exception))
@@ -27771,7 +27771,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         fake_home.mkdir()
         with mock.patch.dict(os.environ, {"ANTHROPIC_MODEL": "haiku",
                                           "HOME": str(fake_home)}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude",
                 **_workshop_build_kwargs(self))
@@ -27783,7 +27783,7 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
     """The backend CLI's own install root and credential home, which the bare profile misses.
 
     `_backend_runtime_bind_paths` is the sole producer of both, and its only caller is
-    `build_readonly_bwrap_profile`, which is now the only profile builder there is. Its
+    `build_lineage_bwrap_profile`, which is now the only profile builder there is. Its
     tests went with `BwrapProfileFilePinTests` in PR-2 although the function has nothing
     to do with the capability document: making it `return ([], [])` left the full suite
     green, and a leaf that cannot find `~/.claude` cannot authenticate — so this is a
@@ -28117,12 +28117,12 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
     def test_a_new_pure_launch_request_is_refused_naming_the_retired_leaf(self) -> None:
         req = self._pure_request("child_new_pure", "verify")
         with self.assertRaises(ValueError) as ctx:
-            ort._validate_pure_launch_request_payload(
+            ort._validate_leaf_launch_request_payload(
                 {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION})
         self.assertIn("pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
         # Control: the same request as a workshop one passes the validator, so the refusal
         # above is the leaf_mode and nothing else the fixture carries.
-        ort._validate_pure_launch_request_payload(
+        ort._validate_leaf_launch_request_payload(
             {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
              "leaf_mode": "workshop", "workshop_provider": "claude_cli",
              "workshop_lineage_id": "child_new_pure"})
@@ -28136,10 +28136,10 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
                "leaf_mode": "workshop", "workshop_provider": "claude_cli",
                "workshop_lineage_id": "child_new_part"}
         with self.assertRaises(ValueError) as ctx:
-            ort._validate_pure_launch_request_payload({**req, "pure_part": "core"})
+            ort._validate_leaf_launch_request_payload({**req, "pure_part": "core"})
         self.assertIn("carries pure_part='core'", str(ctx.exception))
         # Control: the same request without the label passes.
-        ort._validate_pure_launch_request_payload(req)
+        ort._validate_leaf_launch_request_payload(req)
 
     def test_record_launch_refuses_a_new_pure_launch_before_any_launch_record(self) -> None:
         """End to end: a `leaf_mode: pure` request is not a workshop one, so `record_launch`

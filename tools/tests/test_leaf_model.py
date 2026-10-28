@@ -624,14 +624,14 @@ class HostDefectRefusalsTests(unittest.TestCase):
         as the step / substep / shape that has no template. Driven on a workshop request since
         issue #534 PR-J4-b (the renderer kept its name; the pure family it served went).
         """
-        from tools.orchestration_runtime import _render_pure_launch_prompt
+        from tools.orchestration_runtime import _render_leaf_launch_prompt
         payload = {
             "node_key": "component/x@0.1.0", "step": None, "substep": "generate",
             "orchestration_id": "o", "agent_run_id": "arid-1", "leaf_mode": "workshop",
             "workshop_provider": "claude_cli", "pure_context": {"a": "b"},
         }
         with self.assertRaises(ValueError) as caught:
-            _render_pure_launch_prompt(payload)
+            _render_leaf_launch_prompt(payload)
         message = str(caught.exception)
         self.assertIn("names no rendered prompt", message)
         self.assertIn("step=None", message)
@@ -683,7 +683,7 @@ class ExemplarFenceCannotBeForgedTests(unittest.TestCase):
 
     def test_the_same_holds_for_an_inlined_pure_context_document(self) -> None:
         """`_sanitize_pure_doc_body`'s half of the same rule, on the data fence a host-rendered
-        repair prompt wraps its findings in (`_render_pure_repair_prompt`).
+        repair prompt wraps its findings in (`_render_leaf_repair_prompt`).
 
         Not a duplicate: the exemplar fence wraps a host-SELECTED artifact and this one wraps
         the repair findings, text a gate or a reviewer derived from a leaf's output. (Until

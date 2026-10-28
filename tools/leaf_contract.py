@@ -308,7 +308,7 @@ _CLAUDE_FILE_TOOLS_TEXT = ("You have no shell: your file tools (Read, Write, Edi
 #: What a workshop launch prompt's `<tool_surface>` slot says the leaf holds, by the provider
 #: the launch request names (`workshop_provider`): the one sentence of the contract that
 #: differs by transport (`docs/design/producer_workshop_leaf.md` §Provider neutrality). A
-#: provider with no row cannot serve a workshop launch (`_validate_pure_launch_request_payload`).
+#: provider with no row cannot serve a workshop launch (`_validate_leaf_launch_request_payload`).
 WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
     "claude_cli": (_CLAUDE_FILE_TOOLS_TEXT[:-1]
                    + ", and the host's operations are the `wrapper` MCP server's tools "

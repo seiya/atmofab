@@ -304,7 +304,7 @@ class PureCompileContextTests(_Fixture):
         difference is the point.
 
         Every key these builders return is declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
-        `_validate_pure_launch_request_payload` refuses an empty declared key — inside
+        `_validate_leaf_launch_request_payload` refuses an empty declared key — inside
         `record_launch`, whose `runtime` helper raises `RuntimeError` on a non-zero exit, from a
         call the producer loop does not guard. So an empty value would abort the CONDUCTOR with a
         launch-validation error rather than produce the `pure_context_assembly_failed` outcome
@@ -618,7 +618,7 @@ class PureCompileProfileContextTests(_Fixture):
 
     def test_the_absent_document_sentinel_is_what_the_launch_validator_requires(self) -> None:
         """`profile_spec_document` is a DECLARED context key, and
-        `_validate_pure_launch_request_payload` refuses a declared key that is empty — inside
+        `_validate_leaf_launch_request_payload` refuses a declared key that is empty — inside
         `record_launch`, from a call the producer loop does not guard, so the `ValueError` would
         escape the loop's named `pure_context_assembly_failed` branch and abort the conductor.
         The sentinel's non-emptiness is therefore the only thing between EVERY profile-less
@@ -639,9 +639,9 @@ class PureCompileProfileContextTests(_Fixture):
                 "leaf_mode": "workshop", "workshop_lineage_id": "c",
                 "workshop_provider": "claude_cli",
                 "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION}
-        ort._validate_pure_launch_request_payload({**base, "pure_context": ctx})
+        ort._validate_leaf_launch_request_payload({**base, "pure_context": ctx})
         with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload(
+            ort._validate_leaf_launch_request_payload(
                 {**base, "pure_context": {**ctx, "profile_spec_document": ""}})
         self.assertIn("profile_spec_document", str(caught.exception))
 
@@ -665,13 +665,13 @@ class PureCompileProfileContextTests(_Fixture):
                 "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "repair_strategy": "reuse", "repair_findings": "a static gate finding"}
         # Warm: the resumed session holds the context, so omitting it is accepted.
-        ort._validate_pure_launch_request_payload({**base, "warm_resume": True})
+        ort._validate_leaf_launch_request_payload({**base, "warm_resume": True})
         # Cold, same reuse repair with the same findings: refused. This is #209's own shape.
         with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload({**base, "warm_resume": False})
+            ort._validate_leaf_launch_request_payload({**base, "warm_resume": False})
         self.assertIn("pure_context", str(caught.exception))
         # ... and accepted once the context rides along, which is what the loop sends.
-        ort._validate_pure_launch_request_payload(
+        ort._validate_leaf_launch_request_payload(
             {**base, "warm_resume": False, "pure_context": ctx})
 
     def test_an_unresolvable_profile_is_named_rather_than_failing_the_substep(self) -> None:

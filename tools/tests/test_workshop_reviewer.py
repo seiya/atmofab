@@ -495,7 +495,7 @@ class CompileVerifyTests(_Base):
         self.assertFalse(requests[1].get("warm_resume"))
         self.assertEqual(json.loads((self.paths("child-2").tree / self.OUTPUT).read_text()),
                          broken)
-        self.assertEqual(ort._pure_repair_template_name(requests[1]),
+        self.assertEqual(ort._leaf_repair_template_name(requests[1]),
                          "workshop verdict repair")
         self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
                          "superseded")
@@ -789,7 +789,7 @@ class _CodexCutReadRows:
         self.assertIsNone(self.c.spawns[1]["resume_session_id"])
         self.assertEqual(request["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
         self.assertIn("cat host_verdict.json", request["repair_findings"])
-        prompt = ort._render_pure_repair_prompt(request)
+        prompt = ort._render_leaf_repair_prompt(request)
         self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, prompt)
         self.assertNotIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, prompt)
         self.assertIn("cat host_verdict.json", prompt)
@@ -829,7 +829,7 @@ class _CodexCutReadRows:
         _, request = self.requests()
         self.assertTrue(request["repair_findings"].startswith("`/usr/bin/zsh -lc"),
                         request["repair_findings"][:120])
-        prompt = ort._render_pure_repair_prompt(request)
+        prompt = ort._render_leaf_repair_prompt(request)
         scope = ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
         self.assertIn(scope, prompt)
         self.assertLess(prompt.index(scope), prompt.index(request["repair_findings"]))
@@ -985,7 +985,7 @@ class _CodexCutReadRows:
         spec = self.c._leaf_reviewer_spec(self.PHASE, self.SUBSTEP)
         self.assertEqual(reasons, ["none", wc.WORKSHOP_CUT_READ_REPAIR_REASON, spec.repair_reason])
         self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH,
-                      ort._render_pure_repair_prompt(self.requests()[2]))
+                      ort._render_leaf_repair_prompt(self.requests()[2]))
 
     def test_the_two_repair_counters_are_independent(self) -> None:
         self.c.leaf_actions = [_writes(self.OUTPUT, {"x": 1}),
@@ -1104,7 +1104,7 @@ class _CodexCutReadRows:
         _, request = self.requests()
         self.assertFalse(request.get("warm_resume"))
         self.assertEqual(request["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
-        prompt = ort._render_pure_repair_prompt(request)
+        prompt = ort._render_leaf_repair_prompt(request)
         self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, prompt)
         self.assertIn(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
 
@@ -1154,7 +1154,7 @@ class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
         self.assertTrue(second.get("warm_resume"))
         self.assertEqual(second["workshop_lineage_id"], "child-1")
         self.assertEqual(second["workshop_provider"], "codex_cli")
-        self.assertEqual(ort._pure_repair_template_name(second), "workshop verdict repair")
+        self.assertEqual(ort._leaf_repair_template_name(second), "workshop verdict repair")
         self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
         self.assertTrue(self.c.spawns[1]["reading"])
 
@@ -1305,16 +1305,16 @@ class LaunchShapeTests(unittest.TestCase):
         while the reader table names codex, and is refused once it does not, while the same
         provider on a producing pair is not."""
         req = RenderTests()._request("validate", "judge", workshop_provider="codex_cli")
-        ort._validate_pure_launch_request_payload(req)
+        ort._validate_leaf_launch_request_payload(req)
         claude_only = {"claude_cli": leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"]}
         with mock.patch.dict(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT, claude_only,
                              clear=True):
             with self.assertRaises(ValueError) as ctx:
-                ort._validate_pure_launch_request_payload(req)
+                ort._validate_leaf_launch_request_payload(req)
             self.assertIn("one of claude_cli; got 'codex_cli'", str(ctx.exception))
             producing = RenderTests()._request("compile", "generate",
                                                workshop_provider="codex_cli")
-            ort._validate_pure_launch_request_payload(producing)
+            ort._validate_leaf_launch_request_payload(producing)
 
     def test_the_codex_reading_overrides_name_no_wrapper(self) -> None:
         self.assertEqual(leaf_contract.codex_workshop_overrides(None, reading=True),
@@ -1403,7 +1403,7 @@ class RenderTests(unittest.TestCase):
                             self._request(step, substep, shape, workshop_provider=provider,
                                           **extra))
                         if extra:
-                            templates.add(ort._pure_repair_template_name(req))
+                            templates.add(ort._leaf_repair_template_name(req))
                         text = ort.render_launch_prompt_text(req)
                         self.assertTrue(text.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
                         self.assertTrue(text.endswith("\n"))
@@ -1425,22 +1425,22 @@ class RenderTests(unittest.TestCase):
             with self.subTest(pair=(step, substep, shape)):
                 req = self._request(step, substep, shape, repair_strategy="reuse",
                                     repair_findings="bad shape", warm_resume=False)
-                self.assertEqual(ort._pure_repair_template_name(req),
+                self.assertEqual(ort._leaf_repair_template_name(req),
                                  "workshop verdict repair")
-                text = ort._render_pure_repair_prompt(req)
+                text = ort._render_leaf_repair_prompt(req)
                 self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, text)
                 self.assertNotIn("Your prior document under repair", text)
                 # The cold repair re-states the whole launch body, seeds included.
                 self.assertIn("Work tree contract", text)
                 self.assertEqual(text.count(self.PAGING), 1)
-                codex = ort._render_pure_repair_prompt(
+                codex = ort._render_leaf_repair_prompt(
                     self._request(step, substep, shape, repair_strategy="reuse",
                                   repair_findings="bad shape", warm_resume=False,
                                   workshop_provider="codex_cli"))
                 self.assertIn(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], codex)
                 self.assertNotIn(self.PAGING, codex)
                 # A warm repair's session holds the launch prompt: neither is re-stated.
-                warm = ort._render_pure_repair_prompt(
+                warm = ort._render_leaf_repair_prompt(
                     self._request(step, substep, shape, repair_strategy="reuse",
                                   repair_findings="bad shape", warm_resume=True))
                 self.assertNotIn(self.PAGING, warm)
@@ -1509,7 +1509,7 @@ class ReaderTemplateTests(unittest.TestCase):
     def test_no_document_is_inlined(self) -> None:
         for name in self._TEMPLATES:
             with self.subTest(template=name):
-                slots = set(ort._PURE_PLACEHOLDER_RE.findall((self._DIR / name).read_text()))
+                slots = set(ort._LEAF_PLACEHOLDER_RE.findall((self._DIR / name).read_text()))
                 documents = set().union(*(set(v) for v in
                                           wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS
                                           .values())) | {"bundle_document", "dependency_facts",
@@ -1521,7 +1521,7 @@ class ReaderTemplateTests(unittest.TestCase):
         text = (self._DIR / "workshop_verdict_repair.txt").read_text()
         self.assertTrue(text.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
         self.assertEqual(
-            set(ort._PURE_PLACEHOLDER_RE.findall(text)),
+            set(ort._LEAF_PLACEHOLDER_RE.findall(text)),
             {"node_key", "step", "substep", "orchestration_id", "agent_run_id",
              "prompt_contract_version", "repair_scope", "findings", "tool_surface",
              "launch_body", "repair_instruction"})
