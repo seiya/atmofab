@@ -206,9 +206,12 @@ phases:
         api_key_env: LOCAL_LLM_API_KEY
         model: qwen2.5-coder-32b-instruct
         effort: medium
-        # 32768 sizes ONE reply, which writes one bundle file whole (the largest CodegenBundle
-        # in this repository is ~45 kB of JSON in all), and that is the whole budget only
-        # because the model named here does not stream `reasoning_content`. A PROBE against a
+        # 32768 sizes ONE reply; a workshop leaf writes each bundle file through a
+        # `write_file` / `edit_file` call, and whether one reply holds the largest single file
+        # is not measured on the workshop path (the largest bundle under this checkout's
+        # `workspace/` on 2026-10-29 was 137,294 B, one file of it 119,237 B; ~45 kB was the
+        # largest when a pure leaf returned the whole bundle in one reply). It is the whole
+        # budget only because the model named here does not stream `reasoning_content`. A PROBE against a
         # reasoning model at this same 32768 (a pure leaf, before PR #557) spent all of it on
         # reasoning and emitted a zero-character bundle on every
         # effort level; SEPARATELY, a production closure on that model ended at 98304. Two
