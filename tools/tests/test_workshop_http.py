@@ -25,7 +25,7 @@ import yaml
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-from tools import pure_leaf, workshop_tree
+from tools import leaf_contract, workshop_tree
 from tools.tests.http_stand_ins import (
     ScriptedChatApi,
     ScriptedMessagesApi,
@@ -33,16 +33,16 @@ from tools.tests.http_stand_ins import (
     tool_use,
 )
 from tools.tests.llm_samples import workshop_yaml
-from tools.tests.test_pure_leaf_compile import _assembled_ir, _write_compile_node
-from tools.tests.test_pure_leaf_judge import _review, _write_run_node
-from tools.tests.test_pure_leaf_producer import _valid_bundle
-from tools.tests.test_pure_leaf_verify import _verdict, _verify_node
+from tools.tests.test_leaf_compile import _assembled_ir, _write_compile_node
+from tools.tests.test_leaf_judge import _review, _write_run_node
+from tools.tests.test_leaf_producer import _valid_bundle
+from tools.tests.test_leaf_verify import _verdict, _verify_node
 from tools.tests.test_workshop_producer import _WorkshopFakeConductor, _write_node
 from tools.tests.test_workshop_reviewer import _ReviewerFake
 
 _ORCH = "o"
 SECRET = "sk-http-workshop-secret"
-FILES = list(pure_leaf.HTTP_FILE_TOOLS)
+FILES = list(leaf_contract.HTTP_FILE_TOOLS)
 
 
 def _config(repo: Path, provider: str, base_url: str, phase: str, substep: str,
@@ -297,7 +297,7 @@ class _GenerateProducer(_GenerateHarness):
     def test_a_transport_death_drops_the_history_and_reopens_cold(self) -> None:
         self.conductor([{"status": 503, "body": "upstream"}, self.calls(*_bundle_writes()),
                         self.done()])
-        with mock.patch.object(_HttpProducerFake, "_pure_transient_retry",
+        with mock.patch.object(_HttpProducerFake, "_leaf_transient_retry",
                                side_effect=[True]):
             outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
@@ -332,7 +332,7 @@ class _GenerateProducer(_GenerateHarness):
         ort._validate_launch_request_payload(payload)
         prompt = ort.render_launch_prompt_text(payload)
         ort._validate_launch_prompt_text(payload, prompt)
-        self.assertIn(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
+        self.assertIn(leaf_contract.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
         self.assertNotIn("MCP", prompt)
 
     def test_a_cold_repair_restates_the_tool_surface_row(self) -> None:
@@ -349,9 +349,9 @@ class _GenerateProducer(_GenerateHarness):
         self.assertTrue(cold_repair.get("repair_findings"))
         payload = ort.prepare_launch_request_payload(dict(cold_repair))
         prompt = ort.render_launch_prompt_text(payload)
-        self.assertIn(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
-        fence = prompt.index(pure_leaf.PURE_DOC_FENCE_END)
-        self.assertGreater(prompt.index(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT), fence)
+        self.assertIn(leaf_contract.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
+        fence = prompt.index(leaf_contract.PURE_DOC_FENCE_END)
+        self.assertGreater(prompt.index(leaf_contract.HTTP_PRODUCER_TOOL_SURFACE_TEXT), fence)
 
     def test_a_tool_argument_with_a_lone_surrogate_is_recorded_not_raised(self) -> None:
         """Codex, round 2: JSON accepts `"\\ud800"`; the write is refused and the record row
@@ -637,13 +637,13 @@ class _Reading(_Dialect):
         payload = ort.prepare_launch_request_payload(dict(request))
         ort._validate_launch_request_payload(payload)
         prompt = ort.render_launch_prompt_text(payload)
-        self.assertIn(pure_leaf.HTTP_READER_TOOL_SURFACE_TEXT, prompt)
+        self.assertIn(leaf_contract.HTTP_READER_TOOL_SURFACE_TEXT, prompt)
         # No codex reading helper on an HTTP reading tree.
         tree = workshop_tree.LineagePaths(
             homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id="child-1",
             orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH,
             backend="http").tree
-        self.assertFalse((tree / pure_leaf.CODEX_READ_HELPER_NAME).exists())
+        self.assertFalse((tree / leaf_contract.CODEX_READ_HELPER_NAME).exists())
 
     def test_a_timed_out_launch_is_an_unfinished_review(self) -> None:
         self.conductor([{"sleep": 4, "then": self.calls(self.write_output(self.passing()))},
@@ -782,7 +782,7 @@ class OpsTableTests(unittest.TestCase):
         from tools import workshop_wrapper as ww
         self.assertEqual(ww.WrapperContext.__dataclass_fields__["ops"].default,
                          ww.WORKSHOP_OPS_BY_PAIR[("generate", "generate")])
-        self.assertEqual(set(ww.WORKSHOP_OPS_BY_PAIR), set(pure_leaf.WORKSHOP_PRODUCING_PAIRS))
+        self.assertEqual(set(ww.WORKSHOP_OPS_BY_PAIR), set(leaf_contract.WORKSHOP_PRODUCING_PAIRS))
         self.assertEqual(ww.WORKSHOP_OPS_BY_PAIR[("compile", "generate")], ww.IR_CHECK_OPS)
 
 

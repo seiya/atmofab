@@ -1,5 +1,5 @@
 """The READING kind of `workshop leaf` (issue #534 step 3): the three judging substeps run by
-`Conductor._run_pure_reviewer_substep` (a workshop loop alone since issue #534 PR-J4-b).
+`Conductor._run_leaf_reviewer_substep` (a workshop loop alone since issue #534 PR-J4-b).
 
 The leaf is a fake `spawn_leaf` that writes the reviewer's one document into the lineage's
 tree, the way the real CLI's file tools would; the lineage home is a temporary directory.
@@ -22,11 +22,11 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.tests import llm_samples
-from tools import pure_leaf, workshop_tree
-from tools.tests.test_pure_leaf_compile import _write_compile_node
-from tools.tests.test_pure_leaf_judge import _review, _write_run_node
-from tools.tests.test_pure_leaf_producer import _PureFakeConductor, _valid_bundle
-from tools.tests.test_pure_leaf_verify import _verdict, _verify_node
+from tools import leaf_contract, workshop_tree
+from tools.tests.test_leaf_compile import _write_compile_node
+from tools.tests.test_leaf_judge import _review, _write_run_node
+from tools.tests.test_leaf_producer import _PureFakeConductor, _valid_bundle
+from tools.tests.test_leaf_verify import _verdict, _verify_node
 from tools.tests.test_workshop_producer import _codex_proc
 
 _ORCH = "o"
@@ -244,7 +244,7 @@ class CompileVerifyTests(_Base):
         self.assert_projected_pass()
         vmeta = self.attempt_meta()
         self.assertEqual((vmeta["result"], vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
-                         ("pass", "workshop", pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+                         ("pass", "workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
         self.assertNotIn("workshop_prompt_contract_version", vmeta)
         row = vmeta["per_attempt"][0]
@@ -278,7 +278,7 @@ class CompileVerifyTests(_Base):
         self.assertEqual((request["leaf_mode"], request["workshop_lineage_id"],
                           request["workshop_provider"], request["prompt_contract_version"]),
                          ("workshop", "child-1", self.PROVIDER,
-                          pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+                          leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         self.assertNotIn("workshop_prompt_contract_version", request)
         (spawn,) = self.c.spawns
         self.assertIsNone(spawn["mcp_config_json"])
@@ -290,7 +290,7 @@ class CompileVerifyTests(_Base):
     def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
         self.run_substep()
         tree = self.paths("child-1").tree
-        context = self.c._build_pure_compile_verify_context(self.refs)
+        context = self.c._build_leaf_compile_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
                 self.assertEqual((tree / name).read_text(), _terminated(
@@ -361,7 +361,7 @@ class CompileVerifyTests(_Base):
         meta = self.attempt_meta()
         self.assertEqual(meta["result"], "fail")
         self.assertIn("ended by its bound", meta["failure_excerpt"])
-        self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+        self.assertEqual(len(meta["per_attempt"]), 1 + leaf_contract.MAX_BUNDLE_REPAIR_TURNS)
 
     def test_a_document_that_is_not_an_object_is_repaired_like_any_schema_defect(
             self) -> None:
@@ -436,12 +436,12 @@ class CompileVerifyTests(_Base):
         text, and in no claude one; it is a host-placed name, so the snapshot never carries it
         (the snapshot row above)."""
         self.run_substep()
-        helper = self.paths("child-1").tree / pure_leaf.CODEX_READ_HELPER_NAME
+        helper = self.paths("child-1").tree / leaf_contract.CODEX_READ_HELPER_NAME
         if self.PROVIDER == "codex_cli":
-            self.assertEqual(helper.read_text(), pure_leaf.CODEX_READ_HELPER_TEXT)
+            self.assertEqual(helper.read_text(), leaf_contract.CODEX_READ_HELPER_TEXT)
         else:
             self.assertFalse(helper.exists())
-        self.assertNotIn(pure_leaf.CODEX_READ_HELPER_NAME,
+        self.assertNotIn(leaf_contract.CODEX_READ_HELPER_NAME,
                          [p.name for p in self.paths("child-1").snapshot.iterdir()])
 
     def test_a_seed_the_reviewer_edited_is_restored_before_its_warm_turn(self) -> None:
@@ -495,7 +495,7 @@ class CompileVerifyTests(_Base):
         self.assertFalse(requests[1].get("warm_resume"))
         self.assertEqual(json.loads((self.paths("child-2").tree / self.OUTPUT).read_text()),
                          broken)
-        self.assertEqual(ort._pure_repair_template_name(requests[1]),
+        self.assertEqual(ort._leaf_repair_template_name(requests[1]),
                          "workshop verdict repair")
         self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
                          "superseded")
@@ -508,7 +508,7 @@ class CompileVerifyTests(_Base):
             (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
             return wc.ProcResult(1, "", "connection reset by peer (ECONNRESET)")
         self.c.leaf_actions = [writes_pass_and_dies, _writes_nothing]
-        with mock.patch.object(wc.Conductor, "_pure_transient_retry", return_value=True):
+        with mock.patch.object(wc.Conductor, "_leaf_transient_retry", return_value=True):
             outcome = self.run_substep()
         self.assertEqual(outcome.status, "fail")
         self.assertFalse((self.paths("child-2").tree / self.OUTPUT).exists())
@@ -524,7 +524,7 @@ class CompileVerifyTests(_Base):
                                                   return_value=("llm_usage_limit", "limit")),
                                 mock.patch.object(wc.Conductor, "_usage_limit_wait",
                                                   return_value=True))),
-                ("transient retry", (mock.patch.object(wc.Conductor, "_pure_transient_retry",
+                ("transient retry", (mock.patch.object(wc.Conductor, "_leaf_transient_retry",
                                                        return_value=True),))):
             with self.subTest(retry=label):
                 self.setUp()
@@ -585,7 +585,7 @@ class GenerateVerifyTests(CompileVerifyTests):
         No production path reassembles a reviewer tree."""
         self.run_substep()
         tree = self.paths("child-1").tree
-        context = self.c._build_pure_verify_context(self.refs)
+        context = self.c._build_leaf_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
                 self.assertEqual((tree / name).read_text(), _terminated(
@@ -623,7 +623,7 @@ class GenerateVerifyTests(CompileVerifyTests):
         self.c.leaf_actions = [edits_the_contract, reads_the_contract]
         self.assertEqual(self.run_substep().status, "pass")
         self.assertTrue(self.c.spawns[1]["resume_session_id"])
-        context = self.c._build_pure_verify_context(self.refs)
+        context = self.c._build_leaf_verify_context(self.refs)
         self.assertFalse(context["checks_module_contract_document"].endswith("\n"))
         self.assertEqual(seen, [context["checks_module_contract_document"] + "\n"])
 
@@ -654,7 +654,7 @@ class ValidateJudgeTests(CompileVerifyTests):
     def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
         self.run_substep()
         tree = self.paths("child-1").tree
-        context = self.c._build_pure_judge_context(self.refs)
+        context = self.c._build_leaf_judge_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
                 text = (tree / name).read_text()
@@ -716,7 +716,7 @@ def _codex_paths(case, lineage: str) -> workshop_tree.LineagePaths:
         orchestration_dir=case.repo / "workspace" / "orchestrations" / _ORCH, backend="codex")
 
 
-_BUDGET = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+_BUDGET = leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_BYTES
 _CUT_HEADER = ("Warning: truncated output (original token count: 150000)\n"
                "Total output lines: 20000\n\nL00001 x\n\u20269000 tokens truncated\u2026L20000 x\n")
 
@@ -737,7 +737,7 @@ def _over(size: int = 600_000) -> list[tuple[str, int]]:
 
 class _CodexCutReadRows:
     """The host's refusal of a cut read on a codex reading lineage (issue #547), driven through
-    `_run_pure_reviewer_substep` with the fake CLI's rollout and capture. Mixed into one class
+    `_run_leaf_reviewer_substep` with the fake CLI's rollout and capture. Mixed into one class
     per judging pair below (the m3c shape of `generate.verify`; the `harness` shape is
     rendered by `RenderTests` only), so each also runs every row of its pair's class on codex: the lineage
     under the codex container, a warm turn resuming the THREAD the launch emitted, and an attempt
@@ -789,15 +789,15 @@ class _CodexCutReadRows:
         self.assertIsNone(self.c.spawns[1]["resume_session_id"])
         self.assertEqual(request["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
         self.assertIn("cat host_verdict.json", request["repair_findings"])
-        prompt = ort._render_pure_repair_prompt(request)
+        prompt = ort._render_leaf_repair_prompt(request)
         self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, prompt)
         self.assertNotIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, prompt)
         self.assertIn("cat host_verdict.json", prompt)
-        self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
+        self.assertIn(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
         self.assertIn("Work tree contract", prompt)
 
     def test_a_rewritten_helper_is_re_placed_before_the_warm_turn(self) -> None:
-        name = pure_leaf.CODEX_READ_HELPER_NAME
+        name = leaf_contract.CODEX_READ_HELPER_NAME
         seen: list[str] = []
 
         def rewrites_the_helper(c, tree, kwargs):
@@ -810,7 +810,7 @@ class _CodexCutReadRows:
         self.c.leaf_actions = [rewrites_the_helper, reads_the_helper]
         self.assertEqual(self.run_substep().status, "pass")
         self.assertTrue(self.c.spawns[1]["resume_session_id"])
-        self.assertEqual(seen, [pure_leaf.CODEX_READ_HELPER_TEXT])
+        self.assertEqual(seen, [leaf_contract.CODEX_READ_HELPER_TEXT])
 
     def test_a_chained_read_counts_once_and_the_repair_says_one_output_outside_the_findings(
             self) -> None:
@@ -829,13 +829,13 @@ class _CodexCutReadRows:
         _, request = self.requests()
         self.assertTrue(request["repair_findings"].startswith("`/usr/bin/zsh -lc"),
                         request["repair_findings"][:120])
-        prompt = ort._render_pure_repair_prompt(request)
+        prompt = ort._render_leaf_repair_prompt(request)
         scope = ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
         self.assertIn(scope, prompt)
         self.assertLess(prompt.index(scope), prompt.index(request["repair_findings"]))
         for phrase in ("everything one command prints is one output",
                        "so is everything one `exec` prints",
-                       f"python3 {pure_leaf.CODEX_READ_HELPER_NAME} <file>"):
+                       f"python3 {leaf_contract.CODEX_READ_HELPER_NAME} <file>"):
             self.assertIn(phrase, scope)
 
     def test_a_rollout_only_cut_names_its_call_and_a_delegation_is_refused(self) -> None:
@@ -913,7 +913,7 @@ class _CodexCutReadRows:
         self.assertEqual(self.rows()[0]["failure_category"], wc.WORKSHOP_CUT_READ)
 
     def test_the_row_quoted_back_is_not_a_cut(self) -> None:
-        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        row = leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
         self.c.leaf_actions = [_reads(rows=_rollout_rows(["Output:\n", row]),
                                       then=_writes(self.OUTPUT, self.passing()))]
         self.assertEqual(self.run_substep().status, "pass")
@@ -925,7 +925,7 @@ class _CodexCutReadRows:
         self.assertEqual(self.run_substep().status, "pass")
         first, second, third = self.rows()
         self.assertEqual(first["failure_category"], wc.WORKSHOP_CUT_READ)
-        self.assertEqual(second["failure_category"], self.c._pure_reviewer_spec(
+        self.assertEqual(second["failure_category"], self.c._leaf_reviewer_spec(
             self.PHASE, self.SUBSTEP).schema_category)
         self.assertNotIn("failure_category", third)
 
@@ -948,7 +948,7 @@ class _CodexCutReadRows:
         meta = self.attempt_meta()
         self.assertEqual((meta["result"], meta["failure_category"]),
                          ("fail", wc.WORKSHOP_CUT_READ))
-        self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+        self.assertEqual(len(meta["per_attempt"]), 1 + leaf_contract.MAX_BUNDLE_REPAIR_TURNS)
         self.assert_cut_read_exhaustion_route(outcome)
 
     def assert_cut_read_exhaustion_route(self, outcome) -> None:
@@ -982,10 +982,10 @@ class _CodexCutReadRows:
                                _writes(self.OUTPUT, self.passing())]
         self.assertEqual(self.run_substep().status, "pass")
         reasons = [r.get("repair_reason") for r in self.requests()]
-        spec = self.c._pure_reviewer_spec(self.PHASE, self.SUBSTEP)
+        spec = self.c._leaf_reviewer_spec(self.PHASE, self.SUBSTEP)
         self.assertEqual(reasons, ["none", wc.WORKSHOP_CUT_READ_REPAIR_REASON, spec.repair_reason])
         self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH,
-                      ort._render_pure_repair_prompt(self.requests()[2]))
+                      ort._render_leaf_repair_prompt(self.requests()[2]))
 
     def test_the_two_repair_counters_are_independent(self) -> None:
         self.c.leaf_actions = [_writes(self.OUTPUT, {"x": 1}),
@@ -1063,7 +1063,7 @@ class _CodexCutReadRows:
     def test_a_transport_death_is_not_scanned(self) -> None:
         self.c.leaf_actions = [_reads(rows=None, commands=None, then=_dies),
                                _writes(self.OUTPUT, self.passing())]
-        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True):
+        with mock.patch.object(self.c, "_leaf_transient_retry", return_value=True):
             self.assertEqual(self.run_substep().status, "pass")
         first, second = self.rows()
         self.assertEqual((first["failure_category"], first["cut_outputs"]),
@@ -1104,9 +1104,9 @@ class _CodexCutReadRows:
         _, request = self.requests()
         self.assertFalse(request.get("warm_resume"))
         self.assertEqual(request["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
-        prompt = ort._render_pure_repair_prompt(request)
+        prompt = ort._render_leaf_repair_prompt(request)
         self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, prompt)
-        self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
+        self.assertIn(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
 
 
 class CodexCompileVerifyTests(_CodexCutReadRows, CompileVerifyTests):
@@ -1137,7 +1137,7 @@ class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
         self.assertFalse((self.c.homes / _ORCH / "claude").exists())
         vmeta = self.attempt_meta()
         self.assertEqual((vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
-                         ("workshop", pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+                         ("workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         self.assertNotIn("workshop_prompt_contract_version", vmeta)
         row = vmeta["per_attempt"][0]
         self.assertEqual((row["model"], row["model_turns"], row["items_completed"],
@@ -1154,7 +1154,7 @@ class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
         self.assertTrue(second.get("warm_resume"))
         self.assertEqual(second["workshop_lineage_id"], "child-1")
         self.assertEqual(second["workshop_provider"], "codex_cli")
-        self.assertEqual(ort._pure_repair_template_name(second), "workshop verdict repair")
+        self.assertEqual(ort._leaf_repair_template_name(second), "workshop verdict repair")
         self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
         self.assertTrue(self.c.spawns[1]["reading"])
 
@@ -1251,12 +1251,12 @@ class LaunchShapeTests(unittest.TestCase):
         self.assertIn("--strict-mcp-config", argv)
         self.assertEqual(argv[argv.index("--tools") + 1], "Read,Write,Edit,Glob,Grep")
         self.assertEqual(argv[argv.index("--system-prompt") + 1],
-                         pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT)
+                         leaf_contract.WORKSHOP_READER_SYSTEM_PROMPT)
 
     def test_the_kind_and_the_endpoint_must_agree(self) -> None:
         c = self._conductor()
         entry = c.entry_for("validate", "judge")
-        mcp = pure_leaf.workshop_mcp_config_json("http://127.0.0.1:5/mcp")
+        mcp = leaf_contract.workshop_mcp_config_json("http://127.0.0.1:5/mcp")
         with self.assertRaises(ValueError):
             c.leaf_command(entry, session_id="a", reading=True, mcp_config_json=mcp)
         with self.assertRaises(ValueError):
@@ -1305,24 +1305,24 @@ class LaunchShapeTests(unittest.TestCase):
         while the reader table names codex, and is refused once it does not, while the same
         provider on a producing pair is not."""
         req = RenderTests()._request("validate", "judge", workshop_provider="codex_cli")
-        ort._validate_pure_launch_request_payload(req)
-        claude_only = {"claude_cli": pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"]}
-        with mock.patch.dict(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT, claude_only,
+        ort._validate_leaf_launch_request_payload(req)
+        claude_only = {"claude_cli": leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"]}
+        with mock.patch.dict(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT, claude_only,
                              clear=True):
             with self.assertRaises(ValueError) as ctx:
-                ort._validate_pure_launch_request_payload(req)
+                ort._validate_leaf_launch_request_payload(req)
             self.assertIn("one of claude_cli; got 'codex_cli'", str(ctx.exception))
             producing = RenderTests()._request("compile", "generate",
                                                workshop_provider="codex_cli")
-            ort._validate_pure_launch_request_payload(producing)
+            ort._validate_leaf_launch_request_payload(producing)
 
     def test_the_codex_reading_overrides_name_no_wrapper(self) -> None:
-        self.assertEqual(pure_leaf.codex_workshop_overrides(None, reading=True),
+        self.assertEqual(leaf_contract.codex_workshop_overrides(None, reading=True),
                          ["--config", 'approval_policy="never"',
                           "--config", "features.apps=false"])
         with self.assertRaises(ValueError):
-            pure_leaf.codex_workshop_overrides(
-                pure_leaf.workshop_mcp_config_json("http://127.0.0.1:5/mcp"), reading=True)
+            leaf_contract.codex_workshop_overrides(
+                leaf_contract.workshop_mcp_config_json("http://127.0.0.1:5/mcp"), reading=True)
 
 
 class RenderTests(unittest.TestCase):
@@ -1355,7 +1355,7 @@ class RenderTests(unittest.TestCase):
               "from the last line it returned until you reach the end.")
 
     def test_each_pair_renders_its_reading_template_and_passes_the_validator(self) -> None:
-        rows = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT
+        rows = leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT
         for provider, other in (("claude_cli", "codex_cli"), ("codex_cli", "claude_cli")):
             for step, substep, shape in self.PAIRS:
                 with self.subTest(provider=provider, pair=(step, substep, shape)):
@@ -1363,7 +1363,7 @@ class RenderTests(unittest.TestCase):
                         self._request(step, substep, shape, workshop_provider=provider))
                     ort._validate_launch_request_payload(req)
                     text = ort.render_launch_prompt_text(req)
-                    self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+                    self.assertTrue(text.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
                     self.assertNotIn("DOCUMENT-", text)
                     self.assertNotIn("mcp__wrapper", text)
                     self.assertIn(rows[provider], text)
@@ -1372,7 +1372,7 @@ class RenderTests(unittest.TestCase):
                     self.assertEqual(text.lower().count(self.PAGING.lower()),
                                      1 if provider == "claude_cli" else 0)
                     self.assertIn(f"prompt_contract_version: "
-                                  f"{pure_leaf.PURE_PROMPT_CONTRACT_VERSION}", text)
+                                  f"{leaf_contract.LEAF_PROMPT_CONTRACT_VERSION}", text)
         for step, substep, shape in self.PAIRS:
             with self.subTest(pair=(step, substep, shape)):
                 req = ort.prepare_launch_request_payload(self._request(step, substep, shape))
@@ -1394,7 +1394,7 @@ class RenderTests(unittest.TestCase):
         repair = {"repair_strategy": "reuse", "repair_findings": "bad shape",
                   "repair_target_agent_run_id": "ar_w"}
         templates = set()
-        for provider in pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT:
+        for provider in leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT:
             for step, substep, shape in pairs:
                 for extra in ({}, repair):
                     with self.subTest(provider=provider, pair=(step, substep, shape),
@@ -1403,9 +1403,9 @@ class RenderTests(unittest.TestCase):
                             self._request(step, substep, shape, workshop_provider=provider,
                                           **extra))
                         if extra:
-                            templates.add(ort._pure_repair_template_name(req))
+                            templates.add(ort._leaf_repair_template_name(req))
                         text = ort.render_launch_prompt_text(req)
-                        self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+                        self.assertTrue(text.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
                         self.assertTrue(text.endswith("\n"))
         self.assertEqual(templates, {"workshop ir repair", "workshop bundle repair",
                                      "workshop verdict repair"})
@@ -1413,8 +1413,8 @@ class RenderTests(unittest.TestCase):
     def test_a_reading_request_on_a_provider_with_no_reader_row_is_refused(self) -> None:
         req = self._request("validate", "judge", workshop_provider="codex_cli")
         ort.prepare_launch_request_payload(dict(req))
-        claude_only = {"claude_cli": pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"]}
-        with (mock.patch.dict(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT, claude_only,
+        claude_only = {"claude_cli": leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"]}
+        with (mock.patch.dict(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT, claude_only,
                               clear=True),
               self.assertRaises(ValueError) as ctx):
             ort.prepare_launch_request_payload(req)
@@ -1425,22 +1425,22 @@ class RenderTests(unittest.TestCase):
             with self.subTest(pair=(step, substep, shape)):
                 req = self._request(step, substep, shape, repair_strategy="reuse",
                                     repair_findings="bad shape", warm_resume=False)
-                self.assertEqual(ort._pure_repair_template_name(req),
+                self.assertEqual(ort._leaf_repair_template_name(req),
                                  "workshop verdict repair")
-                text = ort._render_pure_repair_prompt(req)
+                text = ort._render_leaf_repair_prompt(req)
                 self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, text)
                 self.assertNotIn("Your prior document under repair", text)
                 # The cold repair re-states the whole launch body, seeds included.
                 self.assertIn("Work tree contract", text)
                 self.assertEqual(text.count(self.PAGING), 1)
-                codex = ort._render_pure_repair_prompt(
+                codex = ort._render_leaf_repair_prompt(
                     self._request(step, substep, shape, repair_strategy="reuse",
                                   repair_findings="bad shape", warm_resume=False,
                                   workshop_provider="codex_cli"))
-                self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], codex)
+                self.assertIn(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], codex)
                 self.assertNotIn(self.PAGING, codex)
                 # A warm repair's session holds the launch prompt: neither is re-stated.
-                warm = ort._render_pure_repair_prompt(
+                warm = ort._render_leaf_repair_prompt(
                     self._request(step, substep, shape, repair_strategy="reuse",
                                   repair_findings="bad shape", warm_resume=True))
                 self.assertNotIn(self.PAGING, warm)
@@ -1483,13 +1483,13 @@ class RenderTests(unittest.TestCase):
     def test_the_codex_reader_row_states_the_budget_numbers_of_the_constants(self) -> None:
         """The row's numbers are the byte rule's (skill rule 3): derived from the two measured
         constants, each said once, and the advice under the rule."""
-        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
-        budget = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_TOKENS
-        rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
-        advice = pure_leaf.CODEX_READ_ADVICE_BYTES
-        self.assertEqual(rule, budget * pure_leaf.CODEX_BYTES_PER_TOKEN)
+        row = leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        budget = leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_TOKENS
+        rule = leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        advice = leaf_contract.CODEX_READ_ADVICE_BYTES
+        self.assertEqual(rule, budget * leaf_contract.CODEX_BYTES_PER_TOKEN)
         self.assertLess(advice, rule)
-        for phrase in (f"({budget:,} tokens)", f"A token here is {pure_leaf.CODEX_BYTES_PER_TOKEN} "
+        for phrase in (f"({budget:,} tokens)", f"A token here is {leaf_contract.CODEX_BYTES_PER_TOKEN} "
                        "bytes", f"under {advice:,} bytes", f"exceeded {rule:,} bytes"):
             self.assertEqual(row.count(phrase), 1, phrase)
         for budget_name in ("`exec` result's own", "`exec_command`'s", "`write_stdin`'s",
@@ -1509,7 +1509,7 @@ class ReaderTemplateTests(unittest.TestCase):
     def test_no_document_is_inlined(self) -> None:
         for name in self._TEMPLATES:
             with self.subTest(template=name):
-                slots = set(ort._PURE_PLACEHOLDER_RE.findall((self._DIR / name).read_text()))
+                slots = set(ort._LEAF_PLACEHOLDER_RE.findall((self._DIR / name).read_text()))
                 documents = set().union(*(set(v) for v in
                                           wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS
                                           .values())) | {"bundle_document", "dependency_facts",
@@ -1519,9 +1519,9 @@ class ReaderTemplateTests(unittest.TestCase):
 
     def test_the_verdict_repair_has_the_slots_its_renderer_fills(self) -> None:
         text = (self._DIR / "workshop_verdict_repair.txt").read_text()
-        self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+        self.assertTrue(text.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
         self.assertEqual(
-            set(ort._PURE_PLACEHOLDER_RE.findall(text)),
+            set(ort._LEAF_PLACEHOLDER_RE.findall(text)),
             {"node_key", "step", "substep", "orchestration_id", "agent_run_id",
              "prompt_contract_version", "repair_scope", "findings", "tool_surface",
              "launch_body", "repair_instruction"})
@@ -1544,7 +1544,7 @@ class HarnessSpecTests(unittest.TestCase):
         c = _PureFakeConductor(repo_root=repo, orchestration_id=_ORCH,
                                orchestration_agent_run_id="orch",
                                llm_config=_config(repo, "generate", "verify"), env={})
-        spec = c._pure_reviewer_spec("generate", "verify", "harness")
+        spec = c._leaf_reviewer_spec("generate", "verify", "harness")
         self.assertEqual(spec.pure_shape, "harness")
         self.assertEqual(spec.workshop_outputs, ("verdict.json",))
         context = {k: f"TEXT-{k}" for k in
@@ -1588,9 +1588,9 @@ class SeedNewlineTests(unittest.TestCase):
 
     def spec(self, phase: str, substep: str, shape: str):
         if substep == "generate":
-            return self.c._pure_producer_spec(
+            return self.c._leaf_producer_spec(
                 phase, (shape or "m3c") if phase == "generate" else None)
-        return self.c._pure_reviewer_spec(phase, substep, shape or None)
+        return self.c._leaf_reviewer_spec(phase, substep, shape or None)
 
     def bundle(self) -> dict:
         """`_valid_bundle()` with its first file unterminated: the existing bundle content is
@@ -1622,10 +1622,10 @@ class SeedNewlineTests(unittest.TestCase):
                     request = {} if provider is None else {"workshop_provider": provider}
                     seeds = self.c._workshop_seeds(refs, context, request, spec)
                     expect = provider == "codex_cli" and substep != "generate"
-                    self.assertEqual(pure_leaf.CODEX_READ_HELPER_NAME in seeds, expect)
+                    self.assertEqual(leaf_contract.CODEX_READ_HELPER_NAME in seeds, expect)
                     if expect:
-                        self.assertEqual(seeds[pure_leaf.CODEX_READ_HELPER_NAME],
-                                         pure_leaf.CODEX_READ_HELPER_TEXT)
+                        self.assertEqual(seeds[leaf_contract.CODEX_READ_HELPER_NAME],
+                                         leaf_contract.CODEX_READ_HELPER_TEXT)
 
     def test_every_seed_but_the_host_sources_ends_in_a_newline(self) -> None:
         refs = _verify_node(self.repo)
@@ -1683,10 +1683,10 @@ class SeedNewlineTests(unittest.TestCase):
         """`spec.ir.yaml` is read by the wrapper's `run` while Validate reads
         `<ir_ref>/spec.ir.yaml`: the normalization is a no-op on it, asserted rather than
         relied on."""
-        from tools.tests.test_pure_leaf_producer import _write_node
+        from tools.tests.test_leaf_producer import _write_node
         refs = _write_node(self.repo)
-        spec = self.c._pure_producer_spec("generate", "m3c")
-        seeds = self.c._workshop_seeds(refs, self.c._build_pure_context(refs), {}, spec)
+        spec = self.c._leaf_producer_spec("generate", "m3c")
+        seeds = self.c._workshop_seeds(refs, self.c._build_leaf_context(refs), {}, spec)
         self.assertEqual(seeds["spec.ir.yaml"],
                          (self.repo / refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
 
@@ -1702,11 +1702,11 @@ class SeedNewlineTests(unittest.TestCase):
                                      env={})
         judge = _write_run_node(judge_repo)
         rows = (
-            (self.c, verify, self.c._build_pure_verify_context(verify),
-             self.c._pure_reviewer_spec("generate", "verify"),
+            (self.c, verify, self.c._build_leaf_verify_context(verify),
+             self.c._leaf_reviewer_spec("generate", "verify"),
              ("CHECKS_MODULE_CONTRACT.md", "SEVERITY_RUBRIC.md")),
-            (judge_c, judge, judge_c._build_pure_judge_context(judge),
-             judge_c._pure_reviewer_spec("validate", "judge"),
+            (judge_c, judge, judge_c._build_leaf_judge_context(judge),
+             judge_c._leaf_reviewer_spec("validate", "judge"),
              ("runner_output_contract.md",)))
         for conductor, refs, context, spec, names in rows:
             seeds = conductor._workshop_seeds(refs, context, {}, spec)

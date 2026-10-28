@@ -36,7 +36,7 @@ import tools.orchestration_runtime as ort
 import tools.run_workflow as rw
 import tools.workflow_conductor as wc
 from tools import operator_private_root
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.orchestration_fixtures import (
     certify_node,
@@ -249,8 +249,8 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             orchestration_agent_run_id="orch-arid", child_agent_run_id=_SRC_ARID,
             agent_model="opus", workflow_mode="dev", runner_host_authored=True,
             resolved_dependencies=_FACTS, pure_leaf=True, pure_context=dict(_CONTEXT),
-            pure_language=conductor._pure_language(_STEP),
-            pure_parallel=conductor._pure_parallel(_STEP),
+            pure_language=conductor._leaf_language(_STEP),
+            pure_parallel=conductor._leaf_parallel(_STEP),
             workshop_lineage_id=_SRC_ARID, workshop_provider="claude_cli")
         entry = conductor.entry_for(_STEP, _SUBSTEP)
         # A workshop launch is recorded into a lineage home the conductor opened first.
@@ -293,7 +293,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             self.assertNotIn("prompt_matches_record", row)
             self.assertEqual(row["source_leaf_mode"], "workshop")
             self.assertEqual(row["source_prompt_contract_version"],
-                             PURE_PROMPT_CONTRACT_VERSION)
+                             LEAF_PROMPT_CONTRACT_VERSION)
             self.assertEqual(row["label"], "agreement")
             # The scripted envelope's figures, summed over the one attempt.
             self.assertEqual((row["duration_ms"], row["model_turns"], row["input_tokens"],
@@ -316,7 +316,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
                          ("cancel", "judge_replay_finished"))
 
     def test_an_exhausted_repair_budget_counts_the_repair_turns(self) -> None:
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = wc.ProcResult(0, json.dumps({"type": "result", "is_error": False,
                                            "result": json.dumps({"decision": "maybe"}),
                                            "num_turns": 1, "duration_ms": 1}), "")
@@ -380,7 +380,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(row["mutated_keys"], ["tests_document"])
         [attempt] = row["attempts"]
         tree = self.homes / replay.name / "claude" / attempt["lineage_id"] / "tree"
-        spec = self._conductor(replay.name, self.workshop_cfg)._pure_judge_spec()
+        spec = self._conductor(replay.name, self.workshop_cfg)._leaf_judge_spec()
         expected = dict(_CONTEXT, tests_document=_CONTEXT["tests_document"].replace(
             old, "SEEDED DEFECT\n"))
         for key, name in spec.workshop_document_seeds.items():
@@ -789,7 +789,7 @@ class SourceRefusalTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, code)
 
     def test_a_diagnose_launch_with_its_context_is_admitted(self) -> None:
-        from tools.pure_leaf import WORKSHOP_DIAGNOSE_PAIRS
+        from tools.leaf_contract import WORKSHOP_DIAGNOSE_PAIRS
         self.assertEqual(set(jr.DIAGNOSE_PAIRS), WORKSHOP_DIAGNOSE_PAIRS)
         for step, substep in jr.DIAGNOSE_PAIRS:
             with self.subTest(step=step):

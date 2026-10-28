@@ -172,7 +172,7 @@ phases:
       # recorded `run_20260802_001`, the excerpt alone is 52,001 bytes (from 13,019,745 bytes of
       # `raw/`) and the whole seed set is about 150 KB. Re-measure rather than trusting that —
       # build a `Conductor` and sum
-      # `len(v.encode()) for v in c._build_pure_judge_context(refs).values()`, whose values
+      # `len(v.encode()) for v in c._build_leaf_judge_context(refs).values()`, whose values
       # are the seeds (a `.json` one re-indented one value per line).
       judge:
         provider: anthropic_api

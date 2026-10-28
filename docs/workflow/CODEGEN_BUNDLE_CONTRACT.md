@@ -687,14 +687,14 @@ object order of the IR-shaped build control file the conductor renders via `_wri
 (the build system's `control_file.render_node`): dependency objects → model → checks → runner.
 `_write_makefile` is the control-file author for Model B
 dependency closures. Its reachability narrowed in Z4 (issue #171) and the accounting is
-worth stating: its sole call site is guarded by `not self._pure_leaf_substep(refs,
+worth stating: its sole call site is guarded by `not self._leaf_substep(refs,
 "generate", "generate")`, so it now runs only for a node with no bundle shape — the shape
 `run_substep` then fails closed. It is kept because the parity test below is what pins the
 derived object order against it, and because narrowing a renderer's reachability is not
 the same claim as it being dead (`atmofab-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
 `derive_build_graph(...)["link"]["objects"]` against the object list parsed out of the
 `_write_makefile`-authored control file. Since `Z2` an `M3c` node renders its control
-file from this derived graph (`_render_pure_makefile_from_graph`, the build system's
+file from this derived graph (`_render_leaf_makefile_from_graph`, the build system's
 `control_file.render_from_graph`) while `_write_makefile` is unchanged, so the two renders are
 **not** byte-identical. What both must agree on is the derived build graph — the object set
 and its order — plus the overridable out-of-source surface and the targets that `Build` and

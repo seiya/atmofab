@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from tools import derivation as d
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
 
 
@@ -86,12 +86,12 @@ class DerivationKeyTests(unittest.TestCase):
         """The version tuple of each phase, member by member — a member dropped from one
         tuple would silently stop that phase's key from moving with it."""
         self.assertEqual(d.transformation_versions(), {
-            "compile": ("pure", PURE_PROMPT_CONTRACT_VERSION,
+            "compile": ("pure", LEAF_PROMPT_CONTRACT_VERSION,
                         d.COMPILE_INLINED_DOCUMENTS_VERSION),
-            "generate": ("pure", PURE_PROMPT_CONTRACT_VERSION, d.RENDER_VERSION),
+            "generate": ("pure", LEAF_PROMPT_CONTRACT_VERSION, d.RENDER_VERSION),
             "build": (d.BUILD_VERSION,),
             "validate": (d.EXECUTE_VERSION, d.VERDICT_VERSION, "pure",
-                         PURE_PROMPT_CONTRACT_VERSION,
+                         LEAF_PROMPT_CONTRACT_VERSION,
                          f"raw-excerpt-{RAW_EXCERPT_POLICY_VERSION}"),
         })
         self.assertEqual(set(d.transformation_versions()), set(d.DERIVATION_STEPS))
@@ -134,7 +134,7 @@ class DerivationKeyTests(unittest.TestCase):
             self.assertNotEqual(d.derivation_key("compile", inputs),
                                 d.sha256_hex(d.canonical_json_bytes({
                                     "key_version": d.DERIVATION_KEY_VERSION, "step": "compile",
-                                    "transformation": ["pure", PURE_PROMPT_CONTRACT_VERSION,
+                                    "transformation": ["pure", LEAF_PROMPT_CONTRACT_VERSION,
                                                        current_docs],
                                     "inputs": inputs})))
 

@@ -420,7 +420,7 @@ class UnittestRunnerHermeticityTests(unittest.TestCase):
     deleted `setUpModule` would change nothing the suite can see."""
 
     _MODULES = ("tools.tests.test_usage_reset", "tools.tests.test_workflow_conductor",
-                "tools.tests.test_pure_leaf_producer", "tools.tests.test_pure_leaf_verify")
+                "tools.tests.test_leaf_producer", "tools.tests.test_leaf_verify")
 
     def test_each_module_that_drives_the_wait_refuses_a_real_probe_under_unittest(self) -> None:
         repo = Path(__file__).resolve().parents[2]

@@ -70,7 +70,7 @@ existing module is a home: the validator may not import `orchestration_runtime`
 (module-boundary rule), and hosting the scanner in the validator would force
 `orchestration_runtime` to import that module at module level, which imports PyYAML
 unconditionally — the runtime deliberately defers PyYAML so its recovery commands stay usable
-without it. Same precedent as `tools/pure_leaf.py`.
+without it. Same precedent as `tools/leaf_contract.py`.
 
 An earlier version of that paragraph gave a third reason — that
 `backends.language.fortran.signatures` imports the validator at module level, so hosting the

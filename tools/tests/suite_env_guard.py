@@ -45,7 +45,7 @@ SUITE_OWNED_ENV = {
     "ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK":
         "a module-level `os.environ.setdefault` in eight test modules "
         "(test_orchestration_runtime.py, test_target_keyed_store.py, test_target_free_compile.py "
-        "and five test_pure_leaf_* modules), so it appears once any of them is imported",
+        "and the five test_leaf_{compile,judge,producer,verify,wiring} modules), so it appears once any of them is imported",
 }
 
 # Populated by the conftest hook; a witness reads it rather than inferring the guard from a

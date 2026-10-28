@@ -76,7 +76,7 @@ from tools.orchestration_runtime import (
     default_agent_model_for_backend,
 )
 
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_PROMPT_SENTINEL
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, WORKSHOP_PROMPT_SENTINEL
 
 # The derivation record a PASS step_result must carry (issue #250): what the conductor computes
 # at phase start (`phase_derivation`) and `write_step_result` stamps into the certifying meta.
@@ -141,7 +141,7 @@ _PURE_GENERATE_OVERRIDE = {
     "workshop_provider": "claude_cli",
     "pure_language": "fortran",
     "pure_parallel": "openmp",
-    "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+    "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
     "allowed_output_paths": [],
     "skill_name": "",
     "skill_ref": "",
@@ -486,7 +486,7 @@ def _launch_request_body(arid: str, *, deterministic: bool = False) -> dict:
         shape["workshop_provider"] = "claude_cli"
         shape["pure_language"] = "fortran"
         shape["pure_parallel"] = "openmp"
-        shape["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
+        shape["prompt_contract_version"] = LEAF_PROMPT_CONTRACT_VERSION
         shape["pure_context"] = _PURE_GENERATE_CONTEXT
     src = f"{_FIX_PIPE_REF}/source/src_20260509_001"
     return {
@@ -1776,7 +1776,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 "leaf_mode": "workshop",
                 "workshop_lineage_id": "substep_run_plan_verify_001",
                 "workshop_provider": "claude_cli",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "pure_context": {
                     "ir_document": "algorithm:\n  state_variables: [h]\n",
                     "tests_document": "- test: conserves mass",
@@ -12299,7 +12299,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "skill_must_read_refs": "",
                 "leaf_mode": "workshop",
                 "workshop_provider": "codex_cli",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
                 "allowed_output_paths": [],
                 "issue_severity": "none",
@@ -12434,7 +12434,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "workshop_provider": "codex_cli",
                 "pure_language": "fortran",
                 "pure_parallel": "openmp",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
                 "allowed_output_paths": [],
                 "issue_severity": "none",
@@ -12460,7 +12460,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "workshop_provider": "codex_cli",
                         "pure_language": "fortran",
                         "pure_parallel": "openmp",
-                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                        "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                         "pure_context": _PURE_GENERATE_CONTEXT,
                         "allowed_output_paths": [],
                         "issue_severity": "none",
@@ -21478,7 +21478,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
 
     The QUESTION is unchanged since Z4 (issue #171); the mechanism under it is not. A leaf
     used to FORCE-READ these files off disk (`leaf_contract_doc_refs`), and the cost was the
-    same. Now no leaf reads anything: `Conductor._build_pure_*_context` reads the file and
+    same. Now no leaf reads anything: `Conductor._build_leaf_*_context` reads the file and
     inlines it, which is why a document that reaches no `pure_context` value is unguarded
     here however large — WORKFLOW_CORE.md, phase_02/03/04, PERFORMANCE_DIAGNOSTICS.md and
     COMMAND_LOG_PLACEMENT.md are all in that position, as they were before."""
@@ -22266,8 +22266,8 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                         f"! checks for {sid}\nmodule {sid}_checks\nend module\n")
             # An M3c checks exemplar is gated on its recorded contract version matching the
             # current one; seed a matching `bundle_meta.json` by default (None => current).
-            from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
-            version = contract_version if contract_version is not None else PURE_PROMPT_CONTRACT_VERSION
+            from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+            version = contract_version if contract_version is not None else LEAF_PROMPT_CONTRACT_VERSION
             self._write(src.parent / "bundle_meta.json",
                         json.dumps({"prompt_contract_version": version}))
 
@@ -22531,7 +22531,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
     AGENTIC arm of `run_substep` — `phase == "generate" and substep == "generate" and not
     warm_resume` — and this class drove `run_substep` to observe it. That arm is gone; the
     producer loop is the WORKSHOP one (the pure loop that first carried this line went in
-    issue #534 PR-J4-b), and its `_PureProducerSpec.wants_exemplar` is the single place the
+    issue #534 PR-J4-b), and its `_LeafProducerSpec.wants_exemplar` is the single place the
     answer is written down (`_run_workshop_producer_substep`:
     `exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None`).
 
@@ -22540,7 +22540,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
     the exemplar line — to observe one boolean, and the assembly failing would look exactly
     like the exemplar not being wanted. The call SITE (that `wants_exemplar` is what gates the
     resolution, and that a repair turn does not attach it) is pinned where the loop is, in
-    `tools/tests/test_pure_leaf_producer.py`.
+    `tools/tests/test_leaf_producer.py`.
     """
 
     def _conductor(self, tmp: str):
@@ -22553,13 +22553,13 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             c = self._conductor(tmp)
             # The DEFAULT generate shape wants one...
-            self.assertTrue(c._pure_producer_spec("generate", "m3c").wants_exemplar)
+            self.assertTrue(c._leaf_producer_spec("generate", "m3c").wants_exemplar)
             # ...the `harness` shape does not: an `infrastructure` self-test authors the
             # executable entry, and a physics sibling's model is not an example of it.
-            self.assertFalse(c._pure_producer_spec("generate", "harness").wants_exemplar)
+            self.assertFalse(c._leaf_producer_spec("generate", "harness").wants_exemplar)
             # ...and neither does the compile producer: it authors an IR, and there is no
             # certified sibling SOURCE to show it.
-            self.assertFalse(c._pure_producer_spec("compile").wants_exemplar)
+            self.assertFalse(c._leaf_producer_spec("compile").wants_exemplar)
 
     def test_no_reviewer_wants_an_exemplar(self) -> None:
         """A reviewer is shown the artifact under review, not a second node's source. The
@@ -22572,7 +22572,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
                                           ("generate", "verify", "harness"),
                                           ("validate", "judge", None)):
                 with self.subTest(phase=phase, substep=substep, shape=shape):
-                    spec = c._pure_reviewer_spec(phase, substep, shape)
+                    spec = c._leaf_reviewer_spec(phase, substep, shape)
                     self.assertFalse(hasattr(spec, "wants_exemplar"))
 
 
@@ -24036,7 +24036,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
     # --- record_launch: the token comes from THIS launch --------------------------------
 
     #: The `workshop_provider` a launch on each response backend token names, and the
-    #: lineage-home backend its cold home is prepared under (`pure_leaf.WORKSHOP_LINEAGE_
+    #: lineage-home backend its cold home is prepared under (`leaf_contract.WORKSHOP_LINEAGE_
     #: BACKENDS`).
     _WORKSHOP_PROVIDER = {"claude": ("claude_cli", "claude"),
                           "openai_compatible": ("openai_compatible", "http"),
@@ -24048,7 +24048,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         leaf is one since issue #534 PR-J4-b, and an HTTP provider is admissible only for one,
         which `record_launch` asserts itself), its lineage home prepared first as the host
         does. `workshop=False` builds a launch that is neither workshop nor deterministic."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         if workshop:
             provider, lineage_backend = self._WORKSHOP_PROVIDER[response_backend]
             _prepare_workshop_lineage(repo_root, "orch_001", arid, backend=lineage_backend)
@@ -24070,7 +24070,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 "pipeline_ref": _FIX_PIPE_REF,
                 "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
                 "source_id": "src_20260415_001",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "allowed_output_paths": [],
                 "pure_context": {
                     "controlled_spec_document": "the model conserves mass",
@@ -24616,19 +24616,19 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # workshop captures of their pairs, plus the escalate diagnostician's
         # (`validate.diagnose`). `BuildLaunchRequestTest`'s docstring carries the provenance.
         self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         modes = {json.loads(p.read_text(encoding="utf-8")).get("leaf_mode") for p in captured}
         self.assertEqual(modes, {None, "workshop"}, "a capture of a retired leaf model")
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if payload.get("leaf_mode") == "workshop":
                 # A capture carries the contract version of ITS run and the validator demands
-                # the current one exactly (`_validate_pure_launch_request_payload`); the
+                # the current one exactly (`_validate_leaf_launch_request_payload`); the
                 # substitution is made HERE, in the test, so the tracked fixture stays a capture
                 # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`) — and
                 # the provider a `workshop-1` capture predates.
                 payload = {**payload,
-                           "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                           "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                            "workshop_provider": payload.get("workshop_provider", "claude_cli")}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
@@ -26873,7 +26873,7 @@ def _hand_workshop_profile_fields(root: Path) -> dict:
 
 
 def _workshop_build_kwargs(test: unittest.TestCase, backend_type: str = "claude") -> dict:
-    """The `build_readonly_bwrap_profile` kwargs of a `backend_type` workshop lineage — the
+    """The `build_lineage_bwrap_profile` kwargs of a `backend_type` workshop lineage — the
     only profile the builder builds since issue #534 PR-J4-b — spelled by the production
     `claude_workshop_profile_kwargs` / `codex_workshop_profile_kwargs` over a lineage layout
     created under a fresh temporary directory (outside any checkout a caller builds for)."""
@@ -27261,7 +27261,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         so the refusal can never fire on a profile production builds."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
-        profile = ort.build_readonly_bwrap_profile(
+        profile = ort.build_lineage_bwrap_profile(
             repo_root=d, orchestration_id="orch_x", agent_run_id="arid_x",
             backend_command="claude", backend_type="claude", **_workshop_build_kwargs(self))
         for field in ort._UNRENDERED_PROFILE_GRANTS:
@@ -27428,7 +27428,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         authored = {"PATH": "/a/bin", "HOME": "/a/home", "LANG": "C.UTF-8",
                     "ATMOFAB_ORCHESTRATION_ID": "o", "ATMOFAB_CHILD_AGENT_RUN_ID": "A"}
         with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude", child_env=authored,
                 **_workshop_build_kwargs(self))
@@ -27447,7 +27447,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                           ("ATMOFAB_CHILD_AGENT_RUN_ID", "other-arid")):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
-                    ort.build_readonly_bwrap_profile(
+                    ort.build_lineage_bwrap_profile(
                         repo_root=Path(d), orchestration_id="o", agent_run_id="A",
                         backend_command="claude", backend_type="claude",
                         child_env={"PATH": "/a", name: bad})
@@ -27473,7 +27473,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ID": "OTHER-ORCH",
                                           "ATMOFAB_CHILD_AGENT_RUN_ID": "PARENT-ARID",
                                           "PATH": "/usr/bin"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o",
                 agent_run_id="CHILD-ARID", backend_command="claude",
                 backend_type="claude", **_workshop_build_kwargs(self))
@@ -27544,7 +27544,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                          "ATMOFAB_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
             with self.subTest(ambient=sorted(ambient)):
                 with mock.patch.dict(os.environ, {**ambient, "PATH": "/usr/bin"}):
-                    profile = ort.build_readonly_bwrap_profile(
+                    profile = ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", **_workshop_build_kwargs(self))
@@ -27562,14 +27562,14 @@ class LeafEnvClosureTests(unittest.TestCase):
         for bad in ([("PATH", "/b")], "PATH=/b", 42):
             with self.subTest(child_env=bad):
                 with self.assertRaises(ValueError):
-                    ort.build_readonly_bwrap_profile(
+                    ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", child_env=bad)
         for bad_entry in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
             with self.subTest(entry=bad_entry):
                 with self.assertRaises(ValueError):
-                    ort.build_readonly_bwrap_profile(
+                    ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", child_env=bad_entry)
@@ -27611,7 +27611,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}), \
                 self.assertRaises(ValueError) as ctx:
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn("contains the checkout", str(ctx.exception))
@@ -27630,7 +27630,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         ort._ensure_orchestration_audit_dirs(repo, "o")
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
                 **_workshop_build_kwargs(self, "codex"))
@@ -27656,7 +27656,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{home / 'x' / 'bin'}:{os.environ['PATH']}"}), \
                 self.assertRaises(ValueError) as ctx:
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn("is the same directory as", str(ctx.exception))
@@ -27683,14 +27683,14 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{home / 'tools' / 'bin'}:{os.environ['PATH']}"}), \
                 self.assertRaises(ValueError) as ctx:
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex")
         self.assertIn("lies inside the checkout", str(ctx.exception))
         # The exemption: the same wrapper reached by its own in-checkout spelling.
         with mock.patch.dict(os.environ, {"HOME": str(home),
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
                 **_workshop_build_kwargs(self, "codex"))
@@ -27710,7 +27710,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         ort._ensure_orchestration_audit_dirs(repo, "o")
         with mock.patch.dict(os.environ, {"HOME": str(home), "PATH": "/usr/bin"}), \
                 self.assertRaises(ValueError):
-            ort.build_readonly_bwrap_profile(
+            ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude",
                 backend_ro_extra=[str(d / "alias")])
@@ -27757,7 +27757,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PATH": f"{dotted}:{os.environ['PATH']}"}):
             os.environ.pop("HOME", None)
             with self.assertRaises(ValueError) as ctx:
-                ort.build_readonly_bwrap_profile(
+                ort.build_lineage_bwrap_profile(
                     repo_root=repo, orchestration_id="o", agent_run_id="A",
                     backend_command="cli-sim", backend_type="codex")
         self.assertIn("lies inside the checkout", str(ctx.exception))
@@ -27771,7 +27771,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         fake_home.mkdir()
         with mock.patch.dict(os.environ, {"ANTHROPIC_MODEL": "haiku",
                                           "HOME": str(fake_home)}):
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude",
                 **_workshop_build_kwargs(self))
@@ -27783,7 +27783,7 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
     """The backend CLI's own install root and credential home, which the bare profile misses.
 
     `_backend_runtime_bind_paths` is the sole producer of both, and its only caller is
-    `build_readonly_bwrap_profile`, which is now the only profile builder there is. Its
+    `build_lineage_bwrap_profile`, which is now the only profile builder there is. Its
     tests went with `BwrapProfileFilePinTests` in PR-2 although the function has nothing
     to do with the capability document: making it `return ([], [])` left the full suite
     green, and a leaf that cannot find `~/.claude` cannot authenticate — so this is a
@@ -28117,13 +28117,13 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
     def test_a_new_pure_launch_request_is_refused_naming_the_retired_leaf(self) -> None:
         req = self._pure_request("child_new_pure", "verify")
         with self.assertRaises(ValueError) as ctx:
-            ort._validate_pure_launch_request_payload(
-                {**req, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION})
+            ort._validate_leaf_launch_request_payload(
+                {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION})
         self.assertIn("pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
         # Control: the same request as a workshop one passes the validator, so the refusal
         # above is the leaf_mode and nothing else the fixture carries.
-        ort._validate_pure_launch_request_payload(
-            {**req, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+        ort._validate_leaf_launch_request_payload(
+            {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
              "leaf_mode": "workshop", "workshop_provider": "claude_cli",
              "workshop_lineage_id": "child_new_pure"})
 
@@ -28132,14 +28132,14 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
         is refused rather than recorded as a part no loop runs (old records keep their
         readers)."""
         req = {**self._pure_request("child_new_part", "verify"),
-               "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+               "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                "leaf_mode": "workshop", "workshop_provider": "claude_cli",
                "workshop_lineage_id": "child_new_part"}
         with self.assertRaises(ValueError) as ctx:
-            ort._validate_pure_launch_request_payload({**req, "pure_part": "core"})
+            ort._validate_leaf_launch_request_payload({**req, "pure_part": "core"})
         self.assertIn("carries pure_part='core'", str(ctx.exception))
         # Control: the same request without the label passes.
-        ort._validate_pure_launch_request_payload(req)
+        ort._validate_leaf_launch_request_payload(req)
 
     def test_record_launch_refuses_a_new_pure_launch_before_any_launch_record(self) -> None:
         """End to end: a `leaf_mode: pure` request is not a workshop one, so `record_launch`
@@ -28153,7 +28153,7 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
             write_preflight(repo_root=repo_root, orchestration_id=self._ORCH,
                             payload=_launchable_preflight_dict(backend="claude"))
             req = {**self._pure_request("child_new_pure", "verify"),
-                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
+                   "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION}
             with self.assertRaises(ValueError) as ctx:
                 record_launch(
                     repo_root=repo_root, orchestration_id=self._ORCH,

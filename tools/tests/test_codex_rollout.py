@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 import tools.workflow_conductor as wc
-from tools import codex_rollout, pure_leaf
+from tools import codex_rollout, leaf_contract
 
 _HEADER = ("Warning: truncated output (original token count: 150000)\nTotal output lines: "
            "20000\n\nL00001 x\n…9000 tokens truncated…L20000 x\n")
@@ -84,13 +84,13 @@ class ScanTests(unittest.TestCase):
     def test_a_text_over_the_default_budget_is_cut_by_its_size(self) -> None:
         """A raised `exec` budget leaves its text whole in the rollout (MR5-e): counted by its
         UTF-8 size, strictly over the budget."""
-        rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        rule = leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_BYTES
         self.write([_start(), _out(_items("y" * rule)), _out(_items("y" * (rule + 1))),
                     _out(_items("\u00e9" * (rule // 2) + "y"))])
         self.assertEqual(self.counts(), (None, 3, 2))
 
     def test_a_whole_output_and_the_quoted_row_are_not_cut(self) -> None:
-        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        row = leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
         self.assertIn("tokens truncated", row)
         self.write([_start(), _out(_items("Output:\n", row)), _out(_items("L1\nL2\n"))])
         self.assertEqual(self.counts(), (None, 2, 0))
@@ -200,7 +200,7 @@ class CommandCaptureTests(unittest.TestCase):
         (clipped,) = reassembler.feed(line)
         self.assertIsNone(wc._parse_codex_line(clipped))
         ((_, size),) = self.take(clipped)
-        self.assertGreater(size, pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES)
+        self.assertGreater(size, leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_BYTES)
 
     def test_the_spawn_collects_the_list_it_hands_the_reader(self) -> None:
         """`_spawn_codex_json_leaf` sets `command_outputs` from the list its reader filled."""

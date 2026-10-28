@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from tools import llm_workshop_loop as loop
-from tools.pure_leaf import (
+from tools.leaf_contract import (
     HTTP_FILE_TOOL_DECLARATIONS,
     HTTP_GREP_MAX_MATCHES,
     HTTP_READ_PAGE_BYTES,

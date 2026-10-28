@@ -434,7 +434,7 @@ class ConductorReadsTheTargetTests(unittest.TestCase):
                               parallel={"backend": "vendor_x"},
                               execution={"threads_per_rank": 5})
         c = self._conductor(Path("/nonexistent"), target=target)
-        self.assertEqual(json.loads(c._pure_target_profile_document()), target.doc)
+        self.assertEqual(json.loads(c._leaf_target_profile_document()), target.doc)
 
 
 class ValidatorReadsTheTargetTests(unittest.TestCase):

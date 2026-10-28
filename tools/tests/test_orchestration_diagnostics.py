@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools import orchestration_diagnostics as diag
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -394,7 +394,7 @@ class LeafTranscriptRootTests(unittest.TestCase):
     either reader at the operator home left the whole suite green.
 
     Z4 (issue #171) retired the agentic leaf and the private home with it. A pure leaf runs
-    with no `CLAUDE_CONFIG_DIR` (`tools/pure_leaf.py`), so its transcript is written where the
+    with no `CLAUDE_CONFIG_DIR` (`tools/leaf_contract.py`), so its transcript is written where the
     CLI writes every transcript, and `claude_leaf_projects_roots` returns that one root. What
     this class pins now is the operator-home half, which was always the other branch.
 
@@ -725,7 +725,7 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
     silently reporting zero tokens (both modules' own suites would stay green)."""
 
     def test_conductor_written_metas_round_trip_through_reader(self) -> None:
-        from tools.tests.test_pure_leaf_producer import _conductor, _write_node
+        from tools.tests.test_leaf_producer import _conductor, _write_node
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -755,7 +755,7 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
         self.assertEqual(gen["attempts"], 2)
         self.assertEqual(gen["failure_category"], "bundle_schema_violation")
         # The writer stamps the contract version; the reader must surface it.
-        self.assertEqual(gen["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(gen["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         # Every usage class the writer persists must be summed by the reader.
         self.assertEqual(gen["usage_total"]["total_tokens"], 11 + 22 + 33 + 44)
         self.assertEqual(gen["models"], ["claude-opus-4-8"])
@@ -1236,7 +1236,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         the row. Two mutants of the document, both GREEN at round 1 --
         rewriting `compile_generate_meta.json`'s row path from `workspace/ir/.../<ir_id>/` to
         `workspace/pipelines/.../WRONG/DIR/`, and rewriting every `conductor
-        (`_write_pure_attempt_meta`)` writer cell to `LEAF (the leaf writes it itself)`, which
+        (`_write_leaf_attempt_meta`)` writer cell to `LEAF (the leaf writes it itself)`, which
         inverts the row's own load-bearing sentence about the leaf holding no write authority.
 
         Those two are left uncovered deliberately. Coupling the DIRECTORY would need a

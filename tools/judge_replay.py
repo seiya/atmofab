@@ -11,7 +11,7 @@ The instrument of the judge A/B (parts 2 and 3 of the plan on issue #534). It re
 `validate.judge` launch and reuses ONLY its `pure_context`, its `pure_shape`, the node refs it
 names, its `runner_host_authored` stamp and its `resolved_dependencies` (the dependency facts,
 reused verbatim, not re-resolved). Everything else of a launch is built fresh by the REAL
-reviewer loop (`Conductor._run_pure_reviewer_substep`): a fresh `agent_run_id`, the replay's
+reviewer loop (`Conductor._run_leaf_reviewer_substep`): a fresh `agent_run_id`, the replay's
 own orchestration, the CURRENT prompt contract version and templates. Each repetition is one
 reviewer substep, with its schema repairs, as a reading `workshop leaf` on the configuration's
 entry for that substep (the configuration file is the only thing that says what a leaf
@@ -115,7 +115,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 #: The judging pairs a replay admits, and (issue #534 PR-J4-a) `escalate`'s diagnose launch of
-#: each escalatable phase (`pure_leaf.WORKSHOP_DIAGNOSE_PAIRS`, asserted equal by
+#: each escalatable phase (`leaf_contract.WORKSHOP_DIAGNOSE_PAIRS`, asserted equal by
 #: `test_judge_replay`).
 JUDGING_PAIRS: tuple[tuple[str, str], ...] = (
     ("compile", "verify"), ("generate", "verify"), ("validate", "judge"))
@@ -679,7 +679,7 @@ def _replay_spec(conductor: Any, source: SourceLaunch, context: dict[str, str],
     """The reviewer's spec with the recorded context and the two host writers held in memory:
     nothing a replay decides reaches the store."""
     step, substep = source.pair
-    spec = conductor._pure_reviewer_spec(step, substep, shape=source.shape or None)
+    spec = conductor._leaf_reviewer_spec(step, substep, shape=source.shape or None)
     if spec.pure_shape != source.shape:
         raise ReplayRefused("judge_replay_shape_unknown",
                             f"recorded pure_shape {source.shape!r}; the spec carries "
@@ -739,7 +739,7 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
     spec = _replay_spec(conductor, source, context, captured)
     deps = source.request.get("resolved_dependencies")
     resolved = tuple(d for d in deps if isinstance(d, dict)) if isinstance(deps, list) else ()
-    outcome = conductor._run_pure_reviewer_substep(refs, step, substep, resolved, spec)
+    outcome = conductor._run_leaf_reviewer_substep(refs, step, substep, resolved, spec)
     entry = conductor.entry_for(step, substep)
     attempts = list(captured.meta.get("per_attempt") or [])
     oid = conductor.orchestration_id

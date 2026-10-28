@@ -30,7 +30,7 @@ import tools.orchestration_runtime as ort
 from tools.tests.target_fixtures import composed_pure_template
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools import usage_reset
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.private_root_fixture import (
@@ -425,7 +425,7 @@ class _WorkshopLeafFake(_PureFakeConductor):
                 # A READING lineage: the reviewer writes its one document file, whatever text
                 # it holds; the host's assembly and validators judge it.
                 if isinstance(result, str):
-                    output = self._pure_reviewer_spec(
+                    output = self._leaf_reviewer_spec(
                         request["step"], request["substep"]).workshop_outputs[0]
                     (tree / output).write_text(result, encoding="utf-8")
             else:
@@ -455,13 +455,13 @@ def _run_producer(c: _PureFakeConductor, refs: wc.NodeRefs, repair=None, spec=No
     """Drive the workshop producer loop directly with the phase's spec (the seam
     `run_substep` dispatches a producing substep to)."""
     if spec is None:
-        spec = c._pure_producer_spec(phase, c._shape_for_spec(refs, phase))
+        spec = c._leaf_producer_spec(phase, c._shape_for_spec(refs, phase))
     return c._run_workshop_producer_substep(refs, phase, "generate", repair, (), spec,
                                             dependency_surface=dependency_surface)
 
 
 # ======================================================================================
-# _pure_bundle_violations: clean bundle + each failure category
+# _leaf_bundle_violations: clean bundle + each failure category
 # ======================================================================================
 class PureBundleViolationsTests(unittest.TestCase):
     def _c_refs(self):
@@ -476,20 +476,20 @@ class PureBundleViolationsTests(unittest.TestCase):
 
     def test_clean_bundle_has_no_violations(self) -> None:
         c, refs = self._c_refs()
-        self.assertIsNone(c._pure_bundle_violations(refs, _valid_bundle()))
+        self.assertIsNone(c._leaf_bundle_violations(refs, _valid_bundle()))
 
     def test_schema_violation(self) -> None:
         c, refs = self._c_refs()
         bad = _valid_bundle()
         del bad["capability_requirements"]
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_schema_violation")
 
     def test_shape_unsupported_multinode(self) -> None:
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["optimization_unit"]["members"] = [_NODE, "problem/other@0.1.0"]
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         # A second member with no files is a schema-invariant failure first; either way it is
         # not accepted. Assert it is rejected with a bundle category.
         self.assertIn(cat, ("bundle_shape_unsupported", "bundle_schema_violation"))
@@ -498,7 +498,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["capability_requirements"] = ["batched_cases@1", "state_registration@1"]
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_capability_unsatisfied")
 
     def test_state_binding_mismatch(self) -> None:
@@ -507,7 +507,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["state_bindings"] = [_binding("not_a_state")]
-        cat, detail = c._pure_bundle_violations(refs, bad)
+        cat, detail = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_state_binding_mismatch")
         self.assertIn("['not_a_state']", detail)
         self.assertIn("with no binding: ['h']", detail)
@@ -525,7 +525,7 @@ class PureBundleViolationsTests(unittest.TestCase):
                 else:
                     bad["state_bindings"] = []
                 bad["capability_requirements"] = ["sync_single_case@1"]
-                cat, detail = c._pure_bundle_violations(refs, bad)
+                cat, detail = c._leaf_bundle_violations(refs, bad)
                 self.assertEqual(cat, "bundle_state_binding_mismatch")
                 self.assertIn("declares ['h']", detail)
                 self.assertIn("'harness_registration'", detail)
@@ -539,14 +539,14 @@ class PureBundleViolationsTests(unittest.TestCase):
         # canonical OBJECT form — a projection that kept only `str` entries would leave the
         # set empty and reject every binding.
         c, refs = self._c_refs()
-        self.assertIsNone(c._pure_bundle_violations(refs, _valid_bundle()))
+        self.assertIsNone(c._leaf_bundle_violations(refs, _valid_bundle()))
 
     def test_bound_variable_must_be_published(self) -> None:
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["files"][1]["content"] = _checks_content().replace("  public :: h\n", "")
         self.assertNotIn("public :: h\n", bad["files"][1]["content"])
-        cat, detail = c._pure_bundle_violations(refs, bad)
+        cat, detail = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("must publish every bound state variable", detail)
 
@@ -567,7 +567,7 @@ class PureBundleViolationsTests(unittest.TestCase):
                 if e["defined_in"] == was:
                     e["defined_in"] = mixed
             self.assertEqual(cb.validate_bundle(bad), [], "the shape must be schema-legal")
-            cat, _ = c._pure_bundle_violations(refs, bad)
+            cat, _ = c._leaf_bundle_violations(refs, bad)
             self.assertEqual(cat, "bundle_assembly_collision", role)
 
     def test_m3c_module_name_match_stays_case_insensitive(self) -> None:
@@ -583,7 +583,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         bad = _valid_bundle()
         bad["files"][0]["logical_path"] = "wrong_model.f90"
         bad["entrypoints"][0]["defined_in"] = "wrong_model.f90"
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_assembly_collision")
 
     def test_accepted_bundle_also_passes_the_real_generate_static_gate(self) -> None:
@@ -595,7 +595,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         import tempfile as _tf
         c, refs = self._c_refs()
         bundle = _valid_bundle()
-        self.assertIsNone(c._pure_bundle_violations(refs, bundle))
+        self.assertIsNone(c._leaf_bundle_violations(refs, bundle))
         checks = next(f for f in bundle["files"] if f["role"] == "checks")
         with _tf.TemporaryDirectory() as tmp:
             src = Path(tmp)
@@ -662,7 +662,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             + "contains\n"
             + "".join(_stub(s) for s in syms)
             + "end module\n")
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         for absent in set(CHECKS_PUBLIC_NAMES) - set(imported):
             self.assertIn(absent, findings)
@@ -673,7 +673,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["files"][1]["content"] = _checks_content(omit="checks_compute")
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("checks_compute", findings)
 
@@ -694,7 +694,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             + "  character(kind=kind('a')) function metric_compute()\n"
             "    metric_compute = 'x'\n  end function metric_compute\n"
             "end module\n")
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("metric_compute", findings)
         self.assertIn("FUNCTION", findings)
@@ -705,7 +705,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["files"][1]["content"] = _checks_content(as_function="metric_compute")
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("metric_compute", findings)
         self.assertIn("FUNCTION", findings)
@@ -732,7 +732,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             "  public :: h\ncontains\n"
             + defs
             + "end module\n")
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        self.assertIsNone(c._leaf_bundle_violations(refs, ok))
 
     def test_checks_abi_defined_but_unexported_rejected(self) -> None:
         # Review finding: the certified idiom is a bare `private` + explicit `public ::` list, so
@@ -742,7 +742,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["files"][1]["content"] = _checks_content(unexported="checks_compute")
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("checks_compute", findings)
         self.assertIn("not published", findings)
@@ -752,7 +752,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         bad = _valid_bundle()
         bad["files"][1]["content"] = _checks_content().replace(
             "  private\n", "  private :: get_time\n", 1)
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("get_time", findings)
 
@@ -765,7 +765,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             f"module {_SPEC_ID}_checks\n"
             + "".join(_stub(s, named_end=False) for s in _checks_symbols())
             + "end module\n")
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        self.assertIsNone(c._leaf_bundle_violations(refs, ok))
 
     def test_checks_abi_accepts_leading_ampersand_continuation(self) -> None:
         # Free-form Fortran allows an OPTIONAL leading `&` on a continuation line (confirmed
@@ -783,7 +783,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             + "contains\n"
             + "".join(_stub(s, named_end=False) for s in syms)
             + "end module\n")
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        self.assertIsNone(c._leaf_bundle_violations(refs, ok))
 
     def test_checks_abi_derived_type_private_is_not_the_module_default(self) -> None:
         # False-positive guard on a fail-closed gate: a bare `private` inside a derived type sets
@@ -797,7 +797,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             "contains\n"
             + "".join(_stub(s, named_end=False) for s in _checks_symbols())
             + "end module\n")
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        self.assertIsNone(c._leaf_bundle_violations(refs, ok))
 
     def test_checks_abi_declaration_attribute_is_not_an_accessibility_statement(self) -> None:
         # `integer, private :: n` is an attribute on a declaration, not a module default, and
@@ -810,7 +810,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             "contains\n"
             + "".join(_stub(s, named_end=False) for s in _checks_symbols())
             + "end module\n")
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        self.assertIsNone(c._leaf_bundle_violations(refs, ok))
 
     def test_checks_abi_accepts_wrapped_export_list(self) -> None:
         # The certified idiom wraps its `public ::` list with `&` continuations.
@@ -822,7 +822,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             f"module {_SPEC_ID}_checks\n  private\n" + wrapped
             + "".join(_stub(s, named_end=False) for s in syms)
             + "end module\n")
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        self.assertIsNone(c._leaf_bundle_violations(refs, ok))
 
     def test_checks_abi_end_subroutine_and_comments_do_not_satisfy(self) -> None:
         # Fail-open guard: every real module carries `end subroutine <name>` for each subroutine,
@@ -837,7 +837,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             + "! the runner also calls subroutine metric_compute\n"
             + "function metric_compute() result(r)\nend subroutine metric_compute\n"
             + "end module\n")
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("metric_compute", findings)
 
@@ -850,7 +850,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             + "".join(_stub(s, prefix="pure ")
                       for s in _checks_symbols())
             + "end module\n")
-        self.assertIsNone(c._pure_bundle_violations(refs, ok))
+        self.assertIsNone(c._leaf_bundle_violations(refs, ok))
 
     def test_checks_abi_ignores_a_decoy_sibling_checks_module(self) -> None:
         # Codex review: a bundle may legally carry more than one checks-role file. Searching them
@@ -865,7 +865,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             "content": _checks_content().replace(f"{_SPEC_ID}_checks", "decoy_checks"),
             "modules": ["decoy_checks"]})
         self.assertEqual(cb.validate_bundle(bad), [])  # the shape really is schema-legal
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
 
     def test_checks_abi_ignores_a_decoy_second_module_in_the_same_file(self) -> None:
@@ -877,7 +877,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             f"module {_SPEC_ID}_checks\nend module\n"
             + _checks_content().replace(f"{_SPEC_ID}_checks", "decoy_checks"))
         bad["files"][1]["modules"] = [f"{_SPEC_ID}_checks", "decoy_checks"]
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
 
     def test_checks_abi_extra_checks_file_does_not_mask_a_real_violation(self) -> None:
@@ -889,7 +889,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             "member_node_key": _NODE,
             "content": _checks_content().replace(f"{_SPEC_ID}_checks", "helper_checks"),
             "modules": ["helper_checks"]})
-        cat, findings = c._pure_bundle_violations(refs, bad)
+        cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
         self.assertIn("checks_compute", findings)
 
@@ -899,7 +899,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         c, refs = self._c_refs()
         bad = _valid_bundle()
         bad["files"][1]["content"] = "! no module here\n"
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
 
     def test_state_binding_fail_closed_when_ir_declares_no_snapshot(self) -> None:
@@ -915,7 +915,7 @@ class PureBundleViolationsTests(unittest.TestCase):
         ir_path.write_text(yaml.safe_dump(ir), encoding="utf-8")
         c = _conductor(repo)
         bad = _valid_bundle()
-        cat, _ = c._pure_bundle_violations(refs, bad)
+        cat, _ = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_state_binding_mismatch")
 
 
@@ -927,7 +927,7 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
-            ctx = _conductor(repo)._build_pure_context(refs)
+            ctx = _conductor(repo)._build_leaf_context(refs)
             staged = (repo / refs.source_dir() / "src"
                       / f"{_SPEC_ID}_runner.f90").read_text(encoding="utf-8")
             self.assertEqual(ctx["runner_document"], staged)
@@ -937,11 +937,11 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
     def test_controlled_spec_is_not_in_producer_context(self) -> None:
         # pure-10: the pure-5 interim carve-out was removed — the producer is spec-blind again
         # (phase_02 §2-1), so its context carries NO controlled_spec_document. The verify reviewer
-        # still reads controlled_spec.md by design (test_pure_leaf_verify.py).
+        # still reads controlled_spec.md by design (test_leaf_verify.py).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
-            ctx = _conductor(repo)._build_pure_context(refs)
+            ctx = _conductor(repo)._build_leaf_context(refs)
             self.assertNotIn("controlled_spec_document", ctx)
 
     def test_non_utf8_runner_raises_the_named_contract_not_a_bare_decode_error(self) -> None:
@@ -954,7 +954,7 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
             (repo / refs.source_dir() / "src" / f"{_SPEC_ID}_runner.f90").write_bytes(
                 b"program p\n  use x_checks, only: \xff\xfe bar\nend program\n")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_context(refs)
+                _conductor(repo)._build_leaf_context(refs)
             self.assertIn("pure_runner_document_missing", str(cm.exception))
 
     def test_missing_runner_raises_rather_than_shipping_a_blank_abi(self) -> None:
@@ -966,15 +966,15 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _write_node(repo, stage_runner=False)
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_context(refs)
+                _conductor(repo)._build_leaf_context(refs)
             self.assertIn("pure_runner_document_missing", str(cm.exception))
 
 
 class PureHarnessManifestNarrowingTests(unittest.TestCase):
     """The manifest a pure leaf is SHOWN must be the one it is JUDGED against (Codex review).
 
-    `_build_pure_context` used to inline the FULL `HARNESS_CAPABILITY_MANIFESTS` table while
-    `_pure_bundle_violations` negotiated only against the node's own infra dependency. With one
+    `_build_leaf_context` used to inline the FULL `HARNESS_CAPABILITY_MANIFESTS` table while
+    `_leaf_bundle_violations` negotiated only against the node's own infra dependency. With one
     registered harness the two coincide, so the defect is latent; these tests register a SECOND
     harness to make it live, which is the only way to reach the branch.
     """
@@ -995,15 +995,15 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_context_shows_only_the_nodes_own_harness(self) -> None:
-        shown = json.loads(self.c._build_pure_context(self.refs)["harness_capabilities"])
+        shown = json.loads(self.c._build_leaf_context(self.refs)["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]], [_HARNESS])
 
     def test_context_hides_another_harnesss_capabilities(self) -> None:
         # The live consequence: the prompt licenses `harness_registration` when the manifest it is
         # shown lists `state_registration@N`. Leaking another harness's token would license a
-        # requirement `_pure_bundle_violations` then rejects as `bundle_capability_unsatisfied` —
+        # requirement `_leaf_bundle_violations` then rejects as `bundle_capability_unsatisfied` —
         # a repair burn on a bundle the leaf could not know was unsatisfiable.
-        shown = json.loads(self.c._build_pure_context(self.refs)["harness_capabilities"])
+        shown = json.loads(self.c._build_leaf_context(self.refs)["harness_capabilities"])
         provided = {t for m in shown["manifests"] for t in m["provides"]}
         self.assertNotIn("trusted_reductions@1", provided)
         self.assertNotIn("async_device_resident@1", provided)
@@ -1012,10 +1012,10 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
     def test_context_and_gate_resolve_the_same_harness(self) -> None:
         # The invariant the fix rests on: one resolution, so the two cannot drift. Since
         # issue #284 that resolution is the TARGET's harness, not an IR direct dependency.
-        self.assertEqual(self.c._pure_harness_node_key(self.refs.node_key), _HARNESS)
-        shown = json.loads(self.c._build_pure_context(self.refs)["harness_capabilities"])
+        self.assertEqual(self.c._leaf_harness_node_key(self.refs.node_key), _HARNESS)
+        shown = json.loads(self.c._build_leaf_context(self.refs)["harness_capabilities"])
         self.assertEqual([m["node_key"] for m in shown["manifests"]],
-                         [self.c._pure_harness_node_key(self.refs.node_key)])
+                         [self.c._leaf_harness_node_key(self.refs.node_key)])
 
     def test_narrowing_is_fail_closed_for_an_unresolvable_harness(self) -> None:
         # None / unregistered => EMPTY manifests, mirroring `harness_provided_capabilities`'s
@@ -1032,11 +1032,11 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         precondition), not a None that would narrow to an empty manifest."""
         from tools.tests.target_fixtures import profile_with
         nk = self.refs.node_key
-        self.assertEqual(self.c._pure_harness_node_key(nk), _HARNESS)
+        self.assertEqual(self.c._leaf_harness_node_key(nk), _HARNESS)
         self.c.target_profile = profile_with(
             harness={"infrastructure_id": "harness_not_in_catalog"})
         with self.assertRaises(RuntimeError) as cm:
-            self.c._pure_harness_node_key(nk)
+            self.c._leaf_harness_node_key(nk)
         self.assertIn("does not resolve", str(cm.exception))
 
     def test_an_infrastructure_node_negotiates_against_its_own_manifest(self) -> None:
@@ -1044,7 +1044,7 @@ class PureHarnessManifestNarrowingTests(unittest.TestCase):
         shown and judged against is its own — resolved from the NODE_KEY, never from the
         target's harness (which a harness of another version would otherwise read as)."""
         own = "infrastructure/harness_gpu_next@0.1.0"
-        self.assertEqual(self.c._pure_harness_node_key(own), own)
+        self.assertEqual(self.c._leaf_harness_node_key(own), own)
 
     def test_full_document_still_carries_every_manifest(self) -> None:
         # The unnarrowed document is the canonical Z6 shape; narrowing is the leaf's projection
@@ -1063,8 +1063,8 @@ class PureMakefileTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _write_node(repo)
             c = _conductor(repo)
-            graph = c._build_pure_bundle_graph(refs, _valid_bundle())
-            mk = c._render_pure_makefile_from_graph(refs, graph)
+            graph = c._build_leaf_bundle_graph(refs, _valid_bundle())
+            mk = c._render_leaf_makefile_from_graph(refs, graph)
             self.assertIn(f"$(OBJDIR)/{_SPEC_ID}_model.o", mk)
             self.assertIn(f"$(OBJDIR)/{_SPEC_ID}_checks.o", mk)
             self.assertIn(f"$(OBJDIR)/{_SPEC_ID}_runner.o", mk)
@@ -1103,14 +1103,14 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         self.assertIsNone(self.ctx.violations(_valid_bundle()))
         bad = _valid_bundle()
         bad["capability_requirements"] = ["batched_cases@1", "state_registration@1"]
-        self.assertEqual(self.ctx.violations(bad), self.c._pure_bundle_violations(self.refs, bad))
+        self.assertEqual(self.ctx.violations(bad), self.c._leaf_bundle_violations(self.refs, bad))
 
     def test_the_control_file_is_the_pure_paths(self) -> None:
         doc = _valid_bundle()
         self.assertEqual(
             self.ctx.render_control_file(graph=self.ctx.build_graph(doc)),
-            self.c._render_pure_makefile_from_graph(
-                self.refs, self.c._build_pure_bundle_graph(self.refs, doc)))
+            self.c._render_leaf_makefile_from_graph(
+                self.refs, self.c._build_leaf_bundle_graph(self.refs, doc)))
 
     def test_the_toolchain_facts_are_the_gates(self) -> None:
         self.assertEqual(self.ctx.lint_preset, _backend_registry.linter_for_language("fortran"))
@@ -1342,7 +1342,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         refs2 = _write_node(repo2)
         c2 = _workshop_conductor(repo2)
         c2.envelopes = [_envelope(_valid_bundle())]
-        spec = c2._pure_producer_spec("generate")._replace(
+        spec = c2._leaf_producer_spec("generate")._replace(
             runner_host_authored=lambda _refs: False)
         _run_producer(c2, refs2, spec=spec)
         request2 = [cap["--request-json"] for sub, cap in c2.calls if sub == "record-launch"][-1]
@@ -1360,7 +1360,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertTrue((base / "src" / "Makefile").exists())
         meta = json.loads((base / "bundle_meta.json").read_text())
         self.assertEqual(meta["result"], "pass")
-        self.assertEqual(meta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(meta["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         self.assertEqual(meta["per_attempt"][0]["model"], "claude-opus-4-8")
         self.assertEqual(meta["per_attempt"][0]["model_provenance"], "result_envelope")
 
@@ -1772,7 +1772,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         many launches as the loop asks. Pinned on the launch count, the outcome's `attempts`,
         and the `bundle_meta` the outer route reads: one cold attempt plus exactly
         `MAX_BUNDLE_REPAIR_TURNS` repair turns."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         c, refs, oc = self._run([_envelope(bad)])
@@ -1798,7 +1798,7 @@ class PureProducerSubstepTests(unittest.TestCase):
                 finalized["did"] = True
                 return super().finalize_child(child_arid, reply_text, agent_run_json)
 
-            def _write_pure_bundle_artifacts(self, refs, doc, graph):  # type: ignore[override]
+            def _write_leaf_bundle_artifacts(self, refs, doc, graph):  # type: ignore[override]
                 raise OSError(28, "No space left on device")
 
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
@@ -1837,7 +1837,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         refs = _write_node(repo)
         c = _workshop_conductor(repo)
         c.envelopes = [_envelope(_valid_bundle())]
-        spec = c._pure_producer_spec("generate")._replace(
+        spec = c._leaf_producer_spec("generate")._replace(
             workshop_assemble=assemble_with_a_surrogate)
         oc = _run_producer(c, refs, spec=spec)  # persistently unencodable -> exhaustion
         self.assertEqual(oc.status, "fail")
@@ -1930,7 +1930,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         death must not overwrite the carriers — the guard above the wait — nor may the wait
         clear them). The re-run is a cold reuse in a NEW lineage seeded from the dead one's
         snapshot, never a resume of the dead session (`_WorkshopLineageMachine.after_transport`)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         quota = wc.ProcResult(1, "", "You've hit your weekly limit · resets 3pm (Asia/Tokyo)")
@@ -1992,7 +1992,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         repair early. On the workshop loop the retry is a cold reuse in a NEW lineage seeded
         from the dead one's snapshot, never a resume of the dead session
         (`_WorkshopLineageMachine.after_transport`: a leaf that died is not resumed)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         flake = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
@@ -2045,7 +2045,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         requests and not in `bundle_meta`'s `per_attempt`. The existing lineage row passes on its first cold
         repair, so it cannot see a dead turn that spent an `attempt`. Faked at `record_launch`,
         where production detects it, on the claude fake (see that row)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -2393,7 +2393,7 @@ class PureTransientWallClockBudgetScopeTest(unittest.TestCase):
     wall-clock. It must therefore be spent by TRANSIENT deaths and by nothing else: a content
     repair turn produced a document and is not what the budget is about, and a usage-limit wait
     can park for hours. Accumulating above those branches made one slow repair turn refuse the
-    very next cheap flake — the opposite of `_pure_transient_retry`'s own promise that the three
+    very next cheap flake — the opposite of `_leaf_transient_retry`'s own promise that the three
     budgets cannot compound."""
 
     class _C(PureUsageLimitWaitTest._C):
@@ -2525,7 +2525,7 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
         # normalization must keep every downstream write from raising even if a violation message
         # ever carried a lone surrogate. Force it by making the validator emit one.
         class _C(_WorkshopLeafFake):
-            def _pure_bundle_violations(self, refs, doc):  # type: ignore[override]
+            def _leaf_bundle_violations(self, refs, doc):  # type: ignore[override]
                 return ("bundle_schema_violation", "bad field value \ud800 here")
             def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 json.dumps(request, ensure_ascii=False).encode("utf-8")  # emulate prompt persist
@@ -2598,7 +2598,7 @@ class PureLaunchRequestTests(unittest.TestCase):
             self.assertEqual(req["leaf_mode"], "workshop")
             self.assertEqual((req["workshop_lineage_id"], req["workshop_provider"]),
                              ("c", "claude_cli"))
-            self.assertEqual(req["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+            self.assertEqual(req["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
             self.assertEqual(req["allowed_output_paths"], [])
             self.assertEqual(req["skill_name"], "")
             self.assertEqual(req["skill_ref"], "")
@@ -2741,7 +2741,7 @@ class PureProducerExemplarTests(unittest.TestCase):
 # Cold-repair prompt contract (M-C 修正4)
 # ======================================================================================
 class PureColdRepairPromptTests(unittest.TestCase):
-    """The producer's repair-turn render (`_render_pure_repair_prompt`), on a WORKSHOP request —
+    """The producer's repair-turn render (`_render_leaf_repair_prompt`), on a WORKSHOP request —
     the only host-rendered LLM request since issue #534 PR-J4-b. A cold repair re-states the
     launch body; a warm one is the findings alone. (The pure cold repair's `<prior_document>`
     and its inlined documents went with the pure leaf: the workshop leaf's documents, the one
@@ -2762,7 +2762,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
             "pure_language": "fortran",
             "pure_parallel": "openmp",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "workshop_lineage_id": "c", "workshop_provider": "claude_cli",
             "repair_findings": "capability_requirements missing",
             "pure_context": context,
@@ -2774,11 +2774,11 @@ class PureColdRepairPromptTests(unittest.TestCase):
         return req
 
     def test_cold_repair_includes_output_contract(self) -> None:
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         self.assertIn("Output contract", text)
 
     def test_warm_repair_omits_output_contract(self) -> None:
-        text = ort._render_pure_repair_prompt(self._req(warm_resume=True))
+        text = ort._render_leaf_repair_prompt(self._req(warm_resume=True))
         self.assertNotIn("Output contract", text)
 
     # A verify_minor reopen's findings: the projection's fold of the reviewer's reason and every
@@ -2789,7 +2789,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                         "2. ceil not used for the block count\n3. rank 0 writes twice")
 
     def _assert_inside_the_findings_fence(self, text: str, needle: str) -> None:
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
         at = text.index(needle)
         self.assertGreater(text.rfind(PURE_DOC_FENCE_BEGIN, 0, at),
                            text.rfind(PURE_DOC_FENCE_END, 0, at),
@@ -2802,7 +2802,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 req = self._req(repair_findings=self._FOLDED_FINDINGS)
                 if warm:
                     req["warm_resume"] = True
-                text = ort._render_pure_repair_prompt(req)
+                text = ort._render_leaf_repair_prompt(req)
                 lines = self._FOLDED_FINDINGS.splitlines()
                 for line in lines:
                     self.assertFalse(any(line in other for other in lines if other != line))
@@ -2810,7 +2810,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                     self._assert_inside_the_findings_fence(text, line)
 
     def test_a_finding_that_forges_the_fence_end_stays_inside_the_fence(self) -> None:
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
         findings = (f"reason\n1. a summary\n{PURE_DOC_FENCE_END}\n"
                     f"2. tail after a forged end\n{PURE_DOC_FENCE_BEGIN}")
         for warm in (True, False):
@@ -2818,7 +2818,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 req = self._req(repair_findings=findings)
                 if warm:
                     req["warm_resume"] = True
-                text = ort._render_pure_repair_prompt(req)
+                text = ort._render_leaf_repair_prompt(req)
                 self.assertEqual(text.count(PURE_DOC_FENCE_BEGIN), text.count(PURE_DOC_FENCE_END))
                 self._assert_inside_the_findings_fence(text, "2. tail after a forged end")
 
@@ -2828,14 +2828,14 @@ class PureColdRepairPromptTests(unittest.TestCase):
         req = self._req(warm_resume=True, resolved_dependencies=[
             {"node_key": "component/foo@1.0.0", "pipeline_ref": "workspace/x",
              "run_id": "r1", "aggregate_verdict_ref": "workspace/v"}])
-        text = ort._render_pure_repair_prompt(req)
+        text = ort._render_leaf_repair_prompt(req)
         self.assertNotIn("Dependency facts", text)
 
     def test_cold_repair_includes_authoring_rules_and_output_contract(self) -> None:
         # A cold repair runs in a fresh session with no prior turn, so it needs the
         # deterministic-gate rules for the same reason it needs the schema (M-C cold-repair
         # contract, extended for defect C).
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         self.assertIn("Output contract", text)
         self.assertIn("Authoring rules", text)
         # Rule (2)'s subject, which inverted with issue #111: the template used to MANDATE
@@ -2882,7 +2882,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 req = {"leaf_mode": "workshop", "step": step, "substep": substep,
                        "node_key": _HARNESS if shape == "harness" else _NODE,
                        "orchestration_id": "o", "agent_run_id": "c",
-                       "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                       "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                        "workshop_lineage_id": "c", "workshop_provider": "claude_cli",
                        "repair_findings": "x is missing",
                        "pure_context": {k: f"<{k} body>" for k in keys}}
@@ -2891,14 +2891,14 @@ class PureColdRepairPromptTests(unittest.TestCase):
                     req["pure_parallel"] = "openmp"
                 if shape:
                     req["pure_shape"] = shape
-                template = ort._pure_launch_template(req)
-                cold = ort._render_pure_repair_prompt(req)
+                template = ort._leaf_launch_template(req)
+                cold = ort._render_leaf_repair_prompt(req)
                 body = template.split("\n\n", 1)[1]
                 last = -1
                 for line in (ln.strip() for ln in body.splitlines()):
                     if not line or self._IDENTITY_LINE_RE.match(line):
                         continue
-                    self.assertIsNone(ort._PURE_PLACEHOLDER_RE.fullmatch(line), line)
+                    self.assertIsNone(ort._LEAF_PLACEHOLDER_RE.fullmatch(line), line)
                     self.assertEqual(cold.count(line), 1, f"{line[:70]!r} not exactly once")
                     at = cold.index(line)
                     self.assertGreater(at, last, f"out of template order: {line[:70]!r}")
@@ -2909,13 +2909,13 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 self.assertEqual(cold.count("\nOutput contract ("), 1)
                 self.assertNotIn("<launch_body>", cold)
                 # Line 0 is the repair template's own, which opens with the workshop sentinel.
-                from tools.pure_leaf import WORKSHOP_PROMPT_SENTINEL
+                from tools.leaf_contract import WORKSHOP_PROMPT_SENTINEL
                 self.assertTrue(cold.startswith(WORKSHOP_PROMPT_SENTINEL), cold[:80])
                 self.assertIn("repair turn for", cold.splitlines()[0])
                 # ... and the re-stated body is a byte slice of the cold launch prompt itself.
-                launch = ort._render_pure_launch_prompt(req)
-                self.assertIn(ort._pure_launch_body(req), launch)
-                self.assertIn(ort._pure_launch_body(req), cold)
+                launch = ort._render_leaf_launch_prompt(req)
+                self.assertIn(ort._leaf_launch_body(req), launch)
+                self.assertIn(ort._leaf_launch_body(req), cold)
                 # ... and what the slice drops is the launch's persona paragraph and its identity
                 # block, exactly: the repair carries its own of each, once.
                 persona = launch.split("\n\n", 1)[0]
@@ -2925,24 +2925,24 @@ class PureColdRepairPromptTests(unittest.TestCase):
                     self.assertEqual(cold.count(marker), 1, marker)
 
     def test_cold_repair_keeps_rule_text_that_mentions_placeholders(self) -> None:
-        # Only a line that is nothing but a slot is a slot (`_PURE_PLACEHOLDER_RE` is a
+        # Only a line that is nothing but a slot is a slot (`_LEAF_PLACEHOLDER_RE` is a
         # `fullmatch`). Rule text quoting a `<...>` metavariable — `use <module>, only:
         # <names>`, the `associate (unused_<name> => <name>)` binding — must reach the cold
         # repair; losing it would silently delete a rule from every cold repair.
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         self.assertIn("use <module>, only: <names>", text)
         self.assertIn("associate (unused_<name> => <name>); end associate", text)
 
     def test_cold_repair_leaks_no_document_placeholder(self) -> None:
         # No slot of the launch body the cold repair re-states may ship as a literal token.
-        text = ort._render_pure_repair_prompt(self._req())
+        text = ort._render_leaf_repair_prompt(self._req())
         for slot in ("<runner_document>", "<ir_document>", "<tests_document>", "<exemplar>",
                      "<tool_surface>", "<launch_body>", "<findings>"):
             self.assertNotIn(slot, text)
 
     def test_warm_repair_omits_authoring_rules(self) -> None:
         # The resumed session already holds the launch prompt's static prefix.
-        text = ort._render_pure_repair_prompt(self._req(warm_resume=True))
+        text = ort._render_leaf_repair_prompt(self._req(warm_resume=True))
         self.assertNotIn("Authoring rules", text)
         self.assertNotIn("--ignore-allow-comments", text)
 
@@ -3374,7 +3374,7 @@ class PureHarnessShapeTests(unittest.TestCase):
     against, and what the assembly declares as host glue."""
 
     #: The repository documents the harness contexts inline. Copied into the fixture repo the
-    #: way `test_pure_leaf_verify` seeds the checks contract: the builders read them off
+    #: way `test_leaf_verify` seeds the checks contract: the builders read them off
     #: `repo_root`, so the fixture's throwaway root has to carry them.
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
                   "docs/workflow/CHECKS_MODULE_CONTRACT.md",
@@ -3402,11 +3402,11 @@ class PureHarnessShapeTests(unittest.TestCase):
 
     def test_the_node_takes_the_harness_shape_and_both_generate_pairs_go_pure(self) -> None:
         self.assertEqual(self.c._bundle_shape(self.refs), "harness")
-        self.assertTrue(self.c._pure_leaf_substep(self.refs, "generate", "generate"))
-        self.assertTrue(self.c._pure_leaf_substep(self.refs, "generate", "verify"))
+        self.assertTrue(self.c._leaf_substep(self.refs, "generate", "generate"))
+        self.assertTrue(self.c._leaf_substep(self.refs, "generate", "verify"))
 
     def test_the_producer_context_carries_the_output_contract_not_a_runner(self) -> None:
-        ctx = self.c._build_pure_harness_context(self.refs)
+        ctx = self.c._build_leaf_harness_context(self.refs)
         self.assertEqual(
             sorted(ctx),
             sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
@@ -3424,7 +3424,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         with mock.patch.object(fortran_prompts, "runner_output_document",
                                side_effect=OSError("gone")):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_runner_output_binding_missing", str(caught.exception))
         # ...and the manifest it is shown is its OWN.
         shown = json.loads(ctx["harness_capabilities"])
@@ -3440,7 +3440,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         every code the gate selects is named in what the leaf is shown. A test that only checked
         non-emptiness is what let the previous document ship unnoticed."""
         from tools.backends.linter.fortitude import lint as fortitude
-        ctx = self.c._build_pure_harness_context(self.refs)
+        ctx = self.c._build_leaf_harness_context(self.refs)
         self.assertEqual(ctx["lint_rules_document"], fortitude.lint_rules_document())
         for code in fortitude.RULE_CODES:
             self.assertIn(code, ctx["lint_rules_document"], code)
@@ -3458,15 +3458,15 @@ class PureHarnessShapeTests(unittest.TestCase):
         from tools.backends import registry as backend_registry
         with mock.patch.object(backend_registry, "linter_for_language", lambda language: None):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
         with mock.patch.object(fortitude, "lint_rules_document", lambda: "   "):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
         with mock.patch.object(fortitude, "lint_rules_document", None):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("states no declared rule set", str(caught.exception))
         # The FOURTH branch, which a round-5 sweep found unwitnessed while the commit message
         # asserted "four named failure modes, all RAISING": a preset whose package does not
@@ -3475,7 +3475,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         with mock.patch.object(backend_registry, "linter_for_language",
                                lambda language: "cppcheck"):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_lint_rules_document_unavailable", str(caught.exception))
         self.assertIn("cppcheck", str(caught.exception))
 
@@ -3501,7 +3501,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         `_checks_contract_abi_sections` — handing the leaf §1-§4, the checks-module ABI this
         shape has no file for and the slicer's docstring says is excluded. Nothing noticed,
         because the only assertion was that the value was non-empty."""
-        ctx = self.c._build_pure_harness_context(self.refs)
+        ctx = self.c._build_leaf_harness_context(self.refs)
         # The target language's binding (issue #289): §5 of it is the gate-guard section.
         from tools.backends.language.fortran import checks_abi
         real = checks_abi.document()
@@ -3514,7 +3514,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         """The slicer runs to the END of its document, so a `## 6.` added above it would widen
         the slice silently — which is what every other slice's literal end anchor prevents. It
         raises instead, and BOTH refusals are driven here: a round-4 sweep deleted each of them
-        in turn and the whole suite stayed green, while `test_pure_prompt_contract_drift`'s
+        in turn and the whole suite stayed green, while `test_leaf_prompt_contract_drift`'s
         comment claimed the digest pinned them (the digest pins the slice's CONTENT under
         today's document, which has no §6 — it cannot see the guard).
 
@@ -3538,7 +3538,7 @@ class PureHarnessShapeTests(unittest.TestCase):
 
     def test_the_gate_guards_read_fails_CLOSED_in_both_directions(self) -> None:
         """The two RAISING reads the context builder added. Same shape as the reviewer's row in
-        `test_pure_leaf_verify`, and written because round 3 claimed both were driven and
+        `test_leaf_verify`, and written because round 3 claimed both were driven and
         neither was: soft-failing either one to `""` survived seven test files."""
         # The guards are the target language's binding since issue #289, read through its
         # `checks_abi` capability; the three ways that read fails are each a named refusal.
@@ -3550,19 +3550,19 @@ class PureHarnessShapeTests(unittest.TestCase):
 
         with mock.patch.object(checks_abi, "document", _unreadable):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_checks_abi_binding_missing", str(caught.exception))
         with mock.patch.object(checks_abi, "document",
                                lambda: body.replace("## 5. ", "## Five ", 1)):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_gate_guards_document_unsliceable", str(caught.exception))
         from tools.backends import registry as backend_registry
         record = backend_registry.get("language", "fortran")
         with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
                 backend_provides=record.backend_provides - {"checks_abi"})}):
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_context(self.refs)
+                self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_checks_abi_binding_unavailable", str(caught.exception))
 
     def test_the_producer_context_raises_when_the_contract_is_unreadable(self) -> None:
@@ -3572,10 +3572,10 @@ class PureHarnessShapeTests(unittest.TestCase):
         refusal one frame into `record_launch` and abort the conductor instead."""
         (self.repo / "docs/workflow/RUNNER_OUTPUT_CONTRACT.md").unlink()
         with self.assertRaises(RuntimeError) as caught:
-            self.c._build_pure_harness_context(self.refs)
+            self.c._build_leaf_harness_context(self.refs)
         self.assertIn("pure_runner_output_contract_document_missing", str(caught.exception))
         with self.assertRaises(RuntimeError) as caught2:
-            self.c._build_pure_harness_verify_context(self.refs)
+            self.c._build_leaf_harness_verify_context(self.refs)
         self.assertIn("pure_runner_output_contract_document_missing", str(caught2.exception))
 
     def test_both_contexts_raise_when_a_node_artifact_is_unreadable(self) -> None:
@@ -3584,13 +3584,13 @@ class PureHarnessShapeTests(unittest.TestCase):
         `pure_context_assembly_failed`. Until then all four degraded to `""`."""
         rows = (
             (f"{self.refs.ir_ref}/spec.ir.yaml", "pure_ir_document_missing",
-             (self.c._build_pure_harness_context, self.c._build_pure_harness_verify_context)),
+             (self.c._build_leaf_harness_context, self.c._build_leaf_harness_verify_context)),
             (f"{self.refs.spec_path}/tests.md", "pure_tests_document_missing",
-             (self.c._build_pure_harness_context, self.c._build_pure_harness_verify_context)),
+             (self.c._build_leaf_harness_context, self.c._build_leaf_harness_verify_context)),
             (f"{self.refs.spec_path}/controlled_spec.md", "pure_controlled_spec_document_missing",
-             (self.c._build_pure_harness_verify_context,)),
+             (self.c._build_leaf_harness_verify_context,)),
             (f"{self.refs.source_dir()}/codegen_bundle.json", "pure_bundle_document_missing",
-             (self.c._build_pure_harness_verify_context,)),
+             (self.c._build_leaf_harness_verify_context,)),
         )
         for rel, marker, builders in rows:
             target = self.repo / rel
@@ -3606,7 +3606,7 @@ class PureHarnessShapeTests(unittest.TestCase):
                 target.write_bytes(body)
 
     def test_the_verify_context_carries_the_output_contract_not_the_checks_abi(self) -> None:
-        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        ctx = self.c._build_leaf_harness_verify_context(self.refs)
         # The reviewer is shown the same runner-output document the producer wrote against:
         # the neutral contract followed by the target language's binding (issue #289).
         from tools.backends.language.fortran import prompts as fortran_prompts
@@ -3618,7 +3618,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         self.assertNotIn("checks_module_contract_document", ctx)
 
     def test_the_assembly_declares_no_host_glue(self) -> None:
-        graph = self.c._build_pure_bundle_graph(self.refs, _harness_bundle())
+        graph = self.c._build_leaf_bundle_graph(self.refs, _harness_bundle())
         sources = [str(u["source"]) for u in graph["compile_units"]]
         self.assertEqual([s for s in sources if s.startswith("glue:")], [])
         self.assertIn(f"bundle:{_HARNESS_SPEC_ID}_runner.f90", sources)
@@ -3629,12 +3629,12 @@ class PureHarnessShapeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
-            m3c = _conductor(repo)._build_pure_bundle_graph(refs, _valid_bundle())
+            m3c = _conductor(repo)._build_leaf_bundle_graph(refs, _valid_bundle())
         self.assertIn(f"glue:{_SPEC_ID}_runner.f90",
                       [str(u["source"]) for u in m3c["compile_units"]])
 
     def test_the_acceptance_layer_takes_the_harness_shape(self) -> None:
-        self.assertIsNone(self.c._pure_bundle_violations(self.refs, _harness_bundle()))
+        self.assertIsNone(self.c._leaf_bundle_violations(self.refs, _harness_bundle()))
 
     def test_a_checks_bearing_bundle_is_refused_on_this_shape(self) -> None:
         doc = _harness_bundle()
@@ -3643,7 +3643,7 @@ class PureHarnessShapeTests(unittest.TestCase):
              "language": "fortran", "member_node_key": _HARNESS,
              "content": "module x\nend module x\n",
              "modules": [f"{_HARNESS_SPEC_ID}_checks"]})
-        result = self.c._pure_bundle_violations(self.refs, doc)
+        result = self.c._leaf_bundle_violations(self.refs, doc)
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "bundle_shape_unsupported")
 
@@ -3659,13 +3659,13 @@ class PureHarnessShapeTests(unittest.TestCase):
                 {"logical_path": f"{_SPEC_ID}_extra_runner.f90", "role": "runner",
                  "language": "fortran", "member_node_key": _NODE,
                  "content": "program p\nend program\n", "modules": []})
-            result = c._pure_bundle_violations(refs, doc)
+            result = c._leaf_bundle_violations(refs, doc)
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "bundle_shape_unsupported")
         self.assertIn("host-rendered glue", result[1])
 
     def test_the_launch_request_stamps_the_shape_and_the_real_authorship(self) -> None:
-        spec = self.c._pure_producer_spec("generate", self.c._bundle_shape(self.refs))
+        spec = self.c._leaf_producer_spec("generate", self.c._bundle_shape(self.refs))
         self.assertEqual(spec.pure_shape, "harness")
         self.assertFalse(spec.wants_exemplar)
         runner_ha = spec.runner_host_authored(self.refs)
@@ -3680,19 +3680,19 @@ class PureHarnessShapeTests(unittest.TestCase):
             pure_shape=spec.pure_shape,
             # as `run_substep` passes it: the harness template carries a language fragment
             # since the R4-b PR-4 preconditions (issue #289)
-            pure_language=self.c._pure_language("generate"),
-            pure_parallel=self.c._pure_parallel("generate"),
-            pure_context=self.c._build_pure_harness_context(self.refs),
+            pure_language=self.c._leaf_language("generate"),
+            pure_parallel=self.c._leaf_parallel("generate"),
+            pure_context=self.c._build_leaf_harness_context(self.refs),
             workshop_lineage_id="c", workshop_provider="claude_cli")
         self.assertEqual(req["pure_shape"], "harness")
         self.assertNotIn("runner_host_authored", req)
         ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
 
     def test_the_reviewer_spec_takes_the_harness_shape(self) -> None:
-        spec = self.c._pure_reviewer_spec("generate", "verify", "harness")
+        spec = self.c._leaf_reviewer_spec("generate", "verify", "harness")
         self.assertEqual(spec.pure_shape, "harness")
         self.assertIs(spec.build_context.__func__,
-                      wc.Conductor._build_pure_harness_verify_context)
+                      wc.Conductor._build_leaf_harness_verify_context)
 
     def test_the_tamper_gate_admits_no_undeclared_source_on_this_shape(self) -> None:
         """C8: the `m3c` carve-out for the host-rendered runner is CLOSED here — the runner is
@@ -3799,7 +3799,7 @@ class CudaCppHarnessTests(unittest.TestCase):
 
     def test_the_node_takes_the_harness_shape_and_both_generate_pairs_go_pure(self) -> None:
         self.assertEqual("harness", self.c._bundle_shape(self.refs))
-        self.assertTrue(self.c._pure_leaf_substep(self.refs, "generate", "generate"))
+        self.assertTrue(self.c._leaf_substep(self.refs, "generate", "generate"))
 
     def test_the_host_authors_the_makefile_and_the_header(self) -> None:
         self.assertEqual({"Makefile", f"{_HARNESS_SPEC_ID}_model.cuh"},
@@ -3820,8 +3820,8 @@ class CudaCppHarnessTests(unittest.TestCase):
                  "content": "int main() { return 0; }\n", "modules": []},
             ],
         }
-        graph = self.c._build_pure_bundle_graph(self.refs, doc)
-        self.c._write_pure_bundle_artifacts(self.refs, doc, graph)
+        graph = self.c._build_leaf_bundle_graph(self.refs, doc)
+        self.c._write_leaf_bundle_artifacts(self.refs, doc, graph)
         src = self.repo / self.refs.source_dir() / "src"
         self.assertEqual(cpp_header.render(_HARNESS_SPEC_ID, self.public_api,
                                            spec_kind="infrastructure"),

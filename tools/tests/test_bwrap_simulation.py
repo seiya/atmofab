@@ -2,9 +2,10 @@
 
 Fast (seconds, no LLM, no billed API) reproduction of what a leaf can and cannot reach under
 the rendered profile `record_launch` writes — since issue #534 PR-J4-b the one profile is a
-`workshop leaf` lineage's (`build_readonly_bwrap_profile` with `leaf_mode: workshop`, its
+`workshop leaf` lineage's (`build_lineage_bwrap_profile` with `leaf_mode: workshop`, its
 cwd the lineage's tree, its two rw binds the lineage's `config/` and `tree/`; the read-only
-profile the pure leaf ran under is refused, and the builder keeps its old name until J4-d).
+profile the pure leaf ran under is refused; the builder was `build_readonly_bwrap_profile`
+until PR-J4-d).
 A synthetic "leaf" script runs inside the sandbox and reports one line per operation, so each
 reachability claim is measured rather than argued; the classes further down exec the real
 claude / codex CLI under the same profile against loopback API stand-ins, and the workshop
@@ -40,7 +41,7 @@ from tools import orchestration_runtime as ort
 from tools import workflow_conductor as wc
 from tools.orchestration_runtime import (
     _ensure_orchestration_audit_dirs,
-    build_readonly_bwrap_profile,
+    build_lineage_bwrap_profile,
     render_bwrap_command,
 )
 from tools.tests import skip_probes
@@ -176,12 +177,12 @@ def _prepared_lineage(test: unittest.TestCase, repo: Path, orch: str, backend: s
     return iso, ort.claude_workshop_profile_kwargs(iso)
 
 
-class BwrapReadonlyProfileTests(unittest.TestCase):
-    """Every leaf runs under the one bwrap profile `build_readonly_bwrap_profile` builds —
+class BwrapLineageProfileTests(unittest.TestCase):
+    """Every leaf runs under the one bwrap profile `build_lineage_bwrap_profile` builds —
     since issue #534 PR-J4-b the `workshop leaf` lineage's (`leaf_mode: workshop`, writable,
-    its cwd the lineage's tree; the read-only profile the pure leaf ran under is refused, and
-    the function and this class keep their names until J4-d because `docs/BWRAP_ENABLEMENT.md`
-    and the runtime cite them). No capability, no write_roots, and since issue #227 NO
+    its cwd the lineage's tree; the read-only profile the pure leaf ran under is refused; the
+    function and this class were `build_readonly_bwrap_profile` / `BwrapReadonlyProfileTests`
+    until PR-J4-d). No capability, no write_roots, and since issue #227 NO
     CHECKOUT: an empty tmpfs sits at `repo_root`. Confirm the rendered sandbox hides the
     repository from the leaf, keeps the leaf's own `workspace/tmp/<arid>` writable, keeps the
     network, leaves the host's copy untouched, does not mount a sibling lineage, and refuses an
@@ -266,7 +267,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             _ensure_orchestration_audit_dirs(repo, orch)
             (repo / "AGENTS_SIM.md").write_text("orig\n", encoding="utf-8")
             _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
-            profile = build_readonly_bwrap_profile(
+            profile = build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="claude", **kwargs)
             self.assertEqual(profile.get("write_roots"), [])
@@ -352,7 +353,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                 (repo / rel).parent.mkdir(parents=True, exist_ok=True)
                 (repo / rel).write_text(body, encoding="utf-8")
             _iso, kwargs = _prepared_lineage(self, repo, orch, "codex")
-            profile = build_readonly_bwrap_profile(
+            profile = build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command="python3", backend_type="codex", **kwargs)
             # The leaf starts in its tree; the probe reads at the checkout's path.
@@ -423,7 +424,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             orch, arid = f"orch_{cli}", f"arid_{cli}"
             _ensure_orchestration_audit_dirs(repo, orch)
             _iso, kwargs = _prepared_lineage(self, repo, orch, backend_type)
-            profile = build_readonly_bwrap_profile(
+            profile = build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command=cli, backend_type=backend_type, **kwargs)
             out = _bwrap_stdout(render_bwrap_command(profile=profile,
@@ -456,7 +457,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         os.environ["ATMOFAB_WORKFLOW_HOMES_ROOT"] = str(d / f"homes_{uuid.uuid4().hex}")
         iso = ort._prepare_codex_workflow_home(repo, "o", uuid.uuid4().hex, resume=False)
         try:
-            profile = ort.build_readonly_bwrap_profile(
+            profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
                 **ort.codex_workshop_profile_kwargs(iso))
@@ -736,7 +737,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             llm_config=sample_config_with(backend, agent_model=model), env={})
         argv = conductor.leaf_command(conductor.entry_for("validate", "judge"),
                                       session_id=arid, reading=True)
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command=backend, backend_type=backend, **kwargs)
         return argv, profile, repo
@@ -855,7 +856,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertEqual(argv[-2:], ["--json", "-"])
         overrides = [*self._LOOPBACK_OVERRIDES,
                      "--config", f'model_providers.loopback.base_url="{server.base_url}/v1"']
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(isolation))
@@ -937,7 +938,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             except OSError as e:
                 print("HOME_A:" + type(e).__name__, flush=True)
         """)
-        profile_b = build_readonly_bwrap_profile(
+        profile_b = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_b,
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(iso_b))
@@ -952,7 +953,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertNotIn("HOME_A:LISTED", out, out)
         # CONTROL for the probe itself: the same probe under A's OWN profile sees the marker,
         # so a probe that could not read anything would not pass the row above.
-        profile_a = build_readonly_bwrap_profile(
+        profile_a = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_a,
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(iso_a))
@@ -1048,7 +1049,7 @@ class ClaudeSettingsIsolationTests(unittest.TestCase):
     """
 
     def _request(self, settings: dict, extra: list[str], *, restricted: bool = True) -> list:
-        from tools.pure_leaf import workshop_leaf_flags
+        from tools.leaf_contract import workshop_leaf_flags
         flags = workshop_leaf_flags(None, reading=True)
         self.assertEqual(flags[0], "--restricted")
         if not restricted:
@@ -1265,7 +1266,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         from types import SimpleNamespace
 
         from tools.llm_workshop_loop import LoopHistory, file_tool, run_workshop_loop
-        from tools.pure_leaf import HTTP_FILE_TOOL_DECLARATIONS, HTTP_FILE_TOOLS
+        from tools.leaf_contract import HTTP_FILE_TOOL_DECLARATIONS, HTTP_FILE_TOOLS
         from tools.tests.http_stand_ins import tool_use
         from tools.workshop_mcp import TOOL_DEFINITIONS
 
@@ -1548,13 +1549,13 @@ class WorkshopLeafCliTests(unittest.TestCase):
     def _launch(self, api: _ScriptedApi, server, *, session: str,
                 resume: str | None = None, restricted: bool = True,
                 arid: str | None = None) -> subprocess.CompletedProcess:
-        from tools.pure_leaf import workshop_mcp_config_json
+        from tools.leaf_contract import workshop_mcp_config_json
         argv = self.conductor.leaf_command(
             self.entry, session_id=session, resume_session_id=resume,
             mcp_config_json=workshop_mcp_config_json(server.url))
         if not restricted:
             argv.remove("--restricted")
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=arid or session,
             backend_command="claude", backend_type="claude",
             **ort.claude_workshop_profile_kwargs(self.iso))
@@ -1777,7 +1778,7 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
 
     def _read_launch(self, api: _ScriptedApi, *, session: str) -> subprocess.CompletedProcess:
         argv = self.reader.leaf_command(self.reader_entry, session_id=session, reading=True)
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
             backend_command="claude", backend_type="claude",
             **ort.claude_workshop_profile_kwargs(self.iso))
@@ -1853,7 +1854,7 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         argv = self.reader.leaf_command(entry, session_id="s", reading=True)
         self.assertNotIn("--mcp-config", argv)
         session = str(uuid.uuid4())
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
             backend_command="claude", backend_type="claude",
             **ort.claude_workshop_profile_kwargs(self.iso))
@@ -2054,7 +2055,7 @@ class _CodexLeafCliCase(unittest.TestCase):
             assert server is None, "a reading lineage is served no endpoint"
             return self.conductor.leaf_command(
                 self.entry, session_id=self.lineage, resume_session_id=resume, reading=True)
-        from tools.pure_leaf import workshop_mcp_config_json
+        from tools.leaf_contract import workshop_mcp_config_json
         return self.conductor.leaf_command(
             self.entry, session_id=self.lineage, resume_session_id=resume,
             mcp_config_json=workshop_mcp_config_json(server.url))
@@ -2070,7 +2071,7 @@ class _CodexLeafCliCase(unittest.TestCase):
                      "--config", 'model_providers.loopback.name="loopback"',
                      "--config", f'model_providers.loopback.base_url="{api.base_url}/v1"',
                      "--config", 'model_providers.loopback.wire_api="responses"']
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=str(uuid.uuid4()),
             backend_command="codex", backend_type="codex",
             **ort.codex_workshop_profile_kwargs(self.iso))
@@ -2254,7 +2255,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
     no endpoint) of a codex `validate.judge` entry under the same rendered profile — against
     the scripted Responses-API stand-in. MR5-a: no `mcp__` tool; MR5-b: a document a command
     writes lands and assembles; MR5-c: what a large read returns (the ground of the codex
-    reader row's paging rule, `pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT`); MR5-d: a warm
+    reader row's paging rule, `leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT`); MR5-d: a warm
     repair resumes the thread."""
 
     CONFIG = ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-5.6-sol}\nphases: {validate: "
@@ -2291,8 +2292,8 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         """MR5-b: a command writes `review.json` (a schema-valid semantic review) at the tree
         root and rewrites the `tests.md` seed; the snapshot holds the review and no seed, and
         the spec's assembly returns the document, which the review validator accepts."""
-        from tools import pure_leaf, workshop_tree
-        from tools.tests.test_pure_leaf_judge import _review
+        from tools import leaf_contract, workshop_tree
+        from tools.tests.test_leaf_judge import _review
         self.paths.make_work_dirs()
         workshop_tree.seed_tree(self.paths, {"tests.md": "# tests\n",
                                              "host_verdict.json": "{}\n"})
@@ -2309,10 +2310,10 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
             ("tests.md", "host_verdict.json"), None, ("review.json",)) - {"review.json"}
         workshop_tree.snapshot_tree(self.paths, host_placed)
         self.assertEqual(sorted(p.name for p in self.paths.snapshot.iterdir()), ["review.json"])
-        spec = self.conductor._pure_reviewer_spec("validate", "judge")
+        spec = self.conductor._leaf_reviewer_spec("validate", "judge")
         assembled = spec.workshop_assemble(self.paths.snapshot, ())
         self.assertEqual(assembled, review)
-        self.assertEqual(pure_leaf.semantic_review_document_violations(assembled), [])
+        self.assertEqual(leaf_contract.semantic_review_document_violations(assembled), [])
 
     def test_mr5c_a_large_read_reaches_the_model_with_its_middle_removed(self) -> None:
         """MR5-c: a 600,000-byte, 20,000-line file. Inside the JS `exec` tool a `cat`'s
@@ -2320,7 +2321,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         `Warning: truncated output` header with the total line count, the first and the LAST
         lines kept, the middle elided at an inline `tokens truncated` marker. A line range read
         with `sed -n` comes back whole. If a CLI version moves this cut, the codex reader row's
-        paging sentence (`pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]`) must be
+        paging sentence (`leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]`) must be
         re-measured with it."""
         lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
         (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -2343,7 +2344,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertIn("output", whole["keys"])
         seen = api.tool_output(2)
         msg = ("the codex output cut moved: re-measure the codex reader row's paging sentence "
-               "(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT['codex_cli'])")
+               "(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT['codex_cli'])")
         self.assertIn("Warning: truncated output", seen, msg)
         self.assertIn("Total output lines: 20000", seen, msg)
         self.assertIn("tokens truncated", seen, msg)
@@ -2353,10 +2354,10 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertLess(len(seen), 100000, msg)
         # The codex reader row states the cut by the markers measured here, and pages through
         # the host's helper (MR6), not a line range (PR-J3-a).
-        from tools import pure_leaf
-        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        from tools import leaf_contract
+        row = leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
         for marker in ("Warning: truncated output", "tokens truncated",
-                       f"python3 {pure_leaf.CODEX_READ_HELPER_NAME} <file>"):
+                       f"python3 {leaf_contract.CODEX_READ_HELPER_NAME} <file>"):
             self.assertIn(marker, row, msg)
         ranged = api.tool_output(3)
         for i in range(9000, 9101):
@@ -2387,12 +2388,12 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         the byte rule is `bytes > CODEX_EXEC_OUTPUT_BUDGET_BYTES`; (v) the rollout reader
         counts exactly the cut texts — the raised-budget one by its size, since the rollout
         records it whole (the cut is applied on the way to the model). If a CLI version moves
-        any of this, the codex reader row and the byte rule (`pure_leaf.CODEX_*`) move with
+        any of this, the codex reader row and the byte rule (`leaf_contract.CODEX_*`) move with
         it."""
-        from tools import codex_rollout, pure_leaf
+        from tools import codex_rollout, leaf_contract
         lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
         (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        rule = leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_BYTES
         (self.tree / "edge.txt").write_text("y" * (rule - 1) + "\n", encoding="utf-8")
         (self.tree / "over.txt").write_text("y" * rule + "\n", encoding="utf-8")
         (self.tree / "mid.txt").write_text("m" * 20999 + "\n", encoding="utf-8")
@@ -2425,10 +2426,10 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         seen = [api.tool_output(n) for n in range(1, len(calls) + 1)]
         msg = ("the codex output cut moved: re-measure the codex reader row and the byte rule "
-               "(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT['codex_cli'], CODEX_*)")
+               "(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT['codex_cli'], CODEX_*)")
         probe = json.loads(seen[0][seen[0].index("{"):seen[0].rindex("}") + 1])
         self.assertEqual(probe, {"sw": True, "otc": 150000}, msg)
-        self.assertEqual(probe["otc"], -(-600000 // pure_leaf.CODEX_BYTES_PER_TOKEN), msg)
+        self.assertEqual(probe["otc"], -(-600000 // leaf_contract.CODEX_BYTES_PER_TOKEN), msg)
         self.assertIn("Warning: truncated output (original token count: 150000)\\n", seen[1])
         self.assertIn("Warning: truncated output", seen[2], msg)
         self.assertIn('"len":600000', seen[3], msg)
@@ -2487,9 +2488,9 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         import subprocess as sp
         import sys as _sys
 
-        from tools import codex_rollout, pure_leaf
-        helper = pure_leaf.CODEX_READ_HELPER_NAME
-        (self.tree / helper).write_text(pure_leaf.CODEX_READ_HELPER_TEXT, encoding="utf-8")
+        from tools import codex_rollout, leaf_contract
+        helper = leaf_contract.CODEX_READ_HELPER_NAME
+        (self.tree / helper).write_text(leaf_contract.CODEX_READ_HELPER_TEXT, encoding="utf-8")
         lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
         (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
         model = (Path(__file__).parent / "data" / "channel_aliased_dependency_calls"
@@ -2529,7 +2530,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         seen = [api.tool_output(n).split("Output:\n", 1)[1] for n in range(1, len(calls) + 1)]
         msg = ("a read.py page did not reach the model whole: lower "
-               "pure_leaf.CODEX_READ_ADVICE_BYTES (the page), not the byte rule")
+               "leaf_contract.CODEX_READ_ADVICE_BYTES (the page), not the byte rule")
         self.assertEqual([codex_rollout.text_is_cut(s) for s in seen],
                          [False, False, True, False, False, False, False], msg)
         self.assertEqual(seen[0].rstrip("\n"), first.rstrip("\n"), msg)
@@ -2540,7 +2541,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
             got = json.loads(seen[n][seen[n].index("{"):seen[n].rindex("}") + 1])
             # Both seeds are ASCII, so `len` is the page's bytes; the count is `ceil(bytes /
             # CODEX_BYTES_PER_TOKEN)` at the lowered budget too, and under it.
-            self.assertEqual(got["otc"], -(-got["len"] // pure_leaf.CODEX_BYTES_PER_TOKEN),
+            self.assertEqual(got["otc"], -(-got["len"] // leaf_contract.CODEX_BYTES_PER_TOKEN),
                              (n, got, msg))
             self.assertLess(got["otc"], 7500, (n, got, msg))
         thread = self._thread_id(res.stdout)
@@ -2548,7 +2549,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         commands: list[tuple[str, int]] = []
         for line in res.stdout.splitlines():
             wc._codex_command_output(line, wc._parse_codex_line(line), commands)
-        rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        rule = leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_BYTES
         self.assertEqual([size > rule for _c, size in commands],
                          [False, False, True, False, False, False, False], msg)
 

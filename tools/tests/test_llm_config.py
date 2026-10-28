@@ -1689,7 +1689,7 @@ class WorkshopEntryTests(_Tmp):
                 self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
 
     def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
-        from tools import pure_leaf
+        from tools import leaf_contract
         # Every LLM pair is a workshop pair (issue #534 PR-J4-b): the union of the two kinds
         # is `LLM_LEAF_SUBSTEPS`, with no pair left over for a second leaf model.
         self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
@@ -1697,14 +1697,14 @@ class WorkshopEntryTests(_Tmp):
         # The validator's set holds the `escalate` diagnostician's pairs too (issue #534
         # PR-J4-a), a reading launch no operator assigns: `defaults` serves it.
         self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS,
-                         pure_leaf.WORKSHOP_LAUNCH_PAIRS - pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
-        self.assertEqual(pure_leaf.WORKSHOP_READING_LAUNCH_PAIRS,
-                         pure_leaf.WORKSHOP_READING_PAIRS | pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
-        self.assertFalse(lc.WORKSHOP_LEAF_SUBSTEPS & pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
-        self.assertEqual(lc.WORKSHOP_PRODUCING_SUBSTEPS, pure_leaf.WORKSHOP_PRODUCING_PAIRS)
-        self.assertEqual(lc.WORKSHOP_READING_SUBSTEPS, pure_leaf.WORKSHOP_READING_PAIRS)
+                         leaf_contract.WORKSHOP_LAUNCH_PAIRS - leaf_contract.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertEqual(leaf_contract.WORKSHOP_READING_LAUNCH_PAIRS,
+                         leaf_contract.WORKSHOP_READING_PAIRS | leaf_contract.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertFalse(lc.WORKSHOP_LEAF_SUBSTEPS & leaf_contract.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertEqual(lc.WORKSHOP_PRODUCING_SUBSTEPS, leaf_contract.WORKSHOP_PRODUCING_PAIRS)
+        self.assertEqual(lc.WORKSHOP_READING_SUBSTEPS, leaf_contract.WORKSHOP_READING_PAIRS)
         self.assertEqual(lc.WORKSHOP_READING_PROVIDERS,
-                         frozenset(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT))
+                         frozenset(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT))
         # The retired leaf-model vocabulary is gone from the configuration module.
         for retired in ("LEAF_PURE", "LEAF_WORKSHOP", "LEAF_MODELS", "CAP_PURE",
                         "WORKSHOP_BOUND_FIELDS"):
@@ -1876,7 +1876,7 @@ class MirrorTableDriftTests(unittest.TestCase):
         self.assertEqual(lc.LLM_LEAF_PHASES, frozenset({"compile", "generate", "validate"}))
 
     def test_llm_leaf_substeps_all_have_a_pure_path_in_the_conductor(self) -> None:
-        """Runs `Conductor._pure_leaf_substep` itself (on a stub whose node-shape predicate
+        """Runs `Conductor._leaf_substep` itself (on a stub whose node-shape predicate
         answers a shape), so the pair test in that body is what is being compared — not a copy
         of it. Since Z4 (issue #171) every LLM leaf must answer True on a shaped node: there is
         no second transport for one that does not.
@@ -1890,7 +1890,7 @@ class MirrorTableDriftTests(unittest.TestCase):
             # token and a per-launch entry), so the guard does not depend on which one the
             # predicate reads — since Z4 it reads neither (the capability is a load-time rule).
             backend = "claude"
-            _pure_leaf_substep = wc.Conductor._pure_leaf_substep
+            _leaf_substep = wc.Conductor._leaf_substep
 
             def _bundle_shape(self, refs):  # noqa: D401 - stub
                 return "m3c"
@@ -1903,7 +1903,7 @@ class MirrorTableDriftTests(unittest.TestCase):
         stub = _Stub()
         derived = {
             (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
-            if stub._pure_leaf_substep(None, phase, substep)
+            if stub._leaf_substep(None, phase, substep)
         }
         self.assertEqual(derived, set(lc.LLM_LEAF_SUBSTEPS))
 
@@ -1912,13 +1912,13 @@ class MirrorTableDriftTests(unittest.TestCase):
         the two COMPILE pairs and the judge stay admissible there — the Compile contract does
         not depend on the node kind, and no IR exists at `compile.generate` time to read a shape
         from — so this row is what separates the pair test from the shape test in
-        `_pure_leaf_substep`'s body. Without it, replacing the shape-free arm with the generate
+        `_leaf_substep`'s body. Without it, replacing the shape-free arm with the generate
         arm's shape condition stays green. No in-tree node answers None since issue #169; this
         is the hand-crafted-IR fail-safe."""
 
         class _Stub:
             backend = "claude"
-            _pure_leaf_substep = wc.Conductor._pure_leaf_substep
+            _leaf_substep = wc.Conductor._leaf_substep
 
             def _bundle_shape(self, refs):  # noqa: D401 - stub
                 return None
@@ -1931,7 +1931,7 @@ class MirrorTableDriftTests(unittest.TestCase):
         stub = _Stub()
         derived = {
             (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
-            if stub._pure_leaf_substep(None, phase, substep)
+            if stub._leaf_substep(None, phase, substep)
         }
         self.assertEqual(derived, {("compile", "generate"), ("compile", "verify"),
                                    ("validate", "judge")})
@@ -1942,7 +1942,7 @@ class MirrorTableDriftTests(unittest.TestCase):
 
         class _Stub:
             backend = "claude"
-            _pure_leaf_substep = wc.Conductor._pure_leaf_substep
+            _leaf_substep = wc.Conductor._leaf_substep
 
             def _bundle_shape(self, refs):  # noqa: D401 - stub
                 return "harness"
@@ -1955,7 +1955,7 @@ class MirrorTableDriftTests(unittest.TestCase):
         stub = _Stub()
         derived = {
             (phase, substep) for (phase, substep) in lc.LLM_LEAF_SUBSTEPS
-            if stub._pure_leaf_substep(None, phase, substep)
+            if stub._leaf_substep(None, phase, substep)
         }
         self.assertEqual(derived, set(lc.LLM_LEAF_SUBSTEPS))
 

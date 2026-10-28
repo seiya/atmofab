@@ -809,7 +809,7 @@ class ProseCouplingTests(unittest.TestCase):
         not hold them to SAYING what the rule is — measured on the round-3 attack: replacing the
         prohibition with its exact opposite ("an allow comment is the accepted way to clear a
         stubborn style finding") in all three agentic sites passed 1294 tests. The pure path was
-        pinned by a token literal in `test_pure_leaf_wiring.py`; the agentic path, including the
+        pinned by a token literal in `test_leaf_wiring.py`; the agentic path, including the
         document every `generate` leaf is force-read, was not.
 
         The literal is DERIVED from `CHECK_FLAGS`, so renaming the flag breaks the code and the

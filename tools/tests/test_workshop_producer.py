@@ -25,8 +25,8 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.tests import llm_samples
-from tools import pure_leaf, workshop_tree
-from tools.tests.test_pure_leaf_producer import (
+from tools import leaf_contract, workshop_tree
+from tools.tests.test_leaf_producer import (
     _PureFakeConductor,
     _SPEC_ID,
     _valid_bundle,
@@ -222,7 +222,7 @@ class HappyPathTests(_Base):
         meta = self.bundle_meta()
         self.assertEqual(meta["result"], "pass")
         self.assertEqual(meta["leaf_mode"], "workshop")
-        self.assertEqual(meta["prompt_contract_version"], pure_leaf.PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(meta["prompt_contract_version"], leaf_contract.LEAF_PROMPT_CONTRACT_VERSION)
         # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
         self.assertNotIn("workshop_prompt_contract_version", meta)
         row = meta["per_attempt"][0]
@@ -236,12 +236,12 @@ class HappyPathTests(_Base):
         self.assertEqual(request["leaf_mode"], "workshop")
         self.assertEqual(request["workshop_lineage_id"], "child-1")
         self.assertEqual(request["prompt_contract_version"],
-                         pure_leaf.PURE_PROMPT_CONTRACT_VERSION)
+                         leaf_contract.LEAF_PROMPT_CONTRACT_VERSION)
         self.assertNotIn("workshop_prompt_contract_version", request)
         self.assertIn("pure_context", request)
         (spawn,) = self.c.spawns
         self.assertEqual(spawn["mcp_config_json"],
-                         pure_leaf.workshop_mcp_config_json("http://127.0.0.1:4242/mcp"))
+                         leaf_contract.workshop_mcp_config_json("http://127.0.0.1:4242/mcp"))
         self.assertIsNotNone(spawn["cancel_event"])
         self.assertIsNone(spawn["resume_session_id"])
         # The endpoint was stopped before the tree was read.
@@ -395,7 +395,7 @@ class RepairTests(_Base):
         self.assertEqual(outcome.status, "fail")
         meta = self.bundle_meta()
         self.assertEqual(meta["failure_category"], "bundle_schema_violation")
-        self.assertEqual(meta["attempts"], 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+        self.assertEqual(meta["attempts"], 1 + leaf_contract.MAX_BUNDLE_REPAIR_TURNS)
         self.assertIn("host-placed", meta["failure_excerpt"])
 
     def test_the_spec_s_own_checks_judge_the_assembled_document(self) -> None:
@@ -443,7 +443,7 @@ class EndOfLineageTests(_Base):
             _write_bundle(tree)
 
         self.c.leaf_actions = [dies_after_a_draft, finishes]
-        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True), \
+        with mock.patch.object(self.c, "_leaf_transient_retry", return_value=True), \
                 mock.patch("time.sleep"):
             outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
@@ -665,7 +665,7 @@ class OuterReopenTests(_Base):
 
 def _seeds(conductor, refs, context, request=None):
     """`_workshop_seeds` under the generate producer spec the loop seeds a lineage by."""
-    spec = conductor._pure_producer_spec("generate", conductor._bundle_shape(refs))
+    spec = conductor._leaf_producer_spec("generate", conductor._bundle_shape(refs))
     return conductor._workshop_seeds(refs, context, request or {}, spec)
 
 
@@ -688,14 +688,14 @@ class SeedTests(_Base):
     def test_the_node_s_own_interface_header_is_a_seed(self) -> None:
         with mock.patch.object(wc.Conductor, "_interface_header_text",
                                return_value=("node_model.h", "// header\n")):
-            seeds = _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+            seeds = _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertEqual(seeds["node_model.h"], "// header\n")
 
     def test_every_file_the_host_placed_in_src_is_a_seed(self) -> None:
         src = self.repo / self.refs.source_dir() / "src"
         (src / "dep_model.h").write_text("// dep\n", encoding="utf-8")
         (src / self.c._control_file_basename(self.refs)).write_text("x", encoding="utf-8")
-        seeds = _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+        seeds = _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertEqual(seeds["dep_model.h"], "// dep\n")
         self.assertNotIn(self.c._control_file_basename(self.refs), seeds)
 
@@ -715,13 +715,13 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
 #: HISTORY, frozen (issue #534 PR-J4-b): the retired `WORKSHOP_PROMPT_CONTRACT_VERSION` -> the
 #: digest that shipped under it. Nothing recomputes these any more and nothing asserts over the
-#: literal — the workshop leaf's contract is pinned by `test_pure_prompt_contract_drift`, whose
+#: literal — the workshop leaf's contract is pinned by `test_leaf_prompt_contract_drift`, whose
 #: tuple is the union of this pin's members and the pure pin's. Kept as the record of what
 #: shipped. Each was a sha256 over the workshop templates,
 #: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
 #: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`; from `workshop-6`,
 #: `orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` and the verdict repair's
-#: instruction-slot tables; from `workshop-7`, `pure_leaf.CODEX_READ_HELPER_TEXT`). A change to any is a change of the
+#: instruction-slot tables; from `workshop-7`, `leaf_contract.CODEX_READ_HELPER_TEXT`). A change to any is a change of the
 #: workshop leaf's contract and takes a new version, keeping every shipped pin (the no-revert
 #: check reads them). `workshop-1` (shipped in step 1's A/B, main f684c756) was taken over the
 #: first three templates and the system prompt alone.
@@ -763,7 +763,7 @@ class TemplateTests(unittest.TestCase):
         for name in _TEMPLATES:
             with self.subTest(template=name):
                 self.assertTrue((_DIR / name).read_text().startswith(
-                    pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+                    leaf_contract.WORKSHOP_PROMPT_SENTINEL))
 
     def test_no_document_is_inlined(self) -> None:
         for phase, names in (("generate", _TEMPLATES[:2]),
@@ -772,7 +772,7 @@ class TemplateTests(unittest.TestCase):
                 "runner_document", "dependency_facts", "exemplar"}
             for name in names:
                 with self.subTest(template=name):
-                    slots = set(ort._PURE_PLACEHOLDER_RE.findall((_DIR / name).read_text()))
+                    slots = set(ort._LEAF_PLACEHOLDER_RE.findall((_DIR / name).read_text()))
                     self.assertEqual(slots & documents, set())
                     self.assertIn("tool_surface", slots)
 
@@ -808,7 +808,7 @@ class TemplateTests(unittest.TestCase):
 
     def test_a_workshop_request_renders_through_the_production_entry_point(self) -> None:
         prompt = self._render()
-        self.assertTrue(prompt.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+        self.assertTrue(prompt.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
         self.assertNotIn("{{", prompt)
         for marker in ort._required_launch_prompt_markers(
                 ort.prepare_launch_request_payload(
@@ -827,7 +827,7 @@ class TemplateTests(unittest.TestCase):
         warm = self._render(repair_findings="fix it", repair_strategy="reuse",
                             repair_target_agent_run_id="ar_w", warm_resume=True)
         for prompt in (cold, warm):
-            self.assertTrue(prompt.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+            self.assertTrue(prompt.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
             self.assertIn("fix it", prompt)
         self.assertIn("Work tree contract", cold)
         self.assertNotIn("Work tree contract", warm)
@@ -962,7 +962,7 @@ class ExemplarRecordTests(_Base):
             ort._validate_launch_request_payload(payload)
             prompt = ort.render_launch_prompt_text(payload)
             ort._validate_launch_prompt_text(payload, prompt)
-            self.assertTrue(prompt.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+            self.assertTrue(prompt.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
 
 
 class GapTests(_Base):
@@ -1004,7 +1004,7 @@ class GapTests(_Base):
         self.c.leaf_actions = [_writes_nothing,
                                lambda c, t, kw: wc.ProcResult(1, "", "API Error: 529 overloaded"),
                                _writes_bundle]
-        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True):
+        with mock.patch.object(self.c, "_leaf_transient_retry", return_value=True):
             self.assertEqual(self.run_substep().status, "pass")
         third = self.requests()[2]
         self.assertIn(workshop_tree.BUNDLE_MANIFEST_NAME, third["repair_findings"])
@@ -1039,7 +1039,7 @@ class GapTests(_Base):
         for label, extra in (
                 ("usage wait", mock.patch.object(wc, "_leaf_infra_error",
                                                  return_value=("llm_usage_limit", "limit"))),
-                ("transient retry", mock.patch.object(wc.Conductor, "_pure_transient_retry",
+                ("transient retry", mock.patch.object(wc.Conductor, "_leaf_transient_retry",
                                                       return_value=True))):
             with self.subTest(retry=label):
                 self.setUp()
@@ -1091,11 +1091,11 @@ class SeedRefusalTests(_Base):
         src = self.repo / self.refs.source_dir() / "src"
         (src / "tests.md").write_text("x", encoding="utf-8")
         with self.assertRaises(RuntimeError) as ctx:
-            _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+            _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertIn("tests.md", str(ctx.exception))
 
     def test_a_context_carrying_the_runner_needs_it_in_src(self) -> None:
-        context = self.c._build_pure_context(self.refs)
+        context = self.c._build_leaf_context(self.refs)
         (self.repo / self.refs.source_dir() / "src"
          / self.c._runner_basename(self.refs)).unlink()
         with self.assertRaises(RuntimeError) as ctx:
@@ -1106,7 +1106,7 @@ class SeedRefusalTests(_Base):
         src = self.repo / self.refs.source_dir() / "src"
         (src / "CONTRACT.md").write_text("x", encoding="utf-8")
         with self.assertRaises(RuntimeError) as ctx:
-            _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+            _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertIn("CONTRACT.md", str(ctx.exception))
 
 
@@ -1171,7 +1171,7 @@ class Round2Tests(_Base):
 
         overloaded = lambda c, t, kw: wc.ProcResult(1, "", "API Error: 529 overloaded")
         self.c.leaf_actions = [overloaded] * 3
-        with mock.patch.object(self.c, "_pure_transient_retry", side_effect=retry):
+        with mock.patch.object(self.c, "_leaf_transient_retry", side_effect=retry):
             self.assertEqual(self.run_substep().status, "fail")
         self.assertEqual(retries, [0, 1, 2])
         self.assertEqual(len({r["workshop_lineage_id"] for r in self.requests()}), 3)
@@ -1358,7 +1358,7 @@ def _compile_config(repo: Path) -> lc.LlmConfig:
 
 
 def _writes_ir(ir: dict | None = None):
-    from tools.tests.test_pure_leaf_compile import _assembled_ir
+    from tools.tests.test_leaf_compile import _assembled_ir
 
     def action(c, tree, kwargs):
         (tree / workshop_tree.IR_DOCUMENT_NAME).write_text(
@@ -1394,7 +1394,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
     context is the REAL `_freeze_ir_check_context` (no subprocess), the endpoint the fake."""
 
     def setUp(self) -> None:
-        from tools.tests.test_pure_leaf_compile import _write_compile_node
+        from tools.tests.test_leaf_compile import _write_compile_node
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.repo = Path(tmp.name)
@@ -1426,17 +1426,17 @@ class WorkshopCompileProducerTests(unittest.TestCase):
 
     def test_a_tree_holding_the_whole_ir_passes_and_is_written(
             self) -> None:
-        from tools.tests.test_pure_leaf_compile import _assembled_ir
+        from tools.tests.test_leaf_compile import _assembled_ir
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
         ir_dir = self.repo / self.refs.ir_ref
         self.assertEqual((ir_dir / "spec.ir.yaml").read_text(),
-                         wc.Conductor._pure_ir_yaml(_assembled_ir()))
+                         wc.Conductor._leaf_ir_yaml(_assembled_ir()))
         self.assertEqual(json.loads((ir_dir / "ir_meta.json").read_text())
                          ["verification_status"], "pending")
         meta = self.meta()
         self.assertEqual((meta["result"], meta["leaf_mode"], meta["prompt_contract_version"]),
-                         ("pass", "workshop", pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+                         ("pass", "workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
         self.assertNotIn("workshop_prompt_contract_version", meta)
         self.assertNotIn("parts", meta)
@@ -1461,9 +1461,9 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         ort._validate_launch_request_payload(payload)
         prompt = ort.render_launch_prompt_text(payload)
         ort._validate_launch_prompt_text(payload, prompt)
-        self.assertTrue(prompt.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+        self.assertTrue(prompt.startswith(leaf_contract.WORKSHOP_PROMPT_SENTINEL))
         self.assertIn("`compile.generate` producer", prompt.splitlines()[0])
-        self.assertIn(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"], prompt)
+        self.assertIn(leaf_contract.WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"], prompt)
         self.assertIn("`check_ir`", prompt)
 
     def test_the_tree_holds_the_compile_documents_and_the_published_catalog(self) -> None:
@@ -1572,7 +1572,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual(meta["failure_category"], workshop_tree.WORKSHOP_TREE_EMPTY)
         self.assertEqual(wc.COMPILE_DOCUMENT_FAILURE_ROUTING[meta["failure_category"]],
                          ("compile", "reuse"))
-        self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+        self.assertEqual(len(meta["per_attempt"]), 1 + leaf_contract.MAX_BUNDLE_REPAIR_TURNS)
 
     def test_a_non_mapping_ir_is_a_finding_not_a_raise(self) -> None:
         def scalar(c, tree, kwargs):
@@ -1584,7 +1584,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                          wc.COMPILE_IR_DOCUMENT_VIOLATION)
 
     def test_the_document_contract_judges_the_tree_s_ir(self) -> None:
-        from tools.tests.test_pure_leaf_compile import _assembled_ir
+        from tools.tests.test_leaf_compile import _assembled_ir
         wrong = _assembled_ir()
         wrong["meta"]["spec_kind"] = "problem"
         self.c.leaf_actions = [_writes_ir(wrong), _writes_ir()]
@@ -1597,7 +1597,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         points `meta.source_refs.tests` at it. The ref is the host's fact, so the document
         contract refuses it, the repair turn names the node's own path, and nothing of the
         copy reaches the written IR."""
-        from tools.tests.test_pure_leaf_compile import _assembled_ir
+        from tools.tests.test_leaf_compile import _assembled_ir
 
         def decoy(c, tree, kwargs):
             (tree / "mytests.md").write_text("## 1. Tests\n", encoding="utf-8")
@@ -1641,11 +1641,11 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                          "workshop_compile_fail: workshop_wrapper_not_stopped")
 
     def test_a_seed_named_after_an_output_file_is_refused(self) -> None:
-        spec = self.c._pure_producer_spec("compile")
+        spec = self.c._leaf_producer_spec("compile")
         bad = spec._replace(workshop_document_seeds={
             **spec.workshop_document_seeds, "tests_document": workshop_tree.IR_DOCUMENT_NAME})
         with self.assertRaises(RuntimeError) as ctx:
-            self.c._workshop_seeds(self.refs, self.c._build_pure_compile_context(self.refs),
+            self.c._workshop_seeds(self.refs, self.c._build_leaf_compile_context(self.refs),
                                    {}, bad)
         self.assertIn("named after an output file", str(ctx.exception))
 
@@ -1662,9 +1662,9 @@ class WorkshopCompileProducerTests(unittest.TestCase):
 
 class WorkshopSpecTests(_Base):
     def test_both_generate_shapes_carry_the_same_workshop_half(self) -> None:
-        default = self.c._pure_producer_spec("generate", "m3c")
-        harness = self.c._pure_producer_spec("generate", "harness")
-        fields = [f for f in wc.Conductor._PureProducerSpec._fields if f.startswith("workshop_")]
+        default = self.c._leaf_producer_spec("generate", "m3c")
+        harness = self.c._leaf_producer_spec("generate", "harness")
+        fields = [f for f in wc.Conductor._LeafProducerSpec._fields if f.startswith("workshop_")]
         self.assertEqual(len(fields), 8)
         for name in fields:
             with self.subTest(field=name):
@@ -1676,7 +1676,7 @@ class WorkshopSpecTests(_Base):
         base = dict(step="generate", substep="generate", orchestration_id="o",
                     orchestration_agent_run_id="orch", child_agent_run_id="c",
                     agent_model="opus", workflow_mode="dev", pure_leaf=True,
-                    pure_context=self.c._build_pure_context(self.refs))
+                    pure_context=self.c._build_leaf_context(self.refs))
         for kw in ({"workshop_lineage_id": "c"}, {"workshop_provider": "claude_cli"}):
             with self.subTest(given=kw):
                 with self.assertRaises(ValueError) as ctx:

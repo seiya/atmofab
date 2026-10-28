@@ -175,14 +175,15 @@ _NON_BUILDER_KEYS = {
 # and not listed above (it was, for one commit, and the omission mutant survived).
 _DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
 # The one builder field a pure capture is NOT held to verbatim. A capture carries the contract
-# version of ITS run, and `PURE_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
-# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/pure_leaf.py`:
+# version of ITS run, and `LEAF_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
+# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/pure_leaf.py`, the names
+# before issue #534 PR-J4-d:
 # 20 commits between 2026-09-03 and 2026-09-12, pure-24 -> pure-43), so pinning the literal
 # would make every bump red and the cheap way to re-green it a hand edit — after which the
 # fixture is no longer a capture. The field is compared as: the builder emits the CURRENT
 # constant, and the capture carries a well-formed version of the same family.
 _HISTORICAL_KEYS = {"prompt_contract_version"}
-#: The form of `PURE_PROMPT_CONTRACT_VERSION` — `pure-NN` through issue #534 PR-J4-b, `leaf-NN`
+#: The form of `LEAF_PROMPT_CONTRACT_VERSION` — `pure-NN` through issue #534 PR-J4-b, `leaf-NN`
 #: from the first bump after it (the counter stops saying `pure`).
 _CONTRACT_VERSION_FORM = re.compile(r"^(pure|leaf)-\d+$")
 #: The form a CAPTURED workshop row may carry: a capture keeps the version of its run, and the
@@ -331,9 +332,9 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
             continue
         tc.assertEqual(value, req[key], f"{step}/{substep}: field {key} mismatch")
     if req.get("leaf_mode") == "workshop":
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
-        tc.assertEqual(built["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
-        tc.assertRegex(PURE_PROMPT_CONTRACT_VERSION, _CONTRACT_VERSION_FORM)
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+        tc.assertEqual(built["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
+        tc.assertRegex(LEAF_PROMPT_CONTRACT_VERSION, _CONTRACT_VERSION_FORM)
         tc.assertRegex(req["prompt_contract_version"], _CAPTURED_WORKSHOP_VERSION_FORM)
     # the builder must cover every real field except record-launch extras
     real_business_keys = set(req) - _NON_BUILDER_KEYS
@@ -374,7 +375,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
     290-526 KB, almost all of it the inlined `pure_context` and the rendered
     `launch_prompt_full`, so what is tracked is a REDACTION: every field the builder produces is
     verbatim, and those two carry a size + sha256 placeholder per value, keeping the
-    `pure_context` KEY SET (which `_validate_pure_launch_request_payload` requires per pair and
+    `pure_context` KEY SET (which `_validate_leaf_launch_request_payload` requires per pair and
     shape) without the content. What the comparison below pins, then: every field the builder
     DERIVES — the role, the `ir_ref` / `pipeline_ref` layout, `dependency_ref` per step, the
     deterministic output lists, the pure branch's empty output list and three skill empties,
@@ -408,9 +409,9 @@ class BuildLaunchRequestTest(unittest.TestCase):
     output by pair and overwrites — so adding a capture of one of those shapes means either
     replacing that pair's row or widening the loader's key, and is a test change either way.
     What is not driven through `build_launch_request` by any capture is driven by
-    `test_pure_leaf_wiring._host_built_launch_requests` (the renderer shapes: cold dep-detail
+    `test_leaf_wiring._host_built_launch_requests` (the renderer shapes: cold dep-detail
     variants, warm and cold repair) and, for the `harness` bundle shape,
-    `test_pure_leaf_producer`; dispatch by `test_pure_only_leaf_model`. This row's own axis is
+    `test_leaf_producer`; dispatch by `test_leaf_model`. This row's own axis is
     "the payload matches a run that really happened", which those do not have."""
 
     def test_reproduces_every_real_substep_payload(self) -> None:
@@ -932,8 +933,8 @@ def _leaf_kind(phase: str | None, substep: str | None) -> dict[str, Any]:
     """The KIND keyword arguments `leaf_command` / `spawn_leaf` take for a launch of
     `(phase, substep)`: a judging pair or the diagnostician (`phase`/`substep` None, the
     `defaults` entry's launch) is READING and takes no endpoint; a producing pair takes its
-    wrapper's endpoint (`pure_leaf.is_workshop_reading_pair`)."""
-    from tools.pure_leaf import is_workshop_reading_pair, workshop_mcp_config_json
+    wrapper's endpoint (`leaf_contract.is_workshop_reading_pair`)."""
+    from tools.leaf_contract import is_workshop_reading_pair, workshop_mcp_config_json
     if phase is None or is_workshop_reading_pair(phase, substep):
         return {"reading": True}
     return {"mcp_config_json": workshop_mcp_config_json(_TEST_MCP_URL)}
@@ -943,13 +944,13 @@ def _leaf_tail(phase: str | None = None, substep: str | None = None) -> list[str
     """The tail EVERY claude leaf argv of `(phase, substep)`'s kind carries: the workshop flag
     set of that kind, then `-p`.
 
-    Derived from `pure_leaf.workshop_leaf_flags()` rather than written out, because that set is
+    Derived from `leaf_contract.workshop_leaf_flags()` rather than written out, because that set is
     the contract and a literal here would only have to be edited to match it. What the goldens
     that splat this pin is the HEAD — the command prefix and the per-entry `--model` /
     `--effort` / session flags — and that nothing follows the `-p`. (The pure-function flag set
     these goldens carried until issue #534 PR-J4-b went with the pure leaf.)
     """
-    from tools.pure_leaf import workshop_leaf_flags
+    from tools.leaf_contract import workshop_leaf_flags
     kind = _leaf_kind(phase, substep)
     return [*workshop_leaf_flags(kind.get("mcp_config_json"),
                                  reading=bool(kind.get("reading"))), "-p"]
@@ -1162,13 +1163,13 @@ class _FakeConductor(wc.Conductor):
     #
     # Every LLM leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b):
     # `run_substep` hands a producing pair to `_run_workshop_producer_substep` and a judging
-    # pair to `_run_pure_reviewer_substep`. Both assemble a node's whole context from disk and
+    # pair to `_run_leaf_reviewer_substep`. Both assemble a node's whole context from disk and
     # seed a lineage home before they ever launch, which no fake `repo_root` has.
     #
     # So the LOOP is what is faked, not the process. `_fake_leaf_substep` performs the same
     # bookkeeping sequence the real loops do — record-launch (a workshop request naming its
     # lineage), spawn, persist, status, finalize-child, the usage-limit wait and the REAL
-    # `_pure_transient_retry` — so every phase-level assertion in this file (call order,
+    # `_leaf_transient_retry` — so every phase-level assertion in this file (call order,
     # vouched arids, retry counts, routing) still observes the sequence it was written
     # against. What it does not do is seed a tree, snapshot it, or validate a document; those
     # are `test_workshop_producer.py` / `test_workshop_reviewer.py`.
@@ -1184,7 +1185,7 @@ class _FakeConductor(wc.Conductor):
                                        resolved_dependencies, spec, dependency_surface=()):
         return self._fake_leaf_substep(refs, phase, substep, repair)
 
-    def _run_pure_reviewer_substep(self, refs, phase, substep,  # type: ignore[override]
+    def _run_leaf_reviewer_substep(self, refs, phase, substep,  # type: ignore[override]
                                    resolved_dependencies, spec):
         return self._fake_leaf_substep(refs, phase, substep, None)
 
@@ -1211,7 +1212,7 @@ class _FakeConductor(wc.Conductor):
         return warm_capable and bool(self.fake_lineage_resumable)
 
     def _fake_leaf_substep(self, refs, phase, substep, repair):
-        from tools.pure_leaf import is_workshop_reading_pair, workshop_mcp_config_json
+        from tools.leaf_contract import is_workshop_reading_pair, workshop_mcp_config_json
         entry = self.entry_for(phase, substep)
         reading = is_workshop_reading_pair(phase, substep)
         # A producing launch is handed its wrapper's endpoint; a reading one none.
@@ -1288,7 +1289,7 @@ class _FakeConductor(wc.Conductor):
                         waits_done=usage_waits, infra_error=infra_error, entry=entry)):
                 usage_waits += 1
                 continue
-            if proc.returncode != 0 and self._pure_transient_retry(
+            if proc.returncode != 0 and self._leaf_transient_retry(
                     refs=refs, phase=phase, substep=substep, infra_error=infra_error,
                     child_arid=child_arid, retries_done=retries,
                     elapsed_s=elapsed, spent_s=spent):
@@ -3059,7 +3060,7 @@ class ConductHappyPathTest(unittest.TestCase):
         # (`classify_failure`'s Z1 branch), so the phase is re-run until
         # `MAX_ATTEMPTS_PER_PHASE` is spent and only then terminalises. This row used to see
         # exactly one step_result because the fixture's leaf was AGENTIC: that branch is
-        # guarded by `_pure_leaf_substep`, so the failure fell through to the verify-severity
+        # guarded by `_leaf_substep`, so the failure fell through to the verify-severity
         # gate, escalated, and the diagnostician's empty answer fail-closed on the first
         # attempt. Z4 (issue #171) made every leaf pure, so the repair budget this fixture
         # always had is now actually spent.
@@ -3420,7 +3421,7 @@ class ConductRoutingTest(unittest.TestCase):
         # `make_error` routes `restart`: the conductor's repair payload names `restart` and the
         # retry is not a warm resume. (The fake producer passes that payload through as its
         # request; the real loop records `none` and renders no excerpt — witnessed by
-        # test_pure_leaf_producer's `test_a_build_restart_carries_no_findings_...`.) The
+        # test_leaf_producer's `test_a_build_restart_carries_no_findings_...`.) The
         # revocation still records the excerpt for the operator.
         c, status, seen, gen_launches, build_ids = self._build_failure_conduct("make_error")
         self.assertEqual(status, "pass")
@@ -3709,7 +3710,7 @@ class ConductRoutingTest(unittest.TestCase):
         return c, refs
 
     def test_a_judge_finding_travels_on_the_prod_compile_reopen(self) -> None:
-        from tools.pure_leaf import judge_repair_text
+        from tools.leaf_contract import judge_repair_text
         folded = judge_repair_text(self._review_455())
         self.assertGreater(len(folded), 5000)  # past every per-artifact clip in the tree
         with tempfile.TemporaryDirectory() as tmp:
@@ -3731,7 +3732,7 @@ class ConductRoutingTest(unittest.TestCase):
     def test_a_judge_finding_travels_on_the_dev_rollback(self) -> None:
         # dev terminalizes the backward reopen as `dev_phase_rollback`, AFTER the revocation,
         # so the operator's `--resume` seeds the warm repair from the artifact.
-        from tools.pure_leaf import judge_repair_text
+        from tools.leaf_contract import judge_repair_text
         with tempfile.TemporaryDirectory() as tmp:
             c, refs = self._judging_conductor(
                 tmp, "dev",
@@ -6417,7 +6418,7 @@ class LeafTransientRetryTest(unittest.TestCase):
     SUBSTEPS[phase]), so these drive run_substep/run_phase directly and assert the launch
     bookkeeping: one arid per attempt, every dead attempt tombstoned (an un-vouched terminal arid
     is an orphan edge that fails the completion check). The loop is `_FakeConductor`'s model of
-    the workshop loops' bookkeeping around the REAL `_pure_transient_retry` / `_usage_limit_wait`;
+    the workshop loops' bookkeeping around the REAL `_leaf_transient_retry` / `_usage_limit_wait`;
     what a re-launch resumes (never the dead lineage) is `test_workshop_producer.py`'s subject."""
 
     class _C(_FakeConductor):
@@ -7263,7 +7264,7 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
         self.assertEqual(oc.infra_error[0], "llm_transport_flake")
 
     def test_the_pure_loops_refuse_on_the_same_budget(self) -> None:
-        """The pure substeps reach the budget through `_pure_transient_retry` rather than the
+        """The pure substeps reach the budget through `_leaf_transient_retry` rather than the
         agentic loop's inline predicate, and two implementations of one rule is exactly where a
         rule drifts. Driven directly, because that is where the arithmetic lives."""
         c = self._conductor([])
@@ -7272,13 +7273,13 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
                   infra_error=infra, child_arid="child-1")
         with redirect_stdout(io.StringIO()):
             # Under budget: granted, as the count budget alone would.
-            self.assertTrue(c._pure_transient_retry(
+            self.assertTrue(c._leaf_transient_retry(
                 retries_done=0, elapsed_s=2.0, spent_s=0.0, **kw))
             # A single attempt that already outran the budget: refused.
-            self.assertFalse(c._pure_transient_retry(
+            self.assertFalse(c._leaf_transient_retry(
                 retries_done=0, elapsed_s=650.0, spent_s=0.0, **kw))
             # And the accumulation: neither attempt crosses it alone.
-            self.assertFalse(c._pure_transient_retry(
+            self.assertFalse(c._leaf_transient_retry(
                 retries_done=1, elapsed_s=350.0, spent_s=350.0, **kw))
 
     def test_run_substep_does_not_charge_a_usage_limit_wait_to_this_budget(self) -> None:
@@ -7318,12 +7319,12 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
         with redirect_stdout(io.StringIO()):
             # A usage limit is not a retryable transient tag, so it is refused WITHOUT the
             # budget being consulted — no `declined` event names it, and nothing is charged.
-            self.assertFalse(c._pure_transient_retry(
+            self.assertFalse(c._leaf_transient_retry(
                 refs=self._refs(), phase="generate", substep="generate",
                 infra_error=("llm_usage_limit", "usage limit reached|1800000000"),
                 child_arid="child-1", retries_done=0, elapsed_s=7200.0, spent_s=0.0))
             # ...and the flake that follows still gets its retry, on a budget of zero spent.
-            self.assertTrue(c._pure_transient_retry(
+            self.assertTrue(c._leaf_transient_retry(
                 refs=self._refs(), phase="generate", substep="generate",
                 infra_error=("llm_transport_flake", "connection reset"),
                 child_arid="child-2", retries_done=0, elapsed_s=2.0, spent_s=0.0))
@@ -7356,7 +7357,7 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
         c = self._conductor([])
         c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
         with redirect_stdout(io.StringIO()):
-            self.assertFalse(c._pure_transient_retry(
+            self.assertFalse(c._leaf_transient_retry(
                 refs=self._refs(), phase="generate", substep="generate",
                 infra_error=("llm_transport_flake", "connection reset"), child_arid="child-1",
                 retries_done=wc.MAX_LEAF_TRANSIENT_RETRIES, elapsed_s=650.0, spent_s=650.0))
@@ -7390,7 +7391,7 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
         c = self._conductor([])
         c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
         with redirect_stdout(io.StringIO()):
-            self.assertFalse(c._pure_transient_retry(
+            self.assertFalse(c._leaf_transient_retry(
                 refs=self._refs(), phase="generate", substep="generate",
                 infra_error=("llm_client_error", "API Error: 400 invalid_request_error"),
                 child_arid="child-1", retries_done=0, elapsed_s=650.0, spent_s=0.0))
@@ -8626,7 +8627,7 @@ class DiagnosticianTest(unittest.TestCase):
         # ...and the launch is a CODEX reading lineage (issue #534 PR-J4-a): the request names
         # the provider whose reader row the prompt states, and the tree carries the codex
         # reading helper beside the diagnosis document.
-        from tools.pure_leaf import CODEX_READ_HELPER_NAME
+        from tools.leaf_contract import CODEX_READ_HELPER_NAME
         request = next(cap for sub, cap in c.calls if sub == "record-launch")["--request-json"]
         self.assertEqual(request["workshop_provider"], "codex_cli")
         tree = c.homes / c.orchestration_id / "codex" / "child-1" / "tree"
@@ -8639,7 +8640,7 @@ class DiagnosticianTest(unittest.TestCase):
         #547): the judges' cut-read check runs on the diagnostician too, and a cut read — an
         output over the budget, a cut marker in the rollout — or a rollout the host cannot read
         discards the directive, since a diagnosis is never run again."""
-        from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        from tools.leaf_contract import CODEX_EXEC_OUTPUT_BUDGET_BYTES
         directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
         cases = {
             "an output over the budget": {"codex_commands": [
@@ -10861,7 +10862,7 @@ class LeafSpawnTest(unittest.TestCase):
         OUTSIDE `repo`, as production's `~/.atmofab/homes` is. It is the one profile any leaf
         runs under since issue #534 PR-J4-b; the read-only profile (`readonly: true`, no
         `leaf_mode`) these fixtures wrote until then is refused by name
-        (`test_pure_only_leaf_model.SpawnLeafRefusesTheRetiredReadonlyProfileTests`). The rows
+        (`test_leaf_model.SpawnLeafRefusesTheRetiredReadonlyProfileTests`). The rows
         that use it are about PROCESS handling, which is the same under either."""
         outside = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, outside, True)
@@ -15074,7 +15075,7 @@ class WriteMakefileTest(unittest.TestCase):
             c = self._conductor(repo)
             c._write_makefile(refs)
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
-            graph_text = c._render_pure_makefile_from_graph(refs, {
+            graph_text = c._render_leaf_makefile_from_graph(refs, {
                 "compile_units": [], "link_units": [], "dependency_edges": []})
             self._write_ir(repo, refs, backend="openmp")
             c = self._conductor(repo)
@@ -16382,7 +16383,7 @@ class WriteRunnerTest(unittest.TestCase):
                 c._write_makefile(refs)
                 node = (repo / refs.source_dir() / "src" / "Makefile").read_text(
                     encoding="utf-8")
-                from_graph = c._render_pure_makefile_from_graph(refs, graph)
+                from_graph = c._render_leaf_makefile_from_graph(refs, graph)
                 for rendered in (node, from_graph):
                     self.assertEqual(initial in rendered, authored)
                     self.assertEqual(bare in rendered, not authored)
@@ -16450,7 +16451,7 @@ class WriteRunnerTest(unittest.TestCase):
 
 
 class PureLeafSubstepPredicateTests(unittest.TestCase):
-    """M-F: `_pure_leaf_substep` dispatch is decided by node SHAPE alone (the generate-executor is
+    """M-F: `_leaf_substep` dispatch is decided by node SHAPE alone (the generate-executor is
     no longer selectable — legacy execution was removed, `pure` is the only executor). Direct unit
     coverage of the predicate (previously exercised only indirectly). Reuses WriteRunnerTest's
     `_write_consumer_ir` IR-shaping helper (self is ignored by it)."""
@@ -16479,16 +16480,16 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             refs = self._refs()
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=1)
             c = self._conductor(repo, "claude")
-            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
-            self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
-            self.assertTrue(c._pure_leaf_substep(refs, "compile", "generate"))
-            self.assertTrue(c._pure_leaf_substep(refs, "compile", "verify"))
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "static"))
-            self.assertFalse(c._pure_leaf_substep(refs, "compile", "static"))
+            self.assertTrue(c._leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._leaf_substep(refs, "generate", "verify"))
+            self.assertTrue(c._leaf_substep(refs, "compile", "generate"))
+            self.assertTrue(c._leaf_substep(refs, "compile", "verify"))
+            self.assertFalse(c._leaf_substep(refs, "generate", "static"))
+            self.assertFalse(c._leaf_substep(refs, "compile", "static"))
             # Z3 (issue #169): the judge is pure too, and on the same terms as the compile
             # pairs — no shape condition, because what it reviews is the run's evidence
             # against the tests, which every node kind has.
-            self.assertTrue(c._pure_leaf_substep(refs, "validate", "judge"))
+            self.assertTrue(c._leaf_substep(refs, "validate", "judge"))
 
     def test_the_predicate_no_longer_reads_the_entrys_capability(self) -> None:
         """It is keyed on the pair and the node's SHAPE, and on nothing about the provider.
@@ -16523,10 +16524,10 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
                              narrow.entry_for("generate", "generate").capabilities)
             for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
                 self.assertEqual(
-                    narrow._pure_leaf_substep(refs, phase, substep),
-                    wide._pure_leaf_substep(refs, phase, substep),
+                    narrow._leaf_substep(refs, phase, substep),
+                    wide._leaf_substep(refs, phase, substep),
                     msg=f"{phase}.{substep}")
-                self.assertTrue(narrow._pure_leaf_substep(refs, phase, substep),
+                self.assertTrue(narrow._leaf_substep(refs, phase, substep),
                                 msg=f"{phase}.{substep}")
 
     @staticmethod
@@ -16541,8 +16542,8 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             refs = self._refs()
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=1)
             c = self._conductor(repo, "codex")
-            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
-            self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
+            self.assertTrue(c._leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._leaf_substep(refs, "generate", "verify"))
 
     def test_claude_non_m3c_has_no_pure_path(self) -> None:
         # (c) claude but non-M3c: an IR that states no physics kind (none at all, or a
@@ -16558,9 +16559,9 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             for kind in ("profile", ""):
                 with self.subTest(spec_kind=kind):
                     WriteRunnerTest._write_consumer_ir(self, repo, refs, spec_kind=kind)
-                    self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
+                    self.assertFalse(c._leaf_substep(refs, "generate", "generate"))
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=2)
-            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._leaf_substep(refs, "generate", "generate"))
 
     def _infra_refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
@@ -16587,8 +16588,8 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             c = self._conductor(repo, "claude")
             self.assertEqual(c._bundle_shape(refs), "harness")
             self.assertFalse(c._conductor_authors_runner(refs))  # the host renders none
-            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
-            self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
+            self.assertTrue(c._leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._leaf_substep(refs, "generate", "verify"))
 
     def test_the_shape_is_read_off_the_node_key_not_the_documents_spec_kind(self) -> None:
         """Surface 11: the shape decides which admissibility rules the bundle is judged
@@ -16602,7 +16603,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
                 self, repo, refs, infra=1, spec_kind="infrastructure")
             c = self._conductor(repo, "claude")
             self.assertIsNone(c._bundle_shape(refs))
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
+            self.assertFalse(c._leaf_substep(refs, "generate", "generate"))
 
     def test_the_two_bundle_shape_readers_agree(self) -> None:
         """`Conductor._bundle_shape` and `validate_pipeline_semantics._ir_bundle_shape` select
@@ -22385,7 +22386,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     #169) made the judge pure by default, and one of this class's subjects only exists on the
     agentic path: `determine_substep_status` reading the review alone (the pure branch also
     requires `judge_meta.json`). Its pure counterpart lives in
-    `tools/tests/test_pure_leaf_judge.py`. The `recoverable` class no longer has a disposition
+    `tools/tests/test_leaf_judge.py`. The `recoverable` class no longer has a disposition
     of its own — issue #176 deleted the warm-resume mini-loop that consumed `warm_resume`, so
     both graded classes write `fail_closed` on either path."""
 
@@ -24049,7 +24050,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def test_the_workshop_capability_is_required_at_load_not_at_dispatch(self) -> None:
         """WHERE the leaf-model requirement is enforced, since Z4 (issue #171).
 
-        It used to be a DISPATCH question: `_pure_leaf_substep` read the entry's capability, and
+        It used to be a DISPATCH question: `_leaf_substep` read the entry's capability, and
         an entry narrowed away from `pure` fell through to the agentic loop — which is what this
         row drove. There is no second loop, so the requirement moved to configuration LOAD,
         where an operator can read the refusal, and the dispatch stopped reading the capability
@@ -24081,7 +24082,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c2 = self._configured("claude", model="opus")
         c2._conductor_authors_makefile = lambda refs: True  # type: ignore[assignment]
         c2._conductor_authors_runner = lambda refs: True    # type: ignore[assignment]
-        self.assertTrue(c2._pure_leaf_substep(None, "generate", "generate"))
+        self.assertTrue(c2._leaf_substep(None, "generate", "generate"))
 
     def test_child_env_output_ceiling_comes_from_the_entry_when_set(self) -> None:
         c = self._configured("claude", model="opus")
@@ -24344,7 +24345,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         answering True for `(build, diagnose)`, so the deterministic-first order of round 1
         recorded nothing there and the next Validate failed the run on the diagnostician's
         own record."""
-        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.leaf_contract import HTTP_FILE_TOOLS
         self.assertFalse(wc.Conductor._is_deterministic_substep("build", "diagnose"))
         repo = self._scratch_repo_root()
         for body, field, value in (
@@ -24891,7 +24892,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
         """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no
         longer reconstructs anything, so a path that leaves `usage` absent silently loses the
         measurement instead of falling back. (The pure loops are covered by
-        `test_pure_leaf_producer` / `test_llm_http_wiring`; this fixture drives no pure leaf.)"""
+        `test_leaf_producer` / `test_llm_http_wiring`; this fixture drives no pure leaf.)"""
         c = self._conductor(wc.ProcResult(0, "done", "", usage=dict(self._CAPTURED_USAGE)))
         c.conduct(self._refs(), "validate")
         rows = [cap["--agent-run-json"] for sub, cap in c.calls if sub == "finalize-child"]
@@ -25096,7 +25097,7 @@ class WarmResumeUsageTest(unittest.TestCase):
     TURN2_USAGE = _u(2, 30665, 72846, 44769)
 
     def _row(self, stdout: str, resumed_stdout: "str | None" = TURN1, *, resumed=True):
-        from tools.pure_leaf import parse_result_envelope
+        from tools.leaf_contract import parse_result_envelope
         pair = (("t1", parse_result_envelope(resumed_stdout)) if resumed else None)
         return wc._leaf_usage_row(wc.ProcResult(0, stdout, ""), self.ENTRY,
                                   envelope=parse_result_envelope(stdout), resumed=pair)

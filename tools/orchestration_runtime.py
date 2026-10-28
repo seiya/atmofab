@@ -87,21 +87,21 @@ try:
         load_target_profile,
         pipelines_dir,
     )
-    from tools.pure_leaf import (
+    from tools.leaf_contract import (
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         PURE_LEAF_MODE,
-        PURE_PROMPT_CONTRACT_VERSION,
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
-        is_host_rendered_request as _pure_leaf_is_host_rendered_request,
-        is_workshop_reading_pair as _pure_leaf_is_workshop_reading_pair,
-        is_pure_request as _pure_leaf_is_pure_request,
-        is_workshop_request as _pure_leaf_is_workshop_request,
+        is_host_rendered_request as _leaf_contract_is_host_rendered_request,
+        is_workshop_reading_pair as _leaf_contract_is_workshop_reading_pair,
+        is_pure_request as _leaf_contract_is_pure_request,
+        is_workshop_request as _leaf_contract_is_workshop_request,
     )
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CLI execution
     _THIS_FILE = Path(__file__).resolve()
@@ -136,21 +136,21 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         load_target_profile,
         pipelines_dir,
     )
-    from tools.pure_leaf import (
+    from tools.leaf_contract import (
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         PURE_LEAF_MODE,
-        PURE_PROMPT_CONTRACT_VERSION,
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_SENTINEL,
         WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
-        is_host_rendered_request as _pure_leaf_is_host_rendered_request,
-        is_workshop_reading_pair as _pure_leaf_is_workshop_reading_pair,
-        is_pure_request as _pure_leaf_is_pure_request,
-        is_workshop_request as _pure_leaf_is_workshop_request,
+        is_host_rendered_request as _leaf_contract_is_host_rendered_request,
+        is_workshop_reading_pair as _leaf_contract_is_workshop_reading_pair,
+        is_pure_request as _leaf_contract_is_pure_request,
+        is_workshop_request as _leaf_contract_is_workshop_request,
     )
 
 def _utc_now_iso() -> str:
@@ -1030,7 +1030,7 @@ def _closure_signature(
     # Issue #175: the adopted `profile` set is part of the resolution, and it is the ONLY part
     # that does not show up in `all_nodes` — the profile is not a node. Without it, bumping a
     # profile's `spec_version` (its §3 parameter/compatibility constraints are what an adopter's
-    # `algorithm` is written to honour, and what `_pure_profile_spec_document` inlines) left
+    # `algorithm` is written to honour, and what `_leaf_profile_spec_document` inlines) left
     # every adopter's signature byte-identical, so the R6-lite comparison this signature was
     # written for called it fresh — while its IR's `profile_selection` went on naming the
     # retired version. Measured on this tree before the fix: identical signature across a
@@ -2250,7 +2250,7 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #
 #   compile   spec.{controlled_spec,tests,deps} — the three spec files' bytes;
 #             profiles[] — each adopted profile's `controlled_spec.md`, as the compile
-#               producer is shown it (`_pure_profile_spec_document`);
+#               producer is shown it (`_leaf_profile_spec_document`);
 #             dependency_graph — the derived closure's canonical signature
 #               (`_closure_signature` of `build_dependency_graph(include_via=False)`: node
 #               set, heights, direct/transitive split and the adopted profile set);
@@ -2336,7 +2336,7 @@ def harness_node_key_for(repo_root: Path, node_key: str, target: TargetProfile) 
     (`target_profile.harness_node_key_for_target`, issue #284 — the IR's `infrastructure` direct
     dependency until R4-a PR-3). `infrastructure` is read off the NODE_KEY — the host's identity
     for the node — never off the IR's self-declared `meta.spec_kind`. Shared by the conductor's
-    context assembly, runner render and acceptance layer (`_pure_harness_node_key` delegates
+    context assembly, runner render and acceptance layer (`_leaf_harness_node_key` delegates
     here), the generate derivation inputs, the pipeline closure (`pipeline_closure_nodes`) and
     the deterministic tamper gate. Raises `TargetProfileError` when the target's harness does
     not resolve in the catalog (the launch gate refused that before the run started)."""
@@ -3015,7 +3015,7 @@ def phase_derivation_inputs(
                 "tests": _spec_file_hash(repo_root, spec, "tests.md"),
             },
             # The target the source is generated FOR: the producer is shown the profile
-            # (`Conductor._pure_target_profile_document`), so the profile's content is an
+            # (`Conductor._leaf_target_profile_document`), so the profile's content is an
             # input. The harness below is the one the profile names (issue #284), so a
             # profile that names another harness moves both members.
             "target": {"target_id": target.target_id, "profile": target.sha256},
@@ -3963,7 +3963,7 @@ def _catalog_family_index(repo_root: Path) -> list[dict[str, str]]:
 
 def _exemplar_contract_version_matches(model_src: Path) -> bool:
     """True iff the certified pure source at ``model_src`` was authored under the CURRENT
-    ``PURE_PROMPT_CONTRACT_VERSION``, read from its ``bundle_meta.json#prompt_contract_version``.
+    ``LEAF_PROMPT_CONTRACT_VERSION``, read from its ``bundle_meta.json#prompt_contract_version``.
 
     ``model_src`` is ``.../source/<source_id>/src/<id>_model.f90``, so the pure ``bundle_meta.json``
     is two parents up. This gates the R5 M3c model+checks exemplar: a sibling's ``<id>_checks.f90``
@@ -3984,7 +3984,7 @@ def _exemplar_contract_version_matches(model_src: Path) -> bool:
     except Exception:
         return False
     return (isinstance(doc, dict)
-            and str(doc.get("prompt_contract_version", "")).strip() == PURE_PROMPT_CONTRACT_VERSION)
+            and str(doc.get("prompt_contract_version", "")).strip() == LEAF_PROMPT_CONTRACT_VERSION)
 
 
 def _resolve_exemplar_source(
@@ -4545,7 +4545,7 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILIT
 # runner-authoring leaf. An `m3c` physics producer does not receive it (it authors
 # model+checks over a host-rendered runner) and takes `CHECKS_MODULE_CONTRACT.md` instead.
 # The node-aware SELECTION used to be `leaf_contract_doc_refs`, deleted with the force-read
-# set in Z4 (issue #171); `Conductor._build_pure_*_context` makes the same choice now.
+# set in Z4 (issue #171); `Conductor._build_leaf_*_context` makes the same choice now.
 RUNNER_OUTPUT_CONTRACT_REF = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
 # (the leaf-authored callbacks the host-rendered runner drives). Reaches every `generate`
@@ -7404,7 +7404,7 @@ def _runtime_ro_bind_paths() -> list[str]:
 # names, and a name absent here is absent from the child. What this closes is the PROCESS
 # environment only. A claude leaf's `HOME` is the operator's, and an `env` block in the
 # settings file under it set both names again (measured; issue #453) until the leaf
-# launched with `--restricted`, which ignores that file (`pure_leaf.workshop_leaf_flags`). An
+# launched with `--restricted`, which ignores that file (`leaf_contract.workshop_leaf_flags`). An
 # `env` block in the CLI's GLOBAL config under it still sets them: that channel is not
 # closed but refused, by preflight (`claude_global_config_env_absent`).
 #
@@ -7582,7 +7582,7 @@ def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
 # workshop profile, naming that profile's own rw-bound `config/`.
 _BACKEND_HOME_ENV_VARS = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
 
-#: The profile `leaf_mode` of a `workshop leaf` (`pure_leaf.WORKSHOP_LEAF_MODE`). A profile
+#: The profile `leaf_mode` of a `workshop leaf` (`leaf_contract.WORKSHOP_LEAF_MODE`). A profile
 #: without the key is a pure leaf's, which every profile written before issue #534 is.
 WORKSHOP_PROFILE_LEAF_MODE = "workshop"
 
@@ -7663,7 +7663,7 @@ def _backend_runtime_bind_paths(
       ``$HOME``, is refused with `ValueError` (`record_launch` routes a profile-build
       failure to transport `fail_closed`), since the only root that would cover it is the
       operator's whole home; so is a root that covers the home PHYSICALLY (a ``$HOME``
-      child symlinked to the home's parent), and — at `build_readonly_bwrap_profile`,
+      child symlinked to the home's parent), and — at `build_lineage_bwrap_profile`,
       which knows ``repo_root`` — a root that is, holds, or lies inside the checkout under
       a path the artifact overlays do not cover, by inode and by the mount table
       (`_refuse_backend_ro_alias_of_repo`). With ``HOME`` unset there is nothing to delimit against and
@@ -7741,7 +7741,7 @@ def _backend_runtime_bind_paths(
                 rw.add(str(cred_file))
     ro_paths = sorted(p for p in ro if p and Path(p).exists())
     # rw (backend config/credential home) is returned unfiltered by existence; the
-    # caller (build_readonly_bwrap_profile) materializes a missing config *dir* before binding,
+    # caller (build_lineage_bwrap_profile) materializes a missing config *dir* before binding,
     # so a fresh environment whose home does not yet exist (but is creatable — preflight
     # verifies the parent is writable) still gets a writable bind.
     rw_paths = sorted(p for p in rw if p)
@@ -7958,7 +7958,7 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
     both. A missing config *dir* is created (the only file, ~/.claude.json, is
     existence-gated at source) so bwrap can bind it writable; a creation failure must
     fail closed rather than emit a profile missing the required auth/session home.
-    Used by build_readonly_bwrap_profile, the one profile builder left.
+    Used by build_lineage_bwrap_profile, the one profile builder left.
     """
     resolved_repo = repo_root.resolve()
     backend_rw: list[str] = []
@@ -8003,7 +8003,7 @@ def workshop_profile_family(env: Mapping[str, Any]) -> str:
     return declared[0]
 
 
-def build_readonly_bwrap_profile(
+def build_lineage_bwrap_profile(
     *,
     repo_root: Path,
     orchestration_id: str,
@@ -8214,7 +8214,7 @@ def render_bwrap_command(
     if not repo_root or not tmp_dir:
         raise ValueError("profile must include repo_root and tmp_dir")
     # NOTHING UNDER THE CHECKOUT IS GRANTED, and a profile that says otherwise is refused
-    # rather than ignored. `build_readonly_bwrap_profile` records these five as empty, and
+    # rather than ignored. `build_lineage_bwrap_profile` records these five as empty, and
     # their mounting arms went with the agentic leaf (issue #445). A profile is also re-read
     # from `sandbox_profiles/<arid>.json` by the conductor; one carrying a grant there was
     # altered after it was written, and rendering it without the grant would launch a leaf
@@ -9504,7 +9504,7 @@ def _sanitize_exemplar_body(text: str) -> str:
     `validate_pipeline_semantics --stage` string in it fail-closed the launch of an unrelated
     node. That lint, `_strip_exemplar_regions` and `_EXEMPLAR_REGION_RE` are all deleted; the
     injection half is untouched, and is what
-    `test_pure_only_leaf_model.HostDefectRefusalsTests` now pins, the round-1 review having
+    `test_leaf_model.HostDefectRefusalsTests` now pins, the round-1 review having
     found that the deleted lint took the only pin with it."""
     return (text.replace(_EXEMPLAR_BEGIN_PREFIX, "--- BEGIN-EXEMPLAR ")
                 .replace(_EXEMPLAR_END_PREFIX, "--- END-EXEMPLAR "))
@@ -9720,7 +9720,7 @@ def _argument_detail_lines(
 ) -> list[str]:
     """The indented per-dummy-argument lines of one published operation, in the words of the
     language the facts were read in (`signatures.argument_detail_lines`), or ``[]``. Kept as
-    this module's function so the launch-render sweep (`test_pure_leaf_wiring`) wraps it as the
+    this module's function so the launch-render sweep (`test_leaf_wiring`) wraps it as the
     prose builder it is; the prose is the backend's since issue #289 (R4-b PR-4)."""
     if signatures is None:
         return []
@@ -9813,7 +9813,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
 #: unknown value is refused rather than falling back to the default, because the shape decides
 #: which template the leaf is sent and which context keys it must carry.
 #: Kept equal to the non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance
-#: layer's vocabulary — by `test_pure_leaf_wiring`. (`verification`, the `compile.generate` part
+#: layer's vocabulary — by `test_leaf_wiring`. (`verification`, the `compile.generate` part
 #: of issue #526, went with the pure part split in issue #534 PR-J4-b.)
 PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness"})
 
@@ -9851,8 +9851,8 @@ def _is_pure_launch_request(request_payload: dict[str, Any]) -> bool:
     were made mutually exclusive predicates for the same reason, and the slim side lives on only
     in `validate_pipeline_semantics`, for records written before the cut.) Deterministic
     and pure are likewise mutually exclusive (enforced at validation). Delegates to
-    `pure_leaf.is_pure_request` — the single detection source shared with the validator."""
-    return _pure_leaf_is_pure_request(request_payload)
+    `leaf_contract.is_pure_request` — the single detection source shared with the validator."""
+    return _leaf_contract_is_pure_request(request_payload)
 
 
 def _sanitize_pure_doc_body(text: str) -> str:
@@ -9877,10 +9877,10 @@ def _fence_pure_doc(text: str) -> str:
                       PURE_DOC_FENCE_END])
 
 
-_PURE_PLACEHOLDER_RE = re.compile(r"<(\w+)>")
+_LEAF_PLACEHOLDER_RE = re.compile(r"<(\w+)>")
 
 
-def _substitute_pure_placeholders(template: str, subs: dict[str, str]) -> str:
+def _substitute_leaf_placeholders(template: str, subs: dict[str, str]) -> str:
     """Replace each `<key>` placeholder in `template` EXACTLY ONCE, in a single pass over the
     template, using `subs`.
 
@@ -9891,16 +9891,16 @@ def _substitute_pure_placeholders(template: str, subs: dict[str, str]) -> str:
     an id into the data, or leave an unprocessed `<key>` behind depending on key order); the
     single pass leaves inserted content untouched. An unknown `<key>` (not in `subs`) is left
     verbatim, so a template typo surfaces rather than silently vanishing."""
-    return _PURE_PLACEHOLDER_RE.sub(
+    return _LEAF_PLACEHOLDER_RE.sub(
         lambda m: subs.get(m.group(1), m.group(0)), template)
 
 
-def _pure_launch_template_name(request_payload: dict[str, Any]) -> str:
+def _leaf_launch_template_name(request_payload: dict[str, Any]) -> str:
     """The template key for a workshop launch: `workshop <step>.<substep>`, with the declared
     `pure_shape` appended when the request carries one. The validator has already refused any
     `pure_shape` outside `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, so a name built here always
     resolves in `_PROMPT_TEMPLATE_FILES` (a KeyError would be the two tables disagreeing, which
-    `test_pure_leaf_wiring` pins). The `pure <step>.<substep>` family went with the pure leaf
+    `test_leaf_wiring` pins). The `pure <step>.<substep>` family went with the pure leaf
     in issue #534 PR-J4-b."""
     step = str(request_payload.get("step", "")).strip().lower()
     substep = str(request_payload.get("substep", "")).strip().lower()
@@ -9917,7 +9917,7 @@ def _fragment_template_stem(template_file: str) -> str:
 
 #: A neutral template's marker for a place the target LANGUAGE's rules go (issue #289, R4-b
 #: PR-2). Composed away before any `<key>` substitution, so a composed template is exactly the
-#: text the leaf reads and the cold repair's re-statement of the body (`_pure_launch_body`)
+#: text the leaf reads and the cold repair's re-statement of the body (`_leaf_launch_body`)
 #: sees it too. A distinct spelling from `<key>` on purpose: a marker left in a rendered prompt
 #: is a composer defect, and it must not be mistaken for an unfilled data slot.
 _LANGUAGE_FRAGMENT_RE = re.compile(r"\{\{language:([a-z0-9_]+)\}\}")
@@ -10021,19 +10021,19 @@ def _compose_fragments(template: str, template_file: str, request_payload: dict[
         template_file, request_payload.get("pure_parallel"))
 
 
-def _pure_launch_template(request_payload: dict[str, Any]) -> str:
+def _leaf_launch_template(request_payload: dict[str, Any]) -> str:
     """The launch template this pure request renders, composed for its `pure_language` and
     `pure_parallel`.
 
     The ONE place a pure launch template is read by name, so the cold launch and the cold
-    repair's re-statement of its body (`_pure_launch_body`) see the same composed text. `KeyError`
+    repair's re-statement of its body (`_leaf_launch_body`) see the same composed text. `KeyError`
     when no template matches the request (each caller decides what that means)."""
-    name = _pure_launch_template_name(request_payload)
+    name = _leaf_launch_template_name(request_payload)
     template = _load_launch_prompt_templates()[name]
     return _compose_fragments(template, _PROMPT_TEMPLATE_FILES[name], request_payload)
 
 
-def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
+def _render_leaf_launch_prompt(request_payload: dict[str, Any]) -> str:
     """Render a cold workshop launch prompt from its `workshop_{step}_{substep}.txt` template.
 
     Byte-stable order (static persona/output-contract prefix first, variable ids last): the
@@ -10042,9 +10042,9 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     files of the lineage's tree (`Conductor._workshop_seeds`), and no workshop template has a
     document slot. (The pure leaf's renderer inlined each `pure_context` value fenced as data,
     and the dependency facts and exemplar beside them; that went in issue #534 PR-J4-b.)"""
-    name = _pure_launch_template_name(request_payload)
+    name = _leaf_launch_template_name(request_payload)
     try:
-        template = _pure_launch_template(request_payload)
+        template = _leaf_launch_template(request_payload)
     except KeyError:
         # A NAMED refusal, not a KeyError. `prepare_launch_request_payload` force-renders a
         # pure request BEFORE `_validate_launch_request_payload` runs, so a payload missing
@@ -10068,7 +10068,7 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     # The one sentence of a workshop contract that differs by transport: what the leaf holds
     # besides the wrapper (issue #534 step 2). A NAMED refusal for a provider with no row, for
     # the reason a missing template is one above: the render runs before
-    # `_validate_pure_launch_request_payload`, which refuses the same request.
+    # `_validate_leaf_launch_request_payload`, which refuses the same request.
     provider = request_payload.get("workshop_provider")
     surface = _workshop_tool_surface_table(request_payload)
     if not (isinstance(provider, str) and provider in surface):
@@ -10076,7 +10076,7 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
             f"workshop launch request must name its provider in workshop_provider, one of "
             f"{', '.join(sorted(surface))}; got {provider!r}")
     subs["tool_surface"] = surface[provider]
-    return _substitute_pure_placeholders(template, subs)
+    return _substitute_leaf_placeholders(template, subs)
 
 
 # The pure pairs whose leaf returns a VERDICT — a conclusion about someone else's artifact —
@@ -10118,7 +10118,7 @@ WORKSHOP_CUT_READ_REPAIR_REASON = "workshop_cut_read_repair"
 #: it did (the adopted claude A/B ran on it); the cut-read text says what a cold re-review from
 #: the seeds is, where the shape text's "rewriting your document file in place" would point at
 #: a document that is not there. One slot, inside the first line: the template's other lines
-#: stay literal, which the host-line sweep of `test_pure_leaf_wiring` subtracts by.
+#: stay literal, which the host-line sweep of `test_leaf_wiring` subtracts by.
 WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS: dict[str, str] = {
     "repair_instruction": (
         "Correct EXACTLY the violations described below by rewriting your document file at "
@@ -10154,7 +10154,7 @@ WORKSHOP_CUT_READ_SCOPE_PARAGRAPH = (
 )
 
 
-def _pure_launch_body(request_payload: dict[str, Any]) -> str:
+def _leaf_launch_body(request_payload: dict[str, Any]) -> str:
     """The launch prompt this request would have been sent cold, minus its persona line and its
     identity block: everything between them, in template order, with every document slot
     filled under the label paragraph the launch template gives it. A cold repair re-states the
@@ -10164,7 +10164,7 @@ def _pure_launch_body(request_payload: dict[str, Any]) -> str:
     the certified exemplar: a repair turn corrects the leaf's own document and carries no prior
     art, so the renderer drops a stray `exemplar` here rather than relying on the conductor
     never to attach one."""
-    full = _render_pure_launch_prompt(
+    full = _render_leaf_launch_prompt(
         {k: v for k, v in request_payload.items() if k != "exemplar"})
     body = full.split("\n\n", 1)[1] if "\n\n" in full else ""
     cut = body.rfind("\n\nTarget node_key: ")
@@ -10178,17 +10178,17 @@ def _workshop_tool_surface_table(request_payload: dict[str, Any]) -> dict[str, s
     KIND its pair is: a judging pair's reading lineage holds no wrapper
     (`WORKSHOP_READER_TOOL_SURFACE_TEXT`), a producing pair's does (`WORKSHOP_TOOL_SURFACE_TEXT`).
     Both are keyed by provider."""
-    if _pure_leaf_is_workshop_reading_pair(request_payload.get("step"),
+    if _leaf_contract_is_workshop_reading_pair(request_payload.get("step"),
                                            request_payload.get("substep")):
         return WORKSHOP_READER_TOOL_SURFACE_TEXT
     return WORKSHOP_TOOL_SURFACE_TEXT
 
 
-def _pure_repair_template_name(request_payload: dict[str, Any]) -> str:
+def _leaf_repair_template_name(request_payload: dict[str, Any]) -> str:
     """The template key of a host-rendered repair turn. A producer's repair turn is its
     substep's — the IR's on `compile`, the bundle's otherwise (issue #534 step 2), and a
     REVIEWER's is the verdict repair whatever its step (step 3)."""
-    if _pure_leaf_is_workshop_reading_pair(request_payload.get("step"),
+    if _leaf_contract_is_workshop_reading_pair(request_payload.get("step"),
                                            request_payload.get("substep")):
         return "workshop verdict repair"
     if str(request_payload.get("step", "")).strip().lower() == "compile":
@@ -10196,18 +10196,18 @@ def _pure_repair_template_name(request_payload: dict[str, Any]) -> str:
     return "workshop bundle repair"
 
 
-def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
+def _render_leaf_repair_prompt(request_payload: dict[str, Any]) -> str:
     """Render a bounded repair turn (`workshop_{bundle,ir,verdict}_repair.txt`).
 
     The findings excerpt is wrapped in the data-only fence. On a WARM repair the resumed
     lineage already holds the launch prompt and its document is in the tree, so `<launch_body>`
     is empty. On a COLD repair (a fresh lineage seeded from the prior one's snapshot, the
     document under repair among its files) the repair re-states the launch prompt's whole body
-    (`_pure_launch_body`; issue #510) beside the `<tool_surface>` row. (The pure leaf's cold
+    (`_leaf_launch_body`; issue #510) beside the `<tool_surface>` row. (The pure leaf's cold
     repair re-inlined its prior document as `<prior_document>`; that went in issue #534
     PR-J4-b.)"""
     templates = _load_launch_prompt_templates()
-    repair_key = _pure_repair_template_name(request_payload)
+    repair_key = _leaf_repair_template_name(request_payload)
     if repair_key not in templates:
         raise ValueError(f"launch request names no rendered prompt: no template for "
                          f"{repair_key!r}")
@@ -10223,7 +10223,7 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
         "findings": _fence_pure_doc(findings),
         # Rendered only for a verdict-bearing pair; empty for the producer, whose document
         # carries no conclusion and whose repair legitimately changes what the document says.
-        # `.strip().lower()` for the reason `_pure_launch_template_name` normalizes the same two
+        # `.strip().lower()` for the reason `_leaf_launch_template_name` normalizes the same two
         # fields: a spelling this membership test does not recognize renders the slot EMPTY while
         # the template still resolves, so the omission would be silent. Only host constants reach
         # these fields today, which is what keeps it a fail-open by omission rather than a hole.
@@ -10242,19 +10242,19 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
                     if subs["repair_scope"] == WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
                     else WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS)
     if not request_payload.get("warm_resume"):
-        subs["launch_body"] = _pure_launch_body(request_payload)
+        subs["launch_body"] = _leaf_launch_body(request_payload)
         # The launch body starts after the persona line, which carries a workshop prompt's
         # `<tool_surface>`; every workshop repair template states it beside the body — the
         # verdict repair since step 3 PR-J2 (a reader row carries its transport's paging rule),
         # the bundle and IR repairs since PR-J3-b (an HTTP producer row carries what to do about
-        # a cut reply, which the findings' fence may only diagnose). `_pure_launch_body` has
+        # a cut reply, which the findings' fence may only diagnose). `_leaf_launch_body` has
         # already refused a provider with no row.
         subs["tool_surface"] = (
             _workshop_tool_surface_table(request_payload)[request_payload["workshop_provider"]])
     else:
         subs["launch_body"] = ""
         subs["tool_surface"] = ""
-    return _substitute_pure_placeholders(template, subs)
+    return _substitute_leaf_placeholders(template, subs)
 
 
 def _render_launch_prompt_template(request_payload: dict[str, Any]) -> str:
@@ -10276,10 +10276,10 @@ def _render_launch_prompt_template(request_payload: dict[str, Any]) -> str:
     """
     if request_payload.get("deterministic"):
         return _render_deterministic_launch_prompt(request_payload)
-    if _pure_leaf_is_workshop_request(request_payload):
+    if _leaf_contract_is_workshop_request(request_payload):
         if str(request_payload.get("repair_findings", "")).strip():
-            return _render_pure_repair_prompt(request_payload)
-        return _render_pure_launch_prompt(request_payload)
+            return _render_leaf_repair_prompt(request_payload)
+        return _render_leaf_launch_prompt(request_payload)
     raise ValueError(
         "launch request is neither deterministic nor workshop, and there is no other leaf "
         f"model to render a prompt for (leaf_mode={request_payload.get('leaf_mode')!r} "
@@ -10320,7 +10320,7 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # skill section in its prompt: force the skill fields empty so the persisted request is
     # self-consistent and the pure marker / validation checks (which require empty skill
     # fields) hold. A deterministic request never carries them in the first place.
-    pure = _pure_leaf_is_host_rendered_request(payload)
+    pure = _leaf_contract_is_host_rendered_request(payload)
     if pure:
         payload["skill_name"] = ""
         payload["skill_ref"] = ""
@@ -10450,13 +10450,13 @@ def _required_launch_prompt_markers(request_payload: dict[str, Any]) -> list[str
     step = request_payload.get("step")
     if not isinstance(step, str) or not step.strip():
         return []
-    if _pure_leaf_is_host_rendered_request(request_payload):
+    if _leaf_contract_is_host_rendered_request(request_payload):
         # Pure-function leaf turn (launch OR repair): sentinel + identity + contract version.
         # No skill / must-read / `Required requirements:` markers — the pure prompt has no
         # skill section and no leaf-authorable gate/write instructions. A workshop turn
         # (issue #534) carries the same identity block under its own sentinel.
         return [
-            WORKSHOP_PROMPT_SENTINEL if _pure_leaf_is_workshop_request(request_payload)
+            WORKSHOP_PROMPT_SENTINEL if _leaf_contract_is_workshop_request(request_payload)
             else PURE_PROMPT_SENTINEL,
             "Target node_key:", "Target step:", "Target substep:",
             "orchestration_id:", "agent_run_id:",
@@ -10521,12 +10521,12 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
     # The WORKSHOP sentinel (issue #534) is held to the same AND, in both directions, before
     # the pure one: a workshop request carries a workshop-shaped prompt and nothing else does.
     prompt_opens_workshop = prompt_text.lstrip().startswith(WORKSHOP_PROMPT_SENTINEL)
-    if prompt_opens_workshop != _pure_leaf_is_workshop_request(request_payload):
+    if prompt_opens_workshop != _leaf_contract_is_workshop_request(request_payload):
         raise ValueError(
             "launch prompt and request disagree on the workshop leaf model: the prompt "
             + ("opens" if prompt_opens_workshop else "does not open")
             + f" with the workshop sentinel ({WORKSHOP_PROMPT_SENTINEL!r}) and the request "
-            + ("declares" if _pure_leaf_is_workshop_request(request_payload)
+            + ("declares" if _leaf_contract_is_workshop_request(request_payload)
                else "does not declare") + " leaf_mode=workshop")
     prompt_opens_pure = prompt_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
     if prompt_opens_pure and not _is_pure_launch_request(request_payload):
@@ -10539,7 +10539,7 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
             "pure launch request prompt must open with the pure-function sentinel "
             f"({PURE_PROMPT_SENTINEL!r})"
         )
-    if _pure_leaf_is_host_rendered_request(request_payload):
+    if _leaf_contract_is_host_rendered_request(request_payload):
         # Defense-in-depth: bind the pure prompt's identity VALUES to the request, not just the
         # marker NAMES. `prepare_launch_request_payload` force-renders the canonical pure prompt,
         # so at the record-launch chokepoint this holds by construction; but a caller that reaches
@@ -11059,7 +11059,7 @@ def default_agent_model_for_backend(backend: str) -> str:
 
     WHAT DECIDES A CLAUDE LEAF'S MODEL — the one statement of it; other sites point here.
     The declared `--model` when the entry names one, else the CLI's own default. A
-    leaf launches with `--restricted` (`pure_leaf.workshop_leaf_flags`), so no user, project or
+    leaf launches with `--restricted` (`leaf_contract.workshop_leaf_flags`), so no user, project or
     local settings file applies: neither a settings `model` key, nor an `env` block's
     `ANTHROPIC_MODEL`, nor an `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remap of a declared
     `opus` reaches the leaf (measured, with the endpoint as a fourth row; the flag ignores
@@ -11182,7 +11182,7 @@ def _validate_pass_output_refs_against_launch(
         )
 
 
-def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> None:
+def _validate_leaf_launch_request_payload(request_payload: dict[str, Any]) -> None:
     """Validate the leaf-specific shape of a host-rendered launch request.
 
     Enforced (fail-closed): the one accepted `leaf_mode` is `"workshop"` (issue #534; the
@@ -11292,10 +11292,10 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
             f"got (step={step!r}, substep={substep!r})"
         )
     version = request_payload.get("prompt_contract_version")
-    if version != PURE_PROMPT_CONTRACT_VERSION:
+    if version != LEAF_PROMPT_CONTRACT_VERSION:
         raise ValueError(
             f"{leaf_mode} launch request prompt_contract_version must be exactly "
-            f"{PURE_PROMPT_CONTRACT_VERSION!r}; got {version!r}"
+            f"{LEAF_PROMPT_CONTRACT_VERSION!r}; got {version!r}"
         )
     aop = request_payload.get("allowed_output_paths")
     if aop not in (None, []):
@@ -11503,11 +11503,11 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # `is not None`: the invariant is "any present `leaf_mode` other than 'pure' is invalid", so
     # an explicit `leaf_mode: null` (or "", or "agentic") must reach the validator and be
     # REJECTED — not silently fall through to the agentic path with write authority. Only an
-    # ABSENT key is the legacy path. `_validate_pure_launch_request_payload` then requires the
+    # ABSENT key is the legacy path. `_validate_leaf_launch_request_payload` then requires the
     # value be exactly "pure".
     is_pure = "leaf_mode" in request_payload
     if is_pure:
-        _validate_pure_launch_request_payload(request_payload)
+        _validate_leaf_launch_request_payload(request_payload)
 
     is_verify_substep = (
         isinstance(step, str)
@@ -11716,7 +11716,7 @@ def _validate_terminal_run_payload(
                 repo_root, orchestration_id, agent_run_id=agent_run_id)
             # A workshop leaf (issue #534) holds no write authority under the checkout either.
             pure_launch = (isinstance(launch_req, dict)
-                           and _pure_leaf_is_host_rendered_request(launch_req))
+                           and _leaf_contract_is_host_rendered_request(launch_req))
         if pure_launch:
             # Require EXACTLY an empty list. A missing field (`output_refs is None`) is NOT
             # equivalent: the contract is that a pure pass row carries `output_refs: []`, so a
@@ -12456,7 +12456,7 @@ def _validate_step_result_payload(
         substep_record = run_records[substep_run_id]
         launch_req = _read_launch_request_payload(
             repo_root, orchestration_id, agent_run_id=substep_run_id)
-        if isinstance(launch_req, dict) and _pure_leaf_is_host_rendered_request(launch_req):
+        if isinstance(launch_req, dict) and _leaf_contract_is_host_rendered_request(launch_req):
             phase_is_pure = True
             continue
         output_refs = substep_record.get("output_refs")
@@ -12696,7 +12696,7 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 # directory itself.
 #
 # `http` holds the lineage homes of an HTTP `workshop leaf` (issue #534 PR-J3-b): one directory
-# for both HTTP providers, whose host loop is one transport (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS`).
+# for both HTTP providers, whose host loop is one transport (`leaf_contract.WORKSHOP_LINEAGE_BACKENDS`).
 WORKFLOW_BACKEND_HOME_DIRNAMES = ("claude", "codex", "http")
 
 # The owner marker's filename, written in the orchestration directory that is the
@@ -13678,7 +13678,7 @@ def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_
 
 
 #: A `workshop leaf`'s lineage-home preparer and the profile kwargs a prepared home implies, by
-#: LINEAGE backend (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS` maps a provider to it; issue #534 step
+#: LINEAGE backend (`leaf_contract.WORKSHOP_LINEAGE_BACKENDS` maps a provider to it; issue #534 step
 #: 2 PR-2, `http` PR-J3-b). The conductor and `record_launch` read the same tables, so the home a
 #: launch is recorded against is the one the conductor seeded. `http` has no profile row: an
 #: HTTP launch runs no sandboxed process.
@@ -14001,7 +14001,7 @@ def _probe_claude_backend(
 _CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(
     r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--restricted(?![\w-])")
 
-#: Every option a claude `workshop leaf`'s argv carries (`pure_leaf.workshop_leaf_flags`, the
+#: Every option a claude `workshop leaf`'s argv carries (`leaf_contract.workshop_leaf_flags`, the
 #: producing and the reading kind; issue #534). A CLI missing one refuses the whole argv, so
 #: every launch would die as a transport failure; `claude_workshop_flag_set_available` moves
 #: that to preflight. An EXPLICIT tuple since issue #534 PR-J4-b: it was the workshop flags
@@ -14048,7 +14048,7 @@ def _claude_workshop_flag_set_check(
 #: The `codex exec --help` options a codex `workshop leaf`'s cold argv spells (issue #534 step 2
 #: PR-2; `Conductor.leaf_command`'s workshop branch). The warm argv's are
 #: `CODEX_EXEC_RESUME_REQUIRED_FLAGS`, which `codex_exec_resume` already certifies; the
-#: `--config` overrides both carry (`pure_leaf.codex_workshop_overrides`) are config keys, which
+#: `--config` overrides both carry (`leaf_contract.codex_workshop_overrides`) are config keys, which
 #: no help text lists, and are pinned by the unbilled CLI rows instead.
 CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS: tuple[str, ...] = (
     "--model", "--sandbox", "--config", "--json", "--skip-git-repo-check", "--ignore-rules")
@@ -15006,7 +15006,7 @@ def record_launch(
     # lineage's tree, and it holds no write authority under the checkout (the host writes every
     # artifact from the snapshot).
     if (backend_token in _HTTP_PROVIDER_TOKENS
-            and not _pure_leaf_is_workshop_request(request_payload)):
+            and not _leaf_contract_is_workshop_request(request_payload)):
         raise RuntimeError(
             f"record-launch: provider {backend_token!r} runs no confined child process and is "
             f"admissible only for a workshop leaf; this launch is not one")
@@ -15027,9 +15027,9 @@ def record_launch(
     # `workshop_lineage_home_missing` and the conductor falls back to a cold reuse, as the codex
     # lineage does above; a cold launch whose home was never prepared is a host defect, refused.
     # Both are answered before any launch record, session-index row or active-child marker.
-    is_workshop = _pure_leaf_is_workshop_request(request_payload)
+    is_workshop = _leaf_contract_is_workshop_request(request_payload)
     workshop_isolation: dict[str, str] | None = None
-    #: The lineage-home backend of a workshop launch (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS`,
+    #: The lineage-home backend of a workshop launch (`leaf_contract.WORKSHOP_LINEAGE_BACKENDS`,
     #: keyed by provider): the CLI's own token on a CLI launch, `http` for both HTTP providers,
     #: whose `backend_token` is the provider token (issue #534 PR-J3-b).
     lineage_backend: str | None = None
@@ -15037,7 +15037,7 @@ def record_launch(
         if not is_workshop:
             raise ValueError("workshop_lineage_id is valid only for a workshop launch request")
         from tools.llm_config import PROVIDER_BACKEND_TOKENS
-        from tools.pure_leaf import WORKSHOP_LINEAGE_BACKENDS
+        from tools.leaf_contract import WORKSHOP_LINEAGE_BACKENDS
         named = request_payload.get("workshop_provider")
         named = named if isinstance(named, str) else ""
         lineage_backend = WORKSHOP_LINEAGE_BACKENDS.get(named)
@@ -15270,7 +15270,7 @@ def record_launch(
         # `determine_substep_status` read for a deterministic substep.
         # A workshop leaf writes nothing under the checkout either — the host writes every
         # artifact from its snapshot — so it declares no output path, as a pure leaf does.
-        is_pure = _pure_leaf_is_host_rendered_request(request_payload)
+        is_pure = _leaf_contract_is_host_rendered_request(request_payload)
         # The toolchain of the target the request's pipeline is built for (issue #284; read
         # off the IR's `impl_defaults` until R4-a PR-2), so the canonical-placement helper can
         # gate cross-phase auto-inject on the build system (the documented Make-only
@@ -15530,9 +15530,9 @@ def record_launch(
                 assert workshop_isolation is not None
                 profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
                 # One profile builder. What the profile binds and why — the checkout is NOT
-                # among it (issue #227) — is stated once, in `build_readonly_bwrap_profile`'s
+                # among it (issue #227) — is stated once, in `build_lineage_bwrap_profile`'s
                 # docstring and at the `--tmpfs` emission in `render_bwrap_command`.
-                profile = build_readonly_bwrap_profile(
+                profile = build_lineage_bwrap_profile(
                     repo_root=repo_root,
                     orchestration_id=orchestration_id,
                     agent_run_id=child_agent_run_id,

@@ -5,9 +5,9 @@
 The module began as the PURE-FUNCTION leaf's transport (Z2; `docs/design/
 zero_base_architecture.md` A2): a host-assembled closed context, one typed JSON document
 returned, no tools. That leaf model, its launch flag set (`pure_leaf_flags`), its fixed system
-prompt and its reply-text extractor went in PR-J4-b; the module keeps its name until the
-mechanical renames of J4-d. What it holds now is STAGE-AGNOSTIC: the leaf contract version
-(`PURE_PROMPT_CONTRACT_VERSION`, a derivation-key input), the workshop leaf's launch flags and
+prompt and its reply-text extractor went in PR-J4-b, and PR-J4-d renamed the module from
+`tools/pure_leaf.py`. What it holds now is STAGE-AGNOSTIC: the leaf contract version
+(`LEAF_PROMPT_CONTRACT_VERSION`, a derivation-key input), the workshop leaf's launch flags and
 tool-surface tables, the result-envelope parser, the verify verdict and semantic-review
 contracts, and the record predicates (`is_pure_request` and the pure sentinel stay so a
 record written by the pure leaf is still read). It is deliberately free of any
@@ -30,11 +30,11 @@ from typing import Any, NamedTuple
 # (`tools/derivation.py`), so a contract change is an observable event (A7). Bumped when any
 # text a leaf reads changes — a workshop template, a fragment, a document slice, a tool-surface
 # row, a system prompt — in a way that affects leaf behaviour; the drift pin
-# (`tools/tests/test_pure_prompt_contract_drift.py`) names what it hashes. ONE counter since
+# (`tools/tests/test_leaf_prompt_contract_drift.py`) names what it hashes. ONE counter since
 # issue #534 PR-J4-b: the workshop leaf's own (`WORKSHOP_PROMPT_CONTRACT_VERSION`, `workshop-1`
 # through `workshop-9`, which entered no key) is retired, and the VALUE stays `pure-84` (no key
 # moves); the next bump writes `leaf-85`.
-PURE_PROMPT_CONTRACT_VERSION = "pure-84"
+LEAF_PROMPT_CONTRACT_VERSION = "pure-84"
 
 # Schema-violation repair is a bounded in-conversation continuation (warm `--resume
 # --fork-session`): the producer sees its own prior answer plus the violation excerpt and
@@ -50,7 +50,7 @@ MAX_BUNDLE_REPAIR_TURNS = 2
 # line 0 against it via a parity test. The slim-repair sentinel, whose anchor this mirrored, was
 # COPIED into each module instead; it survives in the validator alone, for the pre-Z4 records it
 # still has to classify (issue #171). A change here is a prompt-contract change (bump
-# `PURE_PROMPT_CONTRACT_VERSION`).
+# `LEAF_PROMPT_CONTRACT_VERSION`).
 PURE_PROMPT_SENTINEL = "Pure-function leaf turn (host-mediated)"
 
 # Data-only fence around an untrusted document inlined into a pure launch prompt (`tests.md`,
@@ -151,7 +151,7 @@ WORKSHOP_PROMPT_SENTINEL = "Workshop leaf turn (host-seeded work tree)"
 #: default because the default carries per-machine DYNAMIC sections (cwd, environment, memory
 #: paths, git status). It takes them out of the system prompt but not out of the request: the
 #: CLI still adds text of its own (`docs/ORCHESTRATION.md`, issue #454). A change here is a
-#: prompt-contract change (`PURE_PROMPT_CONTRACT_VERSION`).
+#: prompt-contract change (`LEAF_PROMPT_CONTRACT_VERSION`).
 WORKSHOP_SYSTEM_PROMPT = (
     "You are the producer of a host-mediated workflow, working in a host-seeded work tree. "
     "Your file tools reach that tree and nothing else; you hold no shell. The host runs the "
@@ -188,7 +188,7 @@ _PATH_PROPERTY = {"type": "string",
 
 #: What the model reads of the five file tools: name, description and JSON schema, in one table
 #: both dialects serialize (`llm_workshop_loop`). Leaf-read contract text: a change here is a
-#: prompt-contract change (`PURE_PROMPT_CONTRACT_VERSION`).
+#: prompt-contract change (`LEAF_PROMPT_CONTRACT_VERSION`).
 HTTP_FILE_TOOL_DECLARATIONS: tuple[dict[str, Any], ...] = (
     {"name": "read_file",
      "description": (
@@ -308,7 +308,7 @@ _CLAUDE_FILE_TOOLS_TEXT = ("You have no shell: your file tools (Read, Write, Edi
 #: What a workshop launch prompt's `<tool_surface>` slot says the leaf holds, by the provider
 #: the launch request names (`workshop_provider`): the one sentence of the contract that
 #: differs by transport (`docs/design/producer_workshop_leaf.md` §Provider neutrality). A
-#: provider with no row cannot serve a workshop launch (`_validate_pure_launch_request_payload`).
+#: provider with no row cannot serve a workshop launch (`_validate_leaf_launch_request_payload`).
 WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
     "claude_cli": (_CLAUDE_FILE_TOOLS_TEXT[:-1]
                    + ", and the host's operations are the `wrapper` MCP server's tools "
@@ -334,7 +334,7 @@ CODEX_EXEC_OUTPUT_BUDGET_TOKENS = 10_000
 CODEX_BYTES_PER_TOKEN = 4
 
 #: The byte rule the host applies to a codex reading lineage's own capture of each command
-#: (`workflow_conductor.Conductor._run_pure_reviewer_substep`, issue #547).
+#: (`workflow_conductor.Conductor._run_leaf_reviewer_substep`, issue #547).
 CODEX_EXEC_OUTPUT_BUDGET_BYTES = CODEX_EXEC_OUTPUT_BUDGET_TOKENS * CODEX_BYTES_PER_TOKEN
 
 #: The size the codex reader row tells a leaf to keep each command's output under, and the page

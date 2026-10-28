@@ -2,11 +2,11 @@
 """The `generate.verify` reviewer (M-D; a READING workshop leaf since issue #534 PR-J4-b).
 
 Covers the host side of the `generate.verify` channel in `tools/workflow_conductor.py` (the
-reviewer loop `_run_pure_reviewer_substep`, verdict validation, the source_meta.json
+reviewer loop `_run_leaf_reviewer_substep`, verdict validation, the source_meta.json
 projection, verdict_meta, the classify_failure verdict route) and the `tools/run_workflow.py`
 gate removal. The loop is driven through its workshop seam (`test_workshop_reviewer`'s
 `_ReviewerFake`, via `_reviewer_conductor` below): the leaf writes its verdict into the
-lineage's tree. Mirrors the producer suite (`test_pure_leaf_producer.py`), whose fixtures it
+lineage's tree. Mirrors the producer suite (`test_leaf_producer.py`), whose fixtures it
 reuses.
 """
 
@@ -32,8 +32,8 @@ from tools.backends import registry as _bb_registry  # noqa: E402
 from tools.tests.target_fixtures import FORTRAN_CPU as _BB_PROFILE  # noqa: E402
 _FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
     "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
-from tools.tests.test_pure_leaf_producer import (
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
+from tools.tests.test_leaf_producer import (
     _NODE, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
 from tools import usage_reset
@@ -79,7 +79,7 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
                  stage_phase_02: bool = True) -> wc.NodeRefs:
     """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input),
     and — unless the corresponding `stage_*` argument is False — the repository's checks-module
-    contract and phase_02 contract staged where `_build_pure_verify_context` reads them."""
+    contract and phase_02 contract staged where `_build_leaf_verify_context` reads them."""
     refs = _write_node(repo)
     src = repo / refs.source_dir()
     src.mkdir(parents=True, exist_ok=True)
@@ -100,7 +100,7 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
 
 # ======================================================================================
 # The reviewer loop's workshop seam (issue #534 PR-J4-b: every reviewer is a READING workshop
-# leaf, so these rows drive `_run_pure_reviewer_substep` through it)
+# leaf, so these rows drive `_run_leaf_reviewer_substep` through it)
 # ======================================================================================
 def _reviewer_fake() -> type:
     """`test_workshop_reviewer._ReviewerFake`: the reviewer loop's workshop seam — the lineage
@@ -155,9 +155,9 @@ def _reviewer_conductor(repo: Path, script, *, cls: type | None = None, llm_conf
 def _run_verify(c, refs: wc.NodeRefs) -> wc.SubstepOutcome:
     """`generate.verify`'s reviewer loop with the node's own spec — what the deleted seam
     `_run_pure_verify_substep` bound, and what `run_substep` dispatches a judging pair to."""
-    return c._run_pure_reviewer_substep(
+    return c._run_leaf_reviewer_substep(
         refs, "generate", "verify", (),
-        c._pure_reviewer_spec("generate", "verify", c._shape_for_spec(refs, "generate")))
+        c._leaf_reviewer_spec("generate", "verify", c._shape_for_spec(refs, "generate")))
 
 
 def _spawned(c) -> int:
@@ -169,14 +169,14 @@ def _requests(c) -> list[dict]:
 
 
 # ======================================================================================
-# _build_pure_verify_context
+# _build_leaf_verify_context
 # ======================================================================================
 class PureVerifyContextTests(unittest.TestCase):
     def test_context_has_the_six_verify_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            ctx = _conductor(repo)._build_pure_verify_context(refs)
+            ctx = _conductor(repo)._build_leaf_verify_context(refs)
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
                               "ir_document", "target_profile",
@@ -198,7 +198,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            doc = _conductor(repo)._build_pure_verify_context(
+            doc = _conductor(repo)._build_leaf_verify_context(
                 refs)["checks_module_contract_document"]
             self.assertTrue(doc.startswith("## 1. The fixed ABI\n"), doc[:80])
             neutral_end = doc.index("## 1. The fixed ABI in Fortran")
@@ -243,7 +243,7 @@ class PureVerifyContextTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _verify_node(repo, stage_checks_contract=False)
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
 
     def test_each_unreadable_node_artifact_raises_its_named_document(self) -> None:
@@ -263,14 +263,14 @@ class PureVerifyContextTests(unittest.TestCase):
                 refs = _verify_node(repo)
                 (repo / rel_of(refs)).unlink()
                 with self.assertRaises(RuntimeError) as cm:
-                    _conductor(repo)._build_pure_verify_context(refs)
+                    _conductor(repo)._build_leaf_verify_context(refs)
                 self.assertIn(marker, str(cm.exception))
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
             (repo / refs.source_dir() / "codegen_bundle.json").write_bytes(b"\xff\xfe")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_bundle_document_missing", str(cm.exception))
             self.assertIn("UnicodeDecodeError", str(cm.exception))
         # ...and a whitespace-only one (a truncated write): the launch validator refuses it
@@ -280,7 +280,7 @@ class PureVerifyContextTests(unittest.TestCase):
             refs = _verify_node(repo)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(" \n\t\n", encoding="utf-8")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_ir_document_missing", str(cm.exception))
             self.assertTrue(str(cm.exception).endswith(": empty"), str(cm.exception))
 
@@ -293,7 +293,7 @@ class PureVerifyContextTests(unittest.TestCase):
             (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_bytes(
                 b"## 1. x\n\xff\xfe\n## 5. y\n")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
 
     def test_the_language_binding_fails_closed_three_ways(self) -> None:
@@ -312,18 +312,18 @@ class PureVerifyContextTests(unittest.TestCase):
             with mock.patch.object(checks_abi, "document",
                                    lambda: body.replace("## 1. ", "## One ", 1)):
                 with self.assertRaises(RuntimeError) as cm:
-                    c._build_pure_verify_context(refs)
+                    c._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
             self.assertIn("checks-ABI binding", str(cm.exception))
             with mock.patch.object(checks_abi, "document", side_effect=OSError("gone")):
                 with self.assertRaises(RuntimeError) as cm:
-                    c._build_pure_verify_context(refs)
+                    c._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_abi_binding_missing", str(cm.exception))
             record = backend_registry.get("language", "fortran")
             with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
                     backend_provides=record.backend_provides - {"checks_abi"})}):
                 with self.assertRaises(RuntimeError) as cm:
-                    c._build_pure_verify_context(refs)
+                    c._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_abi_binding_unavailable", str(cm.exception))
 
     def test_unsliceable_checks_contract_raises_the_named_contract(self) -> None:
@@ -335,7 +335,7 @@ class PureVerifyContextTests(unittest.TestCase):
             (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_text(
                 "## 1. The fixed ABI\nbody\n", encoding="utf-8")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
 
     def test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02(self) -> None:
@@ -345,7 +345,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+            doc = _conductor(repo)._build_leaf_verify_context(refs)["severity_rubric_document"]
             self.assertTrue(doc.startswith("#### Severity of a finding"), doc[:80])
             self.assertIn("names the repair", doc,
                           "the rubric's lead sentence no longer says what the value names; this "
@@ -455,7 +455,7 @@ class PureVerifyContextTests(unittest.TestCase):
         SAMPLED: nothing about what each bullet SAYS — the wording is prose a leaf reads, and
         `test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02` pins only
         the span. `none` has no named constant of its own (the pass side is the bare literal in
-        `pure_leaf.validate_verdict`), so its exclusion is self-tested against the tuple rather
+        `leaf_contract.validate_verdict`), so its exclusion is self-tested against the tuple rather
         than written out."""
         self.assertIn("none", VERDICT_SEVERITIES,
                       "the pass-side literal left the enum; the exclusion below now removes "
@@ -464,7 +464,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+            doc = _conductor(repo)._build_leaf_verify_context(refs)["severity_rubric_document"]
         # A VALUE bullet is one whose opener is `<word>`: — the shape the three value bullets
         # use. Summing openers over the ENUM (round 1's fix) restored nothing: it could never see
         # a bullet for a value outside the enum, so `- `fatal`: …` shipped green where the older
@@ -485,7 +485,7 @@ class PureVerifyContextTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _verify_node(repo, stage_phase_02=False)
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
 
     def test_non_utf8_phase_02_raises_the_named_contract(self) -> None:
@@ -495,7 +495,7 @@ class PureVerifyContextTests(unittest.TestCase):
             (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_bytes(
                 b"#### Severity of a finding\n\xff\xfe\n## On-failure behavior\n")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
 
     def test_unsliceable_phase_02_raises_the_named_contract(self) -> None:
@@ -512,7 +512,7 @@ class PureVerifyContextTests(unittest.TestCase):
                 real.replace("\n## On-failure behavior\n", "\n## Retry policy\n"),
                 encoding="utf-8")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_severity_rubric_document_unsliceable", str(cm.exception))
 
 
@@ -707,7 +707,7 @@ class PureVerifySubstepTests(unittest.TestCase):
     def test_context_assembly_failure_is_a_recorded_fail_closed_outcome(self) -> None:
         """The HANDLER pin for issue #142's fail-closed disposition, not the builder's.
 
-        `_build_pure_verify_context` raising is only half the contract: `run_substep`'s callers
+        `_build_leaf_verify_context` raising is only half the contract: `run_substep`'s callers
         must never see an exception, so this loop has to convert it into the same recorded
         `pure_context_assembly_failed` transport outcome the producer produces. Deleting the
         try/except around the call would leave every builder-side test above green.
@@ -846,7 +846,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         vmeta = json.loads((base / "verdict_meta.json").read_text())
         self.assertEqual(vmeta["result"], "pass")
         self.assertIsNone(vmeta["failure_category"])
-        self.assertEqual(vmeta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(vmeta["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         self.assertEqual(vmeta["per_attempt"][0]["model"], "claude-opus-4-8")
         self.assertEqual(vmeta["per_attempt"][0]["model_provenance"], "result_envelope")
 
@@ -914,11 +914,11 @@ class PureVerifySubstepTests(unittest.TestCase):
         """Drive a `minor` verdict with `_LONG_SUMMARIES` through the real routing and read the
         launch request the producer's repair turn RECORDS — via `run_substep`, so the producer
         loop's own seed of `repair_findings` is on the path, not only `build_launch_request`.
-        The producer is a workshop leaf (`test_pure_leaf_producer._WorkshopLeafFake`), whose
+        The producer is a workshop leaf (`test_leaf_producer._WorkshopLeafFake`), whose
         lineage `child-1` the repair targets: `resumable=True` reopens it warm, `resumable=False`
         is the #209 cold first turn (a provider without warm resume, a GC'd transcript), a new
         lineage carrying the findings."""
-        from tools.tests.test_pure_leaf_producer import _workshop_conductor
+        from tools.tests.test_leaf_producer import _workshop_conductor
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
@@ -1015,7 +1015,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         repeats its last envelope for as many launches as the loop asks. The two loops are
         separate copies, so the producer's row does not cover this one. Pinned on the launch
         count, the outcome's `attempts`, and the `verdict_meta` the outer route reads."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         c, refs, oc = self._run([_envelope({"verification_status": "pass"})])
         self.assertEqual(oc.status, "fail")
         self.assertEqual(_spawned(c), MAX_BUNDLE_REPAIR_TURNS + 1)
@@ -1057,7 +1057,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         repair budget is spent — never a transport death, so never a quota wait. (The pure loop
         ended at once with `infra_error: leaf_timeout`; the workshop rule is pinned whole by
         `test_workshop_reviewer`'s `test_a_pass_never_finished_exhausts_into_the_schema_category`.)"""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         marker = wc._leaf_timeout_marker(7200, 7203.0)
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
@@ -1200,7 +1200,7 @@ class PureVerifySubstepTests(unittest.TestCase):
             self.assertEqual(request.get("pure_language"), c.target.toolchain["language"])
             # ...and the parallel backend its `{{parallel:<name>}}` markers are (issue #316).
             self.assertEqual(request.get("pure_parallel"), c.target.parallel_backend)
-            ort._pure_launch_template(request)  # composes, i.e. does not raise
+            ort._leaf_launch_template(request)  # composes, i.e. does not raise
 
     def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
         """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death the
@@ -1337,7 +1337,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         # `MAX_BUNDLE_REPAIR_TURNS` malformed verdicts before the valid one. A wait that spent
         # one `attempt` would refuse the last repair and fail closed (the fixture straddles the
         # budget on purpose — one malformed verdict would pass under that regression).
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         malformed = [wc.ProcResult(0, _envelope("nope"), "")] * MAX_BUNDLE_REPAIR_TURNS
         c, refs = self._waiting(self._QUOTA, *malformed,
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
@@ -1380,7 +1380,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         (2) The connection drops on the first repair turn instead: the retry re-runs that repair
         with the same findings, and still spends no budget — cold, in a new lineage seeded from
         the seeds alone, never resuming the dead session (the workshop lineage's rule)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
         c, refs = self._waiting(self._FLAKE, *([malformed] * (MAX_BUNDLE_REPAIR_TURNS + 1)),
                                 record=True)
@@ -1418,7 +1418,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         repair. The dead turn must not spend the repair budget: every repair the budget allows
         still reaches a leaf (`MAX_BUNDLE_REPAIR_TURNS + 1` spawns), and `verdict_meta` counts
         the launches that ran, not the request that died."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
         c, refs = self._waiting(malformed, malformed, record=True)
         recorded = c.record_launch
@@ -1635,7 +1635,7 @@ class PureVerifyRoutingDriftTests(unittest.TestCase):
     def test_routing_categories_match_pure_leaf_constants(self) -> None:
         # parallel_review (glm): the routing table must key on the SAME category strings the loop
         # assigns, or a constant rename would silently mis-route. Pin the identity. (The pure
-        # reply extractor's two categories, `pure_leaf.RESPONSE_*`, went with it in issue #534
+        # reply extractor's two categories, `leaf_contract.RESPONSE_*`, went with it in issue #534
         # PR-J4-b; the reviewer loop assigns the two below.)
         self.assertIn(wc.GENERATE_VERDICT_SCHEMA_VIOLATION, wc.GENERATE_VERDICT_FAILURE_ROUTING)
         self.assertEqual(wc.GENERATE_VERDICT_FAILURE_ROUTING[wc.WORKSHOP_CUT_READ],
@@ -1676,7 +1676,7 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
         # if a violation message ever carried a lone surrogate, capture-time normalization must keep
         # every downstream write from raising. Force it by making the validator emit one.
         from unittest import mock
-        import tools.pure_leaf as pl
+        import tools.leaf_contract as pl
 
         class _C(_reviewer_fake()):  # type: ignore[misc]
             def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
@@ -1722,7 +1722,7 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
                                           workshop_provider="claude_cli", **kwargs)
             self.assertEqual(req["leaf_mode"], "workshop")
             self.assertEqual(req["substep"], "verify")
-            self.assertEqual(req["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+            self.assertEqual(req["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
             self.assertNotIn("workshop_prompt_contract_version", req)
             self.assertEqual(req["allowed_output_paths"], [])
             self.assertEqual(req["skill_name"], "")
@@ -1773,10 +1773,10 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         for extra in self._VERIFY_REQUESTS:
             req = {"leaf_mode": "workshop", "workshop_provider": "claude_cli",
                    "pure_language": "fortran", "pure_parallel": "openmp",
-                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION, **extra}
+                   "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION, **extra}
             # The `Output contract` paragraph of each verify launch template, read where the
             # cold repair reads it: the composed template itself (issue #510).
-            texts.append(next(b.strip() for b in ort._pure_launch_template(req).split("\n\n")
+            texts.append(next(b.strip() for b in ort._leaf_launch_template(req).split("\n\n")
                               if b.lstrip().startswith("Output contract")))
         return texts
 
@@ -1806,13 +1806,13 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         for extra in self._VERIFY_REQUESTS:
             req = {"leaf_mode": "workshop", "workshop_provider": "claude_cli",
                    "pure_language": "fortran", "pure_parallel": "openmp",
-                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                   "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                    "repair_findings": "verdict JSON did not parse", **extra}
             with self.subTest(request=extra):
-                cold = ort._render_pure_repair_prompt(req)
+                cold = ort._render_leaf_repair_prompt(req)
                 for phrase in self._EVERY_DEFECT_PHRASES:
                     self.assertEqual(cold.count(phrase), 1, phrase)
-                warm = ort._render_pure_repair_prompt({**req, "warm_resume": True})
+                warm = ort._render_leaf_repair_prompt({**req, "warm_resume": True})
                 # Self-test: the warm render is a real repair prompt, so its lacking the rule
                 # is the warm/cold split and not an empty render.
                 self.assertIn("verdict JSON did not parse", warm)
@@ -2025,7 +2025,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
 # ======================================================================================
 class PureHarnessVerifyWiringTests(unittest.TestCase):
     """The reviewer half of the second shape, driven through the reviewer loop and
-    `run_substep` rather than by calling `_pure_reviewer_spec` directly.
+    `run_substep` rather than by calling `_leaf_reviewer_spec` directly.
 
     Choosing the spec and WIRING the choice into the two call sites are different things: a
     round-0 mutation sweep reported both call sites as unpinned while the spec's own rows were
@@ -2039,7 +2039,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                   "docs/workflow/phases/phase_02_generate.md")
 
     def setUp(self) -> None:
-        from tools.tests.test_pure_leaf_producer import (
+        from tools.tests.test_leaf_producer import (
             _write_harness_node, _harness_bundle, _HARNESS_SPEC_ID)
         self._harness_bundle = _harness_bundle
         self._spec_id = _HARNESS_SPEC_ID
@@ -2092,7 +2092,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                 target.unlink()
                 try:
                     with self.assertRaises(RuntimeError) as caught:
-                        self.c._build_pure_harness_verify_context(self.refs)
+                        self.c._build_leaf_harness_verify_context(self.refs)
                     self.assertIn(reason, str(caught.exception))
                 finally:
                     target.write_text(body, encoding="utf-8")
@@ -2103,7 +2103,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                              encoding="utf-8")
         try:
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_verify_context(self.refs)
+                self.c._build_leaf_harness_verify_context(self.refs)
             self.assertIn("pure_severity_rubric_document_unsliceable", str(caught.exception))
         finally:
             phase_doc.write_text(body, encoding="utf-8")
@@ -2112,7 +2112,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         # given a row above or shows up here. (An earlier form subtracted the reason STRINGS
         # from a set of context KEYS — a no-op term a round-4 reviewer spotted; the sets are
         # named explicitly now.)
-        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        ctx = self.c._build_leaf_harness_verify_context(self.refs)
         raising = {"runner_output_contract_document", "severity_rubric_document",
                    "controlled_spec_document", "tests_document", "ir_document",
                    "bundle_document"}
@@ -2158,7 +2158,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         self.assertEqual(self._last_request()["pure_shape"], "harness")
 
     def test_run_substep_dispatches_the_producer_with_the_shape(self) -> None:
-        from tools.tests.test_pure_leaf_producer import _harness_bundle, _workshop_conductor
+        from tools.tests.test_leaf_producer import _harness_bundle, _workshop_conductor
         producer = _workshop_conductor(self.repo)
         producer.envelopes = [_envelope(_harness_bundle())]
         oc = producer.run_substep(self.refs, "generate", "generate")
@@ -2179,7 +2179,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         a template is caught by the drift pin's digest and reaches a leaf only through a
         deliberate version bump, while a `controlled_spec.md` edit moves only that node's
         derivation key, which no test reads for meaning."""
-        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        ctx = self.c._build_leaf_harness_verify_context(self.refs)
         contract = ctx["runner_output_contract_document"]
         self.assertIn("final before `write_perf`", contract)
         self.assertNotIn("whole execution", contract)

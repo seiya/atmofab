@@ -8,14 +8,14 @@ name the leaf cites back into a workspace path), the per-attempt record, the pos
 reclassification that follows from `semantic_review.json` becoming host-authored, and the
 defensive freshness branch.
 
-The loop ITSELF is shared with the two older reviewers — `_run_pure_reviewer_substep`,
-parametrised by a `_PureReviewerSpec` — so the transport-shaped behaviour (usage waits,
+The loop ITSELF is shared with the two older reviewers — `_run_leaf_reviewer_substep`,
+parametrised by a `_LeafReviewerSpec` — so the transport-shaped behaviour (usage waits,
 transient retries, tombstones, warm/cold repair turns) is pinned once by
-`test_pure_leaf_verify.py` and is not re-pinned here. The loop rows below drive it through
-the same workshop seam (`test_pure_leaf_verify._reviewer_conductor`): the leaf writes its
+`test_leaf_verify.py` and is not re-pinned here. The loop rows below drive it through
+the same workshop seam (`test_leaf_verify._reviewer_conductor`): the leaf writes its
 review into the lineage's tree as `review.json`. What IS re-pinned here is everything the
 judge's spec record decides, because that is where a judge-side defect would live. The
-document's own schema belongs to `test_pure_leaf.py`, and the raw-evidence excerpt to
+document's own schema belongs to `test_leaf_contract.py`, and the raw-evidence excerpt to
 `test_raw_evidence_excerpt.py`.
 """
 
@@ -37,15 +37,15 @@ import tools.llm_config as lc
 import tools.raw_evidence_excerpt as rex
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import sample_config as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
-from tools.tests.test_pure_leaf_producer import (
+from tools.tests.test_leaf_producer import (
     _conductor,
     _envelope,
     _PureFakeConductor,
 )
-from tools.tests.test_pure_leaf_verify import _reviewer_conductor
+from tools.tests.test_leaf_verify import _reviewer_conductor
 
 _NODE = "component/dynamics_advdiff_flux_1d_upwind_center2@0.2.0"
 _SPEC_ID = "dynamics_advdiff_flux_1d_upwind_center2"
@@ -180,7 +180,7 @@ class _Fixture(unittest.TestCase):
 
     def conductor(self, *envelopes) -> _PureFakeConductor:
         """The reviewer loop's workshop fake over this node, scripted by `envelopes` (CLI
-        stdout texts, or `ProcResult`s; `test_pure_leaf_verify._leaf_action`)."""
+        stdout texts, or `ProcResult`s; `test_leaf_verify._leaf_action`)."""
         return _reviewer_conductor(self.repo, list(envelopes) or ["{}"])
 
     def run_node(self, name: str) -> Path:
@@ -194,7 +194,7 @@ class PureJudgeContextTests(_Fixture):
     def test_context_keys_are_exactly_the_required_set(self) -> None:
         """Set identity against the table the launch validator reads, so a slot added to one
         without the other is red here rather than at a launch."""
-        ctx = self.conductor()._build_pure_judge_context(self.refs)
+        ctx = self.conductor()._build_leaf_judge_context(self.refs)
         self.assertEqual(set(ctx),
                          set(ort.PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]))
         for key, value in ctx.items():
@@ -204,23 +204,23 @@ class PureJudgeContextTests(_Fixture):
         """`evidence_refs` resolution reads this map, so a slot missing from it is a citation
         that survives into `semantic_review.json` unresolved."""
         c = self.conductor()
-        self.assertEqual(set(c._pure_judge_document_refs(self.refs)),
+        self.assertEqual(set(c._leaf_judge_document_refs(self.refs)),
                          set(ort.PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]))
 
     def test_io_contract_is_the_irs_section_and_not_the_whole_ir(self) -> None:
-        ctx = self.conductor()._build_pure_judge_context(self.refs)
+        ctx = self.conductor()._build_leaf_judge_context(self.refs)
         self.assertEqual(yaml.safe_load(ctx["io_contract_document"]), _io_contract())
         # The rest of the IR is deliberately absent: 52 KB of which the judge needs one section.
         self.assertNotIn("published_operations", ctx["io_contract_document"])
 
     def test_runner_output_contract_is_the_two_evidence_sections(self) -> None:
-        ctx = self.conductor()._build_pure_judge_context(self.refs)
+        ctx = self.conductor()._build_leaf_judge_context(self.refs)
         headings = [ln for ln in ctx["runner_output_contract_document"].splitlines()
                     if ln.startswith("## ")]
         self.assertEqual(headings, ["## 1. `diagnostics.json`", "## 3. `raw/` primary evidence"])
 
     def test_the_excerpt_is_the_hosts_and_carries_no_array(self) -> None:
-        ctx = self.conductor()._build_pure_judge_context(self.refs)
+        ctx = self.conductor()._build_leaf_judge_context(self.refs)
         excerpt = json.loads(ctx["raw_evidence_excerpt_document"])
         self.assertEqual(excerpt["coverage"]["present"], [["t_basic", "case_a"]])
         self.assertEqual(excerpt["coverage"]["missing"], [])
@@ -233,14 +233,14 @@ class PureJudgeContextTests(_Fixture):
         writer no longer produces — reaches the judge unchanged."""
         path = self.run_node("verdict.json")
         plain = path.read_text(encoding="utf-8")
-        self.assertEqual(self.conductor()._build_pure_judge_context(self.refs)
+        self.assertEqual(self.conductor()._build_leaf_judge_context(self.refs)
                          ["verdict_document"], plain)
         doc = {"z_first": "Δt", **json.loads(plain),
                "comparands_absent": [{"target_id": "cpp_gpu", "reason": "no_eligible_run"}]}
         self.assertNotEqual(list(doc), sorted(doc))
         text = json.dumps(doc, ensure_ascii=False)   # not the writer's form
         path.write_text(text, encoding="utf-8")
-        self.assertEqual(self.conductor()._build_pure_judge_context(self.refs)
+        self.assertEqual(self.conductor()._build_leaf_judge_context(self.refs)
                          ["verdict_document"], text)
 
     def test_every_missing_document_raises(self) -> None:
@@ -251,12 +251,12 @@ class PureJudgeContextTests(_Fixture):
         NOT because a blank value would reach the leaf — it would not, and an earlier version of
         this docstring said so wrongly, which is the same false sentence round 2 corrected in
         the code and the reference doc and missed HERE, in the file that is this disposition's
-        canonical pin. `_validate_pure_launch_request_payload` counts a whitespace-only
+        canonical pin. `_validate_leaf_launch_request_payload` counts a whitespace-only
         `pure_context` value as missing. What degrading actually buys is a refusal one frame
         later, inside `record_launch`, escaping this loop's named `pure_context_assembly_failed`
         branch and aborting the conductor instead."""
         c = self.conductor()
-        for key, rel in sorted(c._pure_judge_document_refs(self.refs).items()):
+        for key, rel in sorted(c._leaf_judge_document_refs(self.refs).items()):
             if key == "raw_evidence_excerpt_document":
                 continue  # a directory, and its absence is a FACT the excerpt reports
             path = self.repo / rel
@@ -264,7 +264,7 @@ class PureJudgeContextTests(_Fixture):
             path.rename(moved)
             with self.subTest(document=key):
                 with self.assertRaises(RuntimeError) as caught:
-                    c._build_pure_judge_context(self.refs)
+                    c._build_leaf_judge_context(self.refs)
                 # The EXACT name, not `"pure_" in ...`: the weaker form this replaced was
                 # green for any of the nine keys against any other key's message, so the
                 # names could have been swapped wholesale without a red row. The name is what
@@ -276,7 +276,7 @@ class PureJudgeContextTests(_Fixture):
         """The judge is precisely the leaf that should SEE missing evidence, so the excerpt
         reports it and the context still assembles."""
         shutil.rmtree(self.run_node("raw"))
-        ctx = self.conductor()._build_pure_judge_context(self.refs)
+        ctx = self.conductor()._build_leaf_judge_context(self.refs)
         excerpt = json.loads(ctx["raw_evidence_excerpt_document"])
         self.assertFalse(excerpt["raw_dir_present"])
         self.assertEqual(excerpt["coverage"]["missing"], [["t_basic", "case_a"]])
@@ -287,7 +287,7 @@ class PureJudgeContextTests(_Fixture):
         (self.repo / self.refs.ir_ref / "spec.ir.yaml").write_text(
             yaml.safe_dump(ir), encoding="utf-8")
         with self.assertRaises(RuntimeError) as caught:
-            self.conductor()._build_pure_judge_context(self.refs)
+            self.conductor()._build_leaf_judge_context(self.refs)
         self.assertIn("pure_io_contract_document_missing", str(caught.exception))
 
     def test_an_unparseable_ir_raises_its_own_named_outcome(self) -> None:
@@ -297,14 +297,14 @@ class PureJudgeContextTests(_Fixture):
         (self.repo / self.refs.ir_ref / "spec.ir.yaml").write_text(
             "io_contract: [unclosed\n", encoding="utf-8")
         with self.assertRaises(RuntimeError) as caught:
-            self.conductor()._build_pure_judge_context(self.refs)
+            self.conductor()._build_leaf_judge_context(self.refs)
         self.assertIn("pure_io_contract_document_unreadable", str(caught.exception))
 
     def test_an_unsliceable_runner_output_contract_raises(self) -> None:
         (self.repo / _RUNNER_OUTPUT_CONTRACT).write_text(
             "# Runner output contract\n\nno numbered sections here\n", encoding="utf-8")
         with self.assertRaises(RuntimeError) as caught:
-            self.conductor()._build_pure_judge_context(self.refs)
+            self.conductor()._build_leaf_judge_context(self.refs)
         self.assertIn("unsliceable", str(caught.exception))
 
     def test_assembly_failure_spawns_no_leaf(self) -> None:
@@ -334,7 +334,7 @@ class SemanticReviewWriterTests(_Fixture):
         # FROM the constant, not a literal: the stamp exists so a recorded review says which
         # window its judge looked through, which a hardcoded number would not track.
         self.assertEqual(doc["raw_excerpt_policy_version"], rex.RAW_EXCERPT_POLICY_VERSION)
-        self.assertEqual(doc["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(doc["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         self.assertNotIn("notes", doc)
 
     def test_scope_refs_exist_and_are_workspace_rooted(self) -> None:
@@ -431,7 +431,7 @@ class PureJudgeLoopTests(_Fixture):
             "decision"], "pass")
         meta = json.loads(self.run_node("judge_meta.json").read_text())
         self.assertEqual(meta["result"], "pass")
-        self.assertEqual(meta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(meta["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         row = _finalized(c)[-1]
         # A pure row carries no output_refs, so the summary is the only thing that can satisfy
         # `_validate_agent_summary_text`.
@@ -584,7 +584,7 @@ class PostJudgeReclassificationTests(_Fixture):
     """The disposition `_post_judge_inproc` WRITES, driven end to end.
 
     An earlier version of this class asserted the two INPUTS of the pure-judge reclassification
-    — `classify_post_judge_violations(...) == "recoverable"` and `_pure_leaf_substep(...) is
+    — `classify_post_judge_violations(...) == "recoverable"` and `_leaf_substep(...) is
     True` — and never called `_post_judge_inproc`. Three independent review axes reported the
     same thing: deleting the reclassification left the whole suite green. Asserting the inputs
     of a branch is not asserting the branch, so these rows read `post_judge_meta.json`.
@@ -656,7 +656,7 @@ class PostJudgeReclassificationTests(_Fixture):
 
 
 class ConductorConstantIsNotAFieldTests(unittest.TestCase):
-    """`_PURE_JUDGE_RUN_NODE_DOCUMENTS` is annotated `ClassVar`, and `Conductor` is a
+    """`_LEAF_JUDGE_RUN_NODE_DOCUMENTS` is annotated `ClassVar`, and `Conductor` is a
     dataclass. Drop `ClassVar` from the annotation (or from the module's imports, which is how
     `dataclasses` resolves it) and the constant silently becomes a FIELD: `Conductor` grows a
     constructor parameter and every instance gets its own copy. Measured on this branch — the
@@ -665,7 +665,7 @@ class ConductorConstantIsNotAFieldTests(unittest.TestCase):
     def test_the_document_table_is_a_class_constant_not_a_field(self) -> None:
         import dataclasses
         names = {f.name for f in dataclasses.fields(wc.Conductor)}
-        self.assertNotIn("_PURE_JUDGE_RUN_NODE_DOCUMENTS", names)
+        self.assertNotIn("_LEAF_JUDGE_RUN_NODE_DOCUMENTS", names)
         # Self-test the probe: it must be reading a populated field set, or the assertion above
         # is green because `fields()` returned nothing.
         self.assertIn("repo_root", names)
@@ -684,7 +684,7 @@ class PureJudgeTableTests(unittest.TestCase):
         rejected for obeying its instructions — this repository's recorded default error
         direction, and exactly what the cap's own measurement was correcting. Neither number is
         transcribed here; the template is required to state whatever the constant says."""
-        from tools.pure_leaf import SEMANTIC_REVIEW_NOTES_MAX_CHARS
+        from tools.leaf_contract import SEMANTIC_REVIEW_NOTES_MAX_CHARS
         template = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
                     / "workshop_validate_judge.txt").read_text(encoding="utf-8")
         self.assertIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS} characters", template)

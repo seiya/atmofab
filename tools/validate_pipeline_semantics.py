@@ -49,16 +49,16 @@ try:
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
     # PURE_PROMPT_SENTINEL is IMPORTED (not copy-pasted like SLIM_REPAIR_PROMPT_SENTINEL): the
-    # Z2 pure sentinel has a single source in tools/pure_leaf so orchestration_runtime, the
+    # Z2 pure sentinel has a single source in tools/leaf_contract so orchestration_runtime, the
     # prompt templates, and this validator cannot drift (a parity test still pins template
-    # line 0 against it). pure_leaf is stdlib-only, so importing it here introduces no cycle.
-    from tools.pure_leaf import (
-        PURE_PROMPT_CONTRACT_VERSION,
+    # line 0 against it). leaf_contract is stdlib-only, so importing it here introduces no cycle.
+    from tools.leaf_contract import (
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
-        is_pure_request as _pure_leaf_is_pure_request,
-        is_workshop_request as _pure_leaf_is_workshop_request,
+        is_pure_request as _leaf_contract_is_pure_request,
+        is_workshop_request as _leaf_contract_is_workshop_request,
     )
     from tools.target_profile import (
         TargetProfile,
@@ -98,13 +98,13 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
-    from tools.pure_leaf import (
-        PURE_PROMPT_CONTRACT_VERSION,
+    from tools.leaf_contract import (
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
-        is_pure_request as _pure_leaf_is_pure_request,
-        is_workshop_request as _pure_leaf_is_workshop_request,
+        is_pure_request as _leaf_contract_is_pure_request,
+        is_workshop_request as _leaf_contract_is_workshop_request,
     )
     from tools.target_profile import (
         TargetProfile,
@@ -620,8 +620,8 @@ def _launch_request_is_slim_repair(request_payload: dict) -> bool:
     two classify mutually exclusively. Everything else here answers for a pre-Z4 record."""
     if request_payload.get("deterministic"):
         return False
-    if (_pure_leaf_is_pure_request(request_payload)
-            or _pure_leaf_is_workshop_request(request_payload)):
+    if (_leaf_contract_is_pure_request(request_payload)
+            or _leaf_contract_is_workshop_request(request_payload)):
         return False
     if not request_payload.get("warm_resume"):
         return False
@@ -634,7 +634,7 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
     """True when a recorded launch_prompt body is shaped like a Z2 pure-function leaf turn.
 
     Anchored on the sentinel's POSITION (first line), mirroring _is_slim_launch_prompt_text: the
-    pure renderer (orchestration_runtime._render_pure_launch_prompt / _render_pure_repair_prompt)
+    pure renderer (orchestration_runtime._render_leaf_launch_prompt / _render_leaf_repair_prompt)
     always emits PURE_PROMPT_SENTINEL as line 0. A NECESSARY but not SUFFICIENT signal — the
     authoritative signal is the structured request (_launch_request_is_pure); a record is treated
     as pure only when both agree, and a disagreement is itself a violation."""
@@ -664,11 +664,11 @@ _WORKSHOP_ENDPOINT_RESPONSE_FIELDS: tuple[str, ...] = ("claude_mcp_config", "cod
 
 def _workshop_endpoint_violations(request: dict, response: dict) -> list[str]:
     """What is wrong with the endpoint a persisted workshop launch names (issue #534 step 3): a
-    READING launch — a judging pair or the diagnostician's (`pure_leaf.is_workshop_reading_pair`) — is served no wrapper
+    READING launch — a judging pair or the diagnostician's (`leaf_contract.is_workshop_reading_pair`) — is served no wrapper
     operation, so its response names no endpoint; a PRODUCING launch is served its operations
     over one, so its response names one. The kind is the request's pair, never a field of the
     response."""
-    from tools.pure_leaf import is_workshop_reading_pair
+    from tools.leaf_contract import is_workshop_reading_pair
     named = [f for f in _WORKSHOP_ENDPOINT_RESPONSE_FIELDS if response.get(f)]
     if is_workshop_reading_pair(request.get("step"), request.get("substep")):
         if named:
@@ -692,7 +692,7 @@ def _http_workshop_record_violations(request: dict, response: dict) -> list[str]
     tool surface (`http_tool_surface`): the five file tools on a reading pair, and the five
     plus the pair's operations (`workshop_wrapper.WORKSHOP_OPS_BY_PAIR`) on a producing pair —
     compared against that table, never against the request."""
-    from tools.pure_leaf import HTTP_FILE_TOOLS
+    from tools.leaf_contract import HTTP_FILE_TOOLS
     from tools.workshop_wrapper import WORKSHOP_OPS_BY_PAIR
     out: list[str] = []
     endpoint = sorted(k for k in response if isinstance(k, str) and k.endswith("_mcp_config"))
@@ -813,7 +813,7 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
 def _launch_request_is_workshop(request_payload: dict) -> bool:
     """True when the structured launch REQUEST is a `workshop leaf` (`leaf_mode == "workshop"`,
     issue #534), by the same single detection source the runtime uses."""
-    return _pure_leaf_is_workshop_request(request_payload)
+    return _leaf_contract_is_workshop_request(request_payload)
 
 
 def _is_workshop_launch_prompt_text(launch_text: str) -> bool:
@@ -825,12 +825,12 @@ def _is_workshop_launch_prompt_text(launch_text: str) -> bool:
 def _launch_request_is_pure(request_payload: dict) -> bool:
     """True when the structured launch REQUEST is a Z2 pure-function leaf (`leaf_mode == "pure"`).
 
-    Delegates to `pure_leaf.is_pure_request` — the SAME single detection source
+    Delegates to `leaf_contract.is_pure_request` — the SAME single detection source
     orchestration_runtime._is_pure_launch_request uses, so the producer and this validator cannot
     disagree about what "pure" is. Gating on this (not prompt text alone) prevents a non-pure
     record whose prompt was swapped for a pure-looking body from escaping the full markers, and
     vice versa."""
-    return _pure_leaf_is_pure_request(request_payload)
+    return _leaf_contract_is_pure_request(request_payload)
 
 
 def _required_launch_prompt_markers_for_role(
@@ -8123,7 +8123,7 @@ def _validate_orchestration_hierarchy(
                                     # carried its own (`workshop-N`) through PR-J4-a, and one
                                     # stamped so fails here — the `--resume` barrier the
                                     # retirement is (docs/RUNBOOK.md).
-                                    expected_version = PURE_PROMPT_CONTRACT_VERSION
+                                    expected_version = LEAF_PROMPT_CONTRACT_VERSION
                                     mode_word = "workshop" if is_workshop else "pure"
                                     if req_version != expected_version:
                                         violations.append(
@@ -8854,7 +8854,7 @@ def validate_compile_ir_dir(repo_root: Path, ir_dir: Path) -> list[str]:
     `validate_compile_stage` on `<ir_ref>`. The validators read `tests.md` and the controlled
     spec through the IR's `meta.source_refs`, which this function does NOT confine: its caller
     passes only an IR whose refs the producer's contract (`Conductor.
-    _pure_ir_document_violations`) has pinned to the node's own spec documents. The schema pin is per thread (`_pinned_repo_root_for_schema` is a
+    _leaf_ir_document_violations`) has pinned to the node's own spec documents. The schema pin is per thread (`_pinned_repo_root_for_schema` is a
     `ContextVar`), so a call on a wrapper handler thread does not disturb the main thread's."""
     with _pinned_repo_root_for_schema(repo_root):
         return _validate_compile_ir_dir_impl(repo_root, Path(ir_dir))
@@ -11199,7 +11199,7 @@ def _pure_gate_build_graph_inputs(
     """(toolchain, dependency_closure, dependency_edges) for the tamper gate's assembly check.
 
     Mirrors `workflow_conductor._read_toolchain` + `_dependency_closure_nodes` +
-    `_build_pure_bundle_graph`'s edge derivation from the SAME dependency sidecar, so the graph
+    `_build_leaf_bundle_graph`'s edge derivation from the SAME dependency sidecar, so the graph
     the gate assembles is the graph the producer's acceptance built. The toolchain is the
     pipeline's target's (issue #284), the profile the conductor read it from; the closure is
     `orchestration_runtime.pipeline_closure_nodes`, the one definition the conductor's staging
@@ -11287,7 +11287,7 @@ def _validate_post_generate_bundle(
     # The harness a bundle negotiates against: on `harness` the node ITSELF (a harness declares
     # the execution model it implements), otherwise the harness the pipeline's TARGET names
     # (issue #284) — `orchestration_runtime.harness_node_key_for`, the one resolution the
-    # conductor's `_pure_harness_node_key` delegates to as well.
+    # conductor's `_leaf_harness_node_key` delegates to as well.
     from tools.orchestration_runtime import harness_node_key_for
     from tools.target_profile import TargetProfileError
     try:
@@ -11310,7 +11310,7 @@ def _validate_post_generate_bundle(
         str(toolchain.get("language") or ""), "bundle_facts", bundle_path, language_refusals)
     runner_basename = bundle.runner_basename(spec_id) if bundle is not None else ""
     # The host glue this node's assembly carries — none on `harness`, where the runner is bundle
-    # content rather than something the host renders. Mirrors `_build_pure_bundle_graph`.
+    # content rather than something the host renders. Mirrors `_build_leaf_bundle_graph`.
     host_glue: tuple[str, ...] = (() if shape == "harness" or bundle is None
                                   else (runner_basename,))
 

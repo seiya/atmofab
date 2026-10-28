@@ -44,10 +44,10 @@ from tools.llm_config import LLM_LEAF_SUBSTEPS
 from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.target_fixtures import TARGET_ID
 from tools.tests.target_fixtures import composed_pure_template
-from tools.pure_leaf import (
+from tools.leaf_contract import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
-    PURE_PROMPT_CONTRACT_VERSION,
+    LEAF_PROMPT_CONTRACT_VERSION,
     PURE_PROMPT_SENTINEL,
     VERDICT_SEVERITIES,
     WORKSHOP_LAUNCH_PAIRS,
@@ -205,7 +205,7 @@ def _pure_request(substep: str = "generate", **overrides) -> dict[str, object]:
         "pipeline_ref": _PIPE_REF,
         "dependency_ref": _DEP_REF,
         "source_id": "src_20260415_001",
-        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+        "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
         "allowed_output_paths": [],
         "pure_context": ctx,
     }
@@ -325,13 +325,13 @@ class PurePayloadValidationTests(unittest.TestCase):
                             pure_context=_pure_context_for(step, substep))
         req["pure_shape"] = shape
         with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload(req)
+            ort._validate_leaf_launch_request_payload(req)
         self.assertIn("runner_output_contract_document", str(caught.exception))
         # ...and the default pair still requires ITS keys, which the shape context lacks.
         req2 = _workshop_request(substep, step=step, dependency_ref=_DEP_REF,
                              pure_context=_pure_context_by_shape(step, substep, shape))
         with self.assertRaises(ValueError) as caught2:
-            ort._validate_pure_launch_request_payload(req2)
+            ort._validate_leaf_launch_request_payload(req2)
         self.assertIn("runner_document", str(caught2.exception))
 
     def test_the_shape_vocabulary_is_closed_and_pair_scoped(self) -> None:
@@ -348,14 +348,14 @@ class PurePayloadValidationTests(unittest.TestCase):
             bad["pure_shape"] = value
             with self.subTest(pure_shape=value):
                 with self.assertRaises(ValueError) as caught:
-                    ort._validate_pure_launch_request_payload(bad)
+                    ort._validate_leaf_launch_request_payload(bad)
                 self.assertIn(expected, str(caught.exception))
         # A KNOWN shape on a pair the by-shape table does not carry.
         bad = _workshop_request("judge", step="validate",
                             pure_context=_pure_context_for("validate", "judge"))
         bad["pure_shape"] = "harness"
         with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload(bad)
+            ort._validate_leaf_launch_request_payload(bad)
         self.assertIn("pure_shape is only valid for", str(caught.exception))
 
     def test_the_shape_vocabulary_matches_the_acceptance_layers(self) -> None:
@@ -376,11 +376,11 @@ class PurePayloadValidationTests(unittest.TestCase):
         self.assertEqual(ort.PURE_LAUNCH_SHAPES, frozenset(set().union(*by_step.values())))
 
     def test_every_shape_triple_has_a_template(self) -> None:
-        """`_pure_launch_template_name` composes the key; this pins that every key it can
+        """`_leaf_launch_template_name` composes the key; this pins that every key it can
         compose resolves, so the two tables cannot drift into a KeyError at render time."""
         for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE):
             with self.subTest(triple=f"{step}.{substep}.{shape}"):
-                name = ort._pure_launch_template_name(
+                name = ort._leaf_launch_template_name(
                     {"step": step, "substep": substep, "pure_shape": shape})
                 self.assertEqual(name, f"workshop {step}.{substep}.{shape}")
                 self.assertIn(name, ort._load_launch_prompt_templates())
@@ -400,7 +400,7 @@ class PurePayloadValidationTests(unittest.TestCase):
             with self.subTest(pair=f"{step}.{substep}"):
                 bad = _workshop_request(substep, step=step, pure_context=ctx)
                 with self.assertRaises(ValueError) as caught:
-                    ort._validate_pure_launch_request_payload(bad)
+                    ort._validate_leaf_launch_request_payload(bad)
                 self.assertIn("leaf_mode=workshop is only valid for", str(caught.exception))
 
     def test_the_pair_refusal_names_the_pairs_that_are_admissible_now(self) -> None:
@@ -416,7 +416,7 @@ class PurePayloadValidationTests(unittest.TestCase):
         until Z3 made it admissible, and an admissible pair cannot demonstrate the refusal."""
         bad = _workshop_request("execute", step="validate")
         with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload(bad)
+            ort._validate_leaf_launch_request_payload(bad)
         message = str(caught.exception)
         # The first refusal a workshop request meets is the workshop pair gate, whose message
         # is spelled from `WORKSHOP_LAUNCH_PAIRS` (issue #534 PR-J4-b); the context table it
@@ -432,12 +432,12 @@ class PurePayloadValidationTests(unittest.TestCase):
     def test_validate_payload_rejects_pure_with_deterministic(self) -> None:
         bad = _workshop_request(deterministic=True)
         with self.assertRaises(ValueError):
-            ort._validate_pure_launch_request_payload(bad)
+            ort._validate_leaf_launch_request_payload(bad)
 
     def test_validate_payload_rejects_unknown_leaf_mode(self) -> None:
         bad = _workshop_request(leaf_mode="agentic")
         with self.assertRaises(ValueError):
-            ort._validate_pure_launch_request_payload(bad)
+            ort._validate_leaf_launch_request_payload(bad)
 
     def test_validate_payload_pure_requires_exact_contract_version(self) -> None:
         # Any version other than the CURRENT constant is rejected — including the immediately
@@ -446,7 +446,7 @@ class PurePayloadValidationTests(unittest.TestCase):
         for version in ("pure-OBSOLETE", "pure-1", "pure-3", "", None):
             bad = _workshop_request(prompt_contract_version=version)
             with self.assertRaises(ValueError):
-                ort._validate_pure_launch_request_payload(bad)
+                ort._validate_leaf_launch_request_payload(bad)
 
     def test_validate_payload_pure_requires_context_keys(self) -> None:
         for substep, keys in (
@@ -459,13 +459,13 @@ class PurePayloadValidationTests(unittest.TestCase):
                 bad = _workshop_request(substep)
                 bad["pure_context"] = ctx
                 with self.assertRaises(ValueError):
-                    ort._validate_pure_launch_request_payload(bad)
+                    ort._validate_leaf_launch_request_payload(bad)
 
     def test_validate_payload_pure_warm_repair_may_omit_context(self) -> None:
         req = _workshop_request(warm_resume=True, repair_strategy="reuse",
                             repair_findings="fix status", repair_target_agent_run_id="ar_prev")
         del req["pure_context"]
-        ort._validate_pure_launch_request_payload(req)
+        ort._validate_leaf_launch_request_payload(req)
 
     def test_validate_payload_pure_restart_repair_still_requires_context(self) -> None:
         # The context-omission exemption applies ONLY to a genuine warm REUSE repair. A restart
@@ -477,7 +477,7 @@ class PurePayloadValidationTests(unittest.TestCase):
                                 repair_target_agent_run_id="ar_prev")
             del req["pure_context"]
             with self.assertRaises(ValueError):
-                ort._validate_pure_launch_request_payload(req)
+                ort._validate_leaf_launch_request_payload(req)
 
     def test_validate_payload_rejects_explicit_null_leaf_mode(self) -> None:
         # A PRESENT leaf_mode other than "pure" — including an explicit JSON null — must be
@@ -497,14 +497,14 @@ class PurePayloadValidationTests(unittest.TestCase):
         front of it (the row above goes through `prepare_launch_request_payload`, whose render
         refuses first)."""
         with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload(_pure_request("generate"))
+            ort._validate_leaf_launch_request_payload(_pure_request("generate"))
         self.assertIn("leaf_mode must be 'workshop'", str(caught.exception))
         self.assertIn("the pure leaf went in issue #534 PR-J4-b", str(caught.exception))
 
     def test_validate_payload_pure_rejects_nonempty_output_paths(self) -> None:
         bad = _workshop_request(allowed_output_paths=["workspace/pipelines/x/source/s/model.f90"])
         with self.assertRaises(ValueError):
-            ort._validate_pure_launch_request_payload(bad)
+            ort._validate_leaf_launch_request_payload(bad)
 
     def test_validate_payload_rejects_four_key_verify_context(self) -> None:
         # issue #142: `checks_module_contract_document` is the fifth REQUIRED verify key. Several
@@ -566,9 +566,9 @@ class BlankContextRationaleCouplingTests(unittest.TestCase):
     #: Where a leaf-facing rationale can live. Derived narrowly rather than scanning the tree:
     #: a bound that grows silently is a bound that stops meaning anything.
     _SCANNED = ("tools/workflow_conductor.py", "tools/orchestration_runtime.py",
-                "tools/pure_leaf.py", "tools/raw_evidence_excerpt.py",
-                "tools/tests/test_pure_leaf_producer.py", "tools/tests/test_pure_leaf_verify.py",
-                "tools/tests/test_pure_leaf_judge.py", "tools/tests/test_pure_leaf_wiring.py",
+                "tools/leaf_contract.py", "tools/raw_evidence_excerpt.py",
+                "tools/tests/test_leaf_producer.py", "tools/tests/test_leaf_verify.py",
+                "tools/tests/test_leaf_judge.py", "tools/tests/test_leaf_wiring.py",
                 "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
                 "docs/workflow/phases/phase_04_validate.md")
     #: `docs/design/deterministic_followups.md` is deliberately NOT scanned: issue #181 froze it
@@ -585,7 +585,7 @@ class BlankContextRationaleCouplingTests(unittest.TestCase):
         req = _workshop_request("generate", pure_context={
             **_pure_generate_context(), "tests_document": "   "})
         with self.assertRaises(ValueError) as caught:
-            ort._validate_pure_launch_request_payload(req)
+            ort._validate_leaf_launch_request_payload(req)
         self.assertIn("missing required key(s)", str(caught.exception))
         self.assertIn("tests_document", str(caught.exception))
 
@@ -632,7 +632,7 @@ class PureRenderTests(unittest.TestCase):
         for token in (
             "Target node_key:", "Target step:", "Target substep:",
             "orchestration_id:", "agent_run_id:",
-            f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}",
+            f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}",
         ):
             self.assertIn(token, prompt)
         # No `<placeholder>` token of a document survives, and no document is inlined.
@@ -690,7 +690,7 @@ class PureRenderTests(unittest.TestCase):
         # PR-J4-b).
         req = ort.prepare_launch_request_payload(_workshop_request(
             "verify", repair_findings="verdict is missing findings", repair_strategy="reuse"))
-        text = ort._render_pure_repair_prompt(req)
+        text = ort._render_leaf_repair_prompt(req)
         self.assertIn("**Checks-module contract (", text)                # its label
         self.assertIn("can only OVERRULE one kind of claim", text)       # its scope bound
         self.assertIn("Its SILENCE overrules nothing", text)             # ... and its polarity
@@ -980,7 +980,7 @@ class PureRenderTests(unittest.TestCase):
     # meaning of an input, enumerating spellings is the losing line). So it is replaced by a
     # question that IS answerable: "has this text changed since a human last read it against the
     # axis?" That is the instrument this file already uses for `_SEVERITY_ROUTING_ALLOWLIST` and
-    # the one `tools/tests/test_pure_prompt_contract_drift.py` uses for phase_02's slice, which
+    # the one `tools/tests/test_leaf_prompt_contract_drift.py` uses for phase_02's slice, which
     # is why phase_02 was red for every mutant that phase_01 survived. phase_01 now has the same
     # standing. Re-taking the digest is one line, and the failure message says what to re-read
     # before taking it.
@@ -990,7 +990,7 @@ class PureRenderTests(unittest.TestCase):
     # the shape change silently DELETED phase_02's per-bullet axis pin. Measured: re-grounding
     # phase_02's `minor` bullet on the consequence axis is red at `29f8f93` and green at
     # `c27007d` in this file. Its only remaining guard was the pure-prompt drift digest, whose
-    # remedy line says "bump `PURE_PROMPT_CONTRACT_VERSION`" — which is exactly what a
+    # remedy line says "bump `LEAF_PROMPT_CONTRACT_VERSION`" — which is exactly what a
     # maintainer making an intentional documentation edit does, a trap
     # `_generate_verify_severity_rubric_section`'s own docstring warns about in those words.
     #
@@ -1248,7 +1248,7 @@ class PureRenderTests(unittest.TestCase):
         sources = {
             "_generate_verify_severity_rubric_section": "workflow_conductor.py",
             "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
-            "PURE_PROMPT_CONTRACT_VERSION": "pure_leaf.py",
+            "LEAF_PROMPT_CONTRACT_VERSION": "leaf_contract.py",
         }
         for name, module in sources.items():
             self.assertIn(name, note,
@@ -1555,9 +1555,10 @@ class PureRenderTests(unittest.TestCase):
         # conductor does with a value the rubric already chose; it assigns nothing. Round 1
         # re-worded its "(an LLM `structural_violation` ...)" parenthetical; round 2 added the
         # deterministic `Validate.execute` reopens and the manual revocation's findings; round 3
-        # made that recipe a complete command. READ: same, nothing assigned.
+        # made that recipe a complete command. READ: same, nothing assigned. Issue #534 PR-J4-d
+        # renamed the module the recipe imports (`tools.leaf_contract`). READ: same.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #569579fb2cde"),
+         " #f6a1541ab0e7"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at
@@ -1643,7 +1644,7 @@ class PureRenderTests(unittest.TestCase):
         BOUNDED to `docs/**.md`. The builders also inline node artifacts (an IR, a runner) and
         two `docs/examples/` schema files, none of which is prose that could assign a severity;
         a docstring that merely MENTIONS a path is excluded by the full-match, which matters
-        because `_build_pure_context`'s docstring names the checks contract in order to say it
+        because `_build_leaf_context`'s docstring names the checks contract in order to say it
         is NOT inlined there.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
@@ -1657,7 +1658,7 @@ class PureRenderTests(unittest.TestCase):
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            if not (node.name.startswith("_build_pure_") and node.name.endswith("_context")):
+            if not (node.name.startswith("_build_leaf_") and node.name.endswith("_context")):
                 continue
             builders += 1
             body = node.body[1:] if ast.get_docstring(node) is not None else node.body
@@ -1719,7 +1720,7 @@ class PureRenderTests(unittest.TestCase):
         # Until Z4 (issue #171) the derivation read `leaf_contract_doc_refs` — the documents an
         # AGENTIC leaf was TOLD to force-read. No leaf force-reads anything now, and that
         # function is gone with the transport. A repository document reaches a leaf only where
-        # a `_build_pure_*_context` puts the file into its closed context — inlined into the
+        # a `_build_leaf_*_context` puts the file into its closed context — inlined into the
         # pure leaf's prompt until issue #534 PR-J4-b, a seed file of the workshop tree since.
         # The derivation below asks the same question of the transport that exists.
         scanned = {rel for rel, _b, _e in self._SEVERITY_ASSIGNMENT_SURFACES}
@@ -1845,8 +1846,8 @@ class PureRenderTests(unittest.TestCase):
     # The sweep above reads the leaf-read surfaces AS FILES. A `substep_agent.txt` slot
     # (`<gate_runbook>` / `<task_card>` / `<dependency_facts>` / `<exemplar>`) is filled by a
     # Python literal in `orchestration_runtime`, and three renderers
-    # (`_render_slim_repair_launch_prompt`, `_render_pure_launch_prompt`,
-    # `_render_pure_repair_prompt`) build their prompt WITHOUT a template at all — so a severity
+    # (`_render_slim_repair_launch_prompt`, `_render_leaf_launch_prompt`,
+    # `_render_leaf_repair_prompt`) build their prompt WITHOUT a template at all — so a severity
     # hand-assigned in host code reaches a verify leaf with no file for the sweep above to read.
     # A Task Card is drawn BEFORE the must-read header, so a value written there outranks the
     # SKILL and the phase rubric. That mattered most while `Compile.verify` was agentic-ONLY and
@@ -2158,7 +2159,7 @@ class PureRenderTests(unittest.TestCase):
         a workshop one since. The slim warm-resume repair turn, built from no template at all,
         went with the agentic leaf, and so did the `_is_slim_repair_request` branch below.
         A request claims its LAUNCH template only where something reads it: a cold launch
-        renders it, and a COLD repair re-states its whole body (`_pure_launch_body`, issue #510)
+        renders it, and a COLD repair re-states its whole body (`_leaf_launch_body`, issue #510)
         alongside its repair template. A WARM repair reads neither — the resumed session already
         holds them — and claiming it there was round 2's own instance of the union defect above.
         MEASURED on the pure templates at `d9fd128`, per configuration, because a summary of the
@@ -2172,16 +2173,16 @@ class PureRenderTests(unittest.TestCase):
         """
         templates = ort._load_launch_prompt_templates()
         texts: list[str] = []
-        if ort._pure_leaf_is_host_rendered_request(request_payload):
+        if ort._leaf_contract_is_host_rendered_request(request_payload):
             launch = (not str(request_payload.get("repair_findings", "")).strip()
                       or not request_payload.get("warm_resume"))
             if str(request_payload.get("repair_findings", "")).strip():
-                texts.append(templates[ort._pure_repair_template_name(request_payload)])
-            if launch and ort._pure_launch_template_name(request_payload) in templates:
+                texts.append(templates[ort._leaf_repair_template_name(request_payload)])
+            if launch and ort._leaf_launch_template_name(request_payload) in templates:
                 # COMPOSED for the request's language (issue #289): the fragment lines are
                 # template text the leaf reads, reviewed where they live — the fragment files
                 # are on `_SEVERITY_ASSIGNMENT_SURFACES` beside the templates.
-                texts.append(ort._pure_launch_template(request_payload))
+                texts.append(ort._leaf_launch_template(request_payload))
         return {ln for text in texts for ln in text.splitlines() if ln.strip()}
 
     def _host_built_severity_mentions(self, validate: bool = True) -> dict[str, set[str]]:
@@ -2352,15 +2353,15 @@ class PureRenderTests(unittest.TestCase):
         "_build_dependency_facts",
         "_build_dependency_surface_facts", "_published_operations_lines",
         "_argument_detail_lines", "_build_exemplar",
-        "_render_pure_launch_prompt", "_render_pure_repair_prompt",
+        "_render_leaf_launch_prompt", "_render_leaf_repair_prompt",
     )
     # Dispatchers / value maps: they return no prose of their own but CALL builders, so the
     # derivation below descends into them without wrapping them.
     _PROMPT_RENDER_TRANSIT = frozenset({
         "_render_launch_prompt_template",
-        # Slices the text `_render_pure_launch_prompt` returns (drops the persona line and the
+        # Slices the text `_render_leaf_launch_prompt` returns (drops the persona line and the
         # identity block) and adds no prose of its own (issue #510).
-        "_pure_launch_body",
+        "_leaf_launch_body",
     })
     # Callees on the closure that add no prose of their own. Not descended into: the closure of
     # `_allowed_file_tool_paths_for_launch` alone pulls in path normalization that has nothing
@@ -2370,16 +2371,16 @@ class PureRenderTests(unittest.TestCase):
     # subtracting data VALUES instead. A line any of these adds is swept like any other.
     _NON_PROSE_PROMPT_HELPERS = frozenset({
         "_load_launch_prompt_templates",     # reads the template files verbatim
-        "_pure_launch_template_name",        # returns a template NAME
-        "_pure_repair_template_name",        # returns a template NAME
+        "_leaf_launch_template_name",        # returns a template NAME
+        "_leaf_repair_template_name",        # returns a template NAME
         "_workshop_tool_surface_table",      # returns the tool-surface TABLE (its rows are pinned
                                              # by `test_workshop_producer`'s contract digest)
-        "_pure_launch_template",             # reads + composes a template (fragments are swept)
+        "_leaf_launch_template",             # reads + composes a template (fragments are swept)
         "_compose_language_fragments",       # splices fragment FILE text, adds none of its own
         "_fence_pure_doc",                   # wraps a value in the data fence
         "_sanitize_pure_doc_body",           # neutralizes fence markers in a value
         "_sanitize_exemplar_body",           # neutralizes fence markers in exemplar source
-        "_substitute_pure_placeholders",     # `<key>` substitution, adds no text of its own
+        "_substitute_leaf_placeholders",     # `<key>` substitution, adds no text of its own
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
         "_dependency_signatures",            # resolves the facts' language BACKEND module
@@ -2413,13 +2414,13 @@ class PureRenderTests(unittest.TestCase):
         alias, an attribute or a computed name is invisible to it. And a renderer that STOPS
         calling a builder is invisible: both sides of the equality are derived from the calls
         that happen, so they drop together. MEASURED at `26e1b5e` in a pristine worktree:
-        replacing `_render_pure_launch_prompt`'s `_build_dependency_facts(...)` with `""` left
-        this test, both sweeps and the whole of `test_pure_leaf_wiring`,
-        `test_orchestration_runtime`, `test_pure_leaf_producer`,
+        replacing `_render_leaf_launch_prompt`'s `_build_dependency_facts(...)` with `""` left
+        this test, both sweeps and the whole of `test_leaf_wiring`,
+        `test_orchestration_runtime`, `test_leaf_producer`,
         `test_validate_pipeline_semantics` and `test_workflow_conductor` green (3031 passed,
         1602 subtests, before and after). What a renderer owes at launch is a separate claim and
         needs its own witness — `test_a_cold_workshop_tree_carries_the_host_resolved_dependency_facts`
-        below is that one for the case measured (on the seed path since issue #534 PR-J4-b), and `test_pure_leaf_producer
+        below is that one for the case measured (on the seed path since issue #534 PR-J4-b), and `test_leaf_producer
         .test_cold_repair_includes_dependency_facts` is the repair-side mirror that already
         existed.
         """
@@ -2687,7 +2688,7 @@ class PureRenderTests(unittest.TestCase):
 
         This row was `test_pure_cold_launch_prompt_carries_the_host_resolved_dependency_facts`,
         written because a gap the reach test cannot close was measured: with
-        `_render_pure_launch_prompt`'s call replaced by `""`, every test in five suites stayed
+        `_render_leaf_launch_prompt`'s call replaced by `""`, every test in five suites stayed
         green at `26e1b5e`. Since issue #534 PR-J4-b the facts reach the leaf as a seed file,
         not inlined, so the witness is driven through the REAL seeder
         (`Conductor._workshop_seeds`, under the spec `run_substep` dispatches each pair to)
@@ -2721,8 +2722,8 @@ class PureRenderTests(unittest.TestCase):
                     continue
                 step, substep = label.split("/")[0].split(".")
                 shape = "m3c" if step == "generate" else None
-                spec = (c._pure_producer_spec(step, shape) if substep == "generate"
-                        else c._pure_reviewer_spec(step, substep, shape))
+                spec = (c._leaf_producer_spec(step, shape) if substep == "generate"
+                        else c._leaf_reviewer_spec(step, substep, shape))
                 with self.subTest(label=label):
                     block = ort._build_dependency_facts(req)
                     rendered = ort.prepare_launch_request_payload(req)["launch_prompt_full"]
@@ -2779,7 +2780,7 @@ class PureRenderTests(unittest.TestCase):
 
     def test_compile_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
         """Enumeration coupling (`atmofab-enforcement-change` rule 3-a) for phase_01 §1-2's
-        rubric (issue #148) — the mirror of `test_pure_leaf_verify
+        rubric (issue #148) — the mirror of `test_leaf_verify
         .test_severity_rubric_states_every_verdict_severity_at_its_own_bullet`, which holds
         phase_02 §2-2 to the same rule.
 
@@ -2787,12 +2788,12 @@ class PureRenderTests(unittest.TestCase):
         exactly one `- `<value>`:` bullet of the slice, and that no other value does — so a value
         added to the enum, or a bullet deleted or misspelled, is red and NAMES the value. The
         membership comes from the code; the document is checked against it.
-        The enum lives in `tools/pure_leaf.py`, a `generate`-side module, and `Compile.verify` is
+        The enum lives in `tools/leaf_contract.py`, a `generate`-side module, and `Compile.verify` is
         an AGENTIC leaf that renders no pure verdict — the enum reaches it through the
         conductor's routing, `classify_verify_severity`, which is phase-independent. That is why
         this is the right set for a phase_01 rubric.
         What connects the enum to that routing, stated at its real strength (round 1 corrected an
-        overstatement here): `test_pure_leaf.test_every_severity_routes_consistently` asserts only
+        overstatement here): `test_leaf_contract.test_every_severity_routes_consistently` asserts only
         that every non-`none` member routes to something other than `advance`. It does NOT pin
         that each value has its own branch — `classify_verify_severity` ends in a catch-all
         `escalate`, so deleting the `minor` branch would still satisfy it — and it does not pin
@@ -2880,7 +2881,7 @@ class PureRenderTests(unittest.TestCase):
                           f"explained; a leaf that meets one rubric and not the pointer reads "
                           f"the disagreement as an error.")
         # phase_01's rubric CONTENT, by digest. phase_02's equivalent is
-        # `tools/tests/test_pure_prompt_contract_drift.py`, which hashes its slice because it is
+        # `tools/tests/test_leaf_prompt_contract_drift.py`, which hashes its slice because it is
         # a pure-leaf input; phase_01 is force-read whole and had no counterpart, which is
         # exactly the asymmetry every surviving mutant of rounds 1-3 lived in.
         artifact = {"compile": "`spec.ir.yaml`", "generate": "the sources under review"}
@@ -3029,10 +3030,10 @@ class PureRenderTests(unittest.TestCase):
         self.assertTrue(tables, "the key tables are empty; this reads nothing")
         for key_tuple, keys in tables:
             step, substep, shape = key_tuple
-            name = ort._pure_launch_template_name(
+            name = ort._leaf_launch_template_name(
                 {"step": step, "substep": substep, "pure_shape": shape})
             with self.subTest(template=name):
-                slots = set(ort._PURE_PLACEHOLDER_RE.findall(templates[name]))
+                slots = set(ort._LEAF_PLACEHOLDER_RE.findall(templates[name]))
                 self.assertEqual(slots & set(keys), set(), name)
 
     def test_pure_verify_prompt_scopes_the_deterministic_floor(self) -> None:
@@ -3363,9 +3364,9 @@ class PureValidatePipelineTests(unittest.TestCase):
         self.assertFalse(vps._launch_request_is_pure({"leaf_mode": "agentic"}))
 
     def test_pure_predicate_shared_single_source(self) -> None:
-        # Both modules delegate to pure_leaf.is_pure_request (single detection source), so they
+        # Both modules delegate to leaf_contract.is_pure_request (single detection source), so they
         # cannot disagree about what "pure" is.
-        from tools.pure_leaf import is_pure_request, PURE_LEAF_MODE
+        from tools.leaf_contract import is_pure_request, PURE_LEAF_MODE
         for payload in ({"leaf_mode": "pure"}, {"leaf_mode": "  PURE "}, {"leaf_mode": "agentic"},
                         {}, {"leaf_mode": None}):
             self.assertEqual(ort._is_pure_launch_request(payload), is_pure_request(payload))
@@ -3430,11 +3431,11 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
 
     @staticmethod
     def _render(step: str, substep: str) -> str:
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
-        return ort._render_pure_repair_prompt({
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+        return ort._render_leaf_repair_prompt({
             "node_key": "component/x@1.0.0", "step": step, "substep": substep,
             "orchestration_id": "o", "agent_run_id": "child-1",
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "warm_resume": True, "repair_strategy": "reuse",
             "repair_findings": "verification_status 'fail' requires at least one finding",
         })
@@ -3470,7 +3471,7 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
     def test_the_pair_is_matched_the_way_the_template_dispatch_matches_it(self) -> None:
         """A spelling the membership test does not recognize renders the slot EMPTY while the
         template still resolves — a silent omission, not a visible failure. Normalized like
-        `_pure_launch_template_name`, which reads the same two fields. Only host constants reach
+        `_leaf_launch_template_name`, which reads the same two fields. Only host constants reach
         them today; this keeps the two readers from disagreeing if that stops being true."""
         for step, substep in (("Generate", "Verify"), (" generate", "verify "),
                               ("GENERATE", "verify")):
@@ -3492,13 +3493,13 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
     def test_the_paragraph_precedes_the_findings_it_governs(self) -> None:
         """It has to be read before the violation text, not after it: the findings block is what
         offers the cheap correction."""
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN
         text = self._render("validate", "judge")
         self.assertLess(text.index(self._FORBIDS_DROPPING), text.index(PURE_DOC_FENCE_BEGIN))
 
     def test_the_paragraph_is_outside_the_untrusted_fence(self) -> None:
         """A host instruction inside the data fence is one the leaf is told to ignore."""
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
         text = self._render("generate", "verify")
         before = text[:text.index(self._FORBIDS_DROPPING)]
         self.assertEqual(before.count(PURE_DOC_FENCE_BEGIN), before.count(PURE_DOC_FENCE_END))
@@ -3575,16 +3576,16 @@ class LanguageFragmentCompositionTests(unittest.TestCase):
             with self.subTest(pure_language=bad):
                 req = _workshop_request("generate", pure_language=bad)
                 with self.assertRaises(ValueError):
-                    ort._validate_pure_launch_request_payload(req)
+                    ort._validate_leaf_launch_request_payload(req)
 
     def test_the_conductor_names_the_target_language_on_a_generate_launch_only(self) -> None:
         from types import SimpleNamespace
         from tools.tests.target_fixtures import FORTRAN_CPU
         holder = SimpleNamespace(target=FORTRAN_CPU)
-        self.assertEqual(wc.Conductor._pure_language(holder, "generate"),
+        self.assertEqual(wc.Conductor._leaf_language(holder, "generate"),
                          FORTRAN_CPU.toolchain["language"])
         for phase in ("compile", "validate"):
-            self.assertEqual(wc.Conductor._pure_language(holder, phase), "", phase)
+            self.assertEqual(wc.Conductor._leaf_language(holder, phase), "", phase)
 
 
 class ParallelFragmentCompositionTests(unittest.TestCase):
@@ -3722,17 +3723,17 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         self.assertIn("carries no `pure_parallel`", str(caught.exception))
 
     def test_the_cold_repair_refuses_rather_than_drops_the_launch_body(self) -> None:
-        """A cold repair re-states the COMPOSED launch body (`_pure_launch_body`). A
+        """A cold repair re-states the COMPOSED launch body (`_leaf_launch_body`). A
         composition that fails there must refuse, as the cold launch does: a `ValueError`
         swallowed would ship the repair turn without the contract. Asked of both fields the
         composer needs."""
         for field in ("pure_parallel", "pure_language"):
             with self.subTest(field=field):
                 req = _workshop_request("generate", repair_findings="x", repair_strategy="reuse")
-                self.assertIn("Authoring rules", ort._render_pure_repair_prompt(req))
+                self.assertIn("Authoring rules", ort._render_leaf_repair_prompt(req))
                 req.pop(field)
                 with self.assertRaises(ValueError) as caught:
-                    ort._render_pure_repair_prompt(req)
+                    ort._render_leaf_repair_prompt(req)
                 self.assertIn(f"carries no `{field}`", str(caught.exception))
 
     def test_a_malformed_parallel_backend_is_refused_by_the_validator(self) -> None:
@@ -3740,7 +3741,7 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
             with self.subTest(pure_parallel=bad):
                 req = _workshop_request("generate", pure_parallel=bad)
                 with self.assertRaises(ValueError) as caught:
-                    ort._validate_pure_launch_request_payload(req)
+                    ort._validate_leaf_launch_request_payload(req)
                 self.assertIn("pure_parallel must be a non-empty string", str(caught.exception))
 
     def test_the_conductor_names_the_target_parallel_backend_on_a_generate_launch_only(
@@ -3751,8 +3752,8 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
         for profile in (FORTRAN_CPU, cuda):
             holder = SimpleNamespace(target=profile)
-            self.assertEqual(wc.Conductor._pure_parallel(holder, "generate"),
+            self.assertEqual(wc.Conductor._leaf_parallel(holder, "generate"),
                              profile.parallel_backend)
             for phase in ("compile", "validate"):
-                self.assertEqual(wc.Conductor._pure_parallel(holder, phase), "", phase)
+                self.assertEqual(wc.Conductor._leaf_parallel(holder, phase), "", phase)
         self.assertNotEqual(FORTRAN_CPU.parallel_backend, cuda.parallel_backend)

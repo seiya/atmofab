@@ -25,17 +25,17 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools import workshop_tree
 from tools.orchestration_runtime import (
-    build_readonly_bwrap_profile,
+    build_lineage_bwrap_profile,
     claude_workshop_profile_kwargs,
     codex_workshop_profile_kwargs,
     record_launch,
     render_bwrap_command,
     write_preflight,
 )
-from tools.pure_leaf import workshop_mcp_config_json
-from tools.tests.test_pure_leaf_producer import _PureFakeConductor
+from tools.leaf_contract import workshop_mcp_config_json
+from tools.tests.test_leaf_producer import _PureFakeConductor
 from tools.tests.llm_samples import workshop_yaml
-from tools.tests.test_pure_leaf_wiring import _mark_dependencies_ready, _spawn_response
+from tools.tests.test_leaf_wiring import _mark_dependencies_ready, _spawn_response
 from tools.tests.test_workshop_launch import (
     _ORCH,
     _clear_active_child,
@@ -122,7 +122,7 @@ class CodexWorkshopProfileTests(_CodexEnv):
     def _profile(self, **over) -> tuple[dict, dict]:
         iso = self._prepare_codex("lin_a", resume=False)
         kwargs = {**codex_workshop_profile_kwargs(iso), **over}
-        profile = build_readonly_bwrap_profile(
+        profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_a",
             backend_command="codex", backend_type="codex", **kwargs)
         return profile, iso
@@ -164,7 +164,7 @@ class CodexWorkshopProfileTests(_CodexEnv):
                                                   "CLAUDE_CONFIG_DIR": iso["config"]}}),
                 ("no home", {"env_overrides": {}})):
             with self.subTest(case=label), self.assertRaises(ValueError):
-                build_readonly_bwrap_profile(**base, **{**kwargs, **broken})
+                build_lineage_bwrap_profile(**base, **{**kwargs, **broken})
 
     def test_the_renderer_refuses_each_other_codex_shape(self) -> None:
         profile, iso = self._profile()
@@ -217,10 +217,10 @@ class CodexAdmissionTests(_CodexEnv):
         codex_iso = self._prepare_codex("lin_c", resume=False)
         claude_iso = self._prepare("lin_k", resume=False)
         common = dict(repo_root=self.repo, orchestration_id=_ORCH)
-        codex_profile = build_readonly_bwrap_profile(
+        codex_profile = build_lineage_bwrap_profile(
             agent_run_id="lin_c", backend_command="codex", backend_type="codex",
             **common, **codex_workshop_profile_kwargs(codex_iso))
-        claude_profile = build_readonly_bwrap_profile(
+        claude_profile = build_lineage_bwrap_profile(
             agent_run_id="lin_k", backend_command="claude", backend_type="claude",
             **common, **claude_workshop_profile_kwargs(claude_iso))
         codex_entry = _codex_config(self.repo).entry_for("generate", "generate")

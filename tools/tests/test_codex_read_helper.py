@@ -11,17 +11,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import pure_leaf
+from tools import leaf_contract
 
-CAP = pure_leaf.CODEX_READ_ADVICE_BYTES
-NAME = pure_leaf.CODEX_READ_HELPER_NAME
+CAP = leaf_contract.CODEX_READ_ADVICE_BYTES
+NAME = leaf_contract.CODEX_READ_HELPER_NAME
 
 
 class CodexReadHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.tree = Path(self._tmp.name)
-        (self.tree / NAME).write_text(pure_leaf.CODEX_READ_HELPER_TEXT, encoding="utf-8")
+        (self.tree / NAME).write_text(leaf_contract.CODEX_READ_HELPER_TEXT, encoding="utf-8")
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -164,7 +164,7 @@ class CodexReadHelperTests(unittest.TestCase):
         """Round 4 of PR-J3-a (leaf-read text): the row names the helper as a host seed the
         leaf must not edit, and says that what one `exec` prints is one output, so pages are
         read one `exec` each."""
-        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        row = leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
         for phrase in (f"python3 {NAME} <file>",
                        (f"`{NAME}` is a host seed like `CONTRACT.md` — the host placed it, "
                         "though the list of seeds in your work-tree contract does not name it: "
@@ -173,9 +173,9 @@ class CodexReadHelperTests(unittest.TestCase):
             self.assertEqual(row.count(phrase), 1, phrase)
 
     def test_the_only_number_in_the_script_is_the_cap(self) -> None:
-        numbers = re.findall(r"\d{2,}", pure_leaf.CODEX_READ_HELPER_TEXT)
+        numbers = re.findall(r"\d{2,}", leaf_contract.CODEX_READ_HELPER_TEXT)
         self.assertEqual(set(numbers), {str(CAP)})
-        self.assertEqual(CAP, pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES // 2)
+        self.assertEqual(CAP, leaf_contract.CODEX_EXEC_OUTPUT_BUDGET_BYTES // 2)
 
 
 if __name__ == "__main__":

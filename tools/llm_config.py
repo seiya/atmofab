@@ -112,7 +112,7 @@ def _is_loopback(host: str) -> bool:
 #                host-seeded tree with file tools confined to it — a producing one also reaching
 #                the host's operations — its tree snapshotted into the same document a pure
 #                leaf returns. The two CLI providers run it with their own tools (launch shapes
-#                measured: `pure_leaf.workshop_leaf_flags`, `pure_leaf.codex_workshop_overrides`)
+#                measured: `leaf_contract.workshop_leaf_flags`, `leaf_contract.codex_workshop_overrides`)
 #                and the wrapper's MCP endpoint; the two HTTP providers through the host's
 #                tool-use loop (`tools/llm_workshop_loop.py`, issue #534 PR-J3-b). Since issue
 #                #534 PR-J4-b it is the leaf model of every LLM leaf.
@@ -169,7 +169,7 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
 # `workflow_conductor.SUBSTEPS` minus `Conductor._is_deterministic_substep`; guarded by
 # `test_llm_leaf_substeps_matches_conductor`.
 #
-# NOTE the dispatch in `Conductor._pure_leaf_substep` additionally gates the two GENERATE pairs
+# NOTE the dispatch in `Conductor._leaf_substep` additionally gates the two GENERATE pairs
 # on the node having a bundle SHAPE at all (`Conductor._bundle_shape`: `m3c` or, since issue
 # #169, `harness`). No in-tree node answers None; a hand-crafted IR with no shape has no leaf
 # path for those two pairs, and since Z4 there is nothing to fall through to, so the conductor
@@ -199,9 +199,9 @@ LLM_LEAF_PHASES: frozenset[str] = frozenset(p for p, _ in LLM_LEAF_SUBSTEPS)
 # §Migration order). PRODUCING: both producing substeps (steps 1 and 2), served the wrapper's
 # operations. READING: the three judging substeps (step 3; adopted 2026-10-25), served no
 # operation — a seeded tree, file tools and one output document. Mirrors of
-# `pure_leaf.WORKSHOP_PRODUCING_PAIRS` / `WORKSHOP_READING_PAIRS` (the launch validator's
+# `leaf_contract.WORKSHOP_PRODUCING_PAIRS` / `WORKSHOP_READING_PAIRS` (the launch validator's
 # tables), compared by `test_llm_config`. The validator's reading set also holds the `escalate`
-# diagnostician's pairs (`pure_leaf.WORKSHOP_DIAGNOSE_PAIRS`, issue #534 PR-J4-a), which no entry
+# diagnostician's pairs (`leaf_contract.WORKSHOP_DIAGNOSE_PAIRS`, issue #534 PR-J4-a), which no entry
 # here assigns: `defaults` serves that launch (`_defaults_entry`). The union is
 # `LLM_LEAF_SUBSTEPS` (`test_llm_config`): there is no `leaf:` field selecting the model since
 # issue #534 PR-J4-b, and a written one is refused `llm_config_unknown_key`.
@@ -213,7 +213,7 @@ WORKSHOP_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = (
     WORKSHOP_PRODUCING_SUBSTEPS | WORKSHOP_READING_SUBSTEPS)
 
 # The providers a READING workshop entry may name: those whose reading launch shape is measured
-# and whose `<tool_surface>` row exists (`pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT`, compared
+# and whose `<tool_surface>` row exists (`leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT`, compared
 # by `test_llm_config`). `codex_cli` joined with its measured reading argv (step 3, PR-J2); the
 # two HTTP providers with the host loop's five file tools (PR-J3-b).
 WORKSHOP_READING_PROVIDERS: frozenset[str] = frozenset({

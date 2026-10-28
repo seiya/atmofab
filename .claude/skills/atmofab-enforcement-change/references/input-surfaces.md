@@ -648,7 +648,7 @@ and `skills/workflow-generate-verify/SKILL.md:18`. Both lists end: "The implemen
 while a `minor` buys a warm same-phase repair turn — so a verify leaf that follows the instruction
 learns that grading its finding `minor` is the cheap route to reporting its `substep` done.
 
-`tools/tests/test_pure_leaf_wiring.py`'s `_SEVERITY_ROUTING_ALLOWLIST` exists to keep exactly that
+`tools/tests/test_leaf_wiring.py`'s `_SEVERITY_ROUTING_ALLOWLIST` exists to keep exactly that
 off exactly these surfaces. It stayed green throughout: it refuses a severity VALUE, and the
 rewrite added none. The correction to the previous round's defect introduced a worse one, on the
 surface the previous round had been about.

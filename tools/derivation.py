@@ -26,7 +26,7 @@ each decision):
   keyed, because no verdict predicate depends on it yet.
 * The static documents the host inlines into a pure prompt — the same bytes for every node
   — are a property of the TRANSFORMATION, not of the node: they enter through the version
-  tuple, which the drift tests pin (`tools/tests/test_pure_prompt_contract_drift.py`,
+  tuple, which the drift tests pin (`tools/tests/test_leaf_prompt_contract_drift.py`,
   `tools/tests/test_derivation_transformation_drift.py`), so a maintainer decides once —
   bump or re-pin — instead of a typo fix invalidating every certified node. A host-derived
   document that VARIES by node or by target — the harness capability manifest of the target's
@@ -61,7 +61,7 @@ SELECTION_POLICY_VERSION = 1
 
 #: The version of the compile-inlined documents (`phase_01_compile.md`, the two IR examples; the
 #: `impl_defaults` schema was the fourth until R4-a PR-3, issue #284, which deleted it with the IR
-#: section). Pinned separately from `PURE_PROMPT_CONTRACT_VERSION` because a
+#: section). Pinned separately from `LEAF_PROMPT_CONTRACT_VERSION` because a
 #: bump of that one has two side effects this one must not have (it stops `_resolve_exemplar_source`
 #: offering earlier-version exemplars and refuses `--resume` across it — the reason the prompt
 #: drift test refuses to pin these four); a bump HERE costs exactly one re-derivation of every
@@ -88,13 +88,13 @@ def transformation_versions() -> dict[str, tuple[str, ...]]:
     load time for the runtime's own import order) and returned fresh, so a test that patches a
     constant sees its patch. The tuple is what `derivation_key` hashes under `"transformation"`.
     """
-    from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+    from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
     from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
     return {
-        "compile": ("pure", PURE_PROMPT_CONTRACT_VERSION, COMPILE_INLINED_DOCUMENTS_VERSION),
-        "generate": ("pure", PURE_PROMPT_CONTRACT_VERSION, RENDER_VERSION),
+        "compile": ("pure", LEAF_PROMPT_CONTRACT_VERSION, COMPILE_INLINED_DOCUMENTS_VERSION),
+        "generate": ("pure", LEAF_PROMPT_CONTRACT_VERSION, RENDER_VERSION),
         "build": (BUILD_VERSION,),
-        "validate": (EXECUTE_VERSION, VERDICT_VERSION, "pure", PURE_PROMPT_CONTRACT_VERSION,
+        "validate": (EXECUTE_VERSION, VERDICT_VERSION, "pure", LEAF_PROMPT_CONTRACT_VERSION,
                      f"raw-excerpt-{RAW_EXCERPT_POLICY_VERSION}"),
     }
 

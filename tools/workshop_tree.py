@@ -82,7 +82,7 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 #: The transports a lineage home is prepared for: the directory under `<homes-root>/<oid>/`
 #: that holds it, which is `orchestration_runtime.WORKFLOW_BACKEND_HOME_DIRNAMES` (the prune tool
-#: walks those names), and the value `pure_leaf.WORKSHOP_LINEAGE_BACKENDS` maps the launching
+#: walks those names), and the value `leaf_contract.WORKSHOP_LINEAGE_BACKENDS` maps the launching
 #: provider to: `claude` (`claude_cli`, issue #534 step 1), `codex` (`codex_cli`, step 2 PR-2),
 #: `http` (both HTTP providers, whose host loop is one transport — PR-J3-b; no `config/`).
 LINEAGE_BACKENDS: tuple[str, ...] = ("claude", "codex", "http")
@@ -674,7 +674,7 @@ def assemble_ir_document(root: Path, reserved: Iterable[str] = ()) -> dict[str, 
 
     `spec.ir.yaml` is `yaml.safe_load`ed into `ir`; `compile_fail.json` is `json.loads`ed into
     `compile_fail`. Each absent file contributes `None`. BOTH present gives a document carrying
-    both, which the producer's contract (`Conductor._pure_ir_document_violations`, unchanged)
+    both, which the producer's contract (`Conductor._leaf_ir_document_violations`, unchanged)
     refuses as two answers; NEITHER is `workshop_tree_empty`. A file reached through a link,
     not a regular file, not UTF-8, not parseable, or holding a value that is not a JSON value
     is an `ir_document_violation` finding. What passes goes through the same contract a pure

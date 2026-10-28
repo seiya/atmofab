@@ -401,7 +401,7 @@ _EXECUTE_EXCERPT_TRUNCATION_MARK = "[... excerpt truncated to the last "
 # fields (why each superseded pure attempt failed), rendered into no repair prompt — the terminal
 # top-level failure_excerpt is the repair carrier — so a short cap keeps the meta small while still
 # naming the failure class.
-_PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
+_LEAF_ATTEMPT_EXCERPT_MAX_CHARS = 400
 
 #: How much of a failed sweep shape's stderr `quality_check.json#shapes[].run_failure` keeps
 #: (issue #512): its first and its last lines, each bounded in characters — the cause is often
@@ -645,7 +645,7 @@ HOST_RENDERED_RUNNER_UNREPAIRABLE: frozenset[str] = frozenset({"snapshot_deliver
 # The pure `generate.generate` producer returns exactly one CodegenBundle JSON document;
 # the host validates it (transport parse, `validate_bundle`, assembly preflight) and repairs
 # a violation in a bounded in-conversation warm-resume loop (MAX_BUNDLE_REPAIR_TURNS,
-# `tools/pure_leaf`). Only when that budget is exhausted does the substep fail with the
+# `tools/leaf_contract`). Only when that budget is exhausted does the substep fail with the
 # terminal category recorded in `bundle_meta.json#failure_category`; run_phase then routes it
 # here. Every category is a defect in the model's returned document, so the route is a fresh
 # (generate, generate) attempt with a warm reuse repair — the same "this phase's own producer"
@@ -676,7 +676,7 @@ GENERATE_BUNDLE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # capture), a tool output reached the model cut, or a read was delegated to a sub-agent (its
 # rollout), is refused under this category: the judge certified rows it was never shown. A
 # leaf CONTENT failure, repaired by a cold launch from the seeds alone, on a counter of its own
-# (`_run_pure_reviewer_substep`); its exhaustion routes as a schema exhaustion does (the two
+# (`_run_leaf_reviewer_substep`); its exhaustion routes as a schema exhaustion does (the two
 # verdict tables below; `validate.judge` by its conformance violation).
 WORKSHOP_CUT_READ = "workshop_cut_read"
 # The rollout that says what the model received could not be read (no thread id, no file, two,
@@ -693,7 +693,7 @@ WORKSHOP_ROLLOUT_UNREADABLE = "workshop_rollout_unreadable"
 # --- Z2 pure-leaf verify-verdict routing (M-D) ---------------------------------
 # The pure `generate.verify` reviewer returns exactly one verify-verdict JSON document; the host
 # validates it (transport parse, `verify_verdict_violations`) and repairs a SCHEMA violation in a
-# bounded in-conversation warm-resume loop (MAX_BUNDLE_REPAIR_TURNS, `tools/pure_leaf`). A
+# bounded in-conversation warm-resume loop (MAX_BUNDLE_REPAIR_TURNS, `tools/leaf_contract`). A
 # schema-VALID verdict (pass OR fail) is the reviewer's answer and is NEVER repaired here — a
 # `fail` verdict projects onto source_meta.json and routes through the normal verify-severity gate
 # (classify_verify_severity), exactly like the agentic verify leaf. Only a persistently MALFORMED
@@ -705,7 +705,7 @@ WORKSHOP_ROLLOUT_UNREADABLE = "workshop_rollout_unreadable"
 # DEVIATION (documented): the plan sketched `("verify","reuse")`, but a phase reopen hands its
 # repair to substep index 0 (the producer) only — `verify` is index 4 and cannot be the reopen
 # target, so a cross-phase "reuse the verify session" is structurally impossible. The in-session
-# reuse (warm-resume of the same reviewer) already happened inside `_run_pure_reviewer_substep` and
+# reuse (warm-resume of the same reviewer) already happened inside `_run_leaf_reviewer_substep` and
 # is what the budget bounds; once exhausted, reusing that same broken session again is pointless,
 # and threading a "your verdict was malformed" excerpt to the producer would risk perturbing a
 # GOOD bundle. A cold restart is therefore both the only valid and the safest recovery. The
@@ -726,7 +726,7 @@ GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 
 # --- Z3 pure `validate.judge` document routing (issue #169) --------------------
 # The judge returns `{decision, findings, notes}` and the host writes `semantic_review.json`
-# from it (`tools/pure_leaf.semantic_review_document_violations`). A malformed document is
+# from it (`tools/leaf_contract.semantic_review_document_violations`). A malformed document is
 # repaired in the same bounded warm loop the other reviewers use, under this category.
 # There is deliberately NO routing table beside it: when the budget IS exhausted the host has
 # written no `semantic_review.json`, so `_judge_semantic_decision` reads `""` and `run_phase`'s
@@ -742,7 +742,7 @@ SEMANTIC_REVIEW_DOCUMENT_VIOLATION = "semantic_review_document_violation"
 # The pure `compile.generate` producer returns exactly one IR document
 # (`{"ir": <object|null>, "compile_fail": null | {input, where, what}}`); the host validates its
 # SHAPE
-# (transport parse, `_pure_ir_document_violations`) and repairs a violation in a bounded
+# (transport parse, `_leaf_ir_document_violations`) and repairs a violation in a bounded
 # in-conversation warm-resume loop (MAX_BUNDLE_REPAIR_TURNS). The document's MEANING is not
 # judged in that loop — `Compile.static` is the single semantic gate and already routes its own
 # `compile_static_violation` back to (compile, reuse). Only when the shape budget is exhausted
@@ -1141,8 +1141,8 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
         docstring records what it measured about its own document.
 
     A slice is a pure-leaf INPUT: changing what one spans changes what the leaf reads and
-    therefore requires a `PURE_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slices
-    THEMSELVES (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice changes
+    therefore requires a `LEAF_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slices
+    THEMSELVES (`tools/tests/test_leaf_prompt_contract_drift.py`), so a silent re-slice changes
     the digest instead of shipping unversioned.
     """
     begin_re = _numbered_section_heading_re(begin)
@@ -1296,8 +1296,8 @@ def _generate_verify_severity_rubric_section(text: str) -> str:
     second enumeration inside this function.
 
     This slice is a pure-leaf INPUT: changing what it spans changes what the reviewer reads and
-    therefore requires a `PURE_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slice
-    ITSELF (`tools/tests/test_pure_prompt_contract_drift.py`), so a silent re-slice changes the
+    therefore requires a `LEAF_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slice
+    ITSELF (`tools/tests/test_leaf_prompt_contract_drift.py`), so a silent re-slice changes the
     digest instead of shipping unversioned."""
     lines = text.splitlines()
     begin = next((i for i, ln in enumerate(lines)
@@ -1898,7 +1898,7 @@ def build_launch_request(
     # bwrap `write_roots` pinned to that same stage-meta file, and the terminal FS-diff reading those
     # narrowed roots — are ALL DELETED (Z4, issue #171 PR-2): a verify leaf is pure, holds no tool,
     # and authors nothing — `allowed_output_paths` is set to `[]` thirty lines below, on the pure
-    # branch, and `_validate_pure_launch_request_payload` REFUSES a pure request whose list is
+    # branch, and `_validate_leaf_launch_request_payload` REFUSES a pure request whose list is
     # non-empty. So the narrowing above is dead for both verify substeps, which are pure; it
     # survives for a deterministic launch, where `_allowed_output_paths_for_launch` checks the
     # list against the phase contract at record-launch (NOT `post_<phase>` validation, which
@@ -1936,9 +1936,9 @@ def build_launch_request(
                          "request and names its lineage (workshop_lineage_id); the pure leaf "
                          "it would otherwise describe went in issue #534 PR-J4-b")
     if pure_leaf:
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_LEAF_MODE
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, WORKSHOP_LEAF_MODE
         req["leaf_mode"] = WORKSHOP_LEAF_MODE
-        req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
+        req["prompt_contract_version"] = LEAF_PROMPT_CONTRACT_VERSION
         req["workshop_lineage_id"] = workshop_lineage_id
         # The provider whose tool surface the prompt states (`<tool_surface>`, step 2).
         req["workshop_provider"] = workshop_provider
@@ -1988,7 +1988,7 @@ def build_launch_request(
 LEAF_MAX_OUTPUT_TOKENS = 128000
 
 # A claude leaf is launched with the `--tools` allowlist of its workshop kind
-# (`pure_leaf.workshop_leaf_flags`). What reads the argv is `_launch_setting_surface`, which
+# (`leaf_contract.workshop_leaf_flags`). What reads the argv is `_launch_setting_surface`, which
 # records the tool VALUES.
 #
 # PLACEMENT RULE for the variadic flags on this argv (`--tools <tools...>`): a variadic flag
@@ -3669,7 +3669,7 @@ MAX_USAGE_RESET_WAIT_SECONDS = sum(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)
 #: here for exactly that, so the cap has to be wide enough to keep the promise: the longest
 #: raise this tree can produce is the generate producer's runner path, measured at 619
 #: characters.
-_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS = 2000
+_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS = 2000
 
 
 #: The conductor's own cap on a phase failure's persisted `reason_detail`. The runtime's writer
@@ -3685,7 +3685,7 @@ _PHASE_REASON_DETAIL_MAX_CHARS = 200
 _LAUNCH_CHECK_REASON_DETAIL_MAX_CHARS = 4000
 
 
-def _pure_assembly_detail(exc: BaseException) -> str:
+def _leaf_assembly_detail(exc: BaseException) -> str:
     """The evidence string a `pure_context_assembly_failed` outcome carries.
 
     Drops the `RuntimeError: ` prefix when the message already NAMES its reason (every
@@ -3838,7 +3838,7 @@ def _runner_host_authored_m3c(refs: NodeRefs) -> bool:
     `(makefile_host_authored, runner_host_authored)` pair until issue #424 PR-2 deleted the
     makefile half's one reader, `build_launch_request`'s generate-leaf output list.)
 
-    GENERATE reaches the pure loops only on a bundle shape (`_pure_leaf_substep` asks
+    GENERATE reaches the pure loops only on a bundle shape (`_leaf_substep` asks
     `_bundle_shape`, which answers `m3c` or `harness`). The `m3c` specs bind this constant, and
     on that shape the host renders the runner — so for them it is the node's truth; the
     `harness` specs bind `Conductor._node_runner_host_authored`, the node's own answer. COMPILE carries no shape condition at all, deliberately: the Compile contract
@@ -4119,8 +4119,8 @@ class Conductor:
         Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), and
         `reading` is the KIND of the launch, passed in by the caller because
         `ResolvedLeafEntry` carries no `(phase, substep)`. A PRODUCING launch takes its
-        wrapper's endpoint as `mcp_config_json` (`pure_leaf.workshop_leaf_flags`,
-        `pure_leaf.codex_workshop_overrides`); a READING launch (a judging substep, or the
+        wrapper's endpoint as `mcp_config_json` (`leaf_contract.workshop_leaf_flags`,
+        `leaf_contract.codex_workshop_overrides`); a READING launch (a judging substep, or the
         diagnostician) is served no endpoint, so it takes none and the reading flag set. Either
         combination the other way round is refused: a leaf would hold the wrapper under a
         reading contract or lack it under a producing one.
@@ -4158,7 +4158,7 @@ class Conductor:
                 flags += ["--resume", resume_session_id, "--fork-session"]
             if session_id:
                 flags += ["--session-id", session_id]
-            from tools.pure_leaf import workshop_leaf_flags
+            from tools.leaf_contract import workshop_leaf_flags
             flags += workshop_leaf_flags(mcp_config_json, reading=reading)
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
@@ -4174,7 +4174,7 @@ class Conductor:
             # codex's `workspace-write` sandbox: its shell and patch tool write inside the
             # working directory, which the lineage profile makes the tree (issue #534 step 2
             # PR-2), and the wrapper's endpoint on a producing launch
-            # (`pure_leaf.codex_workshop_overrides`). No `--output-schema` (issue #230: codex-cli
+            # (`leaf_contract.codex_workshop_overrides`). No `--output-schema` (issue #230: codex-cli
             # sends it with `strict: true` hardcoded). `--skip-git-repo-check`: the tree is not
             # a git checkout, and codex refuses an untrusted non-git cwd before any API call
             # without it (measured on codex-cli 0.154.0, rc 1). `codex exec resume` has no
@@ -4182,7 +4182,7 @@ class Conductor:
             # subcommands share; passing `--sandbox` there aborts the turn at argv parsing.
             # `-` is the documented stdin sentinel for the positional prompt on BOTH
             # subcommands; an omitted positional on `resume` would be read as the session id.
-            from tools.pure_leaf import codex_workshop_overrides
+            from tools.leaf_contract import codex_workshop_overrides
             overrides = codex_workshop_overrides(mcp_config_json, reading=reading)
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
@@ -5457,7 +5457,7 @@ class Conductor:
         # per-child output schema here before), so the id is for the argv alone.
         # The KIND of a workshop launch is its request's pair (a judging pair reads; issue #534
         # step 3), never the entry, which names no pair.
-        from tools.pure_leaf import is_workshop_reading_pair
+        from tools.leaf_contract import is_workshop_reading_pair
         reading = is_workshop_reading_pair(request.get("step"), request.get("substep"))
         argv = self.leaf_command(entry, session_id=child_arid, mcp_config_json=mcp_config_json,
                                  reading=reading)
@@ -5467,7 +5467,7 @@ class Conductor:
         # From the JSON this launch was handed, not from argv: a configured `command:` may carry
         # an `--mcp-config` of its own (a file path, not JSON), which argv would offer first.
         # A codex workshop launch carries the same endpoint as `--config` overrides
-        # (`pure_leaf.codex_workshop_overrides`), recorded under its own name.
+        # (`leaf_contract.codex_workshop_overrides`), recorded under its own name.
         if mcp_config_json is not None:
             servers = json.loads(mcp_config_json).get("mcpServers", {})
             field = ("codex_mcp_config" if entry.provider == "codex_cli"
@@ -5676,16 +5676,16 @@ class Conductor:
         tc = self._read_toolchain(refs)
         return self._core_authors_control_file(tc["build_system"], tc["language"])
 
-    def _pure_language(self, phase: str) -> str:
+    def _leaf_language(self, phase: str) -> str:
         """The language a pure launch of `phase` composes its template for: the target's, on
         the phase that renders language rules (`generate`). Compile is target-free (issue #284)
         and Validate's judge reads output documents, so neither is told one."""
         return str(self.target.toolchain["language"]) if phase == "generate" else ""
 
-    def _pure_parallel(self, phase: str) -> str:
+    def _leaf_parallel(self, phase: str) -> str:
         """The parallel backend a pure launch of `phase` composes its template for: the
         target's, on the phase whose templates carry `{{parallel:<name>}}` markers (`generate`),
-        for the reason `_pure_language` gives."""
+        for the reason `_leaf_language` gives."""
         return str(self.target.parallel_backend) if phase == "generate" else ""
 
     def _checks_abi_binding_text(self) -> str:
@@ -5819,7 +5819,7 @@ class Conductor:
         PHYSICS node whose target toolchain the neutral core both writes a control file for and
         renders a runner for (today make with fortran or cuda_cpp — asked of the registry, see
         `_core_authors_control_file`). On such a node the runner is glue over the plumbing of
-        the TARGET's certified harness (`_pure_harness_node_key`, issue #284) + the leaf-authored
+        the TARGET's certified harness (`_leaf_harness_node_key`, issue #284) + the leaf-authored
         `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness interface
         (`tools/host_render.render_runner`) — the leaf authors model+checks, not the runner. An
         `infrastructure` node authors its own self-test runner (not glue), and is the only live
@@ -5845,7 +5845,7 @@ class Conductor:
         # A physics kind the IR states (`M3C_SPEC_KINDS`). An IR stating none, or another kind,
         # declines — the fail-safe the dependency count used to give; the pure producer's
         # document is refused unless `meta.spec_kind` is the node's own kind
-        # (`_pure_ir_document_violations`), so no certified IR reaches here without one. The
+        # (`_leaf_ir_document_violations`), so no certified IR reaches here without one. The
         # validator's twin (`validate_pipeline_semantics._m3c_language`) asks the same.
         from tools.spec_input_gates import M3C_SPEC_KINDS
         meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
@@ -5880,7 +5880,7 @@ class Conductor:
         `meta.spec_kind`: the shape decides which admissibility rules the bundle is judged
         against, and a fact a gate reads off the document under review is a switch the leaf
         holds (`.claude/skills/atmofab-enforcement-change`, surface 11). The two are pinned
-        equal for a pure node anyway by `_pure_ir_document_violations`, so this costs nothing
+        equal for a pure node anyway by `_leaf_ir_document_violations`, so this costs nothing
         and cannot be turned off from inside a document. `validate_pipeline_semantics
         ._ir_bundle_shape` is the twin the deterministic tamper gate asks the same question of;
         a parity test pins the two."""
@@ -5894,7 +5894,7 @@ class Conductor:
         language = self._read_toolchain(refs)["language"]
         return "harness" if language in BUNDLE_LANGUAGES else None
 
-    def _pure_leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
+    def _leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
         """True when this substep runs as a host-mediated pure-function leaf.
 
         Since Z4 (issue #171) every LLM leaf runs on this host-rendered path — a `workshop leaf`
@@ -5951,7 +5951,7 @@ class Conductor:
         and — for a language that declares the checks ABI in a header rather than in the checks
         source (`host_render.render_checks_header`) — that header beside it.
 
-        Resolves the TARGET's CERTIFIED harness (`_pure_harness_node_key`) — the exact
+        Resolves the TARGET's CERTIFIED harness (`_leaf_harness_node_key`) — the exact
         `<harness>_model.f90` Build stages/links (`_certified_model_source`, the harness's
         SELECTED certified Generate output under its derivation key) and the IR
         `public_api.signatures` that source was certified against (`_certified_ir_dir`, its
@@ -5983,7 +5983,7 @@ class Conductor:
         # impossible; two earlier versions of this comment declared it impossible and were
         # wrong.
         language = self._read_toolchain(refs)["language"]
-        harness_nk = self._pure_harness_node_key(refs.node_key)
+        harness_nk = self._leaf_harness_node_key(refs.node_key)
         harness_sid = spec_id_of(harness_nk)
         safe = node_key_safe(harness_nk)
         # ONE resolver for both selections, so the source and the IR come from one evaluation
@@ -6214,10 +6214,10 @@ class Conductor:
     # the derived Makefile. The leaf holds no write authority, so every artifact is host-written
     # AFTER the child window closes (finalize_child). The methods below are the host side of
     # that channel: context assembly, bundle validation + assembly preflight, artifact writes,
-    # and the bundle-derived Makefile. Gated by `_pure_leaf_substep`; unreachable on the agentic
+    # and the bundle-derived Makefile. Gated by `_leaf_substep`; unreachable on the agentic
     # leaf path (existing suite green proves the agentic path is byte-for-byte unchanged).
 
-    def _pure_harness_node_key(self, node_key: str) -> str:
+    def _leaf_harness_node_key(self, node_key: str) -> str:
         """The ONE harness a node of this run renders its runner over and a pure leaf
         negotiates against.
 
@@ -6230,8 +6230,8 @@ class Conductor:
         see `_bundle_shape`.
 
         The SINGLE resolution shared by the runner render (`_write_runner`), the context
-        assembly (`_build_pure_context`, which shows the leaf that harness's manifest) and the
-        acceptance layer (`_pure_bundle_violations`, which negotiates `capability_requirements`
+        assembly (`_build_leaf_context`, which shows the leaf that harness's manifest) and the
+        acceptance layer (`_leaf_bundle_violations`, which negotiates `capability_requirements`
         against it). One source, so the capabilities the leaf is shown are by construction the
         capabilities it is judged against, and the harness it is judged against is the one its
         runner is linked to. An `infrastructure` node no manifest declares provides nothing, so
@@ -6251,11 +6251,11 @@ class Conductor:
                 f"harness of target {self.target.target_id} does not resolve for {node_key}: "
                 f"{exc.detail}") from exc
 
-    def _build_pure_context(self, refs: NodeRefs) -> dict[str, str]:
+    def _build_leaf_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees, each value a plain
         string the renderer data-fences. All data is host-resolved from disk here (the leaf has
         no filesystem): the harness capability manifest (A6), the target profile
-        (`_pure_target_profile_document`), the lowered IR, the tests, and the host-rendered
+        (`_leaf_target_profile_document`), the lowered IR, the tests, and the host-rendered
         runner. Mirrors the must-read
         set the agentic `generate.generate` leaf reads.
 
@@ -6267,7 +6267,7 @@ class Conductor:
         `compile`-side IR self-sufficiency guarantees landed — the strengthened lowering rule plus
         the deterministic `Compile.static` local-op lowering presence floor. The pure
         `generate.verify` reviewer still reads controlled_spec.md by design — §2-2, see
-        `_build_pure_verify_context` — because it verifies the source against it.)
+        `_build_leaf_verify_context` — because it verifies the source against it.)
 
         The runner is injected VERBATIM (no interface extraction): it is the consumer of the
         checks-module ABI the leaf must author against, and `docs/workflow/CHECKS_MODULE_CONTRACT.md`
@@ -6278,10 +6278,10 @@ class Conductor:
         (which names the runner actually imports) exact by construction. `run_phase` renders it
         before any generate substep runs, so it is always on disk here."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
-        ir_text = self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
-        tests_text = self._pure_node_document(f"{refs.spec_path}/tests.md", "tests")
+        ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
+        tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
         # The runner RAISES on an unreadable file, as the ir/tests reads above do.
-        # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
+        # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
         # that the blank would reach the leaf and ship a prompt with an empty ABI section — was
         # false, for this site and for every other pure pair. The caller converts the raise
         # into a fail_closed transport outcome (no leaf spawned). The ir/tests reads degraded to
@@ -6298,15 +6298,15 @@ class Conductor:
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
-                    self._pure_harness_node_key(refs.node_key)),
+                    self._leaf_harness_node_key(refs.node_key)),
                 indent=2, ensure_ascii=False),
-            "target_profile": self._pure_target_profile_document(),
+            "target_profile": self._leaf_target_profile_document(),
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_document": runner_text,
         }
 
-    def _pure_target_profile_document(self) -> str:
+    def _leaf_target_profile_document(self) -> str:
         """The `<target_profile>` a pure Generate leaf is shown — the producer on both bundle
         shapes, and the reviewer on both: the run's target profile, whole
         (`spec/targets/<target_id>.yaml` as the loader parsed it).
@@ -6320,10 +6320,10 @@ class Conductor:
         re-derives."""
         return json.dumps(self.target.doc, indent=2, ensure_ascii=False)
 
-    def _build_pure_harness_context(self, refs: NodeRefs) -> dict[str, str]:
+    def _build_leaf_harness_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.generate` leaf sees on the HARNESS shape.
 
-        The `m3c` producer's context (`_build_pure_context`) shows the leaf the host-rendered
+        The `m3c` producer's context (`_build_leaf_context`) shows the leaf the host-rendered
         runner, because on that shape the runner is the CONSUMER of the checks ABI the leaf must
         author against. Here there is no host-rendered runner and no checks module: the leaf
         authors the executable entry itself, so what takes the runner's place is the contract
@@ -6354,15 +6354,15 @@ class Conductor:
         not a substitute. See the slicer's docstring for the full history.
 
         Same reads and the same dispositions as the m3c producer otherwise: the harness manifest
-        (its OWN, see `_pure_harness_node_key`), the target profile
-        (`_pure_target_profile_document`), the lowered IR and the tests. Every read RAISES on an
+        (its OWN, see `_leaf_harness_node_key`), the target profile
+        (`_leaf_target_profile_document`), the lowered IR and the tests. Every read RAISES on an
         unreadable file (and both repository documents on an unsliceable one) the way the m3c
         producer's do — the caller converts it into a `pure_context_assembly_failed` fail_closed
         transport outcome, with no leaf spawned."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
         from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
-        ir_text = self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
-        tests_text = self._pure_node_document(f"{refs.spec_path}/tests.md", "tests")
+        ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
+        tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
         contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
         try:
             contract_text = contract_path.read_text(encoding="utf-8")
@@ -6382,9 +6382,9 @@ class Conductor:
         return {
             "harness_capabilities": json.dumps(
                 harness_capability_manifest_document_for(
-                    self._pure_harness_node_key(refs.node_key)),
+                    self._leaf_harness_node_key(refs.node_key)),
                 indent=2, ensure_ascii=False),
-            "target_profile": self._pure_target_profile_document(),
+            "target_profile": self._leaf_target_profile_document(),
             "ir_document": ir_text,
             "tests_document": tests_text,
             "runner_output_contract_document": self._runner_output_contract_with_binding(
@@ -6434,7 +6434,7 @@ class Conductor:
                 f"empty rule set ({text!r})")
         return text
 
-    def _pure_bundle_violations(self, refs: NodeRefs,
+    def _leaf_bundle_violations(self, refs: NodeRefs,
                                 doc: Any) -> tuple[str, str] | None:
         """Validate + assembly-preflight a producer's CodegenBundle. Returns None for a clean
         bundle, else `(failure_category, findings_text)` for the bounded repair / bundle_meta.
@@ -6459,10 +6459,10 @@ class Conductor:
         delegates."""
         from tools.codegen_bundle import pure_bundle_contract_violation
         return pure_bundle_contract_violation(
-            doc, **self._pure_bundle_violation_inputs(refs),
-            build_graph=lambda d: self._build_pure_bundle_graph(refs, d))
+            doc, **self._leaf_bundle_violation_inputs(refs),
+            build_graph=lambda d: self._build_leaf_bundle_graph(refs, d))
 
-    def _pure_bundle_violation_inputs(self, refs: NodeRefs) -> dict[str, Any]:
+    def _leaf_bundle_violation_inputs(self, refs: NodeRefs) -> dict[str, Any]:
         """The host-owned keyword arguments of `pure_bundle_contract_violation` for this node:
         everything but the document and its build-graph derivation. One assembly, read by the
         pure loop above and frozen into a `workshop leaf`'s wrapper (`_freeze_wrapper_context`),
@@ -6472,10 +6472,10 @@ class Conductor:
             snapshot_variable_entries_from_ir)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         # Capability negotiation against the target's harness, resolved by the same
-        # `_pure_harness_node_key` that narrows the manifest the leaf is SHOWN — so a capability
+        # `_leaf_harness_node_key` that narrows the manifest the leaf is SHOWN — so a capability
         # the context advertises is always one this layer accepts. Its manifest MUST be declared
         # (an undeclared harness provides nothing => every requirement unsatisfied, fail-closed).
-        harness_nk = self._pure_harness_node_key(refs.node_key)
+        harness_nk = self._leaf_harness_node_key(refs.node_key)
         provided = harness_provided_capabilities(harness_nk)
         return {
             "node_key": refs.node_key, "spec_id": refs.spec_id,
@@ -6487,18 +6487,18 @@ class Conductor:
             "ir_published_operations": published_operations_from_ir(ir),
         }
 
-    def _build_pure_bundle_graph(self, refs: NodeRefs, doc: Any) -> dict[str, Any]:
+    def _build_leaf_bundle_graph(self, refs: NodeRefs, doc: Any) -> dict[str, Any]:
         """The deterministic build graph of a bundle (`derive_build_graph`), with the closure,
         toolchain, host glue, and dependency edges the host owns. Raises RuntimeError on a
         cross-origin collision or a staged-dependency straddle (surfaced as an assembly failure
         by the caller). The single derivation source for both the assembly preflight and the
         Makefile renderer, so the graph the host validates is the graph it builds."""
         from tools.codegen_bundle import derive_build_graph
-        return derive_build_graph(doc, **self._pure_bundle_graph_inputs(refs))
+        return derive_build_graph(doc, **self._leaf_bundle_graph_inputs(refs))
 
-    def _pure_bundle_graph_inputs(self, refs: NodeRefs) -> dict[str, Any]:
+    def _leaf_bundle_graph_inputs(self, refs: NodeRefs) -> dict[str, Any]:
         """The host-owned keyword arguments of `derive_build_graph` for this node (everything
-        but the document), for the reason `_pure_bundle_violation_inputs` gives."""
+        but the document), for the reason `_leaf_bundle_violation_inputs` gives."""
         from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
         tc = self._read_toolchain(refs)
         toolchain = {
@@ -6529,7 +6529,7 @@ class Conductor:
         return {"dependency_closure": tuple(closure_nodes), "toolchain": toolchain,
                 "host_glue_sources": host_glue, "dependency_edges": edges or None}
 
-    def _render_pure_makefile_from_graph(self, refs: NodeRefs, graph: dict[str, Any]) -> str:
+    def _render_leaf_makefile_from_graph(self, refs: NodeRefs, graph: dict[str, Any]) -> str:
         """Render `src/Makefile` from a bundle's derived build graph (`derive_build_graph`).
 
         Unlike the IR-shaped `_write_makefile` (which assumes a fixed model/checks/runner set —
@@ -6547,7 +6547,7 @@ class Conductor:
     def _control_file_render_inputs(self, refs: NodeRefs) -> tuple[Callable[..., str],
                                                                     dict[str, Any]]:
         """`(render_from_graph, its host-owned keyword arguments)` for this node: everything
-        the control file says but the graph, for the reason `_pure_bundle_violation_inputs`
+        the control file says but the graph, for the reason `_leaf_bundle_violation_inputs`
         gives."""
         tc = self._read_toolchain(refs)
         return self._control_file_module(tc["build_system"]).render_from_graph, {
@@ -6592,7 +6592,7 @@ class Conductor:
                             architecture=architecture,
                             compiler_wrapper=compiler_wrapper(tc["backend"]))
 
-    def _write_pure_bundle_artifacts(self, refs: NodeRefs, doc: dict[str, Any],
+    def _write_leaf_bundle_artifacts(self, refs: NodeRefs, doc: dict[str, Any],
                                      graph: dict[str, Any]) -> list[str]:
         """Write a validated bundle's artifacts host-side, AFTER the producer's child window
         closes: each `files[]` entry to `src/<logical_path>`, the canonical `codegen_bundle.json`
@@ -6632,7 +6632,7 @@ class Conductor:
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         makefile = (self.repo_root / refs.source_dir() / "src"
                     / self._control_file_basename(refs))
-        makefile.write_text(self._render_pure_makefile_from_graph(refs, graph), encoding="utf-8")
+        makefile.write_text(self._render_leaf_makefile_from_graph(refs, graph), encoding="utf-8")
         self._write_interface_header(refs)
         return written
 
@@ -6677,7 +6677,7 @@ class Conductor:
 
     def _bundle_source_names(self, refs: NodeRefs) -> list[str]:
         """The `files[].logical_path` names of the ACCEPTED bundle under `refs.source_dir()`
-        (`codegen_bundle.json`, written by `_write_pure_bundle_artifacts`), in document order;
+        (`codegen_bundle.json`, written by `_write_leaf_bundle_artifacts`), in document order;
         `[]` when the phase produced none (a failed attempt, or a node whose generate wrote no
         bundle). Read by `run_phase` so `phase_required_outputs("generate")` declares every
         source the bundle contributed, helpers included (issue #250)."""
@@ -6704,12 +6704,12 @@ class Conductor:
         model's provenance (`_spawn_workshop_turn`: claude's CLI result envelope, codex's
         host-pinned slug, an HTTP provider's response or configured entry). A re-derivable value is not
         introduced beyond what only the transcript would otherwise hold."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
             "failure_category": failure_category,
             "attempts": attempts,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
         # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
@@ -6737,15 +6737,15 @@ class Conductor:
     # against this constant rather than transcribing it, so a reworded sentence is not a
     # behaviour change. What IS pinned is that the value is non-empty (the launch validator
     # refuses an empty declared key) and that it is what a node adopting no profile receives.
-    _PURE_PROFILE_ABSENT_DOCUMENT = (
+    _LEAF_PROFILE_ABSENT_DOCUMENT = (
         "This node adopts no profile.")
 
-    def _pure_node_document(self, rel: str, name: str) -> str:
+    def _leaf_node_document(self, rel: str, name: str) -> str:
         """A NODE artifact of any pure context, or RAISE.
 
         A degradation to `""` would not be a degradation: every key the pure builders return is
         declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
-        `_validate_pure_launch_request_payload` refuses an empty declared key — inside
+        `_validate_leaf_launch_request_payload` refuses an empty declared key — inside
         `record_launch`, whose `runtime` helper raises `RuntimeError` on a non-zero exit, from a
         call the pure loop does NOT guard. So an empty value here does not ship a blind prompt;
         it aborts the conductor with a launch-validation error instead of producing the named
@@ -6757,12 +6757,12 @@ class Conductor:
         fail-closed disposition for a corrupted checkout, not a live route. `spec.ir.yaml` and
         `codegen_bundle.json` are RUN OUTPUTS, and a corrupted or half-written run directory is a
         live route to them; that is why the generate builders read them here too, issue #467.)"""
-        return self._pure_repo_document(rel, name)
+        return self._leaf_repo_document(rel, name)
 
-    def _pure_repo_document(self, rel: str, name: str) -> str:
+    def _leaf_repo_document(self, rel: str, name: str) -> str:
         """A repository document inlined VERBATIM into a pure context, or RAISE.
 
-        Every read of the compile context comes through here or through `_pure_node_document`,
+        Every read of the compile context comes through here or through `_leaf_node_document`,
         which delegates to it — so this is the ONE disposition, and the sentence that used to
         contrast it with a node artifact's `""` degradation is gone rather than corrected: that
         contrast stopped being true the moment the node artifacts started raising too.
@@ -6770,7 +6770,7 @@ class Conductor:
         Raising is what makes the failure RECOVERABLE, and the alternative is not a blank
         prompt: every key this function feeds is a DECLARED one (set identity is pinned by
         `test_the_key_source_table_covers_every_declared_key`), and
-        `_validate_pure_launch_request_payload` refuses a declared key that is empty rather than
+        `_validate_leaf_launch_request_payload` refuses a declared key that is empty rather than
         merely absent — inside `record_launch`, from a call the pure loop does not guard, so the
         `RuntimeError` would escape `run_substep` and abort the conductor. An empty string
         therefore never ships a prompt with a blank contract, example or schema section; it
@@ -6789,7 +6789,7 @@ class Conductor:
             # follow. Ordering it this way makes the truncation eat the least actionable end:
             # what survives is which file, then as much of where as fits. The whole string is on
             # the `pure_context_assembly_failed` event, whose own cap
-            # (`_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS`) is set wide enough to keep it — the
+            # (`_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS`) is set wide enough to keep it — the
             # GENERATE pair's repository-document raises still put an absolute path last and
             # are longer, which is what that cap is sized for and what `docs/RUNBOOK.md` warns
             # about.
@@ -6802,7 +6802,7 @@ class Conductor:
                 f"(under {Path(rel).parent}/): empty")
         return text
 
-    def _pure_profile_spec_document(self, refs: NodeRefs) -> str:
+    def _leaf_profile_spec_document(self, refs: NodeRefs) -> str:
         """The controlled spec of each `profile` this node ADOPTS, or the host's fixed sentence
         when it adopts none.
 
@@ -6824,7 +6824,7 @@ class Conductor:
         `_write_dependency_graph` fail-closes the phase on it first. The sentinel keeps the
         value a NON-EMPTY string, which the launch validator requires of every declared key.
 
-        A missing/unreadable sidecar RAISES, like `_pure_repo_document` — the same disposition
+        A missing/unreadable sidecar RAISES, like `_leaf_repo_document` — the same disposition
         for the same reason, and the same recoverable `pure_context_assembly_failed`."""
         from tools.orchestration_runtime import resolve_spec_ref_for
 
@@ -6839,7 +6839,7 @@ class Conductor:
             if isinstance(pid, str) and pid.strip():
                 profile_ids.append(pid.strip())
         if not profile_ids:
-            return self._PURE_PROFILE_ABSENT_DOCUMENT
+            return self._LEAF_PROFILE_ABSENT_DOCUMENT
         sections: list[str] = []
         for pid in profile_ids:
             text = ""
@@ -6859,13 +6859,13 @@ class Conductor:
                                     "does not resolve it to a controlled spec)"))
         return "\n\n".join(sections)
 
-    def _build_pure_compile_context(self, refs: NodeRefs) -> dict[str, str]:
+    def _build_leaf_compile_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `compile.generate` producer sees, each value a plain
         string the renderer data-fences.
 
         EVERY read here RAISES on a missing or undecodable file — the three NODE artifacts
-        through `_pure_node_document` (whose docstring says why none of them degrades to `""`),
-        the repository documents through `_pure_repo_document`,
+        through `_leaf_node_document` (whose docstring says why none of them degrades to `""`),
+        the repository documents through `_leaf_repo_document`,
         and the two derivations below on their own terms. The caller converts any of them into a
         `pure_context_assembly_failed` fail_closed transport outcome with no leaf spawned: a spec
         document, a repository document and a host-derived sidecar are all things a producer
@@ -6876,9 +6876,9 @@ class Conductor:
         R4-a PR-3 are gone with the IR section they governed. The checks-module contract's ABI
         sections were the one target-coloured document left (R4-a's accepted residual); since
         issue #289 (R4-b PR-2) they are language-neutral, and the language binding is shown
-        only to the `generate` leaves. Its version is `PURE_PROMPT_CONTRACT_VERSION`'s, the
+        only to the `generate` leaves. Its version is `LEAF_PROMPT_CONTRACT_VERSION`'s, the
         classification `test_derivation_transformation_drift.INLINED_DOCUMENT_CLASS` gives it
-        (`contract`, pinned by `test_pure_prompt_contract_drift`) — not
+        (`contract`, pinned by `test_leaf_prompt_contract_drift`) — not
         `COMPILE_INLINED_DOCUMENTS_VERSION`'s, which pins the three documents this context
         inlines whole. The compile transformation carries both, so a change to either re-derives
         every node's Compile.
@@ -6891,7 +6891,7 @@ class Conductor:
         adds no new reader of that document beyond the reviewer's."""
         from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
-        contract_text = self._pure_repo_document(
+        contract_text = self._leaf_repo_document(
             CHECKS_MODULE_CONTRACT_REF, "checks_contract")
         try:
             contract_abi = _checks_contract_abi_sections(contract_text)
@@ -6900,29 +6900,29 @@ class Conductor:
                 "pure_checks_contract_document_unsliceable: "
                 f"{self.repo_root / CHECKS_MODULE_CONTRACT_REF}: {exc}") from exc
         return {
-            "controlled_spec_document": self._pure_node_document(
+            "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
-            "tests_document": self._pure_node_document(
+            "tests_document": self._leaf_node_document(
                 f"{refs.spec_path}/tests.md", "tests"),
-            "deps_document": self._pure_node_document(
+            "deps_document": self._leaf_node_document(
                 f"{refs.spec_path}/deps.yaml", "deps"),
             # Ordered before `profile_spec_document`, which READS the same sidecar: a missing
             # or unreadable file is then reported as the document it is, rather than as the
             # profile record it also happens to carry.
-            "dependency_graph_document": self._pure_repo_document(
+            "dependency_graph_document": self._leaf_repo_document(
                 f"{refs.ir_ref}/dependency_graph.json", "dependency_graph"),
-            "profile_spec_document": self._pure_profile_spec_document(refs),
-            "phase_contract_document": self._pure_repo_document(
+            "profile_spec_document": self._leaf_profile_spec_document(refs),
+            "phase_contract_document": self._leaf_repo_document(
                 WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
-            "ir_algorithm_example_document": self._pure_repo_document(
+            "ir_algorithm_example_document": self._leaf_repo_document(
                 "docs/examples/spec_ir_algorithm_section.example.yaml", "ir_algorithm_example"),
-            "ir_algorithm_2d_example_document": self._pure_repo_document(
+            "ir_algorithm_2d_example_document": self._leaf_repo_document(
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
                 "ir_algorithm_2d_example"),
             "checks_module_contract_document": contract_abi,
         }
 
-    def _build_pure_compile_verify_context(self, refs: NodeRefs) -> dict[str, str]:
+    def _build_leaf_compile_verify_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `compile.verify` reviewer sees.
 
         It reads the IR under review and the host-resolved published surface — operation names and
@@ -6934,21 +6934,21 @@ class Conductor:
         places inside one prompt."""
         from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
         return {
-            "controlled_spec_document": self._pure_node_document(
+            "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
-            "tests_document": self._pure_node_document(
+            "tests_document": self._leaf_node_document(
                 f"{refs.spec_path}/tests.md", "tests"),
-            "deps_document": self._pure_node_document(
+            "deps_document": self._leaf_node_document(
                 f"{refs.spec_path}/deps.yaml", "deps"),
-            "ir_document": self._pure_node_document(
+            "ir_document": self._leaf_node_document(
                 f"{refs.ir_ref}/spec.ir.yaml", "ir"),
-            "dependency_surface_document": self._pure_node_document(
+            "dependency_surface_document": self._leaf_node_document(
                 f"{refs.ir_ref}/dependency_surface.json", "dependency_surface"),
-            "phase_contract_document": self._pure_repo_document(
+            "phase_contract_document": self._leaf_repo_document(
                 WORKFLOW_PHASE_DOC_BY_STEP["compile"], "phase_contract"),
-            "ir_algorithm_example_document": self._pure_repo_document(
+            "ir_algorithm_example_document": self._leaf_repo_document(
                 "docs/examples/spec_ir_algorithm_section.example.yaml", "ir_algorithm_example"),
-            "ir_algorithm_2d_example_document": self._pure_repo_document(
+            "ir_algorithm_2d_example_document": self._leaf_repo_document(
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
                 "ir_algorithm_2d_example"),
         }
@@ -6956,16 +6956,16 @@ class Conductor:
     #: The IR sections every node's document must carry, and the one more a node that publishes
     #: a surface must carry. This is a SHAPE floor for the bounded document repair, NOT the
     #: schema: `Compile.static` is the single semantic gate and owns every field inside them.
-    _PURE_IR_REQUIRED_SECTIONS: tuple[str, ...] = (
+    _LEAF_IR_REQUIRED_SECTIONS: tuple[str, ...] = (
         "schema_version", "meta", "case", "algorithm", "io_contract", "dependency")
     #: Top-level sections an IR must NOT carry. `impl_defaults` held the target (toolchain,
     #: hardware class, parallel model) and the lowering knobs until R4-a PR-3 (issue #284); the
     #: target is the host's profile now and the knobs are the Generate producer's lowering plan,
     #: so an IR carrying the section would record a target choice nothing reads.
-    _PURE_IR_FORBIDDEN_SECTIONS: tuple[str, ...] = ("impl_defaults",)
-    _PURE_IR_PUBLIC_API_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
+    _LEAF_IR_FORBIDDEN_SECTIONS: tuple[str, ...] = ("impl_defaults",)
+    _LEAF_IR_PUBLIC_API_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
 
-    def _pure_ir_document_violations(self, refs: NodeRefs,
+    def _leaf_ir_document_violations(self, refs: NodeRefs,
                                      doc: Any) -> tuple[str, str] | None:
         """Validate the SHAPE of a producer's IR document. Returns None when clean, else
         `(failure_category, findings_text)` for the bounded repair / the per-attempt record.
@@ -7012,15 +7012,15 @@ class Conductor:
                     ("`ir` must be a JSON object holding the IR's top-level sections; got "
                      f"{type(ir).__name__}"))
         kind = refs.node_key.partition("@")[0].partition("/")[0].strip()
-        required = list(self._PURE_IR_REQUIRED_SECTIONS)
-        if kind in self._PURE_IR_PUBLIC_API_KINDS:
+        required = list(self._LEAF_IR_REQUIRED_SECTIONS)
+        if kind in self._LEAF_IR_PUBLIC_API_KINDS:
             required.append("public_api")
         absent = [k for k in required if k not in ir]
         if absent:
             return (COMPILE_IR_DOCUMENT_VIOLATION,
                     (f"`ir` is missing the required top-level section(s): {', '.join(absent)} "
                      f"(this node's kind is {kind!r})"))
-        forbidden = [k for k in self._PURE_IR_FORBIDDEN_SECTIONS if k in ir]
+        forbidden = [k for k in self._LEAF_IR_FORBIDDEN_SECTIONS if k in ir]
         if forbidden:
             return (COMPILE_IR_DOCUMENT_VIOLATION,
                     (f"`ir` carries the top-level section(s) {', '.join(forbidden)}, which an IR "
@@ -7093,7 +7093,7 @@ class Conductor:
         # does not survive the round trip — must fail here as a repairable document defect rather
         # than at the host write, where it would be mis-routed as a transport fail_closed.
         try:
-            round_tripped = yaml.safe_load(self._pure_ir_yaml(ir))
+            round_tripped = yaml.safe_load(self._leaf_ir_yaml(ir))
         except Exception as exc:  # noqa: BLE001 — any serializer/parser refusal is the finding
             return (COMPILE_IR_DOCUMENT_VIOLATION,
                     ("`ir` cannot be serialized as the IR document the host writes "
@@ -7111,7 +7111,7 @@ class Conductor:
         seeds for `compile.generate` (`PURE_CONTEXT_REQUIRED_KEYS`'s keys, `_document` dropped)
         plus `published_operations`, the `<dependency_facts>` catalog the renderer appends. The
         list is defined here and nowhere else; the template's enumeration is coupled to it by
-        `test_pure_leaf_compile`. (The `verification` part of issue #526, whose admissible set
+        `test_leaf_compile`. (The `verification` part of issue #526, whose admissible set
         was narrower, went with the part split in issue #534 PR-J4-b.)"""
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         keys = PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]
@@ -7157,7 +7157,7 @@ class Conductor:
         return None
 
     @staticmethod
-    def _pure_ir_declared_fail(doc: dict[str, Any]) -> str | None:
+    def _leaf_ir_declared_fail(doc: dict[str, Any]) -> str | None:
         """The producer's own `Compile fail` declaration as the one-line reason the host records
         (`<input> <where>: <what>`), or None. Read only from an already shape-validated
         document, so the type is settled."""
@@ -7168,13 +7168,13 @@ class Conductor:
                 f"{declaration['what'].strip()}")
 
     @staticmethod
-    def _pure_ir_yaml(ir: dict[str, Any]) -> str:
+    def _leaf_ir_yaml(ir: dict[str, Any]) -> str:
         """The IR object as the document text the host writes. One spelling, shared by the
-        round-trip probe in `_pure_ir_document_violations` and by the write itself, so the thing
+        round-trip probe in `_leaf_ir_document_violations` and by the write itself, so the thing
         that was checked is the thing that lands."""
         return yaml.safe_dump(ir, sort_keys=False, allow_unicode=True, width=120)
 
-    def _write_pure_ir_artifacts(self, refs: NodeRefs, doc: dict[str, Any], *,
+    def _write_leaf_ir_artifacts(self, refs: NodeRefs, doc: dict[str, Any], *,
                                  attempts: int) -> None:
         """Write an accepted IR document's artifacts host-side, AFTER the producer's child window
         closes: `<ir_ref>/spec.ir.yaml` (the serialized `ir` object) and `<ir_ref>/ir_meta.json`
@@ -7189,14 +7189,14 @@ class Conductor:
         ir_dir.mkdir(parents=True, exist_ok=True)
         ir_root = ir_dir.resolve()
         target = ir_dir / "spec.ir.yaml"
-        # Defense-in-depth containment, mirroring `_write_pure_bundle_artifacts`: every path here
+        # Defense-in-depth containment, mirroring `_write_leaf_bundle_artifacts`: every path here
         # is host-composed from `refs`, so an escape means a caller handed this method refs it did
         # not derive — fail closed loudly rather than writing outside the IR directory.
         if not target.resolve().is_relative_to(ir_root):
             raise RuntimeError(
                 f"pure IR artifact {target.resolve()} resolves outside {ir_root} — "
                 "refusing to write")
-        target.write_text(self._pure_ir_yaml(doc["ir"]), encoding="utf-8")
+        target.write_text(self._leaf_ir_yaml(doc["ir"]), encoding="utf-8")
         self._write_ir_meta(refs, verification_status="pending", last_fail_reason=None,
                             issue_severity=None, attempts=attempts)
 
@@ -7263,14 +7263,14 @@ class Conductor:
         verdict's reason followed by every `findings[].summary` (`verify_repair_text`; null on
         pass), exactly as it is there. Never called on a schema-exhausted attempt (proof-of-work:
         no valid verdict => no meta)."""
-        from tools.pure_leaf import verify_repair_text
+        from tools.leaf_contract import verify_repair_text
 
         self._write_ir_meta(
             refs, verification_status=verdict["verification_status"],
             last_fail_reason=verify_repair_text(verdict),
             issue_severity=verdict["issue_severity"], attempts=attempts)
 
-    def _write_pure_attempt_meta(self, refs: NodeRefs, basename: str, *, result: str,
+    def _write_leaf_attempt_meta(self, refs: NodeRefs, basename: str, *, result: str,
                                  failure_category: str | None, failure_excerpt: str | None,
                                  attempts: int, per_attempt: list[dict[str, Any]],
                                  parent: str | None = None,
@@ -7281,12 +7281,12 @@ class Conductor:
         pair it lives beside `compile_static_meta.json` and is named after its substep the same
         way; `validate.judge` passes its run-node dir, because that is where the run's own
         records live."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
             "failure_category": failure_category,
             "attempts": attempts,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
         # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
@@ -7304,11 +7304,11 @@ class Conductor:
 
     def _write_compile_generate_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
         """The pure `compile.generate` producer's per-attempt record (`bundle_meta.json`'s twin)."""
-        self._write_pure_attempt_meta(refs, "compile_generate_meta.json", **kwargs)
+        self._write_leaf_attempt_meta(refs, "compile_generate_meta.json", **kwargs)
 
     def _write_compile_verify_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
         """The pure `compile.verify` reviewer's per-attempt record (`verdict_meta.json`'s twin)."""
-        self._write_pure_attempt_meta(refs, "compile_verify_meta.json", **kwargs)
+        self._write_leaf_attempt_meta(refs, "compile_verify_meta.json", **kwargs)
 
     # --- the pure `validate.judge` reviewer (Z3, issue #169) ------------------
 
@@ -7325,7 +7325,7 @@ class Conductor:
         """The pure `validate.judge` reviewer's per-attempt record, in the run-node dir beside
         the run's other host-written records. Same key set as its `compile` / `generate` twins,
         so `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged."""
-        self._write_pure_attempt_meta(refs, "judge_meta.json",
+        self._write_leaf_attempt_meta(refs, "judge_meta.json",
                                       parent=refs.run_node_dir(), **kwargs)
 
     def _semantic_review_scope(self, refs: NodeRefs) -> dict[str, Any]:
@@ -7390,9 +7390,9 @@ class Conductor:
 
         Never called on an exhausted attempt: no accepted document, no file — which is what
         makes the file's absence the signal `run_phase` routes on."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
-        paths = self._pure_judge_document_refs(refs)
+        paths = self._leaf_judge_document_refs(refs)
         findings = []
         for finding in review["findings"]:
             resolved = dict(finding)
@@ -7414,7 +7414,7 @@ class Conductor:
             "run_id": refs.run_id,
             "attempt_count": attempts,
             "raw_excerpt_policy_version": RAW_EXCERPT_POLICY_VERSION,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
         }
         if review.get("notes"):
             review_document["notes"] = review["notes"]
@@ -7431,7 +7431,7 @@ class Conductor:
         validates the launch against, so a document slot added or removed there moves what an
         `evidence_refs` entry may name WITHOUT a second list here going stale."""
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
-        from tools.pure_leaf import semantic_review_document_violations
+        from tools.leaf_contract import semantic_review_document_violations
         return semantic_review_document_violations(
             review, document_keys=PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")])
 
@@ -7445,14 +7445,14 @@ class Conductor:
         return (f"pure_judge_fail: {first['attribution']}: "
                 f"{first['description'][:200]}")
 
-    def _pure_judge_spec(self) -> "Conductor._PureReviewerSpec":
+    def _leaf_judge_spec(self) -> "Conductor._LeafReviewerSpec":
         """The `validate.judge` half of the pure reviewer loop.
 
         `runner_host_authored` carries the NODE's real value rather than the M3c constant the
         two older reviewers pass: the judge runs on every node kind, and the launch request's
         stamp had one reader, and it is deleted (see `_runner_host_authored_m3c`)."""
-        return self._PureReviewerSpec(
-            build_context=self._build_pure_judge_context,
+        return self._LeafReviewerSpec(
+            build_context=self._build_leaf_judge_context,
             write_project_meta=self._write_semantic_review,
             write_meta=self._write_judge_meta,
             repair_reason="pure_semantic_review_repair",
@@ -7473,7 +7473,7 @@ class Conductor:
         )
 
     # --- the two leaf loops, parametrised ------------------------------------
-    # `_run_workshop_producer_substep` / `_run_pure_reviewer_substep` are PHASE-INDEPENDENT: the
+    # `_run_workshop_producer_substep` / `_run_leaf_reviewer_substep` are PHASE-INDEPENDENT: the
     # spawn / validate / bounded-repair / finalize / host-write shape is identical for the
     # `generate` CodegenBundle pair (M-C / M-D) and the `compile` IR pair (Z1, issue #168). What
     # differs is the context builder, the document validator, the host writers, the failure
@@ -7482,7 +7482,7 @@ class Conductor:
     # defended class of `AGENTS.md` §Development premises (a defect introduced by a change made
     # here) written down deliberately.
 
-    class _PureProducerSpec(NamedTuple):
+    class _LeafProducerSpec(NamedTuple):
         """The phase-specific half of the PRODUCER loop (`_run_workshop_producer_substep`)."""
 
         #: refs -> the closed context (`pure_context`). RAISES on a missing host document.
@@ -7549,8 +7549,8 @@ class Conductor:
         workshop_seed_expanders: Mapping[str, Callable[[str], dict[str, str]]] = (
             MappingProxyType({}))
 
-    class _PureReviewerSpec(NamedTuple):
-        """The phase-specific half of the REVIEWER loop (`_run_pure_reviewer_substep`)."""
+    class _LeafReviewerSpec(NamedTuple):
+        """The phase-specific half of the REVIEWER loop (`_run_leaf_reviewer_substep`)."""
 
         build_context: Callable[[NodeRefs], dict[str, str]]
         #: (refs, verdict) -> project the verdict onto the phase's stage meta.
@@ -7600,8 +7600,8 @@ class Conductor:
         workshop_freeze_context: Callable[..., Any] | None = None
         workshop_stage_closure: Callable[..., tuple[str, ...]] | None = None
 
-    def _pure_producer_spec(self, phase: str,
-                            shape: str | None = None) -> "Conductor._PureProducerSpec":
+    def _leaf_producer_spec(self, phase: str,
+                            shape: str | None = None) -> "Conductor._LeafProducerSpec":
         """The phase-specific half of the pure producer loop.
 
         `shape` is the node's CodegenBundle shape (`_bundle_shape`) and is consulted only for
@@ -7611,10 +7611,10 @@ class Conductor:
         PR-J4-b)."""
         from tools import workshop_tree
         if phase == "compile":
-            return self._PureProducerSpec(
-                build_context=self._build_pure_compile_context,
-                violations=self._pure_ir_document_violations,
-                write_artifacts=self._write_pure_ir_artifacts,
+            return self._LeafProducerSpec(
+                build_context=self._build_leaf_compile_context,
+                violations=self._leaf_ir_document_violations,
+                write_artifacts=self._write_leaf_ir_artifacts,
                 write_meta=self._write_compile_generate_meta,
                 schema_category=COMPILE_IR_DOCUMENT_VIOLATION,
                 unencodable_findings=(
@@ -7626,7 +7626,7 @@ class Conductor:
                 host_write_failed_reason="pure_compile_host_write_failed",
                 wants_exemplar=False,
                 runner_host_authored=_runner_host_authored_m3c,
-                declared_fail=self._pure_ir_declared_fail,
+                declared_fail=self._leaf_ir_declared_fail,
                 write_declared_fail=self._write_declared_compile_fail,
                 declared_fail_category=COMPILE_DECLARED_FAIL,
                 declared_fail_event="pure_compile_fail_declared",
@@ -7641,10 +7641,10 @@ class Conductor:
             # is shown the runner-output contract in place of the host-rendered runner, and no
             # sibling exemplar is resolved (a harness has no family sibling, and
             # `_resolve_exemplar_source` excludes the node itself — see `_build_exemplar`).
-            return self._PureProducerSpec(
-                build_context=self._build_pure_harness_context,
-                violations=self._pure_bundle_violations,
-                write_artifacts=self._write_pure_bundle_artifacts_from_doc,
+            return self._LeafProducerSpec(
+                build_context=self._build_leaf_harness_context,
+                violations=self._leaf_bundle_violations,
+                write_artifacts=self._write_leaf_bundle_artifacts_from_doc,
                 write_meta=self._write_bundle_meta,
                 schema_category="bundle_schema_violation",
                 unencodable_findings=(
@@ -7665,10 +7665,10 @@ class Conductor:
                 workshop_freeze_context=self._freeze_wrapper_context,
                 workshop_stage_closure=self._stage_workshop_closure,
             )
-        return self._PureProducerSpec(
-            build_context=self._build_pure_context,
-            violations=self._pure_bundle_violations,
-            write_artifacts=self._write_pure_bundle_artifacts_from_doc,
+        return self._LeafProducerSpec(
+            build_context=self._build_leaf_context,
+            violations=self._leaf_bundle_violations,
+            write_artifacts=self._write_leaf_bundle_artifacts_from_doc,
             write_meta=self._write_bundle_meta,
             schema_category="bundle_schema_violation",
             unencodable_findings=(
@@ -7689,14 +7689,14 @@ class Conductor:
             workshop_stage_closure=self._stage_workshop_closure,
         )
 
-    def _write_pure_bundle_artifacts_from_doc(self, refs: NodeRefs, doc: dict[str, Any], *,
+    def _write_leaf_bundle_artifacts_from_doc(self, refs: NodeRefs, doc: dict[str, Any], *,
                                               attempts: int) -> None:
-        """The producer-spec shape of `_write_pure_bundle_artifacts`: derive the build graph the
+        """The producer-spec shape of `_write_leaf_bundle_artifacts`: derive the build graph the
         bundle-derived control file needs and write the bundle's artifacts. `attempts` is unused for
         the bundle (its per-attempt record is `bundle_meta.json`), and is in the signature because
         the IR producer's writer needs it for `ir_meta.json#attempt_count`."""
-        self._write_pure_bundle_artifacts(
-            refs, doc, self._build_pure_bundle_graph(refs, doc))
+        self._write_leaf_bundle_artifacts(
+            refs, doc, self._build_leaf_bundle_graph(refs, doc))
 
 
     # --- the workshop producer (issue #534) -------------------------------------
@@ -7794,7 +7794,7 @@ class Conductor:
 
     def _workshop_seeds(self, refs: NodeRefs, pure_context: Mapping[str, str],
                         request: Mapping[str, Any],
-                        spec: "Conductor._PureProducerSpec | Conductor._PureReviewerSpec"
+                        spec: "Conductor._LeafProducerSpec | Conductor._LeafReviewerSpec"
                         ) -> dict[str, str]:
         """The files the host places in a new lineage's tree, by tree name (the contract seed
         is not among them: `_spawn_workshop_turn` writes it once the prompt is rendered).
@@ -7870,7 +7870,7 @@ class Conductor:
             # The host's reading helper (issue #534 PR-J3-a): a codex reading tree pages its
             # seeds through it, so a read sized to the reader row is the default. A seed like
             # the others, so it is reserved, host-placed and re-placed on a warm launch.
-            from tools.pure_leaf import CODEX_READ_HELPER_NAME, CODEX_READ_HELPER_TEXT
+            from tools.leaf_contract import CODEX_READ_HELPER_NAME, CODEX_READ_HELPER_TEXT
             if CODEX_READ_HELPER_NAME in seeds:
                 raise RuntimeError(
                     f"workshop seeds: two seeds named {CODEX_READ_HELPER_NAME!r}")
@@ -7884,11 +7884,11 @@ class Conductor:
         return seeds
 
     def _workshop_backend(self, entry: Any) -> str:
-        """The lineage-home backend of a workshop entry: `pure_leaf.WORKSHOP_LINEAGE_BACKENDS`
+        """The lineage-home backend of a workshop entry: `leaf_contract.WORKSHOP_LINEAGE_BACKENDS`
         of its provider (the CLI's backend token; `http` for both HTTP providers, issue #534
         PR-J3-b), when that is one of `workshop_tree.LINEAGE_BACKENDS` (the keys of
         `orchestration_runtime.WORKSHOP_HOME_PREPARERS`)."""
-        from tools.pure_leaf import WORKSHOP_LINEAGE_BACKENDS
+        from tools.leaf_contract import WORKSHOP_LINEAGE_BACKENDS
         from tools.workshop_tree import LINEAGE_BACKENDS
         backend = WORKSHOP_LINEAGE_BACKENDS.get(getattr(entry, "provider", ""))
         if backend not in LINEAGE_BACKENDS:
@@ -7920,7 +7920,7 @@ class Conductor:
         return WrapperMcpServer(ctx, on_end=on_end).start()
 
     def _workshop_lineage_from_seeds(self, refs: NodeRefs, paths: Any, seeds: dict[str, str],
-                                     deadline: float, spec: "Conductor._PureProducerSpec"
+                                     deadline: float, spec: "Conductor._LeafProducerSpec"
                                      ) -> "Conductor._WorkshopLineage":
         """The loop's handle on a lineage whose tree holds `seeds`: the closure (re)staged into
         its `staged/closure` from the bindings the generate key bound (a lineage whose spec
@@ -7939,7 +7939,7 @@ class Conductor:
 
     def _open_workshop_lineage(self, refs: NodeRefs, entry: Any, lineage_id: str,
                                seeds: dict[str, str], prior: Any | None,
-                               spec: "Conductor._PureProducerSpec"
+                               spec: "Conductor._LeafProducerSpec"
                                ) -> "Conductor._WorkshopLineage":
         """Start a lineage: its home (exclusively), its work directories, its seeds, its staged
         closure, its record, and — for a COLD REUSE — the ended lineage `prior`'s snapshot
@@ -8047,7 +8047,7 @@ class Conductor:
         """The tools an HTTP workshop launch of `(step, substep)` is declared, in order: the five
         file tools, then the pair's operations (`workshop_wrapper.WORKSHOP_OPS_BY_PAIR`; none on
         a reading pair)."""
-        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.leaf_contract import HTTP_FILE_TOOLS
         from tools.workshop_wrapper import WORKSHOP_OPS_BY_PAIR
         pair = (str(step or "").strip().lower(), str(substep or "").strip().lower())
         return [*HTTP_FILE_TOOLS, *WORKSHOP_OPS_BY_PAIR.get(pair, ())]
@@ -8055,9 +8055,9 @@ class Conductor:
     @staticmethod
     def _http_workshop_tools(step: Any, substep: Any) -> list[dict[str, Any]]:
         """The declarations of `_http_workshop_tool_names(step, substep)`: the file tools'
-        (`pure_leaf.HTTP_FILE_TOOL_DECLARATIONS`) and the wrapper's (`workshop_mcp.
+        (`leaf_contract.HTTP_FILE_TOOL_DECLARATIONS`) and the wrapper's (`workshop_mcp.
         TOOL_DEFINITIONS`, whose `inputSchema` is the schema declared)."""
-        from tools.pure_leaf import HTTP_FILE_TOOL_DECLARATIONS
+        from tools.leaf_contract import HTTP_FILE_TOOL_DECLARATIONS
         from tools.workshop_mcp import TOOL_DEFINITIONS
         names = Conductor._http_workshop_tool_names(step, substep)
         files = {d["name"]: d for d in HTTP_FILE_TOOL_DECLARATIONS}
@@ -8093,7 +8093,7 @@ class Conductor:
             file_tool,
             run_workshop_loop,
         )
-        from tools.pure_leaf import (
+        from tools.leaf_contract import (
             HTTP_FILE_TOOLS,
             WORKSHOP_READER_SYSTEM_PROMPT,
             WORKSHOP_SYSTEM_PROMPT,
@@ -8161,7 +8161,7 @@ class Conductor:
                              lineage: "Conductor._WorkshopLineage", *, child_arid: str,
                              phase: str, substep: str | None,
                              resume_session_id: str | None, warm: bool,
-                             spec: "Conductor._PureProducerSpec | Conductor._PureReviewerSpec"
+                             spec: "Conductor._LeafProducerSpec | Conductor._LeafReviewerSpec"
                              ) -> "Conductor._WorkshopTurn | None":
         """One launch of a lineage: freeze the wrapper context, start the endpoint, record the
         launch, spawn the leaf under its bound, stop the endpoint, record why the lineage ended
@@ -8181,7 +8181,7 @@ class Conductor:
         (`_run_workshop_http_loop`): no endpoint is started and `spawn_leaf` is not reached; the
         loop calls the wrapper's operations in this process, and the tail — the lineage's end,
         `last_launch`, the snapshot — reads the `ProcResult` it synthesizes."""
-        from tools.pure_leaf import (
+        from tools.leaf_contract import (
             _MISSING,
             ResultEnvelope,
             parse_result_envelope,
@@ -8564,7 +8564,7 @@ class Conductor:
             template's do-not-obey fence, where an instruction is text to ignore (the J3-a
             `_reads_chained` episode). What to do about either — one file per reply, `edit_file`
             for a long file, files only through the tools — is the HTTP tool-surface row's
-            (`pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT` / `HTTP_READER_TOOL_SURFACE_TEXT`), the
+            (`leaf_contract.HTTP_PRODUCER_TOOL_SURFACE_TEXT` / `HTTP_READER_TOOL_SURFACE_TEXT`), the
             contract outside the fence."""
             if turn.truncated:
                 if " inside a `" in turn.truncated:
@@ -8597,7 +8597,7 @@ class Conductor:
     def _run_workshop_producer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                        repair: dict[str, str] | None,
                                        resolved_dependencies: tuple[dict[str, str], ...],
-                                       spec: "Conductor._PureProducerSpec",
+                                       spec: "Conductor._LeafProducerSpec",
                                        dependency_surface: tuple[dict[str, Any], ...] = ()
                                        ) -> "SubstepOutcome":
         """Run a PRODUCER substep as a `workshop leaf` (issue #534): the pure producer's outer
@@ -8625,7 +8625,7 @@ class Conductor:
         warm when it is open and resumable, else a cold reuse from its snapshot, else (no
         lineage to find) a cold launch carrying the findings. Any other repair starts afresh."""
         from tools.orchestration_runtime import _read_launch_request_payload
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS, is_workshop_request
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS, is_workshop_request
 
         assert spec.workshop_assemble is not None
         entry = self.entry_for(phase, substep)
@@ -8634,10 +8634,10 @@ class Conductor:
             pure_context = spec.build_context(refs)
         except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
             self.emit("pure_context_assembly_failed", node_key=refs.node_key,
-                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                      detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
+                ("pure_context_assembly_failed", _leaf_assembly_detail(exc)), 1)
         runner_host_authored = spec.runner_host_authored(refs)
         exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None
         warm_capable = entry.supports(CAP_WARM_RESUME) or bool(getattr(entry, "is_http", False))
@@ -8688,10 +8688,10 @@ class Conductor:
                             pure_context, spec, dependency_surface)
                     except Exception as exc:  # noqa: BLE001 — a host precondition
                         self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
-                                  detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                                  detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                         return SubstepOutcome(
                             self.new_agent_run_id(), "fail", [], 1,
-                            ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)), 1)
+                            ("workshop_lineage_setup_failed", _leaf_assembly_detail(exc)), 1)
                     resume_session_id = target_session
                     repair_target = target_arid
                     mode = "warm"
@@ -8747,8 +8747,8 @@ class Conductor:
                 warm_resume=warm,
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
-                pure_language=self._pure_language(phase),
-                pure_parallel=self._pure_parallel(phase),
+                pure_language=self._leaf_language(phase),
+                pure_parallel=self._leaf_parallel(phase),
                 pure_context=(None if (warm and findings_turn) else pure_context),
                 dependency_surface=dependency_surface,
                 workshop_lineage_id=lineage_id,
@@ -8759,10 +8759,10 @@ class Conductor:
                     machine.open_cold(pure_context, request, child_arid)
                 except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
                     self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
-                              detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                              detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
-                        ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)),
+                        ("workshop_lineage_setup_failed", _leaf_assembly_detail(exc)),
                         max(1, len(per_attempt)))
             lineage = machine.lineage
             assert lineage is not None
@@ -8775,7 +8775,7 @@ class Conductor:
                 # Nothing was launched or recorded: a host precondition (the wrapper's
                 # context could not be frozen), routed like an unassemblable context.
                 self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
-                          detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                          detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                 return SubstepOutcome(child_arid, "fail", [], 1,
                                       ("workshop_lineage_setup_failed", str(exc)[:200]),
                                       max(1, len(per_attempt)))
@@ -8833,7 +8833,7 @@ class Conductor:
                     last_excerpt = this_excerpt
                 attempt_record["failure_category"] = category
                 attempt_record["failure_excerpt"] = (
-                    this_excerpt[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
+                    this_excerpt[:_LEAF_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
                 self.emit(spec.attempt_failed_event, node_key=refs.node_key,
                           substep=substep, attempt=len(per_attempt), failure_category=category,
                           detail=(this_excerpt or "")[:200])
@@ -8867,7 +8867,7 @@ class Conductor:
                     spec.write_declared_fail(refs, declared_fail, attempts=len(per_attempt))
                     spec.write_meta(
                         refs, result="fail", failure_category=spec.declared_fail_category,
-                        failure_excerpt=declared_fail[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS],
+                        failure_excerpt=declared_fail[:_LEAF_ATTEMPT_EXCERPT_MAX_CHARS],
                         attempts=len(per_attempt), per_attempt=per_attempt,
                         leaf_mode="workshop")
                 except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
@@ -8906,7 +8906,7 @@ class Conductor:
                 elapsed_s = max(0.0, time.monotonic() - turn.launched_monotonic)
                 spent_before = transient_spent
                 transient_spent += elapsed_s
-                if self._pure_transient_retry(
+                if self._leaf_transient_retry(
                         refs=refs, phase=phase, substep=substep, infra_error=infra_error,
                         child_arid=child_arid, retries_done=transient_retries,
                         elapsed_s=elapsed_s, spent_s=spent_before):
@@ -8940,7 +8940,7 @@ class Conductor:
                                    resolved_dependencies: tuple[dict[str, str], ...],
                                    exemplar: dict[str, Any] | None, runner_host_authored: bool,
                                    pure_context: dict[str, str],
-                                   spec: "Conductor._PureProducerSpec",
+                                   spec: "Conductor._LeafProducerSpec",
                                    dependency_surface: tuple[dict[str, Any], ...] = ()
                                    ) -> "Conductor._WorkshopLineage":
         """The loop's handle on an OPEN lineage an outer reopen continues warm: the current
@@ -8969,7 +8969,7 @@ class Conductor:
                                entry: Any, resolved_dependencies: tuple[dict[str, str], ...],
                                exemplar: dict[str, Any] | None, runner_host_authored: bool,
                                pure_context: dict[str, str], lineage_id: str,
-                               spec: "Conductor._PureProducerSpec",
+                               spec: "Conductor._LeafProducerSpec",
                                dependency_surface: tuple[dict[str, Any], ...] = ()
                                ) -> dict[str, Any]:
         """A request carrying what `_workshop_seeds` renders the orientation seeds from (the
@@ -8981,8 +8981,8 @@ class Conductor:
             child_agent_run_id=lineage_id, agent_model=entry.model,
             workflow_mode=self.workflow_mode, runner_host_authored=runner_host_authored,
             resolved_dependencies=resolved_dependencies, exemplar=exemplar, pure_leaf=True,
-            pure_shape=spec.pure_shape, pure_language=self._pure_language(phase),
-            pure_parallel=self._pure_parallel(phase), pure_context=pure_context,
+            pure_shape=spec.pure_shape, pure_language=self._leaf_language(phase),
+            pure_parallel=self._leaf_parallel(phase), pure_context=pure_context,
             dependency_surface=dependency_surface, workshop_lineage_id=lineage_id,
             workshop_provider=entry.provider)
         return request
@@ -8997,7 +8997,7 @@ class Conductor:
     # a verdict (not a bundle) and that a valid `fail` verdict is a legitimate substep FAIL routed
     # by the normal verify-severity gate, not a bundle/verdict category failure.
 
-    def _build_pure_verify_context(self, refs: NodeRefs) -> dict[str, str]:
+    def _build_leaf_verify_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.verify` reviewer sees, each value a plain
         string the renderer data-fences. Unlike the producer, the reviewer DOES read
         controlled_spec.md (the human-authored behavioral contract it verifies against — phase_02
@@ -9016,11 +9016,11 @@ class Conductor:
 
         Every document here has ONE fail-closed disposition: an unreadable file RAISES
         (`UnicodeError` included, since a decode error is a ValueError and not an OSError) —
-        the four NODE artifacts through `_pure_node_document` since issue #467, the contract
+        the four NODE artifacts through `_leaf_node_document` since issue #467, the contract
         slice and the rubric below — and the caller converts it into a
         `pure_context_assembly_failed` fail_closed transport outcome; no leaf is spawned. Not for
         the reason recorded here until issue #169's review measured it: a blank value does NOT
-        reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only
+        reach the leaf — `_validate_leaf_launch_request_payload` counts a whitespace-only
         `pure_context` value as missing and raises — so what degrading buys is a refusal one
         frame later, out of `record_launch`, escaping the loop's named
         `pure_context_assembly_failed` branch and aborting the conductor.
@@ -9072,23 +9072,23 @@ class Conductor:
             raise RuntimeError(
                 f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
         return {
-            "controlled_spec_document": self._pure_node_document(
+            "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
-            "tests_document": self._pure_node_document(f"{refs.spec_path}/tests.md", "tests"),
-            "ir_document": self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
+            "tests_document": self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests"),
+            "ir_document": self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
             # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
-            "target_profile": self._pure_target_profile_document(),
+            "target_profile": self._leaf_target_profile_document(),
             "checks_module_contract_document": contract_abi,
             "severity_rubric_document": severity_rubric,
-            "bundle_document": self._pure_node_document(
+            "bundle_document": self._leaf_node_document(
                 f"{refs.source_dir()}/codegen_bundle.json", "bundle"),
         }
 
-    def _build_pure_harness_verify_context(self, refs: NodeRefs) -> dict[str, str]:
+    def _build_leaf_harness_verify_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `generate.verify` reviewer sees on the HARNESS shape.
 
-        The four node artifacts are the m3c reviewer's (`_build_pure_verify_context`) — the
+        The four node artifacts are the m3c reviewer's (`_build_leaf_verify_context`) — the
         human-authored behavioral contract it verifies against, the tests, the IR, and the bundle
         under review — and every one raises, as the m3c reviewer's do. The severity rubric is the
         same slice, and raises for the same reason.
@@ -9118,25 +9118,25 @@ class Conductor:
             raise RuntimeError(
                 f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
         return {
-            "controlled_spec_document": self._pure_node_document(
+            "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
-            "tests_document": self._pure_node_document(f"{refs.spec_path}/tests.md", "tests"),
-            "ir_document": self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
+            "tests_document": self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests"),
+            "ir_document": self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
             # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
-            "target_profile": self._pure_target_profile_document(),
+            "target_profile": self._leaf_target_profile_document(),
             "runner_output_contract_document": self._runner_output_contract_with_binding(
                 contract_text),
             "severity_rubric_document": severity_rubric,
-            "bundle_document": self._pure_node_document(
+            "bundle_document": self._leaf_node_document(
                 f"{refs.source_dir()}/codegen_bundle.json", "bundle"),
         }
 
     #: The `validate.judge` documents that are a FILE, keyed by the pure-context slot name.
     #: One definition, three readers: the context builder reads each path, `_write_semantic_review`
-    #: resolves an `evidence_refs` key back to it, and `test_pure_leaf_judge` walks it. The three
-    #: DERIVED slots are added by `_pure_judge_document_refs`, which is what a caller should use.
-    _PURE_JUDGE_RUN_NODE_DOCUMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
+    #: resolves an `evidence_refs` key back to it, and `test_leaf_judge` walks it. The three
+    #: DERIVED slots are added by `_leaf_judge_document_refs`, which is what a caller should use.
+    _LEAF_JUDGE_RUN_NODE_DOCUMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("diagnostics_document", "diagnostics.json"),
         ("verdict_document", "verdict.json"),
         ("perf_document", "perf.json"),
@@ -9144,7 +9144,7 @@ class Conductor:
         ("quality_check_document", "quality_check.json"),
     )
 
-    def _pure_judge_document_refs(self, refs: NodeRefs) -> dict[str, str]:
+    def _leaf_judge_document_refs(self, refs: NodeRefs) -> dict[str, str]:
         """Each inlined judge document, mapped to the repository path it was inlined FROM.
 
         This is what makes `evidence_refs` resolvable: the leaf cites the slot it was given and
@@ -9155,7 +9155,7 @@ class Conductor:
         from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
         run_node_dir = refs.run_node_dir()
         paths = {key: f"{run_node_dir}/{name}"
-                 for key, name in self._PURE_JUDGE_RUN_NODE_DOCUMENTS}
+                 for key, name in self._LEAF_JUDGE_RUN_NODE_DOCUMENTS}
         paths.update({
             "tests_document": f"{refs.spec_path}/tests.md",
             "io_contract_document": f"{refs.ir_ref}/spec.ir.yaml",
@@ -9166,7 +9166,7 @@ class Conductor:
         })
         return paths
 
-    def _build_pure_judge_context(self, refs: NodeRefs) -> dict[str, str]:
+    def _build_leaf_judge_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `validate.judge` reviewer sees.
 
         The judge is the one leaf that used to hold tools, and what it did with them was walk
@@ -9189,13 +9189,13 @@ class Conductor:
         below is evidence the judge weighs, and a judge that cannot see `diagnostics.json` has no
         basis for `pass` and would be answering about the absence. The REASON given here was
         wrong until a review round measured it — a blank value does NOT reach the leaf, because
-        `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as
+        `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as
         missing and raises. What degrading actually buys is a refusal one frame too LATE: a
         `ValueError` out of `record_launch`, escaping this loop's named
         `pure_context_assembly_failed` branch and aborting the conductor instead — the issue #168
         shape where a recoverable named outcome becomes a crash. Raising HERE keeps the named
         outcome.
-        `_run_pure_reviewer_substep` turns the `RuntimeError` into a `pure_context_assembly_failed`
+        `_run_leaf_reviewer_substep` turns the `RuntimeError` into a `pure_context_assembly_failed`
         fail-closed outcome and spawns no leaf, which is the pure form of the SKILL's rule that
         the judge does not begin without its evidence.
 
@@ -9204,7 +9204,7 @@ class Conductor:
         exception would mean no judge ran. `tools/raw_evidence_excerpt.py` records that.
         """
         from tools.raw_evidence_excerpt import raw_evidence_excerpt
-        paths = self._pure_judge_document_refs(refs)
+        paths = self._leaf_judge_document_refs(refs)
 
         def _read(key: str) -> str:
             path = self.repo_root / paths[key]
@@ -9236,7 +9236,7 @@ class Conductor:
 
         excerpt = raw_evidence_excerpt(
             self.repo_root / paths["raw_evidence_excerpt_document"], io_contract)
-        context = {key: _read(key) for key, _ in self._PURE_JUDGE_RUN_NODE_DOCUMENTS}
+        context = {key: _read(key) for key, _ in self._LEAF_JUDGE_RUN_NODE_DOCUMENTS}
         context.update({
             "tests_document": _read("tests_document"),
             "io_contract_document": yaml.safe_dump(io_contract, sort_keys=False,
@@ -9261,12 +9261,12 @@ class Conductor:
         meta_contracts and carries no per-attempt usage), and the envelope usage is not recoverable
         from any other artifact — so this file is a justified (non-redundant) persistence, exactly
         as bundle_meta.json is for the producer."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
             "failure_category": failure_category,
             "attempts": attempts,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
         # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
@@ -9291,7 +9291,7 @@ class Conductor:
         `findings[].summary` (`verify_repair_text`; null on pass), which `_read_repair_findings`
         threads into the producer repair on a `fail` route. Never called on a schema-exhausted
         attempt (proof-of-work: no valid verdict => no meta)."""
-        from tools.pure_leaf import verify_repair_text
+        from tools.leaf_contract import verify_repair_text
 
         src_dir = self.repo_root / refs.source_dir()
         src_dir.mkdir(parents=True, exist_ok=True)
@@ -9315,7 +9315,7 @@ class Conductor:
     # verify verdict has. The values are exactly what the loop used to inline.
     @staticmethod
     def _verify_verdict_violations(doc: dict[str, Any]) -> list[str]:
-        from tools.pure_leaf import verify_verdict_violations
+        from tools.leaf_contract import verify_verdict_violations
 
         return verify_verdict_violations(doc)
 
@@ -9425,9 +9425,9 @@ class Conductor:
                 lambda root, _reserved: assemble_document_file(root, output, schema_category)),
         }
 
-    def _pure_reviewer_spec(self, phase: str,
+    def _leaf_reviewer_spec(self, phase: str,
                             substep: str | None = None,
-                            shape: str | None = None) -> "Conductor._PureReviewerSpec":
+                            shape: str | None = None) -> "Conductor._LeafReviewerSpec":
         """The phase-specific half of the pure reviewer loop.
 
         Keyed by `(phase, substep)` since Z3: `validate` has a reviewer that is not a `verify`,
@@ -9435,10 +9435,10 @@ class Conductor:
         node's CodegenBundle shape and is consulted only for `generate.verify`, where what the
         reviewer is shown alongside the bundle differs between the two shapes."""
         if (phase, substep) == ("validate", "judge"):
-            return self._pure_judge_spec()
+            return self._leaf_judge_spec()
         if phase == "compile":
-            return self._PureReviewerSpec(
-                build_context=self._build_pure_compile_verify_context,
+            return self._LeafReviewerSpec(
+                build_context=self._build_leaf_compile_verify_context,
                 write_project_meta=self._write_verify_ir_meta,
                 write_meta=self._write_compile_verify_meta,
                 repair_reason="pure_ir_verdict_repair",
@@ -9456,8 +9456,8 @@ class Conductor:
                     "compile", "verify", "", GENERATE_VERDICT_SCHEMA_VIOLATION),
             )
         if phase == "generate" and shape == "harness":
-            return self._PureReviewerSpec(
-                build_context=self._build_pure_harness_verify_context,
+            return self._LeafReviewerSpec(
+                build_context=self._build_leaf_harness_verify_context,
                 write_project_meta=self._write_verify_source_meta,
                 write_meta=self._write_verdict_meta,
                 repair_reason="pure_verdict_repair",
@@ -9475,8 +9475,8 @@ class Conductor:
                 **self._workshop_reviewer_fields(
                     "generate", "verify", "harness", GENERATE_VERDICT_SCHEMA_VIOLATION),
             )
-        return self._PureReviewerSpec(
-            build_context=self._build_pure_verify_context,
+        return self._LeafReviewerSpec(
+            build_context=self._build_leaf_verify_context,
             write_project_meta=self._write_verify_source_meta,
             write_meta=self._write_verdict_meta,
             repair_reason="pure_verdict_repair",
@@ -9511,7 +9511,7 @@ class Conductor:
         neither record shows: MR5-f). A finding on either record wins over an unreadable
         rollout: the refusal is then the leaf's to repair."""
         from tools.codex_rollout import scan_launch
-        from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        from tools.leaf_contract import CODEX_EXEC_OUTPUT_BUDGET_BYTES
         outputs = turn.command_outputs
         lines = [f"`{' '.join(command.split())[:160]}` printed {size:,} bytes; at most "
                  f"{CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} reach you whole"
@@ -9546,9 +9546,9 @@ class Conductor:
         text = "; ".join(named) + (f"; and {rest} more" if rest else "")
         return text[:1000]
 
-    def _run_pure_reviewer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
+    def _run_leaf_reviewer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                    resolved_dependencies: tuple[dict[str, str], ...],
-                                   spec: "Conductor._PureReviewerSpec"
+                                   spec: "Conductor._LeafReviewerSpec"
                                    ) -> "SubstepOutcome":
         """Run a REVIEWER substep as a READING `workshop leaf` (issue #534 step 3; the only leaf
         model since PR-J4-b): seed the context into a lineage's tree, let the leaf write its one
@@ -9594,7 +9594,7 @@ class Conductor:
         repaired on its own counter by a cold launch from the seeds alone (`after_cut_read`),
         and a launch
         whose rollout cannot be read is `WORKSHOP_ROLLOUT_UNREADABLE`, fail_closed."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         entry = self.entry_for(phase, substep)
         # Assembling the reviewer's context RAISES on any document it cannot read, and WHICH
         # documents those are belongs to the `spec`'s builder, not to this loop: the generate
@@ -9602,17 +9602,17 @@ class Conductor:
         # node artifacts and three repository documents. Each builder's own docstring is the list; a list here went stale
         # the moment a second builder existed. run_substep's callers must
         # never see an exception — recover it as the same fail_closed transport outcome the
-        # producer's `_build_pure_context` failure produces. A repository document the leaf cannot
+        # producer's `_build_leaf_context` failure produces. A repository document the leaf cannot
         # repair makes fail_closed (operator --resume) the correct terminus, not a reopen. No leaf
         # has been spawned yet, so the arid here names no child window; it only labels the row.
         try:
             pure_context = spec.build_context(refs)
         except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
             self.emit("pure_context_assembly_failed", node_key=refs.node_key,
-                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                      detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
             return SubstepOutcome(
                 self.new_agent_run_id(), "fail", [], 1,
-                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
+                ("pure_context_assembly_failed", _leaf_assembly_detail(exc)), 1)
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
         # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
@@ -9658,8 +9658,8 @@ class Conductor:
                 warm_resume=warm,
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
-                pure_language=self._pure_language(phase),
-                pure_parallel=self._pure_parallel(phase),
+                pure_language=self._leaf_language(phase),
+                pure_parallel=self._leaf_parallel(phase),
                 # Same context-omission rule as the producer: a warm reuse repair's resumed session
                 # already holds the context (the validator exempts it); a cold launch or a
                 # cold-fallback repair (session GC'd) carries the full context.
@@ -9677,10 +9677,10 @@ class Conductor:
                     machine.open_cold(pure_context, request, child_arid)
                 except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
                     self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
-                              detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                              detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                     return SubstepOutcome(
                         child_arid, "fail", [], 1,
-                        ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)),
+                        ("workshop_lineage_setup_failed", _leaf_assembly_detail(exc)),
                         max(1, len(per_attempt)))
             assert machine.lineage is not None
             turn = self._spawn_workshop_turn(
@@ -9856,7 +9856,7 @@ class Conductor:
                             if findings is not None else None)
             attempt_record["failure_category"] = category
             attempt_record["failure_excerpt"] = (
-                this_excerpt[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
+                this_excerpt[:_LEAF_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
             self.emit(spec.attempt_failed_event, node_key=refs.node_key,
                       substep=substep, attempt=len(per_attempt), failure_category=category,
                       detail=(this_excerpt or "")[:200])
@@ -9904,7 +9904,7 @@ class Conductor:
                 spent_before = transient_spent
                 # Accumulated whether the retry is granted or refused: a refused attempt ran too.
                 transient_spent += elapsed_s
-                if self._pure_transient_retry(
+                if self._leaf_transient_retry(
                         refs=refs, phase=phase, substep=substep, infra_error=infra_error,
                         child_arid=child_arid, retries_done=transient_retries,
                         elapsed_s=elapsed_s, spent_s=spent_before):
@@ -10831,7 +10831,7 @@ class Conductor:
         makefile`: the target's build system and language both declare `control_file`) —
         staging is paired with the conductor-authored control file (`_write_makefile` non-leaf
         branch), which is the only consumer of the staged dependency model sources. A node whose
-        control file the host does not author has no pure path (`_pure_leaf_substep`), so
+        control file the host does not author has no pure path (`_leaf_substep`), so
         nothing would compile what was staged."""
         if not self._conductor_authors_makefile(refs):
             return []
@@ -10995,7 +10995,7 @@ class Conductor:
                                 seed_texts: Mapping[str, str] | None = None) -> Any:
         """The `workshop_wrapper.WrapperContext` of one launch of a lineage, computed here, in
         the main thread, from the same inputs the host's own gates read: the bundle contract
-        (`_pure_bundle_violation_inputs`), the build graph (`_pure_bundle_graph_inputs`), the
+        (`_leaf_bundle_violation_inputs`), the build graph (`_leaf_bundle_graph_inputs`), the
         control file (`_control_file_render_inputs`), the lint preset `_gate_lint_check` runs,
         the mandatory syntax stage `_gate_syntax_check` runs, and the target's launch shape at
         the LOCAL site (`host_execution.launch_shape`, as `_execute_inproc` asks it, with the
@@ -11031,9 +11031,9 @@ class Conductor:
 
         tc = self._read_toolchain(refs)
         language = tc["language"]
-        build_graph = partial(derive_build_graph, **self._pure_bundle_graph_inputs(refs))
+        build_graph = partial(derive_build_graph, **self._leaf_bundle_graph_inputs(refs))
         violations = partial(pure_bundle_contract_violation,
-                             **self._pure_bundle_violation_inputs(refs), build_graph=build_graph)
+                             **self._leaf_bundle_violation_inputs(refs), build_graph=build_graph)
         render, render_inputs = self._control_file_render_inputs(refs)
         lint_preset = backend_registry.linter_for_language(language)
         if lint_preset is None:
@@ -11126,8 +11126,8 @@ class Conductor:
         """The `workshop_wrapper.WrapperContext` of one launch of a `compile.generate` lineage
         (issue #534 step 2), computed in the main thread: the one operation `check_ir`, bound
         to what the host's own path runs on the snapshot — the IR assembly, the producer's
-        document contract (`_pure_ir_document_violations`), the declaration reader, the IR
-        serializer `_write_pure_ir_artifacts` writes with, the pending `ir_meta.json` it writes
+        document contract (`_leaf_ir_document_violations`), the declaration reader, the IR
+        serializer `_write_leaf_ir_artifacts` writes with, the pending `ir_meta.json` it writes
         beside it, the `<ir_ref>` sidecars as they stand now, and the `Compile.static`
         validators (`validate_pipeline_semantics.validate_compile_ir_dir`). An absent sidecar
         is not copied, so the validators report it as the gate would. `closure_file_names` is
@@ -11154,10 +11154,10 @@ class Conductor:
             max_wrapper_calls=max_wrapper_calls,
             lineage_deadline=lineage_deadline,
             ops=IR_CHECK_OPS,
-            violations=partial(self._pure_ir_document_violations, refs),
+            violations=partial(self._leaf_ir_document_violations, refs),
             assemble=assemble_ir_document,
-            declared_fail=self._pure_ir_declared_fail,
-            ir_yaml=self._pure_ir_yaml,
+            declared_fail=self._leaf_ir_declared_fail,
+            ir_yaml=self._leaf_ir_yaml,
             ir_meta_text=self._ir_meta_text(refs, verification_status="pending",
                                             last_fail_reason=None, issue_severity=None,
                                             attempts=1),
@@ -13640,7 +13640,7 @@ class Conductor:
 
         * An LLM leaf runs as a `workshop leaf` (issue #534; the only leaf model since PR-J4-b)
           — a producing one through `_run_workshop_producer_substep`, a reading one through
-          `_run_pure_reviewer_substep`, each of which owns its own spawn/validate/repair/
+          `_run_leaf_reviewer_substep`, each of which owns its own spawn/validate/repair/
           finalize/write loop. The leaf holds no write authority: the host writes every
           artifact from the snapshot of its tree.
         * A DETERMINISTIC substep (Build, Compile.static, Generate.gate, Validate.pre_judge /
@@ -13651,13 +13651,13 @@ class Conductor:
           could ever fire for it, so the loop is gone too.
 
         A node with no CodegenBundle shape has no leaf path for the two `generate` pairs
-        (`_pure_leaf_substep`), and there is no longer a second loop to fall through to, so it
+        (`_leaf_substep`), and there is no longer a second loop to fall through to, so it
         fails CLOSED here. No in-tree node reaches it (issue #169 made the `infrastructure`
         harness self-test the `harness` shape); it is the fail-safe for a hand-crafted IR."""
         entry = self.entry_for(phase, substep)
         deterministic = self._is_deterministic_substep(phase, substep)
         if not deterministic:
-            if not self._pure_leaf_substep(refs, phase, substep):
+            if not self._leaf_substep(refs, phase, substep):
                 detail = (
                     f"{phase}.{substep or ''} runs as a workshop leaf and this node has "
                     f"no leaf path: it has no CodegenBundle shape (`Conductor._bundle_shape` "
@@ -13675,9 +13675,9 @@ class Conductor:
                 # closes. `judge` joined it in Z3 — a judge reviews a run where a verify reviews
                 # an artifact, and the loop is the same shape either way; what differs is the
                 # document, which the spec says.
-                return self._run_pure_reviewer_substep(
+                return self._run_leaf_reviewer_substep(
                     refs, phase, substep, resolved_dependencies,
-                    self._pure_reviewer_spec(phase, substep, self._shape_for_spec(refs, phase)))
+                    self._leaf_reviewer_spec(phase, substep, self._shape_for_spec(refs, phase)))
             # The producer: the leaf edits a host-seeded work tree (issue #534); a
             # `compile.generate` leaf authors the WHOLE IR in its tree (step 2).
             # `dependency_surface` is threaded through for the compile producer, whose
@@ -13685,7 +13685,7 @@ class Conductor:
             # verbatim; `build_launch_request` attaches it to that substep only.
             return self._run_workshop_producer_substep(
                 refs, phase, substep, repair, resolved_dependencies,
-                self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),
+                self._leaf_producer_spec(phase, self._shape_for_spec(refs, phase)),
                 dependency_surface)
 
         # --- deterministic in-process substep ------------------------------------------
@@ -13768,7 +13768,7 @@ class Conductor:
                   dead_agent_run_id=child_arid, evidence=evidence)
         return True
 
-    def _pure_transient_retry(
+    def _leaf_transient_retry(
         self, *, refs: NodeRefs, phase: str, substep: str | None,
         infra_error: "tuple[str, str] | None", child_arid: str, retries_done: int,
         # REQUIRED, not defaulted. `0.0 / 0.0` is the one pair that always grants a retry, so a
@@ -13818,7 +13818,7 @@ class Conductor:
         """Wait out an `llm_usage_limit` death and return True once the caller may re-launch;
         False leaves the death terminal (flag off, or the budget is spent).
 
-        The sibling of `_pure_transient_retry` for the one non-transient tag the conductor can
+        The sibling of `_leaf_transient_retry` for the one non-transient tag the conductor can
         recover from in place, on a separate budget from the transient retries (a transient tag
         is never `llm_usage_limit`). ARMED by the TAG alone; nothing here reads the dead leaf's
         output. HOW LONG comes from the provider (issue #405): `_read_usage_reset` asks the
@@ -13971,7 +13971,7 @@ class Conductor:
 
     def _persisted_result_envelope(self, child_arid: str) -> Any:
         """The result envelope `_persist_leaf_output` stored for a claude leaf. Never raises."""
-        from tools.pure_leaf import _MISSING, ResultEnvelope, parse_result_envelope
+        from tools.leaf_contract import _MISSING, ResultEnvelope, parse_result_envelope
         try:
             text = (self._dialogs_dir(child_arid) / "leaf.stdout.log").read_text(
                 encoding="utf-8")
@@ -14336,7 +14336,7 @@ class Conductor:
         if r == "judge_semantic_review_fail":
             # The judge's findings are a document, not a meta field: fold them the one way
             # (`judge_repair_text`), from the review the failed run wrote.
-            from tools.pure_leaf import judge_repair_text
+            from tools.leaf_contract import judge_repair_text
             return judge_repair_text(
                 _read_json(self.repo_root / refs.run_node_dir() / "semantic_review.json"))
         field = "failure_excerpt"
@@ -14924,11 +14924,11 @@ class Conductor:
         # closure object rules (Model B); the dep sources are staged at build (see
         # _stage_dependency_sources). c/cpp/mixed keep LLM authoring (see _write_makefile).
         # A pure producer authors the bundle-DERIVED Makefile after the producer returns
-        # (`_write_pure_bundle_artifacts`), so it compiles exactly the bundle's file set — skip
+        # (`_write_leaf_bundle_artifacts`), so it compiles exactly the bundle's file set — skip
         # the IR-shaped pre-authoring here for a pure node (the runner glue below is still
         # host-rendered from the IR, independent of the bundle).
         if (phase == "generate" and self._conductor_authors_makefile(refs)
-                and not self._pure_leaf_substep(refs, "generate", "generate")):
+                and not self._leaf_substep(refs, "generate", "generate")):
             self._write_makefile(refs)
         # R1/M3c-β: for a physics node with a harness dependency the conductor host-renders
         # src/<spec_id>_runner.f90 (glue over the certified harness plumbing + the leaf-authored
@@ -14986,7 +14986,7 @@ class Conductor:
             derivation = self._phase_derivation(refs, phase)
         except DerivationInputsUnresolvable as exc:
             self.emit("derivation_inputs_unresolvable", node_key=node_key, phase=phase,
-                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                      detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
             return PhaseOutcome(phase, "fail", decision=RouteDecision(
                 "fail_closed", reason="derivation_inputs_unresolvable"))
         self._phase_derivations[(node_key, phase)] = derivation
@@ -15299,7 +15299,7 @@ class Conductor:
     #: diagnosis that did not arrive fails the phase closed (`<phase>_diagnose_unparsable`).
     _DIAGNOSE_DIRECTIVE_INVALID: ClassVar[str] = "diagnose_directive_invalid"
 
-    def _diagnose_spec(self) -> Conductor._PureReviewerSpec:
+    def _diagnose_spec(self) -> Conductor._LeafReviewerSpec:
         """The diagnostician as the READING kind of workshop leaf: one seed (`diagnosis.json`),
         one output document (`directive.json`), no frozen wrapper context (so no operation and
         no endpoint, `_workshop_spec_reads`). Read by the lineage machine and
@@ -15311,7 +15311,7 @@ class Conductor:
         def _unused(*_a: Any, **_kw: Any) -> Any:  # pragma: no cover - not the reviewer loop
             raise AssertionError("the diagnose spec is read by `escalate`, not the reviewer loop")
 
-        return self._PureReviewerSpec(
+        return self._LeafReviewerSpec(
             build_context=_unused, write_project_meta=_unused, write_meta=_unused,
             repair_reason="diagnose_no_repair", attempt_failed_event="diagnose_launch_failed",
             summary_prefix="diagnose", host_write_failed_reason="diagnose_no_host_write",
@@ -15545,7 +15545,7 @@ class Conductor:
             # routes via its deterministic union table (warm resume); generate.generate /
             # generate.verify fall through to the verify-severity gate below.
             failed_substep = SUBSTEPS["generate"][len(outcomes) - 1]
-            if failed_substep == "generate" and self._pure_leaf_substep(refs, "generate", "generate"):
+            if failed_substep == "generate" and self._leaf_substep(refs, "generate", "generate"):
                 # Z2 pure producer exhausted its bounded in-conversation repair budget. Route on
                 # the terminal category recorded in bundle_meta.json: every bundle category is a
                 # document defect a fresh (generate, generate) attempt with a warm reuse repair
@@ -15560,7 +15560,7 @@ class Conductor:
                                          reason=f"{GENERATE_BUNDLE_REASON_PREFIX}{category}")
                 return RouteDecision("retry", target_phase="generate", repair_strategy="restart",
                                      reason="generate_bundle_fail")
-            if failed_substep == "verify" and self._pure_leaf_substep(refs, "generate", "verify"):
+            if failed_substep == "verify" and self._leaf_substep(refs, "generate", "verify"):
                 # Z2 pure reviewer (M-D). Two failure shapes reach here:
                 #   (a) a schema-EXHAUSTED verdict (unparseable / truncated / schema-invalid past
                 #       the in-conversation repair budget): verdict_meta.json carries the terminal
@@ -15591,7 +15591,7 @@ class Conductor:
             # the verify-severity gate below, and the compile.generate producer's own
             # declaration terminalizes here and never reaches it (issue #355).
             failed_substep = SUBSTEPS["compile"][len(outcomes) - 1]
-            if failed_substep == "generate" and self._pure_leaf_substep(refs, "compile", "generate"):
+            if failed_substep == "generate" and self._leaf_substep(refs, "compile", "generate"):
                 # Z1 pure IR producer. Two failure shapes reach here:
                 #   (a) an exhausted DOCUMENT repair budget: compile_generate_meta.json carries a
                 #       routed category, and a fresh (compile, generate) attempt with a warm reuse
@@ -15620,7 +15620,7 @@ class Conductor:
                     return RouteDecision("retry", target_phase="compile",
                                          repair_strategy="restart",
                                          reason="compile_document_fail")
-            if failed_substep == "verify" and self._pure_leaf_substep(refs, "compile", "verify"):
+            if failed_substep == "verify" and self._leaf_substep(refs, "compile", "verify"):
                 # Z1 pure IR reviewer. Same two shapes as the generate reviewer (M-D): a
                 # schema-EXHAUSTED verdict routes on its category (a cold compile restart —
                 # the reviewer cannot repair the producer), while a schema-VALID `fail` verdict
