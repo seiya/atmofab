@@ -1290,9 +1290,9 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         # SHRINK half, AFTER the per-record loop above and not before it: a declared record
         # the document omits fails both, and the loop's message is the one that says what to
         # add. Ordering it first made growth report a bare set difference instead.
-        # The second cell of every row this branch added ends in ``(`pure` only)``
-        # and no other row in the table carries it, so it is the document's own statement of
-        # which rows claim to be pure per-attempt records. Compared as a SET against the code.
+        # The second cell of every per-attempt meta row ends in a marker no other row in the table
+        # carries — ``(`pure` only)`` when the rows were added, the workshop marker below now — so
+        # it is the document's own statement of which rows claim to be per-attempt records. Compared as a SET against the code.
         # Every record is written by a `workshop leaf` since issue #534 PR-J4-b, and its row says
         # so with the second marker (older records may still say `pure`); the claim is the same,
         # so both spellings count.
