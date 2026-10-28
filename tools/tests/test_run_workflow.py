@@ -1283,6 +1283,17 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["reason"], "invalid_startup_input")
             self.assertIn("llm_config_codex_cli_requires_model", out["detail"])
             self.assertEqual(calls, [])
+            # A fresh run's load refusal is an edit to make, not a resume to abandon: the
+            # "cannot be resumed" remedy is the recorded file's alone (`--resume`).
+            self.assertNotIn("cannot be resumed", out["detail"])
+            config.write_text("defaults:\n  provider: claude_cli\n  leaf: workshop\n"
+                              "  lineage_timeout_s: 2700\n", encoding="utf-8")
+            code, out, calls = self._run_main_with_fake_runtime(
+                ["spec/problem/test.md", "compile", "--llm-config", str(config),
+                 "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual((code, out["reason"]), (2, "invalid_startup_input"), out)
+            self.assertIn("llm_config_unknown_key", out["detail"])
+            self.assertNotIn("cannot be resumed", out["detail"])
 
     def test_a_codex_configuration_slug_reaches_init(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
