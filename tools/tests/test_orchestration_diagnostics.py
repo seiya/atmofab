@@ -1293,10 +1293,11 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         # The second cell of every row this branch added ends in ``(`pure` only)``
         # and no other row in the table carries it, so it is the document's own statement of
         # which rows claim to be pure per-attempt records. Compared as a SET against the code.
-        # A producer's record is written by a `workshop leaf` too (issue #534), and its row says
-        # so with the second marker; the claim is the same, so both spellings count.
+        # Every record is written by a `workshop leaf` since issue #534 PR-J4-b, and its row says
+        # so with the second marker (older records may still say `pure`); the claim is the same,
+        # so both spellings count.
         pure_marker = "(`pure` only)"
-        markers = (pure_marker, "(`pure` or `workshop`)")
+        markers = (pure_marker, "(`workshop`; `pure` on older records)")
         claimed = set()
         for line in doc.splitlines():
             stripped = line.strip()
@@ -1307,7 +1308,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
                 claimed.add(cells[0].removeprefix("| `").rstrip("`").rsplit("/", 1)[-1])
         self.assertEqual(
             claimed, expected,
-            f"docs/WORKSPACE_LAYOUT.md: the rows marked {pure_marker} are not the records "
+            f"docs/WORKSPACE_LAYOUT.md: the rows marked {' or '.join(markers)} are not the records "
             f"`PURE_LEAF_META_FILES` declares. A name here that the code no longer declares is a "
             f"stale row a reader would look for on disk and not find; a declared name missing "
             f"here is covered by the per-record checks ABOVE, which say what to add. If a row's "
