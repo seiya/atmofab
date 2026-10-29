@@ -277,6 +277,20 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
 
     # --- MR3 --------------------------------------------------------------------------------
 
+    def test_a_repeated_replay_leaves_the_workspace_valid(self) -> None:
+        """Issue #544: a `--repeat 2` replay appends two rows to `replay_result.jsonl`, and the
+        workspace validator that Compile.static and Generate.gate run (`tools/workflow_conductor.py`)
+        still passes over the replay directory. Under the `.json` name the file was two JSON
+        documents and the validator refused it (`invalid json (Extra data: line 2 ...)`), which
+        stopped every later run at Compile.static."""
+        from tools.validate_workspace_root import validate
+        rc, out = self._main("--repeat", "2")
+        self.assertEqual(rc, 0, out)
+        [replay] = self._replays()
+        self.assertEqual([r["repetition"] for r in self._rows(replay)], [1, 2])
+        violations, _ = validate(repo_root=self.repo, workspace_root="workspace")
+        self.assertEqual(violations, [])
+
     def test_a_replay_row_carries_the_outcome_and_the_recorded_facts(self) -> None:
         """Each repetition's row: the accepted review, the source's version and leaf mode, the
         label, the usage sums; the replayed request carries the recorded dependency facts and

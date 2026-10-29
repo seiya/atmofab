@@ -31,9 +31,10 @@ created like a run's (`init`, the configuration snapshot, `preflight`), whose
 `orchestration_meta.json#invocation.kind` is `judge_replay`. It writes NOTHING under
 `workspace/ir/`, `workspace/pipelines/` or `workspace/runs/`: the refs it passes are the
 recorded ones and the reviewer's two host writers are replaced by writers that keep the
-document in memory. Its only result is `<replay dir>/replay_result.json`, one JSON line per
+document in memory. Its only result is `<replay dir>/replay_result.jsonl`, one JSON line per
 repetition; no audit or node-directory discovery reads a replay (`tools/audit_orchestration.py`
-must not be run on one: it composes the SOURCE run's directories from the recorded requests).
+refuses one and names this file: it would compose the SOURCE run's directories from the
+recorded requests).
 
 Refusals print `{"status": "refused", "reason": <code>, "detail": ...}` and exit 2, before
 any launch. Before the orchestration is created: `judge_replay_repeat_invalid` (`--repeat` below
@@ -52,7 +53,7 @@ node's store refs); `judge_replay_llm_config_invalid`;
 (a launch gate — the two `--check` answers — does not pass). An exception ends it `fail` /
 `judge_replay_error` and propagates.
 
-Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, `step`,
+Each `replay_result.jsonl` row: the head (`replay_orchestration_id`, `source_*`, `step`,
 `substep`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
 `leaf_returncode`, `infra_error`, `document` — the accepted verdict or review, else null —
 and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema_repairs`
@@ -125,7 +126,7 @@ DIAGNOSE_PAIRS: tuple[tuple[str, str], ...] = (
 ADMITTED_PAIRS: tuple[tuple[str, str], ...] = JUDGING_PAIRS + DIAGNOSE_PAIRS
 #: `orchestration_meta.json#invocation.kind` of a replay orchestration.
 REPLAY_KIND = "judge_replay"
-REPLAY_RESULT_NAME = "replay_result.json"
+REPLAY_RESULT_NAME = "replay_result.jsonl"
 
 
 class ReplayRefused(Exception):

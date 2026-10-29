@@ -516,6 +516,43 @@ class AuditIntegrationTests(unittest.TestCase):
         self.assertIn("run_bad", result["invalid_run_ids"])
 
 
+class JudgeReplayRefusalTextTests(unittest.TestCase):
+    """The operator-facing text that sends a reader of a judge replay to its result file names
+    the file the replay tool writes (`tools.judge_replay.REPLAY_RESULT_NAME`), in `--help` and
+    in the refusal alike. Issue #544 renamed that file; the help text, which spelled it
+    literally, kept the old name until it was derived from the constant (the refusal had
+    used the constant from the start)."""
+
+    def test_the_help_text_names_the_replay_result_file(self) -> None:
+        from tools.judge_replay import REPLAY_RESULT_NAME
+        out = io.StringIO()
+        # argparse wraps the description at the terminal width it reads from COLUMNS and breaks
+        # a word that does not fit on a line, so the file name is whole only at a sane width
+        # (measured: split as `replay_re` / `sult.jsonl` at COLUMNS=20).
+        with mock.patch.dict(os.environ, {"COLUMNS": "80"}), \
+                mock.patch.object(sys, "argv", ["audit_orchestration.py", "--help"]), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as caught:
+            ao.main()
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn(REPLAY_RESULT_NAME, out.getvalue())
+
+    def test_the_refusal_names_the_replay_result_file(self) -> None:
+        from tools.judge_replay import REPLAY_KIND, REPLAY_RESULT_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            orch_id = "replay_20260101T000000Z_0badcafe"
+            orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
+            orch_root.mkdir(parents=True)
+            (orch_root / "orchestration_meta.json").write_text(
+                json.dumps({"invocation": {"kind": REPLAY_KIND}}), encoding="utf-8")
+            err = io.StringIO()
+            with mock.patch.object(sys, "argv", ["audit_orchestration.py", "--repo-root", tmp,
+                                                 "--orchestration-id", orch_id]), \
+                    contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+                ao.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(REPLAY_RESULT_NAME, err.getvalue())
+
+
 class NoDanglingWindowTests(unittest.TestCase):
     def test_audit_reports_a_clean_negative_when_no_window_is_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
