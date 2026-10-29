@@ -1,4 +1,4 @@
-# The MPI parallel fragments of `tools/prompt_templates/pure_generate_generate.txt`.
+# The MPI parallel fragments of `tools/prompt_templates/workshop_generate_generate.txt`.
 # Each `@@ <name>` section replaces the template's `{{parallel:<name>}}` marker VERBATIM
 # (the section body, without the newline that precedes the next header). Loaded by
 # `tools/backends/parallel/mpi/prompts.py`; lines before the first header are comments.

@@ -9,7 +9,7 @@
 > (`tools/backends/language/fortran/checks_abi.py`). The host seeds the neutral §1-§4
 > followed by §1-§4 of this document into the `generate.verify` reviewer's work tree as
 > `CHECKS_MODULE_CONTRACT.md`, and §5 of this document into the `harness`-shape producer's
-> work tree as `gate_guards.md`. Compile, which is target-free, is seeded the neutral §1-§4
+> work tree as `gate_guards.md`. The Compile producer, target-free, is seeded the neutral §1-§4
 > only.
 
 The source files are `<spec_id>_model.f90` (the physics kernel and the published operation)

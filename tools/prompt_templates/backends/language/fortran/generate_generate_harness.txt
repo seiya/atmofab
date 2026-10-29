@@ -1,4 +1,4 @@
-# The Fortran language fragments of `tools/prompt_templates/pure_generate_generate_harness.txt`.
+# The Fortran language fragments of `tools/prompt_templates/workshop_generate_generate_harness.txt`.
 # Each `@@ <name>` section replaces the template's `{{language:<name>}}` marker VERBATIM
 # (the section body, without the newline that precedes the next header). Loaded by
 # `tools/backends/language/fortran/prompts.py`; lines before the first header are comments.
