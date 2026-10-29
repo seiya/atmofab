@@ -18,12 +18,15 @@ module is what gives it exactly those two routes back. It has two halves, one fi
   a byte pump with no policy in it: it listens on `127.0.0.1:PROXY_PORT` (to `provider.sock`)
   and on the wrapper's own port number (to `wrapper.sock`), then starts the CLI as its child and
   exits with the child's code. The CLI is told the proxy by `HTTPS_PROXY`, which the profile
-  builder authors (`orchestration_runtime.leaf_network_env`).
+  builder authors (`PROXY_ENV`, set by `orchestration_runtime.build_lineage_bwrap_profile`).
 
-Why a proxy variable and not a route on port 443: no process in an unprivileged bwrap can bind a
-port below 1024 (bwrap 0.11.2 refuses `--cap-add` unprivileged; measured), and both CLIs'
-OAuth hosts are fixed at `:443`. A CONNECT proxy needs no privilege and names every target host
-on the host side, which is what makes the allowlist a host decision.
+Why a proxy variable and not a route on port 443: both CLIs' OAuth hosts are fixed at `:443`,
+and in the leaf's sandbox shape, which mounts `--dev /dev`, a bind of port 443 fails `EACCES` even
+under `--cap-add CAP_NET_BIND_SERVICE` with the capability in the effective set (measured, bwrap
+0.11.2; the same bind succeeds without `--dev`, for a reason not established). And a route would
+reach the host as TLS, whose target the host could tell only by parsing SNI; a CONNECT proxy needs
+no privilege and names every target host in cleartext on the host side, which is what makes the
+allowlist a host decision.
 
 The in-namespace half runs under the system python with `-I` and no `PYTHONPATH`: this module
 imports the standard library alone and nothing from the checkout.
@@ -140,11 +143,15 @@ def relay_argv(command_argv: list[str] | tuple[str, ...],
 
 def socket_dir_parent() -> str:
     """Where a per-launch socket directory is created: `$XDG_RUNTIME_DIR` when it is a writable
-    directory, else `/tmp` — never `tempfile.gettempdir()`, which follows `TMPDIR` and can name a
-    path too long for a socket under it (`SUN_PATH_MAX`)."""
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or ""
-    if runtime and os.path.isabs(runtime) and os.path.isdir(runtime) \
-            and os.access(runtime, os.W_OK | os.X_OK):
+    directory whose socket paths fit `SUN_PATH_MAX`, normalized (a profile records only a
+    normalized path), else `/tmp` — never `tempfile.gettempdir()`, which follows `TMPDIR` and can
+    name a path too long for a socket under it."""
+    runtime = os.path.normpath(os.environ.get("XDG_RUNTIME_DIR") or "/nonexistent")
+    # The longest socket path under it: `<dir>/atmofab-net-XXXXXXXX/provider.sock`.
+    longest = os.path.join(runtime, "atmofab-net-" + "x" * 8, PROVIDER_SOCKET)
+    if os.path.isabs(runtime) and os.path.isdir(runtime) \
+            and os.access(runtime, os.W_OK | os.X_OK) \
+            and len(longest.encode()) <= SUN_PATH_MAX:
         return runtime
     return "/tmp"
 
@@ -289,7 +296,7 @@ class HostRoutes:
 
     def _log(self, target: str, allowed: bool, request_line: str) -> None:
         row = {"recorded_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-               "agent_run_id": self.agent_run_id, "target": target, "allowed": allowed}
+               "agent_run_id": self.agent_run_id, "target": target[:200], "allowed": allowed}
         if not target:
             row["request_line"] = request_line[:200]
         with self._lock, open(self.log_path, "a", encoding="utf-8") as out:

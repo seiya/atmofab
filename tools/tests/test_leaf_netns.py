@@ -215,6 +215,19 @@ class HostRoutesTests(unittest.TestCase):
         self.assertEqual(os.stat(self.dir).st_mode & 0o777, 0o700)
         with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": "", "TMPDIR": "/" + "t" * 90}):
             self.assertEqual(leaf_netns.socket_dir_parent(), "/tmp")
+        runtime = tempfile.mkdtemp(dir="/tmp")
+        self.addCleanup(os.rmdir, runtime)
+        # A spelling the profile's normalized-path rule would refuse is normalized here.
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime + "//"}):
+            self.assertEqual(leaf_netns.socket_dir_parent(), runtime)
+        # A runtime directory too long for a socket path under it falls back to /tmp.
+        deep = os.path.join(runtime, "d" * 80)
+        os.mkdir(deep)
+        self.addCleanup(os.rmdir, deep)
+        self.assertGreater(len(os.path.join(deep, "atmofab-net-xxxxxxxx", "provider.sock")),
+                           leaf_netns.SUN_PATH_MAX)
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": deep}):
+            self.assertEqual(leaf_netns.socket_dir_parent(), "/tmp")
 
 
 class RelayMainTests(unittest.TestCase):
@@ -292,7 +305,8 @@ class RelayMainTests(unittest.TestCase):
             try:
                 with open(f"/proc/{child_pid}/stat") as f:
                     state = f.read().rsplit(")", 1)[1].split()[0]
-            except FileNotFoundError:
+            except (FileNotFoundError, ProcessLookupError):
+                # Gone between the open and the read: ESRCH, under load.
                 return
             if state == "Z":
                 return

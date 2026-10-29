@@ -30130,6 +30130,13 @@ class LeafNetnsPreflightTests(unittest.TestCase):
         self.assertIs(rows["sandbox_netns_route"]["pass"], False, rows)
         self.assertFalse(enforced)
 
+    def test_a_host_without_bwrap_fails_both_rows_closed(self) -> None:
+        with mock.patch.object(ort.shutil, "which", return_value=None):
+            rows, enforced = self._rows()
+        self.assertFalse(enforced)
+        self.assertIs(rows["sandbox_netns_python"]["pass"], False)
+        self.assertIs(rows["sandbox_netns_route"]["pass"], False)
+
     def test_the_env_override_assumes_both_rows(self) -> None:
         with mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}):
             rows, enforced = self._rows()
