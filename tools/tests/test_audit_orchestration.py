@@ -535,6 +535,22 @@ class JudgeReplayRefusalTextTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 0)
         self.assertIn(REPLAY_RESULT_NAME, out.getvalue())
 
+    def test_the_refusal_names_the_replay_result_file(self) -> None:
+        from tools.judge_replay import REPLAY_KIND, REPLAY_RESULT_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            orch_id = "replay_20260101T000000Z_0badcafe"
+            orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
+            orch_root.mkdir(parents=True)
+            (orch_root / "orchestration_meta.json").write_text(
+                json.dumps({"invocation": {"kind": REPLAY_KIND}}), encoding="utf-8")
+            err = io.StringIO()
+            with mock.patch.object(sys, "argv", ["audit_orchestration.py", "--repo-root", tmp,
+                                                 "--orchestration-id", orch_id]), \
+                    contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+                ao.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn(REPLAY_RESULT_NAME, err.getvalue())
+
 
 class NoDanglingWindowTests(unittest.TestCase):
     def test_audit_reports_a_clean_negative_when_no_window_is_open(self) -> None:
