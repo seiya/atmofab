@@ -7948,7 +7948,7 @@ class Conductor:
         """Start one CLI launch's network routes (issue #534 step 4): the host half of
         `tools/leaf_netns.py` in a fresh socket directory, admitting the family's constant
         endpoint set (`leaf_contract.WORKSHOP_CLI_ENDPOINTS`) and, for a producing launch, the
-        wrapper endpoint `server` serves. Every CONNECT is a row of the orchestration's
+        wrapper endpoint `server` serves. Every request the proxy reads is a row of the orchestration's
         `net_routes.jsonl`. A failure is the lineage's setup failing — no leaf has run."""
         from urllib.parse import urlsplit
 
@@ -8833,7 +8833,8 @@ class Conductor:
                     spec=spec)
             except WorkshopSetupFailed as exc:
                 # Nothing was launched or recorded: a host precondition (the wrapper's
-                # context could not be frozen), routed like an unassemblable context.
+                # context could not be frozen, or the launch's network routes could not be
+                # served — issue #534 step 4), routed like an unassemblable context.
                 self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
                           detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                 return SubstepOutcome(child_arid, "fail", [], 1,

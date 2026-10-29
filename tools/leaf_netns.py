@@ -9,7 +9,7 @@ module is what gives it exactly those two routes back. It has two halves, one fi
   two path-bound Unix sockets in a short per-launch directory (`make_socket_dir`) — a path-bound
   `AF_UNIX` socket is reachable across a network namespace, and the renderer binds the directory
   read-only at `NET_MOUNT`. `provider.sock` is an HTTP CONNECT proxy that admits exactly the
-  endpoint set it was handed (`host:port`, exact match) and logs every request line it reads to
+  endpoint set it was handed (`host:port`, exact match) and logs every request whose header block it reads to
   `net_routes.jsonl`, refused ones included; TLS passes through it untouched, so the CLI checks
   the real host's certificate. `wrapper.sock` (a producing launch only) is a raw tunnel to the
   wrapper endpoint's loopback port (`tools/workshop_mcp.py`).
@@ -214,7 +214,8 @@ def parse_connect_target(head: bytes) -> str | None:
     if len(parts) != 3 or parts[0] != "CONNECT" or not parts[2].startswith("HTTP/1."):
         return None
     host, sep, port = parts[1].rpartition(":")
-    if not sep or not host or not port.isdigit():
+    # ASCII digits only: `str.isdigit` also accepts `²`, which `int()` refuses.
+    if not sep or not host or not (port.isascii() and port.isdigit()):
         return None
     return f"{host.lower()}:{int(port)}"
 
@@ -248,9 +249,16 @@ class HostRoutes:
         fd = os.open(relay, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
         with os.fdopen(fd, "wb") as out:
             out.write(source)
-        self._serve(PROVIDER_SOCKET, self._handle_connect)
-        if self.wrapper_port is not None:
-            self._serve(WRAPPER_SOCKET, self._handle_wrapper)
+        try:
+            self._serve(PROVIDER_SOCKET, self._handle_connect)
+            if self.wrapper_port is not None:
+                self._serve(WRAPPER_SOCKET, self._handle_wrapper)
+        except BaseException:
+            # A half-started host half (the wrapper's socket failed after the provider's was
+            # served) is stopped here: the caller holds no object to stop, and its accept
+            # thread would otherwise outlive the launch.
+            self.stop()
+            raise
         return self
 
     def _serve(self, name: str, handler) -> None:  # type: ignore[no-untyped-def]

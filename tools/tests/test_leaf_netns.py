@@ -204,6 +204,40 @@ class HostRoutesTests(unittest.TestCase):
                 self.assertFalse(acceptor.is_alive(), "an accept thread outlived stop()")
         self.assertEqual(set(threading.enumerate()) - before, set())
 
+    def test_a_half_started_host_half_stops_itself(self) -> None:
+        """The wrapper's socket fails after the provider's was served: `start()` raises with
+        the provider's accept thread ended and the directory removed — the caller holds no
+        object to stop."""
+        before = set(threading.enumerate())
+        real = leaf_netns.HostRoutes._serve
+
+        def serve(self, name, handler):
+            if name == leaf_netns.WRAPPER_SOCKET:
+                raise OSError(24, "Too many open files")
+            return real(self, name, handler)
+        sdir = leaf_netns.make_socket_dir()
+        with mock.patch.object(leaf_netns.HostRoutes, "_serve", serve), \
+                self.assertRaises(OSError):
+            leaf_netns.HostRoutes(sdir, [], str(self.log), "arid-1",
+                                  wrapper_port=self.upstream.port).start()
+        self.assertEqual(set(threading.enumerate()) - before, set())
+        self.assertFalse(os.path.exists(sdir))
+
+    def test_a_non_ascii_digit_port_is_refused_and_logged(self) -> None:
+        self._routes()
+        c = self._client()
+        c.sendall("CONNECT localhost:44\u00b2 HTTP/1.1\r\n\r\n".encode("latin-1"))
+        self.assertTrue(_recv_until(c, b"\r\n\r\n").startswith(b"HTTP/1.1 400 "))
+        self.assertEqual([r["allowed"] for r in self._rows()], [False])
+
+    def test_the_logged_target_is_bounded(self) -> None:
+        self._routes(endpoints=[])
+        c = self._client()
+        c.sendall(("CONNECT " + "h" * 5000 + ":443 HTTP/1.1\r\n\r\n").encode())
+        _recv_until(c, b"\r\n\r\n")
+        (row,) = self._rows()
+        self.assertEqual(len(row["target"]), 200)
+
     def test_a_socket_dir_too_long_for_af_unix_is_refused_before_anything_is_served(self) -> None:
         long_dir = os.path.join(self.dir, "x" * 100)
         os.mkdir(long_dir)

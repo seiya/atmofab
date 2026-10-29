@@ -506,14 +506,21 @@ class BwrapLineageProfileTests(unittest.TestCase):
                                     "the child and its leaked grandchild are not both visible")
             os.kill(proc.pid, 9)
             proc.wait(timeout=10)
+            def live() -> list[int]:
+                alive = []
+                for pid in holders():
+                    try:
+                        with open(f"/proc/{pid}/stat") as f:
+                            state = f.read().rsplit(")", 1)[1].split()[0]
+                    except (FileNotFoundError, ProcessLookupError):
+                        continue  # reaped between the listing and the read
+                    if state != "Z":
+                        alive.append(pid)
+                return alive
             deadline = time.monotonic() + 10
-            while time.monotonic() < deadline and any(
-                    open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z"
-                    for pid in holders() if os.path.exists(f"/proc/{pid}/stat")):
+            while time.monotonic() < deadline and live():
                 time.sleep(0.05)
-            self.assertEqual([pid for pid in holders() if os.path.exists(f"/proc/{pid}/stat")
-                              and open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0]
-                              != "Z"], [], "a process of the launch outlived the outer bwrap")
+            self.assertEqual(live(), [], "a process of the launch outlived the outer bwrap")
             argv = render_bwrap_command(profile=profile, command_argv=[
                 "python3", "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"])
             self.assertEqual(subprocess.run(argv, timeout=60).returncode, 128 + 9)

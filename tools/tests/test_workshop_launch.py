@@ -1374,3 +1374,15 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         with self.subTest("proxy env"):
             self.assertTrue(vps._workshop_profile_violations(
                 {**good, "env": {**good["env"], "HTTPS_PROXY": "http://x:1"}}))
+        # The persisted block's CONTENT, the audit being the one reader of the record.
+        for label, change in (
+                ("a host beyond the family's set",
+                 {"endpoints": [*good["network"]["endpoints"], "github.com:443"]}),
+                ("a socket dir inside the checkout",
+                 {"socket_dir": str(self.repo.resolve() / "workspace" / "x")}),
+                ("no unshare_pid", {"unshare_pid": False})):
+            with self.subTest(label):
+                found = vps._workshop_profile_violations(
+                    {**good, "network": {**good["network"], **change}}, None, self.repo)
+                self.assertTrue(found, label)
+                self.assertTrue(all("network." in v for v in found), found)
