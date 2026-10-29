@@ -1111,11 +1111,11 @@ PINNED: dict[str, str] = {
     # judge's raw-array sentence states which rank / finiteness checks the `post_execute` gate
     # and the primary-predicate evaluation already make and which arrays nothing checks
     # (issue #545). Members moved: the templates, the fragments, and (through
-    # `runner_output_binding_document`) the audience notes of `RUNNER_OUTPUT_CONTRACT.md` and
-    # the two `RUNNER_OUTPUT.md` bindings, each now naming the seed file instead of an inlined
-    # prompt (the two `CHECKS_ABI.md` audience notes changed too, but the slices this tuple
+    # `runner_output_contract_document` and `runner_output_binding_document`) the audience
+    # notes of `RUNNER_OUTPUT_CONTRACT.md` and the two `RUNNER_OUTPUT.md` bindings, each now
+    # naming the seed file instead of an inlined prompt (the two `CHECKS_ABI.md` audience notes changed too, but the slices this tuple
     # hashes, §1-4 and §5, leave the header note out, so they move no digest).
-    "leaf-85": "37d681a2693d8f7e3f5a978a1073593e4cc779d1a9c383984a0f0b79cc6bbd61",
+    "leaf-85": "d2d97b6e08b9d371a8ad2be266333bdade09ea027e1d6def68fa3fb78924e900",
 }
 
 
