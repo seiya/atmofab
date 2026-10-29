@@ -516,6 +516,22 @@ class AuditIntegrationTests(unittest.TestCase):
         self.assertIn("run_bad", result["invalid_run_ids"])
 
 
+class JudgeReplayRefusalTextTests(unittest.TestCase):
+    """The operator-facing text that sends a reader of a judge replay to its result file names
+    the file the replay tool writes (`tools.judge_replay.REPLAY_RESULT_NAME`), in `--help` and
+    in the refusal alike. Issue #544 renamed that file; a literal spelling here would have
+    kept the old name."""
+
+    def test_the_help_text_names_the_replay_result_file(self) -> None:
+        from tools.judge_replay import REPLAY_RESULT_NAME
+        out = io.StringIO()
+        with mock.patch.object(sys, "argv", ["audit_orchestration.py", "--help"]), \
+                contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as caught:
+            ao.main()
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn(REPLAY_RESULT_NAME, out.getvalue())
+
+
 class NoDanglingWindowTests(unittest.TestCase):
     def test_audit_reports_a_clean_negative_when_no_window_is_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
