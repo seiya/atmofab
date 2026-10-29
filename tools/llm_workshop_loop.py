@@ -401,9 +401,11 @@ def _anthropic_stream_reply(frames: Sequence[tuple[str, str]]
             delta = doc.get("delta")
             if isinstance(delta, dict) and isinstance(delta.get("stop_reason"), str):
                 stop_reason = delta["stop_reason"]
-            reported = doc.get("usage")
-            if isinstance(reported, dict) and isinstance(reported.get("output_tokens"), int):
-                usage["output_tokens"] = reported["output_tokens"]
+            # The final usage, through the same reader as `message_start`'s: it carries the
+            # authoritative `output_tokens` and, only here when streaming, the
+            # `output_tokens_details` breakdown (`thinking_tokens` -> `reasoning_tokens`,
+            # issue #560). Every key the delta carries wins over `message_start`'s.
+            usage.update(_anthropic_usage(doc.get("usage")))
         elif event == "message_stop":
             complete = True
         elif event == "error":

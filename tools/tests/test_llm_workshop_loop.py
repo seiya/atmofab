@@ -435,6 +435,28 @@ class UsageSumTests(_Base):
                           result.usage["cache_creation_input_tokens"]), (14, 6, 10, 4))
         self.assertEqual(result.usage["provider_details"]["requests"], 2)
 
+    def test_the_ended_row_carries_the_thinking_share_streamed_and_buffered(self) -> None:
+        """Issue #560: the `ended` row of `loop_turns.jsonl` (and the launch's usage) states
+        how much of the output was thinking, summed over the launch's requests, without
+        parsing the raw stream. Streamed, the breakdown rides only on the final
+        `message_delta` (the stand-in sends it there and not on `message_start`)."""
+        for stream in (True, False):
+            with self.subTest(stream=stream):
+                self.rows.clear()
+                server = self.api([_reply_anthropic([tool_use("a", "list_files", {})]),
+                                   _reply_anthropic([], "end_turn", "done")])
+                server.usage = {"input_tokens": 7, "output_tokens": 300,
+                                "cache_read_input_tokens": 0,
+                                "cache_creation_input_tokens": 0,
+                                "output_tokens_details": {"thinking_tokens": 250}}
+                result = self.run_loop(server, stream=stream)
+                self.assertEqual(result.ended, "end_turn")
+                [ended] = [r for r in self.rows if r["event"] == "ended"]
+                self.assertEqual(ended["usage"]["reasoning_tokens"], 500)
+                self.assertEqual(ended["usage"]["output_tokens"], 600)
+                self.assertEqual(ended["usage"]["total_tokens"], 14 + 600)
+                self.assertEqual(result.usage, ended["usage"])
+
 
 class AnthropicEndsTests(_EndsMixin, _Base):
     end_stop = "end_turn"

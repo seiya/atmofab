@@ -380,13 +380,64 @@ class ResponseReadingTests(unittest.TestCase):
         self.assertEqual(out.usage["cache_creation_input_tokens"], 5_849)
         self.assertEqual(out.usage["total_tokens"], 33 + 44 + 14_278 + 5_849)
 
+    def test_the_anthropic_thinking_split_survives(self) -> None:
+        """Issue #560: `output_tokens_details.thinking_tokens` is the Messages API's count of
+        output spent on thinking, and the run that motivated it had replies whose WHOLE 16384
+        output budget was thinking. It is lifted to the canonical `reasoning_tokens`, the name
+        the OpenAI dialect's count takes, and it is a SUBSET of `output_tokens`, so it stays
+        out of `total_tokens`."""
+        raw = {"input_tokens": 33, "output_tokens": 348,
+               "cache_read_input_tokens": 1_000, "cache_creation_input_tokens": 200,
+               "output_tokens_details": {"thinking_tokens": 312}}
+        out = _launch(_entry("anthropic_api"), opener=_opener(dict(_ANTHROPIC_OK, usage=raw)))
+        self.assertIsNone(out.transport_error)
+        self.assertEqual(out.usage["reasoning_tokens"], 312)
+        self.assertEqual(out.usage["output_tokens"], 348)
+        self.assertEqual(out.usage["total_tokens"], 33 + 348 + 1_000 + 200)
+        # The detail object travels on the per-request map, int-valued entries only (the
+        # loop's launch-level sum keeps ints and records `provider_details.requests` alone).
+        mapped = hl._anthropic_usage(raw)
+        self.assertEqual(mapped["reasoning_tokens"], 312)
+        self.assertEqual(mapped["provider_details"],
+                         {"output_tokens_details": {"thinking_tokens": 312}})
+        self.assertEqual(hl._normalized_usage(mapped)["provider_details"],
+                         mapped["provider_details"])
+        self.assertEqual(hl._normalized_usage(mapped)["reasoning_tokens"], 312)
+
+    def test_an_anthropic_usage_with_no_breakdown_stays_clean(self) -> None:
+        """No `output_tokens_details` (a model that did not think, an older API): no
+        `reasoning_tokens` key and no `provider_details`, rather than keys holding `None`."""
+        self.assertEqual(hl._anthropic_usage({"input_tokens": 33, "output_tokens": 44}),
+                         {"input_tokens": 33, "output_tokens": 44})
+
     def test_a_malformed_usage_count_is_dropped_not_coerced(self) -> None:
-        """`_anthropic_usage` is a filter: a count that is not an int is dropped, never coerced,
-        so a recorded number is one the provider sent."""
+        """`_anthropic_usage` keeps a count only when it is an int, never coerced, so a
+        recorded number is one the provider sent."""
         self.assertEqual(hl._anthropic_usage({"input_tokens": "33", "output_tokens": 44,
                                               "cache_read_input_tokens": None}),
                          {"output_tokens": 44})
         self.assertEqual(hl._anthropic_usage("not a dict"), {})
+        # The thinking count too: a string, a bool (an `int` subclass) and a non-object
+        # `output_tokens_details` are dropped; a string-valued detail entry never reaches
+        # `provider_details`, which is persisted without redaction. The family straddles the
+        # `isinstance(details, dict)` test: some members reach `.get` / `.items`, some do not.
+        family = ({"thinking_tokens": "312"}, {"thinking_tokens": True}, [312], "312", None)
+        self.assertTrue(any(isinstance(d, dict) for d in family))
+        self.assertTrue(any(not isinstance(d, dict) for d in family))
+        for details in family:
+            with self.subTest(details=details):
+                self.assertEqual(hl._anthropic_usage({"output_tokens": 44,
+                                                      "output_tokens_details": details}),
+                                 {"output_tokens": 44})
+        self.assertEqual(hl._anthropic_usage(
+            {"output_tokens": 44,
+             "output_tokens_details": {"thinking_tokens": 40, "note": "key=" + KEY_VALUE}}),
+            {"output_tokens": 44, "reasoning_tokens": 40,
+             "provider_details": {"output_tokens_details": {"thinking_tokens": 40}}})
+        # A detail object with no count this map reads is not a usage on its own: with no
+        # token class and no thinking count, nothing is returned, as `_openai_usage` does.
+        self.assertEqual(hl._anthropic_usage({"output_tokens_details": {"other_tokens": 3}}),
+                         {})
         self.assertIsNone(hl._normalized_usage({}))
         self.assertIsNone(hl._normalized_usage(None))
 
@@ -1564,6 +1615,30 @@ class AnthropicStreamReadingTests(unittest.TestCase):
         self.assertEqual(out.usage["cache_creation_input_tokens"], 5_849)
         self.assertEqual(out.usage["output_tokens"], 44)
         self.assertEqual(out.usage["total_tokens"], 33 + 44 + 14_278 + 5_849)
+
+    def test_an_anthropic_stream_takes_the_thinking_split_from_the_final_message_delta(
+            self) -> None:
+        """Issue #560: when streaming, `output_tokens_details` arrives ONLY on the final
+        `message_delta` (the provider's thinking page), so a reader that kept just
+        `output_tokens` from it dropped the thinking count on the path production uses."""
+        body = _sse(
+            ("message_start", json.dumps({"message": {
+                "model": "claude-opus-5-resolved",
+                "usage": {"input_tokens": 33, "output_tokens": 1}}})),
+            *_anthropic_block(0, "thinking", "hmm"),
+            *_anthropic_block(1, "text", "x"),
+            ("message_delta", json.dumps({"delta": {"stop_reason": "end_turn"},
+                                          "usage": {"output_tokens": 16384,
+                                                    "output_tokens_details": {
+                                                        "thinking_tokens": 16000}}})),
+            ("message_stop", json.dumps({"type": "message_stop"})),
+        )
+        out = self._run(body)
+        self.assertIsNone(out.transport_error)
+        self.assertEqual(out.usage["output_tokens"], 16384)      # the delta's, not 1
+        self.assertEqual(out.usage["reasoning_tokens"], 16000)
+        self.assertEqual(out.usage["input_tokens"], 33)          # message_start's survives
+        self.assertEqual(out.usage["total_tokens"], 33 + 16384)
 
     def test_a_thinking_delta_is_not_part_of_the_answer_document(self) -> None:
         """Mirrors the buffered reader, which concatenates only `type == "text"` blocks."""

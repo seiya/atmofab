@@ -665,15 +665,38 @@ def _openai_usage(raw: Any) -> "dict[str, Any]":
 def _anthropic_usage(raw: Any) -> "dict[str, Any]":
     """A Messages-API `usage` object in the canonical leaf-usage names.
 
-    Its four token classes already carry those names, so this is a filter, not a map. The
-    two cache classes were dropped before; they are separate prompt classes (not a subset of
+    Its four token classes already carry those names and pass through as they are. The two
+    cache classes were dropped before; they are separate prompt classes (not a subset of
     `input_tokens`), so losing them lost real billed input — and with it any view of whether
     the prompt cache was hitting.
+
+    One count is MAPPED (issue #560): `output_tokens_details.thinking_tokens` becomes the
+    canonical `reasoning_tokens`, the name `_openai_usage` gives the OpenAI dialect's
+    `completion_tokens_details.reasoning_tokens`, so one name reads both providers. It is a
+    SUBSET of `output_tokens` ("always less than or equal to `output_tokens`", the provider's
+    thinking page), so `leaf_usage.normalize_leaf_usage` keeps it out of `total_tokens`. On
+    the run that motivated it, a `compile.verify` reply cut at 16384 output tokens had spent
+    all 16384 on thinking, and the record had no way to say so without parsing the raw stream.
+    `output_tokens_details` also travels under `provider_details`, reduced to its INT-VALUED
+    entries for the reason `_openai_usage` gives. When streaming, the breakdown arrives only
+    on the final `message_delta`, which the stream reader routes through this function too.
     """
     usage = raw if isinstance(raw, dict) else {}
     keys = ("input_tokens", "output_tokens",
             "cache_read_input_tokens", "cache_creation_input_tokens")
-    return {k: usage[k] for k in keys if isinstance(usage.get(k), int)}
+    out: dict[str, Any] = {k: usage[k] for k in keys if isinstance(usage.get(k), int)}
+    details = usage.get("output_tokens_details")
+    thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
+    if isinstance(thinking, int) and not isinstance(thinking, bool):
+        out["reasoning_tokens"] = thinking
+    # INT-VALUED entries only, not the object verbatim: `provider_details` is persisted without
+    # passing through `_redact`, and a string a provider controls could carry the key.
+    counts = {k: v for k, v in details.items()
+              if isinstance(v, int) and not isinstance(v, bool)} \
+        if isinstance(details, dict) else {}
+    if out and counts:
+        out["provider_details"] = {"output_tokens_details": counts}
+    return out
 
 
 # What an incomplete stream is reported as. The WORDING is load-bearing, not decoration: the
