@@ -4,10 +4,11 @@
 > `toolchain.language: fortran`** (today the `infrastructure` self-test), and the maintainer of
 > the host-rendered runner. This document binds the language-neutral JSON serialization
 > requirement of `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §4 and
-> `docs/PERFORMANCE_DIAGNOSTICS.md` §6 to Fortran's formatted output. The host inlines it after
-> `RUNNER_OUTPUT_CONTRACT.md` wherever that document is inlined whole (the `harness` shape's two
-> `generate` prompts), through the Fortran language backend's `prompt_fragments` capability
-> (`tools/backends/language/fortran/prompts.py`).
+> `docs/PERFORMANCE_DIAGNOSTICS.md` §6 to Fortran's formatted output. Wherever
+> `RUNNER_OUTPUT_CONTRACT.md` is seeded whole (the `runner_output_contract.md` seed of the
+> `harness` shape's `generate.generate` and `generate.verify` work trees), the host appends this
+> document after it in the same seed file, through the Fortran language backend's
+> `prompt_fragments` capability (`tools/backends/language/fortran/prompts.py`).
 
 ## 1. JSON serialization in Fortran
 

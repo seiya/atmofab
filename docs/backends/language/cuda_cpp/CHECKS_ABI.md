@@ -7,10 +7,10 @@
 > §5 is the legality and gate-guard rule set every leaf-authored CUDA C++ source of a `Generate`
 > node is held to. It is reached through the CUDA C++ language backend's `checks_abi` capability
 > (`tools/backends/language/cuda_cpp/checks_abi.py`, which also holds the declaration table
-> `CHECKS_ABI_PARAMS` the host renders and the gates compare against). The host inlines the
+> `CHECKS_ABI_PARAMS` the host renders and the gates compare against). The host seeds the
 > neutral §1-§4 followed by §1-§4 of this document into a physics node's `generate.verify`
-> reviewer's prompt as `checks_module_contract_document`, and §5 of this document into the
-> `harness`-shape producer's prompt as `gate_guards_document`; a physics node's
+> reviewer's work tree as `CHECKS_MODULE_CONTRACT.md`, and §5 of this document into the
+> `harness`-shape producer's work tree as `gate_guards.md`; a physics node's
 > `generate.generate` producer is told the same rules by the language's prompt fragments
 > (`tools/prompt_templates/backends/language/cuda_cpp/generate_generate.txt`), and the
 > `harness`-shape reviewer by its own fragment.

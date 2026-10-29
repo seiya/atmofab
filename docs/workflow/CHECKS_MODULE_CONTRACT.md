@@ -15,13 +15,14 @@
 > language backend's binding, `docs/backends/language/<language>/CHECKS_ABI.md`, numbered
 > section for section like this one (§5 below).
 >
-> NO leaf reads this document from disk. It reaches its leaves inlined by the host: the
-> `compile.generate` producer receives §1-§4 of it (Compile is target-free, so it is shown no
-> binding); the `generate.verify` reviewer receives §1-§4 followed by §1-§4 of the target
-> language's binding, as `checks_module_contract_document` (issue #142); the
-> `generate.generate` producer is told the five names and the binding convention and shown the
-> rendered runner, gated by `m3c_checks_abi_violation`, with the §2/§3 behavioral contract
-> distilled into its launch template. All five callbacks bind every node. The language backend
+> NO leaf reads this document from disk at its repository path. The host seeds it into a leaf's
+> work tree as `CHECKS_MODULE_CONTRACT.md`: the `compile.generate` producer is seeded §1-§4 of it
+> (Compile is target-free, so it is seeded no binding); the `generate.verify` reviewer §1-§4
+> followed by §1-§4 of the target language's binding (document key
+> `checks_module_contract_document`, issue #142); the `generate.generate` producer is told the
+> five names and the binding convention and seeded the rendered runner, gated by
+> `m3c_checks_abi_violation`, with the §2/§3 behavioral contract distilled into its launch
+> template. All five callbacks bind every node. The language backend
 > that renders the runner owns the ABI's names (`host_render.checks_public_names`) — keep it,
 > this document, the binding and the distilled paragraph in step. Since Z6
 > ([issue #255](https://github.com/seiya/atmofab/issues/255)) the module also carries the node's

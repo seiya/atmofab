@@ -59,14 +59,15 @@ DERIVATION_KEY_VERSION = 2
 #: flow's exit and takes the next number; the outputs it chooses among are the same set.
 SELECTION_POLICY_VERSION = 1
 
-#: The version of the compile-inlined documents (`phase_01_compile.md`, the two IR examples; the
-#: `impl_defaults` schema was the fourth until R4-a PR-3, issue #284, which deleted it with the IR
-#: section). Pinned separately from `LEAF_PROMPT_CONTRACT_VERSION` because a
+#: The version of the documents the compile pair is seeded whole (`phase_01_compile.md`, the two
+#: IR examples — "inlined" into the pure prompt until issue #534 PR-J4-b, seed files of the
+#: workshop leaf's tree since; the `impl_defaults` schema was the fourth until R4-a PR-3, issue
+#: #284, which deleted it with the IR section). Pinned separately from `LEAF_PROMPT_CONTRACT_VERSION` because a
 #: bump of that one has two side effects this one must not have (it stops `_resolve_exemplar_source`
 #: offering earlier-version exemplars and refuses `--resume` across it — the reason the prompt
 #: drift test refuses to pin these four); a bump HERE costs exactly one re-derivation of every
 #: node's Compile, and nothing downstream whose IR comes out byte-identical.
-COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-20"
+COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-21"
 
 #: The versions of the DETERMINISTIC transformations. Each is the identity of the implementing
 #: code, pinned by `tools/tests/test_derivation_transformation_drift.py` as a digest of the

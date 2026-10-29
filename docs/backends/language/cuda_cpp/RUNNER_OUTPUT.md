@@ -3,9 +3,11 @@
 > **Audience: a runner-authoring `Generate` leaf of a node whose target profile names
 > `toolchain.language: cuda_cpp`** (the `infrastructure` self-test). This document binds the
 > language-neutral JSON serialization requirement of `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §4
-> to CUDA C++ host code. The host inlines it after `RUNNER_OUTPUT_CONTRACT.md` wherever that
-> document is inlined whole (the `harness` shape's two `generate` prompts), through the CUDA C++
-> language backend's `prompt_fragments` capability (`tools/backends/language/cuda_cpp/prompts.py`).
+> to CUDA C++ host code. Wherever `RUNNER_OUTPUT_CONTRACT.md` is seeded whole (the
+> `runner_output_contract.md` seed of the `harness` shape's `generate.generate` and
+> `generate.verify` work trees), the host appends this document after it in the same seed file,
+> through the CUDA C++ language backend's `prompt_fragments` capability
+> (`tools/backends/language/cuda_cpp/prompts.py`).
 
 ## 1. JSON serialization in CUDA C++
 

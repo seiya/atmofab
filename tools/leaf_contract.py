@@ -32,9 +32,11 @@ from typing import Any, NamedTuple
 # row, a system prompt — in a way that affects leaf behaviour; the drift pin
 # (`tools/tests/test_leaf_prompt_contract_drift.py`) names what it hashes. ONE counter since
 # issue #534 PR-J4-b: the workshop leaf's own (`WORKSHOP_PROMPT_CONTRACT_VERSION`, `workshop-1`
-# through `workshop-9`, which entered no key) is retired, and the VALUE stays `pure-84` (no key
-# moves); the next bump writes `leaf-85`.
-LEAF_PROMPT_CONTRACT_VERSION = "pure-84"
+# through `workshop-9`, which entered no key) is retired; the VALUE stayed `pure-84` through
+# PR-J4 (no key moved), and `leaf-85` is the first bump after it (the leaf-read text PR-J4
+# deferred, the `inlined`-to-seed wording, and issue #545's judge sentence): every compile,
+# generate and validate key moves with it.
+LEAF_PROMPT_CONTRACT_VERSION = "leaf-85"
 
 # Schema-violation repair is a bounded in-conversation continuation (warm `--resume
 # --fork-session`): the producer sees its own prior answer plus the violation excerpt and
