@@ -224,6 +224,7 @@ class HostRoutes:
         self.agent_run_id = agent_run_id
         self.wrapper_port = wrapper_port
         self._listeners: list[socket.socket] = []
+        self._acceptors: list[threading.Thread] = []
         self._live: set[socket.socket] = set()
         self._lock = threading.Lock()
         self._stopped = False
@@ -259,7 +260,9 @@ class HostRoutes:
                     return
                 threading.Thread(target=self._guarded, args=(handler, conn),
                                  daemon=True).start()
-        threading.Thread(target=accept_loop, daemon=True).start()
+        acceptor = threading.Thread(target=accept_loop, daemon=True)
+        acceptor.start()
+        self._acceptors.append(acceptor)
 
     def _track(self, *socks: socket.socket) -> bool:
         with self._lock:
@@ -346,11 +349,17 @@ class HostRoutes:
         with self._lock:
             self._stopped = True
             live = list(self._live)
+        # `close()` alone does not wake a thread blocked in `accept()` on Linux: that thread,
+        # and with it the listener, would outlive the launch, one pair per launch for the life
+        # of the conductor. `shutdown` wakes it (`accept` fails), and the join bounds the wait.
         for listener in self._listeners:
-            try:
-                listener.close()
-            except OSError:
-                pass
+            for close in (lambda: listener.shutdown(socket.SHUT_RDWR), listener.close):
+                try:
+                    close()
+                except OSError:
+                    pass
+        for acceptor in self._acceptors:
+            acceptor.join(timeout=5)
         for s in live:
             try:
                 s.shutdown(socket.SHUT_RDWR)

@@ -190,6 +190,20 @@ class HostRoutesTests(unittest.TestCase):
         c.settimeout(5)
         self.assertEqual(c.recv(10), b"")
 
+    def test_stop_leaves_no_thread_behind(self) -> None:
+        """One host half per launch, for the life of the conductor: a `stop()` that left its
+        accept threads blocked (closing a listener does not wake `accept()` on Linux) grew the
+        conductor by two threads and two descriptors per launch, until thread creation failed."""
+        before = set(threading.enumerate())
+        for _ in range(5):
+            routes = leaf_netns.HostRoutes(leaf_netns.make_socket_dir(), [], str(self.log),
+                                           "arid-1", wrapper_port=self.upstream.port).start()
+            self.assertEqual(len(routes._acceptors), 2)
+            routes.stop()
+            for acceptor in routes._acceptors:
+                self.assertFalse(acceptor.is_alive(), "an accept thread outlived stop()")
+        self.assertEqual(set(threading.enumerate()) - before, set())
+
     def test_a_socket_dir_too_long_for_af_unix_is_refused_before_anything_is_served(self) -> None:
         long_dir = os.path.join(self.dir, "x" * 100)
         os.mkdir(long_dir)
