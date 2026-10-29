@@ -18,6 +18,7 @@
 #         provider: anthropic_api
 #         api_key_env: ANTHROPIC_API_KEY
 #         model: claude-opus-5
+#         effort: high
 #         max_output_tokens: 32768
 #         max_wrapper_calls: 30      # host-operation calls per lineage (cold launch + repairs)
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
@@ -29,7 +30,8 @@
 #         provider: anthropic_api
 #         api_key_env: ANTHROPIC_API_KEY
 #         model: claude-opus-5
-#         max_output_tokens: 16384
+#         effort: high
+#         max_output_tokens: 32768
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 #
 # On a workshop entry `max_output_tokens` bounds ONE reply, and a reply that writes a file
@@ -72,12 +74,21 @@
 #               a gateway or a proxy — and it must be a BARE host, because the request appends
 #               /v1/messages (the OpenAI-compatible provider is the opposite: it appends
 #               /chat/completions, so its `base_url` carries the version segment itself).
-#   effort      Does not apply, and declaring it is rejected with
-#               `llm_config_field_not_applicable`. The Messages API expresses the same idea as a
-#               thinking TOKEN BUDGET rather than as a level, so there is no `low`/`high` word
-#               to pass; a level here would name a knob the transport does not have.
-#   command     Does not apply either, and is rejected the same way: there is no child process
-#               to wrap.
+#   effort      Applies, and reaches the request as `output_config: {"effort": "<level>"}`
+#               (`low` | `medium` | `high` | `xhigh` | `max`, the levels of the provider's
+#               effort page, https://platform.claude.com/docs/en/build-with-claude/effort). A
+#               word outside that list is refused at load (`llm_config_invalid_field`). The
+#               DEFAULT is the MODEL's: `high` on `claude-opus-5` and `claude-sonnet-5`,
+#               `medium` on Claude Opus 5.5 and Claude Haiku 5.5. An absent `effort` sends no
+#               `output_config` and leaves that default in force. Not every model takes every
+#               level: one the named model lacks is refused by the endpoint as an HTTP 400 on
+#               the first request, which fails the launch closed with no retry. These models
+#               have no thinking TOKEN BUDGET to set — `max_output_tokens` is the hard cap on
+#               thinking and reply together, and `effort` is soft guidance on how much of it goes
+#               to thinking. (Until issue #560 this field was refused here, on the premise that
+#               the API had a thinking budget and no level.)
+#   command     Does not apply, and is rejected with `llm_config_field_not_applicable`: there
+#               is no child process to wrap.
 #
 #   stream      Applies here exactly as it does there, and is on by default for the same reason:
 #               a non-streaming completion writes nothing until the whole answer exists, so an
@@ -85,7 +96,8 @@
 #               the model is done (measured elsewhere as three `HTTP 504`s on requests of
 #               613.6 s / 612.3 s / 611.8 s, while the entry's own 2400 s bound never fired). No `stream_options` counterpart is
 #               needed: this API reports usage in the stream natively, input tokens in
-#               `message_start` and output tokens in `message_delta`. Set `false` only for a
+#               `message_start` and output tokens in `message_delta` (with the share spent
+#               thinking, recorded as `reasoning_tokens`). Set `false` only for a
 #               gateway that cannot speak server-sent events.
 #
 #   api_key_env The NAME of the environment variable holding the key, never the key. A
@@ -118,6 +130,13 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
+        # `high` is the API default of `claude-opus-5` and `claude-sonnet-5`, so this line runs
+        # exactly as omitting it would ("Setting `effort` explicitly to the model's default is
+        # equivalent to omitting it", the provider's thinking page); it is written so the level
+        # is read here rather than looked up. The default is the MODEL's, so a changed slug can
+        # change what this line means (Claude Opus 5.5 defaults to `medium`): restate it from
+        # the new model's effort page. The four entries below follow this one. Overriding the
+        # default needs quality evidence on the model that will run; no run recorded here is that.
         effort: high
         # Bounds ONE reply, and a reply that writes `spec.ir.yaml` carries what it writes whole.
         # The artifact, over a NAMED population: the 7 `shallow_water2d` IRs under the live
@@ -141,7 +160,31 @@ phases:
         api_key_env: ANTHROPIC_API_KEY
         model: claude-sonnet-5
         effort: high
-        max_output_tokens: 16384
+        # Bounds ONE reply, and on a reading leaf most of a reply is thinking. Issue #560's
+        # table, from `orch_20261028T235119Z_492e5092` (main 25c6ce26; the small node
+        # `dynamics_shallow_water_time_update_2d_rk4`; every reading entry then at 16384 and no
+        # `effort`, so the model's `high`), output / thinking tokens summed per lineage:
+        #   compile.verify   claude-sonnet-5  17,198 / 16,703  cut
+        #                                     16,835 / 16,477  cut
+        #                                     16,804 / 16,450  cut
+        #                                     17,028 / 16,520  cut
+        #                                     29,840 / 28,818
+        #   generate.verify  claude-opus-5    15,868 / 14,965
+        #   validate.judge   claude-opus-5     8,832 /  3,565
+        # Each cut lineage ended on one reply that reached 16384 output tokens, 16382 to 16384
+        # of them thinking, with a thinking block as its only content. Such a reply runs no
+        # tool call and is refused, so the cost was a fresh lineage and a whole compile re-run,
+        # not a wrong verdict. Those four are CENSORED at 16384: how much thinking they wanted
+        # is unknown. Per REPLY (read off the same run's `loop_turns.jsonl`, 2026-10-30), the
+        # largest that finished was 14,980 tokens here, 8,607 on `generate.verify` and 4,461 on
+        # `validate.judge`. 32768 doubles the cap the cuts hit; it is a bound from one censored
+        # run, not a requirement — re-measure against the node you run. The provider's remedy
+        # for a `max_tokens` stop is to raise the cap when the cut replies needed the
+        # reasoning and to lower the effort when they were over-thought; a reviewer certifies,
+        # so this sample raises the cap. If cuts recur at it, `effort: medium` is the lever.
+        # `timeout_s` stays: in that run a 16384-token reply here took 157-160 s (about 103
+        # tokens/s), so a 32768-token one fits 1800 with room.
+        max_output_tokens: 32768
         timeout_s: 1800
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
@@ -163,7 +206,10 @@ phases:
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
         effort: high
-        max_output_tokens: 16384
+        # The reading kind is one shape, so this cap moves with `compile.verify`'s (see the
+        # measurements there): this lineage stayed under 16384, with 14,965 of its 15,868
+        # output tokens thinking.
+        max_output_tokens: 32768
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
   validate:
@@ -184,6 +230,7 @@ phases:
         model: claude-opus-5
         effort: high
         # The artifact is a decision and a findings array, so this is headroom rather than a
-        # size: half the bundle writer's budget, as the verify leaves take.
-        max_output_tokens: 16384
+        # size, and most of a reply is thinking: the same cap as the two verify leaves, the
+        # bundle writer's budget, for the reason given at `compile.verify`.
+        max_output_tokens: 32768
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
