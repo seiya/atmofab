@@ -105,7 +105,8 @@ MUST_BE_INHERITED = {
     "PYTHONDONTWRITEBYTECODE": "an interpreter setting the mutation sweeps rely on",
     "XDG_RUNTIME_DIR": ("the login session's runtime directory, where a leaf's per-launch "
                         "socket directory is created (`leaf_netns.socket_dir_parent`; `/tmp` "
-                        "without it)"),
+                        "without it); `conftest.pytest_configure` replaces it with a "
+                        "per-process directory for the session and restores it after"),
 }
 
 
