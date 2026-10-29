@@ -12,6 +12,7 @@ the real request builder, renderer and validator are driven for every judging pa
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -252,6 +253,83 @@ class CompileVerifyTests(_Base):
                           row["wrapper_calls"], row["ended_by"]),
                          ("child-1", False, self.TURNS, 0, None))
         self.assertIsInstance(row["leaf_wall_s"], float)
+
+    def test_the_launch_runs_inside_its_family_s_routes_which_end_with_it(self) -> None:
+        """Issue #534 step 4: every CLI launch, a reading one included, is served its network
+        routes by the conductor (`_start_leaf_routes`): the family's CONSTANT endpoint set, no
+        wrapper tunnel on a reading launch, the socket directory handed to `record-launch` and
+        alive while the leaf runs, and the routes stopped — the directory removed — after it."""
+        from tools import leaf_netns
+        served: list = []
+        real = leaf_netns.HostRoutes
+
+        class Spy(real):  # type: ignore[misc,valid-type]
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.stopped = False
+                served.append(self)
+
+            def stop(self):
+                self.stopped = True
+                super().stop()
+        seen: list = []
+        action = self.c.leaf_actions[0]
+
+        def during(c, tree, kwargs):
+            seen.append((served[-1].stopped, os.path.isdir(served[-1].socket_dir)))
+            return action(c, tree, kwargs)
+        self.c.leaf_actions = [during]
+        argvs: list = []
+        runtime = self.c.runtime
+
+        def recording(args, **kw):
+            argvs.append(list(args))
+            return runtime(args, **kw)
+        with mock.patch.object(leaf_netns, "HostRoutes", Spy), \
+                mock.patch.object(self.c, "runtime", recording):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass")
+        self.assertEqual(len(served), 1)
+        family = "codex" if self.PROVIDER == "codex_cli" else "claude"
+        self.assertEqual(served[0].endpoints,
+                         frozenset(leaf_contract.WORKSHOP_CLI_ENDPOINTS[family]))
+        self.assertIsNone(served[0].wrapper_port)
+        self.assertEqual(seen, [(False, True)])
+        self.assertTrue(served[0].stopped)
+        self.assertFalse(os.path.exists(served[0].socket_dir))
+        launch = next(a for a in argvs if a[0] == "record-launch")
+        self.assertEqual(launch[launch.index("--netns-socket-dir") + 1], served[0].socket_dir)
+
+    def test_a_route_setup_failure_fails_the_substep_closed_and_leaves_no_directory(
+            self) -> None:
+        """The routes cannot be served (here: their host half refuses to start): no leaf is
+        launched or recorded, the substep fails closed as `workshop_lineage_setup_failed`, and
+        the socket directory already made is removed. A reading substep had no such failure
+        before step 4, and its loop let it escape as a conductor error."""
+        from tools import leaf_netns
+        made: list = []
+        real_make = leaf_netns.make_socket_dir
+
+        def make():
+            made.append(real_make())
+            return made[-1]
+
+        def refuse(self):
+            raise OSError(28, "No space left on device")
+        events: list = []
+        with mock.patch.object(leaf_netns, "make_socket_dir", make), \
+                mock.patch.object(leaf_netns.HostRoutes, "start", refuse), \
+                mock.patch.object(self.c, "emit",
+                                  lambda name, **kw: events.append(name)):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.infra_error[0], "workshop_lineage_setup_failed")
+        self.assertIn("network routes", outcome.infra_error[1])
+        self.assertIn("workshop_lineage_setup_failed", events)
+        self.assertEqual(getattr(self.c, "spawns", []), [])
+        self.assertEqual(self.requests(), [])
+        self.assertEqual(len(made), 1)
+        self.assertFalse(os.path.exists(made[0]))
 
     def test_the_reading_launch_is_bounded_by_its_lineage_timeout(self) -> None:
         """The reading kind's ONLY bound is the spawn timeout (`_workshop_timeout`): the
@@ -1319,7 +1397,9 @@ class LaunchShapeTests(unittest.TestCase):
     def test_the_codex_reading_overrides_name_no_wrapper(self) -> None:
         self.assertEqual(leaf_contract.codex_workshop_overrides(None, reading=True),
                          ["--config", 'approval_policy="never"',
-                          "--config", "features.apps=false"])
+                          "--config", "features.apps=false",
+                          # issue #534 step 4: the provider-side web search tool removed
+                          "--config", 'web_search="disabled"'])
         with self.assertRaises(ValueError):
             leaf_contract.codex_workshop_overrides(
                 leaf_contract.workshop_mcp_config_json("http://127.0.0.1:5/mcp"), reading=True)

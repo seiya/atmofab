@@ -509,6 +509,26 @@ WORKSHOP_MCP_SERVER_NAME = "wrapper"
 WORKSHOP_FILE_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit", "Glob", "Grep")
 
 
+#: The hosts a workshop leaf's CLI process may reach from inside its network namespace (issue
+#: #534 step 4), by CLI family: each family's API host and its OAuth host, `host:port`, matched
+#: exactly by the host half of `tools/leaf_netns.py`. Claude: `api.anthropic.com` (the API) and
+#: `platform.claude.com` (OAuth token exchange and refresh for a claude.ai account; the Claude
+#: Code network-configuration page, and the binary's `https://platform.claude.com/v1/oauth/token`).
+#: Codex: `chatgpt.com` (the ChatGPT-auth backend, `https://chatgpt.com/backend-api/codex`),
+#: `auth.openai.com` (its token refresh) and `api.openai.com` (API-key auth). Not operator
+#: configurable. A host a CLI was seen to attempt — codex's `ab.chatgpt.com`, `github.com`,
+#: `api.github.com` and four `sdmntpr*.oaiusercontent.com` hosts; claude's telemetry intake — is
+#: refused and logged: a host is admitted only on a run's evidence that a turn cannot finish
+#: without it (operator decision D2 on issue #534). The billed codex run that D2 named
+#: (`orch_20261029T090117Z_7d72eca0`, codex-cli 0.165.0) passed with every one of its five
+#: launches refused `ab.chatgpt.com` and the `oaiusercontent.com` hosts, and attempted no GitHub
+#: host. `docs/RUNBOOK.md` says how to read `net_routes.jsonl` for it.
+WORKSHOP_CLI_ENDPOINTS: dict[str, tuple[str, ...]] = {
+    "claude": ("api.anthropic.com:443", "platform.claude.com:443"),
+    "codex": ("chatgpt.com:443", "auth.openai.com:443", "api.openai.com:443"),
+}
+
+
 def is_workshop_request(request_payload: Any) -> bool:
     """True when a launch request selects the workshop path (`leaf_mode == "workshop"`,
     case/space-insensitively). The workshop twin of `is_pure_request`, and like it the single
@@ -636,6 +656,13 @@ def codex_workshop_overrides(mcp_config_json: str | None, *,
       connects to the vendor's connector service with the operator's credential at every
       launch (measured: an `initialize` refused with HTTP 451 from outside the loopback) — an
       MCP server the launch did not name, as `--strict-mcp-config` keeps one out for claude.
+    - `web_search="disabled"` (issue #534 step 4): the provider-side web search tool runs on the
+      vendor's machines over the one endpoint the leaf's network namespace admits, so the
+      namespace cannot see it; the vendor's configuration reference: `"disabled"` "to remove
+      the tool" (default `"cached"`; the `features.web_search*` and `tools.web_search` keys are
+      the deprecated or per-tool forms). A loopback stand-in offers no web search tool under
+      any of these values (measured on codex-cli 0.165.0, `"live"` included), so the pin is on
+      the argv, not on a captured request.
 
     The tool surface the CLI then offers the model is its own (measured on 0.164.0 with a model
     the stand-in does not describe): a `functions` namespace — a JavaScript `exec` tool, `wait`
@@ -646,7 +673,7 @@ def codex_workshop_overrides(mcp_config_json: str | None, *,
     launch prompt names the wrapper's tools by their name (`WORKSHOP_TOOL_SURFACE_TEXT`).
 
     `reading=True` (a judging substep, step 3) takes no `mcp_config_json` and keeps only the
-    two overrides that do not name the wrapper. Measured on 0.164.0 (step 3 PR-J2,
+    three overrides that do not name the wrapper. Measured on 0.164.0 (step 3 PR-J2,
     `test_bwrap_simulation.CodexReadingLeafCliTests`): the lineage offers no `mcp__` tool
     (MR5-a), a document a command writes at the tree root assembles (MR5-b), and `exec
     resume` continues the thread under the same overrides (MR5-d)."""
@@ -654,13 +681,15 @@ def codex_workshop_overrides(mcp_config_json: str | None, *,
         if mcp_config_json is not None:
             raise ValueError("codex_workshop_overrides: a reading lineage is served no "
                              "endpoint")
-        return ["--config", 'approval_policy="never"', "--config", "features.apps=false"]
+        return ["--config", 'approval_policy="never"', "--config", "features.apps=false",
+                "--config", 'web_search="disabled"']
     if mcp_config_json is None:
         raise ValueError("codex_workshop_overrides requires the wrapper's --mcp-config JSON")
     url = workshop_mcp_url(mcp_config_json)
     server = f"mcp_servers.{WORKSHOP_MCP_SERVER_NAME}"
     return ["--config", 'approval_policy="never"',
             "--config", "features.apps=false",
+            "--config", 'web_search="disabled"',
             "--config", f"{server}.url={json.dumps(url)}",
             "--config", f'{server}.default_tools_approval_mode="approve"']
 

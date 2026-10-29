@@ -59,6 +59,7 @@ def _require_yaml() -> Any:
     return _yaml_mod
 
 try:
+    from tools import leaf_netns
     from tools.backends import registry as backend_registry
     from tools.operator_private_root import (
         WORKFLOW_HOMES_ROOT_ENV,
@@ -93,6 +94,7 @@ try:
         PURE_LEAF_MODE,
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_SENTINEL,
@@ -108,6 +110,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     _REPO_ROOT = _THIS_FILE.parent.parent
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
+    from tools import leaf_netns
     from tools.backends import registry as backend_registry
     from tools.operator_private_root import (
         WORKFLOW_HOMES_ROOT_ENV,
@@ -142,6 +145,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         PURE_LEAF_MODE,
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_SENTINEL,
@@ -5668,13 +5672,14 @@ def _ensure_orchestration_audit_dirs(repo_root: Path, orchestration_id: str) -> 
     # ONE directory. Four more were created here unconditionally — `access_policies/`,
     # `access_logs/`, `violations/` and `capabilities/` — and three of them now have no
     # writer at all (issue #171 PR-2). `violations/` has ONE live writer FUNCTION,
-    # `_write_sandbox_enforcement_violation`, reached from FIVE call sites: one in
-    # `record_launch` (the sandbox profile could not be built) and four in `record_agent_run`
-    # (`sandbox_runtime_not_bwrap`, `sandbox_not_enforced`, `sandbox_profile_missing`,
-    # `sandbox_profile_not_found`). Counting it as "one, at record-launch" is wrong and was
-    # written twice — by PR-2 and again by its round-1 correction — so the count is derived
-    # here by name: grep `_write_sandbox_enforcement_violation`. Since bwrap is the only
-    # confinement left, those four are the last record that it was actually in force.
+    # `_write_sandbox_enforcement_violation`, reached from SIX call sites: one in
+    # `record_launch` (the sandbox profile could not be built) and five in `record_agent_run`
+    # (`sandbox_runtime_not_bwrap`, `sandbox_not_enforced`, `sandbox_network_missing` — issue
+    # #534 step 4 —, `sandbox_profile_missing`, `sandbox_profile_not_found`). Counting it as
+    # "one, at record-launch" is wrong and was written twice — by PR-2 and again by its round-1
+    # correction — so the count is derived here by name: grep
+    # `_write_sandbox_enforcement_violation`. Since bwrap is the only confinement left, those
+    # five are the last record that it was actually in force.
     # The directory is deliberately NOT pre-created: an empty `violations/` is a record that
     # something is expected to write there, and the completion criterion for this change is
     # that a clean run leaves neither the directory nor its contents. `_write_json` creates the parent when a violation actually happens.
@@ -7497,9 +7502,12 @@ LEAF_ENV_ALLOWED_PREFIXES = ("ATMOFAB_",)
 # — it just does not forward it.
 LEAF_ENV_PREFIX_EXCEPTIONS = ("ATMOFAB_HOME",)
 
-# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling and
-# the auto-memory closure. Named here so the render-time name validation accepts them.
-CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY")
+# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling, the
+# auto-memory closure, and the closure of the CLI's nonessential traffic (telemetry, update
+# checks; issue #534 step 4 — inside the leaf's network namespace each would be a refused
+# route, logged as one). Named here so the render-time name validation accepts them.
+CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 
 # NAMED EXCLUSIONS — decided, not overlooked (2026-08-20). The proxy / TLS families
 # (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY` in both cases, `SSL_CERT_FILE`,
@@ -7515,6 +7523,12 @@ CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_
 # names from this tuple to `LEAF_ENV_ALLOWLIST` with a justification (removing them here
 # alone forwards nothing) — this comment is the record that the decision was made and what
 # it costs.
+# The OPERATOR's values stay excluded; the profile builder AUTHORS one proxy value of its own
+# (issue #534 step 4): `HTTPS_PROXY` / `NO_PROXY` from `leaf_netns.PROXY_ENV`, naming the
+# leaf's network namespace's own loopback relay. Neither reason above applies to it: the value
+# is host-authored and carries no credential, and a namespace with no route out has no silent
+# redirect for it to cause. `render_bwrap_command` admits those two names with exactly those
+# values and refuses a workshop profile without them.
 LEAF_ENV_NAMED_EXCLUSIONS = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
@@ -8019,6 +8033,7 @@ def build_lineage_bwrap_profile(
     workdir: str | Path | None = None,
     leaf_mode: str | None = None,
     credential_rw_mapping: tuple[str, str] | None = None,
+    network: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The bwrap profile of a `workshop leaf` lineage (issue #534) — the one profile any leaf
     runs under since issue #534 PR-J4-b. (The function keeps the name of the READ-ONLY profile
@@ -8037,6 +8052,12 @@ def build_lineage_bwrap_profile(
     the same file writer: the write landed on the host file; the credential write itself
     happens only on a token refresh, which an unbilled run cannot provoke).
     `Conductor.spawn_leaf` admits it only with exactly those two rw paths.
+
+    `network` (issue #534 step 4) is the leaf's network namespace, `leaf_netns.network_block`:
+    required, recorded as the profile's `network`, and the reason the builder authors the
+    leaf's `HTTPS_PROXY` / `NO_PROXY` (`leaf_netns.PROXY_ENV`) — the in-namespace relay is the
+    only route out, so the profile that records the namespace records the variables that name
+    the route, whoever built it. What it emits is stated at `render_bwrap_command`.
 
     Its sole production caller is `record_launch`'s child-process branch. The checkout is NOT
     bound: an empty tmpfs sits at `repo_root`, so a leaf finds neither the artifact trees nor
@@ -8077,6 +8098,10 @@ def build_lineage_bwrap_profile(
     family = workshop_profile_family(env_overrides or {})
     if workdir is None:
         raise ValueError("a workshop profile needs its tree as workdir")
+    if not isinstance(network, Mapping):
+        raise ValueError("a workshop profile needs its network block (leaf_netns.network_block)"
+                         "; every CLI leaf runs in a network namespace since issue #534 step 4")
+    child_env.update(leaf_netns.PROXY_ENV)
     # The claude CLI refreshes its OAuth token in place, so its credential is bound
     # read-write; codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
     # kwargs`), and a codex workshop profile binding a credential read-write is refused.
@@ -8085,7 +8110,8 @@ def build_lineage_bwrap_profile(
             f"a {family} workshop profile "
             + ("needs its credential mapping" if family == "claude"
                else "binds no credential read-write"))
-    profile_extra: dict[str, Any] = {"leaf_mode": WORKSHOP_PROFILE_LEAF_MODE}
+    profile_extra: dict[str, Any] = {"leaf_mode": WORKSHOP_PROFILE_LEAF_MODE,
+                                     "network": dict(network)}
     if credential_rw_mapping is not None:
         profile_extra["runtime_rw_credential_mapping"] = [str(credential_rw_mapping[0]),
                                                           str(credential_rw_mapping[1])]
@@ -8283,10 +8309,30 @@ def render_bwrap_command(
             raise ValueError(
                 "a codex workshop profile remounts exactly auth.json and config.toml of its "
                 f"CODEX_HOME read-only (got {destinations!r})")
+    # THE NETWORK NAMESPACE (issue #534 step 4). `--unshare-net` leaves the leaf `lo` alone: no
+    # route out and no name resolution. Its two routes back are path-bound Unix sockets in the
+    # per-launch directory the conductor serves (`leaf_netns.HostRoutes`), bound read-only at
+    # the fixed `leaf_netns.NET_MOUNT` — a socket in a read-only bind stays connectable, and the
+    # leaf can neither add nor replace one. The sandboxed command is the in-namespace relay
+    # (`leaf_netns.relay_argv`), which listens on the proxy port the leaf's `HTTPS_PROXY` names
+    # and on the wrapper's own port number, and runs `command_argv` as its child.
+    # `--unshare-pid`: bwrap is the namespace's init, so its death ends every process of the
+    # launch — the CLI behind the relay included (the relay also ties its child to itself,
+    # `PR_SET_PDEATHSIG`; `--die-with-parent` reaches only the relay). The block is a RECORD
+    # checked here against the family's constant endpoint set; the host half reads the
+    # constant, never the block.
+    net_problems = leaf_netns.network_block_violations(
+        profile.get("network"), endpoints=WORKSHOP_CLI_ENDPOINTS[family], repo_root=repo_root)
+    if net_problems:
+        raise ValueError("a workshop profile's network block is refused: "
+                         + "; ".join(net_problems))
+    network = profile["network"]
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",
         "--new-session",
+        "--unshare-net",
+        "--unshare-pid",
         # The leaf's environment is DECLARED, not inherited (issue #63). `--clearenv`
         # drops the host's environment inside the sandbox and every name the leaf gets
         # arrives as an explicit `--setenv` below, so `profile["env"]` — which is
@@ -8394,6 +8440,7 @@ def render_bwrap_command(
         raise ValueError(f"workspace_tmp_rw_abs must be existing directory: {ws_rw}")
     ws_abs = str(ws_path.resolve())
     cmd.extend(["--bind", ws_abs, ws_abs])
+    cmd.extend(["--ro-bind", network["socket_dir"], leaf_netns.NET_MOUNT])
     # Every name the leaf gets, one `--setenv` each, after the head's `--clearenv`.
     # FAIL CLOSED on an absent or empty env: with `--clearenv` in force that would
     # launch a leaf with no PATH, no config home and no orchestration id — a shape no
@@ -8421,11 +8468,20 @@ def render_bwrap_command(
         raise ValueError(
             "profile env CLAUDE_CONFIG_DIR is declared only on a claude workshop profile, naming "
             f"one of its own rw binds (got {claude_home!r})")
+    # The proxy names are the builder's, with exactly its values, and REQUIRED: a leaf in a
+    # namespace whose only route is the relay, told no proxy, reaches nothing — detectable
+    # here rather than as the CLI's transport failure mid-run.
+    for name, value in leaf_netns.PROXY_ENV.items():
+        if profile_env.get(name) != value:
+            raise ValueError(
+                f"profile env {name} must be {value!r}, the leaf's own in-namespace relay (got "
+                f"{profile_env.get(name)!r}); the operator's proxy values are never forwarded")
     for name, value in sorted(profile_env.items()):
         allowed = (
             name in LEAF_ENV_ALLOWLIST
             or name in _BACKEND_HOME_ENV_VARS
             or name in CLAUDE_LEAF_ENV_EXTRAS
+            or name in leaf_netns.PROXY_ENV
             or name == "TMPDIR"
             or (name not in LEAF_ENV_PREFIX_EXCEPTIONS
                 and any(name.startswith(p) for p in LEAF_ENV_ALLOWED_PREFIXES))
@@ -8467,7 +8523,8 @@ def render_bwrap_command(
             cmd.extend(["--setenv", name, value])
     cmd.extend(["--bind", tmp_dir, tmp_dir])
     cmd.append("--")
-    cmd.extend([str(part) for part in command_argv])
+    cmd.extend(leaf_netns.relay_argv([str(part) for part in command_argv],
+                                     wrapper_port=network.get("wrapper_port")))
     return cmd
 
 
@@ -8846,11 +8903,14 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
     "sandbox_bwrap_exec", "codex_exec_json_streaming",
     "codex_exec_resume", "codex_prompt_stdin",
+    # The leaf's network namespace (issue #534 step 4), on both CLI families.
+    "sandbox_netns_python", "sandbox_netns_route",
 })
 CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
     "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
     "claude_restricted_flag_available", "claude_global_config_env_absent",
     "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
+    "sandbox_netns_python", "sandbox_netns_route",
 })
 REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
     "codex": CODEX_REQUIRED_LAUNCH_CHECKS,
@@ -13704,6 +13764,108 @@ def codex_origin_home() -> Path:
     return Path(raw).expanduser() if raw else Path.home() / ".codex"
 
 
+#: The two preflight rows of the leaf's network namespace (issue #534 step 4).
+_NETNS_PROBE_ROWS = ("sandbox_netns_python", "sandbox_netns_route")
+
+#: What the route probe runs inside the namespace: a direct connect to the host's stand-in and
+#: to an outside address must both fail, and a CONNECT through the relay must reach the stand-in.
+_NETNS_ROUTE_PROBE = """
+import errno, socket, sys
+port = int(sys.argv[1])
+s = socket.socket()
+try:
+    s.connect(("127.0.0.1", port)); print("direct connect to the host stand-in succeeded"); sys.exit(2)
+except OSError:
+    pass
+try:
+    socket.create_connection(("1.1.1.1", 443), timeout=5); print("a route out exists"); sys.exit(3)
+except OSError as exc:
+    if exc.errno != errno.ENETUNREACH:
+        print("outside address: %r" % (exc,)); sys.exit(4)
+c = socket.create_connection(("127.0.0.1", 3128), timeout=10)
+c.sendall(("CONNECT localhost:%d HTTP/1.1\\r\\n\\r\\nping" % port).encode())
+buf = b""
+while b"echo:ping" not in buf:
+    data = c.recv(4096)
+    if not data:
+        break
+    buf += data
+print(buf[:80]); sys.exit(0 if b" 200 " in buf and b"echo:ping" in buf else 5)
+"""
+
+
+def _netns_probe_bwrap_argv(socket_dir: str, inner: Sequence[str]) -> list[str]:
+    """A minimal namespaced bwrap over the system binds and the socket directory."""
+    cmd = ["bwrap", "--die-with-parent", "--new-session", "--unshare-net", "--unshare-pid",
+           "--clearenv", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+    for path in _runtime_ro_bind_paths():
+        cmd += ["--ro-bind", path, path]
+    cmd += ["--ro-bind", socket_dir, leaf_netns.NET_MOUNT, "--", *inner]
+    return cmd
+
+
+def _probe_leaf_netns() -> list[dict[str, Any]]:
+    """The two network-namespace rows: `sandbox_netns_python` (the relay's interpreter starts
+    isolated inside a namespaced bwrap) and `sandbox_netns_route` (the real `leaf_netns`: a
+    host-half proxy admitting a loopback stand-in, the in-namespace relay, and inside the
+    namespace no direct route — to the stand-in or out — while a CONNECT through the relay
+    reaches it). No provider is contacted."""
+    import socket as _socket
+    import threading as _threading
+
+    rows: list[dict[str, Any]] = []
+    socket_dir = ""
+    try:
+        socket_dir = leaf_netns.make_socket_dir()
+        python = subprocess.run(
+            _netns_probe_bwrap_argv(socket_dir, [leaf_netns.RELAY_PYTHON, "-I", "-c",
+                                                 "import socket, subprocess"]),
+            text=True, capture_output=True, check=False, timeout=60)
+        rows.append({"name": "sandbox_netns_python", "pass": python.returncode == 0,
+                     "detail": (f"{leaf_netns.RELAY_PYTHON} starts under --unshare-net"
+                                if python.returncode == 0 else
+                                (python.stderr.strip() or f"exit={python.returncode}"))})
+        server = _socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        port = server.getsockname()[1]
+
+        def echo() -> None:
+            try:
+                conn, _ = server.accept()
+                with conn:
+                    data = conn.recv(4096)
+                    conn.sendall(b"echo:" + data)
+            except OSError:
+                pass
+        _threading.Thread(target=echo, daemon=True).start()
+        log = Path(socket_dir).parent / (Path(socket_dir).name + ".routes.jsonl")
+        routes = leaf_netns.HostRoutes(socket_dir, [f"localhost:{port}"], str(log),
+                                       "preflight").start()
+        try:
+            route = subprocess.run(
+                _netns_probe_bwrap_argv(socket_dir, leaf_netns.relay_argv(
+                    [leaf_netns.RELAY_PYTHON, "-I", "-c", _NETNS_ROUTE_PROBE, str(port)])),
+                text=True, capture_output=True, check=False, timeout=60)
+        finally:
+            routes.stop()
+            server.close()
+            log.unlink(missing_ok=True)
+        rows.append({"name": "sandbox_netns_route", "pass": route.returncode == 0,
+                     "detail": ("no direct route; the relay reaches an admitted host"
+                                if route.returncode == 0 else
+                                (route.stdout.strip() + " " + route.stderr.strip()).strip()
+                                or f"exit={route.returncode}")})
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        names = {row["name"] for row in rows}
+        rows.extend({"name": name, "pass": False, "detail": f"{type(exc).__name__}: {exc}"}
+                    for name in _NETNS_PROBE_ROWS if name not in names)
+    finally:
+        if socket_dir:
+            shutil.rmtree(socket_dir, ignore_errors=True)
+    return rows
+
+
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
     """Preflight probe: confirm the host can sandbox a leaf (bwrap present + user
     namespaces + a dry-run exec). bwrap enforcement is mandatory (Linux+userns only), so
@@ -13723,6 +13885,8 @@ def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
                 {"name": "sandbox_bwrap_available", "pass": True, "detail": "assumed via env override"},
                 {"name": "sandbox_bwrap_userns", "pass": True, "detail": "assumed via env override"},
                 {"name": "sandbox_bwrap_exec", "pass": True, "detail": "assumed via env override"},
+                {"name": "sandbox_netns_python", "pass": True, "detail": "assumed via env override"},
+                {"name": "sandbox_netns_route", "pass": True, "detail": "assumed via env override"},
             ]
         )
         return checks, True
@@ -13751,6 +13915,9 @@ def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
                 "detail": "skipped because bwrap is unavailable",
             }
         )
+        for name in _NETNS_PROBE_ROWS:
+            checks.append({"name": name, "pass": False,
+                           "detail": "skipped because bwrap is unavailable"})
         return checks, False
 
     proc = subprocess.run(["bwrap", "--version"], text=True, capture_output=True, check=False)
@@ -13775,7 +13942,9 @@ def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
             "detail": (dry_run.stdout.strip() or dry_run.stderr.strip() or f"exit={dry_run.returncode}"),
         }
     )
-    required_names = {"sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec"}
+    checks.extend(_probe_leaf_netns())
+    required_names = {"sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
+                      *_NETNS_PROBE_ROWS}
     by_name = {
         str(item.get("name")): item.get("pass")
         for item in checks
@@ -14916,6 +15085,49 @@ def _load_graph(graph_path: Path) -> dict[str, Any]:
     return {"edges": []}
 
 
+#: The `sandbox_network` value of a CLI leaf's launch record: it ran in a network namespace.
+SANDBOX_NETWORK_NAMESPACE = "namespace"
+
+
+def _launch_network_block(repo_root: Path, socket_dir: str | None, family: str,
+                          response_payload: Mapping[str, Any]) -> dict[str, Any]:
+    """The `network` block of one CLI launch's profile (issue #534 step 4), from the socket
+    directory the conductor serves for it (`--netns-socket-dir`) and the wrapper endpoint the
+    launch's own setting surface records (`<family>_mcp_config`; a reading launch records
+    none). The directory must be the conductor's: an existing directory, not a link, owned by
+    this user and private to it (0700, `leaf_netns.make_socket_dir`); the block's own refusals
+    (outside the checkout, short enough for a socket path) are `network_block_violations`'."""
+    if not (isinstance(socket_dir, str) and socket_dir.strip()):
+        raise ValueError("a CLI launch needs its network namespace's socket directory "
+                         "(--netns-socket-dir; issue #534 step 4)")
+    path = socket_dir.strip()
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        raise ValueError(f"--netns-socket-dir {path!r} does not exist: {exc}") from exc
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        raise ValueError(f"--netns-socket-dir {path!r} must be a directory (not a link) owned "
+                         "by this user with mode 0700")
+    servers = response_payload.get(f"{family}_mcp_config")
+    wrapper_port: int | None = None
+    if servers is not None:
+        urls = [str(item.get("url") or "") for item in servers if isinstance(item, dict)] \
+            if isinstance(servers, list) else []
+        if len(urls) != 1 or not urls[0].startswith("http://127.0.0.1:"):
+            raise ValueError(f"{family}_mcp_config must name one loopback wrapper URL "
+                             f"(got {servers!r})")
+        port = urls[0][len("http://127.0.0.1:"):].split("/", 1)[0]
+        if not port.isdigit():
+            raise ValueError(f"the wrapper URL names no port (got {urls[0]!r})")
+        wrapper_port = int(port)
+    block = leaf_netns.network_block(path, WORKSHOP_CLI_ENDPOINTS[family], wrapper_port)
+    problems = leaf_netns.network_block_violations(
+        block, endpoints=WORKSHOP_CLI_ENDPOINTS[family], repo_root=str(repo_root))
+    if problems:
+        raise ValueError("; ".join(problems))
+    return block
+
+
 def record_launch(
     repo_root: Path,
     orchestration_id: str,
@@ -14927,6 +15139,7 @@ def record_launch(
     relation_type: str = "launch",
     child_env: Mapping[str, str] | None = None,
     workshop_lineage_id: str | None = None,
+    netns_socket_dir: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(parent_agent_run_id, str) or not parent_agent_run_id.strip():
         raise ValueError("record-launch requires non-empty parent_agent_run_id")
@@ -15529,6 +15742,8 @@ def record_launch(
                 # Its lineage home was found above, cold and warm alike, and stamped.
                 assert workshop_isolation is not None
                 profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
+                network = _launch_network_block(repo_root, netns_socket_dir, backend_token,
+                                                response_payload)
                 # One profile builder. What the profile binds and why — the checkout is NOT
                 # among it (issue #227) — is stated once, in `build_lineage_bwrap_profile`'s
                 # docstring and at the `--tmpfs` emission in `render_bwrap_command`.
@@ -15539,6 +15754,7 @@ def record_launch(
                     backend_command=backend_command,
                     backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
                     child_env=child_env,
+                    network=network,
                     **profile_kwargs,
                 )
                 command_argv = [backend_command]
@@ -15558,6 +15774,9 @@ def record_launch(
                 response_payload.setdefault("sandbox_enforced", True)
                 response_payload.setdefault("sandbox_profile_ref", sandbox_ref)
                 response_payload.setdefault("sandbox_command", rendered)
+                # The leaf ran in a network namespace (issue #534 step 4); `record_agent_run`
+                # requires this value on every row it requires `sandbox_runtime: bwrap` on.
+                response_payload["sandbox_network"] = SANDBOX_NETWORK_NAMESPACE
             except Exception as exc:
                 _write_sandbox_enforcement_violation(
                     repo_root,
@@ -16266,6 +16485,24 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_not_enforced"
                     raise ValueError("launch response must record sandbox_enforced=true")
+                elif (launch_response_payload.get("sandbox_network")
+                      != SANDBOX_NETWORK_NAMESPACE):
+                    # Every CLI leaf runs in a network namespace (issue #534 step 4); a launch
+                    # recorded before that, or without it, is not one.
+                    _write_sandbox_enforcement_violation(
+                        repo_root,
+                        orchestration_id,
+                        agent_run_id=agent_run_id,
+                        reason="sandbox_network_missing",
+                        detail={"launch_response_ref": payload["launch_response_ref"],
+                                "sandbox_network": launch_response_payload.get(
+                                    "sandbox_network")},
+                    )
+                    sandbox_fail_reason = "sandbox_network_missing"
+                    raise ValueError(
+                        f"launch response must record sandbox_network="
+                        f"{SANDBOX_NETWORK_NAMESPACE!r} (got "
+                        f"{launch_response_payload.get('sandbox_network')!r})")
                 elif not isinstance(sandbox_ref, str) or not sandbox_ref.strip():
                     _write_sandbox_enforcement_violation(
                         repo_root,
@@ -17935,6 +18172,14 @@ def main(argv: list[str] | None = None) -> int:
               "never created here. A cold workshop launch passes none: its lineage is the "
               "child's own id."),
     )
+    launch_parser.add_argument(
+        "--netns-socket-dir",
+        help=("For a CLI leaf (issue #534 step 4), the per-launch directory whose Unix sockets "
+              "are the leaf's network namespace's two routes out, served by the conductor "
+              "(`tools/leaf_netns.py`): a 0700 directory of this user's, outside the checkout. "
+              "Recorded in the profile's `network` block and bound read-only into the sandbox; "
+              "a CLI launch without it is refused."),
+    )
 
     run_parser = subparsers.add_parser(
         "record-agent-run",
@@ -18413,6 +18658,7 @@ def main(argv: list[str] | None = None) -> int:
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
                 workshop_lineage_id=args.workshop_lineage_id,
+                netns_socket_dir=args.netns_socket_dir,
                 child_env=child_env_payload,
             )
         except (ValueError, RuntimeError) as exc:

@@ -29,6 +29,7 @@ try:
     from tools import host_render
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
+    from tools import leaf_netns
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -55,6 +56,7 @@ try:
     from tools.leaf_contract import (
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _leaf_contract_is_pure_request,
@@ -79,6 +81,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools import host_render
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
+    from tools import leaf_netns
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -101,6 +104,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.leaf_contract import (
         LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_CLI_ENDPOINTS,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _leaf_contract_is_pure_request,
@@ -807,6 +811,57 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
     if str(profile.get("workdir") or "") != str(tree):
         out.append(f"workshop launch sandbox profile workdir must be its tree (got "
                    f"{profile.get('workdir')!r})")
+    out.extend(_workshop_profile_network_violations(profile, family, env, repo_root))
+    return out
+
+
+def _workshop_profile_network_violations(profile: dict, family: str | None, env: dict,
+                                         repo_root: Path | None) -> list[str]:
+    """The network-namespace half of `_workshop_profile_violations` (issue #534 step 4): the
+    profile's `network` block (`leaf_netns.network_block_violations`, the reader the renderer
+    and the spawn admission share, against the family's constant endpoint set), the
+    namespace's own proxy values in its environment, and its RECORDED command —
+    `--unshare-net` and `--unshare-pid` in the bwrap head, the socket directory bound read-only
+    at `leaf_netns.NET_MOUNT`, and the relay head (`leaf_netns.relay_argv`, `-I` included)
+    right after the head's `--`. The socket directory is not read: it is gone once the launch
+    ends. A profile with no block at all was recorded before step 4 — the `--resume` barrier,
+    named."""
+    network = profile.get("network")
+    if network is None:
+        return [("workshop launch sandbox profile carries no network block: it was recorded "
+                 "before issue #534 step 4 put every CLI leaf in a network namespace, so this "
+                 "orchestration cannot be resumed — start a fresh run; certified nodes are "
+                 "reused")]
+    out: list[str] = []
+    if family not in WORKSHOP_CLI_ENDPOINTS:
+        return out  # the family is refused above; there is no endpoint set to compare
+    out.extend(f"workshop launch sandbox profile {problem}" for problem in
+               leaf_netns.network_block_violations(
+                   network, endpoints=WORKSHOP_CLI_ENDPOINTS[family],
+                   repo_root=str(repo_root) if repo_root is not None else None))
+    if out:
+        return out
+    for name, value in leaf_netns.PROXY_ENV.items():
+        if env.get(name) != value:
+            out.append(f"workshop launch sandbox profile env {name} must be {value!r} (got "
+                       f"{env.get(name)!r})")
+    rendered = profile.get("rendered_command")
+    if not (isinstance(rendered, list) and "--" in rendered):
+        return [*out, (f"workshop launch sandbox profile records no rendered_command (got "
+                       f"{rendered!r})")]
+    split = rendered.index("--")
+    head, tail = rendered[:split], rendered[split + 1:]
+    for flag in ("--unshare-net", "--unshare-pid"):
+        if flag not in head:
+            out.append(f"workshop launch sandbox profile rendered_command lacks {flag}")
+    bind = ["--ro-bind", network["socket_dir"], leaf_netns.NET_MOUNT]
+    if not any(head[i:i + 3] == bind for i in range(len(head))):
+        out.append(f"workshop launch sandbox profile rendered_command does not bind "
+                   f"{network['socket_dir']} read-only at {leaf_netns.NET_MOUNT}")
+    relay = leaf_netns.relay_argv([], wrapper_port=network.get("wrapper_port"))
+    if tail[:len(relay)] != relay:
+        out.append(f"workshop launch sandbox profile rendered_command does not run the relay "
+                   f"{relay!r} (got {tail[:len(relay)]!r})")
     return out
 
 

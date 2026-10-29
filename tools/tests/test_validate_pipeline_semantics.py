@@ -49,6 +49,7 @@ from tools.validate_pipeline_semantics import (
     validate_post_generate_stage,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.orchestration_fixtures import netns_record_fields
 
 # The source-reading, signature, Makefile and parallel-floor gates moved into their backends
 # (issue #289, R4-b PR-3): the Fortran source reader (`source_reading`), the Fortran signature
@@ -28508,13 +28509,16 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             (root / "launches" / f"{self._ARID}.prompt.txt").write_text(prompt,
                                                                        encoding="utf-8")
         home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
+        net = netns_record_fields("claude", "claude")
         body = profile if profile is not None else {
             "agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
             "write_roots": [], "read_roots": [],
             "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-            "workdir": f"{home}/tree", "env": {"CLAUDE_CONFIG_DIR": f"{home}/config"},
+            "workdir": f"{home}/tree",
+            "env": {"CLAUDE_CONFIG_DIR": f"{home}/config", **net["env"]},
             "runtime_rw_credential_mapping": ["/operator/.credentials.json",
-                                              f"{home}/config/.credentials.json"]}
+                                              f"{home}/config/.credentials.json"],
+            "network": net["network"], "rendered_command": net["rendered_command"]}
         sbx_dir = root / "sandbox_profiles"
         sbx_dir.mkdir(parents=True, exist_ok=True)
         (sbx_dir / f"{self._ARID}.json").write_text(json.dumps(body), encoding="utf-8")
@@ -28825,9 +28829,11 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         read-write — and each other shape is refused, the claude credential mapping among them."""
         from tools.validate_pipeline_semantics import _workshop_profile_violations
         home = f"/tmp/homes/{self._ORCH}/codex/{self._ARID}"
+        net = netns_record_fields("codex", "codex")
         good = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
                 "write_roots": [], "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-                "workdir": f"{home}/tree", "env": {"CODEX_HOME": f"{home}/config"},
+                "workdir": f"{home}/tree", "env": {"CODEX_HOME": f"{home}/config", **net["env"]},
+                "network": net["network"], "rendered_command": net["rendered_command"],
                 "runtime_ro_bind_mappings": [["/operator/auth.json", f"{home}/config/auth.json"],
                                              [f"{home}/config/config.toml",
                                               f"{home}/config/config.toml"]]}
@@ -28879,7 +28885,10 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         codex = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
                  "write_roots": [], "runtime_rw_bind_paths": [f"{codex_home}/config",
                                                               f"{codex_home}/tree"],
-                 "workdir": f"{codex_home}/tree", "env": {"CODEX_HOME": f"{codex_home}/config"},
+                 "workdir": f"{codex_home}/tree",
+                 "env": {"CODEX_HOME": f"{codex_home}/config",
+                         **netns_record_fields("codex", "codex")["env"]},
+                 **{k: v for k, v in netns_record_fields("codex", "codex").items() if k != "env"},
                  "runtime_ro_bind_mappings": [
                      ["/operator/auth.json", f"{codex_home}/config/auth.json"],
                      [f"{codex_home}/config/config.toml", f"{codex_home}/config/config.toml"]]}
@@ -28887,7 +28896,10 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                   "write_roots": [], "runtime_rw_bind_paths": [f"{claude_home}/config",
                                                                f"{claude_home}/tree"],
                   "workdir": f"{claude_home}/tree",
-                  "env": {"CLAUDE_CONFIG_DIR": f"{claude_home}/config"},
+                  "env": {"CLAUDE_CONFIG_DIR": f"{claude_home}/config",
+                          **netns_record_fields("claude", "claude")["env"]},
+                  **{k: v for k, v in netns_record_fields("claude", "claude").items()
+                     if k != "env"},
                   "runtime_rw_credential_mapping": ["/operator/.credentials.json",
                                                     f"{claude_home}/config/.credentials.json"]}
         for profile, own, other in ((codex, "codex_cli", "claude_cli"),

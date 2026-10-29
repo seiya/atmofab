@@ -263,7 +263,7 @@ SANDBOX_VIOLATION_KIND = "sandbox_enforcement_violation"
 def collect_sandbox_violations(root: Path) -> dict[str, Any]:
     """Read `violations/*.json` — the sandbox enforcement record.
 
-    One live writer, `_write_sandbox_enforcement_violation`, five reasons; the reason
+    One live writer, `_write_sandbox_enforcement_violation`, six reasons; the reason
     vocabulary is NOT restated here (`docs/WORKSPACE_LAYOUT.md` §`violations/` names it),
     the file's value is reported as written. Three states are told apart, because they
     mean three things: `directory_present=False` — no violation was recorded (since issue

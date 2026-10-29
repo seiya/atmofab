@@ -73,6 +73,15 @@ DIFFERENT checkout, whose metadata is not visible from here. Redirecting is what
 question not arise — the suite never names the real root, so it never has to decide what
 inside it is safe to remove.
 
+ONE MORE TREE, outside `~/.atmofab`: a leaf's per-launch socket directory
+(`leaf_netns.make_socket_dir`, issue #534 step 4) is created under `$XDG_RUNTIME_DIR`, and
+every test that serves or records a CLI launch makes one. A test removes its own, but a test
+process that is killed does not — measured 2026-10-29: 173 `atmofab-net-*` directories in the
+operator's runtime directory, all from killed test processes and none from a run. That
+directory is where a REAL launch's leftover is looked for, so `pytest_configure` points
+`XDG_RUNTIME_DIR` at a short per-process directory under `/tmp` and `pytest_unconfigure`
+removes it: a killed suite's residue stays in its own `atmofab-suite-*` directory.
+
 THE SECOND SUBJECT: the operator's ambient environment (issue #84).
 
 Several dozen tests decide what they are asserting by READING `os.environ` — whether the
@@ -132,6 +141,8 @@ measured here.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -165,6 +176,10 @@ def pytest_configure(config) -> None:
     failures and 482s of real probing on `165c26f`, and an operator who sets it now gets
     1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
     """
+    # Per process: an xdist worker inherits the controller's value and replaces it with its own.
+    config._atmofab_runtime_dir = (os.environ.get("XDG_RUNTIME_DIR"),
+                                   tempfile.mkdtemp(prefix="atmofab-suite-", dir="/tmp"))
+    os.environ["XDG_RUNTIME_DIR"] = config._atmofab_runtime_dir[1]
     if config.getoption("--keep-operator-env"):
         suite_env_guard.decline_strip()
         return
@@ -210,6 +225,12 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
 
 def pytest_unconfigure(config) -> None:
     suite_env_guard.restore_operator_env(os.environ)
+    inherited, runtime = config._atmofab_runtime_dir
+    shutil.rmtree(runtime, ignore_errors=True)
+    if inherited is None:
+        os.environ.pop("XDG_RUNTIME_DIR", None)
+    else:
+        os.environ["XDG_RUNTIME_DIR"] = inherited
 
 
 @pytest.fixture(autouse=True)

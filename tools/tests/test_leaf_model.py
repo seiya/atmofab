@@ -42,6 +42,8 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.tests import llm_samples
 from tools.tests.orchestration_fixtures import claude_launch_checks
+from tools.tests.orchestration_fixtures import netns_socket_dir, network_block
+from tools.leaf_netns import PROXY_ENV
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_build_runtime import _load_module
 from tools.tests.test_orchestration_runtime import (
@@ -359,7 +361,8 @@ class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
                 "repo_root": str(self.repo), "tmp_dir": str(self.repo / "tmp"),
                 "readonly": False, "leaf_mode": "workshop", "write_roots": [],
                 "runtime_rw_bind_paths": [self.config, self.tree], "workdir": self.tree,
-                "env": {"CLAUDE_CONFIG_DIR": self.config},
+                "env": {"CLAUDE_CONFIG_DIR": self.config, **PROXY_ENV},
+                "network": network_block("claude"),
                 "runtime_rw_credential_mapping": ["/operator/.credentials.json",
                                                   f"{self.config}/.credentials.json"]}
 
@@ -437,6 +440,19 @@ class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
                 workshop),
             "no credential mapping": (
                 lambda p: p.pop("runtime_rw_credential_mapping"), workshop),
+            # The leaf's network namespace (issue #534 step 4), read by the admission's own
+            # check (`leaf_netns.network_block_violations`) before the renderer is reached.
+            "no network block": (lambda p: p.pop("network"), workshop),
+            "the other family's endpoint set": (
+                lambda p: p["network"].update(endpoints=list(
+                    __import__("tools.leaf_contract", fromlist=["x"])
+                    .WORKSHOP_CLI_ENDPOINTS["codex"])), workshop),
+            "no unshare_pid": (lambda p: p["network"].update(unshare_pid=False), workshop),
+            "a socket dir inside the checkout": (
+                lambda p: p["network"].update(socket_dir=str(self.repo / "net")), workshop),
+            "the operator's proxy value": (
+                lambda p: p["env"].update(HTTPS_PROXY="http://user:pw@proxy:3128"), workshop),
+            "no NO_PROXY": (lambda p: p["env"].pop("NO_PROXY"), workshop),
         }
         for label, (mutate, entry) in cases.items():
             with self.subTest(case=label):
@@ -880,7 +896,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                                   parent_agent_run_id="orch_run_to_001",
                                   child_agent_run_id=arid, request_payload=dict(request),
                                   response_payload={**response(arid),
-                                                    **_spawn_response_payload(f"sess_{arid}")})
+                                                    **_spawn_response_payload(f"sess_{arid}")}, netns_socket_dir=netns_socket_dir())
                 self.assertEqual(records(repo_root, oid, arid),
                                  dict.fromkeys(("row", "edge", "hook", "launches", "marker",
                                                 "claude_marker"), True))
@@ -948,7 +964,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                     ort.record_launch(repo_root=repo_root, orchestration_id=oid,
                                       parent_agent_run_id=parent, child_agent_run_id=arid,
                                       request_payload=dict(request),
-                                      response_payload=response(arid), child_env=child_env)
+                                      response_payload=response(arid), child_env=child_env, netns_socket_dir=netns_socket_dir())
                 self.assertEqual(records(repo_root, oid, arid),
                                  dict.fromkeys(("row", "edge", "hook", "launches", "marker",
                                                 "claude_marker"), False))
@@ -972,7 +988,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                 ort.record_launch(repo_root=repo_root, orchestration_id=oid,
                                   parent_agent_run_id="orch_run_to_001",
                                   child_agent_run_id=arid, request_payload=dict(det),
-                                  response_payload=response(arid))
+                                  response_payload=response(arid), netns_socket_dir=netns_socket_dir())
             launches = repo_root / "workspace" / "orchestrations" / oid / "launches"
             self.assertEqual(sorted(p.name for p in launches.glob(f"{arid}.*")),
                              sorted(f"{arid}.{s}" for s in
@@ -1405,7 +1421,7 @@ class NoOrchestrationDirRecordsALeafWriteAuthorityTests(unittest.TestCase):
                 "started_at": "2026-05-09T08:00:00Z",
                 **_spawn_response_payload(pure_arid),
             },
-        )
+         netns_socket_dir=netns_socket_dir())
         # A Claude launch holds the active-child marker until the child returns; the
         # conductor clears it with `finalize-child`. Both shapes are needed here, so the
         # first is deactivated the way a real run does before the second is recorded.
@@ -1426,7 +1442,7 @@ class NoOrchestrationDirRecordsALeafWriteAuthorityTests(unittest.TestCase):
                 "started_at": "2026-05-09T08:00:00Z",
                 **_spawn_response_payload(det_arid),
             },
-        )
+         netns_socket_dir=netns_socket_dir())
         return oid, pure_arid, det_arid
 
     def test_no_record_of_a_leaf_write_authority_is_written(self) -> None:

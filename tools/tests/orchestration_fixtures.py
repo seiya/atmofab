@@ -40,6 +40,49 @@ from unittest import mock
 
 _PHASE_ORDER = ("compile", "generate", "build", "validate")
 
+
+def netns_socket_dir() -> str:
+    """A per-launch socket directory as the conductor makes one for a CLI launch
+    (`leaf_netns.make_socket_dir`, issue #534 step 4), removed when the test process exits.
+    For a test that records a CLI launch without running the conductor's launch, which is what
+    serves the directory (`Conductor._start_leaf_routes`)."""
+    import atexit
+    import shutil
+
+    from tools import leaf_netns
+    path = leaf_netns.make_socket_dir()
+    atexit.register(shutil.rmtree, path, True)
+    return path
+
+
+def netns_record_fields(family: str, backend_command: str,
+                        wrapper_port: int | None = None) -> dict[str, Any]:
+    """What a PERSISTED workshop profile records about the leaf's network namespace — its
+    `network` block (over a socket-directory path that need not exist: the audit reads no file),
+    the proxy values in its env, and a `rendered_command` carrying the namespace's flags, the
+    read-only bind and the relay head — for an audit fixture that hand-builds the profile.
+    Merge `env` into the fixture's own env."""
+    from tools import leaf_netns
+    from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
+    socket_dir = "/run/user/0/atmofab-net-fixture"
+    return {
+        "network": leaf_netns.network_block(socket_dir, WORKSHOP_CLI_ENDPOINTS[family],
+                                            wrapper_port),
+        "env": dict(leaf_netns.PROXY_ENV),
+        "rendered_command": ["bwrap", "--die-with-parent", "--new-session", "--unshare-net",
+                             "--unshare-pid", "--ro-bind", socket_dir, leaf_netns.NET_MOUNT,
+                             "--", *leaf_netns.relay_argv([backend_command], wrapper_port)],
+    }
+
+
+def network_block(family: str, wrapper_port: int | None = None) -> dict[str, Any]:
+    """A workshop profile's `network` block for a `family` (`claude` / `codex`) profile built
+    without `record_launch`, over a fresh `netns_socket_dir`."""
+    from tools import leaf_netns
+    from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
+    return leaf_netns.network_block(netns_socket_dir(), WORKSHOP_CLI_ENDPOINTS[family],
+                                    wrapper_port)
+
 #: The canonical empty `deps.yaml` (`_deps_yaml_bytes_are_canonical_empty` recognizes it).
 EMPTY_DEPS_YAML = "dependencies:\n  components: []\n  profiles: []\n  infrastructure: []\n"
 

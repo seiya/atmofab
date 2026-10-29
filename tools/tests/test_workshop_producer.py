@@ -247,6 +247,28 @@ class HappyPathTests(_Base):
         # The endpoint was stopped before the tree was read.
         self.assertTrue(self.c.endpoints[0].stopped)
 
+    def test_the_launch_s_routes_tunnel_the_wrapper_endpoint_s_own_port(self) -> None:
+        """Issue #534 step 4: a producing launch's routes carry the wrapper tunnel at the port
+        the endpoint serves (the leaf's `--mcp-config` URL names that port inside the
+        namespace), with the family's constant endpoint set, and stop with the launch."""
+        from tools import leaf_netns
+        served: list = []
+        real = leaf_netns.HostRoutes
+
+        class Spy(real):  # type: ignore[misc,valid-type]
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                served.append(self)
+        with mock.patch.object(leaf_netns, "HostRoutes", Spy):
+            self.assertEqual(self.run_substep().status, "pass")
+        (routes,) = served
+        self.assertEqual(routes.wrapper_port, 4242)
+        self.assertEqual(routes.endpoints,
+                         frozenset(leaf_contract.WORKSHOP_CLI_ENDPOINTS["claude"]))
+        self.assertFalse(os.path.exists(routes.socket_dir))
+        launch = next(a for a in self.c.argvs if a[0] == "record-launch")
+        self.assertEqual(launch[launch.index("--netns-socket-dir") + 1], routes.socket_dir)
+
     def test_the_tree_is_seeded_with_every_host_placed_file(self) -> None:
         self.run_substep()
         tree = self.paths("child-1").tree

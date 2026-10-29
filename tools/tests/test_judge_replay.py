@@ -45,6 +45,7 @@ from tools.tests.orchestration_fixtures import (
     record_orchestration_target,
     spec_ref_of,
 )
+from tools.tests.orchestration_fixtures import netns_socket_dir
 
 _DEP = "component/dep_a@0.1.0"
 _USER = "component/user@0.1.0"
@@ -255,7 +256,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         entry = conductor.entry_for(_STEP, _SUBSTEP)
         # A workshop launch is recorded into a lineage home the conductor opened first.
         conductor._prepare_workshop_home(entry, _SRC_ARID, resume=False)
-        conductor.record_launch(_SRC_ARID, request, entry)
+        conductor.record_launch(_SRC_ARID, request, entry, netns_socket_dir=netns_socket_dir())
 
     # --- helpers ----------------------------------------------------------------------------
 
@@ -693,7 +694,7 @@ class DiagnoseReplayTests(unittest.TestCase):
         request = conductor._diagnose_request(self.node_refs, "validate", entry,
                                               _DIAGNOSE_ARID, _DIAGNOSIS)
         conductor._prepare_workshop_home(entry, _DIAGNOSE_ARID, resume=False)
-        conductor.record_launch(_DIAGNOSE_ARID, request, entry)
+        conductor.record_launch(_DIAGNOSE_ARID, request, entry, netns_socket_dir=netns_socket_dir())
 
     def _main(self, *extra: str, cfg: Path | None = None) -> tuple[int, str]:
         out = io.StringIO()
