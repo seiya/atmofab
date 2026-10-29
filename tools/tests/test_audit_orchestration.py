@@ -525,7 +525,11 @@ class JudgeReplayRefusalTextTests(unittest.TestCase):
     def test_the_help_text_names_the_replay_result_file(self) -> None:
         from tools.judge_replay import REPLAY_RESULT_NAME
         out = io.StringIO()
-        with mock.patch.object(sys, "argv", ["audit_orchestration.py", "--help"]), \
+        # argparse wraps the description at the terminal width it reads from COLUMNS and breaks
+        # a word that does not fit on a line, so the file name is whole only at a sane width
+        # (measured: split as `replay_re` / `sult.jsonl` at COLUMNS=20).
+        with mock.patch.dict(os.environ, {"COLUMNS": "80"}), \
+                mock.patch.object(sys, "argv", ["audit_orchestration.py", "--help"]), \
                 contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as caught:
             ao.main()
         self.assertEqual(caught.exception.code, 0)
