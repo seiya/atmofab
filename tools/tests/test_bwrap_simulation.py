@@ -499,6 +499,14 @@ class BwrapLineageProfileTests(unittest.TestCase):
                         except OSError:
                             pass
                 return found
+            def reap() -> None:
+                # A failing row's survivors are what it detected; they must not outlive it.
+                for pid in holders():
+                    try:
+                        os.kill(pid, 9)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+            self.addCleanup(reap)
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline and len(holders()) < 2:
                 time.sleep(0.05)

@@ -339,6 +339,14 @@ class RelayMainTests(unittest.TestCase):
         code = "import os,time\nprint(os.getpid(), flush=True)\nwhile True: time.sleep(1)\n"
         proc = self._relay(code)
         child_pid = int(proc.stdout.readline())
+
+        def reap() -> None:
+            # A failing row's survivor is what it detected; it must not outlive the suite.
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        self.addCleanup(reap)
         proc.kill()
         proc.wait(timeout=20)
         deadline = time.monotonic() + 10
