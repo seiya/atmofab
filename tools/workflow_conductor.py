@@ -9743,10 +9743,21 @@ class Conductor:
                         ("workshop_lineage_setup_failed", _leaf_assembly_detail(exc)),
                         max(1, len(per_attempt)))
             assert machine.lineage is not None
-            turn = self._spawn_workshop_turn(
-                refs, request, entry, machine.lineage, child_arid=child_arid,
-                phase=phase, substep=substep,
-                resume_session_id=machine.resume_session_id, warm=warm, spec=spec)
+            try:
+                turn = self._spawn_workshop_turn(
+                    refs, request, entry, machine.lineage, child_arid=child_arid,
+                    phase=phase, substep=substep,
+                    resume_session_id=machine.resume_session_id, warm=warm, spec=spec)
+            except WorkshopSetupFailed as exc:
+                # Nothing was launched or recorded: a reading launch's one host precondition
+                # inside the turn is its network routes (issue #534 step 4,
+                # `_start_leaf_routes`), routed as the producer loop routes a setup failure.
+                self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
+                          detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                return SubstepOutcome(
+                    child_arid, "fail", [], 1,
+                    ("workshop_lineage_setup_failed", str(exc)[:200]),
+                    max(1, len(per_attempt)))
             if turn is None:
                 machine.home_gone()
                 continue
