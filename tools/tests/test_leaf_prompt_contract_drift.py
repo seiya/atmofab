@@ -1115,7 +1115,7 @@ PINNED: dict[str, str] = {
     # notes of `RUNNER_OUTPUT_CONTRACT.md` and the two `RUNNER_OUTPUT.md` bindings, each now
     # naming the seed file instead of an inlined prompt (the two `CHECKS_ABI.md` audience notes changed too, but the slices this tuple
     # hashes, §1-4 and §5, leave the header note out, so they move no digest).
-    "leaf-85": "d2d97b6e08b9d371a8ad2be266333bdade09ea027e1d6def68fa3fb78924e900",
+    "leaf-85": "707b342d0a05166bcf1fd41f667325bb3c8e2436d90b247df3e47f0069e79d4b",
 }
 
 
