@@ -33,7 +33,8 @@ created like a run's (`init`, the configuration snapshot, `preflight`), whose
 recorded ones and the reviewer's two host writers are replaced by writers that keep the
 document in memory. Its only result is `<replay dir>/replay_result.jsonl`, one JSON line per
 repetition; no audit or node-directory discovery reads a replay (`tools/audit_orchestration.py`
-must not be run on one: it composes the SOURCE run's directories from the recorded requests).
+refuses one and names this file: it would compose the SOURCE run's directories from the
+recorded requests).
 
 Refusals print `{"status": "refused", "reason": <code>, "detail": ...}` and exit 2, before
 any launch. Before the orchestration is created: `judge_replay_repeat_invalid` (`--repeat` below

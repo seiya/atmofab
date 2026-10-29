@@ -519,8 +519,9 @@ class AuditIntegrationTests(unittest.TestCase):
 class JudgeReplayRefusalTextTests(unittest.TestCase):
     """The operator-facing text that sends a reader of a judge replay to its result file names
     the file the replay tool writes (`tools.judge_replay.REPLAY_RESULT_NAME`), in `--help` and
-    in the refusal alike. Issue #544 renamed that file; a literal spelling here would have
-    kept the old name."""
+    in the refusal alike. Issue #544 renamed that file; the help text, which spelled it
+    literally, kept the old name until it was derived from the constant (the refusal had
+    used the constant from the start)."""
 
     def test_the_help_text_names_the_replay_result_file(self) -> None:
         from tools.judge_replay import REPLAY_RESULT_NAME
