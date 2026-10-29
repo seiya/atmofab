@@ -27,7 +27,9 @@ The rules this module holds, each decided in the PR-J3-b plan (posted on #534):
 * Anthropic: two `cache_control` breakpoints per request (the system block, and the last block of
   the last user message), set on a COPY at serialization — the stored history carries none; every
   user message is a content-block list, so the first request caches the launch prompt too. The
-  assistant turn is replayed exactly as received. OpenAI: no cache field (the server's automatic
+  assistant turn is replayed exactly as received. The entry's `effort`, when configured, rides
+  as `output_config.effort` (absent: no `output_config` key). OpenAI: the entry's `effort` rides
+  as `reasoning_effort`; no cache field (the server's automatic
   prefix caching); `reasoning_content`, when a server returns it, is recorded and replayed on
   the assistant message (a thinking server that returns it with `tools` requires it back).
 
@@ -215,7 +217,11 @@ def _anthropic_payload(entry: Any, system: str, messages: Sequence[Mapping[str, 
                        tools: list[dict[str, Any]], max_tokens: int,
                        stream: bool) -> dict[str, Any]:
     """The Messages-API body. The two cache breakpoints are placed on a COPY: the system
-    block, and the last content block of the last `user` message."""
+    block, and the last content block of the last `user` message. A configured `effort` is
+    sent as `output_config: {"effort": <level>}` (issue #560); an absent one sends no
+    `output_config` key at all, so the model's own default applies and a strict gateway sees
+    no key it might reject. The level is the entry's, so every request of a launch carries the
+    same one (a change between requests would invalidate the prompt cache)."""
     sent = copy.deepcopy(list(messages))
     for message in reversed(sent):
         if message.get("role") == "user" and isinstance(message.get("content"), list) \
@@ -231,6 +237,8 @@ def _anthropic_payload(entry: Any, system: str, messages: Sequence[Mapping[str, 
         "tools": tools,
         "max_tokens": max_tokens,
     }
+    if getattr(entry, "effort", ""):
+        payload["output_config"] = {"effort": entry.effort}
     if stream:
         payload["stream"] = True
     return payload

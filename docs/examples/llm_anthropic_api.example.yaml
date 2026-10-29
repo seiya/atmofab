@@ -118,6 +118,7 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
+        effort: high
         # Bounds ONE reply, and a reply that writes `spec.ir.yaml` carries what it writes whole.
         # The artifact, over a NAMED population: the 7 `shallow_water2d` IRs under the live
         # `workspace/` run 42,721 to 63,009 bytes of YAML (widen the scope to the archived
@@ -139,6 +140,7 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-sonnet-5
+        effort: high
         max_output_tokens: 16384
         timeout_s: 1800
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
@@ -151,6 +153,7 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
+        effort: high
         max_output_tokens: 32768
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
@@ -159,6 +162,7 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
+        effort: high
         max_output_tokens: 16384
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
@@ -178,6 +182,7 @@ phases:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
+        effort: high
         # The artifact is a decision and a findings array, so this is headroom rather than a
         # size: half the bundle writer's budget, as the verify leaves take.
         max_output_tokens: 16384

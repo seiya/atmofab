@@ -137,6 +137,26 @@ class RequestShapeTests(_Base):
         self.assertEqual(body["reasoning_effort"], "high")
         self.assertEqual(body["max_tokens"], 32768)
 
+    def test_anthropic_effort_rides_as_output_config_and_an_absent_one_sends_no_key(
+            self) -> None:
+        """Issue #560: the Messages API takes the level at `output_config.effort` (not inside
+        a `thinking` object, and not as `reasoning_effort`), on every request of the launch.
+        An absent effort sends no `output_config` key at all, as `reasoning_effort` is omitted
+        on the other dialect: a strict gateway rejects a key it does not know."""
+        server = self.api([_reply_anthropic([tool_use("t1", "list_files", {})]),
+                           _reply_anthropic([], "end_turn", "done")])
+        self.run_loop(server, effort="high")
+        bodies = server.main_requests()
+        self.assertEqual(len(bodies), 2)
+        for body in bodies:
+            self.assertEqual(body["output_config"], {"effort": "high"})
+            self.assertNotIn("reasoning_effort", body)
+            self.assertNotIn("thinking", body)
+        quiet = self.api([_reply_anthropic([], "end_turn", "done")])
+        self.run_loop(quiet, effort="")
+        [body] = quiet.main_requests()
+        self.assertNotIn("output_config", body)
+
 
 class _Mh1Mixin:
     """MH1: a 60 KB `write_file` content split across many deltas assembles byte-identically,

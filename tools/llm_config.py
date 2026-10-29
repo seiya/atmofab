@@ -275,8 +275,11 @@ _ENTRY_FIELDS: frozenset[str] = frozenset({
 #   codex_cli         `--config model_reasoning_effort="<level>"` (the long spelling, which is
 #                     the one `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name)
 #   openai_compatible `reasoning_effort` in the request body
-# `anthropic_api` has no effort LEVEL — the Messages API expresses the same idea as a thinking
-# token budget — so the field does not apply there and saying otherwise is an operator error.
+#   anthropic_api     `output_config: {"effort": "<level>"}` in the Messages-API request body
+# Until issue #560 `anthropic_api` refused the field, on the premise that the Messages API
+# expresses the idea as a thinking TOKEN BUDGET rather than a level. That premise is false for
+# the current models: their thinking is adaptive, there is no thinking budget to set, and the
+# effort level is the control (fetched 2026-10-30, below).
 _EFFORT_LEVELS: Mapping[str, frozenset[str]] = {
     "claude_cli": frozenset({"low", "medium", "high", "xhigh", "max"}),
     # Read off `~/.codex/models_cache.json` (`supported_reasoning_levels`), which is what the
@@ -285,6 +288,17 @@ _EFFORT_LEVELS: Mapping[str, frozenset[str]] = {
     # Terra accept all six, Luna every one but `ultra`. Codex has no `none` and no `minimal`.
     "codex_cli": frozenset({"low", "medium", "high", "xhigh", "max", "ultra"}),
     "openai_compatible": frozenset({"minimal", "low", "medium", "high"}),
+    # Its OWN set, read off the provider's effort page
+    # (https://platform.claude.com/docs/en/build-with-claude/effort.md, fetched 2026-10-30:
+    # "Set `output_config.effort` on the request. With no value, the model's default level
+    # applies."), not an alias of the `claude_cli` set that happens to spell the same words.
+    # The DEFAULT is the model's, not the API's: `high` on every model that supports effort
+    # except Claude Opus 5.5 and Claude Haiku 5.5, which default to `medium`. Not every model
+    # takes every level (the page's availability table lists `xhigh` and `max` per model); the
+    # loader checks the VOCABULARY and the endpoint checks the MODEL, refusing a level the named
+    # model lacks as an HTTP 400 on the first request — a client error the conductor does not
+    # retry, so the launch fails closed having generated nothing.
+    "anthropic_api": frozenset({"low", "medium", "high", "xhigh", "max"}),
 }
 
 # Fields that only make sense for some providers. Anything not listed applies to all.
@@ -305,7 +319,7 @@ _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
     "codex_cli": frozenset({
         "base_url", "api_key_env", "timeout_s", "max_output_tokens", "stream"}),
     "openai_compatible": frozenset({"command"}),
-    "anthropic_api": frozenset({"command", "effort"}),
+    "anthropic_api": frozenset({"command"}),
 }
 
 # Fields scoped to the provider that declared them. When a deeper level switches provider,
@@ -316,8 +330,8 @@ _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
 # pointed at the same gateway must keep the same answer about it.
 _PROVIDER_SCOPED_FIELDS: frozenset[str] = frozenset({
     # `effort` is provider-scoped for the same reason `model` is: the level names are the
-    # provider's own (`max` is a claude level, `minimal` a codex one), so carrying one across a
-    # switch would inherit a word the new provider does not have.
+    # provider's own (`ultra` is a codex level, `minimal` an `openai_compatible` one), so
+    # carrying one across a switch would inherit a word the new provider does not have.
     "provider", "model", "command", "base_url", "api_key_env", "effort", "capabilities",
 })
 
@@ -599,15 +613,16 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
         # to hold while every field an operator actually wrote here was a non-empty string.
         #
         # WHAT ELSE THIS NEWLY REJECTS, enumerated rather than left to be discovered: exactly
-        # four spellings, each an explicitly-EMPTY inapplicable field —
-        #   `base_url: ""` and `api_key_env: ""` on a CLI entry,
-        #   `command: ""` on an HTTP entry, and
-        #   `effort: ""` on an `anthropic_api` entry, the only one an operator is at all likely
-        #   to have written, as a way of saying "leave it at the provider default".
-        # All four previously loaded and were silently dropped; all four now name the field.
+        # three spellings, each an explicitly-EMPTY inapplicable field —
+        #   `base_url: ""` and `api_key_env: ""` on a CLI entry, and
+        #   `command: ""` on an HTTP entry.
+        # All three previously loaded and were silently dropped; all three now name the field.
         # That is the same rule read consistently: the field does not apply here, and writing it
         # is the error whether the value is empty or not. An empty `timeout_s` is NOT in this
         # set — `_layer_fields` rejects it earlier and on every provider, as `invalid_field`.
+        # Neither is `effort: ""` on an `anthropic_api` entry any more: it was the fourth member
+        # until issue #560 made `effort` apply there, and it now loads as "say nothing" (the
+        # model's own default), as an empty `effort` does on every provider.
         # The four `docs/examples/*.yaml` samples are unaffected.
         if field not in fields:
             continue
@@ -620,7 +635,9 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
 
     # AFTER the applicability loop: a provider with no effort concept at all should report
     # `llm_config_field_not_applicable`, which names the real problem, rather than "not a level
-    # it accepts", which implies there is a right level to pick.
+    # it accepts", which implies there is a right level to pick. Since issue #560 every
+    # declared provider has a vocabulary (`anthropic_api` was the one without), so the order
+    # decides nothing today; it stays so that a provider added without one gets the loop's rule.
     effort = str(fields.get("effort") or "").strip().lower()
     if effort and effort not in _EFFORT_LEVELS.get(provider, frozenset()):
         raise LlmConfigError(
