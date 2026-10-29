@@ -1524,7 +1524,7 @@ def main() -> None:
             "its result is UNKNOWN rather than negative (`diagnostic_failures`), "
             "there is no such orchestration under --repo-root (`orchestration_found`), "
             "or the orchestration is a judge replay (tools/judge_replay.py; read its "
-            "replay_result.json instead)."
+            "replay_result.jsonl instead)."
         )
     )
     parser.add_argument("--orchestration-id", required=True, help="Orchestration ID to audit")
@@ -1544,7 +1544,7 @@ def main() -> None:
     repo_root = Path(args.repo_root).resolve()
     # A judge replay is not audited: its launch requests name the SOURCE run's refs, so every
     # run-node section below would report the source's records as the replay's. Its record is
-    # its own `replay_result.json` (`tools/judge_replay.py`).
+    # its own `replay_result.jsonl` (`tools/judge_replay.py`).
     from tools.judge_replay import REPLAY_KIND, REPLAY_RESULT_NAME
     invocation = (_load_json_if_dict(_orch_root(repo_root, args.orchestration_id)
                                      / "orchestration_meta.json") or {}).get("invocation")
