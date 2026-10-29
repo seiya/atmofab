@@ -736,6 +736,16 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # The digest `compile-docs-20` SHIPPED with (origin/main f684c756), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-20@f684c756": "39978e082a639ad84b4cc444c3c0e5e3bf4a80b43360c16814ad0bd5b1f0079c",
+    # compile-docs-21 (issue #534 PR-J4's deferred leaf-read text, landed with `leaf-85`):
+    # `phase_01_compile.md` states the `workshop leaf` both compile substeps run as — the seeds
+    # of each leaf's work tree, `spec.ir.yaml` / `compile_fail.json` / `verdict.json` at the
+    # tree root, the host writing `ir_meta.json` — where it stated the deleted pure leaf (the
+    # `{ir, compile_fail}` reply, "a pure reply carries no comments", "on the PURE path"), and
+    # the two IR examples' headers say the host seeds them into both work trees. A bump taken
+    # with `leaf-85`, which re-derives every Compile anyway, so this one costs no extra
+    # re-derivation; measured 100149 bytes with `wc -c` in /home/seiya/atmofab at the commit
+    # that takes it (ceiling 100200, no bump).
+    "compile-docs-21": "325557f84cceedb3fd418b08a5588955c8f3c63445541e2d835cdf64f5dc5317",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

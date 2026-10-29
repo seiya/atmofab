@@ -1101,6 +1101,20 @@ PINNED: dict[str, str] = {
     # out with the part split they pinned (the workshop `compile.generate` leaf is seeded the
     # whole phase contract document, whose text neither pin hashed).
     "pure-84": "5968beec76c7f51167626f671926df56e49c6fddc7af161fa785c5580cab8f91",
+    # leaf-85 (the first bump after issue #534 PR-J4-b; the deferred leaf-read text of its
+    # PR-J4 plan, TODO.md's two prompt items, and issue #545): every "inlined" document label
+    # and clause of the eleven workshop templates and the language fragments now names the
+    # SEED file of the work tree; the two Fortran fragments name a dependency call by the
+    # local name of a `use …, only: <local> => <dep>__<op>` rename as the gate reads it
+    # (PR-J3-a); the three "no second look" sentences and the judge's limit (f) are scoped to
+    # the launch turn and to the run's artifacts (issue #510's round-2 residue), and the
+    # judge's raw-array sentence states which rank / finiteness checks the `post_execute` gate
+    # and the primary-predicate evaluation already make and which arrays nothing checks
+    # (issue #545). Members moved: the templates, the fragments, and (through
+    # `runner_output_binding_document` and the checks-ABI document) the audience notes of
+    # `RUNNER_OUTPUT_CONTRACT.md`, the two `RUNNER_OUTPUT.md` bindings and the two
+    # `CHECKS_ABI.md` bindings, each now naming the seed file instead of an inlined prompt.
+    "leaf-85": "3b2784bc56fd1673509144213b242087ec8a1511e3a23ec6ca0dcd25c07ef041",
 }
 
 
@@ -1311,8 +1325,8 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "gate-guard and binding sections or exemplar note, or an inlined document slice — "
             "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
             "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file).\n"
-            "The first post-J4 bump writes `leaf-85` (issue #534 PR-J4-b): the counter no longer "
-            "says `pure`."
+            "`leaf-85` was the first post-J4 bump (issue #534 PR-J4-b): the counter no longer "
+            "says `pure`; the next one writes `leaf-86`."
         )
         self.assertIn(
             LEAF_PROMPT_CONTRACT_VERSION, PINNED,
