@@ -42,6 +42,7 @@ from tools.orchestration_runtime import (
 )
 from tools.llm_config import LLM_LEAF_SUBSTEPS
 from tools.tests.orchestration_fixtures import claude_launch_checks
+from tools.tests.orchestration_fixtures import netns_socket_dir
 from tools.tests.target_fixtures import TARGET_ID
 from tools.tests.target_fixtures import composed_pure_template
 from tools.leaf_contract import (
@@ -3256,7 +3257,7 @@ class PureRecordLaunchTests(unittest.TestCase):
             child_agent_run_id=self._ARID,
             request_payload=req,
             response_payload=_spawn_response("sess_pure_001"),
-        )
+         netns_socket_dir=netns_socket_dir())
 
     def _assert_the_lineage_profile(self, base: Path) -> dict:
         """The one profile a leaf launches under: its lineage's `config/` and `tree/` writable,
@@ -3300,7 +3301,7 @@ class PureRecordLaunchTests(unittest.TestCase):
                 record_launch(repo_root=repo_root, orchestration_id="orch_001",
                               parent_agent_run_id="orch_run_001",
                               child_agent_run_id=self._ARID, request_payload=req,
-                              response_payload=_spawn_response("sess_pure_001"))
+                              response_payload=_spawn_response("sess_pure_001"), netns_socket_dir=netns_socket_dir())
             base = repo_root / "workspace/orchestrations/orch_001"
             self.assertFalse((base / "sandbox_profiles" / f"{self._ARID}.json").exists())
             self.assertEqual(list((base / "launches").glob(f"{self._ARID}.*"))

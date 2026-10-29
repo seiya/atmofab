@@ -36,6 +36,8 @@ from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import (
     accept_any_certified_ir, certify_node, claude_launch_checks, ensure_spec_entry,
     record_orchestration_target, spec_ref_of)
+from tools.tests.orchestration_fixtures import netns_socket_dir, network_block
+from tools.leaf_netns import PROXY_ENV
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
@@ -651,6 +653,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             {"name": "sandbox_bwrap_available", "pass": True},
             {"name": "sandbox_bwrap_userns", "pass": True},
             {"name": "sandbox_bwrap_exec", "pass": True},
+            {"name": "sandbox_netns_python", "pass": True},
+            {"name": "sandbox_netns_route", "pass": True},
         ]
         return checks
 
@@ -1046,7 +1050,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     request_payload=self._codex_workshop_request("child", "lineage-1"),
                     response_payload={"backend": "codex"},
                     workshop_lineage_id="lineage-1",
-                )
+                 netns_socket_dir=netns_socket_dir())
             self.assertEqual(result, {"workshop_lineage_home_missing": True,
                                       "workshop_lineage_id": "lineage-1"})
             self.assertFalse(
@@ -1084,7 +1088,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         repo_root, "orch_lineage_refuse",
                         parent_agent_run_id="parent", child_agent_run_id="child",
                         request_payload={}, response_payload={"backend": "codex"},
-                        workshop_lineage_id="lineage-1")
+                        workshop_lineage_id="lineage-1", netns_socket_dir=netns_socket_dir())
                 for bad in ("../x", "a/b", "", "x y"):
                     with self.subTest(lineage=bad), \
                             patch("tools.orchestration_runtime._require_preflight_launchable",
@@ -1096,7 +1100,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                             parent_agent_run_id="parent", child_agent_run_id="child",
                             request_payload=self._codex_workshop_request("child", "lineage-1"),
                             response_payload={"backend": "codex"},
-                            workshop_lineage_id=bad)
+                            workshop_lineage_id=bad, netns_socket_dir=netns_socket_dir())
             prepare.assert_not_called()
 
     def test_record_launch_takes_no_codex_lineage_id(self) -> None:
@@ -1904,7 +1908,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "agent_run_id": "substep_run_ap_generate_001",
                     **_spawn_response_payload("sess_substep_ap_generate_001"),
                 },
-            )
+             netns_socket_dir=netns_socket_dir())
             record_agent_run(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -2234,7 +2238,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     response_payload={"agent_run_id": arid, "backend": "codex",
                                       **_spawn_response_payload(arid)},
                     **kwargs,
-                )
+                 netns_socket_dir=netns_socket_dir())
 
             container = Path(os.environ[WORKFLOW_HOMES_ROOT_ENV]) / orch / "codex"
             iso = _prepare_workshop_lineage(repo_root, orch, "arid-cold-a", backend="codex")
@@ -2378,7 +2382,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "agent_run_id": "substep_run_plan_generate_001",
                     **_spawn_response_payload("sess_substep_plan_generate_001"),
                 },
-            )
+             netns_socket_dir=netns_socket_dir())
             record_launch(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -2409,7 +2413,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "agent_run_id": "step_run_build_001",
                     **_spawn_response_payload("sess_step_build_001"),
                 },
-            )
+             netns_socket_dir=netns_socket_dir())
 
             record_agent_run(
                 repo_root=repo_root,
@@ -2871,7 +2875,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "prompt": full_prompt,
                 },
                 response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             prompt_path = (
                 repo_root
                 / "workspace"
@@ -2937,7 +2941,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     + "\nAdditional instruction: save the most detailed prompt.",
                 },
                 response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             prompt_path = (
                 repo_root
                 / "workspace"
@@ -3007,7 +3011,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     },
                 },
                 response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             prompt_path = (
                 repo_root
                 / "workspace"
@@ -4217,7 +4221,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         ),
                     },
                     response_payload=_spawn_response_payload("sess_step_build_failed_gen"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_build_launch_rejects_listed_paths_for_multiple_build_ids(self) -> None:
         """A build launch must target exactly one binary_id."""
@@ -4432,7 +4436,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         ),
                     },
                     response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_rejects_launch_when_dependency_ref_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4484,7 +4488,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         ),
                     },
                     response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_rejects_launch_with_placeholder_dependency_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4537,7 +4541,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         ),
                     },
                     response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_rejects_launch_when_pipeline_ref_is_not_pipeline_root_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4585,7 +4589,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "launch_prompt_full": "prompt",
                     },
                     response_payload=_spawn_response_payload("sess_bad_pipeline_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_rejects_generate_verify_without_source_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4629,7 +4633,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "launch_prompt_full": "gv verify",
                     },
                     response_payload=_spawn_response_payload("sess_gv_no_gid"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_rejects_pass_step_result_when_required_outputs_are_missing_from_substeps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4689,7 +4693,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             impl_path = (
                 repo_root
                 / "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/compile_static_meta.json"
@@ -4870,7 +4874,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"
             out_path = repo_root / out_ref
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4949,7 +4953,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"
             out_path = repo_root / out_ref
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5029,7 +5033,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"
             out_path = repo_root / out_ref
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5144,7 +5148,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_unrelated"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_unrelated"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_execute_launch_requires_source_build_id_for_in_phase_log_only(self) -> None:
         """source_binary_id is required for ALL execute launches, not only
@@ -5236,7 +5240,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_no_build_id"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_no_build_id"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_execute_launch_rejects_unrelated_generation_when_build_meta_records_lineage(self) -> None:
         """Cross-phase source_id must match an actual build's
@@ -5338,7 +5342,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_unrelated_gen"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_unrelated_gen"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_execute_launch_rejects_cross_phase_log_for_failed_generation(self) -> None:
         """Defense against authorizing writes into a failed generation's tree.
@@ -5436,7 +5440,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_failed_gen"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_failed_gen"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_validate_launch_rejects_cross_phase_log_for_unknown_source_id(self) -> None:
         """Defense against authorization-by-injection of cross-phase log paths.
@@ -5527,7 +5531,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_forged"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_forged"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_record_agent_run_accepts_substep_terminal_when_tmp_file_is_under_allowed_tmp_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5585,7 +5589,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_substep_gen_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             out_ref = f"{_FIX_IR_REF}/compile_static_meta.json"
             out_path = repo_root / out_ref
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5668,7 +5672,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"
             out_path = repo_root / out_ref
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5753,7 +5757,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             out_path.unlink()
             record_agent_run(
                 repo_root=repo_root,
@@ -5841,7 +5845,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             out_ref = f"{_FIX_PIPE_REF}/binary/bin_20260101_001/bin/simulate"
             out_path = repo_root / out_ref
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5920,7 +5924,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         ),
                     },
                     response_payload={"launch_reply": "accepted: missing-id"},
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_allowed_output_paths_for_launch_promote_accepts_release_artifact_and_catalog(self) -> None:
         """Regression: promote step must pass phase contract validation for
@@ -6168,7 +6172,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             with self.assertRaisesRegex(ValueError, "agent_session_id must match"):
                 record_agent_run(
                     repo_root=repo_root,
@@ -6246,7 +6250,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     child_agent_run_id="step_run_plan_001",
                     request_payload={"step": "compile", "agent_role": "substep"},
                     response_payload=_spawn_response_payload("sess_step_plan_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
             meta = json.loads(
                 (repo_root / "workspace" / "orchestrations" / "orch_001" / "orchestration_meta.json").read_text(
                     encoding="utf-8"
@@ -6420,7 +6424,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         ),
                     },
                     response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
                 self.assertEqual(probe_mock.call_count, 1)
 
     def test_record_and_finalize_do_not_run_live_probe_after_launch(self) -> None:
@@ -6487,7 +6491,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         ),
                     },
                     response_payload=_spawn_response_payload("sess_step_build_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
                 record_agent_run(
                     repo_root=repo_root,
                     orchestration_id="orch_001",
@@ -6583,7 +6587,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     ),
                 },
                 response_payload=_spawn_response_payload("sess_step_build_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             with self.assertRaisesRegex(RuntimeError, "child_agent_run_id missing from agent_runs.jsonl"):
                 update_orchestration_status(
                     repo_root=repo_root,
@@ -6827,7 +6831,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 "agent_run_id": agent_run_id,
                 **_spawn_response_payload(f"sess_{agent_run_id}"),
             },
-        )
+         netns_socket_dir=netns_socket_dir())
         binary_ref = (
             "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
             "shallow-water2d_20260415_001/binary/bin_20260101_001/bin/simulate"
@@ -6899,7 +6903,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "agent_run_id": "step_run_build_002",
                     **_spawn_response_payload("sess_step_run_build_002"),
                 },
-            )
+             netns_socket_dir=netns_socket_dir())
             prompt_path = (
                 repo_root
                 / "workspace/orchestrations/orch_001/launches/step_run_build_002.prompt.txt"
@@ -6921,7 +6925,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "agent_run_id": "step_run_build_002",
                     **_spawn_response_payload("sess_step_run_build_002"),
                 },
-            )
+             netns_socket_dir=netns_socket_dir())
             prompt_path = (
                 repo_root
                 / "workspace/orchestrations/orch_001/launches/step_run_build_002.prompt.txt"
@@ -8183,7 +8187,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     child_agent_run_id="step_run_repair_001",
                     request_payload=self._minimal_request_payload(repair_strategy="retry"),
                     response_payload=_spawn_response_payload("sess_step_repair_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_rejects_invalid_issue_severity(self) -> None:
         """Passing an undefined value to issue_severity raises a ValueError."""
@@ -8198,7 +8202,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     child_agent_run_id="step_run_repair_001",
                     request_payload=self._minimal_request_payload(issue_severity="blocker"),
                     response_payload=_spawn_response_payload("sess_step_repair_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_requires_repair_target_for_reuse(self) -> None:
         """ValueError when repair_target_agent_run_id is "none" with repair_strategy=reuse."""
@@ -8218,7 +8222,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         repair_reason="fix indentation",
                     ),
                     response_payload=_spawn_response_payload("sess_step_repair_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_requires_repair_reason_for_reuse(self) -> None:
         """ValueError when repair_reason is "none" with repair_strategy=reuse — the second half of
@@ -8239,7 +8243,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         repair_reason="none",
                     ),
                     response_payload=_spawn_response_payload("sess_step_repair_001"),
-                )
+                 netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_rejects_traversal_in_child_agent_run_id(self) -> None:
         """child_agent_run_id containing path separators must be rejected before path construction."""
@@ -8256,7 +8260,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                             child_agent_run_id=bad_id,
                             request_payload=self._minimal_request_payload(),
                             response_payload=_spawn_response_payload("sess_001"),
-                        )
+                         netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_rejects_traversal_in_parent_agent_run_id(self) -> None:
         """parent_agent_run_id containing path separators must be rejected."""
@@ -8273,7 +8277,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                             child_agent_run_id="step_run_001",
                             request_payload=self._minimal_request_payload(),
                             response_payload=_spawn_response_payload("sess_001"),
-                        )
+                         netns_socket_dir=netns_socket_dir())
 
     def test_record_launch_accepts_none_strategy_without_repair_fields(self) -> None:
         """With repair_strategy=none, it succeeds even if repair_target and repair_reason are "none"."""
@@ -8292,7 +8296,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     repair_reason="none",
                 ),
                 response_payload=_spawn_response_payload("sess_step_repair_001"),
-            )
+             netns_socket_dir=netns_socket_dir())
             self.assertIsInstance(result, dict)
 
     def test_main_help_write_step_result_includes_result_json_schema(self) -> None:
@@ -11163,6 +11167,8 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "sandbox_bwrap_available", "pass": True},
             {"name": "sandbox_bwrap_userns", "pass": True},
             {"name": "sandbox_bwrap_exec", "pass": True},
+            {"name": "sandbox_netns_python", "pass": True},
+            {"name": "sandbox_netns_route", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
             {"name": "codex_workshop_flag_set_available", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
@@ -11313,7 +11319,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
                     "agent_run_id": child,
                     **_spawn_response_payload(session),
                 },
-            )
+             netns_socket_dir=netns_socket_dir())
             index_path = repo / "workspace" / "orchestrations" / orch / "session_run_index.json"
             index_doc = json.loads(index_path.read_text(encoding="utf-8"))
             entries = index_doc.get("entries", [])
@@ -11947,7 +11953,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             ),
                         },
                         response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                    )
+                     netns_socket_dir=netns_socket_dir())
                     self.assertEqual(probe_mock.call_count, 1)
                     record_launch(
                         repo_root=repo,
@@ -11974,7 +11980,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             ),
                         },
                         response_payload=_spawn_response_payload("sess_step_build_001"),
-                    )
+                     netns_socket_dir=netns_socket_dir())
                     self.assertEqual(probe_mock.call_count, 1)
 
     def test_record_launch_re_probes_after_ttl_expiry(self) -> None:
@@ -12040,7 +12046,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             ),
                         },
                         response_payload=_spawn_response_payload("sess_substep_plan_generate_001"),
-                    )
+                     netns_socket_dir=netns_socket_dir())
                     self.assertEqual(probe_mock.call_count, 1)
                     raw = json.loads(path.read_text(encoding="utf-8"))
                     raw["probed_at"] = _iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=2000))
@@ -12070,7 +12076,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                             ),
                         },
                         response_payload=_spawn_response_payload("sess_step_build_001"),
-                    )
+                     netns_socket_dir=netns_socket_dir())
                     self.assertEqual(probe_mock.call_count, 2)
 
     def test_get_preflight_ttl_status_within_ttl(self) -> None:
@@ -12344,7 +12350,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                                 "agent_run_id": f"child_missing_{missing_key}",
                                 **_spawn_response_payload(f"sess_child_missing_{missing_key}"),
                             },
-                        )
+                         netns_socket_dir=netns_socket_dir())
             index_path = (
                 repo_root
                 / "workspace"
@@ -12482,7 +12488,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "agent_run_id": "plan_sub_fail_closed",
                         **_spawn_response_payload("sess_plan_sub_fail_closed"),
                     },
-                )
+                 netns_socket_dir=netns_socket_dir())
             meta = json.loads(
                 (repo_root / "workspace/orchestrations/wf4/orchestration_meta.json").read_text(
                     encoding="utf-8"
@@ -12573,7 +12579,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             child_agent_run_id=child,
             request_payload=req,
             response_payload=_spawn_response_payload(f"sess_{child}"),
-        )
+         netns_socket_dir=netns_socket_dir())
         cap_path = repo_root / f"workspace/orchestrations/{orchestration_id}/capabilities/{child}.json"
         return json.loads(cap_path.read_text(encoding="utf-8"))
 
@@ -15121,7 +15127,7 @@ class ClaudeSequentialLaunchTests(unittest.TestCase):
                 "started_at": "2026-05-09T08:00:00Z",
                 **_spawn_response_payload(arid),
             },
-        )
+         netns_socket_dir=netns_socket_dir())
 
     def _init(self, repo_root: Path) -> None:
         init_orchestration(
@@ -15256,7 +15262,7 @@ class RecordTimeoutTests(unittest.TestCase):
                 **_spawn_response_payload(substep_arid),
                 **(response_extra or {}),
             },
-        )
+         netns_socket_dir=netns_socket_dir())
         return substep_arid
 
     def _setup_deterministic_launch(self, repo_root: Path) -> str:
@@ -15318,7 +15324,7 @@ class RecordTimeoutTests(unittest.TestCase):
                 "started_at": "2026-05-09T08:00:00Z",
                 **_spawn_response_payload(arid),
             },
-        )
+         netns_socket_dir=netns_socket_dir())
         return arid
 
     def test_record_launch_prepares_no_claude_home_for_any_launch(self) -> None:
@@ -15411,11 +15417,15 @@ class RecordTimeoutTests(unittest.TestCase):
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
             profile = json.loads(
                 (orch_root / "sandbox_profiles" / f"{arid}.json").read_text(encoding="utf-8"))
-            # the record: exactly what was authored, plus only the names the DELIVERER owns
+            # the record: exactly what was authored, plus only the names the DELIVERER and the
+            # profile BUILDER own (the namespace's proxy values, issue #534 step 4)
             self.assertEqual(
                 {k: v for k, v in profile["env"].items()
-                 if k not in ("TMPDIR", *ort._BACKEND_HOME_ENV_VARS)},
+                 if k not in ("TMPDIR", *ort._BACKEND_HOME_ENV_VARS,
+                              *ort.leaf_netns.PROXY_ENV)},
                 authored)
+            self.assertEqual({k: profile["env"][k] for k in ort.leaf_netns.PROXY_ENV},
+                             ort.leaf_netns.PROXY_ENV)
             # the delivery: the rendered argv carries that same set and nothing else
             argv = profile["rendered_command"]
             setenv = {argv[i + 1]: argv[i + 2]
@@ -16520,6 +16530,46 @@ class RecordTimeoutTests(unittest.TestCase):
                 f"specific sandbox reason expected, got {arid_entries[0]}",
             )
             self.assertIn("fail_message", arid_entries[0])
+
+    def test_a_launch_without_the_network_stamp_is_refused_by_name(self) -> None:
+        """Issue #534 step 4: every row that requires `sandbox_runtime: bwrap` requires
+        `sandbox_network: "namespace"` on its launch response — absent (a launch recorded
+        before step 4) and any other value alike — as `sandbox_network_missing`, with a
+        violation record. The fixture's own launch carries the stamp and is the control."""
+        for label, value in (("absent", None), ("another value", "host"), ("control", "ok")):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                arid = self._setup_substep_launch(repo_root)
+                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                resp_path = orch_root / "launches" / f"{arid}.response.json"
+                resp = json.loads(resp_path.read_text(encoding="utf-8"))
+                self.assertEqual(resp["sandbox_network"], "namespace")
+                if value is None:
+                    del resp["sandbox_network"]
+                elif value != "ok":
+                    resp["sandbox_network"] = value
+                resp_path.write_text(json.dumps(resp), encoding="utf-8")
+                payload = {
+                    "agent_run_id": arid, "agent_role": "substep", "agent_backend": "claude",
+                    "status": "fail", "started_at": "2026-05-09T08:00:00Z",
+                    "finished_at": "2026-05-09T09:00:00Z", "agent_session_id": arid,
+                    "context_id": arid, "context_isolated": True,
+                    "node_key": "problem/shallow_water2d@0.3.0", "step": "generate",
+                    "substep": "generate", "result_summary": "x", "output_refs": []}
+                if value == "ok":
+                    record_agent_run(repo_root=repo_root, orchestration_id="orch_to_001",
+                                     payload=payload)
+                    continue
+                with self.assertRaisesRegex(ValueError, "sandbox_network="):
+                    record_agent_run(repo_root=repo_root, orchestration_id="orch_to_001",
+                                     payload=payload)
+                rows = [json.loads(line) for line in (orch_root / "agent_runs_invalid.jsonl")
+                        .read_text(encoding="utf-8").splitlines() if line.strip()]
+                self.assertEqual([r.get("fail_reason") for r in rows if r.get("agent_run_id")
+                                  == arid], ["sandbox_network_missing"])
+                violation = json.loads(next((orch_root / "violations").glob("*.json"))
+                                       .read_text(encoding="utf-8"))
+                self.assertIn("sandbox_network_missing", json.dumps(violation))
 
     def test_record_agent_run_locked_recheck_catches_concurrent_duplicate(self) -> None:
         """Adv-24: under fcntl serialization, even if the unlocked early
@@ -24115,7 +24165,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 **(extra_response or {}),
                 **_spawn_response_payload(f"sess_{arid}"),
             },
-        )
+         netns_socket_dir=netns_socket_dir())
 
     def _mixed_preflight(self, repo_root: Path) -> None:
         payload = _launchable_preflight_dict(backend="claude")
@@ -26868,7 +26918,8 @@ def _hand_workshop_profile_fields(root: Path) -> dict:
         "workdir": str(tree),
         "runtime_rw_bind_paths": [str(config), str(tree)],
         "runtime_rw_credential_mapping": [str(cred), str(config / ".credentials.json")],
-        "env": {"CLAUDE_CONFIG_DIR": str(config)},
+        "env": {"CLAUDE_CONFIG_DIR": str(config), **PROXY_ENV},
+        "network": network_block("claude"),
     }
 
 
@@ -27210,6 +27261,8 @@ class LeafEnvClosureTests(unittest.TestCase):
             if "TMPDIR" in base["env"]:
                 base["env"]["TMPDIR"] = str(root / "ws")
             base["env"].setdefault("CLAUDE_CONFIG_DIR", workshop["env"]["CLAUDE_CONFIG_DIR"])
+            for _k, _v in PROXY_ENV.items():
+                base["env"].setdefault(_k, _v)
         return base
 
     @staticmethod
@@ -27263,7 +27316,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         profile = ort.build_lineage_bwrap_profile(
             repo_root=d, orchestration_id="orch_x", agent_run_id="arid_x",
-            backend_command="claude", backend_type="claude", **_workshop_build_kwargs(self))
+            backend_command="claude", backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
         for field in ort._UNRENDERED_PROFILE_GRANTS:
             with self.subTest(field=field):
                 self.assertIn(field, profile)
@@ -27385,7 +27438,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         # profile's home
         profile["env"] = {"PATH": "/usr/bin:/bin", "HOME": "/h", "LANG": "C.UTF-8",
                           "TMPDIR": profile["env"]["TMPDIR"],
-                          "CLAUDE_CONFIG_DIR": profile["env"]["CLAUDE_CONFIG_DIR"]}
+                          "CLAUDE_CONFIG_DIR": profile["env"]["CLAUDE_CONFIG_DIR"], **PROXY_ENV}
         profile["orchestration_id"] = "orch-recorded"
         profile["agent_run_id"] = "arid-recorded"
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
@@ -27431,10 +27484,15 @@ class LeafEnvClosureTests(unittest.TestCase):
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude", child_env=authored,
-                **_workshop_build_kwargs(self))
+                **_workshop_build_kwargs(self), network=network_block("claude"))
+        # The builder's own names: TMPDIR, the backend home, and the namespace's proxy values
+        # (issue #534 step 4), which are the builder's whatever was authored.
         self.assertEqual({k: v for k, v in profile["env"].items()
-                          if k not in ("TMPDIR", *ort._BACKEND_HOME_ENV_VARS)},
+                          if k not in ("TMPDIR", *ort._BACKEND_HOME_ENV_VARS,
+                                       *ort.leaf_netns.PROXY_ENV)},
                          authored)
+        self.assertEqual({k: profile["env"][k] for k in ort.leaf_netns.PROXY_ENV},
+                         ort.leaf_netns.PROXY_ENV)
         self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
 
     def test_a_child_env_naming_another_leafs_ids_fails_closed(self) -> None:
@@ -27450,7 +27508,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                     ort.build_lineage_bwrap_profile(
                         repo_root=Path(d), orchestration_id="o", agent_run_id="A",
                         backend_command="claude", backend_type="claude",
-                        child_env={"PATH": "/a", name: bad})
+                        child_env={"PATH": "/a", name: bad}, network=network_block("claude"))
 
     def test_the_fallback_replaces_a_stale_per_launch_id_rather_than_refusing(self) -> None:
         """The two paths answer DIFFERENT questions, and this is the reconstructing one.
@@ -27476,7 +27534,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o",
                 agent_run_id="CHILD-ARID", backend_command="claude",
-                backend_type="claude", **_workshop_build_kwargs(self))
+                backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
         self.assertEqual(profile["env"]["ATMOFAB_ORCHESTRATION_ID"], "o")
         self.assertEqual(profile["env"]["ATMOFAB_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
 
@@ -27547,7 +27605,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                     profile = ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
-                        backend_type="claude", **_workshop_build_kwargs(self))
+                        backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
                 self.assertEqual(profile["env"]["ATMOFAB_ORCHESTRATION_ID"], "o")
                 self.assertEqual(profile["env"]["ATMOFAB_CHILD_AGENT_RUN_ID"], "A")
 
@@ -27565,14 +27623,14 @@ class LeafEnvClosureTests(unittest.TestCase):
                     ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
-                        backend_type="claude", child_env=bad)
+                        backend_type="claude", child_env=bad, network=network_block("claude"))
         for bad_entry in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
             with self.subTest(entry=bad_entry):
                 with self.assertRaises(ValueError):
                     ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
-                        backend_type="claude", child_env=bad_entry)
+                        backend_type="claude", child_env=bad_entry, network=network_block("claude"))
 
     def _alias_layout(self, d: Path, *, symlinked_home: bool) -> tuple[Path, Path, Path]:
         """A checkout and a CLI wrapper under the same $HOME child (`~/work`), with `$HOME`
@@ -27613,7 +27671,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                 self.assertRaises(ValueError) as ctx:
             ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
-                backend_command="cli-sim", backend_type="codex")
+                backend_command="cli-sim", backend_type="codex", network=network_block("codex"))
         self.assertIn("contains the checkout", str(ctx.exception))
         self.assertIn(str(repo), str(ctx.exception))
 
@@ -27633,7 +27691,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
-                **_workshop_build_kwargs(self, "codex"))
+                **_workshop_build_kwargs(self, "codex"), network=network_block("codex"))
         self.assertIn(str(home / "work"), profile["runtime_ro_bind_paths"])
 
     def test_an_install_root_that_is_the_checkout_itself_under_another_name_is_refused(self) -> None:
@@ -27658,7 +27716,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                 self.assertRaises(ValueError) as ctx:
             ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
-                backend_command="cli-sim", backend_type="codex")
+                backend_command="cli-sim", backend_type="codex", network=network_block("codex"))
         self.assertIn("is the same directory as", str(ctx.exception))
 
     def test_an_install_root_that_lies_inside_the_checkout_under_another_name_is_refused(self) -> None:
@@ -27685,7 +27743,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                 self.assertRaises(ValueError) as ctx:
             ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
-                backend_command="cli-sim", backend_type="codex")
+                backend_command="cli-sim", backend_type="codex", network=network_block("codex"))
         self.assertIn("lies inside the checkout", str(ctx.exception))
         # The exemption: the same wrapper reached by its own in-checkout spelling.
         with mock.patch.dict(os.environ, {"HOME": str(home),
@@ -27693,7 +27751,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
-                **_workshop_build_kwargs(self, "codex"))
+                **_workshop_build_kwargs(self, "codex"), network=network_block("codex"))
         self.assertIn(str(bindir), profile["runtime_ro_bind_paths"])
 
     def test_backend_ro_extra_goes_through_the_alias_refusal(self) -> None:
@@ -27713,7 +27771,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude",
-                backend_ro_extra=[str(d / "alias")])
+                backend_ro_extra=[str(d / "alias")], network=network_block("claude"))
 
     def test_the_mount_table_decodes_escapes_and_the_longest_mount_point_wins(self) -> None:
         # Two properties of the instrument the alias refusal reads, driven on a synthetic
@@ -27759,7 +27817,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 ort.build_lineage_bwrap_profile(
                     repo_root=repo, orchestration_id="o", agent_run_id="A",
-                    backend_command="cli-sim", backend_type="codex")
+                    backend_command="cli-sim", backend_type="codex", network=network_block("codex"))
         self.assertIn("lies inside the checkout", str(ctx.exception))
 
     def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
@@ -27774,7 +27832,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o", agent_run_id="A",
                 backend_command="claude", backend_type="claude",
-                **_workshop_build_kwargs(self))
+                **_workshop_build_kwargs(self), network=network_block("claude"))
         self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
         self.assertEqual(profile["env"]["HOME"], str(fake_home))
 
@@ -28063,6 +28121,12 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
                     "ATMOFAB_ORCHESTRATION_ID": "o", "ATMOFAB_CHILD_AGENT_RUN_ID": "A",
                     "TMPDIR": str(root / "ws"), **workshop["env"]},
         }
+        # The relay the rendered command runs is installed by the host half (issue #534 step 4).
+        from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
+        routes = ort.leaf_netns.HostRoutes(
+            profile["network"]["socket_dir"], WORKSHOP_CLI_ENDPOINTS["claude"],
+            str(root / "net_routes.jsonl"), "A").start()
+        self.addCleanup(routes.stop)
         argv = ort.render_bwrap_command(profile=profile, command_argv=["/usr/bin/env"])
         poison = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
                   "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
@@ -28083,9 +28147,15 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
         # bwrap sets PWD itself from --chdir; it is the ONE name in the child that the
         # profile does not name, and it is measured rather than assumed.
         self.assertEqual({k: v for k, v in child.items() if k != "PWD"}, profile["env"])
-        # ...and the poison controls, so "equal" cannot be "the parent env was empty".
-        for name in poison:
-            self.assertNotIn(name, child)
+        # ...and the poison controls, so "equal" cannot be "the parent env was empty". The
+        # parent's credentialed `HTTPS_PROXY` does not travel; the name the child holds is the
+        # profile's own loopback value (issue #534 step 4), not the parent's.
+        for name, value in poison.items():
+            if name in ort.leaf_netns.PROXY_ENV:
+                self.assertEqual(child.get(name), ort.leaf_netns.PROXY_ENV[name])
+                self.assertNotEqual(child.get(name), value)
+            else:
+                self.assertNotIn(name, child)
 
 
 class RetiredPureLeafRecordTests(unittest.TestCase):
@@ -28160,7 +28230,7 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
                     parent_agent_run_id="orch_run_old", child_agent_run_id="child_new_pure",
                     request_payload=req,
                     response_payload={"agent_run_id": "child_new_pure", "backend": "claude",
-                                      **_spawn_response_payload("child_new_pure")})
+                                      **_spawn_response_payload("child_new_pure")}, netns_socket_dir=netns_socket_dir())
             self.assertIn("the pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
             self.assertFalse((repo_root / "workspace" / "orchestrations" / self._ORCH
                               / "launches" / "child_new_pure.request.json").exists())
@@ -30009,6 +30079,63 @@ class WrapperSandboxRendererTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"PATH": f"{prefix / 'bin'}:/usr/bin:/bin"}):
             roots = ort.wrapper_toolchain_ro_roots(["launcher", "sh", "no-such-tool"])
         self.assertEqual(roots, [str(prefix)])
+
+
+
+class LeafNetnsPreflightTests(unittest.TestCase):
+    """Issue #534 step 4: preflight's two network-namespace rows, run for real (bwrap and the
+    real relay; no provider contacted), and AND-ed into `sandbox_enforced` and both backends'
+    launch gates."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _bwrap_usable():
+            raise AssertionError(
+                "bwrap is absent or unprivileged user namespaces are disabled; see "
+                "docs/BWRAP_ENABLEMENT.md (CI lifts kernel.apparmor_restrict_unprivileged_userns)")
+
+    def setUp(self) -> None:
+        patcher = mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _rows(self) -> tuple[dict, bool]:
+        checks, enforced = ort._probe_bwrap_sandbox()
+        return {c["name"]: c for c in checks}, enforced
+
+    def test_both_rows_pass_on_a_host_that_can_sandbox_a_leaf(self) -> None:
+        rows, enforced = self._rows()
+        self.assertIs(rows["sandbox_netns_python"]["pass"], True, rows)
+        self.assertIs(rows["sandbox_netns_route"]["pass"], True, rows)
+        self.assertTrue(enforced)
+        for required in (ort.CLAUDE_REQUIRED_LAUNCH_CHECKS, ort.CODEX_REQUIRED_LAUNCH_CHECKS):
+            self.assertLessEqual({"sandbox_netns_python", "sandbox_netns_route"}, required)
+
+    def test_a_missing_relay_interpreter_fails_closed(self) -> None:
+        with mock.patch.object(ort.leaf_netns, "RELAY_PYTHON", "/nonexistent/python3"):
+            rows, enforced = self._rows()
+        self.assertIs(rows["sandbox_netns_python"]["pass"], False, rows)
+        self.assertIs(rows["sandbox_netns_route"]["pass"], False, rows)
+        self.assertFalse(enforced)
+
+    def test_a_route_that_reaches_nothing_fails_closed(self) -> None:
+        # The host half admits nothing: the CONNECT is refused, so the route row fails.
+        real = ort.leaf_netns.HostRoutes
+
+        def admitting_nothing(socket_dir, endpoints, *a, **kw):
+            return real(socket_dir, [], *a, **kw)
+        with mock.patch.object(ort.leaf_netns, "HostRoutes", admitting_nothing):
+            rows, enforced = self._rows()
+        self.assertIs(rows["sandbox_netns_python"]["pass"], True, rows)
+        self.assertIs(rows["sandbox_netns_route"]["pass"], False, rows)
+        self.assertFalse(enforced)
+
+    def test_the_env_override_assumes_both_rows(self) -> None:
+        with mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}):
+            rows, enforced = self._rows()
+        self.assertTrue(enforced)
+        self.assertIs(rows["sandbox_netns_route"]["pass"], True)
+        self.assertIs(rows["sandbox_netns_python"]["pass"], True)
 
 
 if __name__ == "__main__":

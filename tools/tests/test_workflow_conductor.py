@@ -48,6 +48,7 @@ from tools import orchestration_runtime as ort
 from tools import usage_reset
 from tools.tests import skip_probes
 from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
+from tools.tests.orchestration_fixtures import netns_socket_dir, network_block
 from tools.tests.private_root_fixture import (
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
@@ -1239,7 +1240,7 @@ class _FakeConductor(wc.Conductor):
             rec = self.record_launch(
                 child_arid, request, entry,
                 workshop_lineage_id=lineage_id if warm_target else None,
-                mcp_config_json=mcp_config_json)
+                mcp_config_json=mcp_config_json, netns_socket_dir=netns_socket_dir())
             launched_at = self._launch_instant(child_arid)
             started = time.monotonic()
             proc = self.spawn_leaf(
@@ -2627,16 +2628,16 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         cleared between the phase and its escalation.)"""
         c = self._conductor()
         request = {"node_key": "component/spec_x@0.1.0", "step": "build", "substep": None}
-        c.record_launch("child-9", request, c.entry_for("generate", "generate"))
+        c.record_launch("child-9", request, c.entry_for("generate", "generate"), netns_socket_dir=netns_socket_dir())
         self.assertNotIn("derivation_key", request)
         refs = self._refs()
         c.run_phase(refs, "compile")
         after = {"node_key": refs.node_key, "step": "compile", "substep": "diagnose"}
-        c.record_launch("child-10", after, c.entry_for(None, None))
+        c.record_launch("child-10", after, c.entry_for(None, None), netns_socket_dir=netns_socket_dir())
         self.assertEqual(after["derivation_key"], "sha256:" + "f" * 64)
         other = {"node_key": refs.node_key, "step": "generate", "substep": "generate"}
         c.record_launch("child-11", other, c.entry_for("generate", "generate"),
-                        mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"])
+                        mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"], netns_socket_dir=netns_socket_dir())
         self.assertNotIn("derivation_key", other)
 
 
@@ -6348,7 +6349,7 @@ class LeafEnvThreadingSiteTest(unittest.TestCase):
             c._write_launch_input_evidence = lambda name, payload: "ref"  # type: ignore[assignment]
             c.record_launch("child-1", {"step": "generate", "substep": "generate"},
                             c.entry_for("generate", "generate"),
-                            mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"])
+                            mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"], netns_socket_dir=netns_socket_dir())
         self.assertIn("--child-env-from-stdin", seen["argv"])
         self.assertIsNotNone(seen["input"])
         sent = json.loads(seen["input"])
@@ -10874,7 +10875,8 @@ class LeafSpawnTest(unittest.TestCase):
         ws_tmp.mkdir(parents=True, exist_ok=True)
         # `render_bwrap_command` fails closed on an env-less profile: under `--clearenv` the
         # leaf would get NO environment at all.
-        env = {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)}
+        from tools.leaf_netns import PROXY_ENV
+        env = {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp), **PROXY_ENV}
         profile: dict[str, Any] = {
             "repo_root": str(repo), "tmp_dir": str(ws_tmp),
             "workspace_tmp_rw_abs": str(ws_tmp),
@@ -10897,6 +10899,7 @@ class LeafSpawnTest(unittest.TestCase):
             env["CODEX_HOME"] = str(config)
             profile["runtime_ro_bind_mappings"] = mappings
         profile["env"] = env
+        profile["network"] = network_block(backend)
         prof_dir = repo / "workspace" / "orchestrations" / "o" / "sandbox_profiles"
         prof_dir.mkdir(parents=True, exist_ok=True)
         (prof_dir / f"{arid}.json").write_text(json.dumps(profile), encoding="utf-8")
@@ -24136,9 +24139,9 @@ class LeafEntryThreadingTests(unittest.TestCase):
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         c.record_launch("arid-1", {"step": "generate", "substep": "generate"},
                         c.entry_for("generate", "generate"),
-                        mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"])
+                        mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"], netns_socket_dir=netns_socket_dir())
         c.record_launch("arid-2", {"step": "validate", "substep": "judge"},
-                        c.entry_for("validate", "judge"))
+                        c.entry_for("validate", "judge"), netns_socket_dir=netns_socket_dir())
         self.assertEqual([r["backend"] for r in recorded], ["claude", "codex"])
 
     def test_record_launch_names_the_executable_this_leaf_is_launched_through(self) -> None:
@@ -24161,7 +24164,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             entry = c.entry_for(phase, substep)
             kind = _leaf_kind(phase, substep)
             c.record_launch(f"arid-{substep}", {"step": phase, "substep": substep}, entry,
-                            mcp_config_json=kind.get("mcp_config_json"))
+                            mcp_config_json=kind.get("mcp_config_json"), netns_socket_dir=netns_socket_dir())
             # THE claim: what is recorded is argv[0] of what `spawn_leaf` would launch.
             self.assertEqual(recorded[-1]["backend_command"],
                              c.leaf_command(entry, **kind)[0], msg=f"{phase}.{substep}")
@@ -24179,14 +24182,15 @@ class LeafEntryThreadingTests(unittest.TestCase):
         step, substep = request.get("step"), request.get("substep") or None
         deterministic = bool(step) and c._is_deterministic_substep(step, substep)
         kind = {} if deterministic else _leaf_kind(step, substep)
-        c.record_launch(arid, request, entry, mcp_config_json=kind.get("mcp_config_json"))
+        c.record_launch(arid, request, entry, mcp_config_json=kind.get("mcp_config_json"), netns_socket_dir=netns_socket_dir())
         return recorded[-1]
 
     def test_record_launch_records_the_tool_set_the_leaf_came_up_with(self) -> None:
         """What a leaf's configuration was closed to is recoverable from no other artifact.
 
-        The persisted `sandbox_command` renders `command_argv=[backend_command]` alone, so the
-        real spawn argv is written down nowhere — and the tool set is the enforcement boundary
+        The persisted `sandbox_command` renders `command_argv=[backend_command]` alone (behind
+        the network relay's head, issue #534 step 4), so the real spawn argv is written down
+        nowhere — and the tool set is the enforcement boundary
         a later audit of "could this leaf have done that" turns on.
 
         `claude_setting_sources` and the `mcp_config` list (a `{ref, sha256}` per configuration,
@@ -24631,7 +24635,7 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             request = {"agent_role": "substep", "pure_context": self.BIG}
 
             c.record_launch("child-1", request, c.entry_for("generate", "generate"),
-                            mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"])
+                            mcp_config_json=_leaf_kind("generate", "generate")["mcp_config_json"], netns_socket_dir=netns_socket_dir())
 
             argv, stdin = c.seen[-1]                                   # type: ignore[attr-defined]
             self._assert_no_huge_argv(argv)

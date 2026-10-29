@@ -1319,7 +1319,9 @@ class LaunchShapeTests(unittest.TestCase):
     def test_the_codex_reading_overrides_name_no_wrapper(self) -> None:
         self.assertEqual(leaf_contract.codex_workshop_overrides(None, reading=True),
                          ["--config", 'approval_policy="never"',
-                          "--config", "features.apps=false"])
+                          "--config", "features.apps=false",
+                          # issue #534 step 4: the provider-side web search tool removed
+                          "--config", 'web_search="disabled"'])
         with self.assertRaises(ValueError):
             leaf_contract.codex_workshop_overrides(
                 leaf_contract.workshop_mcp_config_json("http://127.0.0.1:5/mcp"), reading=True)

@@ -2234,7 +2234,12 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
     False — the READ-ONLY profile (`readonly: True`, no `leaf_mode`) every pure leaf ran under
     included: no in-tree launch shape builds one since the pure path went (issue #534
     PR-J4-b), and a leaf under it would edit the sandbox's own tmpfs and leave an empty tree
-    to snapshot. `spawn_leaf` names that refusal (`_LEAF_PROFILE_NOT_A_LINEAGE`)."""
+    to snapshot. `spawn_leaf` names that refusal (`_LEAF_PROFILE_NOT_A_LINEAGE`).
+
+    And the profile carries the leaf's network namespace (issue #534 step 4): a `network`
+    block `leaf_netns.network_block_violations` answers nothing for, against the ENTRY's
+    family's constant endpoint set, and the namespace's own proxy values
+    (`leaf_netns.PROXY_ENV`) in its environment."""
     if not (profile.get("leaf_mode") == "workshop" and profile.get("readonly") is False):
         return False
     rw = profile.get("runtime_rw_bind_paths")
@@ -2264,6 +2269,14 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
            for fam, name in WORKSHOP_PROFILE_HOME_ENV.items()):
         return False
     if env.get(WORKSHOP_PROFILE_HOME_ENV[family]) != str(config):
+        return False
+    from tools import leaf_netns
+    from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
+    if leaf_netns.network_block_violations(
+            profile.get("network"), endpoints=WORKSHOP_CLI_ENDPOINTS[family],
+            repo_root=str(repo_root) if repo_root is not None else None):
+        return False
+    if any(env.get(name) != value for name, value in leaf_netns.PROXY_ENV.items()):
         return False
     if family == "claude":
         # The credential lands in the CLI's own home, never in the tree the host snapshots.
@@ -2879,12 +2892,17 @@ def _terminate_leaf_process_group(process: Any, *, pgid: int | None = None,
     and deleted its TMPDIR. The leaf is launched with `start_new_session=True` so at least the
     wrapper is its own group leader and can be signalled as a group.
 
-    The reach is bounded, and deliberately not overstated: `render_bwrap_command` passes
-    `--new-session`, so bwrap `setsid`s the sandboxed command into a session of ITS own. The
-    group signal therefore reaches the wrapper, and the CLI dies with it via `--die-with-parent`
-    — but a tool subprocess the CLI leaked is outside this group entirely and survives. Every
-    caller is written to tolerate that (bounded waits, then abandon), rather than assuming the
-    tree is gone.
+    The reach: `render_bwrap_command` passes `--new-session`, so bwrap `setsid`s the sandboxed
+    command into a session of ITS own, and the group signal reaches bwrap alone. Since issue
+    #534 step 4 that is enough: the leaf runs with `--unshare-pid`, so bwrap's child is the
+    namespace's init, it dies with bwrap (`--die-with-parent`), and the kernel ends every
+    process of the namespace with it — the network relay that is the sandboxed command, the CLI
+    it runs, and a tool subprocess the CLI leaked in a session of its own
+    (`test_bwrap_simulation.test_killing_the_outer_bwrap_ends_the_pumps_child_within_the_grace`
+    kills bwrap alone and finds no process of the launch left). Before that, the leaked
+    subprocess survived. Every caller is still written to tolerate survivors (bounded waits,
+    then abandon) rather than assuming the tree is gone. A leaf whose CLI dies of a signal
+    while bwrap lives reports `128 + n` (the relay's exit, mirrored by bwrap), not `-n`.
 
     `pgid` is the group id pinned at SPAWN time, and it is the only id this function will ever
     signal. `os.getpgid(process.pid)` is deliberately NOT consulted: it is a lookup on a pid the
@@ -4396,9 +4414,9 @@ class Conductor:
             # is the wrapper, so the CLI behind it would survive. `start_new_session=True`
             # gives the wrapper its own process group for `_terminate_leaf_process_group`,
             # matching the codex path. (bwrap itself calls `setsid` for the sandboxed command,
-            # so the group signal reaches the wrapper and — via `--die-with-parent` — the CLI
-            # it started; a tool subprocess the CLI spawned is inside the sandbox's own session
-            # and is left to the same fate the interrupt path already leaves it to.)
+            # so the group signal reaches the wrapper; under its `--unshare-pid` every process
+            # of the launch — the relay, the CLI, a tool subprocess in a session of its own —
+            # dies with it, `_terminate_leaf_process_group`.)
             process = subprocess.Popen(
                 argv, cwd=self.repo_root, env=child_env,
                 # The prompt rides stdin, not argv (see `leaf_command`). `claude -p` with
@@ -4796,11 +4814,11 @@ class Conductor:
         # The cap, as a DEADLINE ON EVERY WAIT rather than a watchdog timer that kills and hopes.
         # A timer was the first shape of this and it does not hold: killing the process group
         # does NOT guarantee the stdout pipe closes, because `bwrap --new-session` puts the
-        # sandboxed command in a session of its own — the group signal reaches the wrapper (and,
-        # via `--die-with-parent`, the CLI) but not a tool subprocess the CLI leaked, and that
-        # subprocess inherited the write end. A blocking `for line in process.stdout` would then
-        # never reach EOF and the conductor would block FOREVER PAST THE CAP: the original defect,
-        # merely delayed. So the read runs in a pump thread and the main path waits on a queue
+        # sandboxed command in a session of its own — the group signal reaches the wrapper alone,
+        # and a tool subprocess the CLI leaked inherited the write end. Since issue #534 step 4
+        # the wrapper's `--unshare-pid` takes that subprocess down with it, but a blocking
+        # `for line in process.stdout` would still rest on that one mechanism, and without it
+        # the conductor would block FOREVER PAST THE CAP: the original defect, merely delayed. So the read runs in a pump thread and the main path waits on a queue
         # with the remaining time; every wait below is bounded the same way.
         timeout_seconds = _leaf_timeout_seconds() if timeout_seconds is None else timeout_seconds
         started = time.monotonic()
@@ -5333,8 +5351,12 @@ class Conductor:
     def record_launch(self, child_arid: str, request: dict[str, Any],
                       entry: ResolvedLeafEntry | None = None, *,
                       workshop_lineage_id: str | None = None,
-                      mcp_config_json: str | None = None) -> dict[str, Any]:
+                      mcp_config_json: str | None = None,
+                      netns_socket_dir: str | None = None) -> dict[str, Any]:
         """Record one launch (`orchestration_runtime record-launch`).
+
+        A CLI launch passes the socket directory of its network routes as `netns_socket_dir`
+        (`_start_leaf_routes`, issue #534 step 4); the runtime refuses a CLI launch without it.
 
         A WORKSHOP launch (issue #534) passes its wrapper endpoint as `mcp_config_json` (it is
         recorded in the launch's setting surface) and, on a WARM resume only, the lineage it
@@ -5392,6 +5414,8 @@ class Conductor:
         ]
         if workshop_lineage_id is not None:
             argv += ["--workshop-lineage-id", workshop_lineage_id]
+        if netns_socket_dir is not None:
+            argv += ["--netns-socket-dir", netns_socket_dir]
         return self.runtime(argv, input=json.dumps(
             self._child_env(child_arid, entry), ensure_ascii=False))
 
@@ -5408,7 +5432,8 @@ class Conductor:
         goldens in the suite are the record, and `repo_revision` names the set.
 
         `claude_tools` stays because it is still written down nowhere else: the persisted
-        `sandbox_command` renders `command_argv` as the executable alone, so the tool set a
+        `sandbox_command` renders `command_argv` as the executable alone (behind the network
+        relay's head since issue #534 step 4, `leaf_netns.relay_argv`), so the tool set a
         leaf was actually launched with is not recoverable from any artifact, and it is the
         enforcement boundary a later audit of "could this leaf have done that" turns on. (A pure
         claude leaf, before issue #534 PR-J4-b, recorded `[""]` — the CLI's spelling for "no
@@ -7919,6 +7944,32 @@ class Conductor:
         from tools.workshop_mcp import WrapperMcpServer
         return WrapperMcpServer(ctx, on_end=on_end).start()
 
+    def _start_leaf_routes(self, entry: Any, child_arid: str, server: Any) -> Any:
+        """Start one CLI launch's network routes (issue #534 step 4): the host half of
+        `tools/leaf_netns.py` in a fresh socket directory, admitting the family's constant
+        endpoint set (`leaf_contract.WORKSHOP_CLI_ENDPOINTS`) and, for a producing launch, the
+        wrapper endpoint `server` serves. Every CONNECT is a row of the orchestration's
+        `net_routes.jsonl`. A failure is the lineage's setup failing — no leaf has run."""
+        from urllib.parse import urlsplit
+
+        from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
+        from tools.leaf_netns import HostRoutes, make_socket_dir
+        socket_dir = ""
+        try:
+            socket_dir = make_socket_dir()
+            return HostRoutes(
+                socket_dir, WORKSHOP_CLI_ENDPOINTS[self._workshop_backend(entry)],
+                str(self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                    / "net_routes.jsonl"),
+                child_arid,
+                wrapper_port=(urlsplit(server.url).port if server is not None else None),
+            ).start()
+        except Exception as exc:  # a host precondition, before any launch
+            if socket_dir:
+                shutil.rmtree(socket_dir, ignore_errors=True)
+            raise WorkshopSetupFailed(
+                f"the leaf's network routes: {type(exc).__name__}: {exc}") from exc
+
     def _workshop_lineage_from_seeds(self, refs: NodeRefs, paths: Any, seeds: dict[str, str],
                                      deadline: float, spec: "Conductor._LeafProducerSpec"
                                      ) -> "Conductor._WorkshopLineage":
@@ -8234,13 +8285,20 @@ class Conductor:
             cancel = threading.Event()
             event = cancel
             server = self._start_wrapper_endpoint(ctx, lambda _ended_by: event.set())
+        routes: Any = None
         try:
+            # Every CLI launch runs in a network namespace whose routes out the host serves for
+            # the life of the launch (issue #534 step 4), a reading one included; the HTTP host
+            # loop runs no leaf process and has none.
+            if not http:
+                routes = self._start_leaf_routes(entry, child_arid, server)
             mcp_config_json = (workshop_mcp_config_json(server.url) if server is not None
                                else None)
             rec = self.record_launch(
                 child_arid, request, entry,
                 workshop_lineage_id=(paths.lineage_id if warm else None),
-                mcp_config_json=mcp_config_json)
+                mcp_config_json=mcp_config_json,
+                netns_socket_dir=(routes.socket_dir if routes is not None else None))
             if rec.get("workshop_lineage_home_missing"):
                 self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
                           target=resume_session_id or "",
@@ -8270,6 +8328,8 @@ class Conductor:
                     mcp_config_json=mcp_config_json, cancel_event=cancel, reading=reading)
             self._persist_leaf_output(child_arid, proc)
         finally:
+            if routes is not None:
+                routes.stop()
             if server is not None:
                 server.stop()
         if server is not None and server.in_flight():
@@ -10234,6 +10294,12 @@ class Conductor:
             # measurement was taken against the agentic launch that no longer exists. Set here rather than on the argv because the CLI exposes
             # no flag for it.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+            # The CLI's nonessential traffic — telemetry, update checks — off (issue #534 step
+            # 4): inside the leaf's network namespace each request would be a refused route in
+            # `net_routes.jsonl` (measured on CLI 2.1.312: one Datadog intake CONNECT per
+            # launch without it). The namespace's proxy values are the profile builder's, not
+            # this dict's (`leaf_netns.PROXY_ENV`).
+            env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
             # CLAUDE_CONFIG_DIR is deliberately NOT set here: naming a home here would point the
             # leaf at a configuration surface nothing prepared, hashed or recorded. A WORKSHOP
             # leaf (issue #534) has its own, and it reaches the leaf the way a codex lineage home does — through the profile's

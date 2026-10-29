@@ -37,6 +37,7 @@ from tools.leaf_contract import (
 )
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.orchestration_fixtures import claude_launch_checks
+from tools.tests.orchestration_fixtures import netns_socket_dir, network_block
 from tools.tests.test_leaf_producer import _PureFakeConductor
 from tools.tests.test_leaf_wiring import (
     _mark_dependencies_ready,
@@ -186,6 +187,7 @@ class WorkshopProfileTests(_Env):
     def _profile(self, **over) -> tuple[dict, dict]:
         iso = self._prepare("lin_a", resume=False)
         kwargs = {**claude_workshop_profile_kwargs(iso), **over}
+        kwargs.setdefault("network", network_block("claude"))
         profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_a",
             backend_command="claude", backend_type="claude", **kwargs)
@@ -222,7 +224,7 @@ class WorkshopProfileTests(_Env):
         for broken in ({"readonly": True}, {"leaf_mode": None}, {"leaf_mode": "agentic"},
                        {"workdir": None}, {"credential_rw_mapping": None}):
             with self.subTest(broken=broken), self.assertRaises(ValueError):
-                build_lineage_bwrap_profile(**base, **{**kwargs, **broken})
+                build_lineage_bwrap_profile(**base, **{**kwargs, **broken}, network=network_block("claude"))
         # A profile that is not a workshop lineage's — the read-only one the pure leaf ran
         # under, with or without the workshop fields — is refused since issue #534 PR-J4-b.
         for extra in ({}, {"workdir": iso["tree"]},
@@ -230,7 +232,7 @@ class WorkshopProfileTests(_Env):
                                                  iso["credentials_destination"])},
                       {"readonly": False}):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
-                build_lineage_bwrap_profile(**base, **extra)
+                build_lineage_bwrap_profile(**base, **extra, network=network_block("claude"))
 
     def test_the_renderer_refuses_each_workshop_field_off_a_workshop_profile(self) -> None:
         profile, iso = self._profile()
@@ -292,7 +294,8 @@ class WorkshopRecordLaunchTests(_Env):
         return record_launch(repo_root=self.repo, orchestration_id=_ORCH,
                              parent_agent_run_id="orch_run_001", child_agent_run_id=child,
                              request_payload=req,
-                             response_payload=response or _spawn_response(child), **kw)
+                             response_payload=response or _spawn_response(child),
+                             **{"netns_socket_dir": netns_socket_dir(), **kw})
 
     def test_a_cold_launch_whose_home_the_host_did_not_prepare_is_refused(self) -> None:
         with self.assertRaises(RuntimeError) as ctx:
@@ -708,11 +711,11 @@ class LeafCommandTests(unittest.TestCase):
         self.c.runtime = lambda argv, **kw: seen.append(list(argv)) or {}  # type: ignore
         wc.Conductor.record_launch(self.c, "child", {"node_key": "n", "step": "generate",
                                                      "substep": "generate"},
-                                   self.entry, mcp_config_json=self.mcp)
+                                   self.entry, mcp_config_json=self.mcp, netns_socket_dir=netns_socket_dir())
         wc.Conductor.record_launch(self.c, "child2", {"node_key": "n", "step": "generate",
                                                       "substep": "generate"},
                                    self.entry, mcp_config_json=self.mcp,
-                                   workshop_lineage_id="child")
+                                   workshop_lineage_id="child", netns_socket_dir=netns_socket_dir())
         self.assertNotIn("--workshop-lineage-id", seen[0])
         self.assertEqual(seen[1][seen[1].index("--workshop-lineage-id") + 1], "child")
         response = json.loads(seen[0][seen[0].index("--response-json") + 1])
@@ -942,7 +945,7 @@ class HttpWorkshopRecordLaunchTests(_Env):
                              response_payload={**_spawn_response(child), "backend": backend,
                                                "agent_run_id": child,
                                                "started_at": "2026-10-27T00:00:00Z"},
-                             **kw)
+                             **kw, netns_socket_dir=netns_socket_dir())
 
     def test_a_cold_http_workshop_launch_is_admitted_and_stamped(self) -> None:
         for provider in ("anthropic_api", "openai_compatible"):
@@ -1218,3 +1221,156 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
+    """Issue #534 step 4: the leaf's network namespace as the profile records it, the renderer
+    emits and refuses it, `record_launch` builds it from the conductor's socket directory, and
+    `record_agent_run` requires its stamp. The namespace itself, under real bwrap, is
+    `test_bwrap_simulation.BwrapLineageProfileTests`; the relay, `test_leaf_netns`."""
+
+    def _profile(self, **over) -> dict:
+        import uuid
+        lineage = f"lin_{uuid.uuid4().hex[:12]}"  # a lineage is created once
+        iso = self._prepare(lineage, resume=False)
+        kwargs = {**claude_workshop_profile_kwargs(iso), "network": network_block("claude"),
+                  **over}
+        return build_lineage_bwrap_profile(
+            repo_root=self.repo, orchestration_id=_ORCH, agent_run_id=lineage,
+            backend_command="claude", backend_type="claude", **kwargs)
+
+    def test_the_profile_carries_its_network_block_and_the_renderer_unshares_the_net(
+            self) -> None:
+        from tools import leaf_netns
+        block = network_block("claude", wrapper_port=4242)
+        profile = self._profile(network=block)
+        self.assertEqual(profile["network"], block)
+        self.assertEqual({k: profile["env"][k] for k in leaf_netns.PROXY_ENV},
+                         leaf_netns.PROXY_ENV)
+        cmd = render_bwrap_command(profile=profile, command_argv=["claude", "-p"])
+        head = cmd[:cmd.index("--")]
+        self.assertIn("--unshare-net", head)
+        self.assertIn("--unshare-pid", head)
+        bind = ["--ro-bind", block["socket_dir"], "/run/atmofab/net"]
+        self.assertTrue(any(head[i:i + 3] == bind for i in range(len(head))), head)
+        self.assertEqual(cmd[cmd.index("--") + 1:], [
+            "/usr/bin/python3", "-I", "/run/atmofab/net/relay.py",
+            "--proxy", "3128", "/run/atmofab/net/provider.sock",
+            "--tunnel", "4242", "/run/atmofab/net/wrapper.sock", "--", "claude", "-p"])
+        reading = self._profile(network=network_block("claude"))
+        tail = render_bwrap_command(profile=reading, command_argv=["claude"])
+        self.assertNotIn("--tunnel", tail)
+
+    def test_the_builder_and_the_renderer_refuse_a_profile_without_a_network_block(
+            self) -> None:
+        with self.assertRaisesRegex(ValueError, "needs its network block"):
+            self._profile(network=None)
+        profile = self._profile()
+        del profile["network"]
+        with self.assertRaisesRegex(ValueError, "carries no network block"):
+            render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_a_proxy_value_not_the_namespaces_own_is_refused(self) -> None:
+        for name, bad in (("HTTPS_PROXY", "http://user:pw@proxy:3128"),
+                          ("HTTPS_PROXY", None), ("NO_PROXY", "*"), ("NO_PROXY", None)):
+            with self.subTest(name=name, bad=bad):
+                profile = self._profile()
+                if bad is None:
+                    del profile["env"][name]
+                else:
+                    profile["env"][name] = bad
+                with self.assertRaisesRegex(ValueError, f"profile env {name} must be"):
+                    render_bwrap_command(profile=profile, command_argv=["claude"])
+        profile = self._profile()
+        profile["env"]["HTTP_PROXY"] = "http://127.0.0.1:3128"
+        with self.assertRaisesRegex(ValueError, "undeclared name 'HTTP_PROXY'"):
+            render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_each_field_of_the_block_off_its_constant_is_refused(self) -> None:
+        good = network_block("claude")
+        repo = str(self.repo.resolve())
+        for label, change, needle in (
+                ("unshare_net", {"unshare_net": False}, "unshare_net"),
+                ("unshare_pid", {"unshare_pid": None}, "unshare_pid"),
+                ("mount", {"mount": "/tmp/net"}, "network.mount"),
+                ("proxy", {"proxy_listen": "0.0.0.0:3128"}, "proxy_listen"),
+                ("dir inside the checkout", {"socket_dir": repo + "/net"}, "outside the checkout"),
+                ("dir is the checkout", {"socket_dir": repo}, "outside the checkout"),
+                ("dir holds the checkout", {"socket_dir": str(self.repo.resolve().parent)},
+                 "outside the checkout"),
+                ("relative dir", {"socket_dir": "net"}, "normalized absolute"),
+                ("dir too long", {"socket_dir": "/" + "d" * 100}, "too long"),
+                ("wrapper port is the proxy's", {"wrapper_port": 3128}, "wrapper_port"),
+                ("wrapper port a bool", {"wrapper_port": True}, "wrapper_port"),
+                ("another endpoint", {"endpoints": [*good["endpoints"], "github.com:443"]},
+                 "endpoint set"),
+                ("the other family's set", {"endpoints": list(
+                    leaf_contract.WORKSHOP_CLI_ENDPOINTS["codex"])}, "endpoint set")):
+            with self.subTest(label):
+                profile = self._profile()
+                profile["network"] = {**good, **change}
+                with self.assertRaisesRegex(ValueError, needle):
+                    render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_record_launch_requires_the_socket_dir_to_be_the_conductors_own(self) -> None:
+        import tempfile as _tempfile
+        from tools import leaf_netns
+        loose = leaf_netns.make_socket_dir()
+        self.addCleanup(os.rmdir, loose)
+        os.chmod(loose, 0o755)
+        link = Path(_tempfile.mkdtemp(dir="/tmp")) / "l"
+        os.symlink(netns_socket_dir(), link)
+        inside = self.repo / "net"
+        inside.mkdir(mode=0o700)
+        for label, value, needle in (
+                ("absent", None, "needs its network namespace's socket directory"),
+                ("missing", "/tmp/atmofab-net-does-not-exist", "does not exist"),
+                ("not private", loose, "mode 0700"),
+                ("a link", str(link), "not a link"),
+                ("inside the checkout", str(inside), "outside the checkout")):
+            with self.subTest(label), self.assertRaisesRegex(RuntimeError, needle):
+                self._launch(f"ar_{label.replace(' ', '_')}",
+                             _workshop_request(f"ar_{label.replace(' ', '_')}"),
+                             netns_socket_dir=value)
+            _clear_active_child(self.repo)
+
+    def test_record_launch_records_the_block_the_stamp_and_the_wrapper_port(self) -> None:
+        response = {**_spawn_response("ar_net"),
+                    "claude_mcp_config": [{"server": "wrapper",
+                                           "url": "http://127.0.0.1:4545/mcp"}]}
+        sdir = netns_socket_dir()
+        rec = self._launch("ar_net", _workshop_request("ar_net"), response=response,
+                           netns_socket_dir=sdir)
+        self.assertTrue(rec)
+        profile = json.loads((self._base() / "sandbox_profiles/ar_net.json").read_text())
+        self.assertEqual(profile["network"]["socket_dir"], sdir)
+        self.assertEqual(profile["network"]["wrapper_port"], 4545)
+        self.assertEqual(profile["network"]["endpoints"],
+                         list(leaf_contract.WORKSHOP_CLI_ENDPOINTS["claude"]))
+        launched = json.loads((self._base() / "launches/ar_net.response.json").read_text())
+        self.assertEqual(launched["sandbox_network"], "namespace")
+        import tools.validate_pipeline_semantics as vps
+        self.assertEqual(vps._workshop_profile_violations(profile), [])
+
+    def test_the_audit_names_the_resume_barrier_and_reads_the_recorded_command(self) -> None:
+        import tools.validate_pipeline_semantics as vps
+        self._launch("ar_aud", _workshop_request("ar_aud"))
+        good = json.loads((self._base() / "sandbox_profiles/ar_aud.json").read_text())
+        self.assertEqual(vps._workshop_profile_violations(good), [])
+        old = {k: v for k, v in good.items() if k != "network"}
+        self.assertEqual(len(vps._workshop_profile_violations(old)), 1)
+        self.assertIn("start a fresh run", vps._workshop_profile_violations(old)[0])
+        cmd = good["rendered_command"]
+        split = cmd.index("--")
+        for label, rendered in (
+                ("no --unshare-net", [t for t in cmd if t != "--unshare-net"]),
+                ("no --unshare-pid", [t for t in cmd if t != "--unshare-pid"]),
+                ("no -I", cmd[:split + 2] + cmd[split + 3:]),
+                ("no ro-bind", [t if t != "/run/atmofab/net" else "/run/x" for t in cmd]),
+                ("not rendered", None)):
+            with self.subTest(label):
+                self.assertTrue(vps._workshop_profile_violations(
+                    {**good, "rendered_command": rendered}), label)
+        with self.subTest("proxy env"):
+            self.assertTrue(vps._workshop_profile_violations(
+                {**good, "env": {**good["env"], "HTTPS_PROXY": "http://x:1"}}))

@@ -37,7 +37,9 @@ from unittest import mock
 
 import yaml
 
+from tools import leaf_netns
 from tools import orchestration_runtime as ort
+from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
 from tools import workflow_conductor as wc
 from tools.orchestration_runtime import (
     _ensure_orchestration_audit_dirs,
@@ -172,9 +174,86 @@ def _prepared_lineage(test: unittest.TestCase, repo: Path, orch: str, backend: s
     lineage = lineage or str(uuid.uuid4())
     if backend == "codex":
         iso = ort._prepare_codex_workflow_home(repo, orch, lineage, resume=False)
-        return iso, ort.codex_workshop_profile_kwargs(iso)
+        return iso, {**ort.codex_workshop_profile_kwargs(iso),
+                     "network": _leaf_routes(test, "codex").network}
     iso = ort._prepare_claude_workshop_home(repo, orch, lineage, resume=False)
-    return iso, ort.claude_workshop_profile_kwargs(iso)
+    return iso, {**ort.claude_workshop_profile_kwargs(iso),
+                 "network": _leaf_routes(test, "claude").network}
+
+
+class _LeafRoutes:
+    """One launch's network routes as the conductor serves them (`leaf_netns.HostRoutes` over
+    the family's endpoint set, issue #534 step 4) — and, for a row whose CLI talks to a LOOPBACK
+    stand-in on the host, a raw tunnel per stand-in port that `nest` runs a second relay for
+    inside the namespace (the production launch adds none: its API is reached by CONNECT).
+    `network` is the profile's block; `log` the `net_routes.jsonl` the host half writes."""
+
+    def __init__(self, test: unittest.TestCase, family: str, *, wrapper_port: int | None,
+                 standin_ports: tuple[int, ...], endpoints: tuple[str, ...] | None) -> None:
+        self.socket_dir = leaf_netns.make_socket_dir()
+        logs = tempfile.TemporaryDirectory()
+        test.addCleanup(logs.cleanup)
+        self.log = Path(logs.name) / "net_routes.jsonl"
+        self.routes = leaf_netns.HostRoutes(
+            self.socket_dir, endpoints or WORKSHOP_CLI_ENDPOINTS[family], str(self.log),
+            "test", wrapper_port=wrapper_port).start()
+        test.addCleanup(self.routes.stop)
+        self.standin_ports = standin_ports
+        for port in standin_ports:
+            listener = __import__("socket").socket(__import__("socket").AF_UNIX)
+            listener.bind(os.path.join(self.socket_dir, f"standin{port}.sock"))
+            listener.listen(16)
+            test.addCleanup(listener.close)
+
+            def serve(listener=listener, port=port) -> None:
+                import socket as _s
+                while True:
+                    try:
+                        conn, _ = listener.accept()
+                    except OSError:
+                        return
+                    try:
+                        upstream = _s.create_connection(("127.0.0.1", port), timeout=10)
+                    except OSError:
+                        conn.close()
+                        continue
+                    upstream.settimeout(None)
+                    threading.Thread(target=leaf_netns._splice, args=(conn, upstream),
+                                     daemon=True).start()
+            threading.Thread(target=serve, daemon=True).start()
+        self.network = leaf_netns.network_block(
+            self.socket_dir, WORKSHOP_CLI_ENDPOINTS[family], wrapper_port)
+
+    def nest(self, argv: list[str]) -> list[str]:
+        """`argv` behind a test-owned relay that tunnels each stand-in port to the host."""
+        if not self.standin_ports:
+            return list(argv)
+        tunnels = [part for port in self.standin_ports
+                   for part in ("--tunnel", str(port),
+                                f"{leaf_netns.NET_MOUNT}/standin{port}.sock")]
+        return [leaf_netns.RELAY_PYTHON, "-I",
+                f"{leaf_netns.NET_MOUNT}/{leaf_netns.RELAY_INSTALL_NAME}", *tunnels, "--", *argv]
+
+
+def _port_of(base_url: str) -> int:
+    return int(base_url.rsplit(":", 1)[1].split("/", 1)[0])
+
+
+def _reach_standin(test: unittest.TestCase, profile: dict, family: str, base_url: str, *,
+                   wrapper_port: int | None = None) -> _LeafRoutes:
+    """Give `profile` routes that also tunnel the loopback API stand-in at `base_url` into the
+    namespace (its `network` block replaced by theirs); run the command through `.nest`."""
+    routes = _leaf_routes(test, family, wrapper_port=wrapper_port,
+                          standin_ports=(_port_of(base_url),))
+    profile["network"] = routes.network
+    return routes
+
+
+def _leaf_routes(test: unittest.TestCase, family: str, *, wrapper_port: int | None = None,
+                 standin_ports: tuple[int, ...] = (),
+                 endpoints: tuple[str, ...] | None = None) -> _LeafRoutes:
+    return _LeafRoutes(test, family, wrapper_port=wrapper_port, standin_ports=standin_ports,
+                       endpoints=endpoints)
 
 
 class BwrapLineageProfileTests(unittest.TestCase):
@@ -184,8 +263,8 @@ class BwrapLineageProfileTests(unittest.TestCase):
     function and this class were `build_readonly_bwrap_profile` / `BwrapReadonlyProfileTests`
     until PR-J4-d). No capability, no write_roots, and since issue #227 NO
     CHECKOUT: an empty tmpfs sits at `repo_root`. Confirm the rendered sandbox hides the
-    repository from the leaf, keeps the leaf's own `workspace/tmp/<arid>` writable, keeps the
-    network, leaves the host's copy untouched, does not mount a sibling lineage, and refuses an
+    repository from the leaf, keeps the leaf's own `workspace/tmp/<arid>` writable, takes the
+    network away (issue #534 step 4: no name resolution, no route out), leaves the host's copy untouched, does not mount a sibling lineage, and refuses an
     install root that aliases the checkout. Every profile here is built over a lineage home
     the REAL preparer made (`_prepared_lineage`, or the codex fixture below)."""
 
@@ -282,12 +361,162 @@ class BwrapLineageProfileTests(unittest.TestCase):
             self.assertIn("WRITE_TMP:OK", out, out)
             self.assertIn("WRITE_SANDBOX_TMP:OK", out, out)
             self.assertIn("WRITE_CWD:OK", out, out)
-            self.assertIn("DNS:OK", out, out)
+            # No name resolution inside the leaf's network namespace (issue #534 step 4): it
+            # holds `lo` alone, and its routes out are the relay's.
+            self.assertIn("DNS:FAIL", out, out)
             # the repo file is unchanged on the host: the write landed on the tmpfs
             self.assertEqual((repo / "AGENTS_SIM.md").read_text(), "orig\n")
             # ... while the own-scratch writes reached the host through the rw binds.
             self.assertTrue((repo / "workspace" / "tmp" / arid / "scratch.txt").is_file())
             self.assertTrue((Path(profile["tmp_dir"]) / "scratch.txt").is_file())
+
+    def test_the_leaf_namespace_has_no_route_out_and_reaches_only_its_routes(self) -> None:
+        """Issue #534 step 4, under real bwrap with the rendered profile and the real relay.
+
+        Inside the leaf's namespace: a direct connect to a stand-in listening on the HOST's
+        loopback is refused (the namespace has a loopback of its own), an outside address has
+        no route (`ENETUNREACH`), and a name does not resolve; a CONNECT through the proxy the
+        leaf's `HTTPS_PROXY` names reaches the stand-in when the host half admits it and gets a
+        403 when it does not, both logged; the socket directory is read-only and a socket in it
+        stays connectable. The host half here admits the stand-in's `localhost:<port>` (the
+        renderer checks the RECORD against the family's constant; the host half is handed its
+        set by its caller, `_start_leaf_routes` in production)."""
+        import socket as _socket
+        server = _socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        self.addCleanup(server.close)
+        port = server.getsockname()[1]
+
+        def echo() -> None:
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                with conn:
+                    data = conn.recv(4096)
+                    conn.sendall(b"echo:" + data)
+        threading.Thread(target=echo, daemon=True).start()
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t).resolve()
+            orch, arid = "orch_net", "arid_net"
+            _ensure_orchestration_audit_dirs(repo, orch)
+            _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
+            routes = _leaf_routes(self, "claude", endpoints=(f"localhost:{port}",))
+            kwargs["network"] = routes.network
+            profile = build_lineage_bwrap_profile(
+                repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                backend_command="python3", backend_type="claude", **kwargs)
+            probe = textwrap.dedent(f"""
+                import errno, os, socket
+                def tag(name, value): print(name + ":" + str(value), flush=True)
+                tag("PROXY", os.environ.get("HTTPS_PROXY"))
+                try:
+                    socket.create_connection(("127.0.0.1", {port}), timeout=5); tag("HOST_LO", "OPEN")
+                except OSError as e:
+                    tag("HOST_LO", errno.errorcode.get(e.errno, e))
+                try:
+                    socket.create_connection(("1.1.1.1", 443), timeout=5); tag("OUT", "OPEN")
+                except OSError as e:
+                    tag("OUT", errno.errorcode.get(e.errno, e))
+                try:
+                    socket.getaddrinfo("api.anthropic.com", 443); tag("DNS", "RESOLVED")
+                except OSError as e:
+                    tag("DNS", "FAIL")
+                def connect(target, payload=b""):
+                    c = socket.create_connection(("127.0.0.1", 3128), timeout=10)
+                    c.sendall(("CONNECT %s HTTP/1.1\\r\\n\\r\\n" % target).encode() + payload)
+                    buf = b""
+                    while True:
+                        d = c.recv(4096)
+                        if not d: break
+                        buf += d
+                        if payload and b"echo:" in buf: break
+                    return buf
+                tag("ADMITTED", connect("localhost:{port}", b"ping").replace(b"\\r\\n", b"|"))
+                tag("REFUSED", connect("example.com:443").split(b"\\r\\n")[0])
+                try:
+                    open("{leaf_netns.NET_MOUNT}/planted", "w"); tag("NET_DIR", "WRITABLE")
+                except OSError as e:
+                    tag("NET_DIR", errno.errorcode.get(e.errno, e))
+                u = socket.socket(socket.AF_UNIX)
+                u.connect("{leaf_netns.NET_MOUNT}/{leaf_netns.PROVIDER_SOCKET}")
+                tag("RO_SOCKET", "CONNECTED")
+            """)
+            out = _bwrap_stdout(render_bwrap_command(
+                profile=profile, command_argv=["python3", "-c", probe]))
+        self.assertIn("PROXY:http://127.0.0.1:3128\n", out, out)
+        self.assertIn("HOST_LO:ECONNREFUSED\n", out, out)
+        self.assertIn("OUT:ENETUNREACH\n", out, out)
+        self.assertIn("DNS:FAIL\n", out, out)
+        self.assertIn("ADMITTED:b'HTTP/1.1 200 Connection Established||echo:ping'", out, out)
+        self.assertIn("REFUSED:b'HTTP/1.1 403 Forbidden'", out, out)
+        self.assertIn("NET_DIR:EROFS\n", out, out)
+        self.assertIn("RO_SOCKET:CONNECTED\n", out, out)
+        rows = [json.loads(line) for line in routes.log.read_text().splitlines()]
+        self.assertEqual([(r["target"], r["allowed"]) for r in rows],
+                         [(f"localhost:{port}", True), ("example.com:443", False)])
+
+    def test_killing_the_outer_bwrap_ends_the_pumps_child_within_the_grace(self) -> None:
+        """The kill chain (issue #534 step 4): the sandboxed command is the relay, and the CLI
+        is the relay's CHILD. SIGKILL to the outer bwrap ALONE — not its process group, which is
+        what the conductor sends — must still end that child: `--die-with-parent` takes the
+        namespace's init, and `--unshare-pid` ends every process of the namespace with it — a
+        grandchild the child leaked into a session of its own included. And
+        a child killed by a signal while the relay lives reaches the caller as the relay's
+        `128 + n` (bwrap mirrors its command's exit status)."""
+        token = f"atmofab-kill-chain-{uuid.uuid4().hex}"
+        with tempfile.TemporaryDirectory() as t:
+            repo = Path(t).resolve()
+            orch, arid = "orch_kill", "arid_kill"
+            _ensure_orchestration_audit_dirs(repo, orch)
+            _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
+            profile = build_lineage_bwrap_profile(
+                repo_root=repo, orchestration_id=orch, agent_run_id=arid,
+                backend_command="python3", backend_type="claude", **kwargs)
+            # The child leaks a grandchild into a session of its own, as a CLI's tool
+            # subprocess can; both carry the token in their argv.
+            argv = render_bwrap_command(profile=profile, command_argv=[
+                "python3", "-c",
+                "import subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', 'import time\\nwhile True: time.sleep(1)',"
+                " sys.argv[1]], start_new_session=True)\n"
+                "print('up', flush=True)\nwhile True: time.sleep(1)",
+                token])
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, start_new_session=True)
+            self.addCleanup(lambda: proc.poll() is None and os.killpg(proc.pid, 9))
+            self.assertEqual(proc.stdout.readline(), b"up\n")
+
+            def holders() -> list[int]:
+                found = []
+                for entry in os.listdir("/proc"):
+                    if entry.isdigit():
+                        try:
+                            with open(f"/proc/{entry}/cmdline", "rb") as f:
+                                if token.encode() in f.read():
+                                    found.append(int(entry))
+                        except OSError:
+                            pass
+                return found
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and len(holders()) < 2:
+                time.sleep(0.05)
+            self.assertGreaterEqual(len([pid for pid in holders() if pid != proc.pid]), 2,
+                                    "the child and its leaked grandchild are not both visible")
+            os.kill(proc.pid, 9)
+            proc.wait(timeout=10)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and any(
+                    open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0] != "Z"
+                    for pid in holders() if os.path.exists(f"/proc/{pid}/stat")):
+                time.sleep(0.05)
+            self.assertEqual([pid for pid in holders() if os.path.exists(f"/proc/{pid}/stat")
+                              and open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()[0]
+                              != "Z"], [], "a process of the launch outlived the outer bwrap")
+            argv = render_bwrap_command(profile=profile, command_argv=[
+                "python3", "-c", "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"])
+            self.assertEqual(subprocess.run(argv, timeout=60).returncode, 128 + 9)
 
     def test_readonly_profile_hides_workspace_from_the_leaf(self) -> None:
         """A leaf cannot READ another run's records, the producer's own reasoning, or the
@@ -456,10 +685,19 @@ class BwrapLineageProfileTests(unittest.TestCase):
         # owner marker names the checkout that claimed it.
         os.environ["ATMOFAB_WORKFLOW_HOMES_ROOT"] = str(d / f"homes_{uuid.uuid4().hex}")
         iso = ort._prepare_codex_workflow_home(repo, "o", uuid.uuid4().hex, resume=False)
+        import atexit
+        from tools import leaf_netns
+        from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
+        socket_dir = leaf_netns.make_socket_dir()
+        routes = leaf_netns.HostRoutes(socket_dir, WORKSHOP_CLI_ENDPOINTS["codex"],
+                                       str(d / "net_routes.jsonl"), "A").start()
+        atexit.register(routes.stop)
         try:
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
+                network=leaf_netns.network_block(socket_dir, WORKSHOP_CLI_ENDPOINTS["codex"],
+                                                 None),
                 **ort.codex_workshop_profile_kwargs(iso))
         except ValueError as exc:
             print("REFUSED", exc)
@@ -779,7 +1017,9 @@ class BwrapLineageProfileTests(unittest.TestCase):
         self.assertEqual(argv[-2:], ["--json", "-"])
         with_flag = [*argv[:-2], *overrides, *argv[-2:]]
         self.assertIn("--skip-git-repo-check", with_flag)
-        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=with_flag),
+        routes = _reach_standin(self, profile, "codex", server.base_url)
+        res = subprocess.run(render_bwrap_command(profile=profile,
+                                                  command_argv=routes.nest(with_flag)),
                              input="Reply with one word.", capture_output=True, text=True,
                              timeout=180, check=False)  # rc 1 is the 400 turning into turn.failed
         self.assertIn('"type":"thread.started"', res.stdout, res.stdout + res.stderr)
@@ -797,7 +1037,8 @@ class BwrapLineageProfileTests(unittest.TestCase):
         self.assertNotIn("json_schema", body.decode("utf-8", "replace"))
         self.assertNotIn("--output-schema", with_flag)
         without_flag = [tok for tok in with_flag if tok != "--skip-git-repo-check"]
-        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=without_flag),
+        res = subprocess.run(render_bwrap_command(profile=profile,
+                                                  command_argv=routes.nest(without_flag)),
                              input="Reply with one word.", capture_output=True, text=True,
                              timeout=180, check=False)  # the refusal exits 1 before any request
         self.assertNotEqual(res.returncode, 0)
@@ -859,9 +1100,11 @@ class BwrapLineageProfileTests(unittest.TestCase):
         profile = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command="codex", backend_type="codex",
+            network=_leaf_routes(self, "codex").network,
             **ort.codex_workshop_profile_kwargs(isolation))
+        routes = _reach_standin(self, profile, "codex", server.base_url)
         command = render_bwrap_command(
-            profile=profile, command_argv=[*argv[:-2], *overrides, *argv[-2:]])
+            profile=profile, command_argv=routes.nest([*argv[:-2], *overrides, *argv[-2:]]))
         # The API answers 400, so the turn fails and the CLI exits 1 — the rollout is
         # written at thread start, before the request (measured on codex-cli 0.154.0).
         return subprocess.run(command, input=prompt, capture_output=True, text=True,
@@ -941,6 +1184,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         profile_b = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_b,
             backend_command="codex", backend_type="codex",
+            network=_leaf_routes(self, "codex").network,
             **ort.codex_workshop_profile_kwargs(iso_b))
         out = _bwrap_stdout(render_bwrap_command(profile=profile_b,
                                                  command_argv=["python3", "-c", probe]))
@@ -956,6 +1200,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         profile_a = build_lineage_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_a,
             backend_command="codex", backend_type="codex",
+            network=_leaf_routes(self, "codex").network,
             **ort.codex_workshop_profile_kwargs(iso_a))
         out = _bwrap_stdout(render_bwrap_command(
             profile=profile_a, command_argv=["python3", "-c", probe.replace(
@@ -1020,7 +1265,9 @@ class BwrapLineageProfileTests(unittest.TestCase):
         self.addCleanup(server.close)
         command = ["env", f"ANTHROPIC_BASE_URL={server.base_url}",
                    "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
-        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+        routes = _reach_standin(self, profile, "claude", server.base_url)
+        res = subprocess.run(render_bwrap_command(profile=profile,
+                                                  command_argv=routes.nest(command)),
                              input="Reply with one word.", capture_output=True, text=True,
                              timeout=240, check=False)  # rc 1 is the 400 surfacing as api_error
         self.assertTrue(server.hits, res.stdout + res.stderr)
@@ -1558,10 +1805,13 @@ class WorkshopLeafCliTests(unittest.TestCase):
         profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=arid or session,
             backend_command="claude", backend_type="claude",
+            network=_leaf_routes(self, "claude").network,
             **ort.claude_workshop_profile_kwargs(self.iso))
         command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
                    "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
-        return subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+        routes = _reach_standin(self, profile, "claude", api.base_url, wrapper_port=server.port)
+        return subprocess.run(render_bwrap_command(profile=profile,
+                                                   command_argv=routes.nest(command)),
                               input="Do the task.", capture_output=True, text=True,
                               timeout=240, check=False)
 
@@ -1781,10 +2031,13 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
             backend_command="claude", backend_type="claude",
+            network=_leaf_routes(self, "claude").network,
             **ort.claude_workshop_profile_kwargs(self.iso))
         command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
                    "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
-        return subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+        routes = _reach_standin(self, profile, "claude", api.base_url)
+        return subprocess.run(render_bwrap_command(profile=profile,
+                                                   command_argv=routes.nest(command)),
                               input="Review the run.", capture_output=True, text=True,
                               timeout=240, check=False)
 
@@ -1857,11 +2110,14 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
             backend_command="claude", backend_type="claude",
+            network=_leaf_routes(self, "claude").network,
             **ort.claude_workshop_profile_kwargs(self.iso))
         command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
                    "ANTHROPIC_API_KEY=atmofab-loopback",
                    *self.reader.leaf_command(entry, session_id=session, reading=True)]
-        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+        routes = _reach_standin(self, profile, "claude", api.base_url)
+        res = subprocess.run(render_bwrap_command(profile=profile,
+                                                  command_argv=routes.nest(command)),
                              input="Diagnose the failure.", capture_output=True, text=True,
                              timeout=240, check=False)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
@@ -2074,9 +2330,12 @@ class _CodexLeafCliCase(unittest.TestCase):
         profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=self.orch, agent_run_id=str(uuid.uuid4()),
             backend_command="codex", backend_type="codex",
+            network=_leaf_routes(self, "codex").network,
             **ort.codex_workshop_profile_kwargs(self.iso))
+        routes = _reach_standin(self, profile, "codex", api.base_url,
+                                wrapper_port=server.port if server is not None else None)
         command = render_bwrap_command(
-            profile=profile, command_argv=[*argv[:-2], *overrides, *argv[-2:]])
+            profile=profile, command_argv=routes.nest([*argv[:-2], *overrides, *argv[-2:]]))
         return subprocess.run(command, input="Do the task.", capture_output=True, text=True,
                               timeout=240, check=False)  # the rc is asserted by each row
 

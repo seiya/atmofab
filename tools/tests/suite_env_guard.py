@@ -103,6 +103,9 @@ MUST_BE_INHERITED = {
     "HOME": "the home directory itself; the hook guards resolve paths against it",
     "PYTHONPATH": "how `tools.` imports resolve at all under `python3 -m pytest`",
     "PYTHONDONTWRITEBYTECODE": "an interpreter setting the mutation sweeps rely on",
+    "XDG_RUNTIME_DIR": ("the login session's runtime directory, where a leaf's per-launch "
+                        "socket directory is created (`leaf_netns.socket_dir_parent`; `/tmp` "
+                        "without it)"),
 }
 
 

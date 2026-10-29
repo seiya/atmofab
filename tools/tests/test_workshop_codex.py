@@ -43,6 +43,7 @@ from tools.tests.test_workshop_launch import (
     _with_test_templates,
     _workshop_request,
 )
+from tools.tests.orchestration_fixtures import netns_socket_dir, network_block
 
 _MCP = workshop_mcp_config_json("http://127.0.0.1:4242/mcp")
 
@@ -124,7 +125,7 @@ class CodexWorkshopProfileTests(_CodexEnv):
         kwargs = {**codex_workshop_profile_kwargs(iso), **over}
         profile = build_lineage_bwrap_profile(
             repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_a",
-            backend_command="codex", backend_type="codex", **kwargs)
+            backend_command="codex", backend_type="codex", **kwargs, network=network_block("codex"))
         return profile, iso
 
     def test_the_profile_binds_the_lineage_and_remounts_the_two_host_files(self) -> None:
@@ -150,6 +151,9 @@ class CodexWorkshopProfileTests(_CodexEnv):
         self.assertFalse(any(dst.endswith(".credentials.json") for _, dst in binds), binds)
         self.assertEqual(cmd[cmd.index("CODEX_HOME") + 1], iso["config"])
         import tools.validate_pipeline_semantics as vps
+        # The persisted record carries the command `record_launch` rendered.
+        profile["rendered_command"] = render_bwrap_command(profile=profile,
+                                                           command_argv=["codex"])
         self.assertEqual(vps._workshop_profile_violations(profile), [])
 
     def test_the_builder_refuses_a_credential_mapping_and_two_homes(self) -> None:
@@ -164,7 +168,7 @@ class CodexWorkshopProfileTests(_CodexEnv):
                                                   "CLAUDE_CONFIG_DIR": iso["config"]}}),
                 ("no home", {"env_overrides": {}})):
             with self.subTest(case=label), self.assertRaises(ValueError):
-                build_lineage_bwrap_profile(**base, **{**kwargs, **broken})
+                build_lineage_bwrap_profile(**base, **{**kwargs, **broken}, network=network_block("claude"))
 
     def test_the_renderer_refuses_each_other_codex_shape(self) -> None:
         profile, iso = self._profile()
@@ -219,10 +223,10 @@ class CodexAdmissionTests(_CodexEnv):
         common = dict(repo_root=self.repo, orchestration_id=_ORCH)
         codex_profile = build_lineage_bwrap_profile(
             agent_run_id="lin_c", backend_command="codex", backend_type="codex",
-            **common, **codex_workshop_profile_kwargs(codex_iso))
+            **common, **codex_workshop_profile_kwargs(codex_iso), network=network_block("codex"))
         claude_profile = build_lineage_bwrap_profile(
             agent_run_id="lin_k", backend_command="claude", backend_type="claude",
-            **common, **claude_workshop_profile_kwargs(claude_iso))
+            **common, **claude_workshop_profile_kwargs(claude_iso), network=network_block("claude"))
         codex_entry = _codex_config(self.repo).entry_for("generate", "generate")
         claude_entry = lc.load_llm_config(self._claude_yaml()).entry_for("generate", "generate")
         admit = wc._admissible_leaf_profile
@@ -267,7 +271,7 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
                 "codex_version_available", "codex_exec_json_streaming",
                 "codex_exec_resume", "codex_prompt_stdin",
                 "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
-                "sandbox_bwrap_exec")]})
+                "sandbox_bwrap_exec", "sandbox_netns_python", "sandbox_netns_route")]})
         _with_test_templates(self)
 
     def _base(self) -> Path:
@@ -287,7 +291,7 @@ class CodexWorkshopRecordLaunchTests(_CodexEnv):
                              parent_agent_run_id="orch_run_001", child_agent_run_id=child,
                              request_payload=req,
                              response_payload={"backend": "codex", **_spawn_response(child)},
-                             **kw)
+                             **kw, netns_socket_dir=netns_socket_dir())
 
     def test_a_cold_codex_workshop_launch_records_its_lineage_and_profile(self) -> None:
         self._launch("ar_cx_cold", self._request("ar_cx_cold"))
@@ -465,6 +469,7 @@ class CodexLeafCommandTests(unittest.TestCase):
 
     def test_the_cold_and_warm_argv(self) -> None:
         overrides = ["--config", 'approval_policy="never"', "--config", "features.apps=false",
+                     "--config", 'web_search="disabled"',
                      "--config", 'mcp_servers.wrapper.url="http://127.0.0.1:4242/mcp"',
                      "--config", 'mcp_servers.wrapper.default_tools_approval_mode="approve"']
         self.assertEqual(
@@ -494,7 +499,8 @@ class CodexLeafCommandTests(unittest.TestCase):
                                orchestration_agent_run_id="orch", env={},
                                llm_config=lc.load_llm_config(path))
         entry = c.entry_for("validate", "judge")
-        overrides = ["--config", 'approval_policy="never"', "--config", "features.apps=false"]
+        overrides = ["--config", 'approval_policy="never"', "--config", "features.apps=false",
+                     "--config", 'web_search="disabled"']
         self.assertEqual(
             wc.Conductor.leaf_command(c, entry, session_id="s", reading=True),
             ["codex", "exec", "--model", "gpt-x", "--config", 'model_reasoning_effort="medium"',

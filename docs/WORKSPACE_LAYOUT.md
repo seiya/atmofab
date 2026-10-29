@@ -48,7 +48,9 @@ workspace/
 │       │       └── launch_instant.probe.json       (its MTIME is the attempt's freshness bound)
 │       │
 │       ├── sandbox_profiles/
-│       │   └── <agent_run_id>.json                (bwrap profile)
+│       │   └── <agent_run_id>.json                (bwrap profile; a CLI leaf's carries its `network` block, issue #534 step 4)
+│       │
+│       ├── net_routes.jsonl                       (issue #534 step 4: one row per request line a CLI leaf's network relay read — `recorded_at_utc`, `agent_run_id`, `target` (`host:port`), `allowed`; refused targets included. Host-written by `tools/leaf_netns.py`, `docs/ORCHESTRATION.md` §workshop leaf)
 │       │
 │       ├── sandboxes/
 │       │   └── ...                                (the actual bwrap mount-composition snapshot)
@@ -81,11 +83,12 @@ workspace/
 │       │
 │       └── violations/                          (created only when one occurs — nothing
 │           └── <id>.json                            pre-creates it since issue #171 PR-2.
-│                                                    One writer, sandbox enforcement, five
+│                                                    One writer, sandbox enforcement, six
 │                                                    reasons: sandbox_profile_build_failed
 │                                                    at record-launch, and
 │                                                    sandbox_runtime_not_bwrap /
 │                                                    sandbox_not_enforced /
+│                                                    sandbox_network_missing /
 │                                                    sandbox_profile_missing /
 │                                                    sandbox_profile_not_found at
 │                                                    record-agent-run)
