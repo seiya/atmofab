@@ -16,4 +16,4 @@ unused dummies, `intent(out)` dataflow
 @@ inert_dummy_binding
 an `associate (unused_x => x)` binding of an inert dummy
 @@ dependency_call_consistency
-each `call <dep>__<op>(...)` passes arguments in the published interface's order AND rank/shape (a lower-rank dummy is fed a matching slice inside a component loop, not the whole higher-rank state array)
+each `call <dep>__<op>(...)`, or `call <local>(...)` by the local name of a `use <dep>_model, only: <local> => <dep>__<op>` rename, passes arguments in the published interface's order AND rank/shape (a lower-rank dummy is fed a matching slice inside a component loop, not the whole higher-rank state array)

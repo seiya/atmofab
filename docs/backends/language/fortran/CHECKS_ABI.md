@@ -6,11 +6,11 @@
 > section: its §1-§4 here say how the neutral §1-§4 are spelled in Fortran, and §5 is the
 > legality and gate-guard rule set every leaf-authored Fortran source of a `Generate` node is
 > held to. It is reached through the Fortran language backend's `checks_abi` capability
-> (`tools/backends/language/fortran/checks_abi.py`). The host inlines the neutral §1-§4
-> followed by §1-§4 of this document into the `generate.verify` reviewer's prompt as
-> `checks_module_contract_document`, and §5 of this document into the `harness`-shape
-> producer's prompt as `gate_guards_document`. Compile, which is target-free, is shown the
-> neutral §1-§4 only.
+> (`tools/backends/language/fortran/checks_abi.py`). The host seeds the neutral §1-§4
+> followed by §1-§4 of this document into the `generate.verify` reviewer's work tree as
+> `CHECKS_MODULE_CONTRACT.md`, and §5 of this document into the `harness`-shape producer's
+> work tree as `gate_guards.md`. Compile, which is target-free, is seeded the neutral §1-§4
+> only.
 
 The source files are `<spec_id>_model.f90` (the physics kernel and the published operation)
 and `<spec_id>_checks.f90` (the checks module, `module <spec_id>_checks`). The runner,

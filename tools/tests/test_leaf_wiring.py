@@ -856,7 +856,7 @@ class PureRenderTests(unittest.TestCase):
             _workshop_request("verify"))["launch_prompt_full"]
         self.assertIn(
             "**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, followed "
-            "by §1-4 of the target language's binding of it, inlined:",
+            "by §1-4 of the target language's binding of it, seeded:",
             prompt)
         # Both statements of the rule are BOUNDED, and the bound is the load-bearing half: a
         # round-1 reviewer showed that "do not fail the bundle for a consequence it does not
@@ -869,7 +869,7 @@ class PureRenderTests(unittest.TestCase):
         # finding that catches a stub `metric_compute` — so pin the overrule/silence pair in both
         # statements, not merely that a scope rule is present.
         self.assertIn(
-            "The inlined checks-module contract can only OVERRULE one kind of claim — a claim "
+            "The seeded checks-module contract can only OVERRULE one kind of claim — a claim "
             "about what the host-rendered runner does with the RESULT a checks-module callback "
             "returns",
             prompt)
@@ -898,18 +898,18 @@ class PureRenderTests(unittest.TestCase):
         prompt = ort.prepare_launch_request_payload(
             _workshop_request("verify"))["launch_prompt_full"]
         self.assertIn(
-            "**Severity rubric (`docs/workflow/phases/phase_02_generate.md` §2-2, inlined):",
+            "**Severity rubric (`docs/workflow/phases/phase_02_generate.md` §2-2, seeded):",
             prompt)
         self.assertIn("the value names the repair the finding calls for, never the weight of "
                       "its consequence", prompt)
-        self.assertIn("fail with the `issue_severity` the inlined severity rubric assigns", prompt)
+        self.assertIn("fail with the `issue_severity` the seeded severity rubric assigns", prompt)
         # The checklist must also tell the reviewer that an INPUT-side finding is its to make.
         # Without it the rubric's `major` had no reachable subject on this transport: G1-G7 are
         # all code-subject, the checklist said "verify only the code-vs-IR semantics", and the
         # rubric's own tie-break sends an unsettled subject to `minor` — so an IR that cannot
         # satisfy a checklist item looped the producer instead of stopping (round 3).
         self.assertIn("the defect is on the input side — report it, name the input in "
-                      "`last_fail_reason`, and let the inlined severity rubric grade it", prompt)
+                      "`last_fail_reason`, and let the seeded severity rubric grade it", prompt)
         # The clause must not RE-ENUMERATE the rubric's `major` cases. `pure-27` listed one of
         # four and `pure-28` two of four, each time read as an exhaustive permission and each
         # time leaving a template-authorized `pass` on the cases it omitted; the rubric is
@@ -1595,10 +1595,15 @@ class PureRenderTests(unittest.TestCase):
         #   three verify templates, orders the rubric's values to fold several per-finding
         #   grades into the one verdict field `classify_verify_severity` routes on; it assigns
         #   no value to any finding or checklist item — the rubric still chooses each one.
+        # Re-taken for `leaf-85`: the generate verify `Review checklist` line and the harness
+        # verify input-side clause name "the seeded severity rubric" (and the former "the seeded
+        # checks-module contract") where they said "inlined" (the documents are seed files since
+        # issue #534 PR-J4-b). READ: no severity word moved, the same pointer to the rubric,
+        # nothing assigned.
         "tools/prompt_templates/workshop_generate_verify.txt: Review checklist (the semantic "
-        "items to judge the bundle aga #b31abbfa9532",
+        "items to judge the bundle aga #6b024d08100a",
         "tools/prompt_templates/workshop_generate_verify_harness.txt: One kind of finding is NOT "
-        "code-vs-IR and is still yours to  #18a97797a2d9",
+        "code-vs-IR and is still yours to  #a06371e39fb9",
         ("tools/prompt_templates/workshop_compile_verify.txt: Output contract (verify verdict): "
          "return one JSON object wit #44453a0a4418"),
         ("tools/prompt_templates/workshop_generate_verify.txt: Output contract (verify verdict): "

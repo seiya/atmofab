@@ -14,9 +14,9 @@
 > `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly + verdict fold.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
 > governs the runner-authoring one — the `infrastructure` self-test — and
-> `Validate.judge`. Since issue #169 both are pure and get it INLINED: whole, followed by the
-> target language's runner-output binding (issue #289), in the `harness` shape's two
-> `generate` prompts, §1+§3 in the judge's. The *authoring* rules below survive as
+> `Validate.judge`. Both get it (issue #169) as the seed `runner_output_contract.md`: whole,
+> followed by the target language's runner-output binding (issue #289), in both
+> `harness`-shape `generate` trees, §1+§3 in the judge's. The *authoring* rules below survive as
 > **deterministic backstops** (name / forbidden-output / JSON-descriptor /
 > snapshot-filename gates in `validate_pipeline_semantics.py`).
 
@@ -167,8 +167,8 @@ and an infinity compares as the signed extreme it is.
 
 The writer rules a runner of a given language follows to satisfy this — which of its
 format descriptors are forbidden for a JSON token and the canonical safe idiom — are that
-language backend's: `docs/backends/language/<language>/RUNNER_OUTPUT.md`. The host inlines it
-after this document wherever this document is inlined whole.
+language backend's: `docs/backends/language/<language>/RUNNER_OUTPUT.md`. The host appends it
+to this document wherever this document is seeded whole.
 
 ## 5. Other runner constraints
 

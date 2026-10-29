@@ -4,9 +4,10 @@
 # section part of the spec.ir.yaml that the Compile phase outputs. It shows the
 # structure required by the `Compile` phase contract
 # (`docs/workflow/phases/phase_01_compile.md`) and the
-# `validate_pipeline_semantics --stage compile` gate. The host inlines THIS FILE, whole, into
-# both pure compile prompts, so a leaf reading this line is reading it in its own prompt: it
-# named two `SKILL`s until Z4 (issue #171) deleted them, and no leaf reads a `SKILL`.
+# `validate_pipeline_semantics --stage compile` gate. The host seeds THIS FILE, whole, into
+# both compile leaves' work trees as `ir_algorithm_example.yaml`, so a leaf reading this line
+# is reading a seed of its own tree: it named two `SKILL`s until Z4 (issue #171) deleted them,
+# and no leaf reads a `SKILL`.
 #
 # This file is written as an excerpt of only the algorithm section; in an actual
 # spec.ir.yaml, place this block as the value of the `algorithm:` key, alongside

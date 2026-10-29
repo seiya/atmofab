@@ -28365,7 +28365,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/workshop_compile_generate.txt:65ead5bcfd9e62a9":
+        "tools/prompt_templates/workshop_compile_generate.txt:e3093e7a37e1f30f":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28373,7 +28373,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "set, the graph document's all_nodes minus self minus transitive_deps, read there "
             "and not from the dependency declaration, read WHOLE; the runner harness is the "
             "target's and is not in it; a `profile` entry in deps.yaml is not a node, so "
-            "direct_deps from deps.yaml alone is rejected (read 2026-10-28)",
+            "direct_deps from deps.yaml alone is rejected (read 2026-10-28; re-keyed 2026-10-29 when "
+            "the line's opening clause said \"seeded in your tree\" for \"inlined below\", issue "
+            "#534 leaf-85 — rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",
