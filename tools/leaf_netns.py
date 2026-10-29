@@ -368,11 +368,14 @@ class HostRoutes:
         # and with it the listener, would outlive the launch, one pair per launch for the life
         # of the conductor. `shutdown` wakes it (`accept` fails), and the join bounds the wait.
         for listener in self._listeners:
-            for close in (lambda: listener.shutdown(socket.SHUT_RDWR), listener.close):
-                try:
-                    close()
-                except OSError:
-                    pass
+            try:
+                listener.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                listener.close()
+            except OSError:
+                pass
         for acceptor in self._acceptors:
             acceptor.join(timeout=5)
         for s in live:
