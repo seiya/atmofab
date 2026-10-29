@@ -516,8 +516,11 @@ WORKSHOP_FILE_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit", "Glob", "Grep")
 #: Code network-configuration page, and the binary's `https://platform.claude.com/v1/oauth/token`).
 #: Codex: `chatgpt.com` (the ChatGPT-auth backend, `https://chatgpt.com/backend-api/codex`),
 #: `auth.openai.com` (its token refresh) and `api.openai.com` (API-key auth). Not operator
-#: configurable. A host a CLI was seen to attempt and does not need — codex's `ab.chatgpt.com`,
-#: `github.com`, `api.github.com`; claude's telemetry intake — is refused and logged.
+#: configurable. A host a CLI was seen to attempt — codex's `ab.chatgpt.com`, `github.com`,
+#: `api.github.com`; claude's telemetry intake — is refused and logged: a host is admitted only on
+#: a run's evidence that a turn cannot finish without it (operator decision D2 on issue #534;
+#: unbilled real-CLI turns complete with `ab.chatgpt.com` refused). `docs/RUNBOOK.md` says how to
+#: read `net_routes.jsonl` for it.
 WORKSHOP_CLI_ENDPOINTS: dict[str, tuple[str, ...]] = {
     "claude": ("api.anthropic.com:443", "platform.claude.com:443"),
     "codex": ("chatgpt.com:443", "auth.openai.com:443", "api.openai.com:443"),

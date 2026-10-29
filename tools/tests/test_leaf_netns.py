@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -81,7 +82,10 @@ class HostRoutesTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.dir = leaf_netns.make_socket_dir()
-        self.log = Path(tempfile.mkdtemp()) / "net_routes.jsonl"
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        logs = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, logs, True)
+        self.log = Path(logs) / "net_routes.jsonl"
         self.upstream = _Upstream()
         self.addCleanup(self.upstream.close)
 
@@ -269,7 +273,10 @@ class RelayMainTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.dir = leaf_netns.make_socket_dir()
-        self.log = Path(tempfile.mkdtemp()) / "net_routes.jsonl"
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        logs = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, logs, True)
+        self.log = Path(logs) / "net_routes.jsonl"
         self.upstream = _Upstream()
         self.addCleanup(self.upstream.close)
         self.routes = leaf_netns.HostRoutes(

@@ -13814,8 +13814,9 @@ def _probe_leaf_netns() -> list[dict[str, Any]]:
     import threading as _threading
 
     rows: list[dict[str, Any]] = []
-    socket_dir = leaf_netns.make_socket_dir()
+    socket_dir = ""
     try:
+        socket_dir = leaf_netns.make_socket_dir()
         python = subprocess.run(
             _netns_probe_bwrap_argv(socket_dir, [leaf_netns.RELAY_PYTHON, "-I", "-c",
                                                  "import socket, subprocess"]),
@@ -13860,7 +13861,8 @@ def _probe_leaf_netns() -> list[dict[str, Any]]:
         rows.extend({"name": name, "pass": False, "detail": f"{type(exc).__name__}: {exc}"}
                     for name in _NETNS_PROBE_ROWS if name not in names)
     finally:
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        if socket_dir:
+            shutil.rmtree(socket_dir, ignore_errors=True)
     return rows
 
 

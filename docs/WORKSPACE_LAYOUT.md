@@ -50,7 +50,7 @@ workspace/
 │       ├── sandbox_profiles/
 │       │   └── <agent_run_id>.json                (bwrap profile; a CLI leaf's carries its `network` block, issue #534 step 4)
 │       │
-│       ├── net_routes.jsonl                       (issue #534 step 4: one row per request line a CLI leaf's network relay read — `recorded_at_utc`, `agent_run_id`, `target` (`host:port`), `allowed`; refused targets included. Host-written by `tools/leaf_netns.py`, `docs/ORCHESTRATION.md` §workshop leaf)
+│       ├── net_routes.jsonl                       (issue #534 step 4: one row per request whose header block the host half of a CLI leaf's network routes read — `recorded_at_utc`, `agent_run_id`, `target` (`host:port`, at most 200 characters; empty for a request that is not a CONNECT, whose row then carries `request_line`), `allowed`; refused targets included. Host-written by `tools/leaf_netns.py` (`HostRoutes`), `docs/ORCHESTRATION.md` §workshop leaf)
 │       │
 │       ├── sandboxes/
 │       │   └── ...                                (the actual bwrap mount-composition snapshot)
