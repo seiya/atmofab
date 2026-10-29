@@ -1114,7 +1114,7 @@ PINNED: dict[str, str] = {
     # `runner_output_binding_document` and the checks-ABI document) the audience notes of
     # `RUNNER_OUTPUT_CONTRACT.md`, the two `RUNNER_OUTPUT.md` bindings and the two
     # `CHECKS_ABI.md` bindings, each now naming the seed file instead of an inlined prompt.
-    "leaf-85": "6c167904a1fc9b36d88b60daaa51d0481a3c1dc4bf7e7beb7eef243a6b4d4ad6",
+    "leaf-85": "77de49dc2e891fb9f3d6505e2bb29375b2f6571f5c2442bdfb415e22a775a974",
 }
 
 
