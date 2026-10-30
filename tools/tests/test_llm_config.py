@@ -968,6 +968,15 @@ class RuleTests(_Tmp):
         cfg = lc.load_llm_config(self.write(_doc(entries={
             ("generate", "generate"): self._ANTHROPIC_ENTRY + '\neffort: ""'})))
         self.assertEqual(cfg.entry_for("generate", "generate").effort, "")
+        # The loader lowercases and strips (the vocabulary is lowercase; the endpoint takes
+        # the lowercase word), so an operator's `HIGH` or `" Max "` reaches the wire as the
+        # level it names rather than being refused at load. Pins the normalisation, which no
+        # other row spells (review round 1: dropping `.lower()` survived the file).
+        for spelled, level in (("HIGH", "high"), ('" Max "', "max"), ("xHigh", "xhigh")):
+            with self.subTest(spelled=spelled):
+                cfg = lc.load_llm_config(self.write(_doc(entries={
+                    ("generate", "generate"): self._ANTHROPIC_ENTRY + f"\neffort: {spelled}"})))
+                self.assertEqual(cfg.entry_for("generate", "generate").effort, level)
 
     def test_an_effort_does_not_inherit_across_a_provider_switch(self) -> None:
         """A level is a word in the outer provider's vocabulary; carrying it into another
