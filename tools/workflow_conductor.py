@@ -840,6 +840,10 @@ _POST_JUDGE_RECOVERABLE_BASENAMES: frozenset[str] = frozenset({
 _POST_JUDGE_UNRECOVERABLE_BASENAMES: frozenset[str] = frozenset({
     "agent_graph.json", "step_result.json", "lineage.json", "verdict.json",
     "aggregate_verdict.json", "summary.json", "validate_meta.json",
+    # `_validate_orchestration_hierarchy` leads six integrity lines with the bare root, which the
+    # `"orchestrations/"` test below does not match. A leaf-chosen leading token is a bundle
+    # `logical_path`, which the extension allowlist confines to a source suffix.
+    "orchestrations",
 })
 _POST_JUDGE_UNRECOVERABLE_MARKERS: tuple[str, ...] = (
     "copy_based_artifact_reuse detected", "dependency DAG incomplete",
