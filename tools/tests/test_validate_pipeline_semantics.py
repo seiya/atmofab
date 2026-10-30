@@ -12887,6 +12887,13 @@ end program shallow_water2d_runner
             io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) + sum(at('c2').final.h)"}]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
                                                             case_ids=("c1", "c2")), [])
+            # issue #567: an at('c2') only in a bind `expr` never reaches values nothing, so
+            # it reaches no case — refused through the stage like the narrow corroborant
+            io["primary_predicates"] = [{**narrow,
+                                         "bind": {"dead": "sum(at('c2').final.h)"}}]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "(each reads [['c1']])" in x for x in v), v)
             io = self._io_contract_with_predicates(per_case, corroborate=False)
             io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,

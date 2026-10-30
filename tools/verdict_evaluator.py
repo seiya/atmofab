@@ -477,9 +477,10 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
                         f"{sorted(map(str, rec['target_cases']))}, not the test's target_cases")
             # The Compile gate's coverage rule (`primary_evidence.coverage_violations`),
             # re-checked here like the target_cases pin: some record of the condition's
-            # quantity must READ every case the condition holds in — every target case for a
-            # per_case or suite-level condition, the one case for a `case:` one — else a
-            # corroborant reading one case would stand for the whole test.
+            # quantity must VALUE every case the condition holds in (the record's `cases_read`,
+            # `primary_evidence.cases_read`) — every target case for a per_case or
+            # suite-level condition, the one case for a `case:` one — else a corroborant
+            # reading one case would stand for the whole test.
             for cond in _predicate_conditions(pred):
                 q = cond.get("quantity")
                 if not isinstance(q, str):

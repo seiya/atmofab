@@ -446,6 +446,17 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
     omission, not vacuity."""
     if reads_captured_state(expr_refs, state_names):
         return True
+    return any(reads_captured_state(bind_refs[name], state_names)
+               for name in reached_binds(expr_refs, bind_refs))
+
+
+def reached_binds(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]]) -> set[str]:
+    """The names of the binds `expr` reaches: those its references name, and, transitively,
+    those a reached bind's references name. A bind outside this set enters no value of the
+    predicate. The frontier is built from `expr_refs` as given, so a caller that passes
+    `effective_names` references follows no bind named only inside a term constant by form.
+    Shared by the reads-state rule (`predicate_reads_state`) and the cases a predicate values
+    (`cases_read`, issue #567)."""
     reached: set[str] = set()
     frontier = [r.name for r in expr_refs if r.kind == "name" and r.name in bind_refs]
     while frontier:
@@ -453,11 +464,9 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
         if name in reached:
             continue
         reached.add(name)
-        refs = bind_refs[name]
-        if reads_captured_state(refs, state_names):
-            return True
-        frontier.extend(r.name for r in refs if r.kind == "name" and r.name in bind_refs)
-    return False
+        frontier.extend(r.name for r in bind_refs[name]
+                        if r.kind == "name" and r.name in bind_refs)
+    return reached
 
 
 def predicate_reads_comparand(expr_refs: list[NameRef],
@@ -1190,7 +1199,9 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
          comparands, satisfied, kind,
          evaluated: [{case, value, rhs, satisfied} | {case, satisfied: false, reason, error}]}
 
-    ``kind`` is ``pass`` / ``physics`` (a comparison was false) / ``structural`` (the
+    ``cases_read`` is the cases the predicate VALUES (`cases_read`: reached binds, outside a
+    term constant by form; the key keeps its name). ``kind`` is ``pass`` / ``physics`` (a
+    comparison was false) / ``structural`` (the
     expression could not be evaluated: `PrimaryEvidenceError`) / ``no_comparand``. An empty
     list when the IR declares no primary predicate. A predicate whose own shape is malformed
     (no test_id, no quantity, no expr, an inadmissible op or scope) raises
@@ -1263,7 +1274,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),
             "op": op, "scope": scope, "target_cases": list(targets),
-            # the cases this record reads the state of (`cases_read`), so the verdict
+            # the cases this record values the state of (`cases_read`), so the verdict
             # evaluator can re-check the coverage rule against the records it is handed
             "cases_read": sorted(cases_read({**pred, "target_cases": targets}) or []),
             "grammar_version": GRAMMAR_VERSION,
@@ -1735,10 +1746,15 @@ def validate_primary_predicate_schema(
 
 
 def cases_read(pred: dict[str, Any]) -> set[str] | None:
-    """The cases a primary predicate READS the state of: every target case under
-    `per_case: true`; under `case: X`, X plus every `at('<case>')` its `expr` or a `bind`
-    names. None when the scope or an expression is malformed (the primary schema gate refuses
-    those; they cover nothing here). Read the same way as `_predicate_scope`."""
+    """The cases a primary predicate VALUES the state of: every target case under
+    `per_case: true`; under `case: X`, X plus every `at('<case>')` that enters the value: in
+    `expr` or a bind `expr` reaches (`reached_binds`), outside a term constant by form
+    (`effective_names`, the same forms the reads-state rule prunes; issue #567). A bind `expr`
+    never reaches, and an `at('<case>')` only inside a term constant by form, add no case; the
+    frontier of the reach walk is built from the PRUNED `expr`, so a bind named only inside
+    such a term is not reached. The record's `cases_read` key keeps its name. None when the
+    scope or an expression is malformed (the primary schema gate refuses those; they cover
+    nothing here). Read the same way as `_predicate_scope`."""
     targets = pred.get("target_cases")
     if not isinstance(targets, list) or not all(isinstance(c, str) for c in targets):
         return None
@@ -1749,13 +1765,16 @@ def cases_read(pred: dict[str, Any]) -> set[str] | None:
         return None
     read = {pred["case"].strip()}
     bind = pred.get("bind")
-    texts = ([t for t in bind.values()] if isinstance(bind, dict) else []) + [pred.get("expr")]
-    for text in texts:
-        try:
-            refs = expr_names(parse_expr(text))
-        except PrimaryEvidenceError:
-            return None
-        read |= {r.case for r in refs if r.case is not None}
+    bind_refs: dict[str, list[NameRef]] = {}
+    try:
+        for name, text in (bind.items() if isinstance(bind, dict) else ()):
+            bind_refs[name] = effective_names(parse_expr(text))
+        expr_refs = effective_names(parse_expr(pred.get("expr")))
+    except PrimaryEvidenceError:
+        return None
+    read |= {r.case for r in expr_refs if r.case is not None}
+    for name in reached_binds(expr_refs, bind_refs):
+        read |= {r.case for r in bind_refs[name] if r.case is not None}
     return read
 
 
@@ -1766,8 +1785,10 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
     by a `primary_predicates[]` entry of the same `test_id` that READS every case the
     condition holds in — every target case for a `per_case: true` or a suite-level condition,
     the one case for a `case: X` condition — where a corroborant reads every target case
-    under `per_case: true` and, under `case: X`, X plus the cases its `at('<case>')` names
-    (`cases_read`). Every condition is secondary evidence — a `verdict.*` or `checks.<id>` one
+    under `per_case: true` and, under `case: X`, X plus the cases the `at('<case>')`
+    references that enter its value name (`cases_read`: in `expr` or a bind `expr` reaches,
+    outside a term constant by form). The two readers of that fact — this gate and the
+    record's `cases_read` the verdict evaluator re-checks — are one function. Every condition is secondary evidence — a `verdict.*` or `checks.<id>` one
     as much as a metric address — so every one needs a corroborant, and a test therefore
     always has at least one primary predicate. `primary_predicates` absent is the same
     omission for every test and is refused as such. Rounds 1 and 2 of PR-3's review each
@@ -1838,7 +1859,8 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
                          f"{cond['quantity']!r}) {where}, but no corroborant of that quantity "
                          f"reads every such case (each reads {sorted(map(sorted, reads))}): "
                          "give one primary_predicates entry `per_case: true`, or a `case:` "
-                         "whose at('<case>') references reach the rest — a corroborant "
+                         "whose at('<case>') references — in expr or a bind expr reaches, "
+                         "outside a term constant by form — reach the rest — a corroborant "
                          "reading one case would certify the test on that case alone")
     return v
 

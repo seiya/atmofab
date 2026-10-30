@@ -1100,6 +1100,26 @@ class VerdictIntegrationTest(unittest.TestCase):
         with self.assertRaisesRegex(PredicateError, "reads every case"):
             evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary[1:])
 
+    def test_a_dead_bind_record_values_one_case_and_the_recheck_raises(self) -> None:
+        """Issue #567: the record's `cases_read` comes from the same function as the gate's,
+        so a `case: a` corroborant whose only at('b') is in a bind `expr` never reaches is
+        recorded as valuing a alone, and the evaluator's coverage re-check raises for the
+        per_case condition it used to "cover" — the record is not forged by hand here."""
+        dead = {**MASS, "case": "a",
+                "bind": {**MASS["bind"], "dead": "sum(at('b').final.h)"}}
+        del dead["per_case"]
+        self.ir["io_contract"]["primary_predicates"] = [dead, HMIN, SYM]
+        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
+        self.assertEqual(primary[0]["cases_read"], ["a"])
+        self.assertTrue(primary[0]["satisfied"])
+        with self.assertRaisesRegex(PredicateError, "reads every case"):
+            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
+        # reached, the same bind values b as well and the record covers the condition
+        reached = {**dead, "expr": dead["expr"] + " + 1e-300 * dead"}
+        self.ir["io_contract"]["primary_predicates"] = [reached, HMIN, SYM]
+        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
+        self.assertEqual(primary[0]["cases_read"], ["a", "b"])
+
     def test_unknown_test_id_raises(self) -> None:
         primary = [{"test_id": "nope", "satisfied": True, "kind": "pass"}]
         with self.assertRaisesRegex(PredicateError, "no test_predicates entry"):
@@ -1277,6 +1297,13 @@ class SchemaGateTest(unittest.TestCase):
         self.assertTrue(any("reads no captured state" in m for m in out), out)
         out = self._v([{**HMIN, "bind": {"z": "at('b').final.h"}, "expr": "1"}])
         self.assertTrue(any("reads no captured state" in m for m in out), out)
+        # the reach walk is shared with `cases_read` (issue #567); over the effective
+        # references its frontier is the PRUNED expr, so a bind named only inside `0 * a` is
+        # not reached and the predicate reads no state outside a term constant by form
+        out = self._v([{**HMIN, "bind": {"a": "sum(final.h)"}, "expr": "1.0 + 0 * a"}])
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("reads no captured state", out[0])
+        self.assertIn("outside a term multiplied by a literal zero", out[0])
         # and the keys the secondary side has are refused here
         for key in ("na_allowed", "expected_outcome"):
             out = self._v([{**HMIN, key: "pass"}])
@@ -1670,6 +1697,106 @@ class CoverageGateTest(unittest.TestCase):
         self.assertEqual(pe.coverage_violations(
             self._T, full + [self._p("t_sym", "guard"), self._p("t_mass", "extra")]), [])
 
+    # Channel IR `problem__shallow_water2d_channel__0.2.5/shallow-water2d-channel_20261029_001`,
+    # predicate [300] (`restricted_order_n032_to_n064_hu_l2`, `case: n256`): the Compile leaf
+    # copied one 18-bind block into every restricted predicate; `expr` reaches 6 binds, and
+    # three of the 12 unreached ones read at('…n128…'), which the value never touches.
+    _CHANNEL_300_BIND: ClassVar[dict[str, str]] = {
+        "a32h": "at('chan_tc2_xpert_n032_dts100').final.h",
+        "a32u": "at('chan_tc2_xpert_n032_dts100').final.hu",
+        "a32v": "at('chan_tc2_xpert_n032_dts100').final.hv",
+        "r32h": "coarsen(final.h, 8)",
+        "r32u": "coarsen(final.hu, 8)",
+        "r32v": "coarsen(final.hv, 8)",
+        "a64h": "at('chan_tc2_xpert_n064_dts100').final.h",
+        "a64u": "at('chan_tc2_xpert_n064_dts100').final.hu",
+        "a64v": "at('chan_tc2_xpert_n064_dts100').final.hv",
+        "r64h": "coarsen(final.h, 4)",
+        "r64u": "coarsen(final.hu, 4)",
+        "r64v": "coarsen(final.hv, 4)",
+        "a128h": "at('chan_tc2_xpert_n128_dts100').final.h",
+        "a128u": "at('chan_tc2_xpert_n128_dts100').final.hu",
+        "a128v": "at('chan_tc2_xpert_n128_dts100').final.hv",
+        "r128h": "coarsen(final.h, 2)",
+        "r128u": "coarsen(final.hu, 2)",
+        "r128v": "coarsen(final.hv, 2)",
+    }
+
+    def test_cases_read_counts_only_the_references_that_enter_the_value(self) -> None:
+        """Issue #567: under `case: X` a corroborant values X plus the at('<case>') cases that
+        enter its value — in `expr` or a bind `expr` reaches (directly or transitively),
+        outside a term constant by form. A dead bind, a `0 *` term, a bind reached only
+        through a pruned term, and an at() inside `X - X` add no case. The last row is the
+        corpus witness: channel predicate [300]'s bind block (`_CHANNEL_300_BIND`) values
+        three cases, not the four its raw references name."""
+        def p(expr: str, bind: dict | None = None) -> dict:
+            out = {"test_id": "t", "quantity": "q", "expr": expr, "op": "le", "value": 1.0,
+                   "target_cases": ["a", "b"], "case": "a"}
+            if bind is not None:
+                out["bind"] = bind
+            return out
+        rows = [
+            (p("final.s"), {"a"}),
+            (p("final.s", {"dead": "at('b').final.s"}), {"a"}),
+            (p("final.s + 0 * sum(at('b').final.s)"), {"a"}),
+            (p("final.s + 0 * other", {"other": "at('b').final.s"}), {"a"}),
+            (p("final.s + w", {"w": "(at('b').final.s - at('b').final.s) * 2"}), {"a"}),
+            (p("final.s - other", {"other": "at('b').final.s"}), {"a", "b"}),
+            (p("c", {"other": "at('b').final.s", "c": "other * 2"}), {"a", "b"}),
+            (p("final.s - at('b').final.s"), {"a", "b"}),
+            # a bind reached only through ANOTHER dead bind is dead too
+            (p("final.s", {"x": "at('b').final.s", "y": "x * 2"}), {"a"}),
+        ]
+        for pred, want in rows:
+            with self.subTest(expr=pred["expr"], bind=str(pred.get("bind"))):
+                self.assertEqual(pe.cases_read(pred), want)
+        n = "chan_tc2_xpert_n{:03d}_dts100".format
+        channel = {"test_id": "l1_tc2_perturbed_refinement_restricted",
+                   "quantity": "restricted_order_n032_to_n064_hu_l2",
+                   "target_cases": [n(32), n(64), n(128), n(256)], "case": n(256),
+                   "bind": dict(self._CHANNEL_300_BIND),
+                   "expr": "log2((norm2(a32u - r32u) / norm2(r32u)) / "
+                           "(norm2(a64u - r64u) / norm2(r64u)))",
+                   "op": "ge", "value": 1.1}
+        self.assertEqual(pe.cases_read(channel), {n(32), n(64), n(256)})
+        # the same block with `expr` reaching an n128 bind values all four
+        self.assertEqual(pe.cases_read({**channel, "expr": channel["expr"] + " + "
+                                        "norm2(a128u - r128u)"}),
+                         {n(32), n(64), n(128), n(256)})
+        # an unparsable bind, reached or not, still makes the predicate cover nothing
+        self.assertIsNone(pe.cases_read(p("final.s", {"bad": "final.s +"})))
+
+    def test_a_reference_that_enters_no_value_covers_no_case(self) -> None:
+        """Issue #567, through the gate: a `case: a` corroborant of a per_case condition over
+        {a, b} whose only at('b') is in a dead bind, a `0 *` term, a bind reached only through
+        a pruned term, or inside `X - X` is refused with the "reads every such case" message;
+        a bind reached transitively still covers b."""
+        t = [{"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],
+              "pass_when": {"all": [{"ref": "m.a", "op": "le", "value": 1, "per_case": True,
+                                     "quantity": "pc"}]}}]
+
+        def case_a(expr: str, bind: dict | None = None) -> dict:
+            out = {"test_id": "t_mass", "quantity": "pc", "expr": expr, "op": "le",
+                   "value": 1.0, "target_cases": ["a", "b"], "case": "a"}
+            if bind is not None:
+                out["bind"] = bind
+            return out
+        msg = ("t_mass: condition on 'm.a' (quantity 'pc') holds in every target case, but no "
+               "corroborant of that quantity reads every such case (each reads [['a']])")
+        refused = [
+            case_a("final.s", {"dead": "at('b').final.s"}),
+            case_a("final.s + 0 * sum(at('b').final.s)"),
+            case_a("final.s + 0 * other", {"other": "at('b').final.s"}),
+            case_a("final.s + w", {"w": "at('b').final.s - at('b').final.s"}),
+        ]
+        for pred in refused:
+            with self.subTest(expr=pred["expr"], bind=str(pred.get("bind"))):
+                v = pe.coverage_violations(t, [pred])
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(msg, v[0])
+        self.assertEqual(pe.coverage_violations(t, [case_a(
+            "c", {"other": "at('b').final.s", "c": "other * 2"})]), [])
+
     def test_a_corroborant_must_read_every_case_the_condition_holds_in(self) -> None:
         """Rounds 1 and 2 (security axis): per (test, quantity), some corroborant must READ
         every case the condition holds in — every target case for a per_case or a suite-level
@@ -1711,7 +1838,9 @@ class CoverageGateTest(unittest.TestCase):
                       v[1])
         self.assertIn("condition on 'm.c' (quantity 'suite') holds in every target case", v[2])
         self.assertIn("give one primary_predicates entry `per_case: true`, or a `case:` whose "
-                      "at('<case>') references reach the rest", v[2])
+                      "at('<case>') references — in expr or a bind expr reaches, outside a term "
+                      "constant by form — reach the rest — a corroborant reading one case would "
+                      "certify the test on that case alone", v[2])
         # per_case corroborants, or a `case:` one whose at() reaches the rest, satisfy each;
         # a `case: a` corroborant of a `case: a` condition reads exactly the case it needs
         self.assertEqual(pe.coverage_violations(t, [
