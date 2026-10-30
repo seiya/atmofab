@@ -816,8 +816,8 @@ def _projected_verdict(artifact_dir: Path, basename: str, field: str
     the file is revoked and records no reason, `None` when it is not revoked. `revoked_by` is
     the file's `revoked_by_agent_run_id` (`None` unless revoked): the revoking run is not
     necessarily the audited one — a cold re-run of the same node reads the artifact and revokes
-    it too, and the audit's source-dir discovery lists every attempt under a pipeline the
-    node's orchestrations share — so the arid is what lets a reader place the revocation.
+    it too, on a pipeline the node's orchestrations share — so the arid is what lets a reader
+    place the revocation.
 
     `verdict` is `None` when no projection was written — the reviewer loop ended without an
     accepted document, whether by budget exhaustion or by a transport death; the row's

@@ -447,6 +447,20 @@ def summarize(raw, seen_ids):
     }
 
 
+def launch_is_llm_leaf(orch_path, run_id):
+    """Whether the launch record names an LLM leaf: `leaf_mode` is `pure` or `workshop`. A
+    deterministic substep's record carries no `leaf_mode`. This is what tells a leaf with no
+    transcript to read (a codex or HTTP workshop leaf, a claude one whose home was pruned) from
+    a deterministic step. An unreadable record or none answers False."""
+    record_path = os.path.join(orch_path, "launches", f"{run_id}.request.json")
+    try:
+        with open(record_path, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return isinstance(loaded, dict) and loaded.get("leaf_mode") in ("pure", "workshop")
+
+
 def transcript_path_for(orch_path, repo_root, orch_id, run_id, project_dirs):
     """The transcript file of one run id, or None (see `--project-dir` in the docstring).
 
@@ -605,7 +619,7 @@ def main():
             "role": lab["role"], "status": lab["status"],
             "elapsed_s": elapsed, "raw_elapsed_s": row["dur_s"], "stale_gap_s": stale_gap,
             "gap_cause": gap_cause, "monotonic_s": mono_s,
-            "is_llm": tr is not None,
+            "is_llm": tr is not None or launch_is_llm_leaf(orch_path, rid),
             "transcript": tr,
         })
 
@@ -654,9 +668,12 @@ def main():
 
 
 def render(r):
-    llm = [l for l in r["leaves"] if l["is_llm"]]
+    # `llm` is the leaves with a transcript, the only ones with per-turn figures to read; a leaf
+    # with none is still LLM time, and the split below counts it there.
+    llm = [l for l in r["leaves"] if l["transcript"] is not None]
+    no_transcript = [l for l in r["leaves"] if l["is_llm"] and l["transcript"] is None]
     total = sum(l["elapsed_s"] for l in r["leaves"])
-    llm_total = sum(l["elapsed_s"] for l in llm)
+    llm_total = sum(l["elapsed_s"] for l in r["leaves"] if l["is_llm"])
     out_total = sum(l["transcript"]["out_tokens"] for l in llm)
     think_total = sum(l["transcript"]["thinking_tokens"] for l in llm)
     vis_total = sum(l["transcript"]["visible_tokens"] for l in llm)
@@ -676,6 +693,11 @@ def render(r):
     print(f"  LLM leaves:           {llm_total:6.0f}s ({pct(llm_total,total)})")
     print(f"  deterministic (cond): {total-llm_total:6.0f}s ({pct(total-llm_total,total)})  "
           f"(Build / Validate.execute, no LLM)")
+    if no_transcript:
+        print(f"    NOTE {len(no_transcript)} LLM leaf/leaves ("
+              f"{sum(l['elapsed_s'] for l in no_transcript):.0f}s, kind LLM*) have no claude "
+              "transcript: counted as LLM time, absent from every token figure and from the "
+              "turn detail. Their tokens: tools/audit_orchestration.py, ## Token cost.")
     print(f"  output tokens={out_total}  =  thinking {think_total} ({pct(think_total,out_total)}) "
           f"+ visible {vis_total} ({pct(vis_total,out_total)})")
     print("    NOTE output_tokens includes extended thinking (billed as output, not in "
@@ -694,7 +716,7 @@ def render(r):
            f"{'out_tok':>8s} {'think%':>7s} {'vis_tok':>8s} {'tok/s':>6s} {'resp':>5s}")
     print(hdr)
     for l in r["leaves"]:
-        if l["is_llm"]:
+        if l["transcript"] is not None:
             t = l["transcript"]
             flags = ""
             if l["stale_gap_s"]:
@@ -713,7 +735,8 @@ def render(r):
                   f"{t['visible_tokens']:>8d} {rate:>6s} {t['n_responses']:>5d}"
                   f"{flags}")
         else:
-            print(f"  {l['name']:24s} {l['elapsed_s']:7.0f}s {'det':>6s} {'—':>5s} {'—':>6s} "
+            kind = "LLM*" if l["is_llm"] else "det"
+            print(f"  {l['name']:24s} {l['elapsed_s']:7.0f}s {kind:>6s} {'—':>5s} {'—':>6s} "
                   f"{'—':>8s} {'—':>7s} {'—':>8s} {'—':>6s} {'—':>5s}")
     print()
     render_anomalies(r, llm)

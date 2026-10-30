@@ -124,6 +124,16 @@ def _parse_stream(path):
     return usage, finish, answer_chars, frames, head
 
 
+def _is_workshop_launch(orch, arid):
+    """Whether the launch record names a `workshop leaf`, whose file holds its LAST response."""
+    try:
+        with open(f"{orch}/launches/{arid}.request.json", encoding="utf-8") as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and record.get("leaf_mode") == "workshop"
+
+
 def rows(orch):
     """Yield one dict per persisted leaf stream of `orch`, in run order."""
     runs = _read_runs(orch)
@@ -138,6 +148,10 @@ def rows(orch):
                "finished_at": (run or {}).get("finished_at")}
         if run is None:
             row["note"] = "no agent_runs.jsonl row for this launch"
+        elif _is_workshop_launch(orch, arid):
+            # Any figure read from this file is one turn's, printed as the leaf's.
+            row["note"] = ("workshop leaf: this file holds its last response only; read "
+                           "`tools/audit_orchestration.py` ## Token cost")
         elif usage is None and frames == 0:
             # NOT spelled "not an event stream": `docs/ORCHESTRATION.md` defines
             # `response_not_an_event_stream` as a 200 body that did not OPEN as one, which fails

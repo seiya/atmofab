@@ -591,6 +591,26 @@ class PrunedHomeTests(_Base):
                          "superseded")
 
 
+class WarmPreparationRefusalTests(_Base):
+    def test_a_warm_preparations_refusal_is_the_cold_refusals_category(self) -> None:
+        """A credential file deleted mid-run: the warm preparation refuses, and the outcome is
+        the cold route's, not a `conductor_error` out of `run_substep`. Nothing is launched."""
+        self.c.leaf_actions = [_writes_nothing, _writes_bundle]
+        real = _WorkshopFakeConductor._prepare_workshop_home
+
+        def refuse_warm(conductor, entry, lineage_id, *, resume):
+            if resume:
+                raise ValueError("Codex auth.json not found for isolated home: /x/auth.json")
+            return real(conductor, entry, lineage_id, resume=resume)
+
+        with mock.patch.object(_WorkshopFakeConductor, "_prepare_workshop_home", refuse_warm):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail", outcome)
+        self.assertEqual(outcome.infra_error[0], "workshop_lineage_setup_failed", outcome)
+        self.assertIn("auth.json", outcome.infra_error[1])
+        self.assertEqual(len(self.requests()), 1, "the warm turn recorded no launch")
+
+
 class OuterReopenTests(_Base):
     def _reopen(self, target: str) -> wc.SubstepOutcome:
         evidence = self.c.__dict__.setdefault("evidence", {})

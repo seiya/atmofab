@@ -105,6 +105,34 @@ class TranscriptResolutionTests(unittest.TestCase):
     def _record(self, rid, body):
         (self.orch / "launches" / f"{rid}.request.json").write_text(body, encoding="utf-8")
 
+    def test_a_leaf_with_no_transcript_is_llm_time_and_a_deterministic_step_is_not(self):
+        """A codex or HTTP workshop row has no transcript; its launch record says it is a leaf.
+        The summing is read from the rendered report, where it used to read 0s LLM."""
+        _transcript(self._lineage() / "-any-tree-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 101)
+        self._record(HTTP_RID, json.dumps({"leaf_mode": "pure"}))
+        report = self._report()
+        kinds = {leaf["run_id"]: (leaf["is_llm"], leaf["transcript"] is not None)
+                 for leaf in report["leaves"]}
+        self.assertEqual(kinds, {CLAUDE_RID: (True, True), CODEX_RID: (True, False),
+                                 HTTP_RID: (True, False), PURE_RID: (False, False)})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            analyze_timing.render(report)
+        text = out.getvalue()
+        self.assertRegex(text, r"LLM leaves: +90s \(75%\)")
+        self.assertRegex(text, r"deterministic \(cond\): +30s \(25%\)")
+        self.assertIn("NOTE 2 LLM leaf/leaves (60s, kind LLM*)", text)
+        self.assertRegex(text, r"(?m)^  \S+ +30s +LLM\* ")
+        self.assertRegex(text, r"(?m)^  \S+ +30s +det ")
+        self.assertRegex(text, r"(?m)^  \S+ +\d+s +LLM +")
+
+    def test_an_unreadable_record_does_not_make_a_row_llm(self):
+        self._record(CODEX_RID, "{not json")
+        self._record(HTTP_RID, "[]")
+        leaves = {leaf["run_id"]: leaf["is_llm"] for leaf in self._report()["leaves"]}
+        self.assertFalse(leaves[CODEX_RID])
+        self.assertFalse(leaves[HTTP_RID])
+
     def test_i_a_claude_workshop_row_is_read_from_its_lineage_home(self):
         _transcript(self._lineage() / "-any-tree-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 101)
         # A pure row found in the pair as well: its hit must NOT be listed as a lineage root

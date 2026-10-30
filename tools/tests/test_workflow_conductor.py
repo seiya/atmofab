@@ -22328,6 +22328,23 @@ class DeterministicCompileStaticTest(unittest.TestCase):
 class PostJudgeClassifierTest(unittest.TestCase):
     """G4: post_judge severity classification of free-text `--stage pre_judge` violations."""
 
+    def test_every_line_led_by_the_bare_orchestrations_root_is_unrecoverable(self) -> None:
+        """Read from the validator's source, so a seventh line of the form is red here until it
+        is counted. A leaf writes none of these records, so no repair of the judge's reaches
+        them; an operator's `--resume` still may."""
+        source = (Path(wc.__file__).parent / "validate_pipeline_semantics.py").read_text(
+            encoding="utf-8")
+        tails = re.findall(r'f"\{orchestrations_root\}: ([^"]*)"', source)
+        self.assertEqual(len(tails), 6, tails)
+        for root in ("workspace/orchestrations", "/abs/repo/workspace/orchestrations"):
+            for tail in tails:
+                with self.subTest(root=root, tail=tail):
+                    self.assertEqual(wc.classify_post_judge_violations([f"{root}: {tail}"]),
+                                     "unrecoverable")
+        self.assertEqual(
+            wc.classify_post_judge_violations(["workspace/orchestrations_old/x.f90: finding"]),
+            "unknown", "only the root itself, not a name that begins like it")
+
     def test_recoverable_is_judge_authored_only(self) -> None:
         # R2: semantic_review.json is the judge's ONLY deliverable, so it is the only
         # warm-resume-recoverable artifact.

@@ -840,6 +840,10 @@ _POST_JUDGE_RECOVERABLE_BASENAMES: frozenset[str] = frozenset({
 _POST_JUDGE_UNRECOVERABLE_BASENAMES: frozenset[str] = frozenset({
     "agent_graph.json", "step_result.json", "lineage.json", "verdict.json",
     "aggregate_verdict.json", "summary.json", "validate_meta.json",
+    # `_validate_orchestration_hierarchy` leads six integrity lines with the bare root, which the
+    # `"orchestrations/"` test below does not match. A leaf-chosen leading token is a bundle
+    # `logical_path`, which the extension allowlist confines to a source suffix.
+    "orchestrations",
 })
 _POST_JUDGE_UNRECOVERABLE_MARKERS: tuple[str, ...] = (
     "copy_based_artifact_reuse detected", "dependency DAG incomplete",
@@ -8224,8 +8228,8 @@ class Conductor:
         nothing writes into it while it is read. A handler still alive after the stop is a host
         defect, raised rather than snapshotted past.
 
-        Returns None when a WARM launch finds the lineage home gone (`record_launch` answers
-        `workshop_lineage_home_missing`): nothing was launched and the loop falls back to a
+        Returns None when a WARM launch finds the lineage home gone (this function's own
+        preparation, or `record_launch` answering `workshop_lineage_home_missing`): nothing was launched and the loop falls back to a
         cold launch.
 
         On an HTTP entry (issue #534 PR-J3-b) the leaf is the host's tool-use loop
@@ -8246,13 +8250,21 @@ class Conductor:
             write_host_file,
         )
         paths = lineage.paths
-        if warm and not paths.home.is_dir():
-            # The lineage home is gone (an operator prune): the answer `record_launch` would
-            # give (`workshop_lineage_home_missing`), given before anything is written into it.
-            self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                      target=resume_session_id or "", reason="workshop_lineage_home_missing")
-            return None
         if warm:
+            # The preparation `record_launch` repeats in its own process, asked here first. A home
+            # that is gone (an operator prune) gets the answer `record_launch` would give
+            # (`workshop_lineage_home_missing`), before anything is written into it. A refusal
+            # (a credential file gone mid-run) would reach this loop from there as an unnamed
+            # `RuntimeError`; here it takes the route of the cold preparation's refusal.
+            try:
+                prepared = self._prepare_workshop_home(entry, paths.lineage_id, resume=True)
+            except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
+                raise WorkshopSetupFailed(str(exc)) from exc
+            if prepared is None:
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                          target=resume_session_id or "",
+                          reason="workshop_lineage_home_missing")
+                return None
             # The host's files, as the host placed them: a seed the leaf edited is restored, so
             # the wrapper's feedback reads what the gates will.
             for name, text in lineage.seeds.items():
@@ -8832,9 +8844,10 @@ class Conductor:
                     substep=substep, resume_session_id=machine.resume_session_id, warm=warm,
                     spec=spec)
             except WorkshopSetupFailed as exc:
-                # Nothing was launched or recorded: a host precondition (the wrapper's
-                # context could not be frozen, or the launch's network routes could not be
-                # served — issue #534 step 4), routed like an unassemblable context.
+                # Nothing was launched or recorded: a host precondition (a warm lineage's
+                # preparation refused, the wrapper's context could not be frozen, or the launch's
+                # network routes could not be served — issue #534 step 4), routed like an
+                # unassemblable context.
                 self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
                           detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                 return SubstepOutcome(child_arid, "fail", [], 1,
@@ -9750,9 +9763,9 @@ class Conductor:
                     phase=phase, substep=substep,
                     resume_session_id=machine.resume_session_id, warm=warm, spec=spec)
             except WorkshopSetupFailed as exc:
-                # Nothing was launched or recorded: a reading launch's one host precondition
-                # inside the turn is its network routes (issue #534 step 4,
-                # `_start_leaf_routes`), routed as the producer loop routes a setup failure.
+                # Nothing was launched or recorded: a reading launch's host preconditions inside
+                # the turn are a warm turn's lineage preparation and its network routes (issue
+                # #534 step 4, `_start_leaf_routes`), routed as the producer loop routes them.
                 self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
                           detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                 return SubstepOutcome(

@@ -762,6 +762,30 @@ class IncidentApiErrorRenderTests(unittest.TestCase):
         self.assertIn("safe to", md)
 
 
+class ReportWideLoadersDoNotSwallowTests(unittest.TestCase):
+    """The three JSONL logs behind every count of the report (issue #130). A read error has to
+    reach `audit()`'s caller: a loader that swallowed it would report all counts 0 and no
+    integrity warning over an orchestration whose logs could not be read."""
+
+    def test_a_read_error_on_each_log_reaches_the_caller(self) -> None:
+        real_read_text = Path.read_text
+        for name in ("phase_state_log.jsonl", "agent_runs.jsonl", "agent_runs_invalid.jsonl"):
+            for exc in (OSError, UnicodeDecodeError("utf-8", b"\xff", 0, 1, "boom")):
+                def read_text(path, *args, _name=name, _exc=exc, **kwargs):
+                    if path.name == _name:
+                        raise _exc("boom") if _exc is OSError else _exc
+                    return real_read_text(path, *args, **kwargs)
+
+                with self.subTest(log=name, exc=exc), tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    root = repo / "workspace" / "orchestrations" / "orch_x"
+                    root.mkdir(parents=True)
+                    (root / name).write_text("{}\n", encoding="utf-8")
+                    with mock.patch.object(Path, "read_text", read_text), \
+                            self.assertRaises((OSError, UnicodeDecodeError)):
+                        audit(repo, "orch_x")
+
+
 class PureLeafABSummaryTest(unittest.TestCase):
     """collect_pure_leaf_ab_summary + _render_pure_leaf_ab (Z2 M-E)."""
 
@@ -800,6 +824,18 @@ class PureLeafABSummaryTest(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _launch_source(self, repo: Path, source_id: object, *, pipeline_ref: object = None,
+                orch: str | None = None, step: str = "generate", substep: str = "generate",
+                leaf_mode: object = "workshop") -> None:
+        """Persist the launch request of one generate attempt, which is what discovery reads."""
+        launches = repo / "workspace" / "orchestrations" / (orch or self.ORCH) / "launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        arid = f"arid-{len(list(launches.iterdir()))}"
+        (launches / f"{arid}.request.json").write_text(json.dumps({
+            "step": step, "substep": substep, "leaf_mode": leaf_mode, "source_id": source_id,
+            "pipeline_ref": self.PIPE if pipeline_ref is None else pipeline_ref,
+        }), encoding="utf-8")
+
     def _lay_out(self, repo: Path, *, executor="pure", with_metas=True) -> None:
         root = repo / "workspace" / "orchestrations" / self.ORCH
         root.mkdir(parents=True, exist_ok=True)
@@ -812,6 +848,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
         )
         self._reserve(repo)
         if with_metas:
+            self._launch_source(repo, self.SRC.rsplit("/", 1)[-1])
             src = repo / self.SRC
             src.mkdir(parents=True, exist_ok=True)
             (src / "bundle_meta.json").write_text(
@@ -916,7 +953,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
                 leaf_mode: str | None = "pure") -> None:
         """One persisted launch request — the discovery key for the compile half.
 
-        Deliberately NOT the reservation the generate half uses: `reserved_ir_id` is overwritten
+        Deliberately NOT a reservation: `reserved_ir_id` is overwritten
         on every rotation, so it names only the LIVE directory. A launch request is written once
         per attempt and never rewritten, which is why a rotated attempt is discoverable at all.
         """
@@ -1127,6 +1164,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
             self._reserve(repo)
             # Two source dirs under the pipeline: a rotated failed attempt + the retry.
             for sid, result, cat in (("src_001", "fail", "bundle_schema_violation"), ("src_002", "pass", None)):
+                self._launch_source(repo, sid)
                 sdir = repo / self.PIPE / "source" / sid
                 sdir.mkdir(parents=True, exist_ok=True)
                 (sdir / "bundle_meta.json").write_text(
@@ -1182,7 +1220,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._reserve(repo, target_id=_NO_TARGET)
-            (repo / legacy_pipe / "source" / "src_20260716_001").mkdir(parents=True)
+            self._launch_source(repo, "src_20260716_001", pipeline_ref=legacy_pipe)
             dirs, refs = _pure_source_dirs_of(repo, self.ORCH)
             self.assertEqual(refs, [legacy_pipe])
             self.assertEqual(dirs, [f"{legacy_pipe}/source/src_20260716_001"])
@@ -1191,6 +1229,46 @@ class PureLeafABSummaryTest(unittest.TestCase):
                 repo = Path(tmp)
                 self._reserve(repo, target_id=bad)
                 self.assertEqual(_pure_source_dirs_of(repo, self.ORCH), ([], []), bad)
+
+    def test_a_sibling_runs_attempts_under_the_shared_pipeline_are_not_listed(self) -> None:
+        """A node's pipeline id is reused across orchestrations: on disk this run's directory
+        sits beside a sibling's, and only the launch requests say which is whose."""
+        from tools.audit_orchestration import _pure_source_dirs_of
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._reserve(repo)
+            for sid in ("src_001", "src_002"):
+                (repo / self.PIPE / "source" / sid).mkdir(parents=True)
+            self._launch_source(repo, "src_002")
+            self._launch_source(repo, "src_001", orch="orch_sibling")
+            self.assertEqual(_pure_source_dirs_of(repo, self.ORCH),
+                             ([f"{self.PIPE}/source/src_002"], [self.PIPE]))
+            self.assertEqual(_pure_source_dirs_of(repo, "orch_sibling")[0],
+                             [f"{self.PIPE}/source/src_001"])
+            (repo / "workspace" / "orchestrations" / "orch_idle").mkdir()
+            self.assertEqual(_pure_source_dirs_of(repo, "orch_idle"), ([], []))
+
+    def test_only_a_generate_leaf_launch_with_clean_refs_names_a_source_dir(self) -> None:
+        from tools.audit_orchestration import _pure_source_dirs_of
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._launch_source(repo, "src_workshop")  # launched first, listed last: sorted
+            self._launch_source(repo, "src_pure", leaf_mode="pure")
+            self._launch_source(repo, "src_pure", substep="verify")  # one directory, listed once
+            self._launch_source(repo, "src_agentic", leaf_mode=None)
+            self._launch_source(repo, "src_gate", substep="gate", leaf_mode=None)
+            self._launch_source(repo, "src_validate", step="validate")
+            for bad in ("..", ".", "/abs", "a/b", "", 3):
+                self._launch_source(repo, bad)
+            for bad in ("elsewhere/x/y/z", "workspace/pipelines/a", "../workspace/pipelines/a/b",
+                        "workspace/pipelines/../b",
+                        "workspace/pipelines/a/../b", "workspace/pipelines/a/Not_Target/c",
+                        "/workspace/pipelines/a/b", 3):
+                self._launch_source(repo, "src_bad_ref", pipeline_ref=bad)
+            dirs, refs = _pure_source_dirs_of(repo, self.ORCH)
+        self.assertEqual(dirs, [f"{self.PIPE}/source/{sid}"
+                                for sid in ("src_agentic", "src_pure", "src_workshop")])
+        self.assertEqual(refs, [])
 
     def test_traversal_reserved_pipeline_id_is_skipped(self) -> None:
         # `reserved_ir_id` is JSON-sourced: a non-segment value would escape the
@@ -1221,7 +1299,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
                 repo, self.ORCH, {"invocation": {"generate_executor": "pure"}}
             )
         self.assertFalse(out["available"])
-        self.assertIn("Generate has not produced one", out["reason"])
+        self.assertIn("Generate has not run", out["reason"])
         self.assertNotIn("discovery found no node", out["reason"])
 
     def test_generate_only_run_is_measured_without_any_checkpoint(self) -> None:
@@ -1285,6 +1363,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._lay_out(repo, executor="legacy", with_metas=False)
+            self._launch_source(repo, "src_legacy_001", leaf_mode=None)
             legacy_src = repo / self.PIPE / "source" / "src_legacy_001"
             legacy_src.mkdir(parents=True)
             (legacy_src / "src").mkdir()  # a real legacy source dir, no bundle/verdict meta

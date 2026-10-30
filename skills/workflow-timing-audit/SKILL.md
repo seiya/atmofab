@@ -105,7 +105,7 @@ The bundled script handles all seven structurally; do not hand-sum these:
 | role / substep / status label | `workspace/orchestrations/<orch_id>/session_run_index.json`, `agent_runs.jsonl` |
 | run status / spec | `workspace/orchestrations/<orch_id>/orchestration_meta.json` |
 | per-leaf token usage | `workspace/orchestrations/<orch_id>/agent_runs.jsonl` (`usage`), mirrored in `agents/<agent_run_id>/dialogs/agent.result.json` |
-| per-leaf full transcript (per-TURN detail: thinking split, tool time) | `<projects-root>/<cwd-slug>/<agent_run_id>.jsonl` (`<projects-root>` is `~/.claude/projects` for a pure leaf — a claude leaf of a run between Z4, issue #171, and issue #534 PR-J4-b, which had no private home; a `workshop leaf`'s is its lineage's `~/.atmofab/homes/<orchestration_id>/claude/<lineage_id>/config/projects`, which the bundled script resolves per run id from the launch record `launches/<agent_run_id>.request.json` through `tools/operator_private_root.py::claude_leaf_projects_roots` and searches alone for that row (issue #565; a codex or HTTP `workshop leaf` row is read from nowhere — and is then SUMMED AS NON-LLM, so on a codex or HTTP run the report's `LLM leaves` line is 0 and `deterministic` is 100%; `TODO.md` carries that item, and §Step 1b's `leaf_token_report.py` is the instrument for those runs); issue #63 had put an agentic leaf's under `orchestration_meta.json#claude_workflow_home` + `/projects`, and for a row whose launch record names no workshop the bundled script still searches that AND `~/.claude/projects`, private first and resolved per run id rather than either/or, because a run resumed across either migration has leaves in both — pass one directory explicitly with `--project-dir` to override the resolution for every row, workshop rows included) (`<cwd-slug>` = the leaf's cwd as an absolute path with `/`→`-` — the repo for a pure or agentic leaf, the lineage's `tree/` for a `workshop leaf`, whose slug also turns `.` and `_` into `-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
+| per-leaf full transcript (per-TURN detail: thinking split, tool time) | `<projects-root>/<cwd-slug>/<agent_run_id>.jsonl` (`<projects-root>` is `~/.claude/projects` for a pure leaf — a claude leaf of a run between Z4, issue #171, and issue #534 PR-J4-b, which had no private home; a `workshop leaf`'s is its lineage's `~/.atmofab/homes/<orchestration_id>/claude/<lineage_id>/config/projects`, which the bundled script resolves per run id from the launch record `launches/<agent_run_id>.request.json` through `tools/operator_private_root.py::claude_leaf_projects_roots` and searches alone for that row (issue #565; a codex or HTTP `workshop leaf` row is read from nowhere — its launch record still makes it LLM time, reported as kind `LLM*` with no per-turn detail and no token figures, which §Step 1b says where to find); issue #63 had put an agentic leaf's under `orchestration_meta.json#claude_workflow_home` + `/projects`, and for a row whose launch record names no workshop the bundled script still searches that AND `~/.claude/projects`, private first and resolved per run id rather than either/or, because a run resumed across either migration has leaves in both — pass one directory explicitly with `--project-dir` to override the resolution for every row, workshop rows included) (`<cwd-slug>` = the leaf's cwd as an absolute path with `/`→`-` — the repo for a pure or agentic leaf, the lineage's `tree/` for a `workshop leaf`, whose slug also turns `.` and `_` into `-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
 
 > **Operator context only.** Both roots in the row above are protected read roots for Bash
 > — the backend CLI's credential/session home, and since issue #64 `~/.atmofab`, under
@@ -141,7 +141,10 @@ python3 skills/workflow-timing-audit/scripts/analyze_timing.py <orch_id> --json
 If transcripts live elsewhere, pass `--project-dir <dir>`; it is read for every row, workshop rows included, in place of the per-run-id resolution.
 
 ### Step 1b — for an HTTP leaf, take the per-request token and throughput figures
-`analyze_timing.py` reads transcripts. An HTTP leaf has none: it is one request, and what it
+`analyze_timing.py` reads transcripts, and an HTTP leaf has none. A `workshop leaf` on HTTP is many
+requests, and `launches/` keeps only its last response, so its tokens are in
+`tools/audit_orchestration.py` §Token cost; the script below says so for such a row and prints no
+figure. A codex workshop leaf's are there too, and the script finds no stream to read for it. A pure HTTP leaf of an older run is one request, and what it
 spent is in the run's own `launches/` artifacts. For those, run
 
 ```bash
@@ -168,7 +171,10 @@ script's figures feed, and states the sizing rule they support.
    a `max_tokens` truncation (especially a thinking-only one — zero output, work redone)
    and a leaf API/transport error (the leaf died of infrastructure, not of its reasoning).
    Either changes what the run's numbers *mean* before you interpret them.
-2. Confirm the **LLM vs. deterministic** split. Deterministic steps have no transcript;
+2. Confirm the **LLM vs. deterministic** split. Deterministic steps have no transcript and no
+   `leaf_mode` in their launch record; a row with a `leaf_mode` and no transcript reads `LLM*`.
+   An agentic-era LLM leaf whose transcript is gone has neither and still reads `det`, so on a
+   run from before the pure path the split can overstate deterministic time;
    if one shows as LLM, the run predates the conductor in-process migration. `Build` and
    most `Validate.execute` steps are a few %, but on an M3c problem node `validate.execute`
    is the **real multi-resolution simulation** and can legitimately be 10–20% of leaf time

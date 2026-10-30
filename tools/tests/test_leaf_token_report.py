@@ -74,6 +74,21 @@ class LeafTokenReportTests(unittest.TestCase):
         return subprocess.run([sys.executable, str(_SCRIPT), str(self.orch), *args],
                               capture_output=True, text=True, cwd=str(_ROOT))
 
+    def test_a_workshop_leaf_reports_no_figure_from_its_last_response(self):
+        """The file holds one turn of many, in a dialect this script parses: a figure read from
+        it would be that turn's, printed as the leaf's."""
+        self._leaf("w", frames=[_usage_frame(completion=373)])
+        self._leaf("p", frames=[_usage_frame(completion=373)])
+        launches = self.orch / "launches"
+        (launches / "w.request.json").write_text(json.dumps({"leaf_mode": "workshop"}),
+                                                 encoding="utf-8")
+        (launches / "p.request.json").write_text(json.dumps({"leaf_mode": "pure"}),
+                                                 encoding="utf-8")
+        rows = self._rows()
+        self.assertIn("audit_orchestration", rows["w"]["note"])
+        self.assertNotIn("output_tokens", rows["w"])
+        self.assertEqual(rows["p"]["output_tokens"], 373)
+
     # --- the six reported columns -------------------------------------------------------
     def test_every_reported_column_is_asserted(self):
         self._leaf("aaaa1111", substep="generate",
