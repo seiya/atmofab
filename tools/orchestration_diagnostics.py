@@ -32,10 +32,11 @@ launch was a retryable transport blip or a hang; this module recovers them from
 that transcript when it is still on disk. That is the only thing it reads a transcript
 for: each leaf's token usage is recorded in-repo from the leaf's own output (issue #47,
 ``tools/leaf_usage.py``), and no workflow path reads ``~/.claude``; the conductor's warm-resume
-check asks only whether the lineage's own file exists, and the readers of a lineage
+check asks only whether the lineage's own file exists, and the readers of a CLAUDE lineage
 transcript's content besides this module are operator instruments no run drives —
 ``skills/workflow-timing-audit/scripts/analyze_timing.py`` (per-leaf timing and tokens) and
-``tools/judge_replay.py`` (its coverage measurement).
+``tools/judge_replay.py`` (its coverage measurement). (A codex lineage's rollout IS read
+during a run, by the cut-read scan; it is not a claude transcript.)
 
 It is intentionally dependency-free (stdlib only) and **defensive** against the
 Claude Code transcript format: parse failures degrade to raw tails and
@@ -65,7 +66,11 @@ from typing import Any, NamedTuple
 # scan for function-body `tools.*` imports), and `build_launch_incident`'s refusal to
 # swallow by `tools/tests/test_orchestration_diagnostics.py::CollectorsDoNotSwallowTests`.
 from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
-from tools.operator_private_root import claude_leaf_projects_roots
+from tools.operator_private_root import (
+    WORKFLOW_HOMES_ROOT_ENV,
+    claude_leaf_projects_roots,
+    workflow_homes_root,
+)
 
 # Terminal agent_runs statuses: a row carrying one of these (or any finished_at)
 # proves the child completed and the window is NOT dangling.
@@ -440,8 +445,8 @@ class LeafTranscriptSearch(NamedTuple):
 
     ``match`` is the hit or ``None``. ``searched_root`` is the one projects root that was
     globbed, or ``None`` when the launch record selected no search. ``reason`` is the
-    OPERATOR-FACING miss text (``audit_orchestration`` prints it), ``None`` on a hit; every
-    text names a place the operator can list.
+    OPERATOR-FACING miss text (``audit_orchestration`` prints it), ``None`` on a hit; it
+    names the place searched, or why none was.
     """
 
     match: LeafTranscriptMatch | None
@@ -497,9 +502,10 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
       * a record that is present but unreadable — no search, a typed miss: sending it to the
         operator root would print the pre-Z4 text for what may be a workshop launch.
 
-    The resolver's ``ValueError`` / ``OSError`` and a glob's ``OSError`` degrade to a miss; the
-    homes-root override's ``RuntimeError`` (a ``~account`` naming no account) is NOT caught
-    and reaches ``audit()``'s boundary, which records it as a ``diagnostic_failures`` entry.
+    The resolver's ``ValueError`` / ``OSError`` and a glob's ``OSError`` degrade to a miss, and
+    so does the homes-root override's ``RuntimeError`` (a ``~account`` naming no account), as
+    a miss naming ``ATMOFAB_WORKFLOW_HOMES_ROOT``: left to propagate it made the report say
+    detection had failed and the window was unknown, which was false.
     """
     arid = str(child_arid or "").strip()
     if not arid:
@@ -542,9 +548,9 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
             # A workshop record written before `026de9d4` (issue #534 step 2 PR-1, 2026-10-24)
             # carries no provider key: until that commit the conductor refused a workshop
             # entry on any provider but `claude_cli`, so the absent key names claude by
-            # construction (9 such records on the operator's machine at review, every one
-            # with its transcript under its lineage home). A key PRESENT with `null` or an
-            # unknown value is a record no conductor wrote, and stays a typed miss.
+            # construction (the count on the operator's machine is in the PR's record). A key
+            # PRESENT with `null` or an unknown value is a record no conductor wrote, and
+            # stays a typed miss.
             provider = _WORKSHOP_PROVIDER_CLAUDE
         lineage_id = request.get("workshop_lineage_id")
         lid_text = lineage_id if isinstance(lineage_id, str) else "<lineage_id>"
@@ -554,10 +560,16 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
                 f"the launch record names no usable workshop_provider ({provider!r}), so no "
                 "transcript root was searched")
         if provider == _WORKSHOP_PROVIDER_CODEX:
+            # The resolved homes root when it resolves (a path the operator can list), the
+            # placeholder when the override does not (the claude branch below says why).
+            try:
+                homes = str(workflow_homes_root())
+            except RuntimeError:
+                homes = "<homes-root>"
             return LeafTranscriptSearch(
                 None, None,
                 "a codex workshop leaf writes no claude transcript; its rollout is under "
-                f"<homes-root>/{oid or '<oid>'}/codex/{lid_text}/config/sessions/, which this "
+                f"{homes}/{oid or '<oid>'}/codex/{lid_text}/config/sessions/, which this "
                 "correlation does not read")
         if provider in _WORKSHOP_PROVIDERS_HTTP:
             return LeafTranscriptSearch(
@@ -580,6 +592,18 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
         except (OSError, ValueError) as exc:
             return LeafTranscriptSearch(
                 None, None, f"the lineage home could not be resolved ({exc})")
+        except RuntimeError as exc:
+            # `workflow_homes_root()` is not total: a `~account` override naming no account
+            # raises here (the `TODO.md` item on the private-root resolvers). Left to propagate
+            # it reached `audit()`'s boundary and the report said dangling-launch DETECTION had
+            # failed and the window was UNKNOWN — a false record, since detection had
+            # succeeded (round 3 of issue #565). A typed miss naming the variable keeps the
+            # in-repo facts and says what to fix.
+            return LeafTranscriptSearch(
+                None, None,
+                f"the lineage home could not be resolved: {WORKFLOW_HOMES_ROOT_ENV} is set to "
+                f"a value the resolver cannot expand ({exc}); unset it or point it at a "
+                "directory, then re-run")
         match = _glob_root(projects)
         if match is not None:
             return LeafTranscriptSearch(match, projects, None)
@@ -884,9 +908,7 @@ def build_launch_incident(
     none was) and ``searched_projects_root``.
 
     Only conductor-spawned leaves (arid-pinned sessions) are correlated: a transcript
-    is located by ``<projects-root>/<slug>/<arid>.jsonl`` and by nothing else. The homes-root
-    override's ``RuntimeError`` is not caught here; ``audit()`` records it as a
-    ``diagnostic_failures`` entry.
+    is located by ``<projects-root>/<slug>/<arid>.jsonl`` and by nothing else.
     """
     dangling = detect_dangling_active_child(repo_root, orchestration_id)
     if dangling is None:

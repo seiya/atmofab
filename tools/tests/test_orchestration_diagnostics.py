@@ -465,12 +465,12 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             "lineage_id_absent": (_workshop_request(lineage_id=None), None,
                                   ("the launch record names no usable workshop_lineage_id "
                                   "(None), so no lineage home was searched")),
-            "provider_absent": (_workshop_request(provider=None), None,  # type: ignore[arg-type]
+            "provider_null": (_workshop_request(provider=None), None,
                                 ("the launch record names no usable workshop_provider (None), "
                                 "so no transcript root was searched")),
             "codex": (_workshop_request(provider="codex_cli"), None,
                       ("a codex workshop leaf writes no claude transcript; its rollout is under "
-                      f"<homes-root>/{ORCH_ID}/codex/{LINEAGE_ID}/config/sessions/, which "
+                      f"{{homes}}/{ORCH_ID}/codex/{LINEAGE_ID}/config/sessions/, which "
                       "this correlation does not read")),
             "http": (_workshop_request(provider="anthropic_api"), None,
                      ("an HTTP workshop lineage has no CLI transcript; the host loop's turns "
@@ -487,7 +487,9 @@ class BuildLaunchIncidentTests(unittest.TestCase):
                 home = Path(tmp) / "home"
                 _open_dangling_window(_orch_root(repo), request=request)
                 with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                    from tools.operator_private_root import workflow_homes_root
                     lineage = _lineage_projects()
+                    homes = workflow_homes_root()
                     # A decoy in BOTH roots a wrong branch could search: a miss that is
                     # typed must not have been answered by either of them.
                     _write_transcript(home / ".claude" / "projects")
@@ -497,15 +499,38 @@ class BuildLaunchIncidentTests(unittest.TestCase):
                 assert incident is not None
                 child = incident["transcripts"]["child_transcript"]
                 self.assertFalse(child["found"])
-                self.assertEqual(child["reason"], reason.replace("{lineage}", str(lineage)))
+                self.assertEqual(child["reason"], reason.replace("{lineage}", str(lineage))
+                                 .replace("{homes}", str(homes)))
                 self.assertEqual(child["searched_projects_root"],
                                  str(lineage) if searched == "lineage" else None)
 
+    def test_an_unexpandable_homes_root_is_a_typed_miss_naming_the_variable(self) -> None:
+        """Round 3 of issue #565. The homes-root resolver is not total (the `TODO.md` item on
+        `~account` overrides); its `RuntimeError` on the lineage branch is a miss that names
+        `ATMOFAB_WORKFLOW_HOMES_ROOT`, not a raise, and nothing is searched. The codex branch
+        resolves the same root for its reason and falls back to the placeholder."""
+        from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
+        for provider, needle in (("claude_cli", WORKFLOW_HOMES_ROOT_ENV),
+                                 ("codex_cli", "<homes-root>/")):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                home = Path(tmp) / "home"
+                _open_dangling_window(_orch_root(repo),
+                                      request=_workshop_request(provider=provider))
+                env = {**_home_env(home), WORKFLOW_HOMES_ROOT_ENV: "~nosuchacct/x"}
+                with mock.patch.dict(os.environ, env, clear=False):
+                    incident = diag.build_launch_incident(repo, ORCH_ID)
+                assert incident is not None
+                child = incident["transcripts"]["child_transcript"]
+                self.assertFalse(child["found"])
+                self.assertIsNone(child["searched_projects_root"])
+                self.assertIn(needle, child["reason"])
+
     def test_a_workshop_record_without_a_provider_key_is_a_claude_launch(self) -> None:
         """A workshop record written before `026de9d4` carries no `workshop_provider` key and
-        is a claude launch by construction (round 1 of issue #565: 9 such records on the
-        operator's machine, every transcript under its lineage home, every one a typed miss).
-        The ABSENT key is searched in the lineage home; a key PRESENT with `null` is the
+        is a claude launch by construction (round 1 of issue #565 found such records on the
+        operator's machine, every transcript under its lineage home, every one a typed miss;
+        the count is in the PR's record). The ABSENT key is searched in the lineage home; a key PRESENT with `null` is the
         typed miss the previous row pins, so the two shapes are driven side by side."""
         for name, provider, found in (("key_absent", _NO_PROVIDER_KEY, True),
                                       ("key_null", None, False)):
@@ -1263,8 +1288,9 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
         """Pin (g) of issue #565: the lineage branch is on the behavioural swallow check too.
 
         The window above carries a record with no `leaf_mode`, so it only ever reaches the
-        operator-root glob — and every primitive it poisons is first hit by the detector,
-        before the locator runs. Here a claude workshop record is laid out and ONLY the glob
+        operator-root glob — and the primitives it poisons are first hit by the detector,
+        before the locator runs (`is_file` excepted: the locator's own read of the launch
+        record is its first caller). Here a claude workshop record is laid out and ONLY the glob
         under the lineage root is poisoned (its path contains `ORCH_ID` and the lineage id),
         so what is observed is the locator's own lineage glob."""
         with tempfile.TemporaryDirectory() as tmp:

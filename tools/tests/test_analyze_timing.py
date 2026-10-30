@@ -81,13 +81,14 @@ class TranscriptResolutionTests(unittest.TestCase):
     def _lineage(self, backend="claude"):
         return self.homes / OID / backend / LINEAGE / "config" / "projects"
 
-    def _report(self, *extra):
+    def _report(self, *extra, env_over=None):
         """The script's whole `--json` report over the synthetic orchestration."""
         out = io.StringIO()
         cwd = os.getcwd()
         os.chdir(self.repo)
         self.addCleanup(os.chdir, cwd)
-        env = {"HOME": str(self.home), WORKFLOW_HOMES_ROOT_ENV: str(self.homes)}
+        env = {"HOME": str(self.home), WORKFLOW_HOMES_ROOT_ENV: str(self.homes),
+               **(env_over or {})}
         with mock.patch.dict(os.environ, env, clear=False), \
                 mock.patch.object(sys, "argv", ["analyze_timing.py", OID, "--json", *extra]), \
                 contextlib.redirect_stdout(out):
@@ -95,10 +96,11 @@ class TranscriptResolutionTests(unittest.TestCase):
         os.chdir(cwd)
         return json.loads(out.getvalue())
 
-    def _run(self, *extra):
+    def _run(self, *extra, env_over=None):
         """Per run id: the `output_tokens` of the transcript the row was read from, or None."""
+        report = self._report(*extra, env_over=env_over)
         return {leaf["run_id"]: (leaf["transcript"]["out_tokens"] if leaf["transcript"]
-                                 else None) for leaf in self._report(*extra)["leaves"]}
+                                 else None) for leaf in report["leaves"]}
 
     def _record(self, rid, body):
         (self.orch / "launches" / f"{rid}.request.json").write_text(body, encoding="utf-8")
@@ -180,6 +182,15 @@ class TranscriptResolutionTests(unittest.TestCase):
         self.assertEqual(self._run()[PURE_RID], 121)
         (private_projects / f"{PURE_RID}.jsonl").unlink()
         self.assertEqual(self._run()[PURE_RID], 122)
+
+    def test_an_unexpandable_homes_root_stops_the_report_naming_the_variable(self):
+        """Round 3 of issue #565: a `~account` override made the script die with a raw
+        `RuntimeError` traceback naming no variable. A claude workshop row now stops the
+        report with the variable's name; the report cannot be right without the root."""
+        _transcript(self._lineage() / "-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 131)
+        with self.assertRaises(SystemExit) as ctx:
+            self._run(env_over={WORKFLOW_HOMES_ROOT_ENV: "~nosuchacct/x"})
+        self.assertIn(WORKFLOW_HOMES_ROOT_ENV, str(ctx.exception))
 
     def test_the_script_runs_through_a_symlink(self):
         """The checkout root is taken from the script's REAL path, so an operator's symlink to

@@ -680,6 +680,31 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
             "died).")
         self.assertNotIn("leaf transcripts are machine-local", md)
 
+    def test_an_unexpandable_homes_root_keeps_the_window_facts_and_names_the_variable(self) -> None:
+        """Round 3 of issue #565: with `ATMOFAB_WORKFLOW_HOMES_ROOT='~nosuchacct/x'` the
+        resolver's `RuntimeError` escaped the locator to `audit()`'s boundary, and the report
+        said dangling-launch DETECTION had failed and the window was UNKNOWN — false, since
+        detection had succeeded. The miss is typed now: the window table is rendered, the
+        reason names the variable, and no `diagnostic_failures` entry is written."""
+        from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            orch_root = repo / "workspace" / "orchestrations" / self.ORCH_ID
+            orch_root.mkdir(parents=True)
+            _open_dangling_window(orch_root, request=_workshop_request())
+            env = {**_home_env(home), WORKFLOW_HOMES_ROOT_ENV: "~nosuchacct/x"}
+            with mock.patch.dict(os.environ, env, clear=False):
+                result = audit(repo, self.ORCH_ID)
+                md = _render_markdown(result)
+        self.assertEqual(result["diagnostic_failures"], [])
+        self.assertIn(f"| child agent_run_id | `{CHILD_ARID}` |", md)
+        self.assertNotIn("UNKNOWN", md)
+        line = next(ln for ln in md.splitlines()
+                    if ln.startswith("Child subagent transcript not available: "))
+        self.assertIn(WORKFLOW_HOMES_ROOT_ENV, line)
+        self.assertIn("could not be resolved", line)
+
 
 class IncidentMatchMethodRenderTests(unittest.TestCase):
     """The renderer's `matched via` clause over the live incident's shape."""

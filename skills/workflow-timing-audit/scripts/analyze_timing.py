@@ -107,7 +107,10 @@ from datetime import datetime
 # start, not per row.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.realpath(__file__))))))
-from tools.operator_private_root import claude_leaf_projects_roots
+from tools.operator_private_root import (
+    WORKFLOW_HOMES_ROOT_ENV,
+    claude_leaf_projects_roots,
+)
 
 # The lineage-id grammar (`workshop_tree._SAFE_ID_RE`), checked before the resolver is asked
 # so that a claude workshop row with no usable lineage id is looked up NOWHERE — the resolver
@@ -482,6 +485,13 @@ def transcript_path_for(orch_path, repo_root, orch_id, run_id, project_dirs):
             (projects,) = claude_leaf_projects_roots(repo_root, orch_id, lineage_id)
         except ValueError:
             return None
+        except RuntimeError as exc:
+            # `workflow_homes_root()` is not total (a `~account` override naming no account;
+            # the `TODO.md` item on the private-root resolvers). A raw traceback named no
+            # variable; the report cannot be right without the root, so stop and name it.
+            raise SystemExit(
+                f"analyze_timing: {WORKFLOW_HOMES_ROOT_ENV} is set to a value the resolver "
+                f"cannot expand ({exc}); unset it or point it at a directory") from exc
         matches = sorted(glob.glob(os.path.join(glob.escape(str(projects)), "*",
                                                 glob.escape(run_id) + ".jsonl")))
         return matches[0] if matches else None
@@ -624,7 +634,8 @@ def main():
         "orchestration_id": orch_id,
         "spec_ref": meta.get("spec_ref"),
         "status": meta.get("status"),
-        # ALL the roots searched, not the first of them. The report line built from this
+        # The pair searched (both members, whether or not either held a file), plus each
+        # lineage root a workshop row was read from. The report line built from this once
         # named one directory while the resolution deliberately reads two (private home
         # and the operator's `~/.claude`, per run id), so a run whose leaves came from
         # both was reported as if they came from one — and the reader had no way to see

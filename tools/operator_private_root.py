@@ -12,12 +12,12 @@ never the hook. PR-2 of that issue moved them here and deleted the old module, s
 longer says "hook" about code no hook runs.
 
 Its readers are `tools/orchestration_runtime.py` (the bwrap profile's credential binds and the
-isolated backend homes), `tools/run_workflow.py` (the exclusive start claim) and
-`tools/orchestration_diagnostics.py` (locating a leaf's own transcript), and
+isolated backend homes), `tools/run_workflow.py` (the exclusive start claim),
+`tools/orchestration_diagnostics.py` (locating a leaf's own transcript),
 `skills/workflow-timing-audit/scripts/analyze_timing.py` (the same location, for per-leaf
-timing).
+timing), and `tools/judge_replay.py` (`workflow_homes_root`, inside two functions).
 
-Stdlib only, and imported at module level by all four.
+Stdlib only, and imported at module level by the first four.
 """
 
 from __future__ import annotations
@@ -163,7 +163,8 @@ def claude_leaf_projects_roots(repo_root: Path,
         root returned. Both ids are checked against the lineage-id grammar (`[A-Za-z0-9_-]+`)
         before they are joined, and a `ValueError` names the one that is not. This branch
         calls `workflow_homes_root()`, whose `RuntimeError` on a `~account` override
-        propagates to the caller (`TODO.md` carries that item).
+        propagates to the caller (`TODO.md` carries that item; the two readers above each
+        catch it and name the variable).
       * `lineage_id` absent — the operator's `~/.claude/projects`, where a PURE claude leaf
         (deleted in issue #534 PR-J4-b; `--safe-mode`, no private home) wrote. Issue #63's
         per-orchestration private home existed for the AGENTIC leaf and went with it in Z4
