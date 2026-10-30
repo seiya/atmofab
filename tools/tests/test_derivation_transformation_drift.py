@@ -756,8 +756,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in place before shipping (issue #567 review round 1; the version is new on this
     # branch): the COVERAGE block counts only captured STATE reads — an `at('<case>').inputs`
     # normaliser, `at('<case>').final.t` or a coordinate values none of that case's state, and
-    # the predicate's own case is read only when its own state enters the value.
-    "compile-docs-22": "00d06351b34838c26bbf2a9ad32160e2d7b659fc9cc2ce8835790a8e188d549c",
+    # the predicate's own case is read only when its own state enters the value. Re-pinned
+    # again in round 1: the schema block's bind comment says what an unreached bind still
+    # undergoes (parsed, name-resolved, ranked, evaluated; a `comparand.` read in it makes the
+    # entry cross-target) instead of the false "counts for no rule here".
+    "compile-docs-22": "9f2beda58a629f50a3056aaf920d7342b7d4638246f0c34e34b376e07cccbfe5",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

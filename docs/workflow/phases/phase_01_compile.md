@@ -189,7 +189,7 @@ io_contract:
       quantity: "<name>"                   # the quantity the expression evaluates; matches the secondary condition it corroborates (a cross-target predicate corroborates none: its quantity is the name tests.md gives the agreement)
       target_cases: ["<case_id>", ...]     # EXACTLY the target_cases of this test's test_predicates entry (set equality, gated): a corroborant ranges over every case its test ranges over, never over the easiest one alone
       per_case: true                       # EXACTLY ONE of: per_case: true (evaluate in every target case) / case: "<case_id>" (evaluate in that one case; how a cross-case reduction is read)
-      bind:                                # optional named sub-expressions, evaluated in order; each may reference only the ones before it; a bind expr does not reach (directly or through a later bind) enters no value: it counts for no rule here and is evaluated in every case all the same
+      bind:                                # optional named sub-expressions, evaluated in order; each may reference only the ones before it; a bind expr does not reach (directly or through a later bind) enters no value: it adds no case to the COVERAGE rule and no read to the reads-state rule, while it is still parsed, name-resolved, ranked and evaluated in every case the scope evaluates, and a `comparand.` read in it still makes the entry cross-target
         dA: "(inputs.grid.L_x / inputs.grid.nx) * (inputs.grid.L_y / inputs.grid.ny)"   # spell every inputs.<path> as THIS node's cases declare it (a path that is not a number — or a rectangular numeric list — in every case its scope evaluates is refused)
         M0: "sum(initial.h) * dA"
         M1: "sum(final.h) * dA"
