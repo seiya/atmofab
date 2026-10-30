@@ -12898,6 +12898,19 @@ end program shallow_water2d_runner
             io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
                                                             case_ids=("c1", "c2")), [])
+        # issue #567 review round 2: a snapshot variable whose `shape_expr` is of no recognised
+        # form made the stage RAISE out of the coverage call (origin/main returned the schema
+        # gate's "snapshot schema unreadable" violation); the stage returns its list again,
+        # with the schema gate's finding and, fail-closed, every condition uncovered
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(verdict_only, corroborate=False)
+            io["primary_predicates"] = [corroborant]
+            io["raw_requirements"]["required_evidence"][1]["schema"]["variables"][0][
+                "shape_expr"] = "nx*ny"
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("snapshot schema unreadable" in x for x in v), v)
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "(each reads [[]])" in x for x in v), v)
         with tempfile.TemporaryDirectory() as tmp:
             no_q = copy.deepcopy(verdict_only)
             del no_q[0]["pass_when"]["all"][0]["quantity"]

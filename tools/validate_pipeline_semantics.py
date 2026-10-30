@@ -10906,11 +10906,19 @@ def _validate_test_predicates(
     # schema's variables; with no schema nothing is valued and every condition is uncovered —
     # fail-closed beside the schema gate's own refusal). Names and cases only; the
     # same-quantity and can-fail judgments are Compile.verify's (V3).
-    from tools.primary_evidence import schema_variables
+    from tools.primary_evidence import PrimaryEvidenceError, schema_variables
     state_schema = snapshot_schema(ir)
+    try:
+        state_names = (set(schema_variables(state_schema))
+                       if isinstance(state_schema, dict) else set())
+    except PrimaryEvidenceError:
+        # An unreadable schema (a `shape_expr` of no recognised form) is the primary schema
+        # gate's finding ("snapshot schema unreadable"), reported above; here it values no
+        # case, so every condition is uncovered, and the stage keeps returning its list
+        # instead of raising (issue #567 review round 2).
+        state_names = set()
     for msg in coverage_violations(predicates, io_contract.get("primary_predicates"),
-                                   state_names=set(schema_variables(state_schema))
-                                   if isinstance(state_schema, dict) else set()):
+                                   state_names=state_names):
         violations.append(f"{derived_path}:io_contract.test_predicates: {msg}")
 
     # Cross-target transcription (issue #324): a cross-target predicate covers no condition, so
