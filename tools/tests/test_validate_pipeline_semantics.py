@@ -15965,7 +15965,7 @@ end program shallow_water2d_runner
 
     def test_snapshot_provenance_does_not_depend_on_the_artifact_spelling(self) -> None:
         """`raw/state_snapshots` is a documented spelling that `_normalize_raw_evidence_artifact`
-        accepts and no gate flags. `_extract_spec_var_names` used raw equality, so that spelling
+        accepts (since issue #255 `Compile.static` refuses it, as a side effect). `_extract_spec_var_names` used raw equality, so that spelling
         silently contributed NO provenance and every prognostic step token became an
         `undefined binding` — the false-positive class this whole change exists to remove, and
         one whose message would send the leaf to the wrong fix. Every spelling the normalizer

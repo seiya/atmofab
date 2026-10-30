@@ -2824,7 +2824,7 @@ class PureRenderTests(unittest.TestCase):
         """The two rubrics are one rule stated twice, and issue #148's premise is that they share
         an AXIS — `issue_severity` names the repair, not the weight of the consequence. Without
         this, the phase_01 rubric could be re-grounded on the consequence axis (the axis
-        `tools/prompt_templates/pure_escalate_diagnose.txt` uses, per `TODO.md`) with every
+        `tools/prompt_templates/workshop_escalate_diagnose.txt` uses, per `TODO.md`) with every
         other check green.
 
         PINNED: (a) both slices carry the axis sentence; (b) EACH VALUE BULLET grounds itself on
