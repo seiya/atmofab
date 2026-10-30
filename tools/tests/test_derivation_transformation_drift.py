@@ -1738,9 +1738,13 @@ PINNED_VERDICT: dict[str, str] = {
     # `effective_names`, binds followed only when `expr` (pruned) reaches them, the walk shared
     # with `predicate_reads_state` — and every primary record's `cases_read` comes from it.
     # A bump, not a re-pin: live records' lists move (the #532 precedent moved none) — 216 IR
-    # predicates in 3 IRs, which on disk are 432 records in 6 `verdict.json` files (2 IRs x 3
-    # targets x 72; the third IR, channel `20261025_004`, has no verdict), measured by os.walk
-    # over `workspace/pipelines` at 060c28a0 (review round 1 corrected "216 live records").
+    # predicates in 3 IRs, which on disk are 504 records in 7 `verdict.json` files (72 each:
+    # swe2d `20261029_001` and channel `20261029_001` on fortran_cpu / fortran_cpu_mpi /
+    # cpp_gpu, and channel `20261025_004` on fortran_cpu under pipeline
+    # `shallow-water2d-channel_20261025_001`), measured by os.walk over `workspace/pipelines`
+    # matching each run's `lineage.json` `ir_ref` at 93be8321 (review round 2; round 1's
+    # "432 in 6" matched pipeline directory NAMES and missed the renamed lineage, and round 0's
+    # "216 live records" counted IR predicates).
     # Re-pinned in place before shipping (round 1): `cases_read` takes the snapshot schema's
     # state names and counts only captured STATE reads that enter the value — an own-case
     # read values the cases the scope evaluates, an `at('<case>').<point>.<var>` read values

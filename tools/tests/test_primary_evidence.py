@@ -1122,6 +1122,18 @@ class VerdictIntegrationTest(unittest.TestCase):
         self.ir["io_contract"]["primary_predicates"] = [reached, HMIN, SYM]
         primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
         self.assertEqual(primary[0]["cases_read"], ["a", "b"])
+        # round 2 (blank-slate axis): the record site takes the state names from the
+        # snapshot schema's `variables`, not from every capture name — an at('b').final.t
+        # (the time variable) that enters the value values nothing of b, so the record lists
+        # a alone and the re-check raises as for the dead bind
+        timed = {**dead, "expr": dead["expr"] + " + 1e-300 * at('b').final.t"}
+        del timed["bind"]["dead"]
+        self.ir["io_contract"]["primary_predicates"] = [timed, HMIN, SYM]
+        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
+        self.assertEqual(primary[0]["cases_read"], ["a"])
+        self.assertTrue(primary[0]["satisfied"])
+        with self.assertRaisesRegex(PredicateError, "reads every case"):
+            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
 
     def test_unknown_test_id_raises(self) -> None:
         primary = [{"test_id": "nope", "satisfied": True, "kind": "pass"}]
@@ -1702,8 +1714,10 @@ class CoverageGateTest(unittest.TestCase):
 
     # Channel IR `problem__shallow_water2d_channel__0.2.5/shallow-water2d-channel_20261029_001`,
     # predicate [300] (`restricted_order_n032_to_n064_hu_l2`, `case: n256`): the Compile leaf
-    # copied one 18-bind block into every restricted predicate; `expr` reaches 6 binds, and
-    # three of the 12 unreached ones read at('…n128…'), which the value never touches.
+    # copied one 18-bind block into every restricted predicate; `expr` reaches 4 binds (a32u,
+    # a64u, r32u, r64u), and three of the 14 unreached ones read at('…n128…'), which the value
+    # never touches (measured with `reached_binds` over `effective_names` at 93be8321; the
+    # issue body's "6 of them … 12 unreached" was miscounted).
     _CHANNEL_300_BIND: ClassVar[dict[str, str]] = {
         "a32h": "at('chan_tc2_xpert_n032_dts100').final.h",
         "a32u": "at('chan_tc2_xpert_n032_dts100').final.hu",

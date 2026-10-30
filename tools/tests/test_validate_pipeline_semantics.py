@@ -12894,6 +12894,21 @@ end program shallow_water2d_runner
             v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
             self.assertTrue(any("no corroborant of that quantity reads every such case" in x
                                 and "(each reads [['c1']])" in x for x in v), v)
+            # round 2 (blank-slate axis): the stage builds the state-name set from the IR's
+            # OWN snapshot schema — the time variable `t` is not in it (an at('c2').final.t
+            # values nothing of c2), and a variable with a name no fixture elsewhere declares
+            # IS in it (an at('c2').final.zeta_q read values c2) — so a stage that added the
+            # time variable, or passed a hard-coded name set, is red here
+            io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) * at('c2').final.t"}]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "(each reads [['c1']])" in x for x in v), v)
+            io["raw_requirements"]["required_evidence"][1]["schema"]["variables"].append(
+                {"name": "zeta_q", "shape_expr": "[2,2]"})
+            io["primary_predicates"] = [{**narrow,
+                                         "expr": "sum(final.h) + sum(at('c2').final.zeta_q)"}]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
             io = self._io_contract_with_predicates(per_case, corroborate=False)
             io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
