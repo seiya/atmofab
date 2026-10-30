@@ -455,31 +455,31 @@ class BuildLaunchIncidentTests(unittest.TestCase):
         `searched_projects_root` set exactly when a root was globbed."""
         cases = {
             "claude_no_file": (_workshop_request(), "lineage",
-                               f"no leaf transcript for {CHILD_ARID} under its lineage's "
+                               (f"no leaf transcript for {CHILD_ARID} under its lineage's "
                                "config home {lineage} (the launch record's "
                                f"workshop_lineage_id {LINEAGE_ID}; pruned, or the CLI wrote "
-                               "none before it died)"),
+                               "none before it died)")),
             "lineage_id_bad": (_workshop_request(lineage_id="../x"), None,
-                               "the launch record names no usable workshop_lineage_id "
-                               "('../x'), so no lineage home was searched"),
+                               ("the launch record names no usable workshop_lineage_id "
+                               "('../x'), so no lineage home was searched")),
             "lineage_id_absent": (_workshop_request(lineage_id=None), None,
-                                  "the launch record names no usable workshop_lineage_id "
-                                  "(None), so no lineage home was searched"),
+                                  ("the launch record names no usable workshop_lineage_id "
+                                  "(None), so no lineage home was searched")),
             "provider_absent": (_workshop_request(provider=None), None,  # type: ignore[arg-type]
-                                "the launch record names no usable workshop_provider (None), "
-                                "so no transcript root was searched"),
+                                ("the launch record names no usable workshop_provider (None), "
+                                "so no transcript root was searched")),
             "codex": (_workshop_request(provider="codex_cli"), None,
-                      "a codex workshop leaf writes no claude transcript; its rollout is under "
+                      ("a codex workshop leaf writes no claude transcript; its rollout is under "
                       f"<homes-root>/{ORCH_ID}/codex/{LINEAGE_ID}/config/sessions/, which "
-                      "this correlation does not read"),
+                      "this correlation does not read")),
             "http": (_workshop_request(provider="anthropic_api"), None,
-                     "an HTTP workshop lineage has no CLI transcript; the host loop's turns "
+                     ("an HTTP workshop lineage has no CLI transcript; the host loop's turns "
                      f"are workspace/orchestrations/{ORCH_ID}/workshop/{LINEAGE_ID}/"
-                     "loop_turns.jsonl"),
+                     "loop_turns.jsonl")),
             "http_openai": (_workshop_request(provider="openai_compatible"), None,
-                            "an HTTP workshop lineage has no CLI transcript; the host loop's "
+                            ("an HTTP workshop lineage has no CLI transcript; the host loop's "
                             f"turns are workspace/orchestrations/{ORCH_ID}/workshop/"
-                            f"{LINEAGE_ID}/loop_turns.jsonl"),
+                            f"{LINEAGE_ID}/loop_turns.jsonl")),
         }
         for name, (request, searched, reason) in cases.items():
             with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
@@ -645,7 +645,10 @@ class LeafTranscriptRootTests(unittest.TestCase):
         """Pin (a) of issue #565: the resolver's plain join and `LineagePaths.config` are two
         spellings of one path — the second is what `Conductor._workshop_session_resumable`
         globs and the CLI is handed as `CLAUDE_CONFIG_DIR` — and this is where they meet."""
-        from tools.operator_private_root import claude_leaf_projects_roots, workflow_homes_root
+        from tools.operator_private_root import (
+            claude_leaf_projects_roots,
+            workflow_homes_root,
+        )
         from tools.workshop_tree import LineagePaths
         with tempfile.TemporaryDirectory() as td:
             repo, _slug = self._repo_and_slug(td)

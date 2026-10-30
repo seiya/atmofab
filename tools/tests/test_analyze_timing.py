@@ -24,9 +24,9 @@ from unittest import mock
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _SCRIPT = _ROOT / "skills" / "workflow-timing-audit" / "scripts" / "analyze_timing.py"
 sys.path.insert(0, str(_SCRIPT.parent))
-import analyze_timing  # noqa: E402
+import analyze_timing
 
-from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV  # noqa: E402
+from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
 
 OID = "orch_20261030T000000Z_test0001"
 CLAUDE_RID = "11111111-0000-4000-8000-000000000001"
@@ -190,7 +190,8 @@ class TranscriptResolutionTests(unittest.TestCase):
         link.symlink_to(_SCRIPT)
         proc = subprocess.run([sys.executable, str(link), "orch_nonexistent"],
                               cwd=str(self.repo.parent), capture_output=True, text=True,
-                              timeout=60, env={**os.environ, "HOME": str(self.home)})
+                              timeout=60, env={**os.environ, "HOME": str(self.home)},
+                              check=False)
         self.assertNotIn("ModuleNotFoundError", proc.stderr)
         self.assertNotEqual(proc.returncode, 0)
 

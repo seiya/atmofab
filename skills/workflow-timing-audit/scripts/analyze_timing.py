@@ -107,7 +107,7 @@ from datetime import datetime
 # start, not per row.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.realpath(__file__))))))
-from tools.operator_private_root import claude_leaf_projects_roots  # noqa: E402
+from tools.operator_private_root import claude_leaf_projects_roots
 
 # The lineage-id grammar (`workshop_tree._SAFE_ID_RE`), checked before the resolver is asked
 # so that a claude workshop row with no usable lineage id is looked up NOWHERE — the resolver
