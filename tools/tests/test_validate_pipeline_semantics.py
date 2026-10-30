@@ -12887,10 +12887,45 @@ end program shallow_water2d_runner
             io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) + sum(at('c2').final.h)"}]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
                                                             case_ids=("c1", "c2")), [])
+            # issue #567: an at('c2') only in a bind `expr` never reaches values nothing, so
+            # it reaches no case — refused through the stage like the narrow corroborant
+            io["primary_predicates"] = [{**narrow,
+                                         "bind": {"dead": "sum(at('c2').final.h)"}}]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "(each reads [['c1']])" in x for x in v), v)
+            # round 2 (blank-slate axis): the stage builds the state-name set from the IR's
+            # OWN snapshot schema — the time variable `t` is not in it (an at('c2').final.t
+            # values nothing of c2), and a variable with a name no fixture elsewhere declares
+            # IS in it (an at('c2').final.zeta_q read values c2) — so a stage that added the
+            # time variable, or passed a hard-coded name set, is red here
+            io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) * at('c2').final.t"}]
+            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "(each reads [['c1']])" in x for x in v), v)
+            io["raw_requirements"]["required_evidence"][1]["schema"]["variables"].append(
+                {"name": "zeta_q", "shape_expr": "[2,2]"})
+            io["primary_predicates"] = [{**narrow,
+                                         "expr": "sum(final.h) + sum(at('c2').final.zeta_q)"}]
+            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
+                                                            case_ids=("c1", "c2")), [])
             io = self._io_contract_with_predicates(per_case, corroborate=False)
             io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
                                                             case_ids=("c1", "c2")), [])
+        # issue #567 review round 2: a snapshot variable whose `shape_expr` is of no recognised
+        # form made the stage RAISE out of the coverage call (origin/main returned the schema
+        # gate's "snapshot schema unreadable" violation); the stage returns its list again,
+        # with the schema gate's finding and, fail-closed, every condition uncovered
+        with tempfile.TemporaryDirectory() as tmp:
+            io = self._io_contract_with_predicates(verdict_only, corroborate=False)
+            io["primary_predicates"] = [corroborant]
+            io["raw_requirements"]["required_evidence"][1]["schema"]["variables"][0][
+                "shape_expr"] = "nx*ny"
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("snapshot schema unreadable" in x for x in v), v)
+            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
+                                and "(each reads [[]])" in x for x in v), v)
         with tempfile.TemporaryDirectory() as tmp:
             no_q = copy.deepcopy(verdict_only)
             del no_q[0]["pass_when"]["all"][0]["quantity"]

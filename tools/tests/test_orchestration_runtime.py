@@ -22070,8 +22070,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `inputs.<a>.<b>` entry, V3 and V9's floor say an own-case input resolves in every case
         # the predicate's scope evaluates, and an `at('<case>')` one in that case): bumped
         # 99800->100200; measured 99971 with `wc -c` in /home/seiya/atmofab at the commit that
-        # takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 100200,
+        # takes this bump. Issue #567 (the COVERAGE block says a corroborant reads the cases an
+        # at('<case>') that enters its value names, the schema block's bind comment says a bind
+        # expr does not reach enters no value, V3 (ii) names what the coverage gate no longer
+        # counts): bumped 100200->100800; measured 100691 with `wc -c` in /home/seiya/atmofab at
+        # the commit that takes this bump. Review round 1 of the same issue (the COVERAGE block
+        # counts only captured STATE reads): bumped 100800->101400; measured 101116 the same way
+        # at the commit that takes this bump; the same round's two comment rewordings (the bind
+        # comment, the V3 (ii) parenthetical): 101400->102000, measured 101485 at that commit.
+        "docs/workflow/phases/phase_01_compile.md": 102000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
