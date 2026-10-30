@@ -96,15 +96,23 @@ MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):
 import glob
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
 # The checkout root, from this script's own location (skills/workflow-timing-audit/scripts/),
 # so the ONE resolver of a claude leaf's projects root is importable however the script is
-# started. Module-level: a script that cannot import `tools` fails at start, not per row.
+# started — `realpath`, so a symlink to the script resolves to the checkout it lives in rather
+# than to the symlink's directory. Module-level: a script that cannot import `tools` fails at
+# start, not per row.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))))))
+    os.path.realpath(__file__))))))
 from tools.operator_private_root import claude_leaf_projects_roots  # noqa: E402
+
+# The lineage-id grammar (`workshop_tree._SAFE_ID_RE`), checked before the resolver is asked
+# so that a claude workshop row with no usable lineage id is looked up NOWHERE — the resolver
+# answers the operator root for a `None` lineage id, which would break the one-root rule.
+_LINEAGE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # A leaf's elapsed may legitimately exceed its transcript wall by process
 # startup/teardown (seconds). Beyond this, the excess is dead time
@@ -440,26 +448,38 @@ def transcript_path_for(orch_path, repo_root, orch_id, run_id, project_dirs):
     """The transcript file of one run id, or None (see `--project-dir` in the docstring).
 
     Reads `launches/<run_id>.request.json`. A claude workshop launch is looked up under its
-    lineage's config home ONLY, through the canonical resolver (which also refuses an id
-    outside the lineage-id grammar: `None` then); a workshop launch of another provider has
-    no claude transcript; any other launch (no record, an unreadable one, no `leaf_mode`, or
-    `"pure"`) is looked up in `project_dirs`, in order.
+    lineage's config home ONLY, through the canonical resolver; a workshop launch of another
+    provider has no claude transcript; a workshop launch whose lineage id is absent or outside
+    the lineage-id grammar is looked up nowhere (the resolver is not asked, so no other root
+    answers for it); a record that exists but is not a JSON object is looked up nowhere
+    either (as `tools/orchestration_diagnostics.py` treats it: sending it to the pair would
+    read a pure leaf's file for what may be a workshop launch); any other launch (no record,
+    no `leaf_mode`, or `"pure"`) is looked up in `project_dirs`, in order.
+
+    A workshop record with NO `workshop_provider` key is a claude launch: the key was first
+    written by `026de9d4` (issue #534 step 2 PR-1, 2026-10-24), and before it the conductor
+    launched no workshop leaf on another provider. A key present with another value is not.
     """
-    request = {}
-    try:
-        with open(os.path.join(orch_path, "launches", f"{run_id}.request.json"),
-                  encoding="utf-8") as handle:
-            loaded = json.load(handle)
-        if isinstance(loaded, dict):
-            request = loaded
-    except (OSError, ValueError):
+    record_path = os.path.join(orch_path, "launches", f"{run_id}.request.json")
+    if not os.path.isfile(record_path):
         request = {}
+    else:
+        try:
+            with open(record_path, encoding="utf-8") as handle:
+                loaded = json.load(handle)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        request = loaded
     if request.get("leaf_mode") == "workshop":
-        if request.get("workshop_provider") != "claude_cli":
+        if request.get("workshop_provider", "claude_cli") != "claude_cli":
+            return None
+        lineage_id = request.get("workshop_lineage_id")
+        if not (isinstance(lineage_id, str) and _LINEAGE_ID_RE.fullmatch(lineage_id)):
             return None
         try:
-            (projects,) = claude_leaf_projects_roots(
-                repo_root, orch_id, request.get("workshop_lineage_id"))
+            (projects,) = claude_leaf_projects_roots(repo_root, orch_id, lineage_id)
         except ValueError:
             return None
         matches = sorted(glob.glob(os.path.join(glob.escape(str(projects)), "*",

@@ -31,8 +31,10 @@ the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
 that transcript when it is still on disk. That is the only thing it reads a transcript
 for: each leaf's token usage is recorded in-repo from the leaf's own output (issue #47,
-``tools/leaf_usage.py``), and no workflow path reads a claude transcript's content (the
-conductor's warm-resume check asks only whether the file exists).
+``tools/leaf_usage.py``), and no workflow path reads ``~/.claude``; the conductor's warm-resume
+check asks only whether the lineage's own file exists, and the one reader of a lineage
+transcript's content besides this module is the operator's replay instrument
+(``tools/judge_replay.py``, its coverage measurement), which no run drives.
 
 It is intentionally dependency-free (stdlib only) and **defensive** against the
 Claude Code transcript format: parse failures degrade to raw tails and
@@ -485,7 +487,10 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
         grammar first; a bad one is a typed miss.
       * ``leaf_mode == "workshop"`` with a codex or HTTP provider — no search: neither writes a
         claude transcript, and the miss reason names where each one's record is.
-      * ``leaf_mode == "workshop"`` with no usable provider — no search, a typed miss.
+      * ``leaf_mode == "workshop"`` with NO ``workshop_provider`` key — a claude launch: the
+        key was first written by ``026de9d4`` (issue #534 step 2 PR-1), and before it the
+        conductor launched no workshop leaf on another provider. A key present with an
+        unusable value — no search, a typed miss.
       * no record, or ``leaf_mode`` absent or ``"pure"`` (a deterministic substep, a run before
         PR-J4-b) — the operator's ``~/.claude/projects``, as before.
       * a record that is present but unreadable — no search, a typed miss: sending it to the
@@ -530,7 +535,16 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
             request = payload
 
     if request.get("leaf_mode") == "workshop":
-        provider = request.get("workshop_provider")
+        if "workshop_provider" in request:
+            provider = request["workshop_provider"]
+        else:
+            # A workshop record written before `026de9d4` (issue #534 step 2 PR-1, 2026-10-24)
+            # carries no provider key: until that commit the conductor refused a workshop
+            # entry on any provider but `claude_cli`, so the absent key names claude by
+            # construction (9 such records on the operator's machine at review, every one
+            # with its transcript under its lineage home). A key PRESENT with `null` or an
+            # unknown value is a record no conductor wrote, and stays a typed miss.
+            provider = _WORKSHOP_PROVIDER_CLAUDE
         lineage_id = request.get("workshop_lineage_id")
         lid_text = lineage_id if isinstance(lineage_id, str) else "<lineage_id>"
         if provider not in _WORKSHOP_PROVIDERS:
