@@ -746,6 +746,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # re-derivation; measured 100149 bytes with `wc -c` in /home/seiya/atmofab at the commit
     # that takes it (ceiling 100200, no bump).
     "compile-docs-21": "325557f84cceedb3fd418b08a5588955c8f3c63445541e2d835cdf64f5dc5317",
+    # Issue #567: the COVERAGE block says a `case: X` corroborant reads X plus the cases an
+    # at('<case>') reference that ENTERS ITS VALUE names (in expr or a bind expr reaches,
+    # outside a term constant by form), the schema block's bind comment says a bind expr does
+    # not reach enters no value, and V3 (ii) says the coverage gate no longer counts the case
+    # a `0 *` term names. The leaf pin does not hash this document (it stays `leaf-85`);
+    # measured 100691 bytes with `wc -c` in /home/seiya/atmofab at the commit that takes it
+    # (ceiling 100200 -> 100800).
+    "compile-docs-22": "987c2ff1ac0f4358a1bc5a3261ee6f24396ce71c1e337cf94a225f41f7838900",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1717,6 +1725,11 @@ PINNED_VERDICT: dict[str, str] = {
     # `--stage compile`-only edit: `evaluate_primary_predicates` and the evaluator it calls are
     # untouched, so no record's value moves. The shipped digest stays pinned.
     "verdict-10": "612e17b631d6b1e514a2dbda306a3b98557b5b592b59ca2a794d4d544025d3c0",
+    # Issue #567: `cases_read` lists the cases a predicate VALUES — references from
+    # `effective_names`, binds followed only when `expr` (pruned) reaches them, the walk shared
+    # with `predicate_reads_state` — and every primary record's `cases_read` comes from it.
+    # A bump, not a re-pin: 216 live records' lists move (the #532 precedent moved none).
+    "verdict-11": "d571abeca803ec52b88954175213f2c346397e34c79c1e1fc463b40a39ad8d05",
 }
 
 
