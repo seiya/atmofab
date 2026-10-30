@@ -105,15 +105,26 @@ class TranscriptResolutionTests(unittest.TestCase):
 
     def test_i_a_claude_workshop_row_is_read_from_its_lineage_home(self):
         _transcript(self._lineage() / "-any-tree-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 101)
+        # A pure row found in the pair as well: its hit must NOT be listed as a lineage root
+        # (round 2 of issue #565: the `dirname(tpath) not in project_dirs` filter was unpinned).
+        _transcript(self.operator / f"{PURE_RID}.jsonl", PURE_RID, 104)
         report = self._report()
         got = {leaf["run_id"]: (leaf["transcript"]["out_tokens"] if leaf["transcript"]
                                 else None) for leaf in report["leaves"]}
         self.assertEqual(got[CLAUDE_RID], 101)
+        self.assertEqual(got[PURE_RID], 104)
         # The report says which lineage homes its figures were read from: the pair first,
-        # then every lineage root a workshop row answered from (round 0 of issue #565: this
-        # output line was the one unpinned hunk of the branch).
+        # then every lineage root a workshop row answered from, and nothing else (round 0 of
+        # issue #565: this output line was the one unpinned hunk of the branch).
         self.assertEqual(report["project_dirs"],
                          [str(self.operator), str(self._lineage())])
+
+    def test_the_lineage_id_grammar_is_the_lineage_grammar(self):
+        """The script's copy of `[A-Za-z0-9_-]+` is compared with `workshop_tree._SAFE_ID_RE`
+        the way the resolver's and the locator's copies are: a NARROWER copy here would read
+        every claude workshop row from nowhere with the suite green (round 2 of issue #565)."""
+        from tools import workshop_tree
+        self.assertEqual(analyze_timing._LINEAGE_ID_RE.pattern, workshop_tree._SAFE_ID_RE.pattern)
 
     def test_a_workshop_row_without_a_provider_key_is_read_as_claude(self):
         """A record written before `026de9d4` (issue #534 step 2 PR-1) has no
