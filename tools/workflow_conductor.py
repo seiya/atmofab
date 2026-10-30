@@ -8250,13 +8250,21 @@ class Conductor:
             write_host_file,
         )
         paths = lineage.paths
-        if warm and not paths.home.is_dir():
-            # The lineage home is gone (an operator prune): the answer `record_launch` would
-            # give (`workshop_lineage_home_missing`), given before anything is written into it.
-            self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
-                      target=resume_session_id or "", reason="workshop_lineage_home_missing")
-            return None
         if warm:
+            # The preparation `record_launch` repeats in its own process, asked here first. A home
+            # that is gone (an operator prune) gets the answer `record_launch` would give
+            # (`workshop_lineage_home_missing`), before anything is written into it. A refusal
+            # (a credential file gone mid-run) would reach this loop from there as an unnamed
+            # `RuntimeError`; here it takes the route of the cold preparation's refusal.
+            try:
+                prepared = self._prepare_workshop_home(entry, paths.lineage_id, resume=True)
+            except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
+                raise WorkshopSetupFailed(str(exc)) from exc
+            if prepared is None:
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                          target=resume_session_id or "",
+                          reason="workshop_lineage_home_missing")
+                return None
             # The host's files, as the host placed them: a seed the leaf edited is restored, so
             # the wrapper's feedback reads what the gates will.
             for name, text in lineage.seeds.items():
