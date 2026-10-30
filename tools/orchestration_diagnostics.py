@@ -32,9 +32,10 @@ launch was a retryable transport blip or a hang; this module recovers them from
 that transcript when it is still on disk. That is the only thing it reads a transcript
 for: each leaf's token usage is recorded in-repo from the leaf's own output (issue #47,
 ``tools/leaf_usage.py``), and no workflow path reads ``~/.claude``; the conductor's warm-resume
-check asks only whether the lineage's own file exists, and the one reader of a lineage
-transcript's content besides this module is the operator's replay instrument
-(``tools/judge_replay.py``, its coverage measurement), which no run drives.
+check asks only whether the lineage's own file exists, and the readers of a lineage
+transcript's content besides this module are operator instruments no run drives —
+``skills/workflow-timing-audit/scripts/analyze_timing.py`` (per-leaf timing and tokens) and
+``tools/judge_replay.py`` (its coverage measurement).
 
 It is intentionally dependency-free (stdlib only) and **defensive** against the
 Claude Code transcript format: parse failures degrade to raw tails and
