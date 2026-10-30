@@ -63,10 +63,17 @@ def _open_dangling_window(root: Path, *, with_marker: bool = True,
 LINEAGE_ID = "6c9e51ba-0d1e-4a5b-9c3f-2e7d8a1b4c6f"
 
 
-def _workshop_request(provider: str = "claude_cli", lineage_id: object = LINEAGE_ID) -> dict:
-    """The three launch-record fields `build_launch_request` sets on a workshop launch."""
-    request: dict = {"leaf_mode": "workshop", "workshop_provider": provider,
-                     "workshop_lineage_id": lineage_id}
+_NO_PROVIDER_KEY = object()
+
+
+def _workshop_request(provider: object = "claude_cli", lineage_id: object = LINEAGE_ID) -> dict:
+    """The three launch-record fields `build_launch_request` sets on a workshop launch.
+
+    `provider=_NO_PROVIDER_KEY` OMITS the key: the shape of a workshop record written before
+    `026de9d4` (issue #534 step 2 PR-1), which the locator reads as a claude launch."""
+    request: dict = {"leaf_mode": "workshop", "workshop_lineage_id": lineage_id}
+    if provider is not _NO_PROVIDER_KEY:
+        request["workshop_provider"] = provider
     return request
 
 
@@ -493,6 +500,32 @@ class BuildLaunchIncidentTests(unittest.TestCase):
                 self.assertEqual(child["reason"], reason.replace("{lineage}", str(lineage)))
                 self.assertEqual(child["searched_projects_root"],
                                  str(lineage) if searched == "lineage" else None)
+
+    def test_a_workshop_record_without_a_provider_key_is_a_claude_launch(self) -> None:
+        """A workshop record written before `026de9d4` carries no `workshop_provider` key and
+        is a claude launch by construction (round 1 of issue #565: 9 such records on the
+        operator's machine, every transcript under its lineage home, every one a typed miss).
+        The ABSENT key is searched in the lineage home; a key PRESENT with `null` is the
+        typed miss the previous row pins, so the two shapes are driven side by side."""
+        for name, provider, found in (("key_absent", _NO_PROVIDER_KEY, True),
+                                      ("key_null", None, False)):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                home = Path(tmp) / "home"
+                _open_dangling_window(_orch_root(repo),
+                                      request=_workshop_request(provider=provider))
+                with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                    lineage = _lineage_projects()
+                    _write_transcript(lineage)
+                    _write_transcript(home / ".claude" / "projects")
+                    incident = diag.build_launch_incident(repo, ORCH_ID)
+                assert incident is not None
+                child = incident["transcripts"]["child_transcript"]
+                self.assertEqual(child["found"], found)
+                if found:
+                    self.assertEqual(child["matched_projects_root"], str(lineage))
+                else:
+                    self.assertIn("no usable workshop_provider (None)", child["reason"])
 
     def test_an_unreadable_launch_record_is_a_typed_miss_not_the_operator_root(self) -> None:
         """Pin (d): a record that is present but not a JSON object selects no search. The

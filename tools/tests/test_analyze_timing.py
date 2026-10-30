@@ -15,6 +15,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -80,7 +81,8 @@ class TranscriptResolutionTests(unittest.TestCase):
     def _lineage(self, backend="claude"):
         return self.homes / OID / backend / LINEAGE / "config" / "projects"
 
-    def _run(self, *extra):
+    def _report(self, *extra):
+        """The script's whole `--json` report over the synthetic orchestration."""
         out = io.StringIO()
         cwd = os.getcwd()
         os.chdir(self.repo)
@@ -91,13 +93,95 @@ class TranscriptResolutionTests(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             analyze_timing.main()
         os.chdir(cwd)
-        leaves = json.loads(out.getvalue())["leaves"]
+        return json.loads(out.getvalue())
+
+    def _run(self, *extra):
+        """Per run id: the `output_tokens` of the transcript the row was read from, or None."""
         return {leaf["run_id"]: (leaf["transcript"]["out_tokens"] if leaf["transcript"]
-                                 else None) for leaf in leaves}
+                                 else None) for leaf in self._report(*extra)["leaves"]}
+
+    def _record(self, rid, body):
+        (self.orch / "launches" / f"{rid}.request.json").write_text(body, encoding="utf-8")
 
     def test_i_a_claude_workshop_row_is_read_from_its_lineage_home(self):
         _transcript(self._lineage() / "-any-tree-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 101)
-        self.assertEqual(self._run()[CLAUDE_RID], 101)
+        report = self._report()
+        got = {leaf["run_id"]: (leaf["transcript"]["out_tokens"] if leaf["transcript"]
+                                else None) for leaf in report["leaves"]}
+        self.assertEqual(got[CLAUDE_RID], 101)
+        # The report says which lineage homes its figures were read from: the pair first,
+        # then every lineage root a workshop row answered from (round 0 of issue #565: this
+        # output line was the one unpinned hunk of the branch).
+        self.assertEqual(report["project_dirs"],
+                         [str(self.operator), str(self._lineage())])
+
+    def test_a_workshop_row_without_a_provider_key_is_read_as_claude(self):
+        """A record written before `026de9d4` (issue #534 step 2 PR-1) has no
+        `workshop_provider` key and is a claude launch by construction; round 1 of issue #565
+        found 9 such records on the operator's machine, every one reported as non-LLM with
+        its transcript on disk. A key PRESENT with another value is driven beside it."""
+        self._record(CLAUDE_RID, json.dumps({"leaf_mode": "workshop",
+                                             "workshop_lineage_id": LINEAGE}))
+        _transcript(self._lineage() / "-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 111)
+        _transcript(self.operator / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 999)
+        self.assertEqual(self._run()[CLAUDE_RID], 111)
+        self._record(CLAUDE_RID, json.dumps({"leaf_mode": "workshop",
+                                             "workshop_provider": None,
+                                             "workshop_lineage_id": LINEAGE}))
+        self.assertIsNone(self._run()[CLAUDE_RID])
+
+    def test_a_claude_workshop_row_with_no_usable_lineage_id_is_read_from_nowhere(self):
+        """The resolver answers the OPERATOR root for a `None` lineage id, so the script must
+        not ask it (round 1 of issue #565, `route not established`): with the id absent or
+        outside the grammar the row is None, whatever the operator home holds."""
+        _transcript(self.operator / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 999)
+        _transcript(self._lineage() / "-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 998)
+        for lineage_id in (None, "../x", ""):
+            with self.subTest(lineage_id=lineage_id):
+                self._record(CLAUDE_RID, json.dumps({"leaf_mode": "workshop",
+                                                     "workshop_provider": "claude_cli",
+                                                     "workshop_lineage_id": lineage_id}))
+                self.assertIsNone(self._run()[CLAUDE_RID])
+
+    def test_an_unreadable_record_is_read_from_nowhere(self):
+        """As `tools/orchestration_diagnostics.py` treats it: a record that exists but is not
+        a JSON object selects no root, because the pair would answer with a pure leaf's file
+        for what may be a workshop launch. Decoys in both places a wrong branch would look."""
+        _transcript(self.operator / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 999)
+        _transcript(self._lineage() / "-slug" / f"{CLAUDE_RID}.jsonl", CLAUDE_RID, 998)
+        for body in ("{not json", "[1, 2]"):
+            with self.subTest(body=body):
+                self._record(CLAUDE_RID, body)
+                self.assertIsNone(self._run()[CLAUDE_RID])
+
+    def test_the_pair_is_the_private_home_first_then_the_operator_home(self):
+        """The two members of the pre-#565 pair, and their order, which the branch rewrote
+        into a per-run-id lookup: a run resumed across the issue-#63 migration has leaves in
+        both, so BOTH must be searched (round 1 of issue #565: `project_dirs[:1]` survived),
+        and the private home (`orchestration_meta.json#claude_workflow_home`) answers first."""
+        private = self.homes / OID / "claude"
+        (self.orch / "orchestration_meta.json").write_text(
+            json.dumps({"claude_workflow_home": str(private)}), encoding="utf-8")
+        private_projects = private / "projects" / self.slug
+        private_projects.mkdir(parents=True)
+        _transcript(private_projects / f"{PURE_RID}.jsonl", PURE_RID, 121)
+        _transcript(self.operator / f"{PURE_RID}.jsonl", PURE_RID, 122)
+        self.assertEqual(self._run()[PURE_RID], 121)
+        (private_projects / f"{PURE_RID}.jsonl").unlink()
+        self.assertEqual(self._run()[PURE_RID], 122)
+
+    def test_the_script_runs_through_a_symlink(self):
+        """The checkout root is taken from the script's REAL path, so an operator's symlink to
+        it still imports `tools/` (round 1 of issue #565: `abspath` kept the symlink's own
+        directory and the import failed). Driven as a subprocess from outside the checkout,
+        where the only failure the script may report is the orchestration lookup."""
+        link = self.repo.parent / "analyze_timing_link.py"
+        link.symlink_to(_SCRIPT)
+        proc = subprocess.run([sys.executable, str(link), "orch_nonexistent"],
+                              cwd=str(self.repo.parent), capture_output=True, text=True,
+                              timeout=60, env={**os.environ, "HOME": str(self.home)})
+        self.assertNotIn("ModuleNotFoundError", proc.stderr)
+        self.assertNotEqual(proc.returncode, 0)
 
     def test_ii_a_claude_workshop_row_is_not_read_from_the_operator_home(self):
         """One root, on this reader too (operator decision D1)."""
