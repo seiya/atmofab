@@ -73,13 +73,16 @@ is missing, the dynamic loader when a shared library the program links is missin
 first two and never meets the third, because the host that runs it is the host that built the
 program. None of them is the kernel's result, and a Generate repair could not fix one. The cost
 is a program that exits 126 or 127 on its own, which the local path records as its result; the
-runner and the quality-check command the conductor runs exit neither. Under a launch prefix (a
-device trace's program) the loader's 127 does not arrive: the prefix reports it as its own exit
-status (1 on issue #330's run, measured), so the command is recorded as having run and failed.
-What keeps the loader's case rare is where the binary comes from: the conductor builds it at the
-site that runs it and runs it nowhere else (issue #333), so a shared library the build linked is
-one the site had. A library the building machine had and the machine running the job lacks —
-another node of a batch site, or a site changed since the build — is the case left.
+runner and the quality-check command the conductor runs exit neither. The loader's 127 arrives
+under a launch prefix (a device trace's program) too (measured on `nsys` 2026.3.2; a site's was
+not). A library that lacks a symbol version the program needs is the loader's other failure, and
+it exits 1, bare and under that prefix alike, so it is not refused: the command is recorded as
+having run and failed (issue #330's run: `GLIBC_2.35` not found, `return_code` 1).
+What keeps the loader's cases rare is where the binary comes from: the conductor builds it at the
+site that runs it and runs it nowhere else (issue #333), so a shared library the build linked, at
+the version it linked, is one the site had. A library or a version the building machine had and
+the machine running the job lacks — another node of a batch site, or a site changed since the
+build — is the case left.
 
 A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
 `_run_deterministic_substep` turns it into `deterministic_validate_error` (transport

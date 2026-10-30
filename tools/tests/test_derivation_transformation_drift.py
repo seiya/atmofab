@@ -1153,7 +1153,12 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "f07a084a7dbf701cbbf95d74bb9a30ccf793726a397410a030e959f115b7fda4",
+    "build-2": "ba4ac319bce2ea1e0bc633ac5e1b62b094f4fb86d6a374fc323ed0e5f088c48f",
+    # Re-pinned, behaviour-preserving: the `tools/remote_execution.py` docstring states the
+    # loader's two exit codes as measured, no longer that a launch prefix replaces the 127.
+    # (Measured by diffing `build_tuple()` against fb25d422's: that row and no other.) The digest
+    # `build-2` shipped with at fb25d422:
+    "build-2@fb25d422": "f07a084a7dbf701cbbf95d74bb9a30ccf793726a397410a030e959f115b7fda4",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
     # the certified shape — the one the build's backstop call asks for, with the argv prefix,
@@ -1575,7 +1580,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # fails the shape and the post-execute gate reads. Rows moved: `_author_quality_check`,
     # `_quality_check_failure_lines`, `Conductor._execute_inproc`, the new row, and
     # `tools/host_execution.py` (the `perf_parallelism` docstring).
-    "execute-12": "60f80a1ccc153d67787eda960ecc432e7740713fcce0d7a0af488e05aa0e58d8",
+    "execute-12": "0a7a10d1869a0ea0753c05232a89af9f1c36cd6a617257e29c6e2adbd7045dfd",
+    # Re-pinned, behaviour-preserving: the `tools/remote_execution.py` docstring states the
+    # loader's two exit codes as measured, no longer that a launch prefix replaces the 127.
+    # (Measured by diffing `execute_tuple()` against fb25d422's: that row and no other.) The digest
+    # `execute-12` shipped with at fb25d422:
+    "execute-12@fb25d422": "60f80a1ccc153d67787eda960ecc432e7740713fcce0d7a0af488e05aa0e58d8",
     # Re-pinned (issue #534 PR-1), behaviour-preserving for the execute: `_run_command` and the
     # two run tools take an optional `sandbox_argv_prefix` (and `on_spawn`), which
     # `_execute_inproc` never passes; the unprefixed path is unchanged but for a timeout's
