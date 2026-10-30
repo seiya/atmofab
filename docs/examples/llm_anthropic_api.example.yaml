@@ -81,8 +81,9 @@
 #               DEFAULT is the MODEL's: `high` on `claude-opus-5` and `claude-sonnet-5`,
 #               `medium` on Claude Opus 5.5 and Claude Haiku 5.5. An absent `effort` sends no
 #               `output_config` and leaves that default in force. Not every model takes every
-#               level: one the named model lacks is refused by the endpoint as an HTTP 400 on
-#               the first request, which fails the launch closed with no retry. These models
+#               level: one the named model lacks is refused by the endpoint as a client error
+#               (an HTTP 4xx; the pages state no code for it) on the first request, which fails
+#               the launch closed with no retry. These models
 #               have no thinking TOKEN BUDGET to set — `max_output_tokens` is the hard cap on
 #               thinking and reply together, and `effort` is soft guidance on how much of it goes
 #               to thinking. (Until issue #560 this field was refused here, on the premise that
