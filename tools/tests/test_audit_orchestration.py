@@ -19,7 +19,12 @@ from tools import orchestration_diagnostics as diag
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_orchestration_diagnostics import (
     CHILD_ARID,
+    LINEAGE_ID,
+    _home_env,
+    _lineage_projects,
     _open_dangling_window,
+    _workshop_request,
+    _write_transcript,
 )
 from tools.audit_orchestration import (
     audit,
@@ -633,6 +638,47 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
                 md = _render_markdown(audit(repo, self.ORCH_ID))
         self.assertIn(f"(matched via `session_id` under `{operator_projects}`)", md)
         self.assertNotIn(str(private / "projects"), md)
+
+
+    def test_a_claude_workshop_hit_names_its_lineage_root(self) -> None:
+        """Pin (e) of issue #565: a workshop leaf's transcript is found under its lineage's
+        config home, and the `matched via` clause names that root — which is what tells the
+        reader a workshop leaf answered."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            orch_root = repo / "workspace" / "orchestrations" / self.ORCH_ID
+            orch_root.mkdir(parents=True)
+            _open_dangling_window(orch_root, request=_workshop_request())
+            with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                lineage = _lineage_projects(self.ORCH_ID)
+                _write_transcript(lineage)
+                md = _render_markdown(audit(repo, self.ORCH_ID))
+        self.assertIn(f"(matched via `session_id` under `{lineage}`)", md)
+        self.assertIn(f"/claude/{LINEAGE_ID}/config/projects`)", md)
+
+    def test_a_workshop_miss_renders_its_reason_alone(self) -> None:
+        """Pin (e): the miss line is the reason and nothing after it. The deleted trailing
+        clause `(leaf transcripts are machine-local, under ~/.claude/projects)` contradicted
+        every workshop row, whose reason names the lineage home."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            orch_root = repo / "workspace" / "orchestrations" / self.ORCH_ID
+            orch_root.mkdir(parents=True)
+            _open_dangling_window(orch_root, request=_workshop_request())
+            with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                lineage = _lineage_projects(self.ORCH_ID)
+                md = _render_markdown(audit(repo, self.ORCH_ID))
+        line = next(ln for ln in md.splitlines()
+                    if ln.startswith("Child subagent transcript not available: "))
+        self.assertEqual(
+            line,
+            f"Child subagent transcript not available: no leaf transcript for {CHILD_ARID} "
+            f"under its lineage's config home {lineage} (the launch record's "
+            f"workshop_lineage_id {LINEAGE_ID}; pruned, or the CLI wrote none before it "
+            "died).")
+        self.assertNotIn("leaf transcripts are machine-local", md)
 
 
 class IncidentMatchMethodRenderTests(unittest.TestCase):
