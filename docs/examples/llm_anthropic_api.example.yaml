@@ -82,8 +82,8 @@
 #               `medium` on Claude Opus 5.5 and Claude Haiku 5.5. An absent `effort` sends no
 #               `output_config` and leaves that default in force. Not every model takes every
 #               level: one the named model lacks is refused by the endpoint as a client error
-#               (an HTTP 4xx; the pages state no code for it) on the first request, which fails
-#               the launch closed with no retry. These models
+#               (an HTTP 4xx other than 408 / 429; the pages state no code for it) on the first
+#               request, which fails the launch closed with no retry. These models
 #               have no thinking TOKEN BUDGET to set — `max_output_tokens` is the hard cap on
 #               thinking and reply together, and `effort` is soft guidance on how much of it goes
 #               to thinking. (Until issue #560 this field was refused here, on the premise that
@@ -138,6 +138,10 @@ phases:
         # change what this line means (Claude Opus 5.5 defaults to `medium`): restate it from
         # the new model's effort page. The four entries below follow this one. Overriding the
         # default needs quality evidence on the model that will run; no run recorded here is that.
+        # Each entry states its own because `effort` is provider-scoped: the `defaults` level
+        # above is a `claude_cli` word and is dropped at the switch to this provider, so a
+        # level written only there reaches none of these entries (`docs/ORCHESTRATION.md`
+        # §Leaf LLM configuration, "Resolution order").
         effort: high
         # Bounds ONE reply, and a reply that writes `spec.ir.yaml` carries what it writes whole.
         # The artifact, over a NAMED population: the 7 `shallow_water2d` IRs under the live
@@ -209,7 +213,11 @@ phases:
         effort: high
         # The reading kind is one shape, so this cap moves with `compile.verify`'s (see the
         # measurements there): this lineage stayed under 16384, with 14,965 of its 15,868
-        # output tokens thinking.
+        # output tokens thinking. No `timeout_s` here, so each request takes the module
+        # default of 900 s (`DEFAULT_HTTP_TIMEOUT_SECONDS`, `tools/llm_http_leaf.py`): in the
+        # same run this model's reading replies of 2,000 tokens or more ran 71-79 tokens/s
+        # request-to-response (8,607 tokens in 115.3 s here; 4,461 in 62.7 s on
+        # `validate.judge`), so a 32768-token reply is about 415-460 s, inside 900 with room.
         max_output_tokens: 32768
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
@@ -232,6 +240,8 @@ phases:
         effort: high
         # The artifact is a decision and a findings array, so this is headroom rather than a
         # size, and most of a reply is thinking: the same cap as the two verify leaves, the
-        # bundle writer's budget, for the reason given at `compile.verify`.
+        # bundle writer's budget, for the reason given at `compile.verify`. No `timeout_s`
+        # here either: the 900 s default holds a 32768-token reply at the rate measured on
+        # `generate.verify` (the same model; this lineage's largest reply was 4,461 tokens).
         max_output_tokens: 32768
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch

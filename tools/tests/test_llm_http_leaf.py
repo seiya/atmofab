@@ -1597,9 +1597,13 @@ class AnthropicStreamReadingTests(unittest.TestCase):
                                      **_ONE_REQUEST})
 
     def test_an_anthropic_stream_takes_the_whole_input_side_from_message_start(self) -> None:
-        """`message_start` carries the uncached input AND both cache classes; only
-        `output_tokens` arrives later. Reading just `input_tokens` there dropped the cache
-        split on every streamed turn."""
+        """`message_start` carries the uncached input AND both cache classes. Reading just
+        `input_tokens` there dropped the cache split on every streamed turn. This row's
+        `message_delta` carries `output_tokens` alone, so `message_start`'s input side is what
+        survives; the real final delta repeats all four classes (equal to `message_start`'s
+        in 103 of 103 recorded replies of `orch_20261028T235119Z_492e5092`) and, since issue
+        #560, every key it carries wins — the row pins the start-side read, not a rule that
+        the delta is output-only."""
         body = _sse(
             ("message_start", json.dumps({"message": {
                 "model": "claude-opus-5-resolved",
@@ -1637,7 +1641,9 @@ class AnthropicStreamReadingTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.usage["output_tokens"], 16384)      # the delta's, not 1
         self.assertEqual(out.usage["reasoning_tokens"], 16000)
-        self.assertEqual(out.usage["input_tokens"], 33)          # message_start's survives
+        # This delta omits the input classes, so `message_start`'s stands; a delta carrying
+        # them (the real wire's shape) would win, with equal values on the measured wire.
+        self.assertEqual(out.usage["input_tokens"], 33)
         self.assertEqual(out.usage["total_tokens"], 33 + 16384)
 
     def test_a_thinking_delta_is_not_part_of_the_answer_document(self) -> None:

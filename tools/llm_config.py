@@ -296,9 +296,9 @@ _EFFORT_LEVELS: Mapping[str, frozenset[str]] = {
     # except Claude Opus 5.5 and Claude Haiku 5.5, which default to `medium`. Not every model
     # takes every level (the page's availability table lists `xhigh` and `max` per model); the
     # loader checks the VOCABULARY and the endpoint checks the MODEL, refusing a level the named
-    # model lacks on the first request as a client error (an HTTP 4xx — the page states no code
-    # for it) which the conductor classifies `llm_client_error` and never retries, so the launch
-    # fails closed having generated nothing.
+    # model lacks on the first request as a client error (an HTTP 4xx other than 408 / 429 —
+    # the page states no code for it) which the conductor classifies `llm_client_error` and
+    # never retries, so the launch fails closed having generated nothing.
     "anthropic_api": frozenset({"low", "medium", "high", "xhigh", "max"}),
 }
 

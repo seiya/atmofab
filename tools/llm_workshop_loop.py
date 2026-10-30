@@ -404,7 +404,11 @@ def _anthropic_stream_reply(frames: Sequence[tuple[str, str]]
             # The final usage, through the same reader as `message_start`'s: it carries the
             # authoritative `output_tokens` and, only here when streaming, the
             # `output_tokens_details` breakdown (`thinking_tokens` -> `reasoning_tokens`,
-            # issue #560). Every key the delta carries wins over `message_start`'s.
+            # issue #560). Every key the delta carries wins over `message_start`'s. On the
+            # real wire the final delta repeats all four token classes, equal to
+            # `message_start`'s (103 of 103 recorded replies of
+            # `orch_20261028T235119Z_492e5092`), so the start-side read matters only to a
+            # gateway whose delta omits them; until #560 only `output_tokens` was read here.
             usage.update(_anthropic_usage(doc.get("usage")))
         elif event == "message_stop":
             complete = True
