@@ -523,8 +523,8 @@ def _clean_str(value: Any) -> str | None:
 def _pure_source_dirs_of(
     repo_root: Path, orchestration_id: str
 ) -> tuple[list[str], list[str]]:
-    """Every repo-relative source directory this orchestration launched a PURE or WORKSHOP
-    `generate` leaf into, in sorted order, and the node pipelines it reserved.
+    """Every repo-relative source directory this orchestration launched a `generate` leaf into,
+    in sorted order, and the node pipelines it reserved.
 
     The directories are discovered from this orchestration's own persisted launch requests
     (`launches/<arid>.request.json`), as `_pure_ir_dirs_of` discovers the IR directories: one row
@@ -533,7 +533,10 @@ def _pure_source_dirs_of(
     that, because a node's pipeline id is reused ACROSS orchestrations, and it listed a sibling
     run's attempts as this one's. `pipeline_ref` and `source_id` are JSON-sourced, so the first
     is required to be a `workspace/pipelines/...` path of the shape `_pure_run_node_dirs_of`
-    reads and the second a single clean segment.
+    reads and the second a single clean segment. Only the leaf substeps name a directory: a
+    `gate` row is the conductor's, and a later run re-gating an earlier run's source writes one.
+    An agentic leaf's row (no `leaf_mode`) does name one; it carries no pure meta, so the caller's
+    `found` filter drops it and the diagnosis stays "no pure-leaf meta located".
 
     The returned `pipeline_refs` come from `reservations/<node_key_safe>/generate.json`
     (`#reserved_ir_id` and `#target_id`), which `prepare_node` writes before Compile runs. They
@@ -555,7 +558,7 @@ def _pure_source_dirs_of(
             row = _load_json_if_dict(path) or {}
             if _clean_str(row.get("step")) != "generate":
                 continue
-            if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
+            if _clean_str(row.get("substep")) not in ("generate", "verify"):
                 continue
             pipeline_ref = _clean_str(row.get("pipeline_ref"))
             source_id = _clean_str(row.get("source_id"))

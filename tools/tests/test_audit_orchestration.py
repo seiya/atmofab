@@ -825,14 +825,14 @@ class PureLeafABSummaryTest(unittest.TestCase):
         )
 
     def _launch_source(self, repo: Path, source_id: object, *, pipeline_ref: object = None,
-                orch: str | None = None, step: str = "generate", leaf_mode: object = "workshop",
-                ) -> None:
+                orch: str | None = None, step: str = "generate", substep: str = "generate",
+                leaf_mode: object = "workshop") -> None:
         """Persist the launch request of one generate attempt, which is what discovery reads."""
         launches = repo / "workspace" / "orchestrations" / (orch or self.ORCH) / "launches"
         launches.mkdir(parents=True, exist_ok=True)
         arid = f"arid-{len(list(launches.iterdir()))}"
         (launches / f"{arid}.request.json").write_text(json.dumps({
-            "step": step, "leaf_mode": leaf_mode, "source_id": source_id,
+            "step": step, "substep": substep, "leaf_mode": leaf_mode, "source_id": source_id,
             "pipeline_ref": self.PIPE if pipeline_ref is None else pipeline_ref,
         }), encoding="utf-8")
 
@@ -1252,19 +1252,22 @@ class PureLeafABSummaryTest(unittest.TestCase):
         from tools.audit_orchestration import _pure_source_dirs_of
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
+            self._launch_source(repo, "src_workshop")  # launched first, listed last: sorted
             self._launch_source(repo, "src_pure", leaf_mode="pure")
-            self._launch_source(repo, "src_pure")  # a second attempt in one directory: listed once
-            self._launch_source(repo, "src_workshop")
-            self._launch_source(repo, "src_gate", leaf_mode=None)  # a deterministic substep's row
+            self._launch_source(repo, "src_pure", substep="verify")  # one directory, listed once
+            self._launch_source(repo, "src_agentic", leaf_mode=None)
+            self._launch_source(repo, "src_gate", substep="gate", leaf_mode=None)
             self._launch_source(repo, "src_validate", step="validate")
             for bad in ("..", ".", "/abs", "a/b", "", 3):
                 self._launch_source(repo, bad)
             for bad in ("elsewhere/x/y/z", "workspace/pipelines/a", "../workspace/pipelines/a/b",
+                        "workspace/pipelines/../b",
                         "workspace/pipelines/a/../b", "workspace/pipelines/a/Not_Target/c",
                         "/workspace/pipelines/a/b", 3):
                 self._launch_source(repo, "src_bad_ref", pipeline_ref=bad)
             dirs, refs = _pure_source_dirs_of(repo, self.ORCH)
-        self.assertEqual(dirs, [f"{self.PIPE}/source/src_pure", f"{self.PIPE}/source/src_workshop"])
+        self.assertEqual(dirs, [f"{self.PIPE}/source/{sid}"
+                                for sid in ("src_agentic", "src_pure", "src_workshop")])
         self.assertEqual(refs, [])
 
     def test_traversal_reserved_pipeline_id_is_skipped(self) -> None:
@@ -1360,7 +1363,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._lay_out(repo, executor="legacy", with_metas=False)
-            self._launch_source(repo, "src_legacy_001")
+            self._launch_source(repo, "src_legacy_001", leaf_mode=None)
             legacy_src = repo / self.PIPE / "source" / "src_legacy_001"
             legacy_src.mkdir(parents=True)
             (legacy_src / "src").mkdir()  # a real legacy source dir, no bundle/verdict meta
