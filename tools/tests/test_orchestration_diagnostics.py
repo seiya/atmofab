@@ -27,8 +27,13 @@ def _orch_root(repo_root: Path) -> Path:
     return root
 
 
-def _open_dangling_window(root: Path, *, with_marker: bool = True) -> None:
-    """Lay out an open active_child window for CHILD_ARID."""
+def _open_dangling_window(root: Path, *, with_marker: bool = True,
+                          request: dict | None = None) -> None:
+    """Lay out an open active_child window for CHILD_ARID.
+
+    `request` is MERGED over the launch record's default `{"substep": "verify"}` and written to
+    the same `launches/<arid>.request.json` — a record with no `leaf_mode`, which is what keeps
+    a caller that passes nothing on the operator-root branch (issue #565)."""
     (root / "active_child_agent_run_id.txt").write_text(CHILD_ARID, encoding="utf-8")
     if with_marker:
         (root / "active_children").mkdir(exist_ok=True)
@@ -48,11 +53,59 @@ def _open_dangling_window(root: Path, *, with_marker: bool = True) -> None:
     )
     (root / "launches").mkdir(exist_ok=True)
     (root / "launches" / f"{CHILD_ARID}.request.json").write_text(
-        json.dumps({"substep": "verify"}), encoding="utf-8"
+        json.dumps({"substep": "verify", **(request or {})}), encoding="utf-8"
     )
     (root / "orchestration_meta.json").write_text(
         json.dumps({"orchestration_id": ORCH_ID, "status": "running"}), encoding="utf-8"
     )
+
+
+LINEAGE_ID = "6c9e51ba-0d1e-4a5b-9c3f-2e7d8a1b4c6f"
+
+
+_NO_PROVIDER_KEY = object()
+
+
+def _workshop_request(provider: object = "claude_cli", lineage_id: object = LINEAGE_ID) -> dict:
+    """The three launch-record fields `build_launch_request` sets on a workshop launch.
+
+    `provider=_NO_PROVIDER_KEY` OMITS the key: the shape of a workshop record written before
+    `026de9d4` (issue #534 step 2 PR-1), which the locator reads as a claude launch."""
+    request: dict = {"leaf_mode": "workshop", "workshop_lineage_id": lineage_id}
+    if provider is not _NO_PROVIDER_KEY:
+        request["workshop_provider"] = provider
+    return request
+
+
+def _home_env(home: Path) -> dict[str, str]:
+    """`HOME`, and the homes root at its default place under it.
+
+    The homes root is set explicitly as well because under pytest conftest's autouse fixture
+    has already pointed `ATMOFAB_WORKFLOW_HOMES_ROOT` at one directory per TEST, which every
+    subtest of a row would share; under plain `unittest` the `HOME` half alone decides it."""
+    from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
+    return {"HOME": str(home), WORKFLOW_HOMES_ROOT_ENV: str(home / ".atmofab" / "homes")}
+
+
+def _lineage_projects(orchestration_id: str = ORCH_ID, lineage_id: str = LINEAGE_ID) -> Path:
+    """The lineage's `config/projects`, from `workflow_homes_root()` read NOW.
+
+    Call it INSIDE the `HOME` patch: under plain `unittest` nothing else redirects the homes
+    root, and a value read outside the patch is the operator's real `~/.atmofab/homes`."""
+    from tools.operator_private_root import workflow_homes_root
+    return (workflow_homes_root() / orchestration_id / "claude" / lineage_id / "config"
+            / "projects")
+
+
+def _write_transcript(projects: Path, arid: str = CHILD_ARID, slug: str = "-tree-slug") -> Path:
+    (projects / slug).mkdir(parents=True, exist_ok=True)
+    path = projects / slug / f"{arid}.jsonl"
+    path.write_text(json.dumps({"type": "assistant", "timestamp": "2026-06-16T12:38:47.000Z",
+                                "message": {"role": "assistant", "content": [
+                                    {"type": "tool_use", "name": "Read",
+                                     "input": {"file_path": "x"}}]}}) + "\n",
+                    encoding="utf-8")
+    return path
 
 
 class DetectDanglingTests(unittest.TestCase):
@@ -378,6 +431,170 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             self.assertEqual(incident["dangling_child"]["agent_run_id"], CHILD_ARID)
             self.assertFalse(incident["transcripts"]["child_transcript"]["found"])
 
+    def test_a_claude_workshop_incident_correlates_its_lineage_transcript(self) -> None:
+        """Pin (d), the hit: end to end, the lineage root is stamped and the tail is read."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            _open_dangling_window(_orch_root(repo), request=_workshop_request())
+            with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                lineage = _lineage_projects()
+                _write_transcript(lineage)
+                incident = diag.build_launch_incident(repo, ORCH_ID)
+            assert incident is not None
+            child = incident["transcripts"]["child_transcript"]
+            self.assertTrue(child["found"])
+            self.assertEqual(child["match_method"], "session_id")
+            self.assertEqual(child["matched_projects_root"], str(lineage))
+            self.assertEqual(child["last_tool_use"]["name"], "Read")
+            self.assertEqual(child["last_activity_ts"], "2026-06-16T12:38:47.000Z")
+            self.assertNotIn("searched_projects_root", child)
+
+    def test_a_workshop_miss_is_typed_and_names_the_place_searched(self) -> None:
+        """Pin (d), the misses: one reason per case, each naming a place, and
+        `searched_projects_root` set exactly when a root was globbed."""
+        cases = {
+            "claude_no_file": (_workshop_request(), "lineage",
+                               (f"no leaf transcript for {CHILD_ARID} under its lineage's "
+                               "config home {lineage} (the launch record's "
+                               f"workshop_lineage_id {LINEAGE_ID}; pruned, or the CLI wrote "
+                               "none before it died)")),
+            "lineage_id_bad": (_workshop_request(lineage_id="../x"), None,
+                               ("the launch record names no usable workshop_lineage_id "
+                               "('../x'), so no lineage home was searched")),
+            "lineage_id_absent": (_workshop_request(lineage_id=None), None,
+                                  ("the launch record names no usable workshop_lineage_id "
+                                  "(None), so no lineage home was searched")),
+            "provider_null": (_workshop_request(provider=None), None,
+                                ("the launch record names no usable workshop_provider (None), "
+                                "so no transcript root was searched")),
+            "codex": (_workshop_request(provider="codex_cli"), None,
+                      ("a codex workshop leaf writes no claude transcript; its rollout is under "
+                      f"{{homes}}/{ORCH_ID}/codex/{LINEAGE_ID}/config/sessions/, which "
+                      "this correlation does not read")),
+            "http": (_workshop_request(provider="anthropic_api"), None,
+                     ("an HTTP workshop lineage has no CLI transcript; the host loop's turns "
+                     f"are workspace/orchestrations/{ORCH_ID}/workshop/{LINEAGE_ID}/"
+                     "loop_turns.jsonl")),
+            "http_openai": (_workshop_request(provider="openai_compatible"), None,
+                            ("an HTTP workshop lineage has no CLI transcript; the host loop's "
+                            f"turns are workspace/orchestrations/{ORCH_ID}/workshop/"
+                            f"{LINEAGE_ID}/loop_turns.jsonl")),
+        }
+        for name, (request, searched, reason) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                home = Path(tmp) / "home"
+                _open_dangling_window(_orch_root(repo), request=request)
+                with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                    from tools.operator_private_root import workflow_homes_root
+                    lineage = _lineage_projects()
+                    homes = workflow_homes_root()
+                    # A decoy in BOTH roots a wrong branch could search: a miss that is
+                    # typed must not have been answered by either of them.
+                    _write_transcript(home / ".claude" / "projects")
+                    if name != "claude_no_file":
+                        _write_transcript(lineage)
+                    incident = diag.build_launch_incident(repo, ORCH_ID)
+                assert incident is not None
+                child = incident["transcripts"]["child_transcript"]
+                self.assertFalse(child["found"])
+                self.assertEqual(child["reason"], reason.replace("{lineage}", str(lineage))
+                                 .replace("{homes}", str(homes)))
+                self.assertEqual(child["searched_projects_root"],
+                                 str(lineage) if searched == "lineage" else None)
+
+    def test_an_unexpandable_homes_root_is_a_typed_miss_naming_the_variable(self) -> None:
+        """Round 3 of issue #565. The homes-root resolver is not total (the `TODO.md` item on
+        `~account` overrides); its `RuntimeError` on the lineage branch is a miss that names
+        `ATMOFAB_WORKFLOW_HOMES_ROOT`, not a raise, and nothing is searched. The codex branch
+        resolves the same root for its reason and falls back to the placeholder."""
+        from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
+        for provider, needle in (("claude_cli", WORKFLOW_HOMES_ROOT_ENV),
+                                 ("codex_cli", "<homes-root>/")):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                home = Path(tmp) / "home"
+                _open_dangling_window(_orch_root(repo),
+                                      request=_workshop_request(provider=provider))
+                env = {**_home_env(home), WORKFLOW_HOMES_ROOT_ENV: "~nosuchacct/x"}
+                with mock.patch.dict(os.environ, env, clear=False):
+                    incident = diag.build_launch_incident(repo, ORCH_ID)
+                assert incident is not None
+                child = incident["transcripts"]["child_transcript"]
+                self.assertFalse(child["found"])
+                self.assertIsNone(child["searched_projects_root"])
+                self.assertIn(needle, child["reason"])
+
+    def test_a_workshop_record_without_a_provider_key_is_a_claude_launch(self) -> None:
+        """A workshop record written before `026de9d4` carries no `workshop_provider` key and
+        is a claude launch by construction (round 1 of issue #565 found such records on the
+        operator's machine, every transcript under its lineage home, every one a typed miss;
+        the count is in the PR's record). The ABSENT key is searched in the lineage home; a key PRESENT with `null` is the
+        typed miss the previous row pins, so the two shapes are driven side by side."""
+        for name, provider, found in (("key_absent", _NO_PROVIDER_KEY, True),
+                                      ("key_null", None, False)):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                home = Path(tmp) / "home"
+                _open_dangling_window(_orch_root(repo),
+                                      request=_workshop_request(provider=provider))
+                with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                    lineage = _lineage_projects()
+                    _write_transcript(lineage)
+                    _write_transcript(home / ".claude" / "projects")
+                    incident = diag.build_launch_incident(repo, ORCH_ID)
+                assert incident is not None
+                child = incident["transcripts"]["child_transcript"]
+                self.assertEqual(child["found"], found)
+                if found:
+                    self.assertEqual(child["matched_projects_root"], str(lineage))
+                else:
+                    self.assertIn("no usable workshop_provider (None)", child["reason"])
+
+    def test_an_unreadable_launch_record_is_a_typed_miss_not_the_operator_root(self) -> None:
+        """Pin (d): a record that is present but not a JSON object selects no search. The
+        operator-root branch would print the pre-Z4 text for what may be a workshop launch."""
+        for body, detail in (("{not json", None), ("[1, 2]", "not a JSON object")):
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                home = Path(tmp) / "home"
+                orch = _orch_root(repo)
+                _open_dangling_window(orch)
+                (orch / "launches" / f"{CHILD_ARID}.request.json").write_text(
+                    body, encoding="utf-8")
+                _write_transcript(home / ".claude" / "projects")
+                with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                    incident = diag.build_launch_incident(repo, ORCH_ID)
+                assert incident is not None
+                child = incident["transcripts"]["child_transcript"]
+                self.assertFalse(child["found"])
+                self.assertIsNone(child["searched_projects_root"])
+                reason = child["reason"]
+                self.assertTrue(reason.startswith(
+                    f"the launch record launches/{CHILD_ARID}.request.json could not be read ("),
+                    reason)
+                self.assertTrue(reason.endswith("), so no transcript root was searched"),
+                                reason)
+                if detail:
+                    self.assertIn(detail, reason)
+
+    def test_a_record_without_a_workshop_keeps_the_operator_root_miss(self) -> None:
+        """No `leaf_mode` (a deterministic substep) and `"pure"` (a run before PR-J4-b) both
+        take the operator root, with the text that names it."""
+        for request in ({}, {"leaf_mode": "pure"}):
+            with self.subTest(request=request), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp) / "repo"
+                home = Path(tmp) / "home"
+                _open_dangling_window(_orch_root(repo), request=request)
+                with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                    incident = diag.build_launch_incident(repo, ORCH_ID)
+                assert incident is not None
+                child = incident["transcripts"]["child_transcript"]
+                self.assertEqual(child["reason"], diag._OPERATOR_ROOT_MISS)
+                self.assertEqual(child["searched_projects_root"],
+                                 str(home / ".claude" / "projects"))
+
     def test_no_incident_when_window_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -386,7 +603,7 @@ class BuildLaunchIncidentTests(unittest.TestCase):
 
 
 class LeafTranscriptRootTests(unittest.TestCase):
-    """The post-mortem readers find the transcript in the operator's home.
+    """The post-mortem readers find the transcript in the ONE root its launch record selects.
 
     Issue #63 moved an AGENTIC leaf's transcript out of `~/.claude/projects` into the private
     home the conductor prepared for it, and this class pinned both readers onto that root —
@@ -395,8 +612,12 @@ class LeafTranscriptRootTests(unittest.TestCase):
 
     Z4 (issue #171) retired the agentic leaf and the private home with it. A pure leaf runs
     with no `CLAUDE_CONFIG_DIR` (`tools/leaf_contract.py`), so its transcript is written where the
-    CLI writes every transcript, and `claude_leaf_projects_roots` returns that one root. What
-    this class pins now is the operator-home half, which was always the other branch.
+    CLI writes every transcript, and `claude_leaf_projects_roots` returns that root for a call
+    that names no lineage. A claude `workshop leaf` (issue #534) writes under its lineage's
+    `config/projects` instead; issue #565 gave the resolver a `lineage_id` and the locator a
+    launch-record branch, and this class pins both halves: the operator home for a record that
+    names no workshop, the lineage home ALONE for a claude workshop launch (equal to
+    `LineagePaths.config / "projects"`, with both ids checked against the lineage-id grammar).
 
     ACCEPTED LOSS, recorded rather than discovered later: a transcript written by a pre-Z4
     agentic leaf sat under `<homes-root>/<orchestration_id>/claude/projects` and the
@@ -424,7 +645,7 @@ class LeafTranscriptRootTests(unittest.TestCase):
             proj.mkdir(parents=True)
             (proj / "arid-old.jsonl").write_text("{}\n", encoding="utf-8")
             with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
-                found = diag._locate_leaf_transcript("arid-old", repo, "o")
+                found = diag._locate_leaf_transcript("arid-old", repo, "o").match
             assert found is not None
             self.assertEqual(found.path, proj / "arid-old.jsonl")
             # The root, not just the file: an incident names where it looked, and
@@ -432,10 +653,11 @@ class LeafTranscriptRootTests(unittest.TestCase):
             # shape end to end.
             self.assertEqual(found.projects_root, operator / ".claude" / "projects")
 
-    def test_the_operator_home_is_the_only_root(self) -> None:
-        """The COUNT, not just the first entry. `_locate_leaf_transcript` walks every root, so
-        a second root reintroduced ahead of this one would send every audit somewhere a pure
-        leaf never writes, and a reader that only checked `roots[0]` would not see it."""
+    def test_with_no_lineage_the_operator_home_is_the_only_root(self) -> None:
+        """The COUNT, not just the first entry, for a call that names no lineage.
+        `_locate_leaf_transcript` walks every root, so a second root reintroduced ahead of
+        this one would send every audit somewhere a pure leaf never writes, and a reader that
+        only checked `roots[0]` would not see it."""
         from tools.operator_private_root import claude_leaf_projects_roots
         with tempfile.TemporaryDirectory() as td:
             repo, _slug = self._repo_and_slug(td)
@@ -443,6 +665,80 @@ class LeafTranscriptRootTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
                 roots = claude_leaf_projects_roots(repo, "o")
             self.assertEqual(roots, (operator / ".claude" / "projects",))
+
+    def test_the_lineage_root_is_the_lineage_paths_config_home(self) -> None:
+        """Pin (a) of issue #565: the resolver's plain join and `LineagePaths.config` are two
+        spellings of one path — the second is what `Conductor._workshop_session_resumable`
+        globs and the CLI is handed as `CLAUDE_CONFIG_DIR` — and this is where they meet."""
+        from tools.operator_private_root import (
+            claude_leaf_projects_roots,
+            workflow_homes_root,
+        )
+        from tools.workshop_tree import LineagePaths
+        with tempfile.TemporaryDirectory() as td:
+            repo, _slug = self._repo_and_slug(td)
+            with mock.patch.dict(os.environ, _home_env(Path(td) / "operator"),
+                                 clear=False):
+                homes = workflow_homes_root()
+                roots = claude_leaf_projects_roots(repo, "o", "lid")
+            lineage = LineagePaths(homes, "o", "lid",
+                                   repo / "workspace" / "orchestrations" / "o")
+            self.assertEqual(roots, (lineage.config / "projects",))
+
+    def test_the_lineage_branch_refuses_an_id_outside_the_grammar(self) -> None:
+        """Pin (b): both ids are checked before they are joined, so neither a `/`-bearing
+        lineage id nor a `/`-bearing orchestration id reaches the path."""
+        from tools.operator_private_root import claude_leaf_projects_roots
+        with tempfile.TemporaryDirectory() as td:
+            repo, _slug = self._repo_and_slug(td)
+            with mock.patch.dict(os.environ, _home_env(Path(td) / "operator"),
+                                 clear=False):
+                for oid, lid in (("o", "../x"), ("o", ""), ("o", "a/b"), ("o", 7),
+                                 ("../o", "lid"), (None, "lid"), ("", "lid")):
+                    with self.subTest(oid=oid, lid=lid), self.assertRaises(ValueError):
+                        claude_leaf_projects_roots(repo, oid, lid)  # type: ignore[arg-type]
+
+    def test_a_claude_workshop_launch_is_found_in_its_lineage_home_only(self) -> None:
+        """Pin (c): the launch record selects the lineage home, and only it (decision 1)."""
+        for planted in ("lineage", "operator"):
+            with self.subTest(planted=planted), tempfile.TemporaryDirectory() as td:
+                repo = Path(td) / "repo"
+                orch = _orch_root(repo)
+                _open_dangling_window(orch, request=_workshop_request())
+                operator = Path(td) / "operator"
+                with mock.patch.dict(os.environ, _home_env(operator), clear=False):
+                    lineage = _lineage_projects()
+                    target = (lineage if planted == "lineage"
+                              else operator / ".claude" / "projects")
+                    path = _write_transcript(target)
+                    search = diag._locate_leaf_transcript(CHILD_ARID, repo, ORCH_ID)
+                self.assertEqual(search.searched_root, lineage)
+                if planted == "lineage":
+                    assert search.match is not None
+                    self.assertEqual(search.match.path, path)
+                    self.assertEqual(search.match.projects_root, lineage)
+                    self.assertIsNone(search.reason)
+                else:
+                    self.assertIsNone(search.match)
+                    self.assertIn(str(lineage), search.reason or "")
+
+    def test_the_provider_spelling_matches_the_launch_record_vocabulary(self) -> None:
+        """The locator spells the four `workshop_provider` values rather than importing
+        `leaf_contract`; a fifth provider added there must be classified here too."""
+        from tools.leaf_contract import WORKSHOP_LINEAGE_BACKENDS
+        self.assertEqual(set(diag._WORKSHOP_PROVIDERS), set(WORKSHOP_LINEAGE_BACKENDS))
+        self.assertEqual(WORKSHOP_LINEAGE_BACKENDS[diag._WORKSHOP_PROVIDER_CLAUDE], "claude")
+        self.assertEqual(WORKSHOP_LINEAGE_BACKENDS[diag._WORKSHOP_PROVIDER_CODEX], "codex")
+        self.assertEqual({WORKSHOP_LINEAGE_BACKENDS[p] for p in diag._WORKSHOP_PROVIDERS_HTTP},
+                         {"http"})
+
+    def test_the_lineage_id_grammar_is_one_grammar(self) -> None:
+        """The locator, the resolver and `workshop_tree` each spell `[A-Za-z0-9_-]+`; the
+        locator checks it first so a bad id is a typed miss, and the three must agree."""
+        from tools import operator_private_root, workshop_tree
+        self.assertEqual(diag._LINEAGE_ID_RE.pattern, workshop_tree._SAFE_ID_RE.pattern)
+        self.assertEqual(operator_private_root._LINEAGE_ID_RE.pattern,
+                         workshop_tree._SAFE_ID_RE.pattern)
 
 
 class SummarizePureLeafMetasTest(unittest.TestCase):
@@ -966,8 +1262,9 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
         # `is_file` left this tuple with the child-return ack (issue #447, D2): that check was
         # the path's only `is_file` call, so injecting there reached nothing and the
         # `assertRaises` below went red. A primitive the path does not call cannot be asked
-        # this question; one it starts calling belongs back here.
-        for prim in ("read_text", "is_dir", "glob"):
+        # this question; one it starts calling belongs back here — and `is_file` is back
+        # (issue #565): the locator asks it of the launch record before reading it.
+        for prim in ("read_text", "is_dir", "glob", "is_file"):
             with self.subTest(primitive=prim), tempfile.TemporaryDirectory() as tmp:
                     repo = Path(tmp)
                     _open_dangling_window(_orch_root(repo))
@@ -986,6 +1283,35 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
                     self.assertTrue(
                         _caused_by(cm.exception, _Injected),
                         msg=f"{prim}: something escaped, but not from the injection")
+
+    def test_a_lineage_glob_failure_reaches_the_boundary(self) -> None:
+        """Pin (g) of issue #565: the lineage branch is on the behavioural swallow check too.
+
+        The window above carries a record with no `leaf_mode`, so it only ever reaches the
+        operator-root glob — and the primitives it poisons are first hit by the detector,
+        before the locator runs (`is_file` excepted: the locator's own read of the launch
+        record is its first caller). Here a claude workshop record is laid out and ONLY the glob
+        under the lineage root is poisoned (its path contains `ORCH_ID` and the lineage id),
+        so what is observed is the locator's own lineage glob."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            home = Path(tmp) / "home"
+            _open_dangling_window(_orch_root(repo), request=_workshop_request())
+            real = Path.glob
+
+            def _boom(self_path, *a, **k):
+                text = str(self_path)
+                if ORCH_ID in text and LINEAGE_ID in text:
+                    raise _Injected("glob")
+                return real(self_path, *a, **k)
+
+            with mock.patch.dict(os.environ, _home_env(home), clear=False):
+                _write_transcript(_lineage_projects())
+                with mock.patch.object(Path, "glob", _boom), \
+                        self.assertRaises(Exception) as cm:
+                    diag.build_launch_incident(repo, ORCH_ID)
+            self.assertTrue(_caused_by(cm.exception, _Injected),
+                            msg="something escaped, but not from the lineage glob")
 
     def test_nothing_on_the_detection_path_swallows_broadly(self) -> None:
         """The complement to the injection above, and it is needed: WIDENING the

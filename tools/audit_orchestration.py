@@ -11,9 +11,10 @@ workspace/orchestrations/<id>/ (docs/WORKSPACE_LAYOUT.md is canonical for them):
 - failure_analysis.json (the host's own failure diagnosis) and its runtime / fallback
   sidecars
 - Dangling launch (open active_child window with no child return / terminal run),
-  correlated with the leaf transcript tail under the operator's ~/.claude/projects (see
-  orchestration_diagnostics.build_launch_incident) — the one read outside the
-  repository
+  correlated with the leaf's own transcript tail — under its lineage's config home for a
+  claude workshop leaf, under the operator's ~/.claude/projects for a pure one (see
+  orchestration_diagnostics.build_launch_incident, issue #565) — the one read outside
+  the repository
 - violations/*.json (sandbox enforcement)
 - per-leaf token cost from the `usage` rows of agent_runs.jsonl
 - the pure-leaf A/B metrics from bundle_meta.json / verdict_meta.json
@@ -982,9 +983,11 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
         lines.append("Child subagent transcript (decisive evidence):")
         lines.append("")
         # The live incident is always matched via `session_id` and carries the projects
-        # root the hit came from, which is what the `under` suffix shows. Since Z4
-        # (issue #171) `claude_leaf_projects_roots` returns the operator's
-        # `~/.claude/projects` alone, so that is the only root it can name.
+        # root the hit came from, which is what the `under` suffix shows. That root is one
+        # of two (issue #565): a claude workshop leaf's lineage config home
+        # (`<homes-root>/<oid>/claude/<lineage_id>/config/projects`), which names a workshop
+        # leaf decisively, or the operator's `~/.claude/projects` for a launch whose record
+        # names no workshop.
         # No fallback for a missing key: `None` here is the visible signal that the live
         # producer (`orchestration_diagnostics.build_launch_incident`) has regressed.
         matched_root = ct.get("matched_projects_root")
@@ -1005,9 +1008,10 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
             )
         _render_api_error_line(ct.get("api_error"), lines)
     else:
+        # The reason alone: it names the place searched, or why none was (issue #565). A fixed
+        # `~/.claude/projects` clause after it contradicted every workshop row.
         lines.append(
-            f"Child subagent transcript not available: {ct.get('reason', 'unknown')} "
-            "(leaf transcripts are machine-local, under ~/.claude/projects)."
+            f"Child subagent transcript not available: {ct.get('reason', 'unknown')}."
         )
     lines.append("")
 
