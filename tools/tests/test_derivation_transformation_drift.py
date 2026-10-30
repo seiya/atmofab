@@ -759,8 +759,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # the predicate's own case is read only when its own state enters the value. Re-pinned
     # again in round 1: the schema block's bind comment says what an unreached bind still
     # undergoes (parsed, name-resolved, ranked, evaluated; a `comparand.` read in it makes the
-    # entry cross-target) instead of the false "counts for no rule here".
-    "compile-docs-22": "9f2beda58a629f50a3056aaf920d7342b7d4638246f0c34e34b376e07cccbfe5",
+    # entry cross-target) instead of the false "counts for no rule here". And once more: V3 (ii)'s
+    # parenthetical names the four literal forms and the non-state reads the coverage gate stops
+    # counting, so a re-spelling no literal form shows is not read as uncounted.
+    "compile-docs-22": "ed8ce349e67d654cdb1c60a4b1200dbb799f5e6d09f8957634372895769eadbe",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
