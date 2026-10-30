@@ -1860,7 +1860,10 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any, *,
                 v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
                          f"{cond['quantity']!r}) has no host-evaluated corroborant: add a "
                          f"primary_predicates entry with test_id {test_id!r} and quantity "
-                         f"{cond['quantity']!r} that values it from the captured state")
+                         f"{cond['quantity']!r} that values it from the captured state (an "
+                         "entry of that test and quantity whose expr or a bind does not parse, "
+                         "or whose scope is malformed, is no corroborant: repair it rather than "
+                         "adding one)")
                 continue
             if isinstance(cond.get("case"), str) and not cond.get("per_case"):
                 holds = {cond["case"].strip()}

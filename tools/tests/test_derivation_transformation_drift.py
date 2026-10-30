@@ -1748,8 +1748,11 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned in place before shipping (round 1): `cases_read` takes the snapshot schema's
     # state names and counts only captured STATE reads that enter the value — an own-case
     # read values the cases the scope evaluates, an `at('<case>').<point>.<var>` read values
-    # that case; `inputs`, time, coordinate and `comparand.` reads value no case.
-    "verdict-11": "76542557ace6fdf910e03d68c06756ad6ea3f74eab23fb258b07a9ee850a22ad",
+    # that case; `inputs`, time, coordinate and `comparand.` reads value no case. Re-pinned
+    # again in round 2 (message only): the "has no host-evaluated corroborant" remedy says an
+    # entry whose expr or bind does not parse, or whose scope is malformed, is no corroborant
+    # and is repaired rather than joined by a second one.
+    "verdict-11": "1dc1ab9992d9b2114aa00e176644d14278a51819203a17de5cd05d96b2843c79",
 }
 
 
