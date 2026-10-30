@@ -762,6 +762,30 @@ class IncidentApiErrorRenderTests(unittest.TestCase):
         self.assertIn("safe to", md)
 
 
+class ReportWideLoadersDoNotSwallowTests(unittest.TestCase):
+    """The three JSONL logs behind every count of the report (issue #130). A read error has to
+    reach `audit()`'s caller: a loader that swallowed it would report all counts 0 and no
+    integrity warning over an orchestration whose logs could not be read."""
+
+    def test_a_read_error_on_each_log_reaches_the_caller(self) -> None:
+        real_read_text = Path.read_text
+        for name in ("phase_state_log.jsonl", "agent_runs.jsonl", "agent_runs_invalid.jsonl"):
+            for exc in (OSError, UnicodeDecodeError("utf-8", b"\xff", 0, 1, "boom")):
+                def read_text(path, *args, _name=name, _exc=exc, **kwargs):
+                    if path.name == _name:
+                        raise _exc("boom") if _exc is OSError else _exc
+                    return real_read_text(path, *args, **kwargs)
+
+                with self.subTest(log=name, exc=exc), tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    root = repo / "workspace" / "orchestrations" / "orch_x"
+                    root.mkdir(parents=True)
+                    (root / name).write_text("{}\n", encoding="utf-8")
+                    with mock.patch.object(Path, "read_text", read_text), \
+                            self.assertRaises((OSError, UnicodeDecodeError)):
+                        audit(repo, "orch_x")
+
+
 class PureLeafABSummaryTest(unittest.TestCase):
     """collect_pure_leaf_ab_summary + _render_pure_leaf_ab (Z2 M-E)."""
 
