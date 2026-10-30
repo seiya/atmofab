@@ -143,8 +143,8 @@ If transcripts live elsewhere, pass `--project-dir <dir>`; it is read for every 
 ### Step 1b — for an HTTP leaf, take the per-request token and throughput figures
 `analyze_timing.py` reads transcripts, and an HTTP leaf has none. A `workshop leaf` on HTTP is many
 requests, and `launches/` keeps only its last response, so its tokens are in
-`tools/audit_orchestration.py` §Token cost, as are a codex workshop leaf's; the script below says so
-for such a row and prints no figure. A pure HTTP leaf of an older run is one request, and what it
+`tools/audit_orchestration.py` §Token cost; the script below says so for such a row and prints no
+figure. A codex workshop leaf's are there too, and the script finds no stream to read for it. A pure HTTP leaf of an older run is one request, and what it
 spent is in the run's own `launches/` artifacts. For those, run
 
 ```bash

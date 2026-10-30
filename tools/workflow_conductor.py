@@ -8228,8 +8228,8 @@ class Conductor:
         nothing writes into it while it is read. A handler still alive after the stop is a host
         defect, raised rather than snapshotted past.
 
-        Returns None when a WARM launch finds the lineage home gone (`record_launch` answers
-        `workshop_lineage_home_missing`): nothing was launched and the loop falls back to a
+        Returns None when a WARM launch finds the lineage home gone (this function's own
+        preparation, or `record_launch` answering `workshop_lineage_home_missing`): nothing was launched and the loop falls back to a
         cold launch.
 
         On an HTTP entry (issue #534 PR-J3-b) the leaf is the host's tool-use loop

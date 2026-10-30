@@ -534,8 +534,8 @@ def _pure_source_dirs_of(
     run's attempts as this one's. `pipeline_ref` and `source_id` are JSON-sourced, so the first
     is required to be a `workspace/pipelines/...` path of the shape `_pure_run_node_dirs_of`
     reads and the second a single clean segment. Only the leaf substeps name a directory: a
-    `gate` row is the conductor's, and a later run re-gating an earlier run's source writes one.
-    An agentic leaf's row (no `leaf_mode`) does name one; it carries no pure meta, so the caller's
+    `gate` row is the conductor's, and a directory is this run's because a leaf was launched into
+    it. An agentic leaf's row (no `leaf_mode`) does name one; it carries no pure meta, so the caller's
     `found` filter drops it and the diagnosis stays "no pure-leaf meta located".
 
     The returned `pipeline_refs` come from `reservations/<node_key_safe>/generate.json`
