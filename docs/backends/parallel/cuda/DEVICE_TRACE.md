@@ -177,8 +177,8 @@ A run that stops before `Validate` is asked nothing. The version range measured 
   was not): 127 for a missing shared library, refused as above, and 1 for a library that lacks a
   symbol version the binary needs, which routes as the runner's failure. One run reached the
   second while the binary was still built on the host: a runner needing a newer glibc than the
-  site's was recorded with `return_code` 1 (issue #330). A library or a version the build linked
-  and the machine running the job does not resolve still can (`TODO.md`).
+  site's was recorded with `return_code` 1 (issue #330). The second still can, when the machine
+  running the job lacks a version the build linked (`TODO.md`).
 - The profiler's start-up and its report writing share the run's time bound
   (`RUN_PROGRAM_TIMEOUT_SEC`) with the binary: a run near that bound times out under the trace
   first. Not measured; today's runs take seconds.
