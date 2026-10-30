@@ -523,43 +523,59 @@ def _clean_str(value: Any) -> str | None:
 def _pure_source_dirs_of(
     repo_root: Path, orchestration_id: str
 ) -> tuple[list[str], list[str]]:
-    """Every repo-relative source directory under this orchestration's node
-    pipeline(s), in sorted order.
+    """Every repo-relative source directory this orchestration launched a PURE or WORKSHOP
+    `generate` leaf into, in sorted order, and the node pipelines it reserved.
 
-    Discovery reads this orchestration's OWN pipeline reservations
-    (`reservations/<node_key_safe>/generate.json#reserved_ir_id` and `#target_id`, the
-    target the pipeline is built for — issue #284), which `prepare_node` writes before
-    Compile runs and which `resume_node_refs` already treats as the authority for the
-    pipeline id. A reservation that names no target was written before R4-a PR-2, whose
-    pipelines sat directly under `workspace/pipelines/<node_key_safe>/`; the audit describes
-    such a run where it put its pipeline (no reader SELECTS a pipeline there any more — this
-    one only reports what an orchestration already produced). A reservation naming a
-    `target_id` that is not a target id is skipped like any other unusable reservation.
+    The directories are discovered from this orchestration's own persisted launch requests
+    (`launches/<arid>.request.json`), as `_pure_ir_dirs_of` discovers the IR directories: one row
+    per attempt, never rewritten, so a terminally-failed generate and every rotated source
+    directory are measured and nothing else is. A glob of `<pipeline_ref>/source/*` cannot say
+    that, because a node's pipeline id is reused ACROSS orchestrations, and it listed a sibling
+    run's attempts as this one's. `pipeline_ref` and `source_id` are JSON-sourced, so the first
+    is required to be a `workspace/pipelines/...` path of the shape `_pure_run_node_dirs_of`
+    reads and the second a single clean segment.
 
-    Globbing `<pipeline_ref>/source/*` (rather than reading a pass-only ledger) is what
-    keeps a terminally-failed generate and
-    every cold-restart-rotated source dir measured — otherwise the pure-arm totals
-    silently undercount. The node's `pipeline_id` is allocated once per orchestration
-    node and reused across restarts, so the glob is exactly this orchestration's
-    generate attempts. A legacy source dir under the same pipeline carries no
-    bundle_meta/verdict_meta and is dropped by the caller's `found` filter.
-
-    Returns `(source_dirs, pipeline_refs)`. The accepted `pipeline_refs` are returned
-    alongside so the caller can tell an EMPTY result apart: no pipeline reservation
-    at all (the node was never prepared) versus a reserved pipeline whose `source/`
-    does not exist yet (`Generate` has not run — the normal state of a run stopped at
-    Compile, e.g. `run_workflow.py <spec> Compile`, and of a `--with-deps` dependency
-    node when the TARGET stops at Compile: `dep_until_phase` follows the target, so a
-    `generate`/`validate` target drives its deps all the way to Validate and those do
-    produce source dirs). Those two states must not share a diagnosis. A
-    `reserved_ir_id` that is not a single clean path segment is rejected (it would
-    escape the pipeline root).
+    The returned `pipeline_refs` come from `reservations/<node_key_safe>/generate.json`
+    (`#reserved_ir_id` and `#target_id`), which `prepare_node` writes before Compile runs. They
+    are returned so the caller can tell an EMPTY result apart: no pipeline reservation at all
+    (the node was never prepared) versus a reserved pipeline no generate leaf has been launched
+    into (`Generate` has not run — the normal state of a run stopped at Compile, e.g.
+    `run_workflow.py <spec> Compile`, and of a `--with-deps` dependency node when the TARGET
+    stops at Compile: `dep_until_phase` follows the target, so a `generate`/`validate` target
+    drives its deps all the way to Validate and those do launch). Those two states must not share
+    a diagnosis. A reservation that names no target was written before R4-a PR-2, whose pipelines
+    sat directly under `workspace/pipelines/<node_key_safe>/`; a reservation naming a `target_id`
+    that is not a target id, or a `reserved_ir_id` that is not a single clean path segment, is
+    skipped.
     """
     dirs: list[str] = []
+    launches = _orch_root(repo_root, orchestration_id) / "launches"
+    if launches.is_dir():
+        for path in sorted(launches.glob("*.request.json")):
+            row = _load_json_if_dict(path) or {}
+            if _clean_str(row.get("step")) != "generate":
+                continue
+            if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
+                continue
+            pipeline_ref = _clean_str(row.get("pipeline_ref"))
+            source_id = _clean_str(row.get("source_id"))
+            if not (pipeline_ref and source_id):
+                continue
+            parts = PurePosixPath(pipeline_ref).parts
+            if parts[:2] != ("workspace", "pipelines") or not (
+                    len(parts) == 4 or (len(parts) == 5 and is_target_id(parts[3]))):
+                continue
+            if any(p in {".", ".."} for p in parts):
+                continue
+            if source_id in {".", ".."} or PurePosixPath(source_id).parts != (source_id,):
+                continue
+            rel = f"{pipeline_ref}/source/{source_id}"
+            if rel not in dirs:
+                dirs.append(rel)
     pipeline_refs: list[str] = []
     res_root = _orch_root(repo_root, orchestration_id) / "reservations"
     if not res_root.is_dir():
-        return dirs, pipeline_refs
+        return sorted(dirs), pipeline_refs
     for node_dir in sorted(res_root.iterdir()):
         if not node_dir.is_dir():
             continue
@@ -579,17 +595,7 @@ def _pure_source_dirs_of(
                 else f"workspace/pipelines/{node_dir.name}/{reserved}")
         if pref not in pipeline_refs:
             pipeline_refs.append(pref)
-    for pref in pipeline_refs:
-        source_root = repo_root / pref / "source"
-        if not source_root.is_dir():
-            continue
-        for child in sorted(source_root.iterdir()):
-            if not child.is_dir():
-                continue
-            rel = f"{pref}/source/{child.name}"
-            if rel not in dirs:
-                dirs.append(rel)
-    return dirs, pipeline_refs
+    return sorted(dirs), pipeline_refs
 
 
 def _pure_ir_dirs_of(
@@ -601,11 +607,11 @@ def _pure_ir_dirs_of(
 
     Discovery reads this orchestration's own persisted launch requests
     (`launches/<arid>.request.json`) and keeps the `ir_ref` of every row whose `step` is
-    `compile` and whose `leaf_mode` is `pure` or `workshop`. That is deliberately NOT the reservation the
-    source-dir discovery above uses: `reservations/<node>/compile.json#reserved_ir_id` is
-    OVERWRITTEN by `_ensure_fresh_producer_id` on every rotation, so it names only the LIVE ir
-    directory and would drop every repaired or restarted attempt — the same undercount
-    `_pure_source_dirs_of` warns about, in the one place the A/B numbers are the point.
+    `compile` and whose `leaf_mode` is `pure` or `workshop`. That is deliberately NOT a
+    reservation: `reservations/<node>/compile.json#reserved_ir_id` is OVERWRITTEN by
+    `_ensure_fresh_producer_id` on every rotation, so it names only the LIVE ir directory and
+    would drop every repaired or restarted attempt, in the one place the A/B numbers are the
+    point.
 
     A launch request is written before the leaf runs and is never rewritten, so one row exists
     per attempt and the set of `ir_ref`s is exactly the directories this orchestration wrote an
@@ -731,7 +737,7 @@ def collect_pure_leaf_ab_summary(
     located,
     so a legacy (agentic) run reports `available=False` with the executor still
     surfaced; `reason` then says why, distinguishing "this run wrote no pure meta"
-    from "Generate has not produced a source dir yet" and from "the node was never
+    from "Generate has not run yet" and from "the node was never
     prepared", which would otherwise all render as a silent, legacy-looking zero.
 
     I/O: `meta` is passed in because `audit()` already loads it for its other
@@ -844,8 +850,8 @@ def collect_pure_leaf_ab_summary(
             )
         elif not source_dirs:
             result["reason"] = (
-                "no generate source directory under the pipeline yet "
-                "(Generate has not produced one)"
+                "no generate leaf launched into the pipeline yet "
+                "(Generate has not run)"
             )
         else:
             result["reason"] = "no pure-leaf meta located"
