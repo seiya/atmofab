@@ -145,8 +145,10 @@ class SampleConfigTests(unittest.TestCase):
         Inheritance is legal and right once the copy is the operator's own; it is the wrong
         choice for the sample, where a reader would have to re-derive the answer.
 
-        `effort` is required only where the entry's provider HAS one: `anthropic_api` expresses
-        the same idea as a thinking token budget, and writing a level there is rejected."""
+        `effort` is required on every entry whose provider HAS one, which since issue #560 is
+        every provider: `anthropic_api` takes `output_config.effort` (it once refused the field
+        on a thinking-token-budget premise the current models' API does not have). The
+        `inapplicable` branch below stays for a provider added later without one."""
         for name, path in _discovered_samples().items():
             document = _sample_body(path)
             declared = {
@@ -800,6 +802,11 @@ class RuleTests(_Tmp):
     _HTTP_ENTRY = ("provider: openai_compatible\n"
                    "base_url: https://x/v1\napi_key_env: K\nmodel: m\n"
                    "max_wrapper_calls: 30\nlineage_timeout_s: 2700")
+    # A producing `anthropic_api` entry (for `generate.generate`) and a reading one.
+    _ANTHROPIC_ENTRY = ("provider: anthropic_api\napi_key_env: K\nmodel: claude-opus-5\n"
+                        "max_wrapper_calls: 30\nlineage_timeout_s: 2700")
+    _ANTHROPIC_READING_ENTRY = ("provider: anthropic_api\napi_key_env: K\n"
+                                "model: claude-opus-5\nlineage_timeout_s: 2700")
 
     def test_unreadable_missing_file(self) -> None:
         with self.assertRaises(lc.LlmConfigError) as ctx:
@@ -912,7 +919,8 @@ class RuleTests(_Tmp):
     def test_invalid_field_effort_level_is_per_provider(self) -> None:
         """The level names are the provider's own, so this is not one enum with different
         spellings: `ultra` exists for codex and not claude, `minimal` for an OpenAI-compatible
-        endpoint and for neither CLI."""
+        endpoint and for neither CLI nor the Messages API, and `xhigh` / `max` for the Messages
+        API and not an OpenAI-compatible endpoint."""
         self.assert_rule("llm_config_invalid_field",
                          "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: ultra\n")
         self.assert_rule("llm_config_invalid_field",
@@ -923,6 +931,13 @@ class RuleTests(_Tmp):
         # against `supported_reasoning_levels`, which lists neither for any served model.
         self.assert_rule("llm_config_invalid_field",
                          "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n  effort: none\n")
+        # `minimal` is the OpenAI API's word, not the Messages API's; `xhigh` the reverse.
+        self.assert_rule("llm_config_invalid_field",
+                         _doc(entries={("generate", "generate"): self._ANTHROPIC_ENTRY
+                                       + "\neffort: minimal"}))
+        self.assert_rule("llm_config_invalid_field",
+                         _doc(entries={("generate", "generate"): self._HTTP_ENTRY
+                                       + "\neffort: xhigh"}))
         # ...and each accepts its own.
         for body, expected in (
             ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: max\n", "max"),
@@ -930,24 +945,54 @@ class RuleTests(_Tmp):
         ):
             cfg = lc.load_llm_config(self.write(_doc(body), "levels.yaml"))
             self.assertEqual(cfg.entry_for("validate", "judge").effort, expected)
+        for level in ("xhigh", "max"):
+            cfg = lc.load_llm_config(self.write(_doc(entries={
+                ("generate", "generate"): self._ANTHROPIC_ENTRY + f"\neffort: {level}"}),
+                "levels.yaml"))
+            self.assertEqual(cfg.entry_for("generate", "generate").effort, level)
 
-    def test_effort_does_not_apply_to_the_anthropic_api(self) -> None:
-        """Its Messages API expresses the same idea as a thinking token budget, not a level."""
-        self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                         "phases:\n  generate:\n    substeps:\n      generate:\n"
-                         "        provider: anthropic_api\n"
-                         "        api_key_env: ANTHROPIC_API_KEY\n"
-                         "        model: claude-opus-5\n        effort: high\n")
+    def test_effort_applies_to_the_anthropic_api_in_its_own_vocabulary(self) -> None:
+        """Issue #560: the Messages API takes `output_config.effort` (the provider's effort
+        page, fetched 2026-10-30), so the field applies and is checked against the API's own
+        levels. It once refused the field on a thinking-token-budget premise the current
+        models' API does not have."""
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"): self._ANTHROPIC_ENTRY + "\neffort: high"})))
+        self.assertEqual(cfg.entry_for("generate", "generate").effort, "high")
+        for level in ("minimal", "ultra"):
+            with self.subTest(level=level):
+                err = self.assert_rule("llm_config_invalid_field", _doc(entries={
+                    ("generate", "generate"): self._ANTHROPIC_ENTRY + f"\neffort: {level}"}))
+                self.assertIn("accepted: high, low, max, medium, xhigh", str(err))
+        # An explicitly empty effort says nothing, as on every provider with one.
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"): self._ANTHROPIC_ENTRY + '\neffort: ""'})))
+        self.assertEqual(cfg.entry_for("generate", "generate").effort, "")
+        # The loader lowercases and strips (the vocabulary is lowercase; the endpoint takes
+        # the lowercase word), so an operator's `HIGH` or `" Max "` reaches the wire as the
+        # level it names rather than being refused at load. Pins the normalisation, which no
+        # other row spells (review round 1: dropping `.lower()` survived the file).
+        for spelled, level in (("HIGH", "high"), ('" Max "', "max"), ("xHigh", "xhigh")):
+            with self.subTest(spelled=spelled):
+                cfg = lc.load_llm_config(self.write(_doc(entries={
+                    ("generate", "generate"): self._ANTHROPIC_ENTRY + f"\neffort: {spelled}"})))
+                self.assertEqual(cfg.entry_for("generate", "generate").effort, level)
 
     def test_an_effort_does_not_inherit_across_a_provider_switch(self) -> None:
         """A level is a word in the outer provider's vocabulary; carrying it into another
-        provider would inherit a level it may not have."""
+        provider would inherit a level it may not have. Both HTTP providers, because
+        `anthropic_api` shares every word of `claude_cli`'s set — the one switch where an
+        inherited level would LOAD and reach the wire unnoticed."""
         cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: max\n",
-            entries={("generate", "generate"): self._HTTP_ENTRY})))
+            entries={("generate", "generate"): self._HTTP_ENTRY,
+                     ("generate", "verify"): self._ANTHROPIC_READING_ENTRY,
+                     ("validate", "judge"): self._ANTHROPIC_READING_ENTRY
+                     + "\neffort: high"})))
         self.assertEqual(cfg.entry_for("generate", "generate").effort, "")
-        self.assertEqual(cfg.entry_for("validate", "judge").effort, "max")
+        self.assertEqual(cfg.entry_for("generate", "verify").effort, "")
+        self.assertEqual(cfg.entry_for("validate", "judge").effort, "high")
+        self.assertEqual(cfg.entry_for("compile", "verify").effort, "max")
 
     def test_stream_defaults_to_true_on_an_http_entry(self) -> None:
         """The default is the whole fix. A non-streaming completion writes nothing until the
@@ -989,9 +1034,9 @@ class RuleTests(_Tmp):
     def test_an_explicitly_empty_inapplicable_field_is_rejected(self) -> None:
         """The other half of the presence-not-truthiness guard, pinned deliberately rather than
         left an accident, and pinned for EVERY spelling it changed rather than one of them — the
-        collateral of a guard flip is exactly what goes unnoticed. These four previously loaded
-        and were silently dropped; `effort: ""` on an `anthropic_api` entry is the one an
-        operator is at all likely to have written, as "leave it at the provider default"."""
+        collateral of a guard flip is exactly what goes unnoticed. These three previously loaded
+        and were silently dropped. `effort: ""` on an `anthropic_api` entry was a fourth until
+        issue #560 made `effort` apply there; the sibling row below pins that it now LOADS."""
         http = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: {provider}\n{extra}"
@@ -1001,10 +1046,18 @@ class RuleTests(_Tmp):
             'defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  api_key_env: ""\n',
             http.format(provider="openai_compatible",
                         extra='        base_url: https://x/v1\n        command: ""\n'),
-            http.format(provider="anthropic_api", extra='        effort: ""\n'),
         ):
             with self.subTest(body=body):
                 self.assert_rule("llm_config_field_not_applicable", body)
+
+    def test_an_explicitly_empty_effort_on_the_anthropic_api_loads(self) -> None:
+        """The former fourth member of the row above: since issue #560 `effort` applies to
+        `anthropic_api`, so `effort: ""` is the "say nothing" spelling it is everywhere else,
+        not an inapplicable field."""
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"): self._ANTHROPIC_ENTRY + '\neffort: ""'})))
+        self.assertEqual(cfg.entry_for("generate", "generate").effort, "")
+        self.assertEqual(cfg.entry_for("generate", "generate").provider, "anthropic_api")
 
     def test_an_empty_timeout_is_rejected_by_its_own_rule_not_this_one(self) -> None:
         """The near neighbour that is NOT part of the guard flip: an empty `timeout_s` never

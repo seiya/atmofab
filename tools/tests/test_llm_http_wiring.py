@@ -243,6 +243,14 @@ class HttpWorkshopWiringTests(_ChatDialect, _GenerateHarness, unittest.TestCase)
 
     # --- the mixed configuration and the node-shape refusal -----------------------------
 
+    def test_an_openai_entry_refuses_a_messages_api_level_at_load(self) -> None:
+        """The other half of the anthropic row below: `xhigh` is a Messages-API level, not an
+        OpenAI-compatible one, so the same `extra` that reaches the anthropic wire is a load
+        error here — the loader checks the vocabulary per provider."""
+        with self.assertRaises(lc.LlmConfigError) as ctx:
+            self.wired(self.passing(), extra="effort: xhigh")
+        self.assertEqual(ctx.exception.rule, "llm_config_invalid_field")
+
     def test_the_same_run_carries_two_providers(self) -> None:
         """Acceptance 2, at the level this file can assert it without a billed run: one
         conductor, one config, two providers, each leaf resolving to its own."""
@@ -354,6 +362,31 @@ class HttpWorkshopWiringTests(_ChatDialect, _GenerateHarness, unittest.TestCase)
         self.assertNotIn("repair_findings", first)
         self.assertNotEqual(first.get("repair_strategy"), "reuse")
         self.assertIs(self.reopen_event()["findings_carried"], False)
+
+
+class AnthropicEffortWiringTests(_GenerateHarness, unittest.TestCase):
+    """`generate.generate` on an `anthropic_api` entry (the harness's default dialect): the
+    entry's `effort` observed from the CONFIG LOADER to the Messages-API body (issue #560),
+    rather than through the `SimpleNamespace` entry `test_llm_workshop_loop.py` drives."""
+
+    def passing(self) -> list:
+        return [self.calls(*_bundle_writes()), self.done()]
+
+    def test_an_entrys_effort_reaches_every_request_as_output_config(self) -> None:
+        c = self.conductor(self.passing(), extra="effort: xhigh")
+        self.assertEqual(c.entry_for("generate", "generate").effort, "xhigh")
+        self.assertEqual(self.run_substep().status, "pass")
+        bodies = self.api.main_requests()
+        self.assertGreaterEqual(len(bodies), 2)
+        for body in bodies:
+            self.assertEqual(body["output_config"], {"effort": "xhigh"})
+
+    def test_an_entry_with_no_effort_sends_no_output_config(self) -> None:
+        c = self.conductor(self.passing())
+        self.assertEqual(c.entry_for("generate", "generate").effort, "")
+        self.assertEqual(self.run_substep().status, "pass")
+        for body in self.api.main_requests():
+            self.assertNotIn("output_config", body)
 
 
 if __name__ == "__main__":

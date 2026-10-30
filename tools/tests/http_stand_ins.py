@@ -128,7 +128,10 @@ class ScriptedMessagesApi(_ScriptedServer):
     `{"type": "thinking", "thinking", "signature"}` dicts."""
 
     model = "claude-opus-5-5"
-    usage: ClassVar[dict[str, int]] = {
+    # An `output_tokens_details` key set on an instance (`{"thinking_tokens": n}`) rides on the
+    # final `message_delta` of a stream and not on `message_start`, which is where the provider
+    # sends that breakdown when streaming; a buffered body carries it in its one `usage`.
+    usage: ClassVar[dict[str, Any]] = {
         "input_tokens": 1, "output_tokens": 1,
         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
 
@@ -136,7 +139,8 @@ class ScriptedMessagesApi(_ScriptedServer):
         evs: list[dict] = [{"type": "message_start", "message": {
             "id": "msg_1", "type": "message", "role": "assistant",
             "model": self.model, "content": [], "stop_reason": None,
-            "stop_sequence": None, "usage": dict(self.usage)}}]
+            "stop_sequence": None,
+            "usage": {k: v for k, v in self.usage.items() if k != "output_tokens_details"}}}]
         for i, block in enumerate(blocks):
             if block["type"] == "text":
                 evs += [{"type": "content_block_start", "index": i,
@@ -163,9 +167,12 @@ class ScriptedMessagesApi(_ScriptedServer):
                     evs.append({"type": "content_block_delta", "index": i, "delta": {
                         "type": "input_json_delta", "partial_json": piece}})
             evs.append({"type": "content_block_stop", "index": i})
+        final = {"output_tokens": self.usage.get("output_tokens", 1)}
+        if "output_tokens_details" in self.usage:
+            final["output_tokens_details"] = self.usage["output_tokens_details"]
         evs.append({"type": "message_delta", "delta": {"stop_reason": stop,
                                                        "stop_sequence": None},
-                    "usage": {"output_tokens": self.usage.get("output_tokens", 1)}})
+                    "usage": final})
         if terminated:
             evs.append({"type": "message_stop"})
         return "".join(f"event: {e['type']}\ndata: {json.dumps(e, ensure_ascii=False)}\n\n"

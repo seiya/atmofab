@@ -137,6 +137,26 @@ class RequestShapeTests(_Base):
         self.assertEqual(body["reasoning_effort"], "high")
         self.assertEqual(body["max_tokens"], 32768)
 
+    def test_anthropic_effort_rides_as_output_config_and_an_absent_one_sends_no_key(
+            self) -> None:
+        """Issue #560: the Messages API takes the level at `output_config.effort` (not inside
+        a `thinking` object, and not as `reasoning_effort`), on every request of the launch.
+        An absent effort sends no `output_config` key at all, as `reasoning_effort` is omitted
+        on the other dialect: a strict gateway rejects a key it does not know."""
+        server = self.api([_reply_anthropic([tool_use("t1", "list_files", {})]),
+                           _reply_anthropic([], "end_turn", "done")])
+        self.run_loop(server, effort="high")
+        bodies = server.main_requests()
+        self.assertEqual(len(bodies), 2)
+        for body in bodies:
+            self.assertEqual(body["output_config"], {"effort": "high"})
+            self.assertNotIn("reasoning_effort", body)
+            self.assertNotIn("thinking", body)
+        quiet = self.api([_reply_anthropic([], "end_turn", "done")])
+        self.run_loop(quiet, effort="")
+        [body] = quiet.main_requests()
+        self.assertNotIn("output_config", body)
+
 
 class _Mh1Mixin:
     """MH1: a 60 KB `write_file` content split across many deltas assembles byte-identically,
@@ -414,6 +434,28 @@ class UsageSumTests(_Base):
                           result.usage["cache_read_input_tokens"],
                           result.usage["cache_creation_input_tokens"]), (14, 6, 10, 4))
         self.assertEqual(result.usage["provider_details"]["requests"], 2)
+
+    def test_the_ended_row_carries_the_thinking_share_streamed_and_buffered(self) -> None:
+        """Issue #560: the `ended` row of `loop_turns.jsonl` (and the launch's usage) states
+        how much of the output was thinking, summed over the launch's requests, without
+        parsing the raw stream. Streamed, the breakdown rides only on the final
+        `message_delta` (the stand-in sends it there and not on `message_start`)."""
+        for stream in (True, False):
+            with self.subTest(stream=stream):
+                self.rows.clear()
+                server = self.api([_reply_anthropic([tool_use("a", "list_files", {})]),
+                                   _reply_anthropic([], "end_turn", "done")])
+                server.usage = {"input_tokens": 7, "output_tokens": 300,
+                                "cache_read_input_tokens": 0,
+                                "cache_creation_input_tokens": 0,
+                                "output_tokens_details": {"thinking_tokens": 250}}
+                result = self.run_loop(server, stream=stream)
+                self.assertEqual(result.ended, "end_turn")
+                [ended] = [r for r in self.rows if r["event"] == "ended"]
+                self.assertEqual(ended["usage"]["reasoning_tokens"], 500)
+                self.assertEqual(ended["usage"]["output_tokens"], 600)
+                self.assertEqual(ended["usage"]["total_tokens"], 14 + 600)
+                self.assertEqual(result.usage, ended["usage"])
 
 
 class AnthropicEndsTests(_EndsMixin, _Base):

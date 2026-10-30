@@ -42,6 +42,19 @@ class NormalizeLeafUsageTests(unittest.TestCase):
         self.assertEqual(usage["reasoning_tokens"], 23_438)
         self.assertEqual(usage["cached_tokens"], 32_832)
 
+    def test_an_anthropic_shaped_usage_keeps_its_thinking_count_out_of_the_total(self) -> None:
+        """Issue #560: the Messages-API reader lifts `output_tokens_details.thinking_tokens` to
+        the same `reasoning_tokens` name, beside the two cache classes the OpenAI dialect never
+        populates. The cache classes count toward the total; the thinking count, a subset of
+        `output_tokens`, does not."""
+        usage = lu.normalize_leaf_usage(
+            {"input_tokens": 201, "output_tokens": 16_384,
+             "cache_read_input_tokens": 5_000, "cache_creation_input_tokens": 1_000,
+             "reasoning_tokens": 16_384},
+            source=lu.LEAF_USAGE_SOURCE_HTTP)
+        self.assertEqual(usage["reasoning_tokens"], 16_384)
+        self.assertEqual(usage["total_tokens"], 201 + 16_384 + 5_000 + 1_000)
+
     def test_malformed_and_absent_counts_are_dropped_not_coerced(self) -> None:
         """A recorded 0 must mean the provider said 0. `True` is an `int` in Python, so the
         bool exclusion is load-bearing rather than pedantic."""

@@ -66,7 +66,9 @@ LEAF_USAGE_SOURCE_UNRECORDED = "unrecorded"
 
 # Token counts that are a SUBSET of another class and must therefore never be added into
 # `total_tokens`: OpenAI's `reasoning_tokens` is part of `completion_tokens`, and its
-# `cached_tokens` is part of `prompt_tokens`. They are recorded because they are the term
+# `cached_tokens` is part of `prompt_tokens`. The Messages API's
+# `output_tokens_details.thinking_tokens` is part of `output_tokens`, and its reader records it
+# under the same `reasoning_tokens` name (issue #560). They are recorded because they are the term
 # that dominates — on `orch_20260807T002410Z_acf2b996` reasoning was 84% of `completion_tokens`
 # on two `generate` calls and 99.6% on a `verify` call — and excluded from the sum because
 # adding them would double-count the very same tokens.
@@ -105,7 +107,9 @@ def normalize_leaf_usage(
     subset keys are deliberately excluded — see `_SUBSET_USAGE_KEYS`. This one rule is
     correct for both wire dialects, so there is no per-dialect total to keep in step:
     an OpenAI-dialect reader never populates the cache classes, and an Anthropic-dialect
-    one never populates the subset keys.
+    one populates only `reasoning_tokens` of the subset keys (its thinking count, part of
+    `output_tokens`; issue #560), never `cached_tokens` — its cache reads are a class of
+    their own, not a subset of `input_tokens`.
 
     Deriving `total_tokens` is not cosmetic. `audit_orchestration.collect_token_cost_summary`
     accepts a durable usage row only when `total_tokens` is an `int`, and neither the CLI
