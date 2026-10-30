@@ -953,6 +953,10 @@ class PureRenderTests(unittest.TestCase):
     # choosing the value. A statement that does not scope itself to one phase must reach BOTH:
     # the conductor's routing is phase-independent, so a reader of the routing does not know
     # which phase's rubric to look for unless the line says.
+    #
+    # The set is hand-curated, and its bound is what it is: the three documents known to state the
+    # routing. A fourth statement added elsewhere is not found by this check. No derivation exists
+    # because what makes a sentence a statement of the routing is not readable from the text.
     _RUBRIC_POINTER_SURFACES = (
         ("docs/workflow/WORKFLOW_CORE.md", "A `minor` finding is never left unaddressed",
          ("compile", "generate")),
@@ -964,7 +968,8 @@ class PureRenderTests(unittest.TestCase):
     # Where each phase's rubric lives. The DOCUMENT is derived from the code's own step ->
     # phase-doc map (`atmofab-enforcement-change` rule 3-a: the rule is defined once, in the
     # code, and the documents are checked against it), so a moved phase doc breaks both together;
-    # only the section number is spelled here, having no representation in the code.
+    # only the section number is spelled here, having no representation in the code, and
+    # `test_each_rubric_section_number_is_a_heading_of_its_phase_doc` holds it to the heading.
     _RUBRIC_SECTION_BY_STEP = {"compile": "§1-2", "generate": "§2-2"}
     # phase_01 §1-2's rubric, pinned by DIGEST — a review gate, not a pattern.
     #
@@ -1053,6 +1058,18 @@ class PureRenderTests(unittest.TestCase):
         "compile": "18f4ad6e8b131d009274fe1ffc1a480156fc36c1fcda41dbc802db9af516d0de",
         "generate": "e8aae7c7a1d458f535d045612b363602220dbaef993b21711843a52b9dcf34e1",
     }
+
+    def test_each_rubric_section_number_is_a_heading_of_its_phase_doc(self) -> None:
+        """The pointers are matched against the routing lines; this holds the number they carry
+        to the document, so renumbering a heading is red here and not only through a digest."""
+        repo_root = Path(ort.__file__).resolve().parents[1]
+        for step, section in self._RUBRIC_SECTION_BY_STEP.items():
+            with self.subTest(step=step):
+                text = (repo_root / ort.WORKFLOW_PHASE_DOC_BY_STEP[step]).read_text(encoding="utf-8")
+                number = section.removeprefix("§")
+                headings = [ln for ln in text.splitlines() if ln.startswith(f"### {number}. ")]
+                self.assertEqual(len(headings), 1, f"{step}: no single `### {number}. ` heading")
+                self.assertIn(step.capitalize() + ".verify", headings[0])
 
     def test_every_routing_statement_points_at_the_severity_rubric(self) -> None:
         """Six documents stated what `issue_severity` CAUSES and none stated how to choose it
