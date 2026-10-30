@@ -22329,8 +22329,9 @@ class PostJudgeClassifierTest(unittest.TestCase):
     """G4: post_judge severity classification of free-text `--stage pre_judge` violations."""
 
     def test_every_line_led_by_the_bare_orchestrations_root_is_unrecoverable(self) -> None:
-        """Read from the validator's source, so a seventh line of the form is covered too; a
-        leaf writes none of these records, and no repair reaches them."""
+        """Read from the validator's source, so a seventh line of the form is red here until it
+        is counted. A leaf writes none of these records, so no repair of the judge's reaches
+        them; an operator's `--resume` still may."""
         source = (Path(wc.__file__).parent / "validate_pipeline_semantics.py").read_text(
             encoding="utf-8")
         tails = re.findall(r'f"\{orchestrations_root\}: ([^"]*)"', source)

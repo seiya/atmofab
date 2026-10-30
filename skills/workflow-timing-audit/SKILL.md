@@ -172,7 +172,9 @@ script's figures feed, and states the sizing rule they support.
    and a leaf API/transport error (the leaf died of infrastructure, not of its reasoning).
    Either changes what the run's numbers *mean* before you interpret them.
 2. Confirm the **LLM vs. deterministic** split. Deterministic steps have no transcript and no
-   `leaf_mode` in their launch record (a leaf with the one and not the other reads `LLM*`);
+   `leaf_mode` in their launch record; a row with a `leaf_mode` and no transcript reads `LLM*`.
+   An agentic-era LLM leaf whose transcript is gone has neither and still reads `det`, so on a
+   run from before the pure path the split can overstate deterministic time;
    if one shows as LLM, the run predates the conductor in-process migration. `Build` and
    most `Validate.execute` steps are a few %, but on an M3c problem node `validate.execute`
    is the **real multi-resolution simulation** and can legitimately be 10–20% of leaf time

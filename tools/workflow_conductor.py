@@ -8844,9 +8844,10 @@ class Conductor:
                     substep=substep, resume_session_id=machine.resume_session_id, warm=warm,
                     spec=spec)
             except WorkshopSetupFailed as exc:
-                # Nothing was launched or recorded: a host precondition (the wrapper's
-                # context could not be frozen, or the launch's network routes could not be
-                # served — issue #534 step 4), routed like an unassemblable context.
+                # Nothing was launched or recorded: a host precondition (a warm lineage's
+                # preparation refused, the wrapper's context could not be frozen, or the launch's
+                # network routes could not be served — issue #534 step 4), routed like an
+                # unassemblable context.
                 self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
                           detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                 return SubstepOutcome(child_arid, "fail", [], 1,
@@ -9762,9 +9763,9 @@ class Conductor:
                     phase=phase, substep=substep,
                     resume_session_id=machine.resume_session_id, warm=warm, spec=spec)
             except WorkshopSetupFailed as exc:
-                # Nothing was launched or recorded: a reading launch's one host precondition
-                # inside the turn is its network routes (issue #534 step 4,
-                # `_start_leaf_routes`), routed as the producer loop routes a setup failure.
+                # Nothing was launched or recorded: a reading launch's host preconditions inside
+                # the turn are a warm turn's lineage preparation and its network routes (issue
+                # #534 step 4, `_start_leaf_routes`), routed as the producer loop routes them.
                 self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
                           detail=str(exc)[:_LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
                 return SubstepOutcome(
