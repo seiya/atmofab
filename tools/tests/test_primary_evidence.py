@@ -1865,6 +1865,9 @@ class CoverageGateTest(unittest.TestCase):
         self.assertEqual(pe.cases_read(pc, state_names=STATE), {"b"})
         pc["expr"] = "final.s"
         self.assertEqual(pe.cases_read(pc, state_names=STATE), {"a", "b"})
+        # an `initial.` state read values its case as a `final.` one does (round 3)
+        p = case_p("final.s - sum(at('b').initial.h)")
+        self.assertEqual(pe.cases_read(p, state_names=STATE), {"a", "b"})
         # with no state names (no snapshot schema) nothing is valued: fail-closed
         self.assertEqual(pe.cases_read(case_p("final.s"), state_names=set()), set())
         self.assertEqual(len(pe.coverage_violations(t, [case_p("final.s + at('b').final.s")],
@@ -1948,6 +1951,7 @@ class CoverageGateTest(unittest.TestCase):
                 v = pe.coverage_violations(t[1:], [p], state_names=STATE)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("has no host-evaluated corroborant", v[0])
+                self.assertIn("is no corroborant: repair it rather than adding one", v[0])
         self.assertIsNone(pe.cases_read({"case": "a", "target_cases": ["a"], "expr": "("},
                                         state_names=STATE))
         # an expr reading other cases' state alone values those cases and not its own (the
