@@ -10901,9 +10901,16 @@ def _validate_test_predicates(
             violations.append(f"{derived_path}:{msg}")
 
     # Coverage: every condition's `quantity` has a primary predicate of the same test and
-    # quantity (an absent `primary_predicates` is the same omission for every test). Names
-    # only; the same-quantity and can-fail judgments are Compile.verify's (V3).
-    for msg in coverage_violations(predicates, io_contract.get("primary_predicates")):
+    # quantity (an absent `primary_predicates` is the same omission for every test) that
+    # values the state of every case the condition holds in (`cases_read` over the snapshot
+    # schema's variables; with no schema nothing is valued and every condition is uncovered —
+    # fail-closed beside the schema gate's own refusal). Names and cases only; the
+    # same-quantity and can-fail judgments are Compile.verify's (V3).
+    from tools.primary_evidence import schema_variables
+    state_schema = snapshot_schema(ir)
+    for msg in coverage_violations(predicates, io_contract.get("primary_predicates"),
+                                   state_names=set(schema_variables(state_schema))
+                                   if isinstance(state_schema, dict) else set()):
         violations.append(f"{derived_path}:io_contract.test_predicates: {msg}")
 
     # Cross-target transcription (issue #324): a cross-target predicate covers no condition, so

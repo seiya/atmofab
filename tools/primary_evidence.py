@@ -1276,7 +1276,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
             "op": op, "scope": scope, "target_cases": list(targets),
             # the cases this record values the state of (`cases_read`), so the verdict
             # evaluator can re-check the coverage rule against the records it is handed
-            "cases_read": sorted(cases_read({**pred, "target_cases": targets}) or []),
+            "cases_read": sorted(cases_read({**pred, "target_cases": targets},
+                                            set(schema_variables(schema))) or []),
             "grammar_version": GRAMMAR_VERSION,
             "comparands": [c.detail() for c in comparand_list] if cross else [],
             "satisfied": True, "kind": "pass", "evaluated": [],
@@ -1745,12 +1746,17 @@ def validate_primary_predicate_schema(
     return v
 
 
-def cases_read(pred: dict[str, Any]) -> set[str] | None:
-    """The cases a primary predicate VALUES the state of: every target case under
-    `per_case: true`; under `case: X`, X plus every `at('<case>')` that enters the value: in
-    `expr` or a bind `expr` reaches (`reached_binds`), outside a term constant by form
-    (`effective_names`, the same forms the reads-state rule prunes; issue #567). A bind `expr`
-    never reaches, and an `at('<case>')` only inside a term constant by form, add no case; the
+def cases_read(pred: dict[str, Any], state_names: set[str]) -> set[str] | None:
+    """The cases a primary predicate VALUES the state of: the cases a captured STATE read
+    (`initial.<var>` / `final.<var>` with `<var>` in ``state_names``; the time variable, an
+    `inputs.<path>`, a coordinate and a `comparand.` read are not state) that ENTERS THE VALUE
+    names — an own-case read values every case the scope evaluates the predicate in (every
+    target case under `per_case: true`, X under `case: X`), an `at('<case>')` read values that
+    case. A read enters the value when it sits in `expr` or in a bind `expr` reaches
+    (`reached_binds`), outside a term constant by form (`effective_names`, the same forms the
+    reads-state rule prunes; issue #567). So a bind `expr` never reaches, an `at('<case>')`
+    only inside a term constant by form, and an `at('<case>').inputs.<path>` normaliser or
+    `at('<case>').final.t` beside own-case state (issue #567 review round 1) add no case; the
     frontier of the reach walk is built from the PRUNED `expr`, so a bind named only inside
     such a term is not reached. The record's `cases_read` key keeps its name. None when the
     scope or an expression is malformed (the primary schema gate refuses those; they cover
@@ -1759,11 +1765,12 @@ def cases_read(pred: dict[str, Any]) -> set[str] | None:
     if not isinstance(targets, list) or not all(isinstance(c, str) for c in targets):
         return None
     if pred.get("per_case") is True and "case" not in pred:
-        return {c.strip() for c in targets}
-    if "case" not in pred or pred.get("per_case") or not isinstance(pred.get("case"), str) \
+        contexts = {c.strip() for c in targets}
+    elif "case" not in pred or pred.get("per_case") or not isinstance(pred.get("case"), str) \
             or not pred["case"].strip():
         return None
-    read = {pred["case"].strip()}
+    else:
+        contexts = {pred["case"].strip()}
     bind = pred.get("bind")
     bind_refs: dict[str, list[NameRef]] = {}
     try:
@@ -1772,23 +1779,30 @@ def cases_read(pred: dict[str, Any]) -> set[str] | None:
         expr_refs = effective_names(parse_expr(pred.get("expr")))
     except PrimaryEvidenceError:
         return None
-    read |= {r.case for r in expr_refs if r.case is not None}
+    entering = list(expr_refs)
     for name in reached_binds(expr_refs, bind_refs):
-        read |= {r.case for r in bind_refs[name] if r.case is not None}
+        entering.extend(bind_refs[name])
+    state_reads = [r for r in entering if r.kind == "capture" and r.name in state_names]
+    read = set(contexts) if any(r.case is None for r in state_reads) else set()
+    read |= {r.case for r in state_reads if r.case is not None}
     return read
 
 
-def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[str]:
+def coverage_violations(test_predicates: Any, primary_predicates: Any, *,
+                        state_names: set[str]) -> list[str]:
     """The per-test coverage gate (Z6, issue #255; `zero_base_architecture.md` §A4 "every
     test_id resting on secondary evidence has a same-quantity corroborant"). For every
     `test_predicates[]` entry, every `pass_when.all[]` condition's `quantity` must be carried
     by a `primary_predicates[]` entry of the same `test_id` that READS every case the
     condition holds in — every target case for a `per_case: true` or a suite-level condition,
-    the one case for a `case: X` condition — where a corroborant reads every target case
-    under `per_case: true` and, under `case: X`, X plus the cases the `at('<case>')`
-    references that enter its value name (`cases_read`: in `expr` or a bind `expr` reaches,
-    outside a term constant by form). The two readers of that fact — this gate and the
-    record's `cases_read` the verdict evaluator re-checks — are one function. Every condition is secondary evidence — a `verdict.*` or `checks.<id>` one
+    the one case for a `case: X` condition — where the cases a corroborant reads are the
+    cases its captured STATE reads that enter its value name (`cases_read` over
+    ``state_names``, the snapshot schema's variables: an own-case read values every case the
+    scope evaluates, an `at('<case>')` read values that case; a read in `expr` or a bind
+    `expr` reaches, outside a term constant by form; an `at('<case>').inputs.<path>`, a time
+    or coordinate read values no state). The two readers of that fact — this gate and the
+    record's `cases_read` the verdict evaluator re-checks — are one function. Every
+    condition is secondary evidence — a `verdict.*` or `checks.<id>` one
     as much as a metric address — so every one needs a corroborant, and a test therefore
     always has at least one primary predicate. `primary_predicates` absent is the same
     omission for every test and is refused as such. Rounds 1 and 2 of PR-3's review each
@@ -1824,7 +1838,7 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
             continue
         if is_cross_target_predicate(pred):
             continue
-        read = cases_read(pred)
+        read = cases_read(pred, state_names)
         if read is None:
             continue
         corroborated.setdefault(test_id.strip(), {}).setdefault(quantity, []).append(read)
@@ -1858,8 +1872,9 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
                 v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
                          f"{cond['quantity']!r}) {where}, but no corroborant of that quantity "
                          f"reads every such case (each reads {sorted(map(sorted, reads))}): "
-                         "give one primary_predicates entry `per_case: true`, or a `case:` "
-                         "whose at('<case>') references — in expr or a bind expr reaches, "
+                         "give one primary_predicates entry `per_case: true` reading its own "
+                         "case's state, or a `case:` whose at('<case>').<initial|final>.<state "
+                         "var> reads — in expr or a bind expr reaches, "
                          "outside a term constant by form — reach the rest — a corroborant "
                          "reading one case would certify the test on that case alone")
     return v

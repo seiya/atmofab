@@ -145,6 +145,9 @@ HMIN = {"test_id": "t_mass", "quantity": "h_min", "target_cases": ["a", "b"],
 SYM = {"test_id": "t_sym", "quantity": "sym", "target_cases": ["a", "b"],
        "expr": "norm2(final.h - roll(at('b').final.h, inputs.initial.shift * inputs.grid.nx, 0))"
                " / norm2(final.h)", "op": "le", "value": 1e-12, "case": "a"}
+# The snapshot schema variables of `_ir` (`h`, `s`): the state names `cases_read` counts
+# (the time variable `t` is not among them).
+STATE = {"h", "s"}
 
 
 # ------------------------------------------------------------------------------ grammar
@@ -1691,11 +1694,11 @@ class CoverageGateTest(unittest.TestCase):
 
     def test_covered(self) -> None:
         full = [self._p("t_mass", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")]
-        self.assertEqual(pe.coverage_violations(self._T, full), [])
+        self.assertEqual(pe.coverage_violations(self._T, full, state_names=STATE), [])
         # two conditions sharing one quantity name share one corroborant; a second corroborant
         # of the same quantity and a corroborant of an unnamed quantity change nothing
         self.assertEqual(pe.coverage_violations(
-            self._T, full + [self._p("t_sym", "guard"), self._p("t_mass", "extra")]), [])
+            self._T, full + [self._p("t_sym", "guard"), self._p("t_mass", "extra")], state_names=STATE), [])
 
     # Channel IR `problem__shallow_water2d_channel__0.2.5/shallow-water2d-channel_20261029_001`,
     # predicate [300] (`restricted_order_n032_to_n064_hu_l2`, `case: n256`): the Compile leaf
@@ -1742,14 +1745,16 @@ class CoverageGateTest(unittest.TestCase):
             (p("final.s + 0 * other", {"other": "at('b').final.s"}), {"a"}),
             (p("final.s + w", {"w": "(at('b').final.s - at('b').final.s) * 2"}), {"a"}),
             (p("final.s - other", {"other": "at('b').final.s"}), {"a", "b"}),
-            (p("c", {"other": "at('b').final.s", "c": "other * 2"}), {"a", "b"}),
+            (p("final.s - c", {"other": "at('b').final.s", "c": "other * 2"}), {"a", "b"}),
+            # a transitive chain with no own-case read values b alone (review round 1)
+            (p("c", {"other": "at('b').final.s", "c": "other * 2"}), {"b"}),
             (p("final.s - at('b').final.s"), {"a", "b"}),
             # a bind reached only through ANOTHER dead bind is dead too
             (p("final.s", {"x": "at('b').final.s", "y": "x * 2"}), {"a"}),
         ]
         for pred, want in rows:
             with self.subTest(expr=pred["expr"], bind=str(pred.get("bind"))):
-                self.assertEqual(pe.cases_read(pred), want)
+                self.assertEqual(pe.cases_read(pred, state_names=STATE), want)
         n = "chan_tc2_xpert_n{:03d}_dts100".format
         channel = {"test_id": "l1_tc2_perturbed_refinement_restricted",
                    "quantity": "restricted_order_n032_to_n064_hu_l2",
@@ -1758,13 +1763,15 @@ class CoverageGateTest(unittest.TestCase):
                    "expr": "log2((norm2(a32u - r32u) / norm2(r32u)) / "
                            "(norm2(a64u - r64u) / norm2(r64u)))",
                    "op": "ge", "value": 1.1}
-        self.assertEqual(pe.cases_read(channel), {n(32), n(64), n(256)})
+        channel_state = {"h", "hu", "hv"}
+        self.assertEqual(pe.cases_read(channel, state_names=channel_state),
+                         {n(32), n(64), n(256)})
         # the same block with `expr` reaching an n128 bind values all four
         self.assertEqual(pe.cases_read({**channel, "expr": channel["expr"] + " + "
-                                        "norm2(a128u - r128u)"}),
+                                        "norm2(a128u - r128u)"}, state_names=channel_state),
                          {n(32), n(64), n(128), n(256)})
         # an unparsable bind, reached or not, still makes the predicate cover nothing
-        self.assertIsNone(pe.cases_read(p("final.s", {"bad": "final.s +"})))
+        self.assertIsNone(pe.cases_read(p("final.s", {"bad": "final.s +"}), state_names=STATE))
 
     def test_a_reference_that_enters_no_value_covers_no_case(self) -> None:
         """Issue #567, through the gate: a `case: a` corroborant of a per_case condition over
@@ -1791,12 +1798,63 @@ class CoverageGateTest(unittest.TestCase):
         ]
         for pred in refused:
             with self.subTest(expr=pred["expr"], bind=str(pred.get("bind"))):
-                v = pe.coverage_violations(t, [pred])
+                v = pe.coverage_violations(t, [pred], state_names=STATE)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn(msg, v[0])
         self.assertEqual(pe.coverage_violations(t, [case_a(
-            "c", {"other": "at('b').final.s", "c": "other * 2"})]), [])
+            "final.s - c", {"other": "at('b').final.s", "c": "other * 2"})],
+            state_names=STATE), [])
 
+
+    def test_only_a_state_read_values_a_case(self) -> None:
+        """Issue #567 review round 1: a case is valued only by a captured STATE read that
+        enters the value. `at('b').inputs.<path>` (a normaliser), `at('b').final.t` (the time
+        variable is not state) and `at('b').x` (a coordinate) value none of b's state, so a
+        `case: a` corroborant carrying one of them beside its own state reads a alone; one
+        reading ONLY `at('b').final.s` values b alone (its own case is never read), under
+        `case: a` and under `per_case: true` alike; a `comparand.` read is another target's
+        state and values no case of this run. The schema gate passes every one of these
+        (each reads captured state), so this rule is what refuses the coverage."""
+        t = [{"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],
+              "pass_when": {"all": [{"ref": "m.a", "op": "le", "value": 1.0, "per_case": True,
+                                     "quantity": "pc"}]}}]
+
+        def case_p(expr: str, **extra: object) -> dict:
+            return {"test_id": "t_mass", "quantity": "pc", "op": "le", "value": 1.0,
+                    "target_cases": ["a", "b"], "case": "a", "expr": expr, **extra}
+
+        for expr, read in (("final.s / at('b').inputs.grid.nx", {"a"}),
+                           ("final.s * at('b').final.t", {"a"}),
+                           ("final.s + sum(at('b').x)", {"a"}),
+                           ("sum(at('b').final.s)", {"b"}),
+                           ("final.t + sum(at('b').final.s)", {"b"}),
+                           ("final.s + comparand.final.s", {"a"}),
+                           ("final.s + at('b').final.s", {"a", "b"}),
+                           ("final.s + sum(at('b').final.h)", {"a", "b"})):
+            with self.subTest(expr=expr):
+                p = case_p(expr)
+                self.assertEqual(pe.cases_read(p, state_names=STATE), read)
+                v = pe.coverage_violations(t, [p], state_names=STATE)
+                self.assertEqual(len(v), 0 if read == {"a", "b"} else 1, v)
+        # the same read through a reached bind, and through a bind the frontier would reach
+        # only if it matched a capture NAME against a bind name (the walk follows `name`
+        # references alone: a bind called `h` is not reached by `final.h`)
+        p = case_p("final.s - other", bind={"other": "at('b').inputs.grid.nx"})
+        self.assertEqual(pe.cases_read(p, state_names=STATE), {"a"})
+        p = case_p("final.s - other", bind={"other": "at('b').final.s"})
+        self.assertEqual(pe.cases_read(p, state_names=STATE), {"a", "b"})
+        p = case_p("min(final.h)", bind={"h": "sum(at('b').final.s)"})
+        self.assertEqual(pe.cases_read(p, state_names=STATE), {"a"})
+        # `per_case: true` values every target case only through an own-case state read
+        pc = {k: v_ for k, v_ in case_p("sum(at('b').final.s)").items() if k != "case"}
+        pc["per_case"] = True
+        self.assertEqual(pe.cases_read(pc, state_names=STATE), {"b"})
+        pc["expr"] = "final.s"
+        self.assertEqual(pe.cases_read(pc, state_names=STATE), {"a", "b"})
+        # with no state names (no snapshot schema) nothing is valued: fail-closed
+        self.assertEqual(pe.cases_read(case_p("final.s"), state_names=set()), set())
+        self.assertEqual(len(pe.coverage_violations(t, [case_p("final.s + at('b').final.s")],
+                                                    state_names=set())), 1)
     def test_a_corroborant_must_read_every_case_the_condition_holds_in(self) -> None:
         """Rounds 1 and 2 (security axis): per (test, quantity), some corroborant must READ
         every case the condition holds in — every target case for a per_case or a suite-level
@@ -1828,7 +1886,7 @@ class CoverageGateTest(unittest.TestCase):
         # two-case test -> refused (round 2)
         v = pe.coverage_violations(t, [case_p("t_mass", "pc", "a"), case_p("t_mass", "ca", "b"),
                                        case_p("t_mass", "suite", "a"),
-                                       per_case_p("t_sym", "pc2")])
+                                       per_case_p("t_sym", "pc2")], state_names=STATE)
         self.assertEqual(len(v), 3, v)
         self.assertIn("t_mass: condition on 'm.a' (quantity 'pc') holds in every target case, "
                       "but no corroborant of that quantity reads every such case (each reads "
@@ -1837,33 +1895,34 @@ class CoverageGateTest(unittest.TestCase):
                       "corroborant of that quantity reads every such case (each reads [['b']])",
                       v[1])
         self.assertIn("condition on 'm.c' (quantity 'suite') holds in every target case", v[2])
-        self.assertIn("give one primary_predicates entry `per_case: true`, or a `case:` whose "
-                      "at('<case>') references — in expr or a bind expr reaches, outside a term "
-                      "constant by form — reach the rest — a corroborant reading one case would "
-                      "certify the test on that case alone", v[2])
+        self.assertIn("give one primary_predicates entry `per_case: true` reading its own case's "
+                      "state, or a `case:` whose at('<case>').<initial|final>.<state var> reads — "
+                      "in expr or a bind expr reaches, outside a term constant by form — reach "
+                      "the rest — a corroborant reading one case would certify the test on that "
+                      "case alone", v[2])
         # per_case corroborants, or a `case:` one whose at() reaches the rest, satisfy each;
         # a `case: a` corroborant of a `case: a` condition reads exactly the case it needs
         self.assertEqual(pe.coverage_violations(t, [
             per_case_p("t_mass", "pc"), case_p("t_mass", "ca", "a"),
             case_p("t_mass", "suite", "b", "final.s - at('a').final.s"),
-            per_case_p("t_sym", "pc2")]), [])
+            per_case_p("t_sym", "pc2")], state_names=STATE), [])
         self.assertEqual(pe.coverage_violations(t, [
             case_p("t_mass", "pc", "a", "min(final.s, at('b').final.s)"),
             per_case_p("t_mass", "ca"), per_case_p("t_mass", "suite"),
-            per_case_p("t_sym", "pc2")]), [])
+            per_case_p("t_sym", "pc2")], state_names=STATE), [])
         # an at() inside a BIND reaches the rest too
         bound = case_p("t_mass", "suite", "a", "final.s - other")
         bound["bind"] = {"other": "at('b').final.s"}
         self.assertEqual(pe.coverage_violations(t, [
             per_case_p("t_mass", "pc"), per_case_p("t_mass", "ca"), bound,
-            per_case_p("t_sym", "pc2")]), [])
+            per_case_p("t_sym", "pc2")], state_names=STATE), [])
         # one of several corroborants of a quantity reading enough is enough
         self.assertEqual(pe.coverage_violations(t, [
             case_p("t_mass", "pc", "a"), per_case_p("t_mass", "pc"), per_case_p("t_mass", "ca"),
-            per_case_p("t_mass", "suite"), per_case_p("t_sym", "pc2")]), [])
+            per_case_p("t_mass", "suite"), per_case_p("t_sym", "pc2")], state_names=STATE), [])
         # a single-case test: a `case: a` corroborant reads every case a per_case condition
         # holds in (round 2's over-refusal probe)
-        self.assertEqual(pe.coverage_violations(t[1:], [case_p("t_sym", "pc2", "a")]), [])
+        self.assertEqual(pe.coverage_violations(t[1:], [case_p("t_sym", "pc2", "a")], state_names=STATE), [])
         # a malformed scope (both keys, neither, per_case: false alone, an empty case), a
         # non-list target_cases, or an unparsable expression is not a corroborant at all
         for bad in ({"per_case": True, "case": "a"}, {}, {"per_case": False}, {"case": ""},
@@ -1872,23 +1931,27 @@ class CoverageGateTest(unittest.TestCase):
             with self.subTest(bad=bad):
                 p = {k: v_ for k, v_ in per_case_p("t_sym", "pc2").items() if k != "per_case"}
                 p.update(bad)
-                v = pe.coverage_violations(t[1:], [p])
+                v = pe.coverage_violations(t[1:], [p], state_names=STATE)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("has no host-evaluated corroborant", v[0])
-        self.assertIsNone(pe.cases_read({"case": "a", "target_cases": ["a"], "expr": "("}))
+        self.assertIsNone(pe.cases_read({"case": "a", "target_cases": ["a"], "expr": "("},
+                                        state_names=STATE))
+        # an expr reading other cases' state alone values those cases and not its own (the
+        # case in `case:` is read only when the value reads its state; review round 1)
         self.assertEqual(pe.cases_read({"case": "a", "target_cases": ["a", "b"],
-                                        "expr": "at('b').final.s + at('c').final.s"}),
-                         {"a", "b", "c"})
+                                        "expr": "at('b').final.s + at('c').final.s"},
+                                       state_names=STATE),
+                         {"b", "c"})
 
     def test_absent_list_is_refused(self) -> None:
         for absent in (None, "x", {}):
             with self.subTest(absent=absent):
-                v = pe.coverage_violations(self._T, absent)
+                v = pe.coverage_violations(self._T, absent, state_names=STATE)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("primary_predicates missing", v[0])
 
     def test_each_uncovered_quantity_is_named(self) -> None:
-        v = pe.coverage_violations(self._T, [self._p("t_mass", "mass")])
+        v = pe.coverage_violations(self._T, [self._p("t_mass", "mass")], state_names=STATE)
         self.assertEqual(len(v), 3, v)
         self.assertIn("t_mass: condition on 'verdict.overall' (quantity 'overall') has no "
                       "host-evaluated corroborant", v[0])
@@ -1898,24 +1961,24 @@ class CoverageGateTest(unittest.TestCase):
 
     def test_a_corroborant_counts_for_its_own_test_only(self) -> None:
         v = pe.coverage_violations(self._T, [
-            self._p("t_sym", "mass"), self._p("t_sym", "overall"), self._p("t_mass", "guard")])
+            self._p("t_sym", "mass"), self._p("t_sym", "overall"), self._p("t_mass", "guard")], state_names=STATE)
         self.assertEqual(len(v), 4, v)
         v = pe.coverage_violations(self._T, [
-            self._p(" t_mass ", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")])
+            self._p(" t_mass ", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")], state_names=STATE)
         self.assertEqual(v, [], "a test_id is compared stripped, as the schema gates do")
 
     def test_an_empty_list_leaves_every_test_uncovered(self) -> None:
-        v = pe.coverage_violations(self._T, [])
+        v = pe.coverage_violations(self._T, [], state_names=STATE)
         self.assertEqual(len(v), 4, v)
 
     def test_malformed_shapes_are_left_to_the_schema_gates(self) -> None:
-        self.assertEqual(pe.coverage_violations("x", []), [])
-        self.assertEqual(pe.coverage_violations([1, {"test_id": 2}], []), [])
+        self.assertEqual(pe.coverage_violations("x", [], state_names=STATE), [])
+        self.assertEqual(pe.coverage_violations([1, {"test_id": 2}], [], state_names=STATE), [])
         no_q = [{"test_id": "t", "pass_when": {"all": [{"ref": "verdict.overall"}, 3]}}]
-        self.assertEqual(pe.coverage_violations(no_q, []), [])
+        self.assertEqual(pe.coverage_violations(no_q, [], state_names=STATE), [])
         self.assertEqual(pe.coverage_violations(
             self._T, [1, {"quantity": "mass"}, {"test_id": "t_mass"},
-                      {"test_id": "t_mass", "quantity": 1}]), pe.coverage_violations(self._T, []))
+                      {"test_id": "t_mass", "quantity": 1}], state_names=STATE), pe.coverage_violations(self._T, [], state_names=STATE))
 
 
 class CompileContractCouplingTest(unittest.TestCase):
@@ -2320,11 +2383,11 @@ class CrossTargetSchemaAndCoverageTest(unittest.TestCase):
         tp = _ir(None)["io_contract"]["test_predicates"][:1]   # t_mass, quantity mass_drift_rel
         own = {**MASS}
         cross = {**CROSS, "quantity": "mass_drift_rel"}
-        self.assertEqual(pe.coverage_violations(tp, [own]), [])
-        v = pe.coverage_violations(tp, [cross])
+        self.assertEqual(pe.coverage_violations(tp, [own], state_names=STATE), [])
+        v = pe.coverage_violations(tp, [cross], state_names=STATE)
         self.assertEqual(len(v), 1)
         self.assertIn("has no host-evaluated corroborant", v[0])
-        self.assertEqual(pe.coverage_violations(tp, [cross, own]), [])
+        self.assertEqual(pe.coverage_violations(tp, [cross, own], state_names=STATE), [])
 
 
 class CrossTargetVerdictTest(unittest.TestCase):

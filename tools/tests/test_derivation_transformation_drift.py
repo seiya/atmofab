@@ -753,7 +753,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # a `0 *` term names. The leaf pin does not hash this document (it stays `leaf-85`);
     # measured 100691 bytes with `wc -c` in /home/seiya/atmofab at the commit that takes it
     # (ceiling 100200 -> 100800).
-    "compile-docs-22": "987c2ff1ac0f4358a1bc5a3261ee6f24396ce71c1e337cf94a225f41f7838900",
+    # Re-pinned in place before shipping (issue #567 review round 1; the version is new on this
+    # branch): the COVERAGE block counts only captured STATE reads — an `at('<case>').inputs`
+    # normaliser, `at('<case>').final.t` or a coordinate values none of that case's state, and
+    # the predicate's own case is read only when its own state enters the value.
+    "compile-docs-22": "00d06351b34838c26bbf2a9ad32160e2d7b659fc9cc2ce8835790a8e188d549c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1728,8 +1732,15 @@ PINNED_VERDICT: dict[str, str] = {
     # Issue #567: `cases_read` lists the cases a predicate VALUES — references from
     # `effective_names`, binds followed only when `expr` (pruned) reaches them, the walk shared
     # with `predicate_reads_state` — and every primary record's `cases_read` comes from it.
-    # A bump, not a re-pin: 216 live records' lists move (the #532 precedent moved none).
-    "verdict-11": "d571abeca803ec52b88954175213f2c346397e34c79c1e1fc463b40a39ad8d05",
+    # A bump, not a re-pin: live records' lists move (the #532 precedent moved none) — 216 IR
+    # predicates in 3 IRs, which on disk are 432 records in 6 `verdict.json` files (2 IRs x 3
+    # targets x 72; the third IR, channel `20261025_004`, has no verdict), measured by os.walk
+    # over `workspace/pipelines` at 060c28a0 (review round 1 corrected "216 live records").
+    # Re-pinned in place before shipping (round 1): `cases_read` takes the snapshot schema's
+    # state names and counts only captured STATE reads that enter the value — an own-case
+    # read values the cases the scope evaluates, an `at('<case>').<point>.<var>` read values
+    # that case; `inputs`, time, coordinate and `comparand.` reads value no case.
+    "verdict-11": "76542557ace6fdf910e03d68c06756ad6ea3f74eab23fb258b07a9ee850a22ad",
 }
 
 

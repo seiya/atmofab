@@ -264,12 +264,16 @@ io_contract:
   #   has a primary_predicates entry — a verdict.* condition and an xfail test included (the guard's
   #   corroborant states the state fact the guard leaves behind) — that READS every case the condition
   #   holds in: every target case for a `per_case: true` or a suite-level condition, the one case for a
-  #   `case: X` condition. A corroborant reads every target case under `per_case: true`; under `case: X` it
-  #   reads X plus every case an at('<case>') reference that ENTERS ITS VALUE names — in expr, or in a bind
-  #   expr reaches (directly or through another bind), outside a term constant by form (the forms the
-  #   reads-state rule above prunes) — so a cross-case reduction read at the finer case covers the coarse
-  #   one through at('<coarse>'), and an at('<case>') in a bind expr never uses, or multiplied by a literal
-  #   zero, covers nothing; a corroborant reading one case never stands for a condition over several. A pass test asserting only verdict.* is
+  #   `case: X` condition. The cases a corroborant reads are the cases its captured STATE reads
+  #   (initial.<var> / final.<var> of a snapshot schema variable) that ENTER ITS VALUE name — in expr, or in a
+  #   bind expr reaches (directly or through another bind), outside a term constant by form (the forms the
+  #   reads-state rule above prunes): a read of its own case's state reads every case the scope evaluates
+  #   (every target case under `per_case: true`, X under `case: X`), and an at('<case>').final.<var> read reads
+  #   that case — so a cross-case reduction read at the finer case covers the coarse one through
+  #   at('<coarse>').final.<var>. An at('<case>') in a bind expr never uses, or multiplied by a literal zero,
+  #   covers nothing, and neither does an at('<case>').inputs.<path> normaliser, at('<case>').<time variable>
+  #   or a coordinate of that case (none of them is that case's state), nor a `comparand.` read (another
+  #   target's state); a corroborant reading one case's state never stands for a condition over several. A pass test asserting only verdict.* is
   #   therefore no longer refused as degenerate: its judgment is conjoined with a host-evaluated
   #   predicate, never reduced to the runner's own verdict.overall. A cross-target predicate is outside this
   #   rule in both directions: it covers no condition (a run's own verdict never evaluates it), and no

@@ -22074,8 +22074,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # at('<case>') that enters its value names, the schema block's bind comment says a bind
         # expr does not reach enters no value, V3 (ii) names what the coverage gate no longer
         # counts): bumped 100200->100800; measured 100691 with `wc -c` in /home/seiya/atmofab at
-        # the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 100800,
+        # the commit that takes this bump. Review round 1 of the same issue (the COVERAGE block
+        # counts only captured STATE reads): bumped 100800->101400; measured 101116 the same way
+        # at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 101400,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
