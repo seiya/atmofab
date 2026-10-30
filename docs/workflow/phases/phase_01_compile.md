@@ -271,7 +271,7 @@ io_contract:
   #   (every target case under `per_case: true`, X under `case: X`), and an at('<case>').final.<var> read reads
   #   that case — so a cross-case reduction read at the finer case covers the coarse one through
   #   at('<coarse>').final.<var>. An at('<case>') in a bind expr never uses, or multiplied by a literal zero,
-  #   covers nothing, and neither does an at('<case>').inputs.<path> normaliser, at('<case>').<time variable>
+  #   covers nothing, and neither does an at('<case>').inputs.<path> normaliser, at('<case>').final.<time variable>
   #   or a coordinate of that case (none of them is that case's state), nor a `comparand.` read (another
   #   target's state); a corroborant reading one case's state never stands for a condition over several. A pass test asserting only verdict.* is
   #   therefore no longer refused as degenerate: its judgment is conjoined with a host-evaluated

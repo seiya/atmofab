@@ -761,8 +761,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # undergoes (parsed, name-resolved, ranked, evaluated; a `comparand.` read in it makes the
     # entry cross-target) instead of the false "counts for no rule here". And once more: V3 (ii)'s
     # parenthetical names the four literal forms and the non-state reads the coverage gate stops
-    # counting, so a re-spelling no literal form shows is not read as uncounted.
-    "compile-docs-22": "ed8ce349e67d654cdb1c60a4b1200dbb799f5e6d09f8957634372895769eadbe",
+    # counting, so a re-spelling no literal form shows is not read as uncounted. Round 2: the
+    # COVERAGE block spells the time read in the grammar's form, at('<case>').final.<time variable>.
+    "compile-docs-22": "212e5c5233749fd29bccfc3abbce03e03561e18994fb1fee431b9e71a4d63f5a",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
