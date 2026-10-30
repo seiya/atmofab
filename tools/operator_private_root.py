@@ -13,14 +13,17 @@ longer says "hook" about code no hook runs.
 
 Its readers are `tools/orchestration_runtime.py` (the bwrap profile's credential binds and the
 isolated backend homes), `tools/run_workflow.py` (the exclusive start claim) and
-`tools/orchestration_diagnostics.py` (locating a leaf's own transcript).
+`tools/orchestration_diagnostics.py` (locating a leaf's own transcript), and
+`skills/workflow-timing-audit/scripts/analyze_timing.py` (the same location, for per-leaf
+timing).
 
-Stdlib only, and imported at module level by all three.
+Stdlib only, and imported at module level by all four.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 
@@ -140,29 +143,53 @@ def _resolve_lenient(path: Path) -> Path:
     except (OSError, ValueError, RuntimeError):
         return path
 
-def claude_leaf_projects_roots(repo_root: Path,
-                               orchestration_id: str | None = None) -> tuple[Path, ...]:
-    """Every directory a Claude leaf's per-project state may live under.
+# The lineage-id grammar, re-spelled from `workshop_tree._SAFE_ID_RE` (which
+# `LineagePaths.__post_init__` applies to both ids) rather than imported: `workshop_tree` imports
+# `yaml`, and this module is stdlib-only by design. The two spellings are held together by
+# `tools/tests/test_orchestration_diagnostics.py::LeafTranscriptRootTests`, which compares this
+# resolver's lineage join with `LineagePaths(...).config / "projects"` (issue #565).
+_LINEAGE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-    ONE root since Z4 (issue #171): the operator's `~/.claude/projects`. A PURE claude leaf
-    takes `--safe-mode` (no customizations) and is prepared no private `CLAUDE_CONFIG_DIR`, so
-    it writes its `--session-id` transcript there. A `workshop leaf` (issue #534) writes its
-    transcript into its lineage's private config home instead
-    (`<homes-root>/<oid>/claude/<lineage_id>/config/projects`), which this resolver does not
-    return: a dangling workshop leaf's transcript is not located by the post-mortem below. Issue #63's
-    per-orchestration private home existed for the AGENTIC leaf and went with it; a transcript
-    written under one before Z4 is no longer reachable from here — accepted, and the reason the
-    signature keeps `orchestration_id` is that its callers pass one and the key it would select
-    no longer exists.
+def claude_leaf_projects_roots(repo_root: Path,
+                               orchestration_id: str | None = None,
+                               lineage_id: str | None = None) -> tuple[Path, ...]:
+    """The ONE directory a Claude leaf's per-project state lives under.
+
+    Two answers, never both (issue #565):
+
+      * `lineage_id` given — a claude `workshop leaf` (issue #534) runs with its lineage's
+        private `CLAUDE_CONFIG_DIR`, so its `--session-id` transcript is under
+        `<homes-root>/<orchestration_id>/claude/<lineage_id>/config/projects`, and that is the
+        root returned. Both ids are checked against the lineage-id grammar (`[A-Za-z0-9_-]+`)
+        before they are joined, and a `ValueError` names the one that is not. This branch
+        calls `workflow_homes_root()`, whose `RuntimeError` on a `~account` override
+        propagates to the caller (`TODO.md` carries that item).
+      * `lineage_id` absent — the operator's `~/.claude/projects`, where a PURE claude leaf
+        (deleted in issue #534 PR-J4-b; `--safe-mode`, no private home) wrote. Issue #63's
+        per-orchestration private home existed for the AGENTIC leaf and went with it in Z4
+        (issue #171); a transcript written under one before that cut is not reachable from
+        here — accepted.
+
+    No fallback from the first to the second: a workshop launch's transcript is in its lineage
+    home or nowhere, so an operator-home file could only answer for the wrong launch.
 
     CANONICAL for the consumers that must not drift apart, all of which locate a leaf's own
     session by `<projects-root>/<slug>/<session-id>.jsonl`:
       * `orchestration_diagnostics._locate_leaf_transcript` (post-mortem of a dangling
-        leaf).
+        leaf);
+      * `skills/workflow-timing-audit/scripts/analyze_timing.py::transcript_path_for`
+        (per-leaf timing).
 
-    The pure leaf's resume check (`workflow_conductor._claude_session_resumable`, deleted with
-    the pure leaf in issue #534 PR-J4-b) was deliberately NOT one of them: a resume is served
-    from the ONE home the launch uses, and a workshop lineage's is its own `config/`
-    (`Conductor._workshop_session_resumable`), never this root.
+    The OTHER spelling of the lineage path is `workshop_tree.LineagePaths.config`, which
+    `Conductor._workshop_session_resumable` globs to decide whether a warm launch can resume;
+    a resume is served from the one home the launch uses. The join below and that dataclass
+    are compared by one test, so the two spellings cannot drift.
     """
-    return (_home_dir() / ".claude" / "projects",)
+    if lineage_id is None:
+        return (_home_dir() / ".claude" / "projects",)
+    for name, value in (("orchestration_id", orchestration_id), ("lineage_id", lineage_id)):
+        if not (isinstance(value, str) and _LINEAGE_ID_RE.fullmatch(value)):
+            raise ValueError(
+                f"{name} must be a plain [A-Za-z0-9_-] token (got {value!r})")
+    return (workflow_homes_root() / orchestration_id / "claude" / lineage_id / "config"
+            / "projects",)

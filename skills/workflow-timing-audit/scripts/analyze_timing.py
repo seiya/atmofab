@@ -21,17 +21,27 @@ Usage:
   orchestration_id  Target under workspace/orchestrations/. Omit to auto-pick
                     the most recent orch_* directory.
   --json            Emit machine-readable JSON instead of the text report.
-  --project-dir     Claude transcript dir. Default: BOTH the orchestration's private
-                    home (orchestration_meta.json#claude_workflow_home +
-                    /projects/<slug>, issue #63) and ~/.claude/projects/<slug>,
-                    private first, resolved PER RUN ID rather than picking one —
-                    see the comment at the resolution site, which records that
-                    taking the private dir "when it exists, else ~/.claude" made
-                    every pre-migration leaf of a resumed run look non-LLM. <slug>
-                    is the repo abs-path with '/' -> '-'. Since issue #64 that
-                    private home is durable (~/.atmofab/homes/<orch_id>/claude), so
-                    an older run stays analysable; before it, a host restart took
-                    the transcripts.
+  --project-dir     Claude transcript dir, read for EVERY run id (workshop rows
+                    included; a lineage's config/projects/<slug> can be passed by
+                    hand). Default: resolved PER RUN ID from its launch record
+                    launches/<run_id>.request.json (issue #565):
+                      * a claude workshop leaf (leaf_mode "workshop",
+                        workshop_provider "claude_cli") -> its lineage's config home
+                        <homes-root>/<orch_id>/claude/<lineage_id>/config/projects,
+                        through tools/operator_private_root.claude_leaf_projects_roots,
+                        any slug, and that root ONLY;
+                      * a codex or HTTP workshop leaf -> none (an HTTP lineage has no
+                        transcript; a codex rollout is not read here);
+                      * anything else -> BOTH the orchestration's private home
+                        (orchestration_meta.json#claude_workflow_home +
+                        /projects/<slug>, issue #63) and ~/.claude/projects/<slug>,
+                        private first — see the comment at the resolution site,
+                        which records that taking the private dir "when it exists,
+                        else ~/.claude" made every pre-migration leaf of a resumed
+                        run look non-LLM. <slug> is the repo abs-path with '/' -> '-'.
+                        Since issue #64 that private home is durable
+                        (~/.atmofab/homes/<orch_id>/claude), so an older run stays
+                        analysable; before it, a host restart took the transcripts.
 
 MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):
   1) One model API response is written to the session transcript as SEVERAL
@@ -88,6 +98,13 @@ import json
 import os
 import sys
 from datetime import datetime
+
+# The checkout root, from this script's own location (skills/workflow-timing-audit/scripts/),
+# so the ONE resolver of a claude leaf's projects root is importable however the script is
+# started. Module-level: a script that cannot import `tools` fails at start, not per row.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))))
+from tools.operator_private_root import claude_leaf_projects_roots  # noqa: E402
 
 # A leaf's elapsed may legitimately exceed its transcript wall by process
 # startup/teardown (seconds). Beyond this, the excess is dead time
@@ -419,6 +436,42 @@ def summarize(raw, seen_ids):
     }
 
 
+def transcript_path_for(orch_path, repo_root, orch_id, run_id, project_dirs):
+    """The transcript file of one run id, or None (see `--project-dir` in the docstring).
+
+    Reads `launches/<run_id>.request.json`. A claude workshop launch is looked up under its
+    lineage's config home ONLY, through the canonical resolver (which also refuses an id
+    outside the lineage-id grammar: `None` then); a workshop launch of another provider has
+    no claude transcript; any other launch (no record, an unreadable one, no `leaf_mode`, or
+    `"pure"`) is looked up in `project_dirs`, in order.
+    """
+    request = {}
+    try:
+        with open(os.path.join(orch_path, "launches", f"{run_id}.request.json"),
+                  encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if isinstance(loaded, dict):
+            request = loaded
+    except (OSError, ValueError):
+        request = {}
+    if request.get("leaf_mode") == "workshop":
+        if request.get("workshop_provider") != "claude_cli":
+            return None
+        try:
+            (projects,) = claude_leaf_projects_roots(
+                repo_root, orch_id, request.get("workshop_lineage_id"))
+        except ValueError:
+            return None
+        matches = sorted(glob.glob(os.path.join(glob.escape(str(projects)), "*",
+                                                glob.escape(run_id) + ".jsonl")))
+        return matches[0] if matches else None
+    for candidate_dir in project_dirs:
+        tpath = os.path.join(candidate_dir, run_id + ".jsonl")
+        if os.path.exists(tpath):
+            return tpath
+    return None
+
+
 def main():
     args = sys.argv[1:]
     as_json = "--json" in args
@@ -435,6 +488,7 @@ def main():
     orch_id = pick_orch(orch_dir, requested)
     orch_path = os.path.join(orch_dir, orch_id)
 
+    explicit_dir = project_dir is not None
     project_dirs = [project_dir] if project_dir else []
     if project_dir is None:
         slug = repo_root.replace("/", "-")
@@ -460,6 +514,13 @@ def main():
         # private home; taking only the private directory whenever it exists made
         # every older leaf look non-LLM below, silently undercounting the run's time
         # and tokens. Resolved per run id, not per directory.
+        #
+        # The pair is the answer for a launch whose record names no workshop. A claude
+        # `workshop leaf` writes under neither (its root is its lineage's config home, its
+        # slug its lineage's `tree/`), and searching only the pair made every workshop leaf
+        # of a current run read as non-LLM — the same undercount (issue #565).
+        # `transcript_path_for` sends such a row to the lineage home alone, and a codex or
+        # HTTP workshop row to none.
         project_dirs = [d for d in (private, os.path.expanduser(
             os.path.join("~/.claude/projects", slug))) if d]
         project_dir = project_dirs[0]
@@ -472,13 +533,18 @@ def main():
     # message-id dedupe (MULTIPLE-COUNTING 4) must attribute a replayed response
     # to the leaf that first produced it, which is the earlier-launched one.
     raws = {}
+    lineage_roots = set()
     for row in durations:
-        raws[row["run_id"]] = None
-        for candidate_dir in project_dirs:
-            tpath = os.path.join(candidate_dir, row["run_id"] + ".jsonl")
-            if os.path.exists(tpath):
-                raws[row["run_id"]] = read_transcript(tpath)
-                break
+        rid = row["run_id"]
+        if explicit_dir:
+            tpath = os.path.join(project_dir, rid + ".jsonl")
+            tpath = tpath if os.path.exists(tpath) else None
+        else:
+            tpath = transcript_path_for(orch_path, repo_root, orch_id, rid, project_dirs)
+            # A hit outside the pair came from a lineage config home (`<root>/<slug>/`).
+            if tpath is not None and os.path.dirname(tpath) not in project_dirs:
+                lineage_roots.add(os.path.dirname(os.path.dirname(tpath)))
+        raws[rid] = read_transcript(tpath) if tpath else None
 
     seen_ids = set()
     summaries = {}
@@ -544,7 +610,8 @@ def main():
         # both was reported as if they came from one — and the reader had no way to see
         # which transcripts the numbers below were built from.
         "project_dir": project_dir,
-        "project_dirs": list(project_dirs),
+        # The lineage config homes a claude workshop row was read from follow the pair.
+        "project_dirs": list(project_dirs) + sorted(lineage_roots),
         "run_wall_s": run_wall_s,
         "leaves": leaves,
     }

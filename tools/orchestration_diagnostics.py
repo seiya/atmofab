@@ -13,24 +13,26 @@ is left mid-launch:
 The conductor is a plain Python process with no host/parent session, but each
 leaf is launched with its ``agent_run_id`` pinned as the Claude session id
 (``claude --session-id <arid>``), so the dangling child's OWN transcript is
-directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — the operator's
-``~/.claude/projects``, which since Z4 (issue #171) is the only root there is. A
-``pure-function leaf`` is prepared no private ``CLAUDE_CONFIG_DIR``, so it writes where every
-other claude session writes. A ``workshop leaf`` (issue #534) writes its transcript into its
-lineage's private config home instead, which is not searched here; an HTTP workshop lineage's
-transcript is the host loop's ``loop_turns.jsonl`` under its lineage record (PR-J3-b), not
-searched either. Issue #63 had put an AGENTIC leaf's transcript in the
-orchestration's private home and issue #64 made that home durable
-(``~/.atmofab/homes/<orchestration_id>/claude``); that leaf is deleted, the home is no longer
-prepared, and a transcript written under one before the cut is not reachable from here —
-recorded as an accepted loss, and the files are still on disk for
-``tools/prune_workflow_homes.py``. Every "when it is still there" below now reads against a
-``~/.claude`` an operator may clean. Its last activity, the dead-air before
+directly addressable as ``<projects-root>/<slug>/<arid>.jsonl``. WHICH projects root is
+read from the launch record (issue #565): a claude ``workshop leaf`` (issue #534) writes into
+its lineage's private config home, ``<homes-root>/<oid>/claude/<lineage_id>/config/projects``,
+and that root alone is searched for it; a ``pure-function leaf`` (deleted in issue #534
+PR-J4-b) was prepared no private ``CLAUDE_CONFIG_DIR`` and wrote under the operator's
+``~/.claude/projects``, which is searched for a launch whose record names no workshop. A codex
+workshop leaf's rollout and an HTTP workshop lineage's ``loop_turns.jsonl`` (PR-J3-b) are a
+different format each and are not read; the miss reason names where each is. Issue #63 had
+put an AGENTIC leaf's transcript in the orchestration's private home and issue #64 made that
+home durable (``~/.atmofab/homes/<orchestration_id>/claude``); that leaf is deleted, the home
+is no longer prepared, and a transcript written under one before Z4 (issue #171) is not
+reachable from here — recorded as an accepted loss, and the files are still on disk for
+``tools/prune_workflow_homes.py``. Every "when it is still there" below reads against a home
+an operator may clean or prune. Its last activity, the dead-air before
 the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
 that transcript when it is still on disk. That is the only thing it reads a transcript
 for: each leaf's token usage is recorded in-repo from the leaf's own output (issue #47,
-``tools/leaf_usage.py``), and no workflow path reads ``~/.claude``.
+``tools/leaf_usage.py``), and no workflow path reads a claude transcript's content (the
+conductor's warm-resume check asks only whether the file exists).
 
 It is intentionally dependency-free (stdlib only) and **defensive** against the
 Claude Code transcript format: parse failures degrade to raw tails and
@@ -43,6 +45,7 @@ Callers:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -419,47 +422,170 @@ class LeafTranscriptMatch(NamedTuple):
     """Where a leaf transcript was found, not just which file it is.
 
     ``projects_root`` is the root returned by ``claude_leaf_projects_roots`` that
-    actually held the hit. Since Z4 (issue #171) there is exactly one, the operator's
-    ``~/.claude/projects``: a pure leaf is prepared no private home, so it writes where every
-    claude session writes. The field is KEPT rather than dropped — it says where the search
-    landed, which an incident has to state whether or not there is a choice, and a second root
-    reappearing would otherwise arrive unrecorded.
+    actually held the hit: a claude ``workshop leaf``'s lineage home
+    (``<homes-root>/<oid>/claude/<lineage_id>/config/projects``) for a launch whose record
+    says so, the operator's ``~/.claude/projects`` for a pure one (issue #565). It is what
+    tells an incident's reader which kind of leaf answered, so it is stamped on every hit.
     """
 
     path: Path
     projects_root: Path
 
 
-def _locate_leaf_transcript(child_arid: str, repo_root: Path,
-                            orchestration_id: str | None = None) -> LeafTranscriptMatch | None:
-    """Locate a conductor-spawned leaf's OWN transcript, or ``None``.
+class LeafTranscriptSearch(NamedTuple):
+    """What ``_locate_leaf_transcript`` did: the hit, or why there is none.
 
-    The conductor pins each leaf's Claude session id to its ``agent_run_id``
-    (``claude --session-id <arid>``, workflow_conductor.spawn_leaf), so the leaf's
-    transcript is directly addressable as ``<projects-root>/<slug>/<arid>.jsonl``
-    — no host/parent session is involved. A wildcard slug, so a leaf that ran under a
-    slightly different cwd slug is still found; the arid (a uuid) is unique, so the
-    wildcard cannot collide across projects. The operator's ``~/.claude`` is searched,
-    through the canonical ``claude_leaf_projects_roots`` resolver — since Z4 (issue #171)
-    the only root, because a pure leaf is prepared no private home. Returns WHICH root held
-    the hit alongside the path: an incident record that says only "found" cannot say where it
-    looked, and the resolver is the one place a second root would come back.
+    ``match`` is the hit or ``None``. ``searched_root`` is the one projects root that was
+    globbed, or ``None`` when the launch record selected no search. ``reason`` is the
+    OPERATOR-FACING miss text (``audit_orchestration`` prints it), ``None`` on a hit; every
+    text names a place the operator can list.
+    """
+
+    match: LeafTranscriptMatch | None
+    searched_root: Path | None
+    reason: str | None
+
+
+# The four `workshop_provider` values a launch record may carry
+# (`leaf_contract.WORKSHOP_LINEAGE_BACKENDS`), spelled here so this module keeps its
+# stdlib-plus-`leaf_usage` import set; `tools/tests/test_orchestration_diagnostics.py` compares
+# the two spellings.
+_WORKSHOP_PROVIDER_CLAUDE = "claude_cli"
+_WORKSHOP_PROVIDER_CODEX = "codex_cli"
+_WORKSHOP_PROVIDERS_HTTP: tuple[str, ...] = ("anthropic_api", "openai_compatible")
+_WORKSHOP_PROVIDERS: tuple[str, ...] = (
+    _WORKSHOP_PROVIDER_CLAUDE, _WORKSHOP_PROVIDER_CODEX, *_WORKSHOP_PROVIDERS_HTTP)
+
+# The lineage-id grammar (`workshop_tree._SAFE_ID_RE`), checked here BEFORE the resolver is
+# asked, so a bad id is a typed miss rather than the resolver's `ValueError` swallowed into an
+# untyped one.
+_LINEAGE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+_OPERATOR_ROOT_MISS = ("no leaf transcript located under ~/.claude/projects (cleaned, or "
+                       "a pre-Z4 agentic run whose transcript is in the orchestration's "
+                       "private home, which is no longer searched)")
+
+
+def _locate_leaf_transcript(child_arid: str, repo_root: Path,
+                            orchestration_id: str | None = None) -> LeafTranscriptSearch:
+    """Locate a conductor-spawned leaf's OWN transcript, and say where it looked.
+
+    The conductor pins each claude leaf's session id to its ``agent_run_id``
+    (``claude --session-id <arid>``; a warm workshop launch adds ``--resume <prior>
+    --fork-session``, so its file is still named by its own arid), so the transcript is
+    directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — no host/parent session
+    is involved. A wildcard slug, because a workshop leaf's slug is its lineage's ``tree/`` and
+    is not spelled here; the arid (a uuid) is unique, so the wildcard cannot collide.
+
+    WHICH root is chosen from the launch record ``launches/<arid>.request.json`` (issue #565):
+      * ``leaf_mode == "workshop"`` and ``workshop_provider == "claude_cli"`` — the lineage's
+        config home, ``claude_leaf_projects_roots(repo_root, oid, workshop_lineage_id)``, and
+        only that one (a workshop CLI ran with ``CLAUDE_CONFIG_DIR``, so an operator-home file
+        could only answer for the wrong launch). Both ids are checked against the lineage-id
+        grammar first; a bad one is a typed miss.
+      * ``leaf_mode == "workshop"`` with a codex or HTTP provider — no search: neither writes a
+        claude transcript, and the miss reason names where each one's record is.
+      * ``leaf_mode == "workshop"`` with no usable provider — no search, a typed miss.
+      * no record, or ``leaf_mode`` absent or ``"pure"`` (a deterministic substep, a run before
+        PR-J4-b) — the operator's ``~/.claude/projects``, as before.
+      * a record that is present but unreadable — no search, a typed miss: sending it to the
+        operator root would print the pre-Z4 text for what may be a workshop launch.
+
+    The resolver's ``ValueError`` / ``OSError`` and a glob's ``OSError`` degrade to a miss; the
+    homes-root override's ``RuntimeError`` (a ``~account`` naming no account) is NOT caught
+    and reaches ``audit()``'s boundary, which records it as a ``diagnostic_failures`` entry.
     """
     arid = str(child_arid or "").strip()
     if not arid:
-        return None
-    try:
-        roots = claude_leaf_projects_roots(repo_root, orchestration_id)
-    except (OSError, ValueError):
-        return None
-    for projects in roots:
+        return LeafTranscriptSearch(None, None, "no agent_run_id to correlate a transcript by")
+
+    # Nested, so the blanket-swallow scan over this function's name covers it.
+    def _glob_root(projects: Path) -> LeafTranscriptMatch | None:
         try:
             matches = sorted(projects.glob(f"*/{arid}.jsonl"))
         except OSError:
-            continue
+            return None
         if matches:
             return LeafTranscriptMatch(path=matches[0], projects_root=projects)
-    return None
+        return None
+
+    record_rel = f"launches/{arid}.request.json"
+    oid = str(orchestration_id or "").strip()
+    request: dict[str, Any] = {}
+    if oid:
+        record = _orch_root(repo_root, oid) / "launches" / f"{arid}.request.json"
+        if record.is_file():
+            try:
+                payload = json.loads(record.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                return LeafTranscriptSearch(
+                    None, None,
+                    f"the launch record {record_rel} could not be read ({exc}), so no "
+                    "transcript root was searched")
+            if not isinstance(payload, dict):
+                return LeafTranscriptSearch(
+                    None, None,
+                    f"the launch record {record_rel} could not be read (not a JSON object), "
+                    "so no transcript root was searched")
+            request = payload
+
+    if request.get("leaf_mode") == "workshop":
+        provider = request.get("workshop_provider")
+        lineage_id = request.get("workshop_lineage_id")
+        lid_text = lineage_id if isinstance(lineage_id, str) else "<lineage_id>"
+        if provider not in _WORKSHOP_PROVIDERS:
+            return LeafTranscriptSearch(
+                None, None,
+                f"the launch record names no usable workshop_provider ({provider!r}), so no "
+                "transcript root was searched")
+        if provider == _WORKSHOP_PROVIDER_CODEX:
+            return LeafTranscriptSearch(
+                None, None,
+                "a codex workshop leaf writes no claude transcript; its rollout is under "
+                f"<homes-root>/{oid or '<oid>'}/codex/{lid_text}/config/sessions/, which this "
+                "correlation does not read")
+        if provider in _WORKSHOP_PROVIDERS_HTTP:
+            return LeafTranscriptSearch(
+                None, None,
+                "an HTTP workshop lineage has no CLI transcript; the host loop's turns are "
+                f"workspace/orchestrations/{oid or '<oid>'}/workshop/{lid_text}/"
+                "loop_turns.jsonl")
+        if not (isinstance(lineage_id, str) and _LINEAGE_ID_RE.fullmatch(lineage_id)):
+            return LeafTranscriptSearch(
+                None, None,
+                f"the launch record names no usable workshop_lineage_id ({lineage_id!r}), so "
+                "no lineage home was searched")
+        if not _LINEAGE_ID_RE.fullmatch(oid):
+            return LeafTranscriptSearch(
+                None, None,
+                f"the audit was given no usable orchestration_id ({orchestration_id!r}), so no "
+                "lineage home was searched")
+        try:
+            (projects,) = claude_leaf_projects_roots(repo_root, oid, lineage_id)
+        except (OSError, ValueError) as exc:
+            return LeafTranscriptSearch(
+                None, None, f"the lineage home could not be resolved ({exc})")
+        match = _glob_root(projects)
+        if match is not None:
+            return LeafTranscriptSearch(match, projects, None)
+        return LeafTranscriptSearch(
+            None, projects,
+            f"no leaf transcript for {arid} under its lineage's config home {projects} (the "
+            f"launch record's workshop_lineage_id {lineage_id}; pruned, or the CLI wrote none "
+            "before it died)")
+
+    try:
+        roots = claude_leaf_projects_roots(repo_root, orchestration_id)
+    except (OSError, ValueError) as exc:
+        return LeafTranscriptSearch(
+            None, None, f"the operator's projects root could not be resolved ({exc})")
+    searched: Path | None = None
+    for projects in roots:
+        searched = projects
+        match = _glob_root(projects)
+        if match is not None:
+            return LeafTranscriptSearch(match, projects, None)
+    return LeafTranscriptSearch(None, searched, _OPERATOR_ROOT_MISS)
 
 
 # Token fields summed across a pure leaf's repair attempts: the CLI result-envelope
@@ -731,40 +857,43 @@ def build_launch_incident(
     """Assemble a launch-incident report, or ``None`` if no dangling window.
 
     Combines dangling-child detection (in-repo artifacts) with the dangling leaf's
-    OWN ``~/.claude`` transcript. The conductor pins each leaf's Claude session id
-    to its ``agent_run_id``, so that transcript is directly addressable by the
-    child arid (no host/parent session is needed); it yields the child's last
-    activity, the dead-air before the abort, and the final API error (so a
-    retryable 529 is distinguishable from other failures). Degrades gracefully to
-    the in-repo facts when ``~/.claude`` is absent or cleaned.
+    OWN transcript. The conductor pins each claude leaf's session id to its
+    ``agent_run_id``, so that transcript is directly addressable by the child arid (no
+    host/parent session is needed); it yields the child's last activity, the dead-air before
+    the abort, and the final API error (so a retryable 529 is distinguishable from other
+    failures). The root searched is the one ``_locate_leaf_transcript`` chooses from the
+    launch record: a claude workshop leaf's lineage config home, the operator's
+    ``~/.claude/projects`` for a launch whose record names no workshop, none for a codex or
+    HTTP workshop leaf. A hit is stamped with ``match_method`` and ``matched_projects_root``;
+    a miss degrades to the in-repo facts with a ``reason`` naming the place searched (or why
+    none was) and ``searched_projects_root``.
 
     Only conductor-spawned leaves (arid-pinned sessions) are correlated: a transcript
-    is located by ``<projects-root>/<slug>/<arid>.jsonl`` and by nothing else.
+    is located by ``<projects-root>/<slug>/<arid>.jsonl`` and by nothing else. The homes-root
+    override's ``RuntimeError`` is not caught here; ``audit()`` records it as a
+    ``diagnostic_failures`` entry.
     """
     dangling = detect_dangling_active_child(repo_root, orchestration_id)
     if dangling is None:
         return None
 
-    match = _locate_leaf_transcript(
+    search = _locate_leaf_transcript(
         dangling["agent_run_id"], repo_root, orchestration_id)
-    if match is not None:
-        child = summarize_transcript_tail(match.path)
+    if search.match is not None:
+        child = summarize_transcript_tail(search.match.path)
         # `summarize_transcript_tail` is a tail summarizer and knows nothing about
         # HOW the file was found, so the locator's answer is stamped here — the same
         # split the deleted host-session code used.
         child["match_method"] = LEAF_TRANSCRIPT_MATCH_METHOD
-        child["matched_projects_root"] = str(match.projects_root)
+        child["matched_projects_root"] = str(search.match.projects_root)
     else:
+        # OPERATOR-FACING (`audit_orchestration` prints the reason alone), so the reason names
+        # the place that was searched, or why none was (issue #565); `searched_projects_root`
+        # is that place as data, `None` when the launch record selected no search.
         child = {"found": False,
-                 # OPERATOR-FACING (`audit_orchestration` prints it), so it must name a place
-                 # that was actually searched. It said "private home pruned" until Z4 (issue
-                 # #171) removed that root — pointing an operator at a directory this function
-                 # does not look in. A pre-Z4 agentic run's transcript IS under one, and is
-                 # unreachable from here; that is the accepted loss the module docstring
-                 # records, and naming it is how an operator diagnosing an old run learns it.
-                 "reason": "no leaf transcript located under ~/.claude/projects (cleaned, or "
-                           "a pre-Z4 agentic run whose transcript is in the orchestration's "
-                           "private home, which is no longer searched)"}
+                 "reason": search.reason,
+                 "searched_projects_root": (str(search.searched_root)
+                                            if search.searched_root is not None else None)}
 
     return {
         "schema": "launch_incident/v1",
