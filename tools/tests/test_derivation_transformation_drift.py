@@ -1153,7 +1153,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "ba4ac319bce2ea1e0bc633ac5e1b62b094f4fb86d6a374fc323ed0e5f088c48f",
+    "build-2": "4d085fa1c7bd2e28c816e442b0cb3eee5b1decd3546fa199270535e6b3bc94ca",
     # Re-pinned, behaviour-preserving: the `tools/remote_execution.py` docstring states the
     # loader's two exit codes as measured, no longer that a launch prefix replaces the 127.
     # (Measured by diffing `build_tuple()` against fb25d422's: that row and no other.) The digest
@@ -1580,7 +1580,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # fails the shape and the post-execute gate reads. Rows moved: `_author_quality_check`,
     # `_quality_check_failure_lines`, `Conductor._execute_inproc`, the new row, and
     # `tools/host_execution.py` (the `perf_parallelism` docstring).
-    "execute-12": "0a7a10d1869a0ea0753c05232a89af9f1c36cd6a617257e29c6e2adbd7045dfd",
+    "execute-12": "f83edc25a1fdb1b31c2b275ea41b7ed3ceee3cb6f24e7d11869e70541e35f182",
     # Re-pinned, behaviour-preserving: the `tools/remote_execution.py` docstring states the
     # loader's two exit codes as measured, no longer that a launch prefix replaces the 127.
     # (Measured by diffing `execute_tuple()` against fb25d422's: that row and no other.) The digest

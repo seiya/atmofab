@@ -74,8 +74,8 @@ first two and never meets the third, because the host that runs it is the host t
 program. None of them is the kernel's result, and a Generate repair could not fix one. The cost
 is a program that exits 126 or 127 on its own, which the local path records as its result; the
 runner and the quality-check command the conductor runs exit neither. The loader's 127 arrives
-under a launch prefix (a device trace's program) too (measured on `nsys` 2026.3.2; a site's was
-not). A library that lacks a symbol version the program needs is the loader's other failure, and
+under a launch prefix (a device trace's program) too (measured off-site,
+`docs/backends/parallel/cuda/DEVICE_TRACE.md`; a site's was not). A library that lacks a symbol version the program needs is the loader's other failure, and
 it exits 1, bare and under that prefix alike, so it is not refused: the command is recorded as
 having run and failed (issue #330's run: `GLIBC_2.35` not found, `return_code` 1).
 What keeps the loader's cases rare is where the binary comes from: the conductor builds it at the
