@@ -209,9 +209,10 @@ A remote record naming no building machine (the site's `uname -m` answered nothi
 refused before the site is contacted: make `uname -m` answer there, then rebuild the same way. A shared
 library the build linked and the machine running the job does not resolve — another node of a
 batch site, or a site changed since the build — still makes the job refuse its first command
-(exit 127) mid-run — and under a launch prefix (a device trace's
-program) that 127 is replaced by the prefix's own exit status and recorded as the command's
-result (measured on issue #330's run under a device trace: `return_code` 1). The probe does not
+(exit 127) mid-run, under a launch prefix (a device trace's program) too (measured off-site,
+`docs/backends/parallel/cuda/DEVICE_TRACE.md`; a site's was not). A library there that lacks a symbol version the binary needs exits 1
+instead, which is not refused and is recorded as the command's result (issue #330's run under a
+device trace: `GLIBC_2.35` not found, `return_code` 1). The probe does not
 see the machines a site's scheduler runs a job on either: it asks the login, and a job's
 directory must be visible at the same path from those machines, where the job script checks the
 programs again before its first command. A site is in no derivation key: re-mapping a target to another site

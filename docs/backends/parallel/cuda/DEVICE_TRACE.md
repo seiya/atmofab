@@ -172,10 +172,13 @@ A run that stops before `Validate` is asked nothing. The version range measured 
   `nsys profile` exit 1 (measured on 2026.3.2; run bare, the same binary gives 126 / 127, which
   the remote executor refuses as a host failure, `remote_execution.LAUNCH_CODES`). So under the trace such a binary routes as the
   runner's failure. Build's binary is executable at its own site: it is built there (issue
-  #333), and scp keeps the mode. One run reached this while the binary was still built on the
-  host: a runner needing a newer glibc than the site's made `nsys profile` exit 1 and was
-  recorded as the runner's failure (issue #330); a shared library the build linked and the
-  machine running the job does not resolve still can (`TODO.md`).
+  #333), and scp keeps the mode.
+- A binary the dynamic loader stops exits as it does bare (measured on 2026.3.2; a site's `nsys`
+  was not): 127 for a missing shared library, refused as above, and 1 for a library that lacks a
+  symbol version the binary needs, which routes as the runner's failure. One run reached the
+  second while the binary was still built on the host: a runner needing a newer glibc than the
+  site's was recorded with `return_code` 1 (issue #330). The second still can, when the machine
+  running the job lacks a version the build linked (`TODO.md`).
 - The profiler's start-up and its report writing share the run's time bound
   (`RUN_PROGRAM_TIMEOUT_SEC`) with the binary: a run near that bound times out under the trace
   first. Not measured; today's runs take seconds.
