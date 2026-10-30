@@ -1760,7 +1760,7 @@ def cases_read(pred: dict[str, Any], state_names: set[str]) -> set[str] | None:
     frontier of the reach walk is built from the PRUNED `expr`, so a bind named only inside
     such a term is not reached. The record's `cases_read` key keeps its name. None when the
     scope or an expression is malformed (the primary schema gate refuses those; they cover
-    nothing here). Read the same way as `_predicate_scope`."""
+    nothing here)."""
     targets = pred.get("target_cases")
     if not isinstance(targets, list) or not all(isinstance(c, str) for c in targets):
         return None

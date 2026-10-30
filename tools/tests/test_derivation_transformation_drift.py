@@ -746,7 +746,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # re-derivation; measured 100149 bytes with `wc -c` in /home/seiya/atmofab at the commit
     # that takes it (ceiling 100200, no bump).
     "compile-docs-21": "325557f84cceedb3fd418b08a5588955c8f3c63445541e2d835cdf64f5dc5317",
-    # Issue #567: the COVERAGE block says a `case: X` corroborant reads X plus the cases an
+    # Issue #567 (first form; the re-pins below narrow it to STATE reads): the COVERAGE block
+    # says a `case: X` corroborant reads X plus the cases an
     # at('<case>') reference that ENTERS ITS VALUE names (in expr or a bind expr reaches,
     # outside a term constant by form), the schema block's bind comment says a bind expr does
     # not reach enters no value, and V3 (ii) says the coverage gate no longer counts the case
@@ -1745,7 +1746,9 @@ PINNED_VERDICT: dict[str, str] = {
     # `shallow-water2d-channel_20261025_001`), measured by os.walk over `workspace/pipelines`
     # matching each run's `lineage.json` `ir_ref` at 93be8321 (review round 2; round 1's
     # "432 in 6" matched pipeline directory NAMES and missed the renamed lineage, and round 0's
-    # "216 live records" counted IR predicates).
+    # "216 live records" counted IR predicates). Over all 585 `verdict.json` the state-read rule
+    # moves 556 records in 15 files: those 504, plus 52 in 8 files of three advdiff1d IRs today's
+    # schema gate refuses (re-measured the same way at a1ec27c1, review round 3).
     # Re-pinned in place before shipping (round 1): `cases_read` takes the snapshot schema's
     # state names and counts only captured STATE reads that enter the value — an own-case
     # read values the cases the scope evaluates, an `at('<case>').<point>.<var>` read values
@@ -1753,7 +1756,8 @@ PINNED_VERDICT: dict[str, str] = {
     # again in round 2 (message only): the "has no host-evaluated corroborant" remedy says an
     # entry whose expr or bind does not parse, or whose scope is malformed, is no corroborant
     # and is repaired rather than joined by a second one.
-    "verdict-11": "1dc1ab9992d9b2114aa00e176644d14278a51819203a17de5cd05d96b2843c79",
+    # Round 3: a docstring sentence that was inexact about `_predicate_scope` is deleted.
+    "verdict-11": "7327cb51dfbf36f29441cf6b918275bdb2bf3b3f2be70e86228d30c6a870b96b",
 }
 
 

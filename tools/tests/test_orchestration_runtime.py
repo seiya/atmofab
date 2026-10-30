@@ -22077,7 +22077,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # the commit that takes this bump. Review round 1 of the same issue (the COVERAGE block
         # counts only captured STATE reads): bumped 100800->101400; measured 101116 the same way
         # at the commit that takes this bump; the same round's two comment rewordings (the bind
-        # comment, the V3 (ii) parenthetical): 101400->102000, measured 101485.
+        # comment, the V3 (ii) parenthetical): 101400->102000, measured 101485 at that commit.
         "docs/workflow/phases/phase_01_compile.md": 102000,
     }
 
