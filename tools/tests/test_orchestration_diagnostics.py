@@ -545,7 +545,7 @@ class BuildLaunchIncidentTests(unittest.TestCase):
 
 
 class LeafTranscriptRootTests(unittest.TestCase):
-    """The post-mortem readers find the transcript in the operator's home.
+    """The post-mortem readers find the transcript in the ONE root its launch record selects.
 
     Issue #63 moved an AGENTIC leaf's transcript out of `~/.claude/projects` into the private
     home the conductor prepared for it, and this class pinned both readers onto that root —
@@ -554,8 +554,12 @@ class LeafTranscriptRootTests(unittest.TestCase):
 
     Z4 (issue #171) retired the agentic leaf and the private home with it. A pure leaf runs
     with no `CLAUDE_CONFIG_DIR` (`tools/leaf_contract.py`), so its transcript is written where the
-    CLI writes every transcript, and `claude_leaf_projects_roots` returns that one root. What
-    this class pins now is the operator-home half, which was always the other branch.
+    CLI writes every transcript, and `claude_leaf_projects_roots` returns that root for a call
+    that names no lineage. A claude `workshop leaf` (issue #534) writes under its lineage's
+    `config/projects` instead; issue #565 gave the resolver a `lineage_id` and the locator a
+    launch-record branch, and this class pins both halves: the operator home for a record that
+    names no workshop, the lineage home ALONE for a claude workshop launch (equal to
+    `LineagePaths.config / "projects"`, with both ids checked against the lineage-id grammar).
 
     ACCEPTED LOSS, recorded rather than discovered later: a transcript written by a pre-Z4
     agentic leaf sat under `<homes-root>/<orchestration_id>/claude/projects` and the
