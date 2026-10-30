@@ -628,7 +628,11 @@ def _openai_usage(raw: Any) -> "dict[str, Any]":
     reads a number that is mostly reasoning without knowing it.
 
     Both detail objects also travel under `provider_details`, reduced to their INT-VALUED
-    entries (see the comment below), so a count this map does not model is still on disk.
+    entries (see the comment below), on this function's return. That is as far as they go on
+    the workshop-loop path (every HTTP leaf): the loop's launch-level sum
+    (`llm_workshop_loop._sum_usage`) keeps the mapped counts alone and the launch row's
+    `provider_details` is `{"requests": n}`, so a count this map does not model is NOT on
+    disk — only the raw body kept under `loop_turns.jsonl`'s `response` rows carries it.
     `isinstance(v, int)` drops anything malformed rather than coercing it (a `bool` is an
     `int`, and is filtered downstream by `leaf_usage.normalize_leaf_usage`).
     """
@@ -677,9 +681,13 @@ def _anthropic_usage(raw: Any) -> "dict[str, Any]":
     thinking page), so `leaf_usage.normalize_leaf_usage` keeps it out of `total_tokens`. On
     the run that motivated it, a `compile.verify` reply cut at 16384 output tokens had spent
     all 16384 on thinking, and the record had no way to say so without parsing the raw stream.
-    `output_tokens_details` also travels under `provider_details`, reduced to its INT-VALUED
-    entries for the reason `_openai_usage` gives. When streaming, the breakdown arrives only
-    on the final `message_delta`, which the stream reader routes through this function too.
+    `output_tokens_details` also rides on this function's RETURN under `provider_details`,
+    reduced to its INT-VALUED entries for the reason `_openai_usage` gives — and no further:
+    the workshop loop sums the per-reply usages (`llm_workshop_loop._sum_usage` keeps the
+    int-valued keys, so the summed `reasoning_tokens` survives and the detail object does
+    not) and records the launch's `provider_details` as `{"requests": n}`. When streaming,
+    the breakdown arrives only on the final `message_delta`, which the stream reader routes
+    through this function too.
     """
     usage = raw if isinstance(raw, dict) else {}
     keys = ("input_tokens", "output_tokens",
