@@ -11,9 +11,10 @@ workspace/orchestrations/<id>/ (docs/WORKSPACE_LAYOUT.md is canonical for them):
 - failure_analysis.json (the host's own failure diagnosis) and its runtime / fallback
   sidecars
 - Dangling launch (open active_child window with no child return / terminal run),
-  correlated with the leaf transcript tail under the operator's ~/.claude/projects (see
-  orchestration_diagnostics.build_launch_incident) — the one read outside the
-  repository
+  correlated with the leaf's own transcript tail — under its lineage's config home for a
+  claude workshop leaf, under the operator's ~/.claude/projects for a pure one (see
+  orchestration_diagnostics.build_launch_incident, issue #565) — the one read outside
+  the repository
 - violations/*.json (sandbox enforcement)
 - per-leaf token cost from the `usage` rows of agent_runs.jsonl
 - the pure-leaf A/B metrics from bundle_meta.json / verdict_meta.json
