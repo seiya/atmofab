@@ -15,7 +15,12 @@ import unittest
 from unittest import mock
 
 from tools import derivation as d
-from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+from tools import leaf_contract
+from tools.leaf_contract import (
+    COMPILE_VERIFY_CONTRACT_VERSION,
+    GENERATE_VERIFY_CONTRACT_VERSION,
+    VALIDATE_JUDGE_CONTRACT_VERSION,
+)
 from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
 
 
@@ -86,15 +91,32 @@ class DerivationKeyTests(unittest.TestCase):
         """The version tuple of each phase, member by member — a member dropped from one
         tuple would silently stop that phase's key from moving with it."""
         self.assertEqual(d.transformation_versions(), {
-            "compile": ("pure", LEAF_PROMPT_CONTRACT_VERSION,
-                        d.COMPILE_INLINED_DOCUMENTS_VERSION),
-            "generate": ("pure", LEAF_PROMPT_CONTRACT_VERSION, d.RENDER_VERSION),
+            "compile": (COMPILE_VERIFY_CONTRACT_VERSION, d.COMPILE_INLINED_DOCUMENTS_VERSION),
+            "generate": (GENERATE_VERIFY_CONTRACT_VERSION, d.RENDER_VERSION),
             "build": (d.BUILD_VERSION,),
-            "validate": (d.EXECUTE_VERSION, d.VERDICT_VERSION, "pure",
-                         LEAF_PROMPT_CONTRACT_VERSION,
+            "validate": (d.EXECUTE_VERSION, d.VERDICT_VERSION, VALIDATE_JUDGE_CONTRACT_VERSION,
                          f"raw-excerpt-{RAW_EXCERPT_POLICY_VERSION}"),
         })
         self.assertEqual(set(d.transformation_versions()), set(d.DERIVATION_STEPS))
+
+    def test_a_producer_contract_bump_moves_no_key(self) -> None:
+        """Issue #574: the recorded whole-contract version is advisory."""
+        inputs = {"x": "sha256:" + "1" * 64}
+        before = {s: d.derivation_key(s, inputs) for s in d.DERIVATION_STEPS}
+        with mock.patch.object(leaf_contract, "LEAF_PROMPT_CONTRACT_VERSION", "leaf-999"):
+            self.assertEqual(before, {s: d.derivation_key(s, inputs) for s in d.DERIVATION_STEPS})
+
+    def test_a_reader_contract_bump_moves_only_its_phases_key(self) -> None:
+        inputs = {"x": "sha256:" + "1" * 64}
+        before = {s: d.derivation_key(s, inputs) for s in d.DERIVATION_STEPS}
+        for constant, phase in (("COMPILE_VERIFY_CONTRACT_VERSION", "compile"),
+                                ("GENERATE_VERIFY_CONTRACT_VERSION", "generate"),
+                                ("VALIDATE_JUDGE_CONTRACT_VERSION", "validate")):
+            with self.subTest(constant=constant), mock.patch.object(
+                    leaf_contract, constant, "reader-999"):
+                moved = {s for s in d.DERIVATION_STEPS
+                         if d.derivation_key(s, inputs) != before[s]}
+                self.assertEqual(moved, {phase})
 
     def test_key_is_the_canonical_hash_of_exactly_four_fields(self) -> None:
         inputs = {"spec": {"tests": "sha256:" + "1" * 64}, "closure": []}
@@ -134,7 +156,7 @@ class DerivationKeyTests(unittest.TestCase):
             self.assertNotEqual(d.derivation_key("compile", inputs),
                                 d.sha256_hex(d.canonical_json_bytes({
                                     "key_version": d.DERIVATION_KEY_VERSION, "step": "compile",
-                                    "transformation": ["pure", LEAF_PROMPT_CONTRACT_VERSION,
+                                    "transformation": [COMPILE_VERIFY_CONTRACT_VERSION,
                                                        current_docs],
                                     "inputs": inputs})))
 

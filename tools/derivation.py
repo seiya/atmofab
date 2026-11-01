@@ -35,6 +35,9 @@ each decision):
   Generate, Build and Validate built for that target. Compile hashes nothing target-derived
   (issue #284, R4-a PR-3).
 
+A phase's prompt contract enters through the version tuple by its READER's half: a producer's
+templates decide which valid output an attempt produces, and are advisory (issue #574).
+
 `DERIVATION_KEY_VERSION` is the version of the KEY'S OWN construction (which inputs a phase
 hashes, in which shape). Changing that rule changes every key at once, which is the intended
 cost of changing it.
@@ -52,7 +55,10 @@ from typing import Any, NamedTuple
 #: v2 (issue #284, R4-a PR-3): the compile key lost `toolchain_document` and its graph lost the
 #: harness (target-free Compile); the generate / build `closure[]` became the PIPELINE closure
 #: (the sidecar's plus the target's harness) and the generate `harness` became the target's.
-DERIVATION_KEY_VERSION = 2
+#: v3 (issue #574): the compile key lost `closure[]`; the generate `closure[]` carries each member's
+#: published surface and no output hash; `dependency_surface` is the canonical §5.1 form; the
+#: tuples carry per-phase reader contracts and no `"pure"` token.
+DERIVATION_KEY_VERSION = 3
 
 #: The version of the eligible-output selection policy (`select_eligible`). v1 = the latest
 #: attempt among the eligible outputs of one key. A performance-aware policy is the `Tune`
@@ -89,13 +95,17 @@ def transformation_versions() -> dict[str, tuple[str, ...]]:
     load time for the runtime's own import order) and returned fresh, so a test that patches a
     constant sees its patch. The tuple is what `derivation_key` hashes under `"transformation"`.
     """
-    from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+    from tools.leaf_contract import (
+        COMPILE_VERIFY_CONTRACT_VERSION,
+        GENERATE_VERIFY_CONTRACT_VERSION,
+        VALIDATE_JUDGE_CONTRACT_VERSION,
+    )
     from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
     return {
-        "compile": ("pure", LEAF_PROMPT_CONTRACT_VERSION, COMPILE_INLINED_DOCUMENTS_VERSION),
-        "generate": ("pure", LEAF_PROMPT_CONTRACT_VERSION, RENDER_VERSION),
+        "compile": (COMPILE_VERIFY_CONTRACT_VERSION, COMPILE_INLINED_DOCUMENTS_VERSION),
+        "generate": (GENERATE_VERIFY_CONTRACT_VERSION, RENDER_VERSION),
         "build": (BUILD_VERSION,),
-        "validate": (EXECUTE_VERSION, VERDICT_VERSION, "pure", LEAF_PROMPT_CONTRACT_VERSION,
+        "validate": (EXECUTE_VERSION, VERDICT_VERSION, VALIDATE_JUDGE_CONTRACT_VERSION,
                      f"raw-excerpt-{RAW_EXCERPT_POLICY_VERSION}"),
     }
 

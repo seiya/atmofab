@@ -15864,6 +15864,37 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertEqual([b["output_hash"] for b in bound],
                              [e["source"] for e in derivation["derivation_inputs"]["closure"]])
             self.assertEqual(len(bound), 3)  # the target's harness, base and mid
+            # A generate key binds each member's surface and no source: the binding is the
+            # resolver's selection of the same members (issue #574).
+            derivation = c._phase_derivation(refs, "generate")
+            bound = c._phase_closure_bindings[(refs.node_key, "generate")]
+            self.assertEqual([b["node_key"] for b in bound],
+                             [e["node_key"] for e in derivation["derivation_inputs"]["closure"]])
+            self.assertEqual(set(derivation["derivation_inputs"]["closure"][0]),
+                             {"node_key", "surface"})
+            resolver = c._resolver()
+            self.assertEqual([b["output_hash"] for b in bound],
+                             [resolver.select(b["node_key"], "generate").output_hash
+                              for b in bound])
+
+    def test_a_generate_key_without_a_closure_is_refused_rather_than_staging_nothing(self) -> None:
+        """Both keys that stage hold `closure[]`; a derivation without it is a defect, not an
+        empty closure."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0",
+                               spec_path="spec/component/top", ir_id="top_20260101_001",
+                               pipeline_id="top_20260101_001", source_id="src_20260101_001",
+                               binary_id="b")
+            self._write_dep_ir(repo, refs)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
+                                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                                   env={})
+            self.assertTrue(c._conductor_authors_makefile(refs))
+            with mock.patch.object(wc, "phase_derivation",
+                                   return_value={"derivation_inputs": {}}), \
+                    self.assertRaises(KeyError):
+                c._phase_derivation(refs, "generate")
 
     def test_stage_dependency_sources_noop_for_a_harness_leaf(self) -> None:
         # Since issue #284 a physics node's pipeline closure always holds its target's harness,

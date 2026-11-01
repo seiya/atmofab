@@ -93,8 +93,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
@@ -1116,11 +1119,26 @@ PINNED: dict[str, str] = {
     # naming the seed file instead of an inlined prompt (the two `CHECKS_ABI.md` audience notes changed too, but the slices this tuple
     # hashes, §1-4 and §5, leave the header note out, so they move no digest).
     "leaf-85": "707b342d0a05166bcf1fd41f667325bb3c8e2436d90b247df3e47f0069e79d4b",
+    # leaf-86 (issue #574): `DEPENDENCIES.md` loses the certified refs of each dependency, and its
+    # fixed text joins the tuple as `dependency_facts_render`. The first version in no key.
+    "leaf-86": "fc31997e7cb4af5aada52b958342a4f877ada5bb68536e7ec504aff5de695bc9",
 }
 
+# sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
+# rules as `PINNED` hold. A bump re-derives that phase of every node, so what moves here is what
+# "valid" means for that phase.
+PINNED_READER: dict[str, str] = {
+    "compile-verify-1": "584d9da4ce298797da0bdc8923b042b9cc0a17e22bbd9a5d4bfe510b39e1b4f1",
+    "generate-verify-1": "48c04d7fda595a2bf765178ae888a0ebcea0b484fdc3dd5ed488508d10ceb465",
+    "validate-judge-1": "3237d93d0501db5e66df3b1a265ce7a0d8926e5df481971b32dba4fba93c51f6",
+}
+_READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
+                     "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
+                     "validate": "VALIDATE_JUDGE_CONTRACT_VERSION"}
 
-def _contract_tuple() -> dict[str, object]:
-    tpl_dir = Path(ort.__file__).resolve().parent / "prompt_templates"
+
+def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
+    tpl_dir = tpl_dir or Path(ort.__file__).resolve().parent / "prompt_templates"
     return {
         "templates": {
             name: (tpl_dir / name).read_text(encoding="utf-8") for name in _TEMPLATE_FILES
@@ -1279,7 +1297,120 @@ def _contract_tuple() -> dict[str, object]:
                 "language", language, "prompt_fragments").runner_output_document()
             for language in _prompt_languages()
         },
+        # The fixed text of `DEPENDENCIES.md` as a generate and a judge leaf read it, per language
+        # that reads a dependency's interface (issue #574): rendered over a payload whose every
+        # varying field is this tuple's constant, so only the renderer's words can move it.
+        "dependency_facts_render": {
+            language: ort._build_dependency_facts(_dependency_facts_payload(language))
+            for language in _prompt_languages()
+        },
     }
+
+
+def _dependency_facts_payload(language: str) -> dict[str, object]:
+    return {"step": "validate", "substep": "judge", "resolved_dependencies": [{
+        "node_key": "component/dep@0.1.0", "interface_language": language,
+        "declared_operations_unresolved": ["dep__gone"],
+        "published_operations": [{
+            "operation": "dep__op", "interface": "dep__op(x)",
+            "signature_drift": ["x"],
+            "arguments": [{"name": "x", "type": "real", "intent": "in", "rank": 1}],
+            "procedure_interfaces": {"dep_rhs": ["dep_rhs(u)"]},
+        }],
+    }]}
+
+
+# The keyed half of the contract (issue #574). A member is in phase P's reader digest when a READING
+# leaf of P reads it; a member a producer reads too is keyed here and read there, and a member only
+# a producer reads is advisory. A name is a top-level member of `_contract_tuple`, or
+# `<member>/<key>` for the four members one digest cannot treat whole. Every name of the tuple is in
+# exactly one of the reader sets or `ADVISORY_MEMBERS`, so a new member is refused until someone
+# decides (`test_every_reader_member_is_a_member_of_the_whole_tuple`).
+_EVERY_READER: frozenset[str] = frozenset({
+    "templates/workshop_verdict_repair.txt",
+    "system_prompts/reading",
+    "tool_surface_text/reading",
+    "cut_read_scope_paragraph",
+    "repair_scope_paragraph",
+    "doc_fence",
+    "verdict_repair_slots",
+    "codex_read_helper",
+    "http_file_tool_declarations",
+})
+_FRAGMENT_PHASE = {"generate_verify.txt": "generate", "generate_verify_harness.txt": "generate"}
+READER_MEMBERS_BY_PHASE: dict[str, frozenset[str]] = {
+    "compile": _EVERY_READER | {"templates/workshop_compile_verify.txt"},
+    "generate": _EVERY_READER | {
+        "templates/workshop_generate_verify.txt",
+        "templates/workshop_generate_verify_harness.txt",
+        "checks_contract_abi_sections",
+        "checks_abi_binding_sections",
+        "generate_verify_severity_rubric_section",
+        "runner_output_contract_document",
+        "runner_output_binding_document",
+        "checks_public_names",
+        "check_status_width",
+        "dependency_facts_render",
+    },
+    "validate": _EVERY_READER | {
+        "templates/workshop_validate_judge.txt",
+        "runner_output_contract_sections",
+        "checks_public_names",
+        "check_status_width",
+        "dependency_facts_render",
+    },
+}
+ADVISORY_MEMBERS: frozenset[str] = frozenset({
+    "templates/workshop_bundle_repair.txt",
+    "templates/workshop_compile_generate.txt",
+    "templates/workshop_escalate_diagnose.txt",
+    "templates/workshop_generate_generate.txt",
+    "templates/workshop_generate_generate_harness.txt",
+    "templates/workshop_ir_repair.txt",
+    "system_prompts/producing",
+    "tool_surface_text/producing",
+    "checks_contract_gate_guards_section",
+    "lint_rules_document",
+    "exemplar_gate_drift_note",
+})
+_MEMBERS_READ_BY_KEY = ("templates", "system_prompts", "tool_surface_text")
+
+
+def _member_names(whole: dict[str, object]) -> set[str]:
+    """Every name `_reader_tuples` can select, fragments aside (`_FRAGMENT_PHASE` attributes them)."""
+    names: set[str] = set()
+    for member, value in whole.items():
+        if member == "language_fragments":
+            continue
+        if member in _MEMBERS_READ_BY_KEY:
+            assert isinstance(value, dict)
+            names.update(f"{member}/{key}" for key in value)
+        else:
+            names.add(member)
+    return names
+
+
+def _reader_tuples(tpl_dir: Path | None = None) -> dict[str, dict[str, object]]:
+    whole = _contract_tuple(tpl_dir)
+    fragments = whole["language_fragments"]
+    assert isinstance(fragments, dict)
+    out: dict[str, dict[str, object]] = {}
+    for phase, names in READER_MEMBERS_BY_PHASE.items():
+        selected: dict[str, object] = {}
+        for name in sorted(names):
+            member, _, key = name.partition("/")
+            value = whole[member]
+            selected[name] = value[key] if key else value  # type: ignore[index]
+        selected["language_fragments"] = {
+            path: text for path, text in fragments.items()
+            if _FRAGMENT_PHASE.get(Path(path).name) == phase}
+        out[phase] = selected
+    return out
+
+
+def _reader_digest(phase: str, tpl_dir: Path | None = None) -> str:
+    payload = json.dumps(_reader_tuples(tpl_dir)[phase], sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _prompt_languages() -> list[str]:
@@ -1303,8 +1434,8 @@ def _checks_abi_document(language: str) -> str:
     return _registry.capability_module("language", language, "checks_abi").document()
 
 
-def _digest() -> str:
-    payload = json.dumps(_contract_tuple(), sort_keys=True, ensure_ascii=True)
+def _digest(tpl_dir: Path | None = None) -> str:
+    payload = json.dumps(_contract_tuple(tpl_dir), sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -1325,9 +1456,11 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "file-tool declarations, the language backends' checks-ABI constants, lint rules, "
             "gate-guard and binding sections or exemplar note, or an inlined document slice — "
             "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
-            "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file).\n"
-            "`leaf-85` was the first post-J4 bump (issue #534 PR-J4-b): the counter no longer "
-            "says `pure`; the next one writes `leaf-86`."
+            "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file, or the fixed text of "
+            "DEPENDENCIES.md).\n"
+            "A member only a producer reads needs this bump alone, and it moves no derivation key. "
+            "A member a reader reads needs its phase's reader constant too "
+            "(`test_each_reader_version_is_pinned_and_matches` says which)."
         )
         self.assertIn(
             LEAF_PROMPT_CONTRACT_VERSION, PINNED,
@@ -1339,6 +1472,100 @@ class PurePromptContractDriftTests(unittest.TestCase):
             f"pure prompt contract digest for {LEAF_PROMPT_CONTRACT_VERSION!r} does not match the pin."
             + resolution,
         )
+
+    def test_each_reader_version_is_pinned_and_matches(self) -> None:
+        for phase, constant in _READER_CONSTANTS.items():
+            with self.subTest(phase=phase):
+                version = getattr(leaf_contract, constant)
+                self.assertEqual(
+                    _reader_digest(phase), PINNED_READER.get(version),
+                    f"{constant}={version!r} does not match its pin. What a reader of `{phase}` "
+                    f"reads moved, which re-derives that phase of every node: bump {constant} "
+                    f"(tools/leaf_contract.py), KEEP the entries of PINNED_READER and add "
+                    f"PINNED_READER['<new-version>'] = '{_reader_digest(phase)}', or revert the "
+                    "edit. A member only a producer reads belongs in ADVISORY_MEMBERS.")
+
+    def test_every_reader_member_is_a_member_of_the_whole_tuple(self) -> None:
+        """Set identity both ways: every name of the tuple is classified exactly once as advisory
+        or as some reader's, and no classification names something the tuple lacks."""
+        names = _member_names(_contract_tuple())
+        readers = frozenset().union(*READER_MEMBERS_BY_PHASE.values())
+        self.assertEqual(names, set(readers | ADVISORY_MEMBERS))
+        self.assertEqual(readers & ADVISORY_MEMBERS, frozenset())
+        self.assertEqual({path.rsplit("/", 1)[-1] for path in _contract_tuple()["language_fragments"]},  # type: ignore[union-attr]
+                         {*_FRAGMENT_PHASE, "generate_generate.txt",
+                          "generate_generate_harness.txt"})
+        self.assertEqual(set(READER_MEMBERS_BY_PHASE), set(_READER_CONSTANTS))
+
+    def test_the_reader_tables_follow_the_launch_tables(self) -> None:
+        """A template attributed to a reader is one a reading pair launches on, read off the same
+        naming the launch uses, so a reader's template cannot be classified advisory."""
+        for step, substep in leaf_contract.WORKSHOP_READING_PAIRS:
+            with self.subTest(step=step, substep=substep):
+                self.assertIn(f"templates/workshop_{step}_{substep}.txt",
+                              READER_MEMBERS_BY_PHASE[step])
+        for step, substep in leaf_contract.WORKSHOP_PRODUCING_PAIRS:
+            with self.subTest(step=step, substep=substep):
+                self.assertIn(f"templates/workshop_{step}_{substep}.txt", ADVISORY_MEMBERS)
+
+    def _edited_templates(self, tmp: str, relative: str) -> Path:
+        source = Path(ort.__file__).resolve().parent / "prompt_templates"
+        copy = Path(tmp) / "prompt_templates"
+        shutil.copytree(source, copy)
+        path = copy / relative
+        path.write_text(path.read_text(encoding="utf-8") + "\nedited\n", encoding="utf-8")
+        return copy
+
+    def test_a_producer_only_edit_moves_no_reader_digest(self) -> None:
+        """Done-when 3 at the pin: the whole digest moves, so a `leaf-N` is owed, and no reader
+        digest does, so no certification is lost. A reader's own template is the control."""
+        readers = {phase: _reader_digest(phase) for phase in READER_MEMBERS_BY_PHASE}
+        for relative in ("workshop_compile_generate.txt", "workshop_generate_generate.txt",
+                         "workshop_escalate_diagnose.txt", "workshop_bundle_repair.txt",
+                         "workshop_ir_repair.txt",
+                         "backends/language/fortran/generate_generate.txt",
+                         "backends/parallel/mpi/generate_generate.txt"):
+            with self.subTest(relative), tempfile.TemporaryDirectory() as tmp:
+                edited = self._edited_templates(tmp, relative)
+                self.assertNotEqual(_digest(edited), _digest())
+                self.assertEqual(
+                    readers, {phase: _reader_digest(phase, edited) for phase in readers})
+        for relative, phase in (("workshop_compile_verify.txt", "compile"),
+                                ("workshop_generate_verify.txt", "generate"),
+                                ("backends/language/fortran/generate_verify.txt", "generate"),
+                                ("workshop_validate_judge.txt", "validate")):
+            with self.subTest(relative), tempfile.TemporaryDirectory() as tmp:
+                edited = self._edited_templates(tmp, relative)
+                self.assertEqual(
+                    {phase}, {p for p in readers if readers[p] != _reader_digest(p, edited)})
+
+    def test_a_shared_member_edit_moves_the_reader_digest_of_every_phase_that_reads_it(self) -> None:
+        """Each row is a member more than one kind reads, moved at its authority."""
+        readers = {phase: _reader_digest(phase) for phase in READER_MEMBERS_BY_PHASE}
+
+        def moved() -> set[str]:
+            return {p for p in readers if readers[p] != _reader_digest(p)}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            edited = self._edited_templates(tmp, "workshop_verdict_repair.txt")
+            self.assertEqual(set(readers),
+                             {p for p in readers if readers[p] != _reader_digest(p, edited)})
+        with mock.patch.object(leaf_contract, "PURE_DOC_FENCE_BEGIN", "<<other>>"):
+            self.assertEqual(moved(), set(readers))
+        with mock.patch.object(wc, "_checks_contract_abi_sections", return_value="other"):
+            self.assertEqual(moved(), {"generate"})
+        with mock.patch.object(wc, "_runner_output_contract_sections", return_value="other"):
+            self.assertEqual(moved(), {"validate"})
+        with mock.patch.object(ort, "_published_operations_lines", return_value=["other"]):
+            self.assertEqual(moved(), {"generate", "validate"})
+
+    def test_the_dependency_facts_member_renders_the_fixed_text_it_pins(self) -> None:
+        """The member is what it claims only if the payload drives each branch of the renderer."""
+        for language, text in _contract_tuple()["dependency_facts_render"].items():  # type: ignore[union-attr]
+            with self.subTest(language=language):
+                for fixed in ("WARNING — the IR-declared operation", "certified IR pins a DIFFERENT",
+                              "dep_rhs"):
+                    self.assertIn(fixed, text)
 
     def test_every_prompt_language_s_leaf_inputs_are_in_the_digest(self) -> None:
         """The per-language members are derived from the registry, so the SECOND language's leaf
@@ -1434,7 +1661,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
         # bumping the version literal and copying the failure message's recomputed (unchanged) digest
         # into a new PINNED entry would pass — the reverse-drift hole.
         by_digest: dict[str, list[str]] = {}
-        for version, digest in PINNED.items():
+        for version, digest in {**PINNED, **PINNED_READER}.items():
             by_digest.setdefault(digest, []).append(version)
         collisions = {d: vs for d, vs in by_digest.items() if len(vs) > 1}
         self.assertEqual(

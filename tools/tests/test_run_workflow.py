@@ -6352,7 +6352,7 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertFalse(b["skipped"], runs)
             self.assertEqual(b["rerun_reason"]["failed_stage"], "ir_ref")
             self.assertEqual(b["rerun_reason"]["detail"],
-                             "component/b@0.1.0 compile: derivation_key_mismatch:closure[0].ir")
+                             "component/b@0.1.0 compile: derivation_key_mismatch:dependency_graph")
 
     def test_driver_stops_when_dependency_not_ready_after_run(self) -> None:
         # A dependency that exits 0 without producing readiness evidence
