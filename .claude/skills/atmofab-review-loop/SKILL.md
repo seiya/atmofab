@@ -517,7 +517,10 @@ when a rule does not obviously apply:
    (`tools/tests/test_derivation_transformation_drift.py` — `tools/verdict_evaluator.py`,
    `tools/primary_evidence.py`, the compile-inlined documents, the conductor methods it names)
    moves its pin on ANY byte, and PR #257 shipped a three-line comment commit whose message said
-   the sweep was closed while the suite was red on that pin until the next round found it.
+   the sweep was closed while the suite was red on that pin until the next round found it. The
+   prompt-contract pins (`tools/tests/test_leaf_prompt_contract_drift.py`) do the same to leaf-read
+   text: any member moves the whole digest, and a member a reader reads moves that phase's reader
+   digest as well.
    **The drift pins are not the only reader of prose, so "the files this edit touches" is not
    the suite to run.** The backend-boundary token ratchet counts technology tokens in
    neutral-core docstrings and comments: issue #316 PR-1 wrote a language's name into a gate's
@@ -541,7 +544,9 @@ committing a fix, ask whether it changes something the live run has still to rea
 has not finished — a gate, a renderer, a template or fragment a leaf is handed, an instruction
 that run's leaves would follow.** If it does, stop the run (`TaskStop`, then check `ps` for its
 leaf and launcher children), commit, and relaunch: `--with-deps` reuses every node already
-certified, because an in-place re-pin moves no derivation key. If it does not (a test, a
+certified, because an in-place re-pin moves no derivation key, and neither does a
+producer-template edit with its `leaf-N` bump; a reader-template edit with its reader bump moves
+that phase's keys, so that relaunch re-derives the phase. If it does not (a test, a
 comment, a doc no leaf is handed), leave the run going. Either way **record, per certified node,
 the orchestration id and the branch HEAD it was launched at**, and before publishing re-run the
 final HEAD's deterministic gates over the certified sources without billing, so the record says

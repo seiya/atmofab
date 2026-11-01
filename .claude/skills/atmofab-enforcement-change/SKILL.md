@@ -823,6 +823,9 @@ that could not converge in principle).
   it as the defect). **Rule: name EVERY phase the remedy must re-run (`--rederive
   build,validate`), and run the remedy on a byte-identical reproduction before writing it.**
   The same holds for any prose saying "X re-derives Y": it is true only when X's output changes.
+  Across a dependency edge the condition is narrower since issue #574: under one `spec_version`, a
+  consumer's Compile and Generate move only when the dependency's published surface moves, whatever
+  its output did.
   `references/failure-routing.md` §"A remedy that re-derives one phase"
 
 ### 4. Tests pin properties
