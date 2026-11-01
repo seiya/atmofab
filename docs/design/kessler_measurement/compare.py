@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Runs the original SCALE procedures on the cases of a node's `tests.md` and reads the result.
+
+`screen`: every case of §2 goes through the driver, its columns become the state snapshots the
+workflow's capture would be, and every judgment of the node's predicate file is evaluated by
+`tools.primary_evidence.evaluate_primary_predicates`, the function the host itself runs.
+`compare`: the same driver columns against the snapshots of a certified run.
+
+A refused case has no SCALE result: SCALE aborts or runs on. Its snapshot is the refusal state the
+Controlled Spec defines, so the screen shows only that its judgment is expressible and evaluable,
+and each case's forcing condition is checked on its inputs (`forcing`, and the driver's per-cell
+`converged` where the condition is non-convergence).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO))
+from tools import primary_evidence as pe  # noqa: E402
+
+NODES = {
+    "saturation": ("spec/component/microphysics/saturation/microphysics_saturation_liquid_1d_column",
+                   "predicates_saturation.yaml"),
+    "kessler": ("spec/component/microphysics/kessler/microphysics_kessler_warm_rain_1d_column",
+                "predicates_kessler.yaml"),
+}
+#: What each operation returns; every other variable keeps its setup value.
+RETURNS = {
+    "dens2qsat_liq": ["qsat"],
+    "saturation_adjustment": ["temp", "qv", "qc", "cptot", "cvtot", "rhoe_d"],
+    "adjustment": ["temp", "qv", "qc", "qr", "cptot", "cvtot", "rhoe_t", "evaporate", "pcsat"],
+    "terminal_velocity": ["vterm_c", "vterm_r"],
+}
+#: The intended differences from SCALE, printed beside the maxima (`README.md`).
+DEVIATIONS = [
+    "pcsat is an output; SCALE writes QC_t_sat to history (D4)",
+    "abort replaced by converged / guard_pass with a finite refusal state (D8, D20)",
+    "QI and the cold-rain branch absent (D8)",
+    "halo cells of an output are written with 0 (D17)",
+    "negative moisture and non-positive cptot / cvtot are refused (D18, D20)",
+]
+FLOOR = 1e-15
+REL = 1e-12
+
+
+def load_suite(tests_md: Path) -> dict:
+    """The one fenced YAML block of `tests.md` §2."""
+    text = tests_md.read_text(encoding="utf-8")
+    section = text.split("## 2.", 1)[1].split("\n## 3.", 1)[0]
+    fences = re.findall(r"```yaml\n(.*?)```", section, re.S)
+    if len(fences) != 1:
+        raise SystemExit(f"{tests_md}: §2 holds {len(fences)} YAML fences, not one")
+    return yaml.safe_load(fences[0])
+
+
+def build_initial(suite: dict, case: dict) -> dict[str, list[float]]:
+    """The setup state of §2: rule columns, literal cells, the moist heat capacities, overrides."""
+    ka, ks, ke = suite["grid"]["ka"], suite["grid"]["ks"], suite["grid"]["ke"]
+    state = {name: [float(value)] * ka for name, value in suite["setup"].items()}
+    for name, rule in case.get("columns", {}).items():
+        cells = state[name][:]
+        for n, k in enumerate(range(ks, ke + 1)):
+            if isinstance(rule, dict):
+                value = rule["cells"][n]
+            else:
+                value = rule[0] + rule[1] * n
+            cells[k - 1] = float(value)
+        state[name] = cells
+    columns = case.get("columns", {})
+    if "qv" in columns:
+        c, air = suite["constants"], suite["air"]
+        cvvap = c["cpvap"] - c["rvap"]
+        for k in range(ks, ke + 1):
+            qv, qc = state["qv"][k - 1], state["qc"][k - 1]
+            qr = state["qr"][k - 1] if "qr" in columns else 0.0
+            qd = 1.0 - qv - qc - qr
+            state["cptot"][k - 1] = qd * air["cpdry"] + c["cpvap"] * qv + c["cl"] * (qc + qr)
+            state["cvtot"][k - 1] = (qd * (air["cpdry"] - air["rdry"]) + cvvap * qv
+                                     + c["cl"] * (qc + qr))
+    for row in case.get("overrides", []):
+        state[row["var"]][row["k"] - 1] = float(row["value"])
+    return state
+
+
+def case_inputs(suite: dict, case: dict) -> dict:
+    """A case's `inputs` as a Compile leaf would carry them."""
+    grid = dict(suite["grid"])
+    grid.update(case.get("grid", {}))
+    inputs = {"grid": grid, "constants": dict(suite["constants"])}
+    if "dt" in case:
+        inputs["dt"] = case["dt"]
+    for key in case.get("parameters", {}):
+        inputs[key] = case["parameters"][key]
+    return inputs
+
+
+def run_driver(driver: Path, operation: str, grid: dict, dt: float,
+               state: dict[str, list[float]]) -> dict[str, list[float]]:
+    lines = [f"{operation} {grid['ka']} {grid['ks']} {grid['ke']} {dt!r}"]
+    for name in ("temp", "dens", "pres", "qv", "qc", "qr", "cptot", "cvtot",
+                 "rhoq_c", "rhoq_r", "refstate_dens"):
+        if name in state:
+            lines.append(name + " " + " ".join(repr(v) for v in state[name]))
+    done = subprocess.run([str(driver)], input="\n".join(lines) + "\n", text=True,
+                          capture_output=True, check=False)
+    if done.returncode:
+        raise RuntimeError(f"{operation}: driver rc={done.returncode}: "
+                           f"{done.stdout[-400:]} {done.stderr[-400:]}")
+    out = {}
+    for line in done.stdout.splitlines():
+        parts = line.split()
+        out[parts[0]] = [float(p) for p in parts[1:]]
+    return out
+
+
+def refused(case: dict) -> bool:
+    return case["expected"] == "xfail"
+
+
+def snapshot(suite: dict, case: dict, driver: Path) -> tuple[dict, dict]:
+    """(initial, final) of one case, each with the scalars the §5 contract records."""
+    initial = build_initial(suite, case)
+    flags = [n for n in ("guard_pass", "converged") if n in suite["scalars"]]
+    start = {**initial, **{n: suite["scalars"][n] for n in flags}}
+    final = {k: list(v) if isinstance(v, list) else v for k, v in start.items()}
+    if refused(case):
+        final["guard_pass"] = case["refusal"].get("guard_pass", 0.0)
+        if "converged" in final:
+            final["converged"] = case["refusal"].get("converged", 0.0)
+    else:
+        grid = case_inputs(suite, case)["grid"]
+        returned = run_driver(driver, case["operation"], grid, case.get("dt", 1.0), initial)
+        for name, cells in returned.items():
+            final[name] = cells
+        final["guard_pass"] = 1.0
+        if "converged" in final and case["operation"] == "saturation_adjustment":
+            final["converged"] = 1.0
+    return start, final
+
+
+def expand(entry: dict, bind_sets: dict) -> dict:
+    bind: dict[str, str] = {}
+    for name in entry.get("binds", []):
+        bind.update(bind_sets[name])
+    bind.update(entry.get("bind", {}))
+    out = {k: v for k, v in entry.items() if k not in ("binds", "bind")}
+    out["bind"] = bind
+    out["per_case"] = True
+    return out
+
+
+def write_run(run: Path, suite: dict, driver: Path) -> None:
+    for case in suite["cases"]:
+        start, final = snapshot(suite, case, driver)
+        d = run / "raw" / "state_snapshots"
+        (d / "initial").mkdir(parents=True, exist_ok=True)
+        (d / "initial" / f"{case['case_id']}.json").write_text(json.dumps(start))
+        (d / f"{case['case_id']}.json").write_text(json.dumps(final))
+
+
+def synthetic_ir(suite: dict, predicates: list[dict]) -> dict:
+    variables = [{"name": n, "shape_expr": "[ka]"} for n in suite["setup"]]
+    variables += [{"name": n, "shape_expr": "scalar"} for n in suite["scalars"]]
+    schema = {"variables": variables, "coordinates": [
+        {"name": "c", "axis": 0, "count": "inputs.grid.ka", "length": "inputs.grid.ka",
+         "placement": "cell_center"}]}
+    return {
+        "case": {"test_case_set": [{"case_id": c["case_id"], "inputs": case_inputs(suite, c)}
+                                   for c in suite["cases"]]},
+        "io_contract": {
+            "raw_requirements": {"required_evidence": [
+                {"artifact": "state_snapshots", "required": True, "schema": schema}]},
+            "primary_predicates": predicates,
+        },
+    }
+
+
+def load_predicates(here: Path, name: str, suite: dict) -> list[dict]:
+    doc = yaml.safe_load((here / name).read_text(encoding="utf-8"))
+    out = [expand(e, doc["bind_sets"]) for e in doc["predicates"]]
+    for row in doc.get("cross_target", []):
+        for var in row["variables"]:
+            out.append({
+                "test_id": row["test_id"], "quantity": "cross_target_state_agreement",
+                "target_cases": row["target_cases"], "per_case": True,
+                "expr": (f"maxabs(final.{var} - comparand.final.{var}) / max(maxabs(final.{var}), "
+                         f"maxabs(comparand.final.{var}), 1.0)"),
+                "op": "le", "value": 1e-12,
+            })
+    return out
+
+
+def cmd_screen(args: argparse.Namespace) -> int:
+    here = Path(__file__).resolve().parent
+    spec_dir, pred_file = NODES[args.node]
+    suite = load_suite(REPO / spec_dir / "tests.md")
+    run = Path(args.work) / args.node / "reference"
+    other = Path(args.work) / args.node / "comparand"
+    write_run(run, suite, Path(args.driver))
+    write_run(other, suite, Path(args.comparand_driver))
+    predicates = load_predicates(here, pred_file, suite)
+    ir = synthetic_ir(suite, predicates)
+    comparand = pe.ComparandEvidence("low_optimization", "-", "-", other.resolve(), "-")
+    records = pe.evaluate_primary_predicates(ir, run, comparands=[comparand])
+    failed = 0
+    covered_cases: set[str] = set()
+    tests: dict[str, list[bool]] = {}
+    for rec in records:
+        worst = None
+        for row in rec["evaluated"]:
+            covered_cases.add(row["case"])
+            if "value" in row and (worst is None or abs(row["value"]) > abs(worst)):
+                worst = row["value"]
+        rhs = rec["evaluated"][0].get("rhs") if rec["evaluated"] else None
+        mark = "ok  " if rec["satisfied"] else "FAIL"
+        failed += 0 if rec["satisfied"] else 1
+        tests.setdefault(rec["test_id"], []).append(rec["satisfied"])
+        detail = ""
+        if not rec["satisfied"]:
+            bad = [r for r in rec["evaluated"] if not r.get("satisfied")]
+            detail = " " + json.dumps(bad)[:400]
+        print(f"{mark} {rec['test_id']} {rec['quantity']} {rec['op']} {rhs} worst={worst}"
+              f" cases={len(rec['evaluated'])}{detail}")
+    uncovered = sorted({c["case_id"] for c in suite["cases"]} - covered_cases)
+    print(f"predicates {len(records)}, false {failed}; tests {len(tests)}, "
+          f"cases {len(suite['cases'])}, cases no predicate reads {uncovered}")
+    for case in suite["cases"]:
+        if case.get("nonconvergence_check"):
+            initial = build_initial(suite, case)
+            got = run_driver(Path(args.driver), "moist_conversion", suite["grid"], 1.0, initial)
+            print(f"forcing {case['case_id']}: driver converged per cell "
+                  f"{got['converged_per_cell']}")
+    return 1 if failed or uncovered else 0
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    spec_dir, _ = NODES[args.node]
+    suite = load_suite(REPO / spec_dir / "tests.md")
+    snaps = Path(args.run_dir) / "raw" / "state_snapshots"
+    print("deviations, not banded:")
+    for line in DEVIATIONS:
+        print(f"  {line}")
+    bad = 0
+    grid = suite["grid"]
+    print("variable case max_rel max_abs")
+    for case in suite["cases"]:
+        if refused(case):
+            continue
+        _, ref = snapshot(suite, case, Path(args.driver))
+        got = json.loads((snaps / f"{case['case_id']}.json").read_text(encoding="utf-8"))
+        for var in RETURNS[case["operation"]]:
+            r, g = ref[var], got[var]
+            if var == "evaporate":
+                # `rNc` amplifies round-off `pcsat`, so the comparison reads what the scheme defines.
+                r = [max(-x, 0.0) for x in ref["pcsat"]]
+                g = [max(-x, 0.0) for x in got["pcsat"]]
+            max_rel = max_abs = 0.0
+            for k in range(grid["ks"] - 1, grid["ke"]):
+                diff = abs(r[k] - g[k])
+                max_abs = max(max_abs, diff)
+                if diff > FLOOR:
+                    max_rel = max(max_rel, diff / max(abs(r[k]), abs(g[k])))
+            print(f"{var} {case['case_id']} {max_rel:.3e} {max_abs:.3e}")
+            bad += 1 if max_rel > REL else 0
+    print(f"variables beyond {REL} relative with a {FLOOR} absolute floor: {bad}")
+    return 1 if bad else 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    screen = sub.add_parser("screen")
+    screen.add_argument("node", choices=sorted(NODES))
+    screen.add_argument("--driver", required=True)
+    screen.add_argument("--comparand-driver", required=True,
+                        help="the same sources built at another optimisation level")
+    screen.add_argument("--work", required=True)
+    compare = sub.add_parser("compare")
+    compare.add_argument("node", choices=sorted(NODES))
+    compare.add_argument("--driver", required=True)
+    compare.add_argument("--run-dir", required=True)
+    args = parser.parse_args()
+    return cmd_screen(args) if args.command == "screen" else cmd_compare(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

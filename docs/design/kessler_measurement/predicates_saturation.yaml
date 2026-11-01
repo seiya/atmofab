@@ -1,0 +1,95 @@
+# The judgments of the saturation node's tests.md §6, transcribed by hand into the primary-predicate
+# grammar. A measurement input, not an IR: `Compile.generate` authors its own.
+bind_sets:
+  mask:
+    idx: floor(c)
+    interior: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - idx))
+    halo: 1 - interior
+    pairs: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - idx))
+  const:
+    rvap: inputs.constants.rvap
+    cpvap: inputs.constants.cpvap
+    cl: inputs.constants.cl
+    lhv0: inputs.constants.lhv0
+    psat0: inputs.constants.psat0
+    tem00: inputs.constants.tem00
+    cvv: cpvap - rvap
+    L00: lhv0 - (cpvap - cl) * tem00
+  qs_initial:
+    qs: psat0 * exp(log(initial.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / initial.temp)) / (initial.dens * rvap * initial.temp)
+  qs_final:
+    qs_final: psat0 * exp(log(final.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / final.temp)) / (final.dens * rvap * final.temp)
+    dqs_final: qs_final / final.temp * ((lhv0 + (cpvap - cl) * (final.temp - tem00)) / (rvap * final.temp) - 1)
+qsat_cases: &qsat [l0_qsat_ref, l0_qsat_temp_ramp, l0_qsat_dens_ramp]
+adj_cases: &adj [l0_satadj_dry, l0_satadj_subsat, l0_satadj_supersat]
+predicates:
+- {test_id: l0_qsat_reference_point_pass, quantity: qsat_rel, target_cases: [l0_qsat_ref], binds: [mask, const], bind: {ref: psat0 / (final.dens * rvap * tem00)}, expr: 'maxabs(interior * (final.qsat - ref)) / maxabs(interior * ref)', op: le, value: 1.0e-12}
+- {test_id: l0_qsat_reference_point_pass, quantity: guard_pass, target_cases: [l0_qsat_ref], expr: 'final.guard_pass', op: eq, value: 1.0}
+- {test_id: l0_qsat_clausius_clapeyron_pass, quantity: qsat_rel, target_cases: *qsat, binds: [mask, const, qs_initial], expr: 'maxabs(interior * (final.qsat - qs)) / maxabs(interior * qs)', op: le, value: 1.0e-12}
+- {test_id: l0_qsat_clausius_clapeyron_pass, quantity: guard_pass, target_cases: *qsat, expr: 'final.guard_pass', op: eq, value: 1.0}
+- {test_id: l0_qsat_monotone_pass, quantity: min_increase, target_cases: [l0_qsat_temp_ramp], binds: [mask], expr: 'min(pairs * (roll(final.qsat, -1) - final.qsat) + (1 - pairs))', op: gt, value: 0.0}
+- {test_id: l0_qsat_monotone_pass, quantity: max_decrease, target_cases: [l0_qsat_dens_ramp], binds: [mask], expr: 'max(pairs * (roll(final.qsat, -1) - final.qsat) - (1 - pairs))', op: lt, value: 0.0}
+- {test_id: l0_qsat_monotone_pass, quantity: guard_pass, target_cases: [l0_qsat_temp_ramp, l0_qsat_dens_ramp], expr: 'final.guard_pass', op: eq, value: 1.0}
+- {test_id: l0_qsat_halo_untouched_pass, quantity: halo_qsat, target_cases: *qsat, binds: [mask], expr: 'maxabs(halo * final.qsat)', op: eq, value: 0.0}
+- {test_id: l0_qsat_halo_untouched_pass, quantity: guard_pass, target_cases: *qsat, expr: 'final.guard_pass', op: eq, value: 1.0}
+
+- {test_id: l0_satadj_dry_noop_pass, quantity: dqv, target_cases: [l0_satadj_dry], expr: 'maxabs(final.qv - initial.qv)', op: eq, value: 0.0}
+- {test_id: l0_satadj_dry_noop_pass, quantity: dqc, target_cases: [l0_satadj_dry], expr: 'maxabs(final.qc - initial.qc)', op: eq, value: 0.0}
+- {test_id: l0_satadj_dry_noop_pass, quantity: dcptot, target_cases: [l0_satadj_dry], expr: 'maxabs(final.cptot - initial.cptot)', op: eq, value: 0.0}
+- {test_id: l0_satadj_dry_noop_pass, quantity: dcvtot, target_cases: [l0_satadj_dry], expr: 'maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+- {test_id: l0_satadj_dry_noop_pass, quantity: rhoe_d, target_cases: [l0_satadj_dry], binds: [mask], expr: 'maxabs(interior * final.rhoe_d)', op: eq, value: 0.0}
+- {test_id: l0_satadj_dry_noop_pass, quantity: dtemp, target_cases: [l0_satadj_dry], expr: 'maxabs(final.temp - initial.temp)', op: le, value: 2.0e-13}
+- {test_id: l0_satadj_dry_noop_pass, quantity: flags, target_cases: [l0_satadj_dry], expr: 'final.guard_pass * final.converged', op: eq, value: 1.0}
+
+- &sub {test_id: l0_satadj_subsaturated_evaporates_all_pass, quantity: qc_zero, target_cases: [l0_satadj_subsat], binds: [mask], expr: 'maxabs(interior * final.qc)', op: eq, value: 0.0}
+- {<<: *sub, quantity: qv_rel, expr: 'maxabs(interior * (final.qv - (initial.qv + initial.qc))) / maxabs(interior * (initial.qv + initial.qc))', op: le, value: 1.0e-12}
+- {<<: *sub, quantity: temp_rel, binds: [mask, const], bind: {cvnew: initial.cvtot + initial.qc * (cvv - cl), tstar: (initial.temp * initial.cvtot + initial.qv * L00 - L00 * (initial.qv + initial.qc)) / cvnew}, expr: 'maxabs(interior * (final.temp - tstar)) / maxabs(interior * tstar)', op: le, value: 1.0e-12}
+- {<<: *sub, quantity: cptot_rel, binds: [mask, const], bind: {cpnew: initial.cptot + initial.qc * (cpvap - cl)}, expr: 'maxabs(interior * (final.cptot - cpnew)) / maxabs(interior * cpnew)', op: le, value: 1.0e-12}
+- {<<: *sub, quantity: cvtot_rel, binds: [mask, const], bind: {cvnew: initial.cvtot + initial.qc * (cvv - cl)}, expr: 'maxabs(interior * (final.cvtot - cvnew)) / maxabs(interior * cvnew)', op: le, value: 1.0e-12}
+- {test_id: l0_satadj_subsaturated_evaporates_all_pass, quantity: flags, target_cases: [l0_satadj_subsat], expr: 'final.guard_pass * final.converged', op: eq, value: 1.0}
+
+- {test_id: l0_satadj_conservation_pass, quantity: total_water, target_cases: *adj, binds: [mask], expr: 'maxabs(interior * ((final.qv + final.qc) - (initial.qv + initial.qc)))', op: le, value: 1.0e-15}
+- {test_id: l0_satadj_conservation_pass, quantity: energy_ratio, target_cases: *adj, binds: [mask, const, qs_final], bind: {em: final.temp * final.cvtot + final.qv * L00, em0: initial.temp * initial.cvtot + initial.qv * L00}, expr: 'max(interior * abs(em - em0) / (2e-6 * dqs_final * (L00 + final.temp * (cvv - cl))))', op: le, value: 1.0}
+- {test_id: l0_satadj_conservation_pass, quantity: flags, target_cases: *adj, expr: 'final.guard_pass * final.converged', op: eq, value: 1.0}
+
+- &sat {test_id: l0_satadj_saturated_state_pass, quantity: qv_ratio, target_cases: [l0_satadj_supersat], binds: [mask, const, qs_final], expr: 'max(interior * abs(final.qv - qs_final) / (2e-6 * dqs_final))', op: le, value: 1.0}
+- {test_id: l0_satadj_saturated_state_pass, quantity: qc_min, target_cases: [l0_satadj_supersat], binds: [mask], expr: 'min(interior * final.qc)', op: ge, value: 0.0}
+- {test_id: l0_satadj_saturated_state_pass, quantity: qc_positive, target_cases: [l0_satadj_supersat], binds: [mask], expr: 'min(interior * final.qc + halo)', op: gt, value: 0.0}
+- {<<: *sat, quantity: rhoe_rel, bind: {right: -L00 * (final.qv - initial.qv) * final.dens}, expr: 'maxabs(interior * (final.rhoe_d - right)) / maxabs(interior * right)', op: le, value: 1.0e-12}
+- {<<: *sat, quantity: cptot_rel, bind: {right: (cpvap - cl) * (final.qv - initial.qv)}, expr: 'maxabs(interior * (final.cptot - initial.cptot - right)) / maxabs(interior * right)', op: le, value: 1.0e-12}
+- {<<: *sat, quantity: cvtot_rel, bind: {right: (cvv - cl) * (final.qv - initial.qv)}, expr: 'maxabs(interior * (final.cvtot - initial.cvtot - right)) / maxabs(interior * right)', op: le, value: 1.0e-12}
+- {test_id: l0_satadj_saturated_state_pass, quantity: flags, target_cases: [l0_satadj_supersat], expr: 'final.guard_pass * final.converged', op: eq, value: 1.0}
+
+- &h {test_id: l0_satadj_halo_untouched_pass, quantity: halo_temp, target_cases: *adj, binds: [mask], expr: 'maxabs(halo * (final.temp - initial.temp))', op: eq, value: 0.0}
+- {<<: *h, quantity: halo_qv, expr: 'maxabs(halo * (final.qv - initial.qv))'}
+- {<<: *h, quantity: halo_qc, expr: 'maxabs(halo * (final.qc - initial.qc))'}
+- {<<: *h, quantity: halo_cptot, expr: 'maxabs(halo * (final.cptot - initial.cptot))'}
+- {<<: *h, quantity: halo_cvtot, expr: 'maxabs(halo * (final.cvtot - initial.cvtot))'}
+- {<<: *h, quantity: halo_rhoe_d, expr: 'maxabs(halo * final.rhoe_d)'}
+- {test_id: l0_satadj_halo_untouched_pass, quantity: flags, target_cases: *adj, expr: 'final.guard_pass * final.converged', op: eq, value: 1.0}
+
+- {test_id: l0_dens_nonpositive_xfail, quantity: guard_pass, target_cases: [l0_dens_nonpositive], expr: 'final.guard_pass', op: eq, value: 0.0}
+- {test_id: l0_temp_nonpositive_xfail, quantity: guard_pass, target_cases: [l0_temp_nonpositive], expr: 'final.guard_pass', op: eq, value: 0.0}
+- {test_id: l0_bad_range_xfail, quantity: guard_pass, target_cases: [l0_bad_range], expr: 'final.guard_pass', op: eq, value: 0.0}
+- {test_id: l0_satadj_dens_nonpositive_xfail, quantity: guard_pass, target_cases: [l0_satadj_dens_nonpositive], expr: 'final.guard_pass', op: eq, value: 0.0}
+- {test_id: l0_satadj_dens_nonpositive_xfail, quantity: restored, target_cases: [l0_satadj_dens_nonpositive], expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+- {test_id: l0_satadj_temp_nonpositive_xfail, quantity: guard_pass, target_cases: [l0_satadj_temp_nonpositive], expr: 'final.guard_pass', op: eq, value: 0.0}
+- {test_id: l0_satadj_temp_nonpositive_xfail, quantity: restored, target_cases: [l0_satadj_temp_nonpositive], expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+- {test_id: l0_satadj_cvtot_nonpositive_xfail, quantity: guard_pass, target_cases: [l0_satadj_cvtot_nonpositive], expr: 'final.guard_pass', op: eq, value: 0.0}
+- {test_id: l0_satadj_cvtot_nonpositive_xfail, quantity: restored, target_cases: [l0_satadj_cvtot_nonpositive], expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+- {test_id: l0_satadj_bad_range_xfail, quantity: guard_pass, target_cases: [l0_satadj_bad_range], expr: 'final.guard_pass', op: eq, value: 0.0}
+- {test_id: l0_satadj_bad_range_xfail, quantity: restored, target_cases: [l0_satadj_bad_range], expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+- &nc {test_id: l0_satadj_nonconverged_xfail, quantity: flags_guard, target_cases: [l0_satadj_nonconverged], expr: 'final.guard_pass', op: eq, value: 1.0}
+- {<<: *nc, quantity: flags_converged, expr: 'final.converged', value: 0.0}
+- {<<: *nc, quantity: restored_exact, expr: 'maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', value: 0.0}
+- {<<: *nc, quantity: restored_temp, expr: 'maxabs(final.temp - initial.temp)', op: le, value: 2.0e-13}
+cross_target:
+- {test_id: l0_qsat_reference_point_pass, target_cases: [l0_qsat_ref], variables: [qsat]}
+- {test_id: l0_qsat_clausius_clapeyron_pass, target_cases: *qsat, variables: [qsat]}
+- {test_id: l0_qsat_monotone_pass, target_cases: [l0_qsat_temp_ramp, l0_qsat_dens_ramp], variables: [qsat]}
+- {test_id: l0_satadj_dry_noop_pass, target_cases: [l0_satadj_dry], variables: [temp, qv, qc, cptot, cvtot, rhoe_d]}
+- {test_id: l0_satadj_subsaturated_evaporates_all_pass, target_cases: [l0_satadj_subsat], variables: [temp, qv, qc, cptot, cvtot, rhoe_d]}
+- {test_id: l0_satadj_conservation_pass, target_cases: *adj, variables: [qv, qc]}
+- {test_id: l0_satadj_saturated_state_pass, target_cases: [l0_satadj_supersat], variables: [temp, qv, qc, cptot, cvtot, rhoe_d]}
+- {test_id: l0_qsat_halo_untouched_pass, target_cases: *qsat, variables: [qsat]}
+- {test_id: l0_satadj_halo_untouched_pass, target_cases: *adj, variables: [temp, qv, qc, cptot, cvtot, rhoe_d]}
