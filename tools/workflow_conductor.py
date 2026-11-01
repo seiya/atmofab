@@ -1637,10 +1637,10 @@ def build_launch_request(
     state_snapshots is not forced to produce them (phase_04 §44).
     repair carries issue_severity/repair_strategy/repair_target_agent_run_id/
     repair_reason on a retry (defaults to the literal "none" the templates use).
-    resolved_dependencies are the orientation-only dependency facts (pipeline/run/verdict
-    per direct dep, from `_resolve_dependency_facts`); when non-empty they are attached for
-    the LLM (generate / validate) leaves so the rendered `<dependency_facts>` block lets a
-    judge skip the filesystem lookup. They never gate (pure module function, no FS access).
+    resolved_dependencies are the orientation-only dependency facts (the refs and published
+    operations per direct dep, from `_resolve_dependency_facts`); when non-empty they are attached
+    for the LLM (generate / validate) leaves, whose `DEPENDENCIES.md` lists the operations. They
+    never gate (pure module function, no FS access).
     device_trace says the target's binary runs under a device trace (validate.execute only),
     whose per-kernel summary execute promotes to `kernel_trace.csv` (issue #307).
     """
@@ -7978,7 +7978,7 @@ class Conductor:
                                      deadline: float, spec: "Conductor._LeafProducerSpec"
                                      ) -> "Conductor._WorkshopLineage":
         """The loop's handle on a lineage whose tree holds `seeds`: the closure (re)staged into
-        its `staged/closure` from the bindings the generate key bound (a lineage whose spec
+        its `staged/closure` from the bindings the generate attempt bound (a lineage whose spec
         stages one), and the name sets."""
         from tools.workshop_tree import reserved_tree_names
         closure = (spec.workshop_stage_closure(refs, paths)
@@ -10890,12 +10890,12 @@ class Conductor:
         canonical `src/` — phase_02 §41 carve-out: a transient `$(OBJDIR)` stage is not a
         canonical-tree copy, so it is not the forbidden dependency mix-in.
 
-        Each dep's model source is the one the running `phase` attempt's derivation key
-        BOUND (`closure[].source` of its `derivation_inputs`): the binding resolved at phase
-        start by `_phase_derivation`, through the resolver that computed the key, and held
-        in `_phase_closure_bindings` (issue #250 PR-3). Nothing is re-selected here. Under a
+        Each dep's model source is the one the running `phase` attempt bound: the binding
+        resolved at phase start by `_phase_derivation`, through the resolver that computed the
+        key, and held in `_phase_closure_bindings` (issue #250 PR-3); on `build` it is the key's
+        `closure[].source`. Nothing is re-selected here. Under a
         parallel closure a member can be re-certified between this attempt's key and this
-        copy; the staged bytes are still the bytes the key names, and the copy is hashed
+        copy; the staged bytes are still the bytes the attempt bound, and the copy is hashed
         AFTER it lands and refused if it is not (`model_source_sha256`). A `source_id`
         directory's content is written once and never rewritten, so a mismatch is a copy
         that did not read the file the binding hashed. `phase` is `generate` (the syntax
@@ -10950,7 +10950,7 @@ class Conductor:
             raise RuntimeError(
                 f"cannot stage the dependency closure of {refs.node_key} for {phase}: the "
                 f"phase attempt has no derivation record, so no closure binding to stage "
-                f"from (staging reads the bindings the phase's key bound, never a fresh "
+                f"from (staging reads the bindings the phase's attempt bound, never a fresh "
                 f"selection)")
         by_node = {b["node_key"]: b for b in bound}
         if set(by_node) != set(nodes):
@@ -11048,7 +11048,7 @@ class Conductor:
     def _stage_workshop_closure(self, refs: NodeRefs, paths: Any) -> tuple[str, ...]:
         """Stage the node's dependency closure into a `workshop leaf` lineage's
         `paths.staged_closure` (each wrapper `compile` copies it into a fresh object
-        directory), from the bindings the generate key bound
+        directory), from the bindings the generate attempt bound
         (`_stage_dependency_sources`, phase `generate`), and return the basenames placed there.
 
         Run in the main thread when the lineage is created, before the leaf launches, so the

@@ -7,7 +7,8 @@ zero_base_architecture.md` A2): a host-assembled closed context, one typed JSON 
 returned, no tools. That leaf model, its launch flag set (`pure_leaf_flags`), its fixed system
 prompt and its reply-text extractor went in PR-J4-b, and PR-J4-d renamed the module from
 `tools/pure_leaf.py`. What it holds now is STAGE-AGNOSTIC: the leaf contract version
-(`LEAF_PROMPT_CONTRACT_VERSION`, a derivation-key input), the workshop leaf's launch flags and
+(`LEAF_PROMPT_CONTRACT_VERSION`, recorded, and the readers' constants, derivation-key inputs),
+the workshop leaf's launch flags and
 tool-surface tables, the result-envelope parser, the verify verdict and semantic-review
 contracts, and the record predicates (`is_pure_request` and the pure sentinel stay so a
 record written by the pure leaf is still read). It is deliberately free of any

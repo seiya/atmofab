@@ -1159,7 +1159,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "e71260719bb5163c8d26ddc357844a86c14e5f513872481c24c1eb6f7857be1f",
+    "build-2": "61588a8db04430e9ce9bc4195f986f98883972bc65abb5a7761ec76b4712e8fc",
     # Re-pinned (issue #574), behaviour-preserving: `_copy_bound_file`'s docstring and refusal
     # text, as under `render-12@ee8eceb4`. The digest `build-2` shipped with at ee8eceb4:
     "build-2@ee8eceb4": "4d085fa1c7bd2e28c816e442b0cb3eee5b1decd3546fa199270535e6b3bc94ca",

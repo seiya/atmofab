@@ -3365,7 +3365,7 @@ def _certified_model_source(
     surface (``_resolve_component_dep_surface``), the harness pin
     (``workflow_conductor._write_runner``) and the deterministic Build staging
     (``_resolve_certified_closure_binding``), so the interface a consumer is SHOWN at Generate
-    is always the source Build COMPILES and the source the consumer's key binds. The
+    and the source its Build COMPILES each come from the selection of their moment. The
     selection is the dependency's SELECTED certified Generate output under its key
     recomputed now (``DerivationResolver.select``) — never the latest directory, never the
     binary's ``source_source_id``.
