@@ -15876,10 +15876,25 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertEqual([b["output_hash"] for b in bound],
                              [resolver.select(b["node_key"], "generate").output_hash
                               for b in bound])
+            # What replaces a generate key's source comparison: the key and every binding are one
+            # resolver's answers (issue #574).
+            from tools import orchestration_runtime as ort
+            with mock.patch.object(wc, "phase_derivation", wraps=wc.phase_derivation) as key, \
+                    mock.patch.object(ort, "_resolve_certified_closure_binding",
+                                      wraps=ort._resolve_certified_closure_binding) as binding:
+                c._phase_derivation(refs, "generate")
+            self.assertEqual(binding.call_count, 3)
+            for call in binding.call_args_list:
+                self.assertIs(call.kwargs["resolver"], key.call_args.kwargs["resolver"])
+            # Build's comparison stands, and a generate entry has nothing to compare.
+            entry = derivation["derivation_inputs"]["closure"][0]
+            with self.assertRaisesRegex(wc.DerivationInputsUnresolvable, "its staged source"):
+                c._bind_closure_sources(refs, "build", [{**entry, "source": "sha256:other"}])
+            self.assertEqual(len(c._bind_closure_sources(refs, "generate", [entry])), 1)
 
-    def test_a_generate_key_without_a_closure_is_refused_rather_than_staging_nothing(self) -> None:
-        """Both keys that stage hold `closure[]`; a derivation without it is a defect, not an
-        empty closure."""
+    def test_a_derivation_without_a_closure_is_a_defect_rather_than_an_empty_closure(self) -> None:
+        """Both keys that stage hold `closure[]` (`phase_derivation_inputs`), so nothing reaches
+        this today: the row pins that a lost member cannot stage nothing, silently."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0",

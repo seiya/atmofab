@@ -25463,6 +25463,7 @@ class DerivationInputsTests(unittest.TestCase):
             dep = next(n for n in graph["all_nodes"] if n["node_key"] == self._DEP)
             dep["topo_level"] = 1
             graph["all_nodes"].append({"node_key": extra, "topo_level": 0})
+            graph["transitive_deps"] = [{"node_key": extra}]
             self._write(sidecar, json.dumps(graph))
             added = self._inputs(repo, refs, "generate")
             self.assertEqual(before["ir"], added["ir"])
@@ -25575,7 +25576,9 @@ class DerivationInputsTests(unittest.TestCase):
                 self._inputs(repo, refs, "compile")
 
     def test_a_member_without_section_51_has_a_null_surface_and_a_position(self) -> None:
-        """A `problem` closure member publishes nothing a consumer calls, and it is still linked."""
+        """A `problem` publishes nothing a consumer calls, and it is still linked. The fixture's
+        members have no §5.1, which is the form the key reads; the gate refuses a certified
+        `component` without one (`test_component_without_section51_is_a_compile_fail`)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25586,12 +25589,11 @@ class DerivationInputsTests(unittest.TestCase):
     def test_a_published_surface_needs_one_spec_directory_and_a_readable_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = self._seed(repo)
+            self._seed(repo)
             with mock.patch.object(ort, "resolve_spec_ref_for", return_value=None), \
                     self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
                                            "does not resolve to one spec directory"):
                 ort._published_surface(repo, self._DEP, ort.DerivationResolver(repo, target=_TP))
-            self.assertTrue(refs)
             (repo / self._spec_dir("component", "dep_a") / "controlled_spec.md").unlink()
             with mock.patch.object(ort, "_dependency_output_hash"), \
                     self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "is unreadable"):
@@ -25783,7 +25785,7 @@ class DerivationInputsTests(unittest.TestCase):
                             ort.DerivationInputsUnresolvable,
                             rf"no certified generate output \({reason}\)"):
                         self._inputs(repo, refs, step)
-                # Compile binds the dependency's IR alone, which stands.
+                # Compile asks for the dependency's certified IR alone, which stands.
                 self._inputs(repo, refs, "compile")
 
     def test_build_binds_the_selected_source_not_the_latest_directory(self) -> None:
