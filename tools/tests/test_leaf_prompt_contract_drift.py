@@ -1121,7 +1121,7 @@ PINNED: dict[str, str] = {
     "leaf-85": "707b342d0a05166bcf1fd41f667325bb3c8e2436d90b247df3e47f0069e79d4b",
     # leaf-86 (issue #574): `DEPENDENCIES.md` loses the certified refs of each dependency, and its
     # fixed text joins the tuple as `dependency_facts_render`. The first version in no key.
-    "leaf-86": "dc24cd2b1b87d8989c641096ba8d14394b67b7ec3027908b1540e49e788715c3",
+    "leaf-86": "c8fcb173cdb1d18a1d32e9991ad6673de285b747d88aaad8d37280a395fbec6e",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1129,8 +1129,8 @@ PINNED: dict[str, str] = {
 # "valid" means for that phase.
 PINNED_READER: dict[str, str] = {
     "compile-verify-1": "584d9da4ce298797da0bdc8923b042b9cc0a17e22bbd9a5d4bfe510b39e1b4f1",
-    "generate-verify-1": "664af19372be916b3398dc7da137354a6f963421730dede9f7cba2ae5c4bcc97",
-    "validate-judge-1": "6764915db8b3282404909255ec5db5ee888e901b34b44b21ae32af9c09ca077b",
+    "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
+    "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

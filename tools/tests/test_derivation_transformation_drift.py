@@ -1032,10 +1032,12 @@ PINNED_RENDER: dict[str, str] = {
     # profile's count; the renderer's pin of that harness carries the seven-argument writer.
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
-    "render-12": "98ac09ac3381d457b29dd8d705044235442f1d0528aae307f399df13723059d0",
+    "render-12": "686b3a94c52a25ab973da285341b8f6b234c8ff800107087baee948e2d39bf6e",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
-    # the attempt bound it; what is staged and copied is byte-identical. The digest `render-12`
+    # the attempt bound it, and a language's dependency-operations header no longer calls the source
+    # the one Build will compile, which a reused Generate makes false; that text is not what the
+    # phase renders, and what is staged and copied is byte-identical. The digest `render-12`
     # shipped with at ee8eceb4:
     "render-12@ee8eceb4": "94410f59920cefbca0b06b643d6ac76bd8b3d9a12ec7f9422b16cffac919aed3",
     # Re-pinned (issue #534 PR-3), behaviour-preserving: `_write_interface_header` writes what

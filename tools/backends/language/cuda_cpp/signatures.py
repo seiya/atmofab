@@ -673,7 +673,7 @@ def dependency_operations_header(*, detailed: bool, procedure_argument: bool) ->
     del procedure_argument  # an alias-typed argument needs no paragraph of its own here
     text = (
         "**Published dependency operations (conductor-resolved from each dependency's "
-        "CERTIFIED source — the exact source Build will compile):** C++ arguments are "
+        "CERTIFIED source; its `spec` pins this interface):** C++ arguments are "
         "positional; call each operation, qualified by its model's namespace, with EXACTLY this "
         "argument order. A wrong order builds against a type mismatch and fails the build "
         "(routed back to Generate). For generate.generate this is authoring-binding; for "

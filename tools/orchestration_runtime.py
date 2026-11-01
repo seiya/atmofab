@@ -1072,8 +1072,8 @@ def _closure_signature(
 # pass`, is not revoked, still hashes to what the certifying run stamped (`artifact_hashes`),
 # and carries a `derivation_key` EQUAL to the key recomputed NOW over the phase's contract
 # inputs (`phase_derivation_inputs`). Among the eligible outputs of one key the selection
-# policy (`select_eligible`, v1 = the latest attempt) chooses ONE, and every consumer binds to
-# that output's `output_hash` — the node's own next phase and every dependent node alike.
+# policy (`select_eligible`, v1 = the latest attempt) chooses ONE, and what binds an output binds
+# that one's `output_hash` — the node's own next phase, and a dependent node's Build.
 #
 # The recomputation is recursive by construction: a node's compile and generate keys ask each
 # closure member for a certified output and bind its published surface, the build key binds its
@@ -2589,7 +2589,7 @@ def _meta_output_hash(meta_doc: Mapping[str, Any], meta_ref: str) -> str:
 def _dependency_output_hash(
     resolver: DerivationResolver, dep_node_key: str, step: str
 ) -> str:
-    """What a consumer's key binds a dependency's `step` output BY: the `output_hash` of the
+    """A dependency's `step` output as a consumer's key asks for it: the `output_hash` of the
     SELECTED certified output of that step under the dependency's own key recomputed now
     (`DerivationResolver.select`). A dependency with no eligible output — never derived,
     revoked, or stamped under another key (every meta written before issue #250 PR-1) — is
@@ -3451,8 +3451,8 @@ def _resolve_certified_closure_binding(
 
     The selection is the dependency's SELECTED certified Generate output under its key
     (`DerivationResolver.select`) — the same selection the consumer's build key binds by
-    `closure[].source` (`phase_derivation_inputs`), so what a consumer is CERTIFIED AGAINST and what Build STAGES are one output by construction, not two lookups
-    that must agree. The hash is taken over the same immutable file the stage copies (a
+    `closure[].source` (`phase_derivation_inputs`), so what a consumer's Build is CERTIFIED AGAINST
+    and what it STAGES are one output by construction, not two lookups that must agree. The hash is taken over the same immutable file the stage copies (a
     `source_id` directory's content is written once and never rewritten), so hashing and
     copying cannot observe different bytes."""
     try:
