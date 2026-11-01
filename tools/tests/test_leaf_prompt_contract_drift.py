@@ -1121,7 +1121,7 @@ PINNED: dict[str, str] = {
     "leaf-85": "707b342d0a05166bcf1fd41f667325bb3c8e2436d90b247df3e47f0069e79d4b",
     # leaf-86 (issue #574): `DEPENDENCIES.md` loses the certified refs of each dependency, and its
     # fixed text joins the tuple as `dependency_facts_render`. The first version in no key.
-    "leaf-86": "fc31997e7cb4af5aada52b958342a4f877ada5bb68536e7ec504aff5de695bc9",
+    "leaf-86": "dc24cd2b1b87d8989c641096ba8d14394b67b7ec3027908b1540e49e788715c3",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1129,8 +1129,8 @@ PINNED: dict[str, str] = {
 # "valid" means for that phase.
 PINNED_READER: dict[str, str] = {
     "compile-verify-1": "584d9da4ce298797da0bdc8923b042b9cc0a17e22bbd9a5d4bfe510b39e1b4f1",
-    "generate-verify-1": "48c04d7fda595a2bf765178ae888a0ebcea0b484fdc3dd5ed488508d10ceb465",
-    "validate-judge-1": "3237d93d0501db5e66df3b1a265ce7a0d8926e5df481971b32dba4fba93c51f6",
+    "generate-verify-1": "664af19372be916b3398dc7da137354a6f963421730dede9f7cba2ae5c4bcc97",
+    "validate-judge-1": "6764915db8b3282404909255ec5db5ee888e901b34b44b21ae32af9c09ca077b",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
@@ -1301,22 +1301,32 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         # that reads a dependency's interface (issue #574): rendered over a payload whose every
         # varying field is this tuple's constant, so only the renderer's words can move it.
         "dependency_facts_render": {
-            language: ort._build_dependency_facts(_dependency_facts_payload(language))
+            language: [ort._build_dependency_facts(_dependency_facts_payload(language, detailed))
+                       for detailed in (True, False)]
             for language in _prompt_languages()
         },
     }
 
 
-def _dependency_facts_payload(language: str) -> dict[str, object]:
+def _dependency_facts_payload(language: str, detailed: bool) -> dict[str, object]:
+    """One payload per header the renderer has: `detailed` drives every kind of argument line, a
+    procedure argument, a resolved rank and an unresolved one, and the other drives the header for
+    an operation with no argument facts."""
+    operation: dict[str, object] = {
+        "operation": "dep__op", "interface": "dep__op(x)",
+        "signature_drift": ["x"],
+        "procedure_interfaces": {"dep_rhs": ["dep_rhs(u)"]},
+    }
+    if detailed:
+        operation["arguments"] = [
+            {"name": "x", "type": "real", "intent": "in", "rank": 1},
+            {"name": "y", "type": "real"},
+            {"name": "f", "type": "procedure", "procedure_interface": "dep_rhs"},
+        ]
     return {"step": "validate", "substep": "judge", "resolved_dependencies": [{
         "node_key": "component/dep@0.1.0", "interface_language": language,
         "declared_operations_unresolved": ["dep__gone"],
-        "published_operations": [{
-            "operation": "dep__op", "interface": "dep__op(x)",
-            "signature_drift": ["x"],
-            "arguments": [{"name": "x", "type": "real", "intent": "in", "rank": 1}],
-            "procedure_interfaces": {"dep_rhs": ["dep_rhs(u)"]},
-        }],
+        "published_operations": [operation],
     }]}
 
 
@@ -1560,12 +1570,30 @@ class PurePromptContractDriftTests(unittest.TestCase):
             self.assertEqual(moved(), {"generate", "validate"})
 
     def test_the_dependency_facts_member_renders_the_fixed_text_it_pins(self) -> None:
-        """The member is what it claims only if the payload drives each branch of the renderer."""
-        for language, text in _contract_tuple()["dependency_facts_render"].items():  # type: ignore[union-attr]
+        """The member is what it claims only if its payloads drive each branch of the renderer:
+        a backend function's own words move the digest, each witnessed by replacing it."""
+        for language, texts in _contract_tuple()["dependency_facts_render"].items():  # type: ignore[union-attr]
             with self.subTest(language=language):
-                for fixed in ("WARNING — the IR-declared operation", "certified IR pins a DIFFERENT",
-                              "dep_rhs"):
-                    self.assertIn(fixed, text)
+                self.assertEqual(len(texts), 2)
+                for fixed in ("WARNING — the IR-declared operation",
+                              "certified IR pins a DIFFERENT", "prototype `dep_rhs`"):
+                    self.assertIn(fixed, texts[0])
+                self.assertNotEqual(texts[0], texts[1])
+                module = _registry.capability_module("language", language, "signatures")
+
+                def header(*, detailed: bool, procedure_argument: bool,
+                           _real=module.dependency_operations_header) -> str:
+                    real = _real(detailed=detailed, procedure_argument=procedure_argument)
+                    return real + f"|{detailed}|{procedure_argument}"
+
+                with mock.patch.object(module, "dependency_operations_header", header):
+                    moved = _contract_tuple()["dependency_facts_render"][language]  # type: ignore[index]
+                self.assertIn("|True|", moved[0])
+                self.assertIn("|False|False", moved[1])
+        fortran = _contract_tuple()["dependency_facts_render"]["fortran"]  # type: ignore[index]
+        self.assertIn("marked as a PROCEDURE argument", fortran[0])
+        self.assertIn("a PROCEDURE argument: pass", fortran[0])
+        self.assertIn("rank/shape not resolved", fortran[0])
 
     def test_every_prompt_language_s_leaf_inputs_are_in_the_digest(self) -> None:
         """The per-language members are derived from the registry, so the SECOND language's leaf
