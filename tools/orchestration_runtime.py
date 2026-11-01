@@ -2678,7 +2678,7 @@ def _published_surface(
             "spec directory")
     path = repo_root / spec_ref / "controlled_spec.md"
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8", errors="ignore")  # as `_section51_fence_body`
     except OSError as exc:
         raise DerivationInputsUnresolvable(
             f"derivation_inputs_unresolvable: {path} is unreadable ({exc})") from exc

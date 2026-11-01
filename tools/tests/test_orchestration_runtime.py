@@ -25586,6 +25586,19 @@ class DerivationInputsTests(unittest.TestCase):
                 {"node_key": self._HARNESS, "surface": None},
                 {"node_key": self._DEP, "surface": None}])
 
+    def test_a_spec_with_an_invalid_byte_reads_as_its_gate_reads_it(self) -> None:
+        """A byte the gate's reader ignores would otherwise certify the dependency under its own
+        gate and raise out of every consumer's key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            before = self._inputs(repo, refs, "compile")["dependency_surface"]
+            path = repo / self._spec_dir("component", "dep_a") / "controlled_spec.md"
+            path.write_bytes(path.read_bytes().replace(b"body", b"b\xffody"))
+            certify_node(repo, "o-publish", self._DEP, through="validate")
+            self.assertEqual(before, self._inputs(repo, refs, "compile")["dependency_surface"])
+
     def test_a_published_surface_needs_one_spec_directory_and_a_readable_spec(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
