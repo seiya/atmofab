@@ -53,6 +53,8 @@ The key's input set is defined **per derivation type**; there is no single all-a
 
 The transformation version of an LLM stage is its prompt contract version + gate/validator version + model policy (A7); the transformation version of a deterministic stage is the version identity of the implementing tool and its policy inputs (renderer + templates for assemble, build-runtime server for build and execute, verdict evaluator for verdict). Evidence is environment-specific (perf in particular), so a change of execution environment invalidates the execute derivation and, through the evidence output hash, its dependent verdict. Downstream references to the output of a non-deterministic stage are always the selected certified **output hash**, never the upstream derivation key: one derivation key can hold multiple certified outputs (cache policy above), so a key-based reference would leave the dependent key unchanged when the selected output changes. The spec-compile key contains no target profile, so the semantic IR is compiled once per spec and shared across all targets (A5); target dependence enters at codegen.
 
+Amended by [issue #574](https://github.com/seiya/atmofab/issues/574): the spec-compile and codegen keys bind a dependency by its published surface (§5.1 of its spec), not by the closure's IR or source output hashes; the build key keeps the closure's source output hashes. The transformation version of an LLM stage is its reader's contract version; a producer's contract is advisory.
+
 Inputs divide into two classes, and the classification rule is explicit:
 
 - **Contract inputs** define what a valid output is; every one of them is hashed into the key (the table above). A comparand consumed by the verdict — the regression baseline — is a contract input: updating it invalidates the dependent verdict derivation. The `cross_target` counterpart is the exception since [issue #383](https://github.com/seiya/atmofab/issues/383): it is compared on demand, outside the verdict and its key, because each target's variant is the other's counterpart and keying either on the other made every certification on one target invalidate the other.
@@ -140,7 +142,7 @@ Three corpora grow with every certified node and feed back into generation:
 
 - **Exemplar corpus** (R5, adopted unchanged): certified (family, spec_kind, language, target) siblings injected as prior art. An advisory input under A1: recorded per attempt in the event log, excluded from derivation keys.
 - **Failure taxonomy as data**: failure classes, attribution rules, and routing decisions are versioned structured data consumed by the router and injected into repair turns — not prose distributed across contract documents.
-- **Prompt contracts as versioned inputs**: the per-stage instruction text is a versioned artifact participating in the derivation key, so a contract change is an observable, cache-invalidating event with measurable effect on pass rates.
+- **Prompt contracts as versioned inputs**: the per-stage instruction text is a versioned artifact, so a contract change is an observable event with measurable effect on pass rates. A reader's contract participates in the derivation key and is cache-invalidating; a producer's is a versioned advisory input, recorded per attempt ([issue #574](https://github.com/seiya/atmofab/issues/574)).
 
 ### A8. Runtime substrate
 

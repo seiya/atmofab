@@ -1637,10 +1637,10 @@ def build_launch_request(
     state_snapshots is not forced to produce them (phase_04 §44).
     repair carries issue_severity/repair_strategy/repair_target_agent_run_id/
     repair_reason on a retry (defaults to the literal "none" the templates use).
-    resolved_dependencies are the orientation-only dependency facts (pipeline/run/verdict
-    per direct dep, from `_resolve_dependency_facts`); when non-empty they are attached for
-    the LLM (generate / validate) leaves so the rendered `<dependency_facts>` block lets a
-    judge skip the filesystem lookup. They never gate (pure module function, no FS access).
+    resolved_dependencies are the orientation-only dependency facts (the refs and published
+    operations per direct dep, from `_resolve_dependency_facts`); when non-empty they are attached
+    for the LLM (generate / validate) leaves, whose `DEPENDENCIES.md` lists the operations. They
+    never gate (pure module function, no FS access).
     device_trace says the target's binary runs under a device trace (validate.execute only),
     whose per-kernel summary execute promotes to `kernel_trace.csv` (issue #307).
     """
@@ -3935,10 +3935,10 @@ class Conductor:
     _phase_derivations: dict[tuple[str, str], dict[str, Any]] = field(
         default_factory=dict, init=False, repr=False)
     #: The closure bindings of each `(node_key, phase)` attempt in flight — for `generate` and
-    #: `build`, which certified source of every closure member the phase's key bound
-    #: (`closure[].source`), resolved by the SAME `DerivationResolver` that computed the key
-    #: (issue #250 PR-3). `_stage_dependency_sources` copies from these and from nothing
-    #: it resolves itself, so what is staged is what the key says even when a member is
+    #: `build`, which certified source of every closure member the attempt stands on, resolved
+    #: by the SAME `DerivationResolver` that computed the key (issue #250 PR-3); on `build` it is
+    #: the key's `closure[].source`. `_stage_dependency_sources` copies from these and from
+    #: nothing it resolves itself, so what is staged stays one selection even when a member is
     #: re-certified between the key and the copy (a parallel closure does that).
     _phase_closure_bindings: dict[tuple[str, str], list[dict[str, Any]]] = field(
         default_factory=dict, init=False, repr=False)
@@ -7978,7 +7978,7 @@ class Conductor:
                                      deadline: float, spec: "Conductor._LeafProducerSpec"
                                      ) -> "Conductor._WorkshopLineage":
         """The loop's handle on a lineage whose tree holds `seeds`: the closure (re)staged into
-        its `staged/closure` from the bindings the generate key bound (a lineage whose spec
+        its `staged/closure` from the bindings the generate attempt bound (a lineage whose spec
         stages one), and the name sets."""
         from tools.workshop_tree import reserved_tree_names
         closure = (spec.workshop_stage_closure(refs, paths)
@@ -10890,12 +10890,12 @@ class Conductor:
         canonical `src/` — phase_02 §41 carve-out: a transient `$(OBJDIR)` stage is not a
         canonical-tree copy, so it is not the forbidden dependency mix-in.
 
-        Each dep's model source is the one the running `phase` attempt's derivation key
-        BOUND (`closure[].source` of its `derivation_inputs`): the binding resolved at phase
-        start by `_phase_derivation`, through the resolver that computed the key, and held
-        in `_phase_closure_bindings` (issue #250 PR-3). Nothing is re-selected here. Under a
+        Each dep's model source is the one the running `phase` attempt bound: the binding
+        resolved at phase start by `_phase_derivation`, through the resolver that computed the
+        key, and held in `_phase_closure_bindings` (issue #250 PR-3); on `build` it is the key's
+        `closure[].source`. Nothing is re-selected here. Under a
         parallel closure a member can be re-certified between this attempt's key and this
-        copy; the staged bytes are still the bytes the key names, and the copy is hashed
+        copy; the staged bytes are still the bytes the attempt bound, and the copy is hashed
         AFTER it lands and refused if it is not (`model_source_sha256`). A `source_id`
         directory's content is written once and never rewritten, so a mismatch is a copy
         that did not read the file the binding hashed. `phase` is `generate` (the syntax
@@ -10950,7 +10950,7 @@ class Conductor:
             raise RuntimeError(
                 f"cannot stage the dependency closure of {refs.node_key} for {phase}: the "
                 f"phase attempt has no derivation record, so no closure binding to stage "
-                f"from (staging reads the bindings the phase's key bound, never a fresh "
+                f"from (staging reads the bindings the phase's attempt bound, never a fresh "
                 f"selection)")
         by_node = {b["node_key"]: b for b in bound}
         if set(by_node) != set(nodes):
@@ -11004,7 +11004,7 @@ class Conductor:
     def _copy_bound_file(self, refs: NodeRefs, phase: str, node_key: str, ref: str,
                          sha256: str, target: Path) -> None:
         """Copy the bound file `ref` of closure member `node_key` to `target` and refuse the copy
-        unless it hashes to `sha256` — the bytes the `phase` key of `refs` bound. Hashed AFTER it
+        unless it hashes to `sha256` — the bytes the `phase` attempt of `refs` bound. Hashed AFTER it
         lands, so the check reads what will be compiled. Raises RuntimeError (a build
         precondition, transport fail_closed)."""
         shutil.copy2(self.repo_root / ref, target)
@@ -11012,9 +11012,9 @@ class Conductor:
         if digest != sha256:
             raise RuntimeError(
                 f"dependency {node_key}: the staged {ref} hashes to {digest}, not the "
-                f"{sha256} the {phase} key of {refs.node_key} bound (the certified source "
+                f"{sha256} the {phase} attempt of {refs.node_key} bound (the certified source "
                 f"directory was rewritten under the running attempt; refusing to compile bytes "
-                f"the key never saw)")
+                f"the attempt did not bind)")
 
     def _write_dependency_headers(self, refs: NodeRefs) -> None:
         """Copy each closure member's host-rendered interface header into the node's `src/`, at
@@ -11025,9 +11025,10 @@ class Conductor:
         the files of `src/` by name), the syntax stage (which copies `src/`'s sources and headers
         into its stage directory), and the leaf-authored sources at Build (whose object
         directory is on the include path too, where `_stage_dependency_sources` puts the same
-        bytes). The copy is the BOUND one — the header beside the model source the generate key
-        bound, sha-checked after it lands — so the declarations the node is checked against are
-        the ones its Build links against. No-op for a language without the capability and for a
+        bytes). The copy is the BOUND one — the header beside the model source the generate
+        attempt bound, sha-checked after it lands. The generate key binds the surface the header
+        renders, so the declarations the node is checked against are the surface its Build links
+        against. No-op for a language without the capability and for a
         node without bindings (no dependency, or a control file the host does not author)."""
         if self._interface_header_module(refs) is None:
             return
@@ -11036,8 +11037,8 @@ class Conductor:
         for binding in bound:
             if "interface_header_ref" not in binding:
                 raise RuntimeError(
-                    f"dependency {binding.get('node_key')}: the generate key of {refs.node_key} "
-                    f"bound no interface header, and this language's sources include one")
+                    f"dependency {binding.get('node_key')}: the generate attempt of "
+                    f"{refs.node_key} bound no interface header, and this language's sources include one")
             src.mkdir(parents=True, exist_ok=True)
             self._copy_bound_file(
                 refs, "generate", str(binding["node_key"]), binding["interface_header_ref"],
@@ -11047,7 +11048,7 @@ class Conductor:
     def _stage_workshop_closure(self, refs: NodeRefs, paths: Any) -> tuple[str, ...]:
         """Stage the node's dependency closure into a `workshop leaf` lineage's
         `paths.staged_closure` (each wrapper `compile` copies it into a fresh object
-        directory), from the bindings the generate key bound
+        directory), from the bindings the generate attempt bound
         (`_stage_dependency_sources`, phase `generate`), and return the basenames placed there.
 
         Run in the main thread when the lineage is created, before the leaf launches, so the
@@ -14149,13 +14150,12 @@ class Conductor:
 
         For `generate` and `build` the closure bindings are resolved here too, through the
         resolver that computed the key, and kept in `_phase_closure_bindings` for
-        `_stage_dependency_sources` (issue #250 PR-3): one selection per member, read once,
-        so the key and the staged bytes cannot disagree. A member whose selected source
-        cannot be bound is the same unresolvable input as a member with no certified output
-        (`phase_derivation_inputs` raises for that first; this raise is the guard behind it),
-        and a binding whose output hash is not the one the key bound is refused outright —
-        it cannot happen with one memoised resolver, and if it did, staging would compile
-        bytes the key never saw. The resolver is this run's target's (`_resolver`); a compile
+        `_stage_dependency_sources` (issue #250 PR-3): one selection per member, read once.
+        A member whose selected source cannot be bound is the same unresolvable input as a
+        member with no certified output (`phase_derivation_inputs` raises for that first; this
+        raise is the guard behind it), and a `build` binding whose output hash is not the one
+        the key bound is refused outright — it cannot happen with one memoised resolver, and if
+        it did, staging would compile bytes the key never saw. The resolver is this run's target's (`_resolver`); a compile
         key reads no pipeline artifact, so it answers the same for every target."""
         resolver = self._resolver()
         derivation = phase_derivation(
@@ -14173,8 +14173,7 @@ class Conductor:
             # node whose control file the conductor does not author, and a member of such a
             # node's closure need not carry a source under the staged name.
             self._phase_closure_bindings[(refs.node_key, phase)] = self._bind_closure_sources(
-                refs, phase, derivation["derivation_inputs"].get("closure") or [],
-                resolver=resolver)
+                refs, phase, derivation["derivation_inputs"]["closure"], resolver=resolver)
         return derivation
 
     def _bind_closure_sources(self, refs: NodeRefs, phase: str,
@@ -14182,10 +14181,11 @@ class Conductor:
                               resolver: Any = None,
                               ) -> list[dict[str, Any]]:
         """The staging binding of every member of `closure` (the `closure[]` entries of a
-        `generate` / `build` derivation: `{node_key, source: <output hash>, ...}`), resolved
-        through `resolver` — the memo that computed the key, when called from
-        `_phase_derivation`. Each binding is `_resolve_certified_closure_binding`'s record;
-        its `output_hash` must be the `source` the key bound, or the binding is refused.
+        `generate` / `build` derivation), resolved through `resolver` — the memo that computed
+        the key, when called from `_phase_derivation`. Each binding is
+        `_resolve_certified_closure_binding`'s record. A `build` entry names the `source` its key
+        bound, and a binding with another `output_hash` is refused; a `generate` key binds no
+        source, so there the binding is the selection itself (issue #574).
         Raises `DerivationInputsUnresolvable`, phrased as the build precondition it is."""
         from tools.orchestration_runtime import _resolve_certified_closure_binding
         resolver = resolver or self._resolver()
@@ -14198,7 +14198,7 @@ class Conductor:
                 raise DerivationInputsUnresolvable(
                     f"derivation_inputs_unresolvable: {phase} derivation of "
                     f"{refs.node_key} cannot bind the closure member {nk}: {err}")
-            if binding["output_hash"] != entry.get("source"):
+            if "source" in entry and binding["output_hash"] != entry["source"]:
                 raise DerivationInputsUnresolvable(
                     f"derivation_inputs_unresolvable: {phase} derivation of "
                     f"{refs.node_key} bound {nk} to output {entry.get('source')!r} but "

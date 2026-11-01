@@ -12852,15 +12852,20 @@ class DependencyFactsRenderTests(unittest.TestCase):
         det = dict(self.BASE, deterministic=True, resolved_dependencies=[self.DEP])
         self.assertEqual(_build_dependency_facts(det), "")
 
-    def test_one_line_per_dependency(self) -> None:
+    def test_a_dependencys_certified_refs_are_not_rendered(self) -> None:
+        """Issue #574: a workshop leaf cannot open a workspace path and a past id is not an input,
+        so the refs stay on the structure the lineage record reads, and a dependency with no
+        published operation renders nothing."""
         from tools.orchestration_runtime import _build_dependency_facts
 
+        self.assertEqual(_build_dependency_facts(
+            dict(self.BASE, resolved_dependencies=[self.DEP])), "")
         block = _build_dependency_facts(
-            dict(self.BASE, resolved_dependencies=[self.DEP]))
-        self.assertIn(
-            "- component/demo_dep_base@0.1.0: "
-            f"pipeline_ref={self.DEP['pipeline_ref']} run_id={self.DEP['run_id']} "
-            f"aggregate_verdict={self.DEP['aggregate_verdict_ref']}", block)
+            dict(self.BASE, resolved_dependencies=[self.DEP_WITH_OPS]))
+        self.assertIn("subroutine demo_dep_base__scale(x, n, y)", block)
+        for ref in (self.DEP["pipeline_ref"], self.DEP["run_id"],
+                    self.DEP["aggregate_verdict_ref"], "pipeline_ref=", "aggregate_verdict="):
+            self.assertNotIn(ref, block)
 
     DEP_WITH_OPS = {
         **DEP,
@@ -13225,14 +13230,13 @@ class DependencyFactsRenderTests(unittest.TestCase):
 
         This row used to render the agentic `substep agent` template and assert the block
         landed in it. That template went with the agentic leaf (Z4, issue #171), so what it
-        drives now is the renderer that survives — and the assertion is unchanged in substance:
-        the verdict path is in the prompt when a dependency was resolved and absent when none
-        was."""
+        drives now is the renderer that survives: the operation is in the document when a
+        dependency was resolved, and the document is empty when none was."""
         from tools.orchestration_runtime import _build_dependency_facts
 
-        with_dep = _build_dependency_facts(dict(self.BASE, resolved_dependencies=[self.DEP]))
-        self.assertIn(self.DEP["aggregate_verdict_ref"], with_dep)
-        self.assertIn("Dependency facts", with_dep)
+        with_dep = _build_dependency_facts(
+            dict(self.BASE, resolved_dependencies=[self.DEP_WITH_OPS]))
+        self.assertIn("demo_dep_base__scale", with_dep)
         self.assertEqual(_build_dependency_facts(dict(self.BASE)), "")
 
 
@@ -22645,7 +22649,7 @@ class DerivationKeyCertificationTests(unittest.TestCase):
     key-stamped artifacts (`certify_node` asks `phase_derivation` for the stamp; nothing here
     computes a key by hand): the 13a property (a registry that resolves the closure
     differently moves the compile key — `dependency_graph`), the 13b property (a dependency
-    regenerated within its version moves the consumer's generate and build keys —
+    regenerated within its version moves the consumer's build key —
     `closure[].source` — while a byte-identical re-certification moves nothing), the spec
     text (an edit with no version bump moves the compile key), the legacy corpus (a meta
     with no key is not eligible), revocation and a moved deliverable (not eligible under a
@@ -22790,20 +22794,18 @@ class DerivationKeyCertificationTests(unittest.TestCase):
 
     def test_a_regenerated_dependency_source_moves_the_consumer_keys(self) -> None:
         """13b's property. `dep_a` re-certified from DIFFERENT bytes under the same version:
-        the selection moves to the newer output, so `dep_b`'s generate and build keys
-        (`closure[].source`) no longer match and it is not ready for `pipeline_ref`, while
-        its Compile — which binds `dep_a`'s IR and published surface, both unchanged — still
-        stands. One level up, `user`'s Compile stands too: a dependency's certified SOURCE is
-        a per-target artifact and no longer a compile input (issue #284 removed the
-        `dependency_surface` fallback that read it), so `user` is refused at Generate, by the
-        same `closure[].source` binding. Removing `closure` from the generate / build inputs
-        leaves this row red."""
+        the selection moves to the newer output, so `dep_b`'s build key (`closure[].source`) no
+        longer matches and it is not ready for `pipeline_ref`, while its Compile and Generate,
+        which bind `dep_a`'s published surface, unchanged, still stand (issue #574). One level up,
+        `user` stands through Generate too and is refused at Build, by the same binding. Removing
+        `closure` from the build inputs leaves this row red."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
             self._recertify_dep(repo_root, model_text="module dep_a_model\n! v2\nend module\n")
             self.assertTrue(self._certified(repo_root, self.DEP_B, "compile")[0])
-            ok, detail = self._certified(repo_root, self.DEP_B, "generate")
+            self.assertTrue(self._certified(repo_root, self.DEP_B, "generate")[0])
+            ok, detail = self._certified(repo_root, self.DEP_B, "build")
             self.assertFalse(ok)
             self.assertEqual(detail["reason"], "derivation_key_mismatch:closure[0].source")
             from tools.orchestration_runtime import _verify_dep_stage_detail
@@ -22814,13 +22816,10 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                 _verify_dep_stage_detail(repo_root, "component", "dep_b", "0.1.0", "pipeline_ref", target=_TP),
                 (False, f"{self.DEP_B} build: derivation_key_mismatch:closure[0].source"))
             self.assertTrue(self._certified(repo_root, self.USER, "compile")[0])
-            ok, detail = self._certified(repo_root, self.USER, "generate")
+            self.assertTrue(self._certified(repo_root, self.USER, "generate")[0])
+            ok, detail = self._certified(repo_root, self.USER, "build")
             self.assertFalse(ok)
-            # `dep_b` itself has no certified Generate under its moved key, so `user`'s
-            # generate key cannot be computed and names the deepest node.
-            self.assertTrue(str(detail["reason"]).startswith(
-                f"derivation_inputs_unresolvable: dependency {self.DEP_B} has no certified "
-                "generate output"), detail)
+            self.assertEqual(detail["reason"], "derivation_key_mismatch:closure[0].source")
 
     def test_an_identical_source_under_a_new_certification_moves_nothing(self) -> None:
         """The other direction: a re-certification of `dep_a` that reproduces its source byte
@@ -22879,6 +22878,62 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                 ok, detail = self._certified(repo_root, self.USER, "build")
             self.assertFalse(ok)
             self.assertEqual(detail["reason"], "derivation_key_mismatch:transformation")
+
+    def test_a_reader_contract_bump_moves_its_phase_and_a_producer_bump_moves_none(self) -> None:
+        """Done-when 3 through the production predicate, on stamped artifacts (issue #574): the
+        recorded whole-contract version moves no certification; a phase's reader constant refuses
+        that phase, and each later phase stands or falls by its own constants."""
+        from tools import leaf_contract
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            with mock.patch.object(leaf_contract, "LEAF_PROMPT_CONTRACT_VERSION", "leaf-999"):
+                for step in ("compile", "generate", "build", "validate"):
+                    self.assertTrue(self._certified(repo_root, self.USER, step)[0], step)
+            for constant, step in (("COMPILE_VERIFY_CONTRACT_VERSION", "compile"),
+                                   ("GENERATE_VERIFY_CONTRACT_VERSION", "generate"),
+                                   ("VALIDATE_JUDGE_CONTRACT_VERSION", "validate")):
+                with self.subTest(constant=constant), mock.patch.object(
+                        leaf_contract, constant, "reader-999"):
+                    ok, detail = self._certified(repo_root, self.USER, step)
+                    self.assertFalse(ok)
+                    # The bump reaches `user` directly or through the dependency it stands on,
+                    # whose own stamp is stale first.
+                    self.assertIn("derivation_key_mismatch:transformation", detail["reason"])
+
+    def test_a_stamp_whose_tuple_differs_is_diagnosed_as_transformation_before_any_input(
+            self) -> None:
+        """An input that differs under the current tuple is named. Under another tuple the tuple
+        is named instead: one key change would otherwise send the operator after an input."""
+        from tools import derivation
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            spec = repo_root / "spec" / "component" / "dep_a" / "controlled_spec.md"
+            spec.write_text(spec.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            self.assertEqual(self._certified(repo_root, self.DEP, "compile")[1]["reason"],
+                             "derivation_key_mismatch:spec.controlled_spec")
+            with mock.patch.object(derivation, "COMPILE_INLINED_DOCUMENTS_VERSION", "docs-999"):
+                self.assertEqual(self._certified(repo_root, self.DEP, "compile")[1]["reason"],
+                                 "derivation_key_mismatch:transformation")
+
+    def test_a_current_tuple_stamp_outranks_a_stale_tuple_stamp_in_the_diagnosis(self) -> None:
+        """A stale-tuple stamp has a one-member diff, and a current-tuple stamp with two differing
+        inputs has a longer one; the current-tuple stamp is still the one diagnosed, because its
+        remedy is an input and the other's is not the operator's to act on while it stands."""
+        from tools import derivation
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            with mock.patch.object(derivation, "COMPILE_INLINED_DOCUMENTS_VERSION", "docs-old"):
+                certify_node(repo_root, "orch_old", self.DEP, through="compile",
+                             ir_id="dep-a_20260102_001", pipeline_id="dep-a_20260101_001",
+                             ir_text=f"node_key: {self.DEP}\n# older tuple\n")
+            for name in ("controlled_spec.md", "tests.md"):
+                path = repo_root / "spec" / "component" / "dep_a" / name
+                path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            self.assertEqual(self._certified(repo_root, self.DEP, "compile")[1]["reason"],
+                             "derivation_key_mismatch:spec.controlled_spec")
 
     # --- eligibility ------------------------------------------------------------------
 
@@ -24949,6 +25004,24 @@ class DerivationInputsTests(unittest.TestCase):
         self._write(repo / refs["ir_ref"] / "dependency_graph.json", json.dumps(graph, indent=2))
         return refs
 
+    _SURFACE_A = "module_parameters:\n  - {name: dp, value: float64}\nprocedures: []\n"
+    _SURFACE_B = "module_parameters:\n  - {name: dp, value: float32}\nprocedures: []\n"
+
+    @staticmethod
+    def _surface_hash(body: str) -> str:
+        from tools.structured_signatures import load_structured_signatures
+        struct, err = load_structured_signatures(body)
+        assert err is None, err
+        return tools_derivation.sha256_hex(tools_derivation.canonical_json_bytes(struct))
+
+    def _publish(self, repo: Path, kind: str, sid: str, node_key: str, section51: str, *,
+                 prose: str = "body", **certify: Any) -> None:
+        """Give `node_key`'s spec a §5.1 fence and certify the node again under the moved spec."""
+        self._write(repo / self._spec_dir(kind, sid) / "controlled_spec.md",
+                    f"# {sid}\n\n{prose}\n\n## 5. Published interface\n\n"
+                    f"### 5.1 Canonical interface\n\n```yaml\n{section51}```\n")
+        certify_node(repo, "o-publish", node_key, through="validate", **certify)
+
     def _reir(self, repo: Path, refs: dict[str, Any], text: str) -> None:
         """Rewrite spec_x's IR document and re-stamp its meta's byte-pin, as a real compile
         pass would leave it."""
@@ -24988,7 +25061,7 @@ class DerivationInputsTests(unittest.TestCase):
             refs = self._seed(repo)
             expected = {
                 # Target-free since issue #284: no `toolchain_document`, no harness anywhere.
-                "compile": {"spec", "profiles", "dependency_graph", "closure", "dependency_surface"},
+                "compile": {"spec", "profiles", "dependency_graph", "dependency_surface"},
                 "generate": {"ir", "spec", "target", "harness", "closure"},
                 "build": {"source", "closure", "toolchain"},
                 "validate": {"binary", "ir", "spec", "run_policy"},
@@ -25020,7 +25093,7 @@ class DerivationInputsTests(unittest.TestCase):
 
     # --- what each entry binds to ------------------------------------------------------
 
-    def test_compile_inputs_bind_the_spec_the_profile_and_the_closure_irs(self) -> None:
+    def test_compile_inputs_bind_the_spec_the_profile_and_the_dependency_surface(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25033,18 +25106,14 @@ class DerivationInputsTests(unittest.TestCase):
                 "node_key": self._PROFILE,
                 "controlled_spec": _compute_sha256(
                     repo / self._spec_dir("profile", "pr") / "controlled_spec.md")}])
-            # The closure is every member of the derived graph but self, sorted, each bound
-            # to the output hash of its certified IR (`_certified_ir_dir` selection). The
-            # target's harness is NOT a member: the Compile is target-free (issue #284).
-            dep_ir = ort._certified_ir_dir(repo, "component", "dep_a", "0.1.0")
-            self.assertEqual(inputs["closure"], [
-                {"node_key": self._DEP,
-                 "ir": self._meta_output_hash(repo, str((dep_ir / "ir_meta.json").relative_to(repo)))},
-            ])
+            # The direct component dependencies, each by its §5.1. The target's harness is NOT
+            # a member: the Compile is target-free (issue #284).
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            inputs = self._inputs(repo, refs, "compile")
             self.assertEqual(inputs["dependency_surface"], tools_derivation.sha256_hex(
-                tools_derivation.canonical_json_bytes(ort._resolve_component_dep_surface(
-                    repo, self._NK, json.loads((repo / refs["ir_ref"] / "dependency_graph.json")
-                                               .read_text(encoding="utf-8"))))))
+                tools_derivation.canonical_json_bytes([{
+                    "node_key": self._DEP,
+                    "surface": self._surface_hash(self._SURFACE_A)}])))
             # The graph signature is the canonical form the R6-lite comparison reads.
             from tools.dependency_graph import build_dependency_graph
             graph, _ = build_dependency_graph(repo, target_spec_ref=spec, target_node_key=self._NK,
@@ -25052,7 +25121,7 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(inputs["dependency_graph"], tools_derivation.sha256_hex(
                 tools_derivation.canonical_json_bytes(ort._closure_signature(graph))))
 
-    def test_generate_inputs_bind_the_ir_the_harness_and_both_closure_outputs(self) -> None:
+    def test_generate_inputs_bind_the_ir_the_harness_and_the_closure_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25063,13 +25132,13 @@ class DerivationInputsTests(unittest.TestCase):
                 "node_key": self._HARNESS,
                 "manifest": tools_derivation.sha256_hex(tools_derivation.canonical_json_bytes(
                     harness_capability_manifest_document_for(self._HARNESS)))})
-            dep_refs = {nk: certify_node(repo, "o-read", nk, through="validate")
-                        for nk in (self._DEP, self._HARNESS)}
-            self.assertEqual(inputs["closure"], [
-                {"node_key": nk,
-                 "ir": self._meta_output_hash(repo, dep_refs[nk]["ir_meta"]),
-                 "source": self._meta_output_hash(repo, dep_refs[nk]["source_meta"])}
-                for nk in (self._DEP, self._HARNESS)])
+            self._publish(repo, "infrastructure", "harness_fortran_cpu", self._HARNESS,
+                          self._SURFACE_B)
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            # The pipeline's order, the harness first, and each member by its §5.1 alone.
+            self.assertEqual(self._inputs(repo, refs, "generate")["closure"], [
+                {"node_key": self._HARNESS, "surface": self._surface_hash(self._SURFACE_B)},
+                {"node_key": self._DEP, "surface": self._surface_hash(self._SURFACE_A)}])
 
     def test_build_and_validate_inputs_bind_their_own_upstream_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -25305,10 +25374,10 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(tools_derivation.first_differing_input(before, after),
                              "profiles[0].controlled_spec")
 
-    def test_a_deps_edit_moves_the_graph_and_the_closure(self) -> None:
+    def test_a_deps_edit_moves_the_graph(self) -> None:
         """The 13a fact under one key: dropping the adopted profile from `deps.yaml` moves the
-        derived graph signature AND the closure list (and the deps file hash). (Until issue
-        #284 the edit dropped the harness, which no `deps.yaml` declares any more.)"""
+        derived graph signature (and the deps file hash). (Until issue #284 the edit dropped the
+        harness, which no `deps.yaml` declares any more.)"""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25316,13 +25385,14 @@ class DerivationInputsTests(unittest.TestCase):
             self._seed_registry(repo, adopt_profile=False)
             after = self._inputs(repo, refs, "compile")
             self.assertNotEqual(before["dependency_graph"], after["dependency_graph"])
-            self.assertEqual(after["closure"], [])
-            self.assertEqual(tools_derivation.first_differing_input(before, after), "closure")
+            self.assertEqual(tools_derivation.first_differing_input(before, after),
+                             "dependency_graph")
 
-    def test_a_dependency_re_derived_within_its_version_moves_every_consumer_key(self) -> None:
-        """The 13b fact under one key, and the compile-side fact 13b never saw: a NEWER
-        certified IR / source of `dep_a` under the same `spec_version` changes what the
-        consumer's compile, generate and build bind to."""
+    def test_a_dependency_re_derived_to_a_different_ir_with_the_same_surface_moves_no_compile_or_generate_key(
+            self) -> None:
+        """Issue #574's first Done-when, under one key. A NEWER certified IR and source of `dep_a`
+        under the same `spec_version` and §5.1 leave the consumer's compile and generate inputs
+        as they were, and its Build, which links the source, moves."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25335,20 +25405,217 @@ class DerivationInputsTests(unittest.TestCase):
                          ir_text=f"node_key: {self._DEP}\n# v2\n",
                          model_text="module dep_a_model\n! v2\nend module\n")
             after = {s: self._inputs(repo, refs, s) for s in ("compile", "generate", "build")}
-            self.assertEqual(tools_derivation.first_differing_input(before["compile"], after["compile"]),
-                             "closure[0].ir")
-            self.assertEqual(tools_derivation.first_differing_input(before["generate"], after["generate"]),
-                             "closure[0].ir")
+            self.assertEqual(before["compile"], after["compile"])
+            self.assertEqual(before["generate"], after["generate"])
             self.assertEqual(tools_derivation.first_differing_input(before["build"], after["build"]),
                              "closure[0].source")
             # The harness entry did not move: the diff is exactly dep_a's.
             self.assertEqual(before["build"]["closure"][1], after["build"]["closure"][1])
 
+    def test_a_dependency_surface_change_moves_the_generate_key_under_an_identical_ir(
+            self) -> None:
+        """The consumer's own IR is byte-identical (a Compile can reproduce it), and its Generate
+        must still re-run: its producer is shown the dependency's new interface."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            before = {s: self._inputs(repo, refs, s) for s in ("compile", "generate")}
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_B)
+            after = {s: self._inputs(repo, refs, s) for s in ("compile", "generate")}
+            self.assertEqual(before["generate"]["ir"], after["generate"]["ir"])
+            self.assertEqual(tools_derivation.first_differing_input(before["compile"], after["compile"]),
+                             "dependency_surface")
+            self.assertEqual(tools_derivation.first_differing_input(before["generate"], after["generate"]),
+                             "closure[1].surface")
+
+    def test_a_harness_surface_change_moves_the_generate_key_under_an_identical_ir(self) -> None:
+        """The harness is no direct component dependency, and `assert_harness_pin` and a language's
+        interface headers read it only inside a Generate, so its surface is that key's. Compile is
+        target-free and does not move."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            before = {s: self._inputs(repo, refs, s) for s in ("compile", "generate")}
+            self._publish(repo, "infrastructure", "harness_fortran_cpu", self._HARNESS,
+                          self._SURFACE_B)
+            # `dep_a` stands on the harness too, and re-derives before its consumer.
+            certify_node(repo, "o-publish", self._DEP, through="validate")
+            after = {s: self._inputs(repo, refs, s) for s in ("compile", "generate")}
+            self.assertEqual(before["compile"], after["compile"])
+            self.assertEqual(before["generate"]["harness"], after["generate"]["harness"])
+            self.assertEqual(tools_derivation.first_differing_input(before["generate"], after["generate"]),
+                             "closure[0].surface")
+
+    def test_a_transitive_member_added_moves_the_generate_key_under_an_identical_ir(self) -> None:
+        """The control file lists every pipeline closure member in order, and a language's headers
+        are seeded for each, so the sidecar's membership and order are the generate key's: a
+        member added, or two members exchanged, move it with the consumer's IR unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            extra = "component/dep_t@0.1.0"
+            ensure_spec_entry(repo, extra)
+            certify_node(repo, "o-t", extra, through="validate")
+            sidecar = repo / refs["ir_ref"] / "dependency_graph.json"
+            graph = json.loads(sidecar.read_text(encoding="utf-8"))
+            before = self._inputs(repo, refs, "generate")
+            dep = next(n for n in graph["all_nodes"] if n["node_key"] == self._DEP)
+            dep["topo_level"] = 1
+            graph["all_nodes"].append({"node_key": extra, "topo_level": 0})
+            graph["transitive_deps"] = [{"node_key": extra}]
+            self._write(sidecar, json.dumps(graph))
+            added = self._inputs(repo, refs, "generate")
+            self.assertEqual(before["ir"], added["ir"])
+            self.assertEqual([c["node_key"] for c in added["closure"]],
+                             [self._HARNESS, extra, self._DEP])
+            dep["topo_level"] = 0
+            graph["all_nodes"][-1]["topo_level"] = 1
+            self._write(sidecar, json.dumps(graph))
+            exchanged = self._inputs(repo, refs, "generate")
+            self.assertEqual([c["node_key"] for c in exchanged["closure"]],
+                             [self._HARNESS, self._DEP, extra])
+
+    def test_two_irs_the_gate_accepts_as_equal_give_one_surface(self) -> None:
+        """Issue #574 round 1: `dep_a`'s IR certified with and without an optional `base`, as
+        `time_update_2d_rk4@0.1.1` was. The IR's own gate accepts both, a consumer's keys bind
+        neither, and a language's header renders one text."""
+        import yaml as _yaml
+
+        from tools.backends.language.cuda_cpp import header
+        from tools.backends.language.fortran import signatures
+        from tools.validate_pipeline_semantics import (
+            _validate_ir_module_parameters_against_section51)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            cs_path = repo / self._spec_dir("component", "dep_a") / "controlled_spec.md"
+            seen = {s: [] for s in ("compile", "generate")}
+            rendered = []
+            for n, param in enumerate(({"name": "dp", "value": "float64"},
+                                       {"name": "dp", "base": "integer", "value": "float64"})):
+                public_api = {"published_operations": [], "module_parameters": [param]}
+                violations: list[str] = []
+                _validate_ir_module_parameters_against_section51(
+                    Path("ir"), "component", public_api, cs_path, violations,
+                    signatures=signatures, identifier_key=str.lower)
+                self.assertEqual(violations, [])
+                certify_node(repo, "o-base", self._DEP, through="validate",
+                             ir_id=f"dep-a_20260103_00{n}",
+                             ir_text=_yaml.safe_dump({"public_api": public_api}))
+                rendered.append(header.render("dep_a", public_api, spec_kind="component"))
+                for step, values in seen.items():
+                    values.append(self._inputs(repo, refs, step))
+            self.assertEqual(seen["compile"][0], seen["compile"][1])
+            self.assertEqual(seen["generate"][0], seen["generate"][1])
+            self.assertEqual(rendered[0], rendered[1])
+
+    def test_a_prose_edit_outside_section_51_moves_no_surface(self) -> None:
+        """The edit re-derives the dependency (its own compile key moved) and no consumer: the
+        surface is §5.1's parsed form, so a comment or a layout change in the fence moves nothing
+        either."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            before = {s: self._inputs(repo, refs, s) for s in ("compile", "generate")}
+            self._publish(repo, "component", "dep_a", self._DEP,
+                          "# a comment\n" + self._SURFACE_A, prose="other words of the spec")
+            self.assertEqual(before, {s: self._inputs(repo, refs, s)
+                                      for s in ("compile", "generate")})
+
+    def test_a_section_51_edit_of_each_top_key_moves_the_surface(self) -> None:
+        """One row per key of the structured form, derived from its constant."""
+        import yaml as _yaml
+
+        from tools.structured_signatures import STRUCT_TOP_KEYS
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            before = self._inputs(repo, refs, "compile")["dependency_surface"]
+            for key in STRUCT_TOP_KEYS:
+                with self.subTest(key=key):
+                    doc = _yaml.safe_load(self._SURFACE_A)
+                    doc[key] = [*doc.get(key, []), {"name": f"added_{key}"}]
+                    self._publish(repo, "component", "dep_a", self._DEP, _yaml.safe_dump(doc))
+                    self.assertNotEqual(
+                        before, self._inputs(repo, refs, "compile")["dependency_surface"])
+
+    def test_a_section_51_that_does_not_load_is_refused_on_the_key_path(self) -> None:
+        """The sidecar's reader never raises; the key's must, or a surface nobody can state would
+        hash as a constant. Each row is a present §5.1 the structured loader refuses."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            cases = {"not_a_mapping": "- a\n", "null_key": "procedures: null\n",
+                     "unknown_key": "proceedures: []\n"}
+            for name, body in cases.items():
+                with self.subTest(name):
+                    self._publish(repo, "component", "dep_a", self._DEP, body)
+                    for step in ("compile", "generate"):
+                        with self.assertRaisesRegex(
+                                ort.DerivationInputsUnresolvable,
+                                "dependency component/dep_a@0.1.0 publishes no readable surface"):
+                            self._inputs(repo, refs, step)
+            graph = json.loads((repo / refs["ir_ref"] / "dependency_graph.json")
+                               .read_text(encoding="utf-8"))
+            self.assertEqual([e["node_key"] for e in ort._resolve_component_dep_surface(
+                repo, self._NK, graph)], [self._DEP])
+
+    def test_a_section_51_with_two_fences_is_refused_on_the_key_path(self) -> None:
+        """The other route to a present §5.1 with no one block: the reader of the fence refuses."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._publish(repo, "component", "dep_a", self._DEP,
+                          "procedures: []\n```\n\n```yaml\nprocedures: []\n")
+            with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+                                        "publishes no readable surface"):
+                self._inputs(repo, refs, "compile")
+
+    def test_a_member_without_section_51_has_a_null_surface_and_a_position(self) -> None:
+        """A `problem` publishes nothing a consumer calls, and it is still linked. The fixture's
+        members have no §5.1, which is the form the key reads; the gate refuses a certified
+        `component` without one (`test_component_without_section51_is_a_compile_fail`)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self.assertEqual(self._inputs(repo, refs, "generate")["closure"], [
+                {"node_key": self._HARNESS, "surface": None},
+                {"node_key": self._DEP, "surface": None}])
+
+    def test_a_spec_with_an_invalid_byte_reads_as_its_gate_reads_it(self) -> None:
+        """A byte the gate's reader ignores would otherwise certify the dependency under its own
+        gate and raise out of every consumer's key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            before = self._inputs(repo, refs, "compile")["dependency_surface"]
+            path = repo / self._spec_dir("component", "dep_a") / "controlled_spec.md"
+            path.write_bytes(path.read_bytes().replace(b"body", b"b\xffody"))
+            certify_node(repo, "o-publish", self._DEP, through="validate")
+            self.assertEqual(before, self._inputs(repo, refs, "compile")["dependency_surface"])
+
+    def test_a_published_surface_needs_one_spec_directory_and_a_readable_spec(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._seed(repo)
+            with mock.patch.object(ort, "resolve_spec_ref_for", return_value=None), \
+                    self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+                                           "does not resolve to one spec directory"):
+                ort._published_surface(repo, self._DEP, ort.DerivationResolver(repo, target=_TP))
+            (repo / self._spec_dir("component", "dep_a") / "controlled_spec.md").unlink()
+            with mock.patch.object(ort, "_dependency_output_hash"), \
+                    self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "is unreadable"):
+                ort._published_surface(repo, self._DEP, ort.DerivationResolver(repo, target=_TP))
+
     def test_a_dependencys_published_interfaces_move_the_dependency_surface_input(self) -> None:
-        """Issue #486: the surface carries each component dependency's `public_api`
-        `interfaces` / `signatures` / `module_parameters`, so a prototype that changes by one
-        argument moves `dependency_surface` — the input that hashes what the producer and the
-        reviewer are shown — and the input equals the hash of the surface that carries it."""
+        """Issue #486: the document the leaves read carries each component dependency's
+        `public_api`. A prototype that changes by one argument changes that document, and its
+        §5.1 moves `dependency_surface` (issue #574)."""
         import yaml as _yaml
 
         def pa(intent: str) -> dict:
@@ -25359,6 +25626,9 @@ class DerivationInputsTests(unittest.TestCase):
                         {"name": "u", "rank": 0, "intent": intent,
                          "spec": {"type": "real", "kind": "dp"}}]}}]}}
 
+        def section51(intent: str) -> str:
+            return _yaml.safe_dump({"interfaces": pa(intent)["public_api"]["interfaces"]})
+
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25366,16 +25636,13 @@ class DerivationInputsTests(unittest.TestCase):
                                .read_text(encoding="utf-8"))
             seen = []
             for n, intent in enumerate(("in", "inout"), start=2):
-                certify_node(repo, "o-reir", self._DEP, through="validate",
-                             ir_id=f"dep-a_20260101_00{n}", ir_text=_yaml.safe_dump(pa(intent)))
+                self._publish(repo, "component", "dep_a", self._DEP, section51(intent),
+                              ir_id=f"dep-a_20260101_00{n}", ir_text=_yaml.safe_dump(pa(intent)))
                 [entry] = ort._resolve_component_dep_surface(repo, self._NK, graph)
                 self.assertEqual(
                     entry["public_api"]["interfaces"][0]["signature"]["args"][0]["intent"],
                     intent)
-                got = self._inputs(repo, refs, "compile")["dependency_surface"]
-                self.assertEqual(got, tools_derivation.sha256_hex(
-                    tools_derivation.canonical_json_bytes([entry])))
-                seen.append(got)
+                seen.append(self._inputs(repo, refs, "compile")["dependency_surface"])
             self.assertNotEqual(seen[0], seen[1])
 
     def test_a_dependencys_source_is_not_a_compile_input(self) -> None:
@@ -25384,8 +25651,8 @@ class DerivationInputsTests(unittest.TestCase):
         used to have its published operations read off that source (Codex, #250 round 2, made
         the result a key input); the fallback is gone, so such a dependency is `unresolved`
         and a re-certified source with different public subroutines moves no compile input.
-        What stays a key input is the surface itself (`dependency_surface`), pinned from the
-        IR side by `test_compile_inputs_bind_the_spec_the_profile_and_the_closure_irs`."""
+        What stays a key input is the surface itself (`dependency_surface`), pinned by
+        `test_compile_inputs_bind_the_spec_the_profile_and_the_dependency_surface`."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -25500,9 +25767,10 @@ class DerivationInputsTests(unittest.TestCase):
                 self._inputs(repo, refs, "generate")
             model.write_text(model.read_text(encoding="utf-8").replace(
                 "! edited after the stamp\n", ""), encoding="utf-8")
-            gen2 = self._inputs(repo, refs, "generate")
-            self.assertTrue(gen2["closure"][0]["ir"].startswith("sha256:"))
-            self.assertTrue(gen2["closure"][0]["source"].startswith("sha256:"))
+            self.assertEqual(self._inputs(repo, refs, "generate")["closure"][1]["node_key"],
+                             self._DEP)
+            self.assertTrue(self._inputs(repo, refs, "build")["closure"][0]["source"]
+                            .startswith("sha256:"))
 
     def test_a_revoked_dependency_source_refuses_readiness_and_the_consumer(self) -> None:
         """Round-1 review of PR-1 found `revoke-artifact --step generate` run by hand on a
@@ -25530,10 +25798,10 @@ class DerivationInputsTests(unittest.TestCase):
                             ort.DerivationInputsUnresolvable,
                             rf"no certified generate output \({reason}\)"):
                         self._inputs(repo, refs, step)
-                # Compile binds the dependency's IR alone, which stands.
+                # Compile asks for the dependency's certified IR alone, which stands.
                 self._inputs(repo, refs, "compile")
 
-    def test_generate_binds_the_selected_source_not_the_latest_directory(self) -> None:
+    def test_build_binds_the_selected_source_not_the_latest_directory(self) -> None:
         """The route it matters on: a dependency whose generate retry produced a NEWER source
         directory that never certified (a `pass` meta with hashes and no key — the shape a
         retry that died before `write-step-result` leaves, and the shape of every pre-PR-1
@@ -25542,7 +25810,7 @@ class DerivationInputsTests(unittest.TestCase):
             repo = Path(tmp)
             refs = self._seed(repo)
             dep = certify_node(repo, "o-read", self._DEP, through="validate")
-            before = self._inputs(repo, refs, "generate")["closure"][0]["source"]
+            before = self._inputs(repo, refs, "build")["closure"][0]["source"]
             newer = repo / dep["pipeline_ref"] / "source" / "src_20260102_009"
             (newer / "src").mkdir(parents=True)
             (newer / "src" / "dep_a_model.f90").write_text("module dep_a_model\n! retry\nend module\n",
@@ -25557,7 +25825,6 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(
                 ort.DerivationResolver(repo, target=_TP).select(self._DEP, "generate").source_id,
                 dep["source_id"])
-            self.assertEqual(self._inputs(repo, refs, "generate")["closure"][0]["source"], before)
             self.assertEqual(self._inputs(repo, refs, "build")["closure"][0]["source"], before)
 
     def test_a_dependency_without_a_certified_output_is_unresolvable(self) -> None:

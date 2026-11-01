@@ -1267,6 +1267,7 @@ class PureRenderTests(unittest.TestCase):
             "_generate_verify_severity_rubric_section": "workflow_conductor.py",
             "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
             "LEAF_PROMPT_CONTRACT_VERSION": "leaf_contract.py",
+            "GENERATE_VERIFY_CONTRACT_VERSION": "leaf_contract.py",
         }
         for name, module in sources.items():
             self.assertIn(name, note,

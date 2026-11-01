@@ -15864,6 +15864,52 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertEqual([b["output_hash"] for b in bound],
                              [e["source"] for e in derivation["derivation_inputs"]["closure"]])
             self.assertEqual(len(bound), 3)  # the target's harness, base and mid
+            # A generate key binds each member's surface and no source: the binding is the
+            # resolver's selection of the same members (issue #574).
+            derivation = c._phase_derivation(refs, "generate")
+            bound = c._phase_closure_bindings[(refs.node_key, "generate")]
+            self.assertEqual([b["node_key"] for b in bound],
+                             [e["node_key"] for e in derivation["derivation_inputs"]["closure"]])
+            self.assertEqual(set(derivation["derivation_inputs"]["closure"][0]),
+                             {"node_key", "surface"})
+            resolver = c._resolver()
+            self.assertEqual([b["output_hash"] for b in bound],
+                             [resolver.select(b["node_key"], "generate").output_hash
+                              for b in bound])
+            # What replaces a generate key's source comparison: the key and every binding are one
+            # resolver's answers (issue #574).
+            from tools import orchestration_runtime as ort
+            with mock.patch.object(wc, "phase_derivation", wraps=wc.phase_derivation) as key, \
+                    mock.patch.object(ort, "_resolve_certified_closure_binding",
+                                      wraps=ort._resolve_certified_closure_binding) as binding:
+                c._phase_derivation(refs, "generate")
+            self.assertEqual(binding.call_count, 3)
+            for call in binding.call_args_list:
+                self.assertIs(call.kwargs["resolver"], key.call_args.kwargs["resolver"])
+            # Build's comparison stands, and a generate entry has nothing to compare.
+            entry = derivation["derivation_inputs"]["closure"][0]
+            with self.assertRaisesRegex(wc.DerivationInputsUnresolvable, "its staged source"):
+                c._bind_closure_sources(refs, "build", [{**entry, "source": "sha256:other"}])
+            self.assertEqual(len(c._bind_closure_sources(refs, "generate", [entry])), 1)
+
+    def test_a_derivation_without_a_closure_is_a_defect_rather_than_an_empty_closure(self) -> None:
+        """Both keys that stage hold `closure[]` (`phase_derivation_inputs`), so nothing reaches
+        this today: the row pins that a lost member cannot stage nothing, silently."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/top@0.1.0",
+                               spec_path="spec/component/top", ir_id="top_20260101_001",
+                               pipeline_id="top_20260101_001", source_id="src_20260101_001",
+                               binary_id="b")
+            self._write_dep_ir(repo, refs)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
+                                   orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                                   env={})
+            self.assertTrue(c._conductor_authors_makefile(refs))
+            with mock.patch.object(wc, "phase_derivation",
+                                   return_value={"derivation_inputs": {}}), \
+                    self.assertRaises(KeyError):
+                c._phase_derivation(refs, "generate")
 
     def test_stage_dependency_sources_noop_for_a_harness_leaf(self) -> None:
         # Since issue #284 a physics node's pipeline closure always holds its target's harness,

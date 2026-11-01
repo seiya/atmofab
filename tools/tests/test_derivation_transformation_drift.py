@@ -45,6 +45,7 @@ import tools.execution_sites as es
 import tools.orchestration_runtime as ort
 import tools.target_profile as tp
 import tools.workflow_conductor as wc
+from tools import leaf_contract
 
 _REPO = Path(wc.__file__).resolve().parents[1]
 
@@ -1031,7 +1032,14 @@ PINNED_RENDER: dict[str, str] = {
     # profile's count; the renderer's pin of that harness carries the seven-argument writer.
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
-    "render-12": "94410f59920cefbca0b06b643d6ac76bd8b3d9a12ec7f9422b16cffac919aed3",
+    "render-12": "686b3a94c52a25ab973da285341b8f6b234c8ff800107087baee948e2d39bf6e",
+    # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
+    # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
+    # the attempt bound it, and a language's dependency-operations header no longer calls the source
+    # the one Build will compile, which a reused Generate makes false; that text is not what the
+    # phase renders, and what is staged and copied is byte-identical. The digest `render-12`
+    # shipped with at ee8eceb4:
+    "render-12@ee8eceb4": "94410f59920cefbca0b06b643d6ac76bd8b3d9a12ec7f9422b16cffac919aed3",
     # Re-pinned (issue #534 PR-3), behaviour-preserving: `_write_interface_header` writes what
     # the new `_interface_header_text` renders (joins the tuple), so a `workshop leaf`'s tree is
     # seeded with the header the gates read; the header written is byte-identical. The digest
@@ -1153,7 +1161,10 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "4d085fa1c7bd2e28c816e442b0cb3eee5b1decd3546fa199270535e6b3bc94ca",
+    "build-2": "61588a8db04430e9ce9bc4195f986f98883972bc65abb5a7761ec76b4712e8fc",
+    # Re-pinned (issue #574), behaviour-preserving: `_copy_bound_file`'s docstring and refusal
+    # text, as under `render-12@ee8eceb4`. The digest `build-2` shipped with at ee8eceb4:
+    "build-2@ee8eceb4": "4d085fa1c7bd2e28c816e442b0cb3eee5b1decd3546fa199270535e6b3bc94ca",
     # Re-pinned, behaviour-preserving: the `tools/remote_execution.py` docstring states the
     # loader's two exit codes as measured, no longer that a launch prefix replaces the 127.
     # (Measured by diffing `build_tuple()` against fb25d422's: that row and no other.) The digest
@@ -1842,7 +1853,8 @@ class TransformationDriftTests(unittest.TestCase):
 #: Every `pure_context` key the launch tables declare, classified. `input`: node input data,
 #: hashed per node by the derivation inputs (`phase_derivation_inputs`) or an artifact of an
 #: upstream phase whose OUTPUT HASH is; `contract`: a static document or slice pinned by
-#: `test_leaf_prompt_contract_drift._contract_tuple` under `LEAF_PROMPT_CONTRACT_VERSION`;
+#: `test_leaf_prompt_contract_drift._contract_tuple` under `LEAF_PROMPT_CONTRACT_VERSION`, and
+#: under a phase's reader constant when that phase's reader reads it;
 #: `compile-docs`: pinned above under `COMPILE_INLINED_DOCUMENTS_VERSION`; `derived`: a
 #: host-computed value that is a function of `input` members and the transformation version
 #: (not hashed on its own); `same-phase`: an artifact an EARLIER substep of the same phase
@@ -1855,7 +1867,7 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "deps_document": "input",
     "profile_spec_document": "input",
     "dependency_graph_document": "input",      # the derived closure signature is hashed
-    "dependency_surface_document": "derived",  # from the closure members' certified IRs
+    "dependency_surface_document": "derived",  # the IR `public_api` `Compile.static` pins to the §5.1 hashed
     "ir_document": "input",                    # the compile output hash
     "bundle_document": "same-phase",           # the producer's bundle (the reviewer's subject)
     "harness_capabilities": "input",           # `harness.manifest`
@@ -1916,6 +1928,31 @@ class InlinedDocumentCensusTests(unittest.TestCase):
         for key, member in expected_member.items():
             with self.subTest(key=key):
                 self.assertIn(f'"{member}":', tuple_source)
+
+    def test_every_contract_row_a_reader_reads_is_in_that_phases_reader_set(self) -> None:
+        """A key classified `contract` that a READING substep is seeded is keyed: the reader
+        digest of its phase holds the member, read off the launch tables (issue #574)."""
+        from tools.tests import test_leaf_prompt_contract_drift as drift
+        member = {
+            "checks_module_contract_document": "checks_contract_abi_sections",
+            "severity_rubric_document": "generate_verify_severity_rubric_section",
+            "runner_output_contract_document": {"generate": "runner_output_contract_document",
+                                                "validate": "runner_output_contract_sections"},
+        }
+        tables = [*ort.PURE_CONTEXT_REQUIRED_KEYS.items(),
+                  *((key[:2], keys) for key, keys in ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE.items())]
+        seen = set()
+        for (step, substep), keys in tables:
+            if (step, substep) not in leaf_contract.WORKSHOP_READING_PAIRS:
+                continue
+            for key in keys:
+                if INLINED_DOCUMENT_CLASS.get(key) != "contract":
+                    continue
+                name = member[key] if isinstance(member[key], str) else member[key][step]
+                seen.add(key)
+                with self.subTest(step=step, key=key):
+                    self.assertIn(name, drift.READER_MEMBERS_BY_PHASE[step])
+        self.assertEqual(seen, set(member))
 
     def test_the_compile_docs_rows_are_the_pinned_table(self) -> None:
         self.assertEqual({k for k, v in INLINED_DOCUMENT_CLASS.items() if v == "compile-docs"},

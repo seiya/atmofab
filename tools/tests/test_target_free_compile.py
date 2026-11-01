@@ -180,9 +180,7 @@ class DerivationKeyTests(unittest.TestCase):
             second = ort.phase_derivation(repo, node_key=_NK, step="compile",
                                           spec_ref="spec/component/spec_x", target=SECOND_TARGET)
             self.assertEqual(set(first["derivation_inputs"]),
-                             {"spec", "profiles", "dependency_graph", "closure",
-                              "dependency_surface"})
-            self.assertEqual(first["derivation_inputs"]["closure"], [])
+                             {"spec", "profiles", "dependency_graph", "dependency_surface"})
             self.assertEqual(first["derivation_key"], second["derivation_key"])
             self.assertTrue(refs["ir_ref"])
 
@@ -194,8 +192,7 @@ class DerivationKeyTests(unittest.TestCase):
             gen = json.loads((repo / refs["source_meta"]).read_text())["derivation_inputs"]
             self.assertEqual(gen["harness"]["node_key"], harness_nk)
             self.assertEqual([c["node_key"] for c in gen["closure"]], [harness_nk])
-            self.assertTrue(gen["closure"][0]["ir"].startswith("sha256:"))
-            self.assertTrue(gen["closure"][0]["source"].startswith("sha256:"))
+            self.assertEqual(set(gen["closure"][0]), {"node_key", "surface"})
             build = json.loads((repo / refs["binary_meta"]).read_text())["derivation_inputs"]
             self.assertEqual([c["node_key"] for c in build["closure"]], [harness_nk])
             # The selected consumer chain stands on the certified harness.

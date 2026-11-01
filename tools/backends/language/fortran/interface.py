@@ -653,7 +653,7 @@ def dependency_operations_header(*, detailed: bool, procedure_argument: bool) ->
     if not detailed:
         return (
             "**Published dependency operations (conductor-resolved from each dependency's "
-            "CERTIFIED source — the exact source Build will compile/link):** Fortran arguments "
+            "CERTIFIED source; its `spec` pins this interface):** Fortran arguments "
             "are positional; call each operation with EXACTLY this argument order. A wrong "
             "order builds against a type/rank mismatch and fails the build (routed back to "
             "Generate). For generate.generate this is authoring-binding; for verify/validate "
@@ -661,7 +661,7 @@ def dependency_operations_header(*, detailed: bool, procedure_argument: bool) ->
         )
     header = (
         "**Published dependency operations (conductor-resolved from each dependency's "
-        "CERTIFIED source — the exact source Build will compile/link):** Fortran arguments "
+        "CERTIFIED source; its `spec` pins this interface):** Fortran arguments "
         "are positional; call each operation with EXACTLY this argument order. Each dummy "
         "argument's declared type, intent, and rank/shape is listed under its header — the "
         "actual argument you pass must MATCH the dummy's rank and shape. When a dummy is "

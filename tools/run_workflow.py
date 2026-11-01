@@ -4352,8 +4352,8 @@ def _dependency_node_readiness(
 
     Each stage is a derivation-key question of the node's own chain (issue #250 PR-2): its
     Compile / Build / Validate has an eligible output under the key recomputed NOW over the
-    node's contract inputs — the spec files, the registry-derived closure, every closure
-    member's selected outputs, the toolchain, the transformation version. So a node certified
+    node's contract inputs — the spec files, the registry-derived closure, its dependencies'
+    published surface and selected sources, the toolchain, the transformation version. So a node certified
     against an older version of one of ITS dependencies, against a dependency re-derived within
     its version, or against a spec text since edited, reports not-ready here with
     `derivation_key_mismatch:<the input that moved>` and this driver re-runs it — which is how

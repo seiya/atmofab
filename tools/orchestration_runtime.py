@@ -1072,14 +1072,14 @@ def _closure_signature(
 # pass`, is not revoked, still hashes to what the certifying run stamped (`artifact_hashes`),
 # and carries a `derivation_key` EQUAL to the key recomputed NOW over the phase's contract
 # inputs (`phase_derivation_inputs`). Among the eligible outputs of one key the selection
-# policy (`select_eligible`, v1 = the latest attempt) chooses ONE, and every consumer binds to
-# that output's `output_hash` — the node's own next phase and every dependent node alike.
+# policy (`select_eligible`, v1 = the latest attempt) chooses ONE, and what binds an output binds
+# that one's `output_hash` — the node's own next phase, and a dependent node's Build.
 #
-# The recomputation is recursive by construction: the compile key of a node hashes the
-# compile output hash of every closure member, the generate key the compile and generate
-# outputs, the build key the generate outputs, so a dependency re-derived within its version
-# changes every consumer's key with no bookkeeping, and a dependency re-derived to
-# byte-identical output changes nobody's (`output_hash` is stage-relative). One
+# The recomputation is recursive by construction: a node's compile and generate keys ask each
+# closure member for a certified output and bind its published surface, the build key binds its
+# generate output, so a dependency re-derived within its version changes the keys its change
+# reaches with no bookkeeping, and a dependency re-derived to byte-identical output changes
+# nobody's (`output_hash` is stage-relative). One
 # `DerivationResolver` memoises the selections of ONE evaluation, because nothing on disk
 # changes during it and the closure is a DAG in which the same member is reached many times.
 #
@@ -1529,11 +1529,19 @@ class DerivationResolver:
             sel.reason = ("stage_meta_unreadable" if not isinstance(doc, dict)
                           else "derivation_key_missing")
             return
-        closest: tuple[int, tuple[Any, ...], list[str] | None] | None = None
+        # A stamp under another transformation tuple is diagnosed by that tuple before any input
+        # is compared: one PR's key change would otherwise name a member only one side has, and
+        # send the operator after a dependency that did not move. It ranks after every stamp under
+        # the current tuple, whose remedy is an input.
+        current_tuple = list(transformation_versions()[step_token])
+        closest: tuple[tuple[bool, int], tuple[Any, ...], list[str] | None] | None = None
         for order, doc in keyed:
+            stale_tuple = doc.get("derivation_transformation") != current_tuple
             recorded = doc.get("derivation_inputs")
             diff = None
-            if isinstance(recorded, dict):
+            if stale_tuple:
+                diff = ["transformation"]
+            elif isinstance(recorded, dict):
                 # A comparand resolver diffs each stamp against the inputs substituted with
                 # ITS OWN host-probed leaves, so the diagnosis names what moved rather than a
                 # probe this host never ran; a stamp lacking an expected leaf names that leaf.
@@ -1548,20 +1556,13 @@ class DerivationResolver:
                         **inputs["toolchain"],
                         **{leaf: stamped[leaf] for leaf in leaves if leaf in stamped}}}
                 diff = missing + differing_inputs(recorded, against)
-            rank = (len(diff) if diff is not None else sys.maxsize, order)
-            if closest is None or rank[0] < closest[0] or (rank[0] == closest[0]
-                                                            and order > closest[1]):
-                closest = (rank[0], order, diff)
-                doc_closest = doc
+            rank = (stale_tuple, len(diff) if diff is not None else sys.maxsize)
+            if closest is None or rank < closest[0] or (rank == closest[0]
+                                                        and order > closest[1]):
+                closest = (rank, order, diff)
         assert closest is not None
-        doc = doc_closest
         diff = closest[2]
-        differing = (diff[0] if diff else None) if diff is not None else "derivation_inputs"
-        if differing is None:
-            recorded_tf = doc.get("derivation_transformation")
-            differing = ("transformation"
-                         if recorded_tf != list(transformation_versions()[step_token])
-                         else "key_version")
+        differing = (diff[0] if diff else "key_version") if diff is not None else "derivation_inputs"
         sel.reason = f"derivation_key_mismatch:{differing}"
 
 
@@ -1617,7 +1618,7 @@ def _verify_dep_stage_detail(
     the key recomputed now; `pipeline_ref` — its Build has (which requires its Generate and
     Compile to); `aggregate_verdict` — its Validate has. The key carries what the readiness
     stages used to compare beside the status — the dependency resolution (13a, now the
-    compile key's `dependency_graph` and `closure[]`), the staged sources (13b, now the build
+    compile key's `dependency_graph`), the staged sources (13b, now the build
     key's `closure[].source`) — and what they could not see: the spec text, the IR content,
     the toolchain, the transformation version. A dependency whose Validate meta was written
     before PR-1 carries no key and is not ready (`derivation_key_missing`); the closure
@@ -2258,11 +2259,10 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #             dependency_graph — the derived closure's canonical signature
 #               (`_closure_signature` of `build_dependency_graph(include_via=False)`: node
 #               set, heights, direct/transitive split and the adopted profile set);
-#             closure[] — every closure node's certified COMPILE output hash (its IR is what
-#               the reviewer's facts come from);
-#             dependency_surface — the resolved published surface of the component direct deps
-#               (op names and each dep IR's `public_api` ABI) as the producer and the reviewer
-#               are shown it (`_resolve_component_dep_surface`).
+#             dependency_surface — the published surface (`_published_surface`) of each
+#               component direct dep. A closure member's IR or source body is not a member: no
+#               compile leaf reads one, and a dep's non-interface edit must not re-derive its
+#               consumers (issue #574).
 #             Nothing here names a target: the graph is `deps.yaml`'s alone (no harness since
 #             R4-a PR-3), and the admissible-toolchain document the producer was shown until
 #             then is gone with the IR's `impl_defaults` (issue #284).
@@ -2275,11 +2275,14 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #             harness — the ONE harness the producer negotiates against — the target's
 #               (`harness_node_key_for`) — and the manifest document it is shown
 #               (`harness_capability_manifest_document_for`);
-#             closure[] — every PIPELINE closure node's certified compile AND generate output
-#               hashes (`pipeline_closure_nodes`: the sidecar's closure plus the target's
-#               harness): the published operations the producer transcribes come from the
-#               certified source, and the host-rendered runner is glue over the harness's
-#               certified source and IR.
+#             closure[] — every PIPELINE closure node (`pipeline_closure_nodes`: the sidecar's
+#               closure plus the target's harness) in pipeline order, each `{node_key, surface}`
+#               (`_published_surface`). The members and their order are what the control file
+#               lists; a language declaring `interface_header` seeds each member's surface as a
+#               header; and `assert_harness_pin` runs only inside a Generate, so a harness whose
+#               surface moved must re-run it. A member's IR or source output hash is not a
+#               member: no generate leaf reads an IR or source body, and Build binds the sources.
+#               A member with no certified compile or generate output is still unresolvable.
 #             NOT hashed, because they are functions of the members above and of the
 #             transformation version: the host-rendered runner and control file
 #             (`RENDER_VERSION`), and the bundle shape (the node kind and the target's
@@ -2312,9 +2315,12 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 # keys. Compile is target-free in its store AND its key (R4-a PR-3): one Compile serves
 # every target.
 #
+# The transformation tuple's prompt contract is the READER's (`derivation.transformation_versions`):
+# a producer's templates are advisory, because validity is decided by the gates and the readers.
+#
 # An UPSTREAM output hash is always the `output_hash` of the SELECTED certified output —
 # never a derivation key — so that when the selection among several certified outputs of one
-# key changes, every downstream key changes with it (A1's completion condition 4). The
+# key changes, every key that binds it changes with it (A1's completion condition 4). The
 # selection is `DerivationResolver.select` for a dependency (its own chain under its own keys)
 # and, for this node's own upstream phases, the ref the caller passes: the conductor passes
 # the attempt's reserved / adopted ids, which `_adopt_certified_refs` keeps equal to the
@@ -2583,7 +2589,7 @@ def _meta_output_hash(meta_doc: Mapping[str, Any], meta_ref: str) -> str:
 def _dependency_output_hash(
     resolver: DerivationResolver, dep_node_key: str, step: str
 ) -> str:
-    """What a consumer's key binds a dependency's `step` output BY: the `output_hash` of the
+    """A dependency's `step` output as a consumer's key asks for it: the `output_hash` of the
     SELECTED certified output of that step under the dependency's own key recomputed now
     (`DerivationResolver.select`). A dependency with no eligible output — never derived,
     revoked, or stamped under another key (every meta written before issue #250 PR-1) — is
@@ -2646,6 +2652,59 @@ def _harness_for_key(repo_root: Path, node_key: str, target: TargetProfile) -> s
         raise DerivationInputsUnresolvable(
             f"derivation_inputs_unresolvable: the harness of target {target.target_id} does "
             f"not resolve ({exc.detail})") from exc
+
+
+def _published_surface(
+    repo_root: Path, dep_node_key: str, resolver: DerivationResolver,
+) -> str | None:
+    """What a consumer's compile and generate keys bind a dependency BY: the hash of the
+    canonical structured form of §5.1 of the dependency's `controlled_spec.md`, the form
+    `Compile.static` pins its IR's `public_api` to. It rests on a file no leaf writes rather
+    than on what a leaf authored, so a re-derived dependency keeps its surface, and a prose edit
+    outside §5.1 moves nothing. A dependency whose spec has no §5.1 (a `problem`) answers `None`,
+    which still pins its membership and its position.
+
+    The dependency must have a certified compile output, whose hash is not bound. A §5.1 that is
+    present and does not load raises: the surface cannot be stated."""
+    from tools.structured_signatures import load_structured_signatures
+    from tools.validate_pipeline_semantics import (
+        _extract_controlled_spec_section, _extract_subsection_51, _section51_fence_body)
+    _dependency_output_hash(resolver, dep_node_key, "compile")
+    kind, spec_id, _version = _parse_node_key_strict(dep_node_key)
+    spec_ref = resolve_spec_ref_for(repo_root, kind, spec_id)
+    if not spec_ref:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: dependency {dep_node_key} does not resolve to one "
+            "spec directory")
+    path = repo_root / spec_ref / "controlled_spec.md"
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")  # as `_section51_fence_body`
+    except OSError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: {path} is unreadable ({exc})") from exc
+    section = _extract_controlled_spec_section(text, "5")
+    if section is None or _extract_subsection_51(section) is None:
+        return None
+    body, err = _section51_fence_body(path)
+    struct: dict[str, Any] = {}
+    if body is not None:
+        struct, err = load_structured_signatures(body)
+    if err:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: dependency {dep_node_key} publishes no readable "
+            f"surface: {err}")
+    return _sha256_hex(_canonical_json_bytes(struct))
+
+
+def _generate_closure_entry(
+    repo_root: Path, member: str, resolver: DerivationResolver,
+) -> dict[str, Any]:
+    """One `closure[]` entry of a generate key. The member's certified generate output is what
+    the attempt staged and its Build will link, so a member without one is unresolvable; its
+    hash is Build's input, not this key's."""
+    surface = _published_surface(repo_root, member, resolver)
+    _dependency_output_hash(resolver, member, "generate")
+    return {"node_key": member, "surface": surface}
 
 
 def _pipeline_closure_for_key(
@@ -2974,11 +3033,6 @@ def phase_derivation_inputs(
                 "controlled_spec": _spec_file_hash(repo_root, profile_ref, "controlled_spec.md"),
             })
         profiles.sort(key=lambda p: p["node_key"])
-        closure = sorted(
-            nk for nk in (
-                (n.get("node_key") or "").strip() for n in (graph.get("all_nodes") or [])
-                if isinstance(n, dict))
-            if nk and nk != node_key)
         return {
             "spec": {
                 "controlled_spec": _spec_file_hash(repo_root, spec, "controlled_spec.md"),
@@ -2987,15 +3041,12 @@ def phase_derivation_inputs(
             },
             "profiles": profiles,
             "dependency_graph": _sha256_hex(_canonical_json_bytes(signature)),
-            "closure": [
-                {"node_key": nk, "ir": _dependency_output_hash(resolver, nk, "compile")}
-                for nk in closure],
-            # The dependency surface the producer is SHOWN (`dependency_surface.json`, rendered
-            # through `<dependency_facts>`). Hashed as the resolved document itself — operation
-            # names, `public_api` blocks and unresolved entries included — because that is what
-            # the producer, the reviewer and the membership gate read.
-            "dependency_surface": _sha256_hex(_canonical_json_bytes(
-                _resolve_component_dep_surface(repo_root, node_key, graph, resolver=resolver))),
+            # Not the document the leaves are shown (`dependency_surface.json`, which copies each
+            # dependency IR's `public_api`): two IRs its gate accepts as equal differ there as
+            # text, so a re-authored dependency would re-derive its consumers.
+            "dependency_surface": _sha256_hex(_canonical_json_bytes([
+                {"node_key": nk, "surface": _published_surface(repo_root, nk, resolver)}
+                for nk in _component_direct_deps(graph, node_key)])),
         }
 
     ir = need("ir_ref", ir_ref)
@@ -3027,11 +3078,7 @@ def phase_derivation_inputs(
                 "node_key": harness_nk,
                 "manifest": _sha256_hex(_canonical_json_bytes(manifest)),
             },
-            "closure": [
-                {"node_key": nk,
-                 "ir": _dependency_output_hash(resolver, nk, "compile"),
-                 "source": _dependency_output_hash(resolver, nk, "generate")}
-                for nk in sorted(closure_nodes)],
+            "closure": [_generate_closure_entry(repo_root, nk, resolver) for nk in closure_nodes],
         }
 
     if step_token == "build":
@@ -3318,7 +3365,7 @@ def _certified_model_source(
     surface (``_resolve_component_dep_surface``), the harness pin
     (``workflow_conductor._write_runner``) and the deterministic Build staging
     (``_resolve_certified_closure_binding``), so the interface a consumer is SHOWN at Generate
-    is always the source Build COMPILES and the source the consumer's key binds. The
+    and the source its Build COMPILES each come from the selection of their moment. The
     selection is the dependency's SELECTED certified Generate output under its key
     recomputed now (``DerivationResolver.select``) — never the latest directory, never the
     binary's ``source_source_id``.
@@ -3403,10 +3450,9 @@ def _resolve_certified_closure_binding(
     fail_closed.
 
     The selection is the dependency's SELECTED certified Generate output under its key
-    (`DerivationResolver.select`) — the same selection the consumer's generate and build
-    keys bind by `closure[].source` (`phase_derivation_inputs`), so what a consumer is
-    CERTIFIED AGAINST and what Build STAGES are one output by construction, not two lookups
-    that must agree. The hash is taken over the same immutable file the stage copies (a
+    (`DerivationResolver.select`) — the same selection the consumer's build key binds by
+    `closure[].source` (`phase_derivation_inputs`), so what a consumer's Build is CERTIFIED AGAINST
+    and what it STAGES are one output by construction, not two lookups that must agree. The hash is taken over the same immutable file the stage copies (a
     `source_id` directory's content is written once and never rewritten), so hashing and
     copying cannot observe different bytes."""
     try:
@@ -3474,8 +3520,8 @@ def _resolve_dependency_facts(
     dependency of ``<ir_ref>/spec.ir.yaml`` was certified to — ORIENTATION ONLY, never a
     gate.
 
-    Mirrors ``_verify_dep_stage``'s execution-readiness selection EXACTLY so the hint a
-    leaf reads matches the artifacts readiness actually accepted: the dependency's SELECTED
+    Mirrors ``_verify_dep_stage``'s execution-readiness selection EXACTLY so the operations a
+    leaf reads come from the artifacts readiness actually accepted: the dependency's SELECTED
     certified Validate output under its key (``DerivationResolver.select``), whose run
     directory holds the ``aggregate_verdict.json`` the fact names.
 
@@ -3708,6 +3754,35 @@ def _resolve_dependency_facts(
     return facts
 
 
+def _component_direct_deps(graph: Mapping[str, Any], node_key: str) -> list[str]:
+    """The COMPONENT direct dependencies of `node_key` in the derived graph, in `all_nodes` order:
+    `all_nodes − {self} − transitive_deps`. A graph without a list of nodes has none."""
+    all_nodes = graph.get("all_nodes")
+    if not isinstance(all_nodes, list):
+        return []
+    self_nk = str(graph.get("node_key") or node_key or "").strip()
+    transitive = graph.get("transitive_deps")
+    transitive_nks: set[str] = set()
+    if isinstance(transitive, list):
+        for t in transitive:
+            tk = t.get("node_key") if isinstance(t, dict) else None
+            if isinstance(tk, str) and tk.strip():
+                transitive_nks.add(tk.strip())
+    direct: list[str] = []
+    seen: set[str] = set()
+    for n in all_nodes:
+        nk = n.get("node_key") if isinstance(n, dict) else None
+        if not isinstance(nk, str) or not nk.strip():
+            continue
+        nk = nk.strip()
+        if nk == self_nk or nk in transitive_nks or nk in seen:
+            continue
+        seen.add(nk)
+        if nk.split("/", 1)[0].strip() == "component":
+            direct.append(nk)
+    return direct
+
+
 def _resolve_component_dep_surface(
     repo_root: Path, node_key: str, graph: Any,
     *, resolver: DerivationResolver | None = None,
@@ -3735,7 +3810,9 @@ def _resolve_component_dep_surface(
       - ``unresolved``      — no certified IR, or one with no ``public_api``
         (``published_operations == []``, no ``public_api`` key). The ``certified_source``
         fallback that read a dependency's model source went with issue #284: a source is a
-        per-target artifact, and this surface is a target-free compile-key input.
+        per-target artifact, and this surface is target-free.
+
+    This is the document the leaves READ. The keys bind `_published_surface` instead.
 
     The ``public_api`` copy is how a consumer's Compile reads the contract its controlled_spec
     delegates to a dependency's §5.1 — a local procedure passed to a procedure-typed argument
@@ -3749,33 +3826,9 @@ def _resolve_component_dep_surface(
     try:
         if not isinstance(graph, dict):
             return []
-        all_nodes = graph.get("all_nodes")
-        if not isinstance(all_nodes, list):
-            return []
         resolver = resolver or DerivationResolver(repo_root)
-        self_nk = str(graph.get("node_key") or node_key or "").strip()
-        transitive = graph.get("transitive_deps")
-        transitive_nks: set[str] = set()
-        if isinstance(transitive, list):
-            for t in transitive:
-                tk = t.get("node_key") if isinstance(t, dict) else None
-                if isinstance(tk, str) and tk.strip():
-                    transitive_nks.add(tk.strip())
-        direct: list[str] = []
-        seen: set[str] = set()
-        for n in all_nodes:
-            nk = n.get("node_key") if isinstance(n, dict) else None
-            if not isinstance(nk, str) or not nk.strip():
-                continue
-            nk = nk.strip()
-            if nk == self_nk or nk in transitive_nks or nk in seen:
-                continue
-            seen.add(nk)
-            direct.append(nk)
         out: list[dict[str, Any]] = []
-        for nk in direct:
-            if nk.split("/", 1)[0].strip() != "component":
-                continue
+        for nk in _component_direct_deps(graph, node_key):
             entry: dict[str, Any] = {
                 "node_key": nk, "published_operations": [], "source": "unresolved",
             }
@@ -3788,7 +3841,7 @@ def _resolve_component_dep_surface(
             # (even with an empty operation list) is authoritative. A dep IR with NO
             # public_api is `unresolved`: the certified-SOURCE fallback that used to stand here
             # read a Generate output, which is a per-target artifact (issue #284), and this
-            # surface is a compile-key input, which must answer the same for every target.
+            # surface must answer the same for every target.
             # Measured when it went (R4-a PR-2): every keyed certified component IR under
             # `workspace/ir/` carries `public_api.published_operations`, and the compile gate
             # refuses a component IR without `public_api`, so no key it fed changes.
@@ -9482,15 +9535,13 @@ def _build_dependency_surface_facts(surface: Any) -> str:
 
 
 def _build_dependency_facts(request_payload: dict[str, Any]) -> str:
-    """Return a conductor-resolved "Dependency facts" block listing the on-disk
-    pipeline / run / aggregate_verdict each direct dependency was certified to.
+    """Return a conductor-resolved "Dependency facts" block listing the published operations
+    of each direct dependency.
 
     The conductor resolves these host-side (``_resolve_dependency_facts``) and stows the
     structured list on ``request_payload["resolved_dependencies"]``; this renderer only
-    formats it. It removes the recurring category-C "scan the filesystem for the right
-    base pipeline / run / verdict" thinking a judge otherwise repeats. ORIENTATION ONLY:
-    ``pre_judge`` is already scoped to the leaf's own pipeline and each dependency's PASS
-    is resolved from the leaf's lineage — these facts are NOT a gate argument.
+    formats it. The refs that list also carries are the lineage record's: a workshop leaf cannot
+    open a workspace path, and a past id is not an input (issue #574).
 
     For ``compile.generate`` the block is DIFFERENT: the consumer IR does not exist yet, so there
     is no ``resolved_dependencies``. Instead the conductor injects ``dependency_surface`` — the
@@ -9510,32 +9561,7 @@ def _build_dependency_facts(request_payload: dict[str, Any]) -> str:
     deps = request_payload.get("resolved_dependencies")
     if not isinstance(deps, list) or not deps:
         return ""
-    lines = [
-        "**Dependency facts (conductor-resolved — orientation for your semantic review, "
-        "NOT a gate argument):** the conductor runs the pre_judge integrity gate for you "
-        "(you invoke no validator gate); each dependency's PASS is resolved from your "
-        "lineage. These are the on-disk artifacts each direct dependency was certified to:",
-    ]
-    for dep in deps:
-        if not isinstance(dep, dict):
-            continue
-        node_key = str(dep.get("node_key", "")).strip()
-        if not node_key:
-            continue
-        pipeline_ref = str(dep.get("pipeline_ref", "")).strip()
-        run_id = str(dep.get("run_id", "")).strip()
-        verdict_ref = str(dep.get("aggregate_verdict_ref", "")).strip()
-        lines.append(
-            f"- {node_key}: pipeline_ref={pipeline_ref} run_id={run_id} "
-            f"aggregate_verdict={verdict_ref}"
-        )
-    if len(lines) == 1:
-        return ""
-    op_lines = _published_operations_lines(deps)
-    if op_lines:
-        lines.append("")
-        lines.extend(op_lines)
-    return "\n".join(lines)
+    return "\n".join(_published_operations_lines(deps))
 
 
 # Data-only fence around an injected exemplar source file. The body is a certified workspace
@@ -9683,11 +9709,9 @@ def _published_operations_lines(deps: list[Any]) -> list[str]:
     """Render the conductor-resolved published-operation interfaces (argument order) for
     each direct dependency, or ``[]`` when none were resolved.
 
-    Separate, role-aware sub-block: unlike the PASS/verdict facts above (orientation for a
-    judge, never a gate), the argument order is a correctness input to AUTHORING — the
-    consumer's Generate must call each op with exactly this positional order or the build
-    fails on a type/rank mismatch and is routed back to Generate. It is still
-    conductor-resolved orientation, never itself a gate.
+    The argument order is a correctness input to AUTHORING — the consumer's Generate must call
+    each op with exactly this positional order or the build fails on a type/rank mismatch and
+    is routed back to Generate. It is conductor-resolved orientation, never itself a gate.
     """
     signatures = _dependency_signatures(deps)
     rows: list[str] = []
