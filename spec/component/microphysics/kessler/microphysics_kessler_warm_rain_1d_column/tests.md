@@ -15,7 +15,7 @@ This suite verifies the two published `operation`s at `L0`. For `__adjustment`: 
 The symmetry pairs of `docs/TESTS.md` §Symmetry pairs are not judged. A one-dimensional column has no axis exchange. A reversal or a translation of the column with a correspondingly transformed reference profile is a pointwise identity of each cell's computation. The CFL number is `N/A`: the `operation`s have no transport. The comparison with theory is the closed-form judgments of §6.
 
 ## 2. Input-defaulting rules
-The block below is the suite's whole input. Every case has `ka=8`, and every case but the two bad-range ones passes `ks=2`, `ke=7`, so the first and the last cell are the halo.
+The block below is the suite's whole input. Every case has `ka=8`, and every case without a `grid` entry passes `ks=2`, `ke=7`, so the first and the last cell are the halo.
 
 - `constants` are the values of the constant arguments of Controlled Spec §2 in every case. `eps` is $2^{-52}$, the spacing of double-precision numbers at `1`.
 - `setup` is each state variable's value at every cell before a case's own rules apply. A case's `columns` entry replaces the interior cells: `[a, b]` gives `a + b*(k-2)` at cell `k`, and `{cells: [...]}` gives the six interior values literally. A variable a case names no rule for keeps its `setup` value at every cell: the halo sentinels of the inputs are positive, so that a host expression over a whole column stays finite, and the outputs `rhoe_t`, `evaporate`, `pcsat`, `vterm_c`, `vterm_r` hold `-999`.
@@ -23,7 +23,7 @@ The block below is the suite's whole input. Every case has `ka=8`, and every cas
 - `overrides` set one cell after every other rule, and are what force the guard cases.
 - `operation` names the published `operation` a case calls and `expected` the outcome §6 states. `refusal` states the flags a refused case's run leaves: `guard_pass = 0`. `nonconvergence_check` marks the case whose cell 4 does not converge.
 - `dt` is the case's time step.
-- `grid`, on a bad-range case, replaces the `ks`, `ke` passed to the `operation` after the state is built with `ks=2`, `ke=7`.
+- `grid`, on an index-range case, replaces the `ks`, `ke` passed to the `operation` after the state is built with `ks=2`, `ke=7`.
 - The literal `qv` cells of `l0_autoconv_below`, `l0_autoconv_above` and `l0_accretion` are $q_s$ of the dependency's Controlled Spec §3 at the case's `temp` and `dens`, computed once in double precision by that closed form and printed to 17 significant digits. The kernel's own $q_s$ is a second evaluation of the same form, so such a cell is saturated to within a few units in the last place, and the saturation step is a near no-op, not an exact one.
 - `parameters.qsat_ratio`, on `l0_nonconverged`, states the multiple of $q_s$ at `temp=277.8`, `dens=1` that the literal `qv` of cell 4 is; it is the condition the case's `xfail_condition` reads.
 
@@ -62,6 +62,14 @@ cases:
 - {case_id: l0_tv_refstate_nonpositive, operation: terminal_velocity, expected: xfail, refusal: {}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}, overrides: [{var: refstate_dens, k: 4, value: 0.0}]}
 - {case_id: l0_rain_above_saturation, operation: adjustment, expected: pass, dt: 10.0, columns: {temp: [280.0, 3.0], dens: [1.1, -0.05], pres: [95000.0, -3000.0], qv: [0.009, 0.003], qc: [1.0e-3, 2.0e-4], qr: [5.0e-4, 1.0e-4]}}
 - {case_id: l0_tv_mixed, operation: terminal_velocity, expected: pass, columns: {dens: {cells: [3.0, 0.4, 1.5, 0.6, 1.1, 0.9]}, rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: {cells: [1.5e-12, 8.0e-13, 7.5e-13, 1.2e-12, 1.1e-9, 9.0e-4]}, refstate_dens: [1.2, -0.08]}}
+- {case_id: l0_qv_negative, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}, overrides: [{var: qv, k: 4, value: -1e-05}]}
+- {case_id: l0_qc_negative, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}, overrides: [{var: qc, k: 4, value: -1e-05}]}
+- {case_id: l0_temp_nonpositive, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}, overrides: [{var: temp, k: 4, value: -1.0}]}
+- {case_id: l0_cptot_nonpositive, operation: adjustment, expected: xfail, refusal: {}, dt: 100.0, columns: {temp: [290.0, 1.0], dens: [1.0, -0.02], pres: [95000.0, -1000.0], qv: [1.0e-6, 2.0e-7], qc: [1.0e-3, 1.0e-4], qr: [0.01, 1.0e-3]}, overrides: [{var: cptot, k: 4, value: 0.0}]}
+- {case_id: l0_ks_below_one, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, grid: {ks: 0, ke: 7}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}}
+- {case_id: l0_ke_above_ka, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, grid: {ks: 2, ke: 9}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}}
+- {case_id: l0_tv_ks_below_one, operation: terminal_velocity, expected: xfail, refusal: {}, grid: {ks: 0, ke: 7}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}}
+- {case_id: l0_tv_ke_above_ka, operation: terminal_velocity, expected: xfail, refusal: {}, grid: {ks: 2, ke: 9}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}}
 ```
 
 ## 3. Execution-control rules
@@ -244,6 +252,70 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__terminal_velocity`
   - `expected_outcome`: `pass`
   - `judgment`: on `l0_tv_mixed`, with `qr = rhoq_r/dens`, the switch `z = 1 - min(1, floor(qr/1e-12))` and `ref = -36.34*(dens*(qr + z))**0.1364*sum(first*refstate_dens)/refstate_dens*(1 - z)`: `maxabs(interior*(vterm_r - ref)) / maxabs(interior*ref)` is `<= 1e-12` (`checks.tv_mixed`). No `qr` of the case is within a factor of 2 of `1e-12`. The cross-target judgment is applied: `cross_target_state_agreement` over `vterm_r` is `<= 1e-12`.
+- `test_id`: `l0_qv_negative_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_qv_negative`
+  - `xfail_condition`: `qv(4) < 0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_dt_nonpositive_xfail`.
+- `test_id`: `l0_qc_negative_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_qc_negative`
+  - `xfail_condition`: `qc(4) < 0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_dt_nonpositive_xfail`.
+- `test_id`: `l0_cptot_nonpositive_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_cptot_nonpositive`
+  - `xfail_condition`: `cptot(4) <= 0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_dt_nonpositive_xfail`.
+- `test_id`: `l0_temp_nonpositive_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_temp_nonpositive`
+  - `xfail_condition`: `temp(4) <= 0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_dt_nonpositive_xfail`.
+- `test_id`: `l0_ks_below_one_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_ks_below_one`
+  - `xfail_condition`: `ks < 1`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_dt_nonpositive_xfail`.
+- `test_id`: `l0_ke_above_ka_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_ke_above_ka`
+  - `xfail_condition`: `ke > ka`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_dt_nonpositive_xfail`.
+- `test_id`: `l0_tv_ks_below_one_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__terminal_velocity`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_tv_ks_below_one`
+  - `xfail_condition`: `ks < 1`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: `guard_pass` is `0`.
+- `test_id`: `l0_tv_ke_above_ka_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__terminal_velocity`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_tv_ke_above_ka`
+  - `xfail_condition`: `ke > ka`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: `guard_pass` is `0`.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when the judgment expression is satisfied.

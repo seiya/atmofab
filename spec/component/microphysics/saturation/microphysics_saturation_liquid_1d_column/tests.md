@@ -15,14 +15,14 @@ This suite verifies the two published `operation`s at `L0`. For `__dens2qsat_liq
 The symmetry pairs of `docs/TESTS.md` §Symmetry pairs are not judged. A one-dimensional column has no axis exchange. A reversal or a translation of the column is a pointwise identity: each `operation` couples no two cells, so the transformed case compares each cell's computation with itself. The CFL number is `N/A`: the `operation`s have no transport and no time step. The comparison with theory is the closed-form judgments of §6.
 
 ## 2. Input-defaulting rules
-The block below is the suite's whole input. Every case has `ka=8`, and every case but the two bad-range ones passes `ks=2`, `ke=7`, so the first and the last cell are the halo.
+The block below is the suite's whole input. Every case has `ka=8`, and every case without a `grid` entry passes `ks=2`, `ke=7`, so the first and the last cell are the halo.
 
 - `constants` are the values of the constant arguments of Controlled Spec §2 in every case.
 - `setup` is each state variable's value at every cell before a case's own rules apply. A case's `columns` entry replaces the interior cells: `[a, b]` gives `a + b*(k-2)` at cell `k`, and `{cells: [...]}` gives the six interior values literally. A variable a case names no rule for keeps its `setup` value at every cell: the halo sentinels of `temp`, `dens`, `qv`, `qc`, `cptot`, `cvtot` are positive, so that a host expression over a whole column stays finite, and `qsat`, `rhoe_d` hold `-999`.
 - In a case with a `qv` rule, the interior cells of `cptot` and `cvtot` are the moist-air mixture over the case's `qv` and `qc`, with `air` the dry-air constants: $q_d=1-q_v-q_c$, `cptot` $=q_d\,$`cpdry`$+$`cpvap`$\,q_v+$`cl`$\,q_c$, `cvtot` $=q_d($`cpdry`$-$`rdry`$)+($`cpvap`$-$`rvap`$)q_v+$`cl`$\,q_c$.
 - `overrides` set one cell after every other rule, and are what force the guard cases.
 - `operation` names the published `operation` a case calls and `expected` the outcome §6 states. `refusal` states the flags a refused case's run leaves: `guard_pass = 0` where it is empty, and otherwise the values it lists. `nonconvergence_check` marks the case whose cell 4 does not converge.
-- `grid`, on a bad-range case, replaces the `ks`, `ke` passed to the `operation` after the state is built with `ks=2`, `ke=7`.
+- `grid`, on an index-range case, replaces the `ks`, `ke` passed to the `operation` after the state is built with `ks=2`, `ke=7`.
 - `parameters.qsat_ratio`, on `l0_satadj_nonconverged`, states the multiple of $q_s$ at `temp=277.8`, `dens=1` that the literal `qv` of cell 4 is; it is the condition the case's `xfail_condition` reads. The literal is $q_s(277.8,1)$ of Controlled Spec §3 in double precision, multiplied by `qsat_ratio`.
 
 No case sits on the boundary between the two branches of Controlled Spec §3, where a change of the last bit changes the branch: at every interior cell of every `pass` case, $q_\Sigma$ and $q_s$ at the virtual temperature differ by more than `50%` of $q_s$.
@@ -54,6 +54,11 @@ cases:
 - {case_id: l0_satadj_branch, operation: saturation_adjustment, expected: pass, columns: {temp: [285.0, 0.0], dens: [1.0, 0.0], qv: {cells: [0.0095, 0.0095, 0.0095, 0.0100, 0.0102, 0.0104]}, qc: {cells: [5.0e-4, 6.0e-4, 7.0e-4, 1.5e-3, 1.5e-3, 1.5e-3]}}}
 - {case_id: l0_satadj_slow, operation: saturation_adjustment, expected: pass, columns: {temp: {cells: [243.8, 243.8, 243.8, 294.848, 289.937, 290.097]}, dens: {cells: [0.799, 0.799, 0.799, 1.148, 1.224, 1.039]}, qv: {cells: [0.0185, 0.0185, 0.0185, 0.62658, 0.45295, 0.54852]}, qc: {cells: [0.006, 0.006, 0.006, 0.0, 0.0, 0.0]}}}
 - {case_id: l0_satadj_limit, operation: saturation_adjustment, expected: xfail, refusal: {guard_pass: 1.0, converged: 0.0}, nonconvergence_check: true, columns: {temp: {cells: [280.0, 280.0, 279.2327, 280.0, 280.0, 280.0]}, dens: {cells: [1.0, 1.0, 0.88584, 1.0, 1.0, 1.0]}, qv: {cells: [0.001, 0.001, 0.45708, 0.001, 0.001, 0.001]}, qc: [0.0, 0.0]}}
+- {case_id: l0_satadj_cptot_nonpositive, operation: saturation_adjustment, expected: xfail, refusal: {}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}, overrides: [{var: cptot, k: 4, value: 0.0}]}
+- {case_id: l0_ks_below_one, operation: dens2qsat_liq, expected: xfail, refusal: {}, grid: {ks: 0, ke: 7}, columns: {temp: [280.0, 4.0], dens: [1.1, -0.05]}}
+- {case_id: l0_ke_above_ka, operation: dens2qsat_liq, expected: xfail, refusal: {}, grid: {ks: 2, ke: 9}, columns: {temp: [280.0, 4.0], dens: [1.1, -0.05]}}
+- {case_id: l0_satadj_ks_below_one, operation: saturation_adjustment, expected: xfail, refusal: {}, grid: {ks: 0, ke: 7}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}}
+- {case_id: l0_satadj_ke_above_ka, operation: saturation_adjustment, expected: xfail, refusal: {}, grid: {ks: 2, ke: 9}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}}
 ```
 
 ## 3. Execution-control rules
@@ -192,6 +197,46 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `xfail_condition`: `qv(4) == 0.45708 and temp(4) == 279.2327 and dens(4) == 0.88584`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'converged'`
   - `judgment`: `guard_pass` is `1` and `converged` is `0`. With `at4` the mask of cell 4, `maxabs(at4*(final - initial))` is `== 0` for each of `temp`, `qv`, `qc`, `cptot` and `cvtot`, and `maxabs(at4*rhoe_d)` is `== 0`.
+- `test_id`: `l0_satadj_cptot_nonpositive_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_satadj_cptot_nonpositive`
+  - `xfail_condition`: `cptot(4) <= 0`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_satadj_dens_nonpositive_xfail`.
+- `test_id`: `l0_ks_below_one_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_ks_below_one`
+  - `xfail_condition`: `ks < 1`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: `guard_pass` is `0`.
+- `test_id`: `l0_ke_above_ka_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_ke_above_ka`
+  - `xfail_condition`: `ke > ka`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: `guard_pass` is `0`.
+- `test_id`: `l0_satadj_ks_below_one_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_satadj_ks_below_one`
+  - `xfail_condition`: `ks < 1`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_satadj_dens_nonpositive_xfail`.
+- `test_id`: `l0_satadj_ke_above_ka_xfail`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
+  - `expected_outcome`: `xfail`
+  - `case`: `l0_satadj_ke_above_ka`
+  - `xfail_condition`: `ke > ka`
+  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: as `l0_satadj_dens_nonpositive_xfail`.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when the judgment expression is satisfied.

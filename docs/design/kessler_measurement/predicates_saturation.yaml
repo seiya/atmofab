@@ -171,3 +171,26 @@ tests:
     - {quantity: restored_cptot, binds: [mask, cells], expr: 'maxabs(at4 * (final.cptot - initial.cptot))', op: eq, value: 0.0}
     - {quantity: restored_cvtot, binds: [mask, cells], expr: 'maxabs(at4 * (final.cvtot - initial.cvtot))', op: eq, value: 0.0}
     - {quantity: restored_rhoe_d, binds: [mask, cells], expr: 'maxabs(at4 * final.rhoe_d)', op: eq, value: 0.0}
+  l0_ks_below_one_xfail:
+    cases: [l0_ks_below_one]
+    guard: 0
+    judgments: []
+  l0_ke_above_ka_xfail:
+    cases: [l0_ke_above_ka]
+    guard: 0
+    judgments: []
+  l0_satadj_cptot_nonpositive_xfail:
+    cases: [l0_satadj_cptot_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_ks_below_one_xfail:
+    cases: [l0_satadj_ks_below_one]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_ke_above_ka_xfail:
+    cases: [l0_satadj_ke_above_ka]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
