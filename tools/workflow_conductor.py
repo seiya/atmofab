@@ -12831,13 +12831,14 @@ class Conductor:
         {test_id: status}}` (issue #582, D6), or None when it cannot be evaluated at all (a
         malformed test or predicate; a capture that is absent or unreadable is a structural record
         of that test, whose status then differs from a shape that captured it)."""
-        from tools.primary_evidence import PrimaryEvidenceError, evaluate_primary_predicates
-        from tools.verdict_evaluator import PredicateError, evaluate_verdict
+        from tools.primary_evidence import evaluate_primary_predicates
+        from tools.verdict_evaluator import evaluate_verdict
         io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         try:
             doc = evaluate_verdict(io_contract.get("tests"),
                                    evaluate_primary_predicates(ir, shape_dir))
-        except (PredicateError, PrimaryEvidenceError):
+        except Exception:  # noqa: BLE001 - as `_author_execute_verdict`: a malformed IR is a named
+            # outcome, never a transport fail_closed (`target_cases: 5` raises TypeError).
             return None
         if not doc["per_test"]:
             return None

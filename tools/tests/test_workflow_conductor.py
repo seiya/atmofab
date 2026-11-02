@@ -23312,6 +23312,33 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                     self.assertIn("case a cross_target_state_agreement", lines[0])
                     self.assertEqual(doc["shapes"][0]["status"], "pass")
 
+    def test_a_malformed_test_entry_is_unevaluable_not_a_crash(self) -> None:
+        """Round 3 D5: `target_cases: 5` raises TypeError in the evaluator. `_shape_verdict` runs
+        before `_author_execute_verdict`'s broad guard, so it let a malformed IR out as a transport
+        fail_closed. Each malformed shape reads as unevaluable, and the quality check authors."""
+        for label, mutate in (
+                ("target_cases not iterable",
+                 lambda io: io["tests"][0].__setitem__("target_cases", 5)),
+                ("tests not a list", lambda io: io.__setitem__("tests", 5)),
+                ("a predicate value of no form",
+                 lambda io: io["predicates"][0].__setitem__("value", {"per_case": 5})),
+                ("predicates not a list", lambda io: io.__setitem__("predicates", {"x": 1}))):
+            with self.subTest(label):
+                ir = self._ir(cross=False)
+                mutate(ir["io_contract"])
+                run = self._run_dir(f"run_{abs(hash(label))}", self.h)
+                verdict = wc.Conductor._shape_verdict(ir, run)
+                if verdict is not None:   # a shape the evaluator reads as a structural record
+                    self.assertIn("fail", verdict["per_test"].values())
+                self.assertIn(wc.Conductor._ir_unevaluable(ir, run), (True, False))
+        ir = self._ir(cross=False)
+        ir["io_contract"]["tests"][0]["target_cases"] = 5
+        run = self._run_dir("run_tc5", self.h)
+        self.assertIsNone(wc.Conductor._shape_verdict(ir, run))
+        status, doc = self._author(self._runs(run, run), ir=ir)
+        self.assertEqual(status, "fail")
+        self.assertFalse(doc["shapes"][0]["verdict_available"])
+
     def test_two_shapes_failing_different_tests_do_not_match(self) -> None:
         """Review round 1 m2: reference and shape both reduce to `self_verdict: fail`, on different
         tests. The comparison is per test (D6), so an equal reduction is no match; a state that
