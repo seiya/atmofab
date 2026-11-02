@@ -14098,7 +14098,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                     self.assertIn(f"final.{name}", block)
         section = text.split("## 4. ", 1)[1].split("## 5. ", 1)[0]
         first, second = vps.HARNESS_GRID_SNAPSHOT_VARIABLES
-        self.assertIn(f"`nranks`, `{first}` and `{second}` are the exception: every case captures",
+        self.assertIn(f"`{first}` and `{second}` are the exception: every case captures",
                       section)
 
     def test_the_syntax_stage_of_a_wrapper_target_is_certified_through_its_wrapper(

@@ -770,7 +770,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-23": "81d774fe9e21f6b22527cc581cf5a0d0232e467fe81ca3348436e41e2a4fe6c9",
     # compile-docs-24 (the issue's PR-3): a harness self-test's variables no longer hold a
     # round-trip deviation; the schema block names the perf fields it re-parses.
-    "compile-docs-24": "905306cc987b4135a56006562cd1b170a10e7225329410f42ae03d37df52ad9a",
+    "compile-docs-24": "33c85442a90a6b0b6c2d905bec8f7e8d198b0188f14a76f2554fa7c46b346e8c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

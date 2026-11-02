@@ -678,9 +678,9 @@
     },
     {
       "node_key": "infrastructure/harness_fortran_cpu@0.9.0",
-      "pipeline_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.8.0/fortran_cpu/harness-fortran-cpu_20261023_001",
+      "pipeline_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.9.0/fortran_cpu/harness-fortran-cpu_20261023_001",
       "run_id": "run_20261023_001",
-      "aggregate_verdict_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.8.0/fortran_cpu/harness-fortran-cpu_20261023_001/runs/run_20261023_001/infrastructure__harness_fortran_cpu__0.8.0/aggregate_verdict.json"
+      "aggregate_verdict_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.9.0/fortran_cpu/harness-fortran-cpu_20261023_001/runs/run_20261023_001/infrastructure__harness_fortran_cpu__0.9.0/aggregate_verdict.json"
     }
   ],
   "issue_severity": "none",
