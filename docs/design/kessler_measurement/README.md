@@ -23,7 +23,8 @@ make SCALE_ROOT=<tree> BUILD=<dir>/O2alt ALT_CONSTANTS=1
 make SCALE_ROOT=<tree> BUILD=<dir>/O0alt ALT_CONSTANTS=1 FFLAGS="-O0 -cpp -ffree-line-length-none"
 python3 compare.py screen saturation --driver <dir>/O2/driver --comparand-driver <dir>/O0/driver --alt-driver <dir>/O2alt/driver --alt-comparand-driver <dir>/O0alt/driver --work <dir>/work
 python3 compare.py screen kessler    --driver <dir>/O2/driver --comparand-driver <dir>/O0/driver --alt-driver <dir>/O2alt/driver --alt-comparand-driver <dir>/O0alt/driver --work <dir>/work
-python3 compare.py compare kessler   --driver <dir>/O2/driver --alt-driver <dir>/O2alt/driver --run-dir <certified run node directory>
+python3 compare.py compare saturation --driver <dir>/O2/driver --alt-driver <dir>/O2alt/driver --run-dir <certified saturation run node directory>
+python3 compare.py compare kessler   --driver <dir>/O2/driver --alt-driver <dir>/O2alt/driver --run-dir <certified Kessler run node directory>
 ```
 
 **Screen.** Every `pass` case goes through the driver, its columns become state snapshots, and `tools.primary_evidence.evaluate_primary_predicates` evaluates each judgment, the cross-target ones against the `-O0` build; `validate_primary_predicate_schema` reads the same predicates against the real test ids. An `xfail` case does not run: the original has no guard, so its snapshot is the refusal state the Controlled Spec defines, written by the script, and its evaluation shows only that the judgment is expressible and evaluable. Forcing is checked with a nonzero exit: a case's inputs meet a refusal clause of Controlled Spec §4 exactly when it is `xfail`, and a non-convergence case aborts in the original at cell 4. The screen establishes that a `pass` judgment is true of the original and evaluable; it does not establish that the original is correct, and it does not show a judgment separates a wrong kernel.
@@ -36,6 +37,8 @@ Measured with an independent kernel written from the two Controlled Specs and wi
 - an iteration limit above 100 (`150` and `1000` leave `l0_satadj_limit` unconverged and every other case unchanged);
 - the virtual branch keeping `temp` when `qc = 0`, which the bound `2e-13` admits;
 - a clip of a limited result to non-negative, which changes only a remainder of order `1e-19` whose sign depends on rounding, so no bound separates it from a correct kernel on another target.
+
+The comparison adds nothing to the suites on these four: a threshold of `1.5e-6`, a limit of `150` or `1000`, the kept `temp` and the clip all exit 0 on `compare saturation` and `compare kessler`. The comparison skips `xfail` cases, and the other differences fall under its `1e-15` floor. A threshold of `3e-6` or `1e-5` exits 1 on `compare saturation` and 0 on `compare kessler`, so a threshold change is read on `compare saturation`, and the suites also fail those two. The four are held by §3 and §6 of the Controlled Specs and a `Generate` reviewer alone.
 
 ## Deviations from the original
 Listed, not banded, in `DEVIATIONS` of `compare.py`, which the comparison prints, and in §1 of each node's Controlled Spec.
