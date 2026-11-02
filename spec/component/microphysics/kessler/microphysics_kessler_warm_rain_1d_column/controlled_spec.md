@@ -72,7 +72,7 @@ $$
 
 The numbers of steps 1 and 5 are constants of the scheme and are part of this definition.
 
-**`terminal_velocity`.** For $k=ks..ke$: `vterm_c(k)` $=0$. With $q_r=$`rhoq_r(k)`$/$`dens(k)` and $z=1$ when $q_r<10^{-12}$, $z=0$ otherwise,
+**`terminal_velocity`.** `rhoq_c` is not read: the argument is part of the published signature, and the definition does not use it. For $k=ks..ke$: `vterm_c(k)` $=0$. With $q_r=$`rhoq_r(k)`$/$`dens(k)` and $z=1$ when $q_r<10^{-12}$, $z=0$ otherwise,
 $$
 \mathtt{vterm\_r}(k)=-36.34\,\left(\mathtt{dens}(k)(q_r+z)\right)^{0.1364}\,\frac{\mathtt{refstate\_dens}(ks)}{\mathtt{refstate\_dens}(k)}\,(1-z).
 $$
