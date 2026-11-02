@@ -49,6 +49,8 @@ DEVIATIONS = [
     "negative moisture and non-positive cptot / cvtot are refused (D18, D20)",
 ]
 FLOOR = 1e-15
+#: Driver -> the same sources built with `ALT_CONSTANTS=1`, for the cases with `constants: alt`.
+ALT_DRIVER: dict[Path, Path] = {}
 REL = 1e-12
 
 
@@ -77,7 +79,7 @@ def build_initial(suite: dict, case: dict) -> dict[str, list[float]]:
         state[name] = cells
     columns = case.get("columns", {})
     if "qv" in columns:
-        c, air = suite["constants"], suite["air"]
+        c, air = case_inputs(suite, case)["constants"], suite["air"]
         cvvap = c["cpvap"] - c["rvap"]
         for k in range(ks, ke + 1):
             qv, qc = state["qv"][k - 1], state["qc"][k - 1]
@@ -95,7 +97,10 @@ def case_inputs(suite: dict, case: dict) -> dict:
     """A case's `inputs` as a Compile leaf would carry them."""
     grid = dict(suite["grid"])
     grid.update(case.get("grid", {}))
-    inputs = {"grid": grid, "constants": dict(suite["constants"])}
+    constants = dict(suite["constants"])
+    if case.get("constants") == "alt":
+        constants.update(suite["alt_constants"])
+    inputs = {"grid": grid, "constants": constants}
     if "dt" in case:
         inputs["dt"] = case["dt"]
     for key in case.get("parameters", {}):
@@ -150,7 +155,8 @@ def snapshot(suite: dict, case: dict, driver: Path) -> tuple[dict, dict]:
                     final[name][k - 1] = cells[k - 1]
     else:
         grid = case_inputs(suite, case)["grid"]
-        returned = run_driver(driver, case["operation"], grid, case.get("dt", 1.0), initial)
+        chosen = ALT_DRIVER[driver] if case.get("constants") == "alt" else driver
+        returned = run_driver(chosen, case["operation"], grid, case.get("dt", 1.0), initial)
         for name, cells in returned.items():
             final[name] = cells
         final["guard_pass"] = 1.0
@@ -244,6 +250,8 @@ def cmd_screen(args: argparse.Namespace) -> int:
     suite = load_suite(REPO / spec_dir / "tests.md")
     run = Path(args.work) / args.node / "reference"
     other = Path(args.work) / args.node / "comparand"
+    ALT_DRIVER[Path(args.driver)] = Path(args.alt_driver)
+    ALT_DRIVER[Path(args.comparand_driver)] = Path(args.alt_comparand_driver)
     write_run(run, suite, Path(args.driver))
     write_run(other, suite, Path(args.comparand_driver))
     predicates = load_predicates(here, pred_file)
@@ -289,6 +297,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     spec_dir, _ = NODES[args.node]
     suite = load_suite(REPO / spec_dir / "tests.md")
     snaps = Path(args.run_dir) / "raw" / "state_snapshots"
+    ALT_DRIVER[Path(args.driver)] = Path(args.alt_driver)
     print("deviations, not banded:")
     for line in DEVIATIONS:
         print(f"  {line}")
@@ -326,10 +335,13 @@ def main() -> int:
     screen.add_argument("--driver", required=True)
     screen.add_argument("--comparand-driver", required=True,
                         help="the same sources built at another optimisation level")
+    screen.add_argument("--alt-driver", required=True, help="--driver built with ALT_CONSTANTS=1")
+    screen.add_argument("--alt-comparand-driver", required=True)
     screen.add_argument("--work", required=True)
     compare = sub.add_parser("compare")
     compare.add_argument("node", choices=sorted(NODES))
     compare.add_argument("--driver", required=True)
+    compare.add_argument("--alt-driver", required=True, help="--driver built with ALT_CONSTANTS=1")
     compare.add_argument("--run-dir", required=True)
     args = parser.parse_args()
     return cmd_screen(args) if args.command == "screen" else cmd_compare(args)

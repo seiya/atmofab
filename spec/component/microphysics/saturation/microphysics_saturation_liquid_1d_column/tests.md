@@ -29,10 +29,12 @@ No case sits on the boundary between the two branches of Controlled Spec §3, wh
 
 - `l0_satadj_branch` holds the two states on which the test of Controlled Spec §3 step 1 differs from a test at another temperature or over another quantity: cells 2 to 4 have $q_s(T^*)<q_\Sigma\le q_s(T_0)$, with $T^*$ the virtual temperature, and cells 5 to 7 have $q_{v0}<q_s(T_0)<q_\Sigma$. Each takes the Newton branch and ends with `qc > 0`.
 - `l0_satadj_slow` holds states whose iteration takes 6 iterations (cells 2 to 4), 85 (cell 5), 16 (cell 6) and 32 (cell 7), so an iteration limit below 85 refuses a state the definition converges on. `l0_satadj_limit` holds at cell 4 a state that reaches the 100th iteration with a finite `temp`, so a limit taken for convergence is visible. Each count stayed the same in 20,000 trials under the jitter of `l0_satadj_nonconverged`.
+- `alt_constants` replaces the values of `constants` it names on a case with `constants: alt`, so a kernel that ignores a constant argument (Controlled Spec §6) deviates there. The values are not physical; each is a few percent from the default.
 
 ```yaml
 grid: {ka: 8, ks: 2, ke: 7}
 constants: {rvap: 461.50, cpvap: 1846.0, cl: 4218.0, lhv0: 2.501e+6, psat0: 610.78, tem00: 273.15}
+alt_constants: {rvap: 480.0, cpvap: 1900.0, cl: 4100.0, lhv0: 2.4e+6, psat0: 600.0, tem00: 270.0}
 air: {cpdry: 1004.64, rdry: 287.04}
 setup: {temp: 222.0, dens: 0.77, qv: 0.0123, qc: 0.0321, cptot: 1111.0, cvtot: 777.0, qsat: -999.0, rhoe_d: -999.0}
 scalars: {guard_pass: -1.0, converged: -1.0}
@@ -59,6 +61,9 @@ cases:
 - {case_id: l0_ke_above_ka, operation: dens2qsat_liq, expected: xfail, refusal: {}, grid: {ks: 2, ke: 9}, columns: {temp: [280.0, 4.0], dens: [1.1, -0.05]}}
 - {case_id: l0_satadj_ks_below_one, operation: saturation_adjustment, expected: xfail, refusal: {}, grid: {ks: 0, ke: 7}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}}
 - {case_id: l0_satadj_ke_above_ka, operation: saturation_adjustment, expected: xfail, refusal: {}, grid: {ks: 2, ke: 9}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}}
+- {case_id: l0_qsat_alt, operation: dens2qsat_liq, expected: pass, constants: alt, columns: {temp: [260.0, 8.0], dens: [1.2, -0.1]}}
+- {case_id: l0_satadj_alt_subsat, operation: saturation_adjustment, expected: pass, constants: alt, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}}
+- {case_id: l0_satadj_alt_supersat, operation: saturation_adjustment, expected: pass, constants: alt, columns: {temp: [280.0, 3.0], dens: [1.1, -0.05], qv: [0.012, 0.004], qc: [1.0e-3, 2.0e-4]}}
 ```
 
 ## 3. Execution-control rules
@@ -89,7 +94,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_qsat_ref`, `l0_qsat_temp_ramp` and `l0_qsat_dens_ramp`, `qsat` equals $q_s$ of Controlled Spec §3 at the case's `temp` and `dens` at every interior cell: `maxabs(interior*(qsat - qs)) / maxabs(interior*qs)` is `<= 1e-12` (`checks.qsat_formula`). The cross-target judgment is applied: `cross_target_state_agreement` over `qsat` is `<= 1e-12`.
+  - `judgment`: on `l0_qsat_ref`, `l0_qsat_temp_ramp`, `l0_qsat_dens_ramp` and `l0_qsat_alt`, `qsat` equals $q_s$ of Controlled Spec §3 at the case's `temp` and `dens` at every interior cell: `maxabs(interior*(qsat - qs)) / maxabs(interior*qs)` is `<= 1e-12` (`checks.qsat_formula`). The cross-target judgment is applied: `cross_target_state_agreement` over `qsat` is `<= 1e-12`.
 - `test_id`: `l0_qsat_monotone_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
@@ -99,7 +104,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_qsat_ref`, `l0_qsat_temp_ramp` and `l0_qsat_dens_ramp`, `maxabs(halo*qsat)` is `== 0` (`checks.halo_untouched`). The cross-target judgment is applied: `cross_target_state_agreement` over `qsat` is `<= 1e-12`.
+  - `judgment`: on every `pass` case of `__dens2qsat_liq`, `maxabs(halo*qsat)` is `== 0` (`checks.halo_untouched`). The cross-target judgment is applied: `cross_target_state_agreement` over `qsat` is `<= 1e-12`.
 - `test_id`: `l0_satadj_dry_noop_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
@@ -109,17 +114,17 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_satadj_subsat` (`qc > 0`, every interior cell ending below saturation), with `qsum = initial.qv + initial.qc`, `cvnew = initial.cvtot + initial.qc*(cvv - cl)`, `cpnew = initial.cptot + initial.qc*(cpvap - cl)` and `tstar = (initial.temp*initial.cvtot + initial.qv*L00 - L00*qsum) / cvnew`: `maxabs(final.qc)` over interior cells is `== 0`, and each of `final.qv` against `qsum`, `final.temp` against `tstar`, `final.cptot` against `cpnew` and `final.cvtot` against `cvnew` and `rhoe_d` against `-L00*(final.qv - initial.qv)*dens` agrees within `1e-12` relative, `maxabs(interior*(final - reference)) / maxabs(interior*reference)` (`checks.satadj_evaporates_all`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `cptot`, `cvtot` and `rhoe_d` is `<= 1e-12`.
+  - `judgment`: on `l0_satadj_subsat` and `l0_satadj_alt_subsat` (`qc > 0`, every interior cell ending below saturation), with `qsum = initial.qv + initial.qc`, `cvnew = initial.cvtot + initial.qc*(cvv - cl)`, `cpnew = initial.cptot + initial.qc*(cpvap - cl)` and `tstar = (initial.temp*initial.cvtot + initial.qv*L00 - L00*qsum) / cvnew`: `maxabs(final.qc)` over interior cells is `== 0`, and each of `final.qv` against `qsum`, `final.temp` against `tstar`, `final.cptot` against `cpnew` and `final.cvtot` against `cvnew` and `rhoe_d` against `-L00*(final.qv - initial.qv)*dens` agrees within `1e-12` relative, `maxabs(interior*(final - reference)) / maxabs(interior*reference)` (`checks.satadj_evaporates_all`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `cptot`, `cvtot` and `rhoe_d` is `<= 1e-12`.
 - `test_id`: `l0_satadj_conservation_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_satadj_dry`, `l0_satadj_subsat`, `l0_satadj_supersat`, `l0_satadj_branch` and `l0_satadj_slow`, `maxabs(interior*((final.qv + final.qc) - (initial.qv + initial.qc)))` is `<= 1e-15`. On the same cases, with `em = final.temp*final.cvtot + final.qv*L00` and `em0 = initial.temp*initial.cvtot + initial.qv*L00`, `max(interior*abs(em - em0) / (2e-6*dqs_final*(L00 + final.temp*(cvv - cl))))` is `<= 1`, the per-cell drift bound of §5 (`checks.satadj_conservation`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `qv` and `qc` is `<= 1e-12`.
+  - `judgment`: on `l0_satadj_dry`, `l0_satadj_subsat`, `l0_satadj_supersat`, `l0_satadj_branch`, `l0_satadj_slow` and `l0_satadj_alt_supersat`, `maxabs(interior*((final.qv + final.qc) - (initial.qv + initial.qc)))` is `<= 1e-15`. On the same cases, with `em = final.temp*final.cvtot + final.qv*L00` and `em0 = initial.temp*initial.cvtot + initial.qv*L00`, `max(interior*abs(em - em0) / (2e-6*dqs_final*(L00 + final.temp*(cvv - cl))))` is `<= 1`, the per-cell drift bound of §5 (`checks.satadj_conservation`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `qv` and `qc` is `<= 1e-12`.
 - `test_id`: `l0_satadj_saturated_state_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_satadj_supersat`, `l0_satadj_branch` and `l0_satadj_slow`: `max(interior*abs(final.qv - qs_final) / (2e-6*dqs_final))` is `<= 1`; with `em` and `em0` as in `l0_satadj_conservation_pass`, `drift_ratio = (em - em0) / ((final.qv - qs_final)*(L00 + final.temp*(cvv - cl)))` and, on `l0_satadj_supersat`, `max(pairs*abs(drift_ratio - 1))` is `<= 1e-3` (§5); on `l0_satadj_supersat` and `l0_satadj_branch`, `min(interior*final.qc)` is `>= 0`, and `qc` is positive at every interior cell (cells 5 to 7 of `l0_satadj_slow` converge to a negative `qc`, in the original as in the definition, and the suite does not judge its sign there); with `dqv = final.qv - initial.qv`, each of `rhoe_d` against `-L00*dqv*dens`, `final.cptot - initial.cptot` against `(cpvap - cl)*dqv` and `final.cvtot - initial.cvtot` against `(cvv - cl)*dqv` agrees within `1e-12` relative, `maxabs(interior*(left - right)) / maxabs(interior*right)` (`checks.satadj_saturated`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `cptot`, `cvtot` and `rhoe_d` is `<= 1e-12`.
+  - `judgment`: on `l0_satadj_supersat`, `l0_satadj_branch`, `l0_satadj_slow` and `l0_satadj_alt_supersat`: `max(interior*abs(final.qv - qs_final) / (2e-6*dqs_final))` is `<= 1`; with `em` and `em0` as in `l0_satadj_conservation_pass`, `drift_ratio = (em - em0) / ((final.qv - qs_final)*(L00 + final.temp*(cvv - cl)))` and, on `l0_satadj_supersat`, `max(pairs*abs(drift_ratio - 1))` is `<= 1e-3` (§5); on `l0_satadj_supersat` and `l0_satadj_branch`, `min(interior*final.qc)` is `>= 0`, and `qc` is positive at every interior cell (cells 5 to 7 of `l0_satadj_slow` converge to a negative `qc`, in the original as in the definition, and the suite does not judge its sign there); with `dqv = final.qv - initial.qv`, each of `rhoe_d` against `-L00*dqv*dens`, `final.cptot - initial.cptot` against `(cpvap - cl)*dqv` and `final.cvtot - initial.cvtot` against `(cvv - cl)*dqv` agrees within `1e-12` relative, `maxabs(interior*(left - right)) / maxabs(interior*right)` (`checks.satadj_saturated`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `cptot`, `cvtot` and `rhoe_d` is `<= 1e-12`.
 - `test_id`: `l0_satadj_halo_untouched_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`

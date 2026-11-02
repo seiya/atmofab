@@ -9,7 +9,7 @@ A measurement record of [issue #578](https://github.com/seiya/atmofab/issues/578
 `scale-met/scale-dev` at commit `dc58155` (SCALE 5.5.5). The tree is read only, and nothing is copied from it into this directory. The real files are `scale_precision`, `scale_const`, `scale_atmos_hydrometeor`, `scale_atmos_saturation`, `scale_atmos_phy_mp_common` and `scale_atmos_phy_mp_kessler`, plus `scalelib/include`.
 
 ## Contents
-- `Makefile`: builds the six real files, the six stubs and the driver. `SCALE_ROOT` is required; `BUILD` defaults to `build/`.
+- `Makefile`: builds the six real files, the six stubs and the driver. `SCALE_ROOT` is required; `BUILD` defaults to `build/`. `ALT_CONSTANTS=1` builds a copy of `scale_const` holding the suites' `alt_constants`, since the original holds them as compile-time parameters.
 - `stubs/`: `scale_io`, `scale_prc`, `scale_prof`, `scale_file_history`, `scale_tracer` and `scale_atmos_grid_cartesC_index`. `scale_file_history` keeps the one field the Kessler adjustment writes, which the driver publishes as `pcsat`. `scale_prc` turns the abort into an error stop.
 - `driver.F90`: runs one column through `dens2qsat_liq`, `saturation_adjustment`, `moist_conversion_dens_liq`, the Kessler adjustment or the terminal velocity, with `IA = JA = 1`.
 - `compare.py`: the screen and the comparison. It reads the cases from the one fenced YAML block of each node's `tests.md` §2, so no second copy of them exists.
@@ -19,9 +19,11 @@ A measurement record of [issue #578](https://github.com/seiya/atmofab/issues/578
 ```sh
 make SCALE_ROOT=<tree> BUILD=<dir>/O2
 make SCALE_ROOT=<tree> BUILD=<dir>/O0 FFLAGS="-O0 -cpp -ffree-line-length-none"
-python3 compare.py screen saturation --driver <dir>/O2/driver --comparand-driver <dir>/O0/driver --work <dir>/work
-python3 compare.py screen kessler    --driver <dir>/O2/driver --comparand-driver <dir>/O0/driver --work <dir>/work
-python3 compare.py compare kessler   --driver <dir>/O2/driver --run-dir <certified run node directory>
+make SCALE_ROOT=<tree> BUILD=<dir>/O2alt ALT_CONSTANTS=1
+make SCALE_ROOT=<tree> BUILD=<dir>/O0alt ALT_CONSTANTS=1 FFLAGS="-O0 -cpp -ffree-line-length-none"
+python3 compare.py screen saturation --driver <dir>/O2/driver --comparand-driver <dir>/O0/driver --alt-driver <dir>/O2alt/driver --alt-comparand-driver <dir>/O0alt/driver --work <dir>/work
+python3 compare.py screen kessler    --driver <dir>/O2/driver --comparand-driver <dir>/O0/driver --alt-driver <dir>/O2alt/driver --alt-comparand-driver <dir>/O0alt/driver --work <dir>/work
+python3 compare.py compare kessler   --driver <dir>/O2/driver --alt-driver <dir>/O2alt/driver --run-dir <certified run node directory>
 ```
 
 **Screen.** Every `pass` case goes through the driver, its columns become state snapshots, and `tools.primary_evidence.evaluate_primary_predicates` evaluates each judgment, the cross-target ones against the `-O0` build. A refused case has no result in the original, so its snapshot is the refusal state the Controlled Spec defines: the screen then shows only that its judgment is expressible and evaluable. On the non-convergence cases the driver reports `converged` per cell from `moist_conversion_dens_liq`. The screen establishes that a judgment is true of the original and evaluable; it does not establish that the original is correct.

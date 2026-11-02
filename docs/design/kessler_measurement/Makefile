@@ -13,6 +13,14 @@ COMMON := $(SCALE_ROOT)/scalelib/src/common
 ATMOS := $(SCALE_ROOT)/scalelib/src/atmosphere/common
 MP := $(SCALE_ROOT)/scalelib/src/atmosphere/physics/microphysics
 
+# `ALT_CONSTANTS=1` builds a copy of `scale_const` with the values of each suite's `alt_constants`,
+# since the original holds them as compile-time parameters.
+ifdef ALT_CONSTANTS
+CONST_SOURCE := $(BUILD)/alt/scale_const.F90
+else
+CONST_SOURCE := $(COMMON)/scale_const.F90
+endif
+
 # Link order is the `use` order.
 SOURCES := \
   $(COMMON)/scale_precision.F90 \
@@ -22,7 +30,7 @@ SOURCES := \
   $(SELF)stubs/scale_file_history.F90 \
   $(SELF)stubs/scale_tracer.F90 \
   $(SELF)stubs/scale_atmos_grid_cartesC_index.F90 \
-  $(COMMON)/scale_const.F90 \
+  $(CONST_SOURCE) \
   $(ATMOS)/scale_atmos_hydrometeor.F90 \
   $(ATMOS)/scale_atmos_saturation.F90 \
   $(MP)/scale_atmos_phy_mp_common.F90 \
@@ -41,6 +49,17 @@ $(BUILD)/$(notdir $(1:.F90=.o)): $(1) $(2) | $(BUILD)
 endef
 PREVIOUS :=
 $(foreach src,$(SOURCES),$(eval $(call COMPILE_RULE,$(src),$(PREVIOUS)))$(eval PREVIOUS += $(BUILD)/$(notdir $(src:.F90=.o))))
+
+$(BUILD)/alt/scale_const.F90: $(COMMON)/scale_const.F90 | $(BUILD)
+	mkdir -p $(BUILD)/alt
+	sed -E -e 's/(CONST_Rvap +=) +461.50_RP/\1 480.0_RP/' \
+	  -e 's/(CONST_CPvap +=) +1846.00_RP/\1 1900.0_RP/' \
+	  -e 's/(CONST_CL +=) +4218.0_RP/\1 4100.0_RP/' \
+	  -e 's/(CONST_LHV0 +=) +2.501E\+6_RP/\1 2.4E+6_RP/' \
+	  -e 's/(CONST_PSAT0 +=) +610.78_RP/\1 600.0_RP/' \
+	  -e 's/(CONST_DWATR +=) +1000.0_RP/\1 950.0_RP/' \
+	  -e 's/(CONST_TEM00 +=) +273.15_RP/\1 270.0_RP/' \
+	  -e 's/CONST_EPS += +epsilon\(0.0_RP\)/CONST_EPS = 1.0E-15_RP/' $< > $@
 
 $(BUILD):
 	mkdir -p $@

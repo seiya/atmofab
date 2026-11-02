@@ -29,10 +29,13 @@ The block below is the suite's whole input. Every case has `ka=8`, and every cas
 
 No case sits on the boundary between the two branches of the saturation step, where a change of the last bit changes the branch: at every interior cell of every `pass` case, $q_\Sigma$ and $q_s$ at the virtual temperature differ by more than `10%` of $q_s$.
 - `l0_tv_mixed` has `qr = rhoq_r/dens` of `5e-13`, `2e-12`, `5e-13`, `2e-12`, `1e-9` and `1e-3`, with `dens` different from `1`, so that `qr` and `rhoq_r` fall on opposite sides of `1e-12` in cells 2 and 3.
+- Cell 7 of `l0_alt_evaporation` has `qs` below the case's `eps`, as `l0_eps_floor` has it below the default one.
+- `alt_constants` replaces the values of `constants` it names on a case with `constants: alt`, so a kernel that ignores a constant argument (Controlled Spec §6) deviates there. The values are not physical; each is a few percent from the default.
 
 ```yaml
 grid: {ka: 8, ks: 2, ke: 7}
 constants: {rvap: 461.50, cpvap: 1846.0, cl: 4218.0, lhv0: 2.501e+6, psat0: 610.78, tem00: 273.15, eps: 2.220446049250313e-16, dwatr: 1000.0}
+alt_constants: {rvap: 480.0, cpvap: 1900.0, cl: 4100.0, lhv0: 2.4e+6, psat0: 600.0, tem00: 270.0, eps: 1.0e-15, dwatr: 950.0}
 air: {cpdry: 1004.64, rdry: 287.04}
 setup: {temp: 222.0, dens: 0.77, pres: 12345.0, qv: 0.0123, qc: 0.0321, qr: 0.0456, cptot: 1111.0, cvtot: 777.0, rhoq_c: 0.00011, rhoq_r: 0.00022, refstate_dens: 0.66, rhoe_t: -999.0, evaporate: -999.0, pcsat: -999.0, vterm_c: -999.0, vterm_r: -999.0}
 scalars: {guard_pass: -1.0}
@@ -70,6 +73,8 @@ cases:
 - {case_id: l0_ke_above_ka, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, grid: {ks: 2, ke: 9}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}}
 - {case_id: l0_tv_ks_below_one, operation: terminal_velocity, expected: xfail, refusal: {}, grid: {ks: 0, ke: 7}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}}
 - {case_id: l0_tv_ke_above_ka, operation: terminal_velocity, expected: xfail, refusal: {}, grid: {ks: 2, ke: 9}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}}
+- {case_id: l0_alt_evaporation, operation: adjustment, expected: pass, constants: alt, dt: 10.0, columns: {temp: {cells: [290.0, 288.0, 286.0, 284.0, 282.0, 108.0]}, dens: {cells: [1.0, 0.96, 0.92, 0.88, 0.84, 1.0]}, pres: [90000.0, -2000.0], qv: {cells: [0.003, 0.0032, 0.0034, 0.0036, 0.0038, 1.0e-18]}, qc: [0.0, 0.0], qr: [1.0e-3, 0.0]}}
+- {case_id: l0_alt_cloud, operation: adjustment, expected: pass, constants: alt, dt: 10.0, columns: {temp: [285.0, 0.5], dens: [1.0, 0.0], pres: [100000.0, 0.0], qv: [0.0105, 0.0], qc: [3.0e-3, 2.0e-4], qr: [0.0, 0.0]}}
 ```
 
 ## 3. Execution-control rules
@@ -79,7 +84,7 @@ cases:
 `N/A`: the `L0` suite uses the fixed cases of §2 and defines no `case` sweep.
 
 ## 5. Diagnostics contract
-- Require outputting `checks.dry_noop`, `checks.autoconversion`, `checks.accretion`, `checks.evaporation`, `checks.eps_floor`, `checks.water_energy`, `checks.limiter`, `checks.saturated`, `checks.evaporate_number`, `checks.heat_capacity`, `checks.rain_above_saturation`, `checks.tv_formula`, `checks.tv_zerosw`, `checks.tv_mixed`, `checks.tv_refstate`, `checks.tv_cloud_zero`, `checks.halo_untouched` and `checks.input_guard` in `diagnostics.json`. Each is computed on the cases of the test that names it in §6 and is `na` on every other case; `checks.input_guard` is defined in the next item.
+- Require outputting `checks.dry_noop`, `checks.autoconversion`, `checks.accretion`, `checks.evaporation`, `checks.eps_floor`, `checks.water_energy`, `checks.limiter`, `checks.saturated`, `checks.evaporate_number`, `checks.heat_capacity`, `checks.rain_above_saturation`, `checks.alt_constants`, `checks.tv_formula`, `checks.tv_zerosw`, `checks.tv_mixed`, `checks.tv_refstate`, `checks.tv_cloud_zero`, `checks.halo_untouched` and `checks.input_guard` in `diagnostics.json`. Each is computed on the cases of the test that names it in §6 and is `na` on every other case; `checks.input_guard` is defined in the next item.
 - The state of a case, captured after setup and after the run, consists of `temp`, `qv`, `qc`, `qr`, `cptot`, `cvtot`, `dens`, `pres`, `rhoe_t`, `evaporate`, `pcsat`, `vterm_c`, `vterm_r`, `rhoq_c`, `rhoq_r`, `refstate_dens` (each with extent `ka`, at the §2 values at setup) and the scalar `guard_pass`, recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. A variable an `operation` does not publish keeps its setup value. `checks.input_guard` is `pass` when `guard_pass = 1` and `fail` otherwise.
 - A judgment reads a halo cell only through the masks below. With $i=k-1$ and $c=i+1/2$ the cell-centre coordinate of a unit-length cell, `coordinates[]` axis `0`, `count` and `length` `ka`, placement `cell_center`: `interior` $=\min(1,\max(0,\lfloor c\rfloor-(ks-2)))\cdot\min(1,\max(0,ke-\lfloor c\rfloor))$, `halo` $=1-$`interior`, `first` $=\max(0,1-|\lfloor c\rfloor-(ks-1)|)$ marks the cell $k=ks$, and `pairs` $=\min(1,\max(0,\lfloor c\rfloor-(ks-2)))\cdot\min(1,\max(0,ke-1-\lfloor c\rfloor))$ marks the cells $k=ks..ke-1$.
 - `qs` is $q_s$ of the dependency's Controlled Spec §3 at `initial.temp`, `initial.dens`; `qs_final` and `dqs_final` are $q_s$ and $dq_s/dT$ at `final.temp`, `final.dens`, over every cell (the halo sentinels keep them finite). `L00` and `cvv` are the derived constants of Controlled Spec §2. `dq_auto`, `dq_accr` and `dq_evap` are $d_{auto}$, $d_{accr}$, $d_{evap}$ of Controlled Spec §3 step 1 over the `initial` state and `qs`. `dv`, `dc` and `dr` are `final - initial` of `qv`, `qc`, `qr`.
@@ -316,6 +321,11 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `xfail_condition`: `ke > ka`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`.
+- `test_id`: `l0_alt_constants_pass`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `pass`
+  - `judgment`: on `l0_alt_evaporation` (`qc = 0`, subsaturated) and `l0_alt_cloud` (subsaturated with cloud), each with the constants of `alt_constants`. On `l0_alt_evaporation`, with `ref = dq_evap*dt` over that case's `eps`: `max(interior*abs(dv - ref)/(ref + halo))` is `<= 1e-12`, cell by cell so that cell 7 counts, and `maxabs(interior*(final.temp - initial.temp + dv*(L00 + initial.temp*(cvv - cl))/final.cvtot))` is `<= 2e-13`. On `l0_alt_cloud`: `evaporate` against `max(-pcsat, 0)*dens/(4/3*pi*dwatr*(8e-6)**3)` within `1e-12` relative, with `evaporate` positive at every interior cell; and `max(interior*abs(final.qv - qs_final)/(2e-6*dqs_final))` is `<= 1` (`checks.alt_constants`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
