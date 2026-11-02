@@ -12570,8 +12570,9 @@ end program shallow_water2d_runner
                       (repo / "docs/TESTS.md").read_text(encoding="utf-8"))
 
     def test_cross_target_judged_ids_of_the_real_corpus(self) -> None:
-        """Every pass test of the 17 physics tests.md applies the judgment and no xfail test
-        does (the reader against the real prose, both forms); a harness applies none."""
+        """`docs/TESTS.md` §Cross-target judgment states the rule: a pass test applies it and an
+        xfail or fail test does not. This pins the reader against the 17 physics tests.md under
+        that rule, both prose forms; a harness applies none."""
         import glob
         repo = Path(__file__).resolve().parents[2]
         files = sorted(glob.glob(str(repo / "spec/*/*/*/*/tests.md")))
