@@ -132,7 +132,7 @@ def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
 _RETIRED_TEST_TOKENS = ("pass_when", "required_raw_variables", "diagnostics.json",
                         "metrics_basis", "primary_predicate", "verdict.overall", "failed_checks",
                         "`quantity`")
-_RETIRED_CHECK_REF = re.compile(r"\bchecks\.[a-z_]")
+_RETIRED_CHECK_REF = re.compile(r"\bchecks\.\S")
 RUN_WIDE_EXTREMA = {"cfl.max": "cfl_run_max", "extrema.h.min": "h_min_run"}
 
 
@@ -332,6 +332,8 @@ class SpecCorpusVersionTest(unittest.TestCase):
                                            "  - `quantities`: `r`\n")[0])
             self.assertIn("retired checks.<id>", run(good + "checks.cfl.status\n")[0])
             self.assertEqual(run(good + "the host checks.\n"), [])
+            for spelling in ("checks.<id>", "checks.Zero.status"):
+                self.assertIn("retired checks.<id>", run(good + spelling + "\n")[0])
             self.assertEqual(len(run("- `test_id`: `a`\n- `test_id`: `b`\n")), 2)
             self.assertIn("2 `reported:`", run(good + "  - `reported`: `x`\n  - `reported`: `y`\n")[0])
             self.assertIn("defines no test", run("nothing\n")[0])
