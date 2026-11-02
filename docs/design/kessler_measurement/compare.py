@@ -147,17 +147,6 @@ def snapshot(suite: dict, case: dict, driver: Path) -> tuple[dict, dict]:
     return start, final
 
 
-def expand(entry: dict, bind_sets: dict) -> dict:
-    bind: dict[str, str] = {}
-    for name in entry.get("binds", []):
-        bind.update(bind_sets[name])
-    bind.update(entry.get("bind", {}))
-    out = {k: v for k, v in entry.items() if k not in ("binds", "bind")}
-    out["bind"] = bind
-    out["per_case"] = True
-    return out
-
-
 def write_run(run: Path, suite: dict, driver: Path) -> None:
     for case in suite["cases"]:
         start, final = snapshot(suite, case, driver)
@@ -184,18 +173,56 @@ def synthetic_ir(suite: dict, predicates: list[dict]) -> dict:
     }
 
 
-def load_predicates(here: Path, name: str, suite: dict) -> list[dict]:
+def load_predicates(here: Path, name: str) -> list[dict]:
+    """The predicate file expanded to the shape the Compile gate reads: `target_cases` is the
+    test's whole case list, and a row with its own `cases` is one `case:` predicate per case."""
     doc = yaml.safe_load((here / name).read_text(encoding="utf-8"))
-    out = [expand(e, doc["bind_sets"]) for e in doc["predicates"]]
-    for row in doc.get("cross_target", []):
-        for var in row["variables"]:
+    out: list[dict] = []
+    for test_id, test in doc["tests"].items():
+        targets = test["cases"]
+        rows = list(test["judgments"])
+        for flag in ("guard", "converged"):
+            if flag in test:
+                variable = "guard_pass" if flag == "guard" else "converged"
+                rows.append({"quantity": variable, "expr": f"final.{variable}", "op": "eq",
+                             "value": float(test[flag])})
+        for row in rows:
+            bind: dict[str, str] = {}
+            for name_ in row.get("binds", []):
+                bind.update(doc["bind_sets"][name_])
+            bind.update(row.get("bind", {}))
+            base = {"test_id": test_id, "quantity": row["quantity"], "target_cases": targets,
+                    "expr": row["expr"], "op": row["op"], "value": float(row["value"])}
+            if bind:
+                base["bind"] = bind
+            if "cases" in row:
+                out.extend({**base, "case": case} for case in row["cases"])
+            else:
+                out.append({**base, "per_case": True})
+        for var in test.get("cross_target", []):
             out.append({
-                "test_id": row["test_id"], "quantity": "cross_target_state_agreement",
-                "target_cases": row["target_cases"], "per_case": True,
+                "test_id": test_id, "quantity": "cross_target_state_agreement",
+                "target_cases": targets, "per_case": True,
                 "expr": (f"maxabs(final.{var} - comparand.final.{var}) / max(maxabs(final.{var}), "
                          f"maxabs(comparand.final.{var}), 1.0)"),
                 "op": "le", "value": 1e-12,
             })
+    return out
+
+
+def gate_violations(tests_md: Path, suite: dict, predicates: list[dict]) -> list[str]:
+    """`validate_primary_predicate_schema` against the real test ids of `tests.md`."""
+    from tools import validate_pipeline_semantics as vps
+    ir = synthetic_ir(suite, predicates)
+    targets: dict[str, list[str]] = {}
+    for pred in predicates:
+        targets[pred["test_id"]] = pred["target_cases"]
+    cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+    ids = vps._parse_test_ids_from_tests_md(tests_md)
+    out = pe.validate_primary_predicate_schema(
+        predicates, case_ids=set(cases), test_ids=ids, schema=pe.snapshot_schema(ir), cases=cases,
+        test_target_cases=targets)
+    out += [f"test {t} has no predicate" for t in ids if t not in targets]
     return out
 
 
@@ -207,8 +234,11 @@ def cmd_screen(args: argparse.Namespace) -> int:
     other = Path(args.work) / args.node / "comparand"
     write_run(run, suite, Path(args.driver))
     write_run(other, suite, Path(args.comparand_driver))
-    predicates = load_predicates(here, pred_file, suite)
+    predicates = load_predicates(here, pred_file)
     ir = synthetic_ir(suite, predicates)
+    violations = gate_violations(REPO / spec_dir / "tests.md", suite, predicates)
+    for line in violations:
+        print(f"GATE {line}")
     comparand = pe.ComparandEvidence("low_optimization", "-", "-", other.resolve(), "-")
     records = pe.evaluate_primary_predicates(ir, run, comparands=[comparand])
     failed = 0
@@ -239,7 +269,8 @@ def cmd_screen(args: argparse.Namespace) -> int:
             got = run_driver(Path(args.driver), "moist_conversion", suite["grid"], 1.0, initial)
             print(f"forcing {case['case_id']}: driver converged per cell "
                   f"{got['converged_per_cell']}")
-    return 1 if failed or uncovered else 0
+    print(f"gate violations {len(violations)}")
+    return 1 if failed or uncovered or violations else 0
 
 
 def cmd_compare(args: argparse.Namespace) -> int:

@@ -117,7 +117,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
   - `expected_outcome`: `xfail`
   - `case`: `l0_dens_nonpositive`
-  - `xfail_condition`: `dens_min <= 0`
+  - `xfail_condition`: `dens(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`. The output is not defined on a refused call (Controlled Spec §4), so the flag alone is judged.
 - `test_id`: `l0_temp_nonpositive_xfail`
@@ -125,7 +125,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
   - `expected_outcome`: `xfail`
   - `case`: `l0_temp_nonpositive`
-  - `xfail_condition`: `temp_min <= 0`
+  - `xfail_condition`: `temp(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`.
 - `test_id`: `l0_bad_range_xfail`
@@ -141,7 +141,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_satadj_dens_nonpositive`
-  - `xfail_condition`: `dens_min <= 0`
+  - `xfail_condition`: `dens(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`, and each input-updated array holds its input at every cell: `maxabs(final - initial)` is `== 0` for each of `temp`, `qv`, `qc`, `cptot` and `cvtot`.
 - `test_id`: `l0_satadj_temp_nonpositive_xfail`
@@ -149,7 +149,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_satadj_temp_nonpositive`
-  - `xfail_condition`: `temp_min <= 0`
+  - `xfail_condition`: `temp(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: as `l0_satadj_dens_nonpositive_xfail`.
 - `test_id`: `l0_satadj_cvtot_nonpositive_xfail`
@@ -157,7 +157,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_satadj_cvtot_nonpositive`
-  - `xfail_condition`: `cvtot_min <= 0`
+  - `xfail_condition`: `cvtot(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: as `l0_satadj_dens_nonpositive_xfail`.
 - `test_id`: `l0_satadj_bad_range_xfail`

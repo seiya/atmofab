@@ -87,7 +87,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_autoconv_below` (`qc <= 1e-3` at every interior cell, `qr = 0`, `qv` at `qs`): `maxabs(interior*dc)` is `<= 3e-16` and `maxabs(final.qr - initial.qr)` is `== 0`. On `l0_autoconv_above` (`qc > 1e-3`, `qr = 0`, `qv` at `qs`), with `ref = 1e-3*(initial.qc - 1e-3)*dt`: `maxabs(interior*(dc + ref)) / maxabs(interior*ref)` and `maxabs(interior*(dr - ref)) / maxabs(interior*ref)` are `<= 1e-10`. On both, `maxabs(interior*dv)` is `<= 3e-16` and `maxabs(final.temp - initial.temp)` is `<= 2e-13`. `evaporate` is not judged here: `pcsat` is round-off (`checks.autoconversion`). The bound `1e-10` carries the bound `3e-16` of §5 over the smallest `ref` of this suite, of order `7e-6`. The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
+  - `judgment`: on `l0_autoconv_below` (`qc <= 1e-3` at every interior cell, `qr = 0`, `qv` at `qs`): `maxabs(interior*dc)` is `<= 3e-16` and `maxabs(final.qr - initial.qr)` is `== 0`. On `l0_autoconv_above` (`qc > 1e-3`, `qr = 0`, `qv` at `qs`), with `ref = 1e-3*(initial.qc - 1e-3)*dt`: `maxabs(interior*(dc + ref)) / maxabs(interior*ref)` and `maxabs(interior*(dr - ref)) / maxabs(interior*ref)` are `<= 1e-10`. On both, `maxabs(interior*dv)` is `<= 3e-16` and `maxabs(final.temp - initial.temp)` is `<= 2e-13`. `evaporate` is not judged here: `pcsat` is round-off (`checks.autoconversion`). The denominator is the column maximum of `ref`, `3e-5` here and `1.9e-5` on `l0_accretion`, so the bound `3e-16` of §5 is at most `1.6e-11` of it, and `1e-10` carries a factor of 6 over that. The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
 - `test_id`: `l0_accretion_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
@@ -166,7 +166,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_negative_moisture`
-  - `xfail_condition`: `qr_min < 0`
+  - `xfail_condition`: `qr(4) < 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`, and each input-updated array holds its input at every cell: `maxabs(final - initial)` is `== 0` for each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot`.
 - `test_id`: `l0_cvtot_nonpositive_xfail`
@@ -174,7 +174,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_cvtot_nonpositive`
-  - `xfail_condition`: `cvtot_min <= 0`
+  - `xfail_condition`: `cvtot(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`, and each input-updated array holds its input at every cell: `maxabs(final - initial)` is `== 0` for each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot`.
 - `test_id`: `l0_dens_nonpositive_xfail`
@@ -182,7 +182,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_dens_nonpositive`
-  - `xfail_condition`: `dens_min <= 0`
+  - `xfail_condition`: `dens(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`, and each input-updated array holds its input at every cell: `maxabs(final - initial)` is `== 0` for each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot`.
 - `test_id`: `l0_bad_range_xfail`
@@ -214,7 +214,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__terminal_velocity`
   - `expected_outcome`: `xfail`
   - `case`: `l0_tv_dens_nonpositive`
-  - `xfail_condition`: `dens_min <= 0`
+  - `xfail_condition`: `dens(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`.
 - `test_id`: `l0_tv_refstate_nonpositive_xfail`
@@ -222,7 +222,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__terminal_velocity`
   - `expected_outcome`: `xfail`
   - `case`: `l0_tv_refstate_nonpositive`
-  - `xfail_condition`: `refstate_dens_min <= 0`
+  - `xfail_condition`: `refstate_dens(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`.
 
