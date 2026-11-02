@@ -1,0 +1,5 @@
+spec_id: microphysics_saturation_liquid_1d_column
+spec_kind: component
+dependencies:
+  components: []
+  profiles: []

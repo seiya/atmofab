@@ -12570,7 +12570,7 @@ end program shallow_water2d_runner
                       (repo / "docs/TESTS.md").read_text(encoding="utf-8"))
 
     def test_cross_target_judged_ids_of_the_real_corpus(self) -> None:
-        """Every pass test of the 15 physics tests.md applies the judgment and no xfail test
+        """Every pass test of the 17 physics tests.md applies the judgment and no xfail test
         does (the reader against the real prose, both forms); a harness applies none."""
         import glob
         repo = Path(__file__).resolve().parents[2]
@@ -12597,7 +12597,7 @@ end program shallow_water2d_runner
             self.assertEqual(set(ids) >= passes and len(passes) > 0, True, f)
             self.assertEqual(judged, passes, f)
             judged_total += len(judged)
-        self.assertEqual(len(files), 18)
+        self.assertEqual(len(files), 20)
         self.assertGreater(judged_total, 40)
 
     def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:

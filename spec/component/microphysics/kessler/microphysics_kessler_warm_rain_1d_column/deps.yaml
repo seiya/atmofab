@@ -1,0 +1,7 @@
+spec_id: microphysics_kessler_warm_rain_1d_column
+spec_kind: component
+dependencies:
+  components:
+    - component_id: microphysics_saturation_liquid_1d_column
+      version_constraint: ">=0.1.0 <1.0.0"
+  profiles: []

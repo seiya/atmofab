@@ -1,0 +1,279 @@
+# The judgments of the Kessler node's tests.md §6, transcribed by hand into the primary-predicate
+# grammar. A measurement input, not an IR: `Compile.generate` authors its own. `compare.py` expands
+# each row to the gate's shape: `target_cases` is the test's `cases`, and a row with its own `cases`
+# becomes one `case: <case_id>` predicate per case. `guard` and `converged` add the flag rows.
+bind_sets:
+  mask:
+    idx: floor(c)
+    interior: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - idx))
+    halo: 1 - interior
+    first: max(0, 1 - abs(idx - (inputs.grid.ks - 1)))
+    pairs: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - idx))
+  const:
+    rvap: inputs.constants.rvap
+    cpvap: inputs.constants.cpvap
+    cl: inputs.constants.cl
+    lhv0: inputs.constants.lhv0
+    psat0: inputs.constants.psat0
+    tem00: inputs.constants.tem00
+    dwatr: inputs.constants.dwatr
+    cvv: cpvap - rvap
+    L00: lhv0 - (cpvap - cl) * tem00
+  diffs:
+    dv: final.qv - initial.qv
+    dc: final.qc - initial.qc
+    dr: final.qr - initial.qr
+  rates:
+    qs: psat0 * exp(log(initial.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / initial.temp)) / (initial.dens * rvap * initial.temp)
+    dq_auto: 1e-3 * max(initial.qc - 1e-3, 0)
+    dq_accr: 2.2 * initial.qc * initial.qr ** 0.875
+    sliq: initial.qv / max(qs, inputs.constants.eps)
+    pq: initial.pres * qs
+    dq_evap: (1 - min(sliq, 1)) * (1.6 + 124.9 * (initial.dens * initial.qr) ** 0.2046) * (initial.dens * initial.qr) ** 0.525 * pq / (initial.dens * (5.4e5 * pq + 2.55e8))
+  qs_final:
+    qs_final: psat0 * exp(log(final.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / final.temp)) / (final.dens * rvap * final.temp)
+    dqs_final: qs_final / final.temp * ((lhv0 + (cpvap - cl) * (final.temp - tem00)) / (rvap * final.temp) - 1)
+  drift:
+    em: final.temp * final.cvtot + final.qv * L00
+    em0: initial.temp * initial.cvtot + initial.qv * L00
+    drift_ratio: (em - em0) / ((final.qv - qs_final) * (L00 + final.temp * (cvv - cl)))
+tests:
+  l0_dry_column_noop_pass:
+    cases: [l0_dry_column]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot, rhoe_t, evaporate, pcsat]
+    judgments:
+    - {quantity: dqv, binds: [mask], expr: 'maxabs(final.qv - initial.qv)', op: eq, value: 0.0}
+    - {quantity: dqc, binds: [mask], expr: 'maxabs(final.qc - initial.qc)', op: eq, value: 0.0}
+    - {quantity: dqr, binds: [mask], expr: 'maxabs(final.qr - initial.qr)', op: eq, value: 0.0}
+    - {quantity: dcp, binds: [mask], expr: 'maxabs(final.cptot - initial.cptot)', op: eq, value: 0.0}
+    - {quantity: dcv, binds: [mask], expr: 'maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+    - {quantity: rhoe_t, binds: [mask], expr: 'maxabs(interior * final.rhoe_t)', op: eq, value: 0.0}
+    - {quantity: evaporate, binds: [mask], expr: 'maxabs(interior * final.evaporate)', op: eq, value: 0.0}
+    - {quantity: pcsat, binds: [mask], expr: 'maxabs(interior * final.pcsat)', op: eq, value: 0.0}
+    - {quantity: dtemp, binds: [mask], expr: 'maxabs(final.temp - initial.temp)', op: le, value: 2e-13}
+  l0_autoconversion_threshold_pass:
+    cases: [l0_autoconv_below, l0_autoconv_above]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot]
+    judgments:
+    - {quantity: below_dqc, cases: [l0_autoconv_below], binds: [mask, diffs], expr: 'maxabs(interior * dc)', op: le, value: 3e-16}
+    - {quantity: below_dqr, cases: [l0_autoconv_below], binds: [mask, diffs], expr: 'maxabs(final.qr - initial.qr)', op: eq, value: 0.0}
+    - {quantity: above_dqc_rel, cases: [l0_autoconv_above], binds: [mask, diffs], bind: {ref: '1e-3 * (initial.qc - 1e-3) * inputs.dt'}, expr: 'maxabs(interior * (dc + ref)) / maxabs(interior * ref)', op: le, value: 1e-10}
+    - {quantity: above_dqr_rel, cases: [l0_autoconv_above], binds: [mask, diffs], bind: {ref: '1e-3 * (initial.qc - 1e-3) * inputs.dt'}, expr: 'maxabs(interior * (dr - ref)) / maxabs(interior * ref)', op: le, value: 1e-10}
+    - {quantity: dqv, binds: [mask, diffs], expr: 'maxabs(interior * dv)', op: le, value: 3e-16}
+    - {quantity: dtemp, binds: [mask, diffs], expr: 'maxabs(final.temp - initial.temp)', op: le, value: 2e-13}
+  l0_accretion_pass:
+    cases: [l0_accretion]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot]
+    judgments:
+    - {quantity: dqc_rel, binds: [mask, const, diffs, rates], bind: {ref: '(dq_auto + dq_accr) * inputs.dt'}, expr: 'maxabs(interior * (dc + ref)) / maxabs(interior * ref)', op: le, value: 1e-10}
+    - {quantity: dqr_rel, binds: [mask, const, diffs, rates], bind: {ref: '(dq_auto + dq_accr) * inputs.dt'}, expr: 'maxabs(interior * (dr - ref)) / maxabs(interior * ref)', op: le, value: 1e-10}
+  l0_evaporation_pass:
+    cases: [l0_evaporation]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot, rhoe_t]
+    judgments:
+    - {quantity: dqr_rel, binds: [mask, const, diffs, rates], bind: {ref: 'dq_evap * inputs.dt'}, expr: 'maxabs(interior * (dr + ref)) / maxabs(interior * ref)', op: le, value: 1e-12}
+    - {quantity: dqv_rel, binds: [mask, const, diffs, rates], bind: {ref: 'dq_evap * inputs.dt'}, expr: 'maxabs(interior * (dv - ref)) / maxabs(interior * ref)', op: le, value: 1e-12}
+    - {quantity: qc_zero, binds: [mask, const, diffs, rates], bind: {ref: 'dq_evap * inputs.dt'}, expr: 'maxabs(interior * final.qc)', op: eq, value: 0.0}
+    - {quantity: dtemp, binds: [mask, const, diffs, rates], bind: {ref: 'dq_evap * inputs.dt'}, expr: 'maxabs(interior * (final.temp - initial.temp + dv * (L00 + initial.temp * (cvv - cl)) / final.cvtot))', op: le, value: 2e-13}
+  l0_eps_floor_pass:
+    cases: [l0_eps_floor]
+    guard: 1
+    cross_target: [temp, qv, qr]
+    judgments:
+    - {quantity: dqv_rel, binds: [mask, const, diffs, rates], bind: {ref: 'dq_evap * inputs.dt'}, expr: 'maxabs(interior * (dv - ref)) / maxabs(interior * ref)', op: le, value: 1e-12}
+  l0_total_water_and_energy_pass:
+    cases: [l0_dry_column, l0_autoconv_below, l0_autoconv_above, l0_accretion, l0_evaporation, l0_cloud_evaporates, l0_supersaturated, l0_limiter_qr, l0_limiter_qc, l0_rain_above_saturation]
+    guard: 1
+    cross_target: [qv, qc, qr]
+    judgments:
+    - {quantity: total_water, binds: [mask, const, diffs, qs_final], expr: 'maxabs(interior * (dv + dc + dr))', op: le, value: 1e-15}
+    - {quantity: energy_ratio, binds: [mask, const, diffs, qs_final], bind: {em: 'final.temp * final.cvtot + final.qv * L00', em0: 'initial.temp * initial.cvtot + initial.qv * L00'}, expr: 'max(interior * abs(em - em0) / abs(2e-6 * dqs_final * (L00 + final.temp * (cvv - cl))))', op: le, value: 1.0}
+    - {quantity: rhoe_t_rel, binds: [mask, const, diffs, qs_final], expr: 'maxabs(interior * (final.rhoe_t * inputs.dt + final.dens * L00 * dv)) / max(maxabs(interior * final.dens * L00 * dv), 10)', op: le, value: 1e-12}
+  l0_limiter_positivity_pass:
+    cases: [l0_limiter_qr, l0_limiter_qc, l0_limiter_qv]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot]
+    judgments:
+    - {quantity: qr_clipped, cases: [l0_limiter_qr], binds: [mask], expr: 'maxabs(interior * final.qr)', op: le, value: 1e-17}
+    - {quantity: qc_clipped, cases: [l0_limiter_qc], binds: [mask], expr: 'maxabs(interior * final.qc)', op: eq, value: 0.0}
+    - {quantity: qv_clipped, cases: [l0_limiter_qv], binds: [mask], expr: 'maxabs(interior * final.qv)', op: le, value: 1e-17}
+    - {quantity: qv_min, binds: [mask], expr: 'min(interior * final.qv)', op: ge, value: -1e-17}
+    - {quantity: qc_min, binds: [mask], expr: 'min(interior * final.qc)', op: ge, value: -1e-17}
+    - {quantity: qr_min, binds: [mask], expr: 'min(interior * final.qr)', op: ge, value: -1e-17}
+    - {quantity: rain_not_scaled, cases: [l0_limiter_qv], binds: [mask, const, diffs, rates], bind: {ref: '(dq_auto + dq_accr - dq_evap) * inputs.dt'}, expr: 'maxabs(interior * (dr - ref)) / maxabs(interior * ref)', op: le, value: 1.0e-12}
+  l0_supersaturated_saturates_pass:
+    cases: [l0_supersaturated]
+    guard: 1
+    cross_target: [temp, qv, qc, cptot, cvtot, rhoe_t, pcsat]
+    judgments:
+    - {quantity: qv_ratio, binds: [mask, const, qs_final], expr: 'max(interior * abs(final.qv - qs_final) / (2e-6 * abs(dqs_final)))', op: le, value: 1.0}
+    - {quantity: qc_positive, binds: [mask, const, qs_final], expr: 'min(interior * final.qc + halo)', op: gt, value: 0.0}
+    - {quantity: drift_ratio, binds: [mask, const, qs_final, drift], expr: 'max(pairs * abs(drift_ratio - 1))', op: le, value: 1.0e-3}
+  l0_evaporate_number_pass:
+    cases: [l0_cloud_evaporates, l0_supersaturated]
+    guard: 1
+    cross_target: [evaporate, pcsat]
+    judgments:
+    - {quantity: evaporate_rel, binds: [mask, const], bind: {ref: 'max(-final.pcsat, 0) * final.dens / (4 / 3 * pi * dwatr * (8e-6) ** 3)'}, expr: 'maxabs(interior * (final.evaporate - ref)) / max(maxabs(interior * ref), 1)', op: le, value: 1e-12}
+    - {quantity: pcsat_rel, binds: [mask, const], bind: {star: 'initial.qc - 1e-3 * max(initial.qc - 1e-3, 0) * inputs.dt'}, expr: 'maxabs(interior * (final.pcsat - (final.qc - star) / inputs.dt)) / maxabs(interior * final.pcsat)', op: le, value: 1e-12}
+    - {quantity: evaporate_positive, cases: [l0_cloud_evaporates], binds: [mask], expr: 'min(interior * final.evaporate + halo)', op: gt, value: 0.0}
+    - {quantity: evaporate_zero, cases: [l0_supersaturated], binds: [mask], expr: 'maxabs(interior * final.evaporate)', op: eq, value: 0.0}
+    - {quantity: pcsat_positive, cases: [l0_supersaturated], binds: [mask], expr: 'min(interior * final.pcsat + halo)', op: gt, value: 0.0}
+  l0_adjustment_halo_untouched_pass:
+    cases: [l0_dry_column, l0_autoconv_below, l0_autoconv_above, l0_accretion, l0_evaporation, l0_cloud_evaporates, l0_supersaturated, l0_eps_floor, l0_limiter_qr, l0_limiter_qc, l0_limiter_qv, l0_rain_above_saturation, l0_alt_evaporation, l0_alt_cloud]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot]
+    judgments:
+    - {quantity: halo_temp, binds: [mask], expr: 'maxabs(halo * (final.temp - initial.temp))', op: eq, value: 0.0}
+    - {quantity: halo_qv, binds: [mask], expr: 'maxabs(halo * (final.qv - initial.qv))', op: eq, value: 0.0}
+    - {quantity: halo_qc, binds: [mask], expr: 'maxabs(halo * (final.qc - initial.qc))', op: eq, value: 0.0}
+    - {quantity: halo_qr, binds: [mask], expr: 'maxabs(halo * (final.qr - initial.qr))', op: eq, value: 0.0}
+    - {quantity: halo_cptot, binds: [mask], expr: 'maxabs(halo * (final.cptot - initial.cptot))', op: eq, value: 0.0}
+    - {quantity: halo_cvtot, binds: [mask], expr: 'maxabs(halo * (final.cvtot - initial.cvtot))', op: eq, value: 0.0}
+    - {quantity: halo_rhoe_t, binds: [mask], expr: 'maxabs(halo * final.rhoe_t)', op: eq, value: 0.0}
+    - {quantity: halo_evaporate, binds: [mask], expr: 'maxabs(halo * final.evaporate)', op: eq, value: 0.0}
+    - {quantity: halo_pcsat, binds: [mask], expr: 'maxabs(halo * final.pcsat)', op: eq, value: 0.0}
+  l0_terminal_velocity_formula_pass:
+    cases: [l0_tv_formula]
+    guard: 1
+    cross_target: [vterm_r]
+    judgments:
+    - {quantity: vterm_r_rel, binds: [mask], bind: {ref: '-36.34 * (final.dens * (final.rhoq_r / final.dens)) ** 0.1364 * sum(first * final.refstate_dens) / final.refstate_dens'}, expr: 'maxabs(interior * (final.vterm_r - ref)) / maxabs(interior * ref)', op: le, value: 1e-12}
+    - {quantity: vterm_r_negative, binds: [mask], expr: 'max(interior * final.vterm_r - halo)', op: lt, value: 0.0}
+  l0_terminal_velocity_zerosw_pass:
+    cases: [l0_tv_zerosw]
+    guard: 1
+    cross_target: [vterm_r]
+    judgments:
+    - {quantity: vterm_r_zero, expr: 'maxabs(final.vterm_r)', op: eq, value: 0.0}
+  l0_terminal_velocity_refstate_scaling_pass:
+    cases: [l0_tv_refstate]
+    guard: 1
+    cross_target: [vterm_r]
+    judgments:
+    - {quantity: scaling, binds: [mask], expr: 'maxabs(interior * final.vterm_r / sum(first * final.vterm_r) - interior * sum(first * final.refstate_dens) / final.refstate_dens)', op: le, value: 1e-12}
+  l0_terminal_velocity_cloud_zero_pass:
+    cases: [l0_tv_formula, l0_tv_refstate, l0_tv_zerosw, l0_tv_mixed]
+    guard: 1
+    cross_target: [vterm_c]
+    judgments:
+    - {quantity: vterm_c_zero, expr: 'maxabs(final.vterm_c)', op: eq, value: 0.0}
+  l0_tv_halo_untouched_pass:
+    cases: [l0_tv_formula, l0_tv_refstate, l0_tv_zerosw, l0_tv_mixed]
+    guard: 1
+    cross_target: [vterm_r]
+    judgments:
+    - {quantity: halo_vterm_r, binds: [mask], expr: 'maxabs(halo * final.vterm_r)', op: eq, value: 0.0}
+  l0_dt_nonpositive_xfail:
+    cases: [l0_dt_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_negative_moisture_xfail:
+    cases: [l0_negative_moisture]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_cvtot_nonpositive_xfail:
+    cases: [l0_cvtot_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_dens_nonpositive_xfail:
+    cases: [l0_dens_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_bad_range_xfail:
+    cases: [l0_bad_range]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_nonconverged_xfail:
+    cases: [l0_nonconverged]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_tv_bad_range_xfail:
+    cases: [l0_tv_bad_range]
+    guard: 0
+    judgments: []
+  l0_tv_dens_nonpositive_xfail:
+    cases: [l0_tv_dens_nonpositive]
+    guard: 0
+    judgments: []
+  l0_tv_refstate_nonpositive_xfail:
+    cases: [l0_tv_refstate_nonpositive]
+    guard: 0
+    judgments: []
+  l0_heat_capacity_pass:
+    cases: [l0_dry_column, l0_autoconv_below, l0_autoconv_above, l0_accretion, l0_evaporation, l0_eps_floor, l0_cloud_evaporates, l0_supersaturated, l0_rain_above_saturation, l0_limiter_qr, l0_limiter_qc, l0_limiter_qv, l0_alt_evaporation, l0_alt_cloud]
+    guard: 1
+    cross_target: [cptot, cvtot]
+    judgments:
+    - {quantity: cptot_closed, binds: [mask, const, diffs], expr: 'maxabs(interior * (final.cptot - initial.cptot - (cpvap * dv + cl * (dc + dr))))', op: le, value: 1.0e-11}
+    - {quantity: cvtot_closed, binds: [mask, const, diffs], expr: 'maxabs(interior * (final.cvtot - initial.cvtot - (cvv * dv + cl * (dc + dr))))', op: le, value: 1.0e-11}
+  l0_rain_above_saturation_pass:
+    cases: [l0_rain_above_saturation]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot]
+    judgments:
+    - {quantity: dqr_rel, binds: [mask, const, diffs, rates], bind: {ref: '(dq_auto + dq_accr) * inputs.dt'}, expr: 'maxabs(interior * (dr - ref)) / maxabs(interior * ref)', op: le, value: 1.0e-12}
+  l0_terminal_velocity_mixed_column_pass:
+    cases: [l0_tv_mixed]
+    guard: 1
+    cross_target: [vterm_r]
+    judgments:
+    - {quantity: vterm_r_rel, binds: [mask], bind: {qr: 'final.rhoq_r / final.dens', z: '1 - min(1, floor(qr / 1e-12))', ref: '-36.34 * (final.dens * (qr + z)) ** 0.1364 * sum(first * final.refstate_dens) / final.refstate_dens * (1 - z)'}, expr: 'maxabs(interior * (final.vterm_r - ref)) / maxabs(interior * ref)', op: le, value: 1.0e-12}
+  l0_qv_negative_xfail:
+    cases: [l0_qv_negative]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_qc_negative_xfail:
+    cases: [l0_qc_negative]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_cptot_nonpositive_xfail:
+    cases: [l0_cptot_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_temp_nonpositive_xfail:
+    cases: [l0_temp_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_ks_below_one_xfail:
+    cases: [l0_ks_below_one]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_ke_above_ka_xfail:
+    cases: [l0_ke_above_ka]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.qr - initial.qr) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_tv_ks_below_one_xfail:
+    cases: [l0_tv_ks_below_one]
+    guard: 0
+    judgments: []
+  l0_tv_ke_above_ka_xfail:
+    cases: [l0_tv_ke_above_ka]
+    guard: 0
+    judgments: []
+  l0_alt_constants_pass:
+    cases: [l0_alt_evaporation, l0_alt_cloud]
+    guard: 1
+    cross_target: [temp, qv, qc, qr, cptot, cvtot]
+    judgments:
+    - {quantity: dqv_rel, cases: [l0_alt_evaporation], binds: [mask, const, diffs, rates], bind: {ref: 'dq_evap * inputs.dt'}, expr: 'max(interior * abs(dv - ref) / (ref + halo))', op: le, value: 1.0e-12}
+    - {quantity: dtemp, cases: [l0_alt_evaporation], binds: [mask, const, diffs], expr: 'maxabs(interior * (final.temp - initial.temp + dv * (L00 + initial.temp * (cvv - cl)) / final.cvtot))', op: le, value: 2.0e-13}
+    - {quantity: evaporate_rel, cases: [l0_alt_cloud], binds: [mask, const], bind: {ref: 'max(-final.pcsat, 0) * final.dens / (4 / 3 * pi * dwatr * (8e-6) ** 3)'}, expr: 'maxabs(interior * (final.evaporate - ref)) / max(maxabs(interior * ref), 1)', op: le, value: 1.0e-12}
+    - {quantity: evaporate_positive, cases: [l0_alt_cloud], binds: [mask], expr: 'min(interior * final.evaporate + halo)', op: gt, value: 0.0}
+    - {quantity: qv_ratio, cases: [l0_alt_cloud], binds: [mask, const, qs_final], expr: 'max(interior * abs(final.qv - qs_final) / (2e-6 * abs(dqs_final)))', op: le, value: 1.0}

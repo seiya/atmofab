@@ -1,0 +1,196 @@
+# The judgments of the saturation node's tests.md §6, transcribed by hand into the primary-predicate
+# grammar. A measurement input, not an IR: `Compile.generate` authors its own. `compare.py` expands
+# each row to the gate's shape: `target_cases` is the test's `cases`, and a row with its own `cases`
+# becomes one `case: <case_id>` predicate per case. `guard` and `converged` add the flag rows.
+bind_sets:
+  mask:
+    idx: floor(c)
+    interior: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - idx))
+    halo: 1 - interior
+    pairs: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - idx))
+  const:
+    rvap: inputs.constants.rvap
+    cpvap: inputs.constants.cpvap
+    cl: inputs.constants.cl
+    lhv0: inputs.constants.lhv0
+    psat0: inputs.constants.psat0
+    tem00: inputs.constants.tem00
+    cvv: cpvap - rvap
+    L00: lhv0 - (cpvap - cl) * tem00
+  qs_initial:
+    qs: psat0 * exp(log(initial.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / initial.temp)) / (initial.dens * rvap * initial.temp)
+  qs_final:
+    qs_final: psat0 * exp(log(final.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / final.temp)) / (final.dens * rvap * final.temp)
+    dqs_final: qs_final / final.temp * ((lhv0 + (cpvap - cl) * (final.temp - tem00)) / (rvap * final.temp) - 1)
+  drift:
+    em: final.temp * final.cvtot + final.qv * L00
+    em0: initial.temp * initial.cvtot + initial.qv * L00
+    drift_ratio: (em - em0) / ((final.qv - qs_final) * (L00 + final.temp * (cvv - cl)))
+  cells:
+    at4: max(0, 1 - abs(idx - 3))
+    m36: max(0, 1 - abs(idx - 2)) + max(0, 1 - abs(idx - 5))
+    m57: max(0, 1 - abs(idx - 4)) + max(0, 1 - abs(idx - 6))
+tests:
+  l0_qsat_reference_point_pass:
+    cases: [l0_qsat_ref]
+    guard: 1
+    cross_target: [qsat]
+    judgments:
+    - {quantity: qsat_rel, binds: [mask, const], bind: {ref: 'psat0 / (final.dens * rvap * tem00)'}, expr: 'maxabs(interior * (final.qsat - ref)) / maxabs(interior * ref)', op: le, value: 1e-12}
+  l0_qsat_clausius_clapeyron_pass:
+    cases: [l0_qsat_ref, l0_qsat_temp_ramp, l0_qsat_dens_ramp, l0_qsat_alt]
+    guard: 1
+    cross_target: [qsat]
+    judgments:
+    - {quantity: qsat_rel, binds: [mask, const, qs_initial], expr: 'maxabs(interior * (final.qsat - qs)) / maxabs(interior * qs)', op: le, value: 1e-12}
+  l0_qsat_monotone_pass:
+    cases: [l0_qsat_temp_ramp, l0_qsat_dens_ramp]
+    guard: 1
+    cross_target: [qsat]
+    judgments:
+    - {quantity: min_increase, cases: [l0_qsat_temp_ramp], binds: [mask], expr: 'min(pairs * (roll(final.qsat, -1) - final.qsat) + (1 - pairs))', op: gt, value: 0.0}
+    - {quantity: max_decrease, cases: [l0_qsat_dens_ramp], binds: [mask], expr: 'max(pairs * (roll(final.qsat, -1) - final.qsat) - (1 - pairs))', op: lt, value: 0.0}
+  l0_qsat_halo_untouched_pass:
+    cases: [l0_qsat_ref, l0_qsat_temp_ramp, l0_qsat_dens_ramp, l0_qsat_alt]
+    guard: 1
+    cross_target: [qsat]
+    judgments:
+    - {quantity: halo_qsat, binds: [mask], expr: 'maxabs(halo * final.qsat)', op: eq, value: 0.0}
+  l0_satadj_dry_noop_pass:
+    cases: [l0_satadj_dry]
+    guard: 1
+    converged: 1
+    cross_target: [temp, qv, qc, cptot, cvtot, rhoe_d]
+    judgments:
+    - {quantity: dqv, expr: 'maxabs(final.qv - initial.qv)', op: eq, value: 0.0}
+    - {quantity: dqc, expr: 'maxabs(final.qc - initial.qc)', op: eq, value: 0.0}
+    - {quantity: dcptot, expr: 'maxabs(final.cptot - initial.cptot)', op: eq, value: 0.0}
+    - {quantity: dcvtot, expr: 'maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+    - {quantity: rhoe_d, binds: [mask], expr: 'maxabs(interior * final.rhoe_d)', op: eq, value: 0.0}
+    - {quantity: dtemp, expr: 'maxabs(final.temp - initial.temp)', op: le, value: 2e-13}
+  l0_satadj_subsaturated_evaporates_all_pass:
+    cases: [l0_satadj_subsat, l0_satadj_alt_subsat]
+    guard: 1
+    converged: 1
+    cross_target: [temp, qv, qc, cptot, cvtot, rhoe_d]
+    judgments:
+    - {quantity: qc_zero, binds: [mask], expr: 'maxabs(interior * final.qc)', op: eq, value: 0.0}
+    - {quantity: qv_rel, binds: [mask], expr: 'maxabs(interior * (final.qv - (initial.qv + initial.qc))) / maxabs(interior * (initial.qv + initial.qc))', op: le, value: 1e-12}
+    - {quantity: temp_rel, binds: [mask, const], bind: {cvnew: 'initial.cvtot + initial.qc * (cvv - cl)', tstar: '(initial.temp * initial.cvtot + initial.qv * L00 - L00 * (initial.qv + initial.qc)) / cvnew'}, expr: 'maxabs(interior * (final.temp - tstar)) / maxabs(interior * tstar)', op: le, value: 1e-12}
+    - {quantity: cptot_rel, binds: [mask, const], bind: {cpnew: 'initial.cptot + initial.qc * (cpvap - cl)'}, expr: 'maxabs(interior * (final.cptot - cpnew)) / maxabs(interior * cpnew)', op: le, value: 1e-12}
+    - {quantity: cvtot_rel, binds: [mask, const], bind: {cvnew: 'initial.cvtot + initial.qc * (cvv - cl)'}, expr: 'maxabs(interior * (final.cvtot - cvnew)) / maxabs(interior * cvnew)', op: le, value: 1e-12}
+    - {quantity: rhoe_rel, binds: [mask, const], bind: {right: '-L00 * (final.qv - initial.qv) * final.dens'}, expr: 'maxabs(interior * (final.rhoe_d - right)) / maxabs(interior * right)', op: le, value: 1.0e-12}
+  l0_satadj_conservation_pass:
+    cases: [l0_satadj_dry, l0_satadj_subsat, l0_satadj_supersat, l0_satadj_branch, l0_satadj_slow, l0_satadj_alt_supersat]
+    guard: 1
+    converged: 1
+    cross_target: [qv, qc]
+    judgments:
+    - {quantity: total_water, binds: [mask], expr: 'maxabs(interior * ((final.qv + final.qc) - (initial.qv + initial.qc)))', op: le, value: 1e-15}
+    - {quantity: energy_ratio, binds: [mask, const, qs_final], bind: {em: 'final.temp * final.cvtot + final.qv * L00', em0: 'initial.temp * initial.cvtot + initial.qv * L00'}, expr: 'max(interior * abs(em - em0) / abs(2e-6 * dqs_final * (L00 + final.temp * (cvv - cl))))', op: le, value: 1.0}
+  l0_satadj_saturated_state_pass:
+    cases: [l0_satadj_supersat, l0_satadj_branch, l0_satadj_slow, l0_satadj_alt_supersat]
+    guard: 1
+    converged: 1
+    cross_target: [temp, qv, qc, cptot, cvtot, rhoe_d]
+    judgments:
+    - {quantity: qv_ratio, binds: [mask, const, qs_final], expr: 'max(interior * abs(final.qv - qs_final) / (2e-6 * abs(dqs_final)))', op: le, value: 1.0}
+    - {quantity: qc_min, cases: [l0_satadj_supersat, l0_satadj_branch], binds: [mask], expr: 'min(interior * final.qc)', op: ge, value: 0.0}
+    - {quantity: qc_positive, cases: [l0_satadj_supersat, l0_satadj_branch], binds: [mask], expr: 'min(interior * final.qc + halo)', op: gt, value: 0.0}
+    - {quantity: rhoe_rel, binds: [mask, const, qs_final], bind: {right: '-L00 * (final.qv - initial.qv) * final.dens'}, expr: 'maxabs(interior * (final.rhoe_d - right)) / maxabs(interior * right)', op: le, value: 1e-12}
+    - {quantity: cptot_rel, binds: [mask, const, qs_final], bind: {right: '(cpvap - cl) * (final.qv - initial.qv)'}, expr: 'maxabs(interior * (final.cptot - initial.cptot - right)) / maxabs(interior * right)', op: le, value: 1e-12}
+    - {quantity: cvtot_rel, binds: [mask, const, qs_final], bind: {right: '(cvv - cl) * (final.qv - initial.qv)'}, expr: 'maxabs(interior * (final.cvtot - initial.cvtot - right)) / maxabs(interior * right)', op: le, value: 1e-12}
+    - {quantity: drift_ratio, cases: [l0_satadj_supersat], binds: [mask, const, qs_final, drift], expr: 'max(pairs * abs(drift_ratio - 1))', op: le, value: 1.0e-3}
+  l0_satadj_halo_untouched_pass:
+    cases: [l0_satadj_dry, l0_satadj_subsat, l0_satadj_supersat, l0_satadj_branch, l0_satadj_slow, l0_satadj_alt_subsat, l0_satadj_alt_supersat]
+    guard: 1
+    converged: 1
+    cross_target: [temp, qv, qc, cptot, cvtot, rhoe_d]
+    judgments:
+    - {quantity: halo_temp, binds: [mask], expr: 'maxabs(halo * (final.temp - initial.temp))', op: eq, value: 0.0}
+    - {quantity: halo_qv, binds: [mask], expr: 'maxabs(halo * (final.qv - initial.qv))', op: eq, value: 0.0}
+    - {quantity: halo_qc, binds: [mask], expr: 'maxabs(halo * (final.qc - initial.qc))', op: eq, value: 0.0}
+    - {quantity: halo_cptot, binds: [mask], expr: 'maxabs(halo * (final.cptot - initial.cptot))', op: eq, value: 0.0}
+    - {quantity: halo_cvtot, binds: [mask], expr: 'maxabs(halo * (final.cvtot - initial.cvtot))', op: eq, value: 0.0}
+    - {quantity: halo_rhoe_d, binds: [mask], expr: 'maxabs(halo * final.rhoe_d)', op: eq, value: 0.0}
+  l0_dens_nonpositive_xfail:
+    cases: [l0_dens_nonpositive]
+    guard: 0
+    judgments: []
+  l0_temp_nonpositive_xfail:
+    cases: [l0_temp_nonpositive]
+    guard: 0
+    judgments: []
+  l0_bad_range_xfail:
+    cases: [l0_bad_range]
+    guard: 0
+    judgments: []
+  l0_satadj_dens_nonpositive_xfail:
+    cases: [l0_satadj_dens_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_temp_nonpositive_xfail:
+    cases: [l0_satadj_temp_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_cvtot_nonpositive_xfail:
+    cases: [l0_satadj_cvtot_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_bad_range_xfail:
+    cases: [l0_satadj_bad_range]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_nonconverged_xfail:
+    cases: [l0_satadj_nonconverged]
+    guard: 1
+    converged: 0
+    judgments:
+    - {quantity: restored_temp, binds: [mask, cells], expr: 'maxabs(at4 * (final.temp - initial.temp))', op: eq, value: 0.0}
+    - {quantity: restored_qv, binds: [mask, cells], expr: 'maxabs(at4 * (final.qv - initial.qv))', op: eq, value: 0.0}
+    - {quantity: restored_qc, binds: [mask, cells], expr: 'maxabs(at4 * (final.qc - initial.qc))', op: eq, value: 0.0}
+    - {quantity: restored_cptot, binds: [mask, cells], expr: 'maxabs(at4 * (final.cptot - initial.cptot))', op: eq, value: 0.0}
+    - {quantity: restored_cvtot, binds: [mask, cells], expr: 'maxabs(at4 * (final.cvtot - initial.cvtot))', op: eq, value: 0.0}
+    - {quantity: restored_rhoe_d, binds: [mask, cells], expr: 'maxabs(at4 * final.rhoe_d)', op: eq, value: 0.0}
+    - {quantity: evaporated, binds: [mask, cells], expr: 'maxabs(m36 * final.qc)', op: eq, value: 0.0}
+    - {quantity: saturated, binds: [mask, cells, const, qs_final], expr: 'max(m57 * abs(final.qv - qs_final) / (2e-6 * abs(dqs_final)))', op: le, value: 1.0}
+    - {quantity: cloud_left, binds: [mask, cells], expr: 'min(m57 * final.qc + (1 - m57))', op: gt, value: 0.0}
+    - {quantity: total_water, binds: [mask, cells], expr: 'maxabs((interior - at4) * ((final.qv + final.qc) - (initial.qv + initial.qc)))', op: le, value: 1.0e-15}
+  l0_satadj_limit_xfail:
+    cases: [l0_satadj_limit]
+    guard: 1
+    converged: 0
+    judgments:
+    - {quantity: restored_temp, binds: [mask, cells], expr: 'maxabs(at4 * (final.temp - initial.temp))', op: eq, value: 0.0}
+    - {quantity: restored_qv, binds: [mask, cells], expr: 'maxabs(at4 * (final.qv - initial.qv))', op: eq, value: 0.0}
+    - {quantity: restored_qc, binds: [mask, cells], expr: 'maxabs(at4 * (final.qc - initial.qc))', op: eq, value: 0.0}
+    - {quantity: restored_cptot, binds: [mask, cells], expr: 'maxabs(at4 * (final.cptot - initial.cptot))', op: eq, value: 0.0}
+    - {quantity: restored_cvtot, binds: [mask, cells], expr: 'maxabs(at4 * (final.cvtot - initial.cvtot))', op: eq, value: 0.0}
+    - {quantity: restored_rhoe_d, binds: [mask, cells], expr: 'maxabs(at4 * final.rhoe_d)', op: eq, value: 0.0}
+  l0_ks_below_one_xfail:
+    cases: [l0_ks_below_one]
+    guard: 0
+    judgments: []
+  l0_ke_above_ka_xfail:
+    cases: [l0_ke_above_ka]
+    guard: 0
+    judgments: []
+  l0_satadj_cptot_nonpositive_xfail:
+    cases: [l0_satadj_cptot_nonpositive]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_ks_below_one_xfail:
+    cases: [l0_satadj_ks_below_one]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
+  l0_satadj_ke_above_ka_xfail:
+    cases: [l0_satadj_ke_above_ka]
+    guard: 0
+    judgments:
+    - {quantity: restored, expr: 'maxabs(final.temp - initial.temp) + maxabs(final.qv - initial.qv) + maxabs(final.qc - initial.qc) + maxabs(final.cptot - initial.cptot) + maxabs(final.cvtot - initial.cvtot)', op: eq, value: 0.0}
