@@ -212,6 +212,14 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
     keeps working has NOT waited, and the loop is still out there. On PR #81 I noticed
     that mid-session, said so, and still left two behind for the user to find
 
+## A reviewer's blind sweep and the parent that waited on it (issue #582, PR #583, 2026-11-02)
+
+A round 2 reviewer generated a mutant script and started it in the background at 19:17, then ended its turn at 19:23 with "waiting for the sweep" and no findings. I told the operator I was waiting for its report and did not look at the job. The operator asked what was taking so long at about 20:43.
+
+The script had lost the quoting of a `-k "a or b"` selection: `or: command not found` on its first lines, and pytest ran the whole suite serially with no selection. Each mutant ran into its 500 s timeout at about 60%, so every line read `rc=124`: nothing measured. A notification reporting the agent completed changed nothing, because it carried only the promise to wait.
+
+The output answered this in the first ten minutes. Once the job was killed and the reviewer told to report in the foreground, the report arrived soon after with a new major finding. Stopping the job also cost another of this file's accidents: `pkill -f` with the pattern in its own command line killed my own shell (exit 144) before it restored the mutated file, and a separate command had to restore it.
+
 ## A reviewer's restore landed in the primary checkout (issue #178, PR #221, 2026-09-15)
 
 A round-2 mechanical-recomputation reviewer (sonnet, checklist-driven) was told, in its prompt:
