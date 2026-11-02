@@ -8,6 +8,7 @@ bind_sets:
     interior: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - idx))
     halo: 1 - interior
     first: max(0, 1 - abs(idx - (inputs.grid.ks - 1)))
+    pairs: min(1, max(0, idx - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - idx))
   const:
     rvap: inputs.constants.rvap
     cpvap: inputs.constants.cpvap
@@ -32,6 +33,10 @@ bind_sets:
   qs_final:
     qs_final: psat0 * exp(log(final.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / final.temp)) / (final.dens * rvap * final.temp)
     dqs_final: qs_final / final.temp * ((lhv0 + (cpvap - cl) * (final.temp - tem00)) / (rvap * final.temp) - 1)
+  drift:
+    em: final.temp * final.cvtot + final.qv * L00
+    em0: initial.temp * initial.cvtot + initial.qv * L00
+    drift_ratio: (em - em0) / ((final.qv - qs_final) * (L00 + final.temp * (cvv - cl)))
 tests:
   l0_dry_column_noop_pass:
     cases: [l0_dry_column]
@@ -106,6 +111,7 @@ tests:
     judgments:
     - {quantity: qv_ratio, binds: [mask, const, qs_final], expr: 'max(interior * abs(final.qv - qs_final) / (2e-6 * dqs_final))', op: le, value: 1.0}
     - {quantity: qc_positive, binds: [mask, const, qs_final], expr: 'min(interior * final.qc + halo)', op: gt, value: 0.0}
+    - {quantity: drift_ratio, binds: [mask, const, qs_final, drift], expr: 'max(pairs * abs(drift_ratio - 1))', op: le, value: 1.0e-3}
   l0_evaporate_number_pass:
     cases: [l0_cloud_evaporates, l0_supersaturated]
     guard: 1

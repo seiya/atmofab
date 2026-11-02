@@ -22,6 +22,10 @@ bind_sets:
   qs_final:
     qs_final: psat0 * exp(log(final.temp / tem00) * (cpvap - cl) / rvap + L00 / rvap * (1 / tem00 - 1 / final.temp)) / (final.dens * rvap * final.temp)
     dqs_final: qs_final / final.temp * ((lhv0 + (cpvap - cl) * (final.temp - tem00)) / (rvap * final.temp) - 1)
+  drift:
+    em: final.temp * final.cvtot + final.qv * L00
+    em0: initial.temp * initial.cvtot + initial.qv * L00
+    drift_ratio: (em - em0) / ((final.qv - qs_final) * (L00 + final.temp * (cvv - cl)))
 tests:
   l0_qsat_reference_point_pass:
     cases: [l0_qsat_ref]
@@ -91,6 +95,7 @@ tests:
     - {quantity: rhoe_rel, binds: [mask, const, qs_final], bind: {right: '-L00 * (final.qv - initial.qv) * final.dens'}, expr: 'maxabs(interior * (final.rhoe_d - right)) / maxabs(interior * right)', op: le, value: 1e-12}
     - {quantity: cptot_rel, binds: [mask, const, qs_final], bind: {right: '(cpvap - cl) * (final.qv - initial.qv)'}, expr: 'maxabs(interior * (final.cptot - initial.cptot - right)) / maxabs(interior * right)', op: le, value: 1e-12}
     - {quantity: cvtot_rel, binds: [mask, const, qs_final], bind: {right: '(cvv - cl) * (final.qv - initial.qv)'}, expr: 'maxabs(interior * (final.cvtot - initial.cvtot - right)) / maxabs(interior * right)', op: le, value: 1e-12}
+    - {quantity: drift_ratio, cases: [l0_satadj_supersat], binds: [mask, const, qs_final, drift], expr: 'max(pairs * abs(drift_ratio - 1))', op: le, value: 1.0e-3}
   l0_satadj_halo_untouched_pass:
     cases: [l0_satadj_dry, l0_satadj_subsat, l0_satadj_supersat]
     guard: 1
