@@ -1124,6 +1124,9 @@ PINNED: dict[str, str] = {
     "leaf-86": "c8fcb173cdb1d18a1d32e9991ad6673de285b747d88aaad8d37280a395fbec6e",
     # leaf-87 (issue #582): the judging half of the checks module is retired.
     "leaf-87": "4343ff9199f3c20535a83b857f5e7a35785862cf1887832bd0205782f5383923",
+    # leaf-88 (the issue's PR-3): the runner-output contract and the Validate document say a
+    # shape-valid value is zeros of the declared extents, never an empty array.
+    "leaf-88": "9f5c0041fe0b3e74229d0c267744fb2c780083440b9e89d79fd6206fa11811b6",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1134,8 +1137,10 @@ PINNED_READER: dict[str, str] = {
     "compile-verify-2": "fc767692fbcd05d9c620296e60405834ffdbb96ccc3c5fbe303e78d2d4e3850b",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
+    "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
+    "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

@@ -2137,7 +2137,7 @@ class HarnessTestsMdStatesTheThreadQueryTest(unittest.TestCase):
     def test_the_judgment_states_the_conditional_runtime_query(self) -> None:
         judgment = self._perf_judgment()
         # The bound: this is the perf judgment, not another item that mentions the test id.
-        self.assertIn("throughput_residual", judgment)
+        self.assertIn("RELATIVE residual", judgment)
         for needle in ("takes no thread count", "omp_get_max_threads", "`!$`",
                        "unconditional assignment of `1`"):
             self.assertIn(needle, judgment)

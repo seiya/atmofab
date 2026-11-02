@@ -908,7 +908,7 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
     f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
 )
 
-# Verbatim copy of `harness_fortran_cpu_mpi@0.2.0` §5.1's distributed-state operations (§3.3),
+# Verbatim copy of `harness_fortran_cpu_mpi@0.3.0` §5.1's distributed-state operations (§3.3),
 # as the language backend renders them. That harness's §5.1 is `_HARNESS_V3_INTERFACE` under its
 # own `<spec_id>__` names followed by this block (its §5 says so), so its pinned interface is
 # composed below rather than copied twice.

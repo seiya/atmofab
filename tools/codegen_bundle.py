@@ -459,8 +459,8 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
 # shared-memory runtime gives the program itself (issue #512); the distributed harness's §5.1
 # has the eight-argument writer instead.
-# `harness_cpp_gpu@0.3.0` §5.1 begins with the block (issue #289, R4-b
-# PR-5), followed by `__block_size`, the threads per block the host imposes on the program's
+# The device harness's §5.1 likewise begins with the block with the eight-argument
+# writer (issue #289, R4-b PR-5), followed by `__block_size`, the threads per block the host imposes on the program's
 # kernels (issue #512), which the CUDA C++ runner calls. Each runner's `assert_harness_pin` pins
 # its harness's §5.1 as that harness publishes it. Its mechanical enforcer remains
 # the language backend's `assert_harness_pin`; this contract names the ABI, it does not

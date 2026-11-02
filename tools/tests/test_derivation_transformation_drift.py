@@ -768,6 +768,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-22": "212e5c5233749fd29bccfc3abbce03e03561e18994fb1fee431b9e71a4d63f5a",
     # compile-docs-23 (issue #582): the judging half of the checks module is retired.
     "compile-docs-23": "81d774fe9e21f6b22527cc581cf5a0d0232e467fe81ca3348436e41e2a4fe6c9",
+    # compile-docs-24 (the issue's PR-3): a harness self-test's variables no longer hold a
+    # round-trip deviation; the schema block names the perf fields it re-parses.
+    "compile-docs-24": "905306cc987b4135a56006562cd1b170a10e7225329410f42ae03d37df52ad9a",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1040,7 +1043,7 @@ PINNED_RENDER: dict[str, str] = {
     # writers and four types `0.9.0` / `0.3.0` no longer publish, and the runner they render, which
     # stopped calling them in PR-H, is byte-identical. The digest `render-13` shipped with at
     # bb06b9ef:
-    "render-13": "e9ae29cbbb3540a4059b8c5e0c1c973bb04c9e269822b337bac34a29bf0e8208",
+    "render-13": "8d8f0e6f30346dfb6ff134014e9e533a5d3b3af961edfbb9635a5b2543338295",
     "render-13@bb06b9ef": "f09b4e3e6428b1f3e9282940d3de9396f90d9087cfbefc6c421b21b222989559",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
@@ -1791,7 +1794,10 @@ PINNED_VERDICT: dict[str, str] = {
     # Round 3: a docstring sentence that was inexact about `_predicate_scope` is deleted.
     "verdict-11": "7327cb51dfbf36f29441cf6b918275bdb2bf3b3f2be70e86228d30c6a870b96b",
     # verdict-12 (issue #582): the judging half of the checks module is retired.
-    "verdict-12": "48cf3bbbf0da29c071cf56b0825499548fac7a975562968c86fe386e600e8702",
+    # Re-pinned (the issue's PR-3), behaviour-preserving: a comment in `primary_evidence.py` says
+    # a harness self-test writes every declared variable. The digest shipped at bb06b9ef:
+    "verdict-12": "0123aff7d06f8acd4092bfc65f6c1e5af794bb1685150b9525e8b9539cb4bfbd",
+    "verdict-12@bb06b9ef": "48cf3bbbf0da29c071cf56b0825499548fac7a975562968c86fe386e600e8702",
 }
 
 

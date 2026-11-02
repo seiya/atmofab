@@ -445,8 +445,8 @@ Its performance-record writer, which no consuming node's bundle code calls eithe
 host-rendered runner calls it, `CHECKS_MODULE_CONTRACT.md` §4, and so does the providing harness's
 own self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
 shared-memory runtime gives the program itself (issue #512); `harness_fortran_cpu_mpi@0.3.0` §5.1
-begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.3.0` §5.1 begins
-with the block,
+begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.3.0` §5.1 likewise begins
+with the block with the eight-argument writer,
 followed by `__block_size` (the threads per block the host imposes on the program's kernels,
 issue #512, which the CUDA C++ runner calls).
 The mechanical enforcer of that definition remains

@@ -14051,6 +14051,28 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                                  parallel={"backend": "cuda"})
         self.assertEqual(run({}, target=unimposed), [])
 
+    def test_every_snapshot_of_the_device_harness_is_read_for_the_block(self) -> None:
+        """Every snapshot carries `block_size` since issue #582, so a placeholder in the LAST one
+        sorted is a violation too: the tie does not stop at the first capture it reads."""
+        from unittest import mock
+
+        from tools import target_profile as tp_mod
+        with tempfile.TemporaryDirectory() as tmp:
+            node_dir = Path(tmp) / "node"
+            snap_dir = node_dir / "raw" / "state_snapshots"
+            snap_dir.mkdir(parents=True)
+            _write_json(snap_dir / "a.json", {"t": 0.0, "block_size": 128})
+            _write_json(snap_dir / "z.json", {"t": 0.0, "block_size": 0.0})
+            execution = vps.NodeExecution(node_key="infrastructure/h@0.3.0", node_dir=node_dir,
+                                          exec_dir=node_dir, pipeline_dir=Path(tmp))
+            violations: list[str] = []
+            with mock.patch.object(tp_mod, "harness_node_key_for_target",
+                                   return_value="infrastructure/h@0.3.0"):
+                vps._validate_harness_reported_block(
+                    Path(tmp), execution, mock.Mock(block_size=128), violations)
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("z.json", violations[0])
+
     def test_the_harness_block_variable_is_the_one_its_self_test_captures(self) -> None:
         """`HARNESS_BLOCK_SNAPSHOT_VARIABLE` against the device harness's tests.md: its test's
         predicates read it, and §4 has every case capture the real value, because the gate reads
