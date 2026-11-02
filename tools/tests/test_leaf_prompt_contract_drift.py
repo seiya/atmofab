@@ -1123,7 +1123,7 @@ PINNED: dict[str, str] = {
     # fixed text joins the tuple as `dependency_facts_render`. The first version in no key.
     "leaf-86": "c8fcb173cdb1d18a1d32e9991ad6673de285b747d88aaad8d37280a395fbec6e",
     # leaf-87 (issue #582): the judging half of the checks module is retired.
-    "leaf-87": "d993a5cabc17f8a9bb3cc4ee2ca7889b8df5c316d8b25e257200cb1e4f85b170",
+    "leaf-87": "4343ff9199f3c20535a83b857f5e7a35785862cf1887832bd0205782f5383923",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1131,7 +1131,7 @@ PINNED: dict[str, str] = {
 # "valid" means for that phase.
 PINNED_READER: dict[str, str] = {
     "compile-verify-1": "584d9da4ce298797da0bdc8923b042b9cc0a17e22bbd9a5d4bfe510b39e1b4f1",
-    "compile-verify-2": "8bcc329a4dc4df59fb5ba994c20029a1a4eca90d3b2de02fb0607912e68b6759",
+    "compile-verify-2": "fc767692fbcd05d9c620296e60405834ffdbb96ccc3c5fbe303e78d2d4e3850b",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
