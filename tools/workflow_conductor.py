@@ -471,35 +471,15 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
             continue
         lines.append(f"- test {item.get('test_id')}: fail")
         basis = item.get("basis")
-        conditions = basis.get("conditions") if isinstance(basis, dict) else None
-        for cond in (conditions if isinstance(conditions, list) else []):
-            if not isinstance(cond, dict):
-                continue
-            evaluated = cond.get("evaluated")
-            for ev in (evaluated if isinstance(evaluated, list) else []):
-                if not isinstance(ev, dict) or ev.get("satisfied"):
-                    continue
-                parts = [f"ref={ev.get('ref', cond.get('ref'))!r}",
-                         f"op={ev.get('op', cond.get('op'))!r}"]
-                if ev.get("case") is not None:
-                    parts.append(f"case={ev['case']!r}")
-                if ev.get("reason"):
-                    parts.append(f"reason={ev['reason']}")
-                if "lhs" in ev:
-                    parts.append(f"lhs={ev['lhs']!r}")
-                if "rhs" in ev:
-                    parts.append(f"rhs={ev['rhs']!r}")
-                lines.append("  - " + " ".join(parts))
-        # The host-evaluated corroborants (Z6): every unsatisfied primary record, with the value
-        # the host computed or the evaluation error, and whether the two kinds of evidence agree.
-        primary = basis.get("primary") if isinstance(basis, dict) else None
-        for rec in (primary if isinstance(primary, list) else []):
+        # Every unsatisfied host record, with the value the host computed or the evaluation error.
+        records = basis.get("predicates") if isinstance(basis, dict) else None
+        for rec in (records if isinstance(records, list) else []):
             if not isinstance(rec, dict) or rec.get("satisfied"):
                 continue
             for ev in (rec.get("evaluated") if isinstance(rec.get("evaluated"), list) else []):
                 if not isinstance(ev, dict) or ev.get("satisfied"):
                     continue
-                parts = [f"primary quantity={rec.get('quantity')!r}",
+                parts = [f"quantity={rec.get('quantity')!r}",
                          f"expr={rec.get('expr')!r}", f"op={rec.get('op')!r}"]
                 if ev.get("case") is not None:
                     parts.append(f"case={ev['case']!r}")
@@ -512,8 +492,6 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
                 if "rhs" in ev:
                     parts.append(f"rhs={ev['rhs']!r}")
                 lines.append("  - " + " ".join(parts))
-        if isinstance(basis, dict) and basis.get("corroboration"):
-            lines.append(f"  corroboration={basis['corroboration']}")
     return "\n".join(lines)
 
 
@@ -637,8 +615,8 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # pattern). `post_execute_violation` and `quality_check_mismatch` stay on the Generate route even
 # on an M3c node: the renderer captures every declared variable for every case straight from
 # the checks module's bound storage, so the key set and shapes are host-fixed by the IR, but every
-# VALUE comes from the leaf's checks module — a trivial (all-zero) basis, a NaN, or a wrong metric
-# is exactly what a warm repair fixes.
+# VALUE comes from the leaf's sources — a trivial (all-zero) state or a NaN is exactly what a warm
+# repair fixes.
 HOST_RENDERED_RUNNER_UNREPAIRABLE: frozenset[str] = frozenset({"snapshot_deliverable_gap"})
 
 # --- Z2 pure-leaf CodegenBundle producer routing (M-C) -------------------------
@@ -1221,23 +1199,19 @@ def _checks_contract_gate_guards_section(text: str) -> str:
     return "\n".join(lines[start:]).rstrip("\n")
 
 
-# The runner-output contract's two evidence sections — §1 (`diagnostics.json`) and §3 (`raw/`
-# primary evidence) — as they reach the pure `validate.judge` reviewer (issue #169). They are
-# what a judge needs to read the two documents it is given about the run's own output: what
-# `diagnostics.json` is obliged to carry, and what `raw/` is obliged to hold and in what shape.
+# The runner-output contract's evidence section — §3 (`raw/` primary evidence) — as it reaches the
+# `validate.judge` reviewer (issue #169): what `raw/` is obliged to hold and in what shape.
 # §2 (`perf.json` required fields) is `Validate.execute`'s deliverable gate rather than a
 # semantic question; §4 (JSON serialization) and §5 (other runner constraints) are settled
 # deterministically before the judge sees anything, and the template tells it not to re-check
 # what a gate has settled.
-_RUNNER_OUTPUT_CONTRACT_SECTIONS = (("1", "2"), ("3", "4"))
+_RUNNER_OUTPUT_CONTRACT_SECTIONS = (("3", "4"),)
 
 
 def _runner_output_contract_sections(text: str) -> str:
-    """Return §1 and §3 of `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, joined by a blank line.
+    """Return §3 of `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`.
 
-    Two `_numbered_section_range` calls, which own the anchoring and the fail-closed semantics:
-    §2 sits between them, so this cannot be one range, and a slice that silently included §2
-    would be a different leaf input under the same contract version.
+    `_numbered_section_range` owns the anchoring and the fail-closed semantics.
 
     Specific to this document, and CORRECTED after a review round: it holds exactly ONE fenced
     block, indented two spaces, at lines 151-164 inside §4. An earlier version of this docstring
@@ -1829,15 +1803,13 @@ def build_launch_request(
             req["source_binary_id"] = refs.source_binary_id
             outs = [
                 f"{rundir}/command_log.jsonl",
-                f"{rundir}/diagnostics.json",
                 f"{rundir}/perf.json",
                 f"{rundir}/trial_meta.json",
                 f"{rundir}/quality_check.json",
-                # R2: execute authors verdict.json deterministically (per-test predicate
-                # evaluation of diagnostics.json), so the judge leaf authors only
-                # semantic_review.json. Moved out of the judge's allowed_output_paths (below).
+                # R2: execute authors verdict.json deterministically (the host's predicates over
+                # the captures), so the judge leaf authors only semantic_review.json. Moved out
+                # of the judge's allowed_output_paths (below).
                 f"{rundir}/verdict.json",
-                f"{rundir}/raw/metrics_basis.json",
             ]
             # Raw-evidence deliverables are IR-driven (phase_04 §44): only require the
             # artifacts the IR's required_evidence declares. A host-rendered runner (Z6, issue
@@ -1863,7 +1835,7 @@ def build_launch_request(
         elif substep == "judge":
             # R2: the judge authors ONLY semantic_review.json. verdict.json (per_test +
             # failure_class) is now deterministically host-authored at execute from the IR
-            # predicates + diagnostics.json; the deterministically-derivable aggregate_verdict /
+            # predicates over the captures; the deterministically-derivable aggregate_verdict /
             # summary / validate_meta are conductor-authored in post_judge (G6,
             # _author_derived_validate_artifacts). The judge is a pure semantic pass.
             req["allowed_output_paths"] = [
@@ -9211,7 +9183,6 @@ class Conductor:
     #: resolves an `evidence_refs` key back to it, and `test_leaf_judge` walks it. The three
     #: DERIVED slots are added by `_leaf_judge_document_refs`, which is what a caller should use.
     _LEAF_JUDGE_RUN_NODE_DOCUMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
-        ("diagnostics_document", "diagnostics.json"),
         ("verdict_document", "verdict.json"),
         ("perf_document", "perf.json"),
         ("trial_meta_document", "trial_meta.json"),
@@ -9260,7 +9231,7 @@ class Conductor:
 
         EVERY read RAISES, as the `generate.verify` sibling's four node artifacts do since issue
         #467 (they degraded to `""` until then). No degradation may travel here: each document
-        below is evidence the judge weighs, and a judge that cannot see `diagnostics.json` has no
+        below is evidence the judge weighs, and a judge that cannot see `verdict.json` has no
         basis for `pass` and would be answering about the absence. The REASON given here was
         wrong until a review round measured it — a blank value does NOT reach the leaf, because
         `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as
@@ -9449,7 +9420,6 @@ class Conductor:
             "tests_document": "tests.md",
             "io_contract_document": "io_contract.yaml",
             "runner_output_contract_document": "runner_output_contract.md",
-            "diagnostics_document": "diagnostics.json",
             "verdict_document": "host_verdict.json",
             "perf_document": "perf.json",
             "trial_meta_document": "trial_meta.json",
@@ -9481,8 +9451,8 @@ class Conductor:
         output = self._WORKSHOP_REVIEW_OUTPUT_BY_SUBSTEP[substep]
         expanders: dict[str, Callable[[str], dict[str, str]]] = {}
         # Every JSON seed is laid out one value per line: a reviewer's file tools page by LINE,
-        # and a document the host wrote on one line (the channel node's `diagnostics.json`,
-        # 116-135 KB) is cut inside that line by both CLIs with no way to page on (step 3
+        # and a document the host wrote on one line (a run's `diagnostics.json` was one, 116-135
+        # KB on the channel node, until issue #582 retired it) is cut inside that line by both CLIs with no way to page on (step 3
         # PR-J2: on the A/B's channel judge claude's `Read` returned 40,964 characters of the
         # 116,682-byte line, `truncatedByTokenCap`; codex removes a long output's middle).
         for key, name in self._WORKSHOP_REVIEWER_DOCUMENT_SEEDS[(phase, substep, shape)].items():
@@ -10394,8 +10364,8 @@ class Conductor:
         # but this is the shared runtime boundary (M3c and non-M3c alike), so drop any unsafe
         # token here too: never put a traversal string on the argv, even from a hand-crafted IR
         # that bypassed Compile. A dropped case is simply absent from the run (and from the
-        # deliverable set this same list feeds); if a predicate still references it, the
-        # metrics-basis matrix reports the missing (test_id, case_id). Either way the run stays
+        # deliverable set this same list feeds); if a predicate still references it, its record
+        # is structural (the capture is absent). Either way the run stays
         # in-directory — the dropped case never produces an out-of-bounds write.
         from tools.spec_input_gates import CASE_ID_TOKEN_RE
         return tuple(sorted(
@@ -12673,8 +12643,7 @@ class Conductor:
 
     @staticmethod
     def _required_evidence_artifacts(ir: dict[str, Any]) -> list[str]:
-        """IR-declared required raw-evidence artifact types (closed set:
-        metrics_basis.json / state_snapshots)."""
+        """IR-declared required raw-evidence artifact types (closed set: state_snapshots)."""
         io = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         rr = (io.get("raw_requirements") or {}) if isinstance(io, dict) else {}
         out: list[str] = []
@@ -12696,18 +12665,13 @@ class Conductor:
         files under raw/ (a per-case debug dump, a scratch log) are deterministically dropped.
         Returns the repo-relative raw_artifact_refs of what was promoted."""
         node_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("diagnostics.json", "perf.json"):
-            src = run_tmp / name
-            if src.exists():
-                shutil.copy2(src, node_dir / name)
+        perf = run_tmp / "perf.json"
+        if perf.exists():
+            shutil.copy2(perf, node_dir / "perf.json")
         raw_dst = node_dir / "raw"
         raw_dst.mkdir(parents=True, exist_ok=True)
         raw_refs: list[str] = []
         node_ref = self._rel(node_dir)
-        mb = run_tmp / "raw" / "metrics_basis.json"
-        if mb.exists():
-            shutil.copy2(mb, raw_dst / "metrics_basis.json")
-            raw_refs.append(f"{node_ref}/raw/metrics_basis.json")
         for art in artifacts:
             if art == "state_snapshots":
                 sdst = raw_dst / "state_snapshots"
@@ -12814,7 +12778,7 @@ class Conductor:
         under the IR's cross-target predicates (issue #512): the comparison those predicates
         state between two targets' runs of one node holds between two shapes of one run too —
         the cell-wise state does not depend on how the work was divided, while a reduction's
-        summation order does, which is why the statuses and not the diagnostic values are
+        summation order does, which is why each test's status and not its values is
         compared beside it. A harness self-test declares none (its captures name the ranks), so
         the answer is `not_applicable`.
 
@@ -12861,7 +12825,32 @@ class Conductor:
                 "failures": failures[:5], "worst": worst}
 
     @staticmethod
-    def _author_quality_check(node_dir: Path, qc_diag: dict[str, Any], qc_cmd_id: str | None,
+    def _shape_verdict(ir: dict[str, Any], shape_dir: Path) -> dict[str, Any] | None:
+        """The host's verdict over one execution shape's captures, as `{self_verdict, per_test:
+        {test_id: status}}` (issue #582, D6), or None when it cannot be evaluated at all (a
+        malformed test or predicate; a capture that is absent or unreadable is a structural record
+        of that test, whose status then differs from a shape that captured it)."""
+        from tools.primary_evidence import PrimaryEvidenceError, evaluate_primary_predicates
+        from tools.verdict_evaluator import PredicateError, evaluate_verdict
+        io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
+        try:
+            doc = evaluate_verdict(io_contract.get("tests"),
+                                   evaluate_primary_predicates(ir, shape_dir))
+        except (PredicateError, PrimaryEvidenceError):
+            return None
+        if not doc["per_test"]:
+            return None
+        return {"self_verdict": doc["self_verdict"],
+                "per_test": {t["test_id"]: t["status"] for t in doc["per_test"]}}
+
+    @staticmethod
+    def _ir_unevaluable(ir: dict[str, Any], run_dir: Path) -> bool:
+        """Whether the host cannot evaluate the IR's tests over a run at all, which says nothing
+        of that run."""
+        return Conductor._shape_verdict(ir, run_dir) is None
+
+    @staticmethod
+    def _author_quality_check(node_dir: Path, qc_cmd_id: str | None,
                               preset: str, *, ir: dict[str, Any], reference_dir: Path,
                               shape_runs: list[dict[str, Any]], launcher: bool,
                               block_imposed: bool = False,
@@ -12876,9 +12865,12 @@ class Conductor:
         its log entry, with `failure` when it did not: `{return_code, error, stderr_head,
         stderr_tail}` (`_stderr_head_and_tail`) for a run that failed, `{not_run}` naming the command that stopped it for one that did not
         run. The row records it as `run_failure`, and the repair excerpt quotes it. Each shape is compared with the reference by the statuses of its
-        `diagnostics.json` checks, its verdict, and its captured state through the IR's
+        host verdict over its own captures, compared per test (`_shape_verdict`, issue #582: no
+        exact-equality rule, because a capture that names the ranks differs by shape by design and
+        the predicates read the grid the run reports), and its captured state through the IR's
         cross-target predicates (`_shape_state_agreement`); a shape that failed to run is a
-        mismatch. For a target whose backend declares a launcher (`launcher`), the process count
+        mismatch. Comparing each shape with the one reference makes every shape's statuses equal
+        to the certified shape's too. For a target whose backend declares a launcher (`launcher`), the process count
         and grid the shape's harness reports in `perf.json` must be the shape's; for one whose
         backend imposes a thread-block size (`block_imposed`), the block size it reports must be
         the shape's whenever the shape imposes one; and for one some shape of which runs more than
@@ -12895,25 +12887,18 @@ class Conductor:
                 return {}
             return doc if isinstance(doc, dict) else {}
 
-        def _check_map(d: dict[str, Any]) -> dict[str, Any]:
-            checks = d.get("checks")
-            return {k: (v.get("status") if isinstance(v, dict) else v)
-                    for k, v in (checks.items() if isinstance(checks, dict) else ())}
-
-        qc_diag = qc_diag if isinstance(qc_diag, dict) else {}
-        qc_checks, qc_verdict = _check_map(qc_diag), qc_diag.get("verdict")
+        qc_verdict = Conductor._shape_verdict(ir, reference_dir)
         shapes: list[dict[str, Any]] = []
         for entry in shape_runs:
             shape, shape_dir = entry["shape"], Path(entry["dir"])
-            diag = _object(shape_dir / "diagnostics.json") if entry["ok"] else {}
-            verdict = diag.get("verdict")
+            verdict = Conductor._shape_verdict(ir, shape_dir) if entry["ok"] else None
             row: dict[str, Any] = {
                 **shape.record(), "command_id": entry.get("command_id"),
                 "run_ok": bool(entry["ok"]),
                 **({"run_failure": entry["failure"]} if entry.get("failure") else {}),
-                "verdict_available": bool(verdict) and bool(qc_verdict),
-                "diagnostics_match": bool(entry["ok"]) and _check_map(diag) == qc_checks,
-                "verdict_match": bool(entry["ok"]) and verdict == qc_verdict,
+                "verdict_available": verdict is not None and qc_verdict is not None,
+                "verdict_match": (verdict is not None and qc_verdict is not None
+                                  and verdict["per_test"] == qc_verdict["per_test"]),
                 "verdict": verdict,
             }
             perf = _object(shape_dir / "perf.json") if entry["ok"] else {}
@@ -12939,7 +12924,7 @@ class Conductor:
                 Conductor._shape_state_agreement(ir, reference_dir, shape.label, shape_dir)
                 if entry["ok"] else {"status": "not_run"})
             row["status"] = "pass" if (
-                row["run_ok"] and row["verdict_available"] and row["diagnostics_match"]
+                row["run_ok"] and row["verdict_available"]
                 and row["verdict_match"] and row.get("launch_match", True)
                 and row.get("block_match", True) and row.get("thread_match", True)
                 and row["state_agreement"]["status"] in ("agree", "not_applicable")) else "fail"
@@ -12952,7 +12937,6 @@ class Conductor:
             "preset": preset,
             "checks": {
                 "verdict_available": certified["verdict_available"],
-                "diagnostics_match": certified["diagnostics_match"],
                 "verdict_match": certified["verdict_match"],
             },
             "comparison": {
@@ -12967,8 +12951,9 @@ class Conductor:
             "shapes": shapes,
             "notes": (f"conductor in-process: every execution shape's run_program "
                       f"({', '.join(r['label'] for r in shapes)}) compared with the {preset} "
-                      f"re-run (one process, one thread): diagnostics check statuses, verdicts "
-                      f"and the captured state under the IR's cross-target predicates."),
+                      f"re-run (one process, one thread): each test's host verdict over the "
+                      f"shape's captures, and the captured state under the IR's cross-target "
+                      f"predicates."),
         }
         (node_dir / "quality_check.json").write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -13023,7 +13008,7 @@ class Conductor:
                     if first is not None:
                         lines.append(f"    {clip(first)}")
                 continue
-            for key in ("verdict_available", "diagnostics_match", "verdict_match",
+            for key in ("verdict_available", "verdict_match",
                         "launch_match", "block_match", "thread_match"):
                 if row.get(key) is False:
                     # The three launch ties compare what the harness reported with the shape's
@@ -13421,8 +13406,10 @@ class Conductor:
             run_tmp / "raw" / "state_snapshots", case_ids, artifacts,
             initial_required=authors_runner)
 
-        run_diag = _read_json(run_tmp / "diagnostics.json") or {}
-        qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}
+        def _captured(run_dir: Path) -> bool:
+            return any(p.name != "snapshot_schema.json"
+                       for p in (run_dir / "raw" / "state_snapshots").glob("*.json"))
+
         shape_runs = [{"shape": target.certified_shape, "dir": run_tmp, "ok": True,
                        "command_id": res_run.get("command_id")}]
         # A sweep shape that did not run names the command that stopped it — the first earlier
@@ -13447,7 +13434,7 @@ class Conductor:
             earlier.append((f"shape {shape.label}", res))
             shape_runs.append(entry)
         qc_status = self._author_quality_check(
-            node_dir, qc_diag, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
+            node_dir, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
             ir=ir, reference_dir=qc_tmp, shape_runs=shape_runs,
             launcher=declares_launcher(target.parallel_backend),
             block_imposed=imposes_block_size(target.parallel_backend),
@@ -13539,7 +13526,7 @@ class Conductor:
         (node_dir / "trial_meta.json").write_text(
             json.dumps(trial_meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-        # 4. gate: post_execute structural check. It also requires diagnostics.json, perf.json
+        # 4. gate: post_execute structural check. It also requires perf.json
         # and quality_check.json to be present and to parse as JSON objects
         # (`_validate_raw_evidence` / `_validate_execution_json_outputs`), so it needs no
         # separate well-formedness gate ahead of it (issue #180).
@@ -13547,8 +13534,13 @@ class Conductor:
             ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_execute",
              "--pipeline-root", refs.pipeline_ref, "--run-id", refs.run_id or ""],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
-        structural_ok = (gate.returncode == 0
-                         and qc_status == "pass" and not snapshot_gap)
+        # An IR whose tests or predicates the host cannot evaluate at all (`_shape_verdict` None
+        # on the reference, which Compile forbids) is no defect of the run: it fails every
+        # comparison above, and step 5 authors the `structural_violation` verdict that routes
+        # it to the diagnostician, not to a Generate repair that cannot fix an IR.
+        ir_unevaluable = gate.returncode in (0, 1) and self._ir_unevaluable(ir, qc_tmp)
+        structural_ok = ir_unevaluable or (gate.returncode == 0
+                                           and qc_status == "pass" and not snapshot_gap)
         if not structural_ok:
             # Structural content failure (bad/missing evidence): record it in
             # trial_meta.status (read by determine_substep_status) and return rc 0 so
@@ -13558,22 +13550,22 @@ class Conductor:
             block = "\n[execute fail]\n" + gate.stdout + gate.stderr
             if snapshot_gap:
                 block += "\n" + snapshot_gap
-            # Actionable cause when the quality-check candidate emitted no diagnostics/verdict:
+            # Actionable cause when the quality-check candidate captured nothing:
             # the control file's quality-check target must invoke the runner with `--cases`
-            # (the runner requires it and aborts without it). run_program's diagnostics being
-            # present while the candidate's is absent isolates the target's form as the cause
+            # (the runner requires it and aborts without it). run_program's captures being
+            # present while the candidate's are absent isolates the target's form as the cause
             # rather than a buggy runner. The binding is the build system's control-file
             # document, §2.
             # Each shape that disagreed with the serial reference, and how (issue #512) — when
-            # the reference itself emitted a verdict; when it emitted none, every shape fails
+            # the reference itself captured state; when it captured none, every shape fails
             # against it and the cause is the reference's, named below.
-            if qc_status != "pass" and qc_diag.get("verdict"):
+            if qc_status != "pass" and _captured(qc_tmp):
                 block += "".join(f"\n{line}" for line in
                                  self._quality_check_failure_lines(node_dir))
-            if qc_status != "pass" and not qc_diag.get("verdict") and run_diag.get("verdict"):
+            if qc_status != "pass" and not _captured(qc_tmp) and _captured(run_tmp):
                 block += (
                     f"\n[execute fail: quality_check] the {execute.QUALITY_CHECK_PRESET} re-run "
-                    f"emitted no diagnostics.json/verdict while run_program's is present — the "
+                    f"captured no state while run_program's did — the "
                     f"{self._control_file_basename(refs)} quality-check target must invoke the "
                     f"runner with the argv run_program uses, `<binary> --cases <spec> "
                     f"<case_id>...` (the runner requires `--cases`); the binding is "
@@ -13641,13 +13633,13 @@ class Conductor:
             return {"returncode": 0, "stdout": stdout, "stderr": stderr}
 
         # 5. R2: the run is structurally valid (evidence present, post_execute gate + quality
-        # check clean), so author verdict.json deterministically from the IR predicates +
-        # diagnostics.json. A per-test predicate failure (physics_fail / structural_violation)
+        # check clean), so author verdict.json deterministically from the IR's predicates over
+        # the captures. A per-test predicate failure (physics_fail / structural_violation)
         # fails the execute substep WITHOUT spawning the judge leaf (the R2 cost lever) —
         # classify_failure reads verdict.json#failure_class to route it. An all-clean verdict
         # (self_verdict ∈ {pass, xfail}) leaves the execute substep passing; the judge then
         # authors semantic_review.json only.
-        verdict_doc = self._author_execute_verdict(refs, ir, run_diag)
+        verdict_doc = self._author_execute_verdict(refs, ir)
         if verdict_doc.get("self_verdict") == "fail":
             # Persist the failing predicate(s) as `failure_excerpt`, symmetric with the structural
             # branch above: the dev rollback revokes Generate's artifact before terminalizing and
@@ -13667,14 +13659,12 @@ class Conductor:
             stderr += "\n" + block
         return {"returncode": 0, "stdout": stdout, "stderr": stderr}
 
-    def _author_execute_verdict(self, refs: NodeRefs, ir: dict[str, Any],
-                                run_diag: dict[str, Any]) -> dict[str, Any]:
-        """R2: author verdict.json from ``io_contract.test_predicates`` + the runner's
-        diagnostics.json (``run_diag``), conjoined with the host-evaluated
-        ``io_contract.primary_predicates`` over the promoted captures under the run node
-        directory (Z6, issue #255: `tools/primary_evidence.py` reads
+    def _author_execute_verdict(self, refs: NodeRefs, ir: dict[str, Any]) -> dict[str, Any]:
+        """Author verdict.json from ``io_contract.tests`` and the host-evaluated
+        ``io_contract.predicates`` over the promoted captures under the run node directory
+        (issue #582; `tools/primary_evidence.py` reads
         `raw/state_snapshots/{initial/,}<case_id>.json`, which `_promote_run_evidence` has
-        already placed there). Returns the authored doc. A missing / malformed predicate DSL
+        already placed there). Returns the authored doc. A missing / malformed test or predicate
         (which the Compile-stage gate forbids) is authored as a ``structural_violation``
         verdict; classify_failure's execute branch then routes it to the escalate diagnostician
         (prod) / fail_closed (dev) — the diagnostician can reopen Compile for the IR defect —
@@ -13687,15 +13677,13 @@ class Conductor:
         # certification (`orchestration_runtime.cross_target_agreement`), never stored here.
 
         io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
-        predicates = io_contract.get("test_predicates") if isinstance(io_contract, dict) else None
+        tests = io_contract.get("tests") if isinstance(io_contract, dict) else None
         try:
-            if not isinstance(predicates, list) or not predicates:
+            if not isinstance(tests, list) or not tests:
                 raise PredicateError(
-                    "io_contract.test_predicates missing/empty (Compile must author it)")
-            primary = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir())
-            doc = evaluate_verdict(predicates, run_diag,
-                                   run_id=refs.run_id, node_key=refs.node_key,
-                                   primary=primary)
+                    "io_contract.tests missing/empty (Compile must author it)")
+            records = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir())
+            doc = evaluate_verdict(tests, records, run_id=refs.run_id, node_key=refs.node_key)
         except Exception as exc:  # noqa: BLE001 - any evaluation failure is an IR/contract defect
             # Catch broadly (not just PredicateError): a malformed IR must always route via the
             # deterministic structural_violation path (escalate/fail_closed), never crash execute
@@ -14783,7 +14771,6 @@ class Conductor:
             summary_doc["quality_check"] = {
                 "target_class": qc.get("target_class"),
                 "status": qc.get("status"),
-                "diagnostics_match": qc_checks.get("diagnostics_match"),
                 "verdict_match": qc_checks.get("verdict_match"),
             }
         self._write_run_node_meta(refs, "summary.json", summary_doc)
@@ -15751,8 +15738,8 @@ class Conductor:
                 # R2: an execute failure now has two kinds, disambiguated by whether execute
                 # authored a verdict.json with a failure_class:
                 #   (a) a per-test PREDICATE failure (physics_fail / structural_violation):
-                #       evidence was structurally valid, but a deterministic predicate over
-                #       diagnostics.json failed, so the judge leaf was intentionally not
+                #       evidence was structurally valid, but a host predicate over the
+                #       captures failed, so the judge leaf was intentionally not
                 #       spawned. Attribution (code / ir / spec) needs reasoning, so route to
                 #       the escalate diagnostician in prod (it reads verdict.json#per_test.basis)
                 #       and fail_closed in dev (F1 cross-phase rollback posture). This preserves
@@ -15768,7 +15755,7 @@ class Conductor:
                     if hasattr(self, "_validate_execute_fail_count"):
                         self._validate_execute_fail_count[refs.node_key] = 0
                     reason = f"{VALIDATE_EXECUTE_REASON_PREFIX}{fclass}"
-                    # A `predicate_error` verdict is the missing/malformed `test_predicates` DSL
+                    # A `predicate_error` verdict is a missing/malformed `io_contract.tests` / `predicates`
                     # (_author_execute_verdict's guard), i.e. a defect in the already-certified IR
                     # that Generate cannot author. Attribute it to the IR with the same `_ir`
                     # suffix the C2 backstop and the host-rendered-runner re-attribution use: the

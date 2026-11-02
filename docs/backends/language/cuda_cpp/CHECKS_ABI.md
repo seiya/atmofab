@@ -16,7 +16,7 @@
 > `harness`-shape reviewer by its own fragment.
 
 The leaf-authored source files of a node are `<spec_id>_model.cu` (the definitions of its
-published operations) and, on a physics node, `<spec_id>_checks.cu` (the checks callbacks and
+published operations) and, on a physics node, `<spec_id>_checks.cu` (the checks procedures and
 the bound state) — on a harness, `<spec_id>_runner.cu` (the executable entry) instead. The host
 renders `<spec_id>_model.cuh` (the published surface), and on a physics node
 `<spec_id>_runner.cu` and `<spec_id>_checks.cuh` (the declarations of this document's §1 and
@@ -25,7 +25,7 @@ renders `<spec_id>_model.cuh` (the published surface), and on a physics node
 
 ## 1. The fixed ABI in CUDA C++
 
-The five callbacks of the neutral §1 are functions returning `void` in `namespace
+The three procedures of the neutral §1 are functions returning `void` in `namespace
 <spec_id>_checks`, and the host DECLARES them: it renders `<spec_id>_checks.cuh` beside the
 sources (`runner.render_checks_header`), and both the host-rendered runner and the leaf's
 `<spec_id>_checks.cu` include it. The header reads, for a node whose snapshot schema declares a
@@ -41,28 +41,24 @@ namespace <spec_id>_checks {
 void case_setup(const std::string& case_id, bool& ok);
 void case_run(const std::string& case_id, int& steps, int& cells_updated, bool& ok);
 void get_time(double& t);
-void checks_compute(const std::string& case_id, const std::string& check_id, std::string& status);
-void metric_compute(const std::string& case_id, const std::string& name, double& val, bool& is_na, std::string& reason_na, bool& found);
 extern double s;
 extern std::vector<double> u;
 extern atmofab::Array<double, 2> a;
 }  // namespace <spec_id>_checks
 ```
 
-The neutral argument table binds as: an `in` string is `const std::string&`, an `out` string
-`std::string&`; `logical` is `bool`, `integer` `int`, `float64` `double`; every `out` argument
+The neutral argument table binds as: an `in` string is `const std::string&`; `logical` is `bool`, `integer` `int`, `float64` `double`; every `out` argument
 is a non-const reference to an object the runner owns and passes freshly initialized.
 
 The leaf's `<spec_id>_checks.cu` begins with `#include "<spec_id>_checks.cuh"` and DEFINES each
-callback in `namespace <spec_id>_checks` (a qualified definition `void <spec_id>_checks::f(...)`
+procedure in `namespace <spec_id>_checks` (a qualified definition `void <spec_id>_checks::f(...)`
 counts) with exactly the declared return type and parameter types, in order; the parameter names
 are the leaf's. Each is one external definition: not `static`, `inline` or `constexpr`, not
 `__device__`, not in an unnamed namespace. The `Generate.gate` static check and the bundle
 acceptance gate read the definitions by one reader (`source.checks_module_abi_facts`) and treat a
-callback defined any other way as not defined: a definition with another parameter type is an
+procedure defined any other way as not defined: a definition with another parameter type is an
 OVERLOAD the header's declaration never reaches — the runner's call would fail at link — so it
-is refused by name before Build. All five are required on every physics node, whatever subset its
-runner calls: a node with no metrics still defines `metric_compute`.
+is refused by name before Build. All three are required on every physics node.
 
 ### 1-b. The bound state in CUDA C++
 
@@ -83,12 +79,9 @@ still leaves every bound array so sized.
 
 ## 2. The semantics, spelled in CUDA C++
 
-`status` is `"pass"`, `"fail"`
-or `"na  "` — the not-applicable value is written at the contract's width 4, right-padded, and
-the certified harness trims the padding before it writes the status, so `diagnostics.json` reads
-`"na"` as on every other target; an honestly unavailable metric sets `found = true`,
-`is_na = true` and `reason_na` to a short reason, and a metric that does not apply to the case
-sets `found = false`; a rejected case's bound arrays are still sized, e.g. filled with `0.0`.
+A rejected case's bound arrays are still sized, e.g. filled with `0.0`. A `source: reported` scalar
+over a device state is reduced on the device and copied back with the state before `case_run`
+returns, as the state is (§3).
 
 ## 3. Module-level state in CUDA C++
 
@@ -100,9 +93,7 @@ releases them when it resets the device (`cudaDeviceReset`, `runner.py`).
 `case_run` advances that state by calling the model's published operation, qualified —
 `<spec_id>_model::<spec_id>__<op>(...)` or through a namespace alias of it — from itself or from
 a function the checks source defines that it calls; the checks
-source computes no update of its own (the static check refuses a `case_run` that reaches none). A
-cross-case accumulator lives in other namespace-scope variables of the checks source, which an
-unnamed namespace keeps internal to it.
+source computes no update of its own (the static check refuses a `case_run` that reaches none).
 
 ## 4. Prohibitions in CUDA C++
 
@@ -119,7 +110,7 @@ unnamed namespace keeps internal to it.
   refused by NAME, called or not (`source.checks_harness_isolation_violations`,
   `LEAF_IO_NAMES` / `LEAF_IO_CALL_NAMES`). Emission is the harness's alone, and the host-rendered
   runner makes it so structurally: it writes EVERY output — the snapshots it serialized at the
-  capture points included — after the node's last callback has returned, and ends every exit
+  capture points included — after the node's last procedure has returned, and ends every exit
   with `std::_Exit`, so no code of a leaf source runs after the harness has written anything.
 - **`case_run` reaches the model's operation, and nothing else carries its name.** From
   `case_run`, through the functions the checks source defines, some body names a

@@ -761,17 +761,17 @@ class ValidateJudgeTests(CompileVerifyTests):
         self.assertEqual(review["decision"], "fail")
         # `evidence_refs` name document KEYS, resolved by the host to workspace paths.
         self.assertTrue(review["findings"][0]["evidence_refs"][0].startswith(
-            f"{self.refs.run_node_dir()}/diagnostics.json#"))
+            f"{self.refs.run_node_dir()}/verdict.json#"))
 
     def test_an_evidence_ref_naming_a_seed_file_is_refused(self) -> None:
         """The tree shows file names; `evidence_refs` still name document keys, and a file name
         there is a schema violation repaired as any other (a cost, never a resolution)."""
         bad = _review("fail")
-        bad["findings"][0]["evidence_refs"] = ["diagnostics.json#per_case"]
+        bad["findings"][0]["evidence_refs"] = ["verdict.json#per_test"]
         self.c.leaf_actions = [_writes(self.OUTPUT, bad), _writes(self.OUTPUT, _review("fail"))]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "fail")
-        self.assertIn("diagnostics.json", self.requests()[1]["repair_findings"])
+        self.assertIn("verdict.json", self.requests()[1]["repair_findings"])
         self.assertEqual(len(self.attempt_meta()["per_attempt"]), 2)
 
 

@@ -56,7 +56,7 @@ _STEP, _SUBSTEP = "validate", "judge"
 #: One line per document, numbered, so a seed's line count and a mutation's target are known.
 _CONTEXT = {
     key: "".join(f"{key} line {n}\n" for n in range(1, 6))
-    for key in ("diagnostics_document", "verdict_document", "perf_document",
+    for key in ("verdict_document", "perf_document",
                 "trial_meta_document", "quality_check_document", "tests_document",
                 "io_contract_document", "runner_output_contract_document",
                 "binary_meta_document", "source_meta_document",
@@ -242,7 +242,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         # What every recorded judge launch found: an executed run node (the downstream gate).
         run_node = self.repo / self.node_refs.run_node_dir()
         (run_node / "raw").mkdir(parents=True, exist_ok=True)
-        for name in ("diagnostics.json", "perf.json", "command_log.jsonl"):
+        for name in ("perf.json", "command_log.jsonl"):
             if not (run_node / name).exists():
                 (run_node / name).write_text("{}\n", encoding="utf-8")
         request = wc.build_launch_request(
@@ -406,6 +406,31 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(row["coverage"]["host_verdict.json"]["covered"], 0)
         self.assertNotIn("prompt_matches_record", row)
 
+    def test_replay_reads_no_verdict_basis_so_both_shapes_pass_through(self) -> None:
+        """Issue #582 §3.7: the verdict is an opaque seed to the replay, so a recorded verdict in
+        the retired shape (`conditions` / `primary` / `corroboration`) and one in the current
+        shape (`predicates`) both replay; the tool names no basis at all. A record that still
+        holds the retired `diagnostics_document` SEED is another fact: the context's key set is
+        not the current one, and it is refused rather than replayed on a contract it did not
+        have."""
+        source = Path(jr.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("basis", source)
+        launches = self.repo / "workspace/orchestrations" / _SRC / "launches"
+        path = launches / f"{_SRC_ARID}.request.json"
+        request = json.loads(path.read_text(encoding="utf-8"))
+        for name, basis in (("old", {"conditions": [], "primary": [], "corroboration": "agree"}),
+                            ("new", {"predicates": []})):
+            with self.subTest(name):
+                request["pure_context"]["verdict_document"] = json.dumps(
+                    {"per_test": [{"test_id": "t", "status": "pass", "basis": basis}]})
+                path.write_text(json.dumps(request), encoding="utf-8")
+                rc, out = self._main("--check")
+                self.assertEqual(rc, 0, out)
+        request["pure_context"]["diagnostics_document"] = "{}"
+        path.write_text(json.dumps(request), encoding="utf-8")
+        rc, out = self._main("--check")
+        self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_context_keys_moved"))
+
     def test_the_replay_s_own_seed_build_names_the_provider(self) -> None:
         """Issue #534 PR-J3-a: `_workshop_seeds` places the codex reading helper by the
         request's `workshop_provider`, so the replay's own call (the coverage seeds) carries
@@ -537,12 +562,12 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(self._replays(), [])
 
     def test_check_answers_the_downstream_gate(self) -> None:
-        (self.repo / self.node_refs.run_node_dir() / "diagnostics.json").unlink()
+        (self.repo / self.node_refs.run_node_dir() / "perf.json").unlink()
         rc, out = self._main("--check")
         check = json.loads(out.strip().splitlines()[-1])["check"]
         self.assertEqual((rc, check["dependency_ready"], check["downstream_ready"]),
                          (1, True, False))
-        self.assertIn("diagnostics.json", check["downstream_reason"])
+        self.assertIn("perf.json", check["downstream_reason"])
 
     def test_refusals_before_any_orchestration(self) -> None:
         # A prefix naming two launches.
@@ -701,7 +726,7 @@ class DiagnoseReplayTests(unittest.TestCase):
             run_id="run_20260101_001")
         run_node = self.repo / self.node_refs.run_node_dir()
         (run_node / "raw").mkdir(parents=True, exist_ok=True)
-        for name in ("diagnostics.json", "perf.json", "command_log.jsonl"):
+        for name in ("perf.json", "command_log.jsonl"):
             if not (run_node / name).exists():
                 (run_node / name).write_text("{}\n", encoding="utf-8")
         entry = conductor.entry_for(None, None)

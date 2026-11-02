@@ -29,10 +29,9 @@ def document() -> str:
 
 
 #: The fixed ABI of the leaf-authored checks source (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1,
-#: bound in CHECKS_ABI.md §1): the same five names every language's runner calls.
+#: bound in CHECKS_ABI.md §1): the same three names every language's runner calls.
 CHECKS_PUBLIC_NAMES: tuple[str, ...] = (
     "case_setup", "case_run", "get_time",
-    "checks_compute", "metric_compute",
 )
 
 #: The declaration of each callback, as `(parameter type, parameter name)` pairs in call order.
@@ -45,11 +44,6 @@ CHECKS_ABI_PARAMS: dict[str, tuple[tuple[str, str], ...]] = {
     "case_run": (("const std::string&", "case_id"), ("int&", "steps"),
                  ("int&", "cells_updated"), ("bool&", "ok")),
     "get_time": (("double&", "t"),),
-    "checks_compute": (("const std::string&", "case_id"), ("const std::string&", "check_id"),
-                       ("std::string&", "status")),
-    "metric_compute": (("const std::string&", "case_id"), ("const std::string&", "name"),
-                       ("double&", "val"), ("bool&", "is_na"), ("std::string&", "reason_na"),
-                       ("bool&", "found")),
 }
 
 

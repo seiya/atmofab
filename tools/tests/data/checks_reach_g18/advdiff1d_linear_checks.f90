@@ -1,4 +1,4 @@
-!> advdiff1d_linear checks: case setup / run driving and honest diagnostics.
+!> advdiff1d_linear checks: case setup / run driving.
 !> The bound snapshot state is the module variable u (captured by the host).
 module advdiff1d_linear_checks
   use, intrinsic :: iso_fortran_env, only: dp => real64
@@ -9,8 +9,6 @@ module advdiff1d_linear_checks
   public :: case_setup
   public :: case_run
   public :: get_time
-  public :: checks_compute
-  public :: metric_compute
 
   !> Bound snapshot state (state_bindings: u), shape [nx], cell centres.
   real(dp), allocatable :: u(:)
@@ -179,140 +177,6 @@ contains
     real(dp), intent(out) :: tval
     tval = t
   end subroutine get_time
-
-  subroutine checks_compute(case_id, check_id, status)
-    character(len=*), intent(in) :: case_id
-    character(len=*), intent(in) :: check_id
-    character(len=4), intent(out) :: status
-    associate (unused_case_id => case_id); end associate
-    status = 'na  '
-    select case (check_id)
-    case ('cfl')
-      if (cur_setup_ok) then
-        if (cfl_combined() > 1.0_dp) then
-          status = 'fail'
-        else
-          status = 'pass'
-        end if
-      end if
-    case default
-      status = 'na  '
-    end select
-  end subroutine checks_compute
-
-  subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
-    character(len=*), intent(in) :: case_id
-    character(len=*), intent(in) :: name
-    real(dp), intent(out) :: val
-    logical, intent(out) :: is_na
-    character(len=:), allocatable, intent(out) :: reason_na
-    logical, intent(out) :: found
-    logical :: state_ok
-    real(dp) :: dx
-    real(dp) :: e_f
-
-    val = 0.0_dp
-    is_na = .false.
-    reason_na = ''
-    found = .false.
-    state_ok = cur_setup_ok .and. cur_run_ok
-    dx = cur_len/real(max(cur_nx, 1), dp)
-    select case (name)
-    case ('cfl.combined_max')
-      found = .true.
-      if (cur_setup_ok) then
-        val = cfl_combined()
-      else
-        is_na = .true.
-        reason_na = 'case setup rejected the inputs'
-      end if
-    case ('conserved.mass.initial')
-      found = .true.
-      if (cur_setup_ok) then
-        val = sum(u_init)*dx
-      else
-        is_na = .true.
-        reason_na = 'case setup rejected the inputs'
-      end if
-    case ('conserved.mass.abs_initial')
-      found = .true.
-      if (cur_setup_ok) then
-        val = sum(abs(u_init))*dx
-      else
-        is_na = .true.
-        reason_na = 'case setup rejected the inputs'
-      end if
-    case ('conserved.mass.final')
-      found = .true.
-      if (state_ok) then
-        val = sum(u)*dx
-      else
-        is_na = .true.
-        reason_na = 'case run did not complete'
-      end if
-    case ('metrics.mass_drift_rel')
-      found = .true.
-      if (state_ok) then
-        val = abs(sum(u)*dx - sum(u_init)*dx) &
-          /max(sum(abs(u_init))*dx, 1.0e-14_dp)
-      else
-        is_na = .true.
-        reason_na = 'case run did not complete'
-      end if
-    case ('errors.analytic.l2_rel_tend')
-      found = .true.
-      if (state_ok) then
-        val = l2_rel_analytic()
-      else
-        is_na = .true.
-        reason_na = 'case run did not complete'
-      end if
-    case ('errors.mode_scheme_fidelity')
-      found = .true.
-      if (state_ok) then
-        val = mode_fidelity()
-      else
-        is_na = .true.
-        reason_na = 'case run did not complete'
-      end if
-    case ('errors.symmetry_l2_rel')
-      if (case_id == id_sym) then
-        found = .true.
-        if (state_ok .and. have_ref128) then
-          val = symmetry_rel()
-        else
-          is_na = .true.
-          reason_na = 'reference or shifted state unavailable'
-        end if
-      end if
-    case ('convergence.nx64_to_nx128.l2_order')
-      if (case_id == id_ref128) then
-        found = .true.
-        e_f = 0.0_dp
-        if (state_ok) e_f = l2_rel_analytic()
-        if (have_e064 .and. e_f > 0.0_dp .and. e064 > 0.0_dp) then
-          val = log(e064/e_f)/log(2.0_dp)
-        else
-          is_na = .true.
-          reason_na = 'coarse or fine error unavailable'
-        end if
-      end if
-    case ('convergence.nx128_to_nx256.l2_order')
-      if (case_id == id_ref256) then
-        found = .true.
-        e_f = 0.0_dp
-        if (state_ok) e_f = l2_rel_analytic()
-        if (have_e128 .and. e_f > 0.0_dp .and. e128 > 0.0_dp) then
-          val = log(e128/e_f)/log(2.0_dp)
-        else
-          is_na = .true.
-          reason_na = 'coarse or fine error unavailable'
-        end if
-      end if
-    case default
-      found = .false.
-    end select
-  end subroutine metric_compute
 
   !> C + 2D of the case (constant dt, so equal to its maximum over steps).
   function cfl_combined() result(cfl)

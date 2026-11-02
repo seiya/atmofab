@@ -1784,27 +1784,12 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
       (`Symbol '<name>' not found in module`) or defines as a FUNCTION (`'<name>' ... has a type,
       which is not consistent with the CALL`).
 
-    The required set is the FULL fixed ABI, never the subset the node's own runner happens to
-    import: the runner's import list IS dynamic in the IR (`metric_compute` only with metrics),
-    but `Generate.gate` static check requires the full ABI regardless, so requiring only the
-    imported subset would accept a bundle that gate then rejects — which is what it did until a
-    review caught it.
+    The required set is the FULL fixed ABI.
 
     Conservative NECESSARY condition: every ABI name is published — defined in this module, or
     named in one of its `public ::` statements — and none is defined HERE as a function. It does
-    not check dummy-argument agreement in general; `Generate.gate` syntax check stages the runner with the source and
-    owns call resolution. The ONE dummy-argument fact that call resolution cannot see — the
-    attribute the runner's actual for `metric_compute`'s reason argument requires of the dummy,
-    which the compiler accepts without and the program then faults on at the first call — is
-    asked of the language backend that renders that call
-    (`host_render.checks_abi_dummy_violation`, issue #261), after the procedure clause and
-    before the bound-state clause below. That reader is a SECOND statement walker over the
-    same module, beside `checks_module_abi_facts` — the "one parser" promise above is about
-    the PUBLICATION facts the two gates share, and this clause consults the scan for nothing.
-    Measured (round-3 review, 23 shapes): the two disagree on a labelled header, an identifier
-    named `interface` or `type`, and a labelled earlier bare `end`, each in the direction
-    where the scan reports the name undefined and this walker judges it — safe for this
-    clause, and a leaf gains nothing from the scan's side (the syntax gate resolves the name).
+    not check dummy-argument agreement; `Generate.gate` syntax check stages the runner with the
+    source and owns call resolution.
 
     "Published" is the `Generate.gate` static check's own notion, deliberately, not a better one. Fortran has
     ways to export a callable name that neither gate models — a whole-module `use` re-export with
@@ -1821,7 +1806,6 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
     `Generate.gate` static check rejected.)"""
     from tools.host_render import (
         bound_state_publication_violation,
-        checks_abi_dummy_violation,
         checks_abi_publication_violation,
         checks_public_names,
         runner_render_refusal,
@@ -1895,13 +1879,6 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
             return (f"module {spec_id}_checks does not publish the fixed checks ABI "
                     f"(unpublished: {unpublished}; wrong kind: {wrong_kind}), and the "
                     f"language's remedy could not be stated ({exc!r})")
-    # The dummy declaration the compiler cannot check (issue #261): the runner backend states
-    # it, this gate applies it. Positive evidence only, like the clause above — a module that
-    # does not DEFINE the procedure here is not judged on it.
-    dummy_violation = checks_abi_dummy_violation(
-        match.get("language"), str(match.get("content") or ""), spec_id)
-    if dummy_violation:
-        return f"module {spec_id}_checks: {dummy_violation}"
     # The bound state (Z6, issue #255): every `state_bindings[].storage_symbol` is a
     # module-level variable the host-rendered runner imports with `use <spec_id>_checks, only:
     # sb_<var> => <var>`, so it must be PUBLISHED by this module under the same scan and the
@@ -2229,11 +2206,7 @@ def pure_bundle_contract_violation(
     and the node's `spec_kind` is one of `L1C_PUBLISHED_SURFACE_SPEC_KINDS`, the bundle's `operation` entrypoint
     symbols for this member must equal that set (under `language`'s case rule), so the bundle entrypoints cannot drift
     from the pinned published surface. `build_graph(doc)` performs the caller's `derive_build_graph`
-    assembly. (The former
-    diagnostics-contract check-id literal-presence layer is gone: pure-8's runner-driven per-id
-    checks ABI passes each declared id to `checks_compute` as a literal actual, so a dropped id is
-    structurally impossible — the module authors only the status. `post_execute` stays the
-    sufficient backstop for status honesty.)"""
+    assembly."""
     if shape not in BUNDLE_SHAPES:
         return ("bundle_shape_unsupported",
                 f"unknown bundle shape {shape!r}; the admissible shapes are "

@@ -41,7 +41,7 @@ Design points:
 ### Per-trial Outputs
 - the variant's `target_lowering_plan` (the core workflow's plan overridden by `tuning.spec`)
 - `<stage>_meta.json` (the result of the in-`LLM`-stage verification)
-- `diagnostics.json` (physics)
+- `raw/state_snapshots/` (physics)
 - `perf.json` (performance)
 - `verdict.json` (physics pass/fail + performance judgment if possible)
 - `trial_meta.json` (build log, environment, random seed, git sha)

@@ -18,17 +18,16 @@ and `<spec_id>_checks.f90` (the checks module, `module <spec_id>_checks`). The r
 
 ## 1. The fixed ABI in Fortran
 
-`module <spec_id>_checks` publishes **exactly** the five non-prefixed procedure names of the
+`module <spec_id>_checks` publishes **exactly** the three non-prefixed procedure names of the
 neutral §1 (module scope makes them collision-free — the harness's symbols are all
 `harness_fortran_cpu__*` and the model's are `<spec_id>__*`, so a bare `case_run` cannot clash;
 non-prefixed names keep every identifier under the f2008 63-character limit, which a
-`<spec_id>__checks_compute` would exceed for a long `spec_id`) plus the bound state variables of
+prefixed name could exceed for a long `spec_id`) plus the bound state variables of
 §1-b. Each is a SUBROUTINE, because the runner reaches it with a `call`; a FUNCTION of any of these
 names cannot satisfy the ABI. Author them verbatim:
 
 ```fortran
 public :: case_setup, case_run, get_time
-public :: checks_compute, metric_compute
 
 ! Initialize this case's state from the spec's fixed inputs/constants.
 subroutine case_setup(case_id, ok)
@@ -53,42 +52,16 @@ end subroutine case_run
 subroutine get_time(t)
   real(dp), intent(out) :: t
 end subroutine get_time
-
-! The honest per-case result for ONE check. The runner calls this once per
-! (case, check id), supplying `check_id` (a literal from the IR's
-! diagnostics_contract.checks[].id); you author no id and set `status` (one of
-! 'pass'/'fail'/'na  ', width 4) on EVERY `check_id` branch, `case default`
-! included. An xfail case's failing guard still reports 'fail' (the harness folds).
-subroutine checks_compute(case_id, check_id, status)
-  character(len=*), intent(in) :: case_id
-  character(len=*), intent(in) :: check_id
-  character(len=4), intent(out) :: status
-end subroutine checks_compute
-
-! One diagnostics_contract.metrics leaf (dotted address, e.g. 'error.l2') for
-! this case. `found` is .false. when this case does not produce that metric (it
-! is then omitted). `is_na`/`reason_na` carry an honestly-unavailable value.
-subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
-  character(len=*), intent(in) :: case_id
-  character(len=*), intent(in) :: name
-  real(dp), intent(out) :: val
-  logical, intent(out) :: is_na
-  character(len=:), allocatable, intent(out) :: reason_na
-  logical, intent(out) :: found
-end subroutine metric_compute
 ```
 
-Pinned width: `status` is `character(len=4)` (the rendered runner declares a matching actual),
-and its three values are `'pass'`, `'fail'` and `'na  '` (right-padded). The check id is a
-runner-supplied `intent(in)` actual, so no width is pinned for it. `reason_na` is a
-deferred-length allocatable. `real(dp)` is `real64` from `iso_fortran_env`.
+`real(dp)` is `real64` from `iso_fortran_env`.
 
-The five names must be published from `module <spec_id>_checks` **itself**. The
+The three names must be published from `module <spec_id>_checks` **itself**. The
 `Generate.gate` static check (`_validate_checks_source_files`) resolves the published set
 from that module alone: the names its `public` statements list, plus — only while
 the module keeps Fortran's default public accessibility — the procedures the module
 **defines at module level**, minus the names any `private`
-statement hides. Authoring the two `public ::` lines above verbatim, in the
+statement hides. Authoring the `public ::` line above verbatim, in the
 specification part (never inside a procedure body), satisfies the gate under either
 accessibility default; a bare module-level `private` without them publishes nothing
 and fails. Where the fallback applies, a name that is only prototyped in an
@@ -129,24 +102,20 @@ trailing ones. `hi<d> < lo<d>` when a rank contributes nothing (the array still 
 along a dimension the array is not partitioned along, only the coordinate `0` contributes its
 copy; an axis not partitioned holds its declared extent. A scalar is replicated. The
 harness's gather stops the run unless the contributed blocks tile the global array. `case_run` reports the
-cells THIS rank updated; `checks_compute` / `metric_compute` run on every rank and rank 0's
-result is written, so a whole-field value is a harness reduction. A physics source `use`s the
+cells THIS rank updated. A scalar is written from rank 0's copy, so a `source: reported` scalar is
+the whole-domain reduction before the operation returns: the kernel reduces it with
+`harness_fortran_cpu_mpi__reduce_max` / `__reduce_min`. A physics source `use`s the
 harness only with an `only:` list of its distributed-state operations
 (`docs/backends/parallel/mpi/GENERATE_RULES.md`).
 
 ## 2. The semantics, spelled in Fortran
 
 The neutral §2 is procedure semantics; what it leaves to the language is the spelling of its
-values. `status` is
-`'pass'`, `'fail'` or `'na  '` (width 4, right-padded); an honestly unavailable metric sets
-`found = .true.`, `is_na = .true.` and `reason_na` (deferred-length, allocated by the
-assignment), and a metric that does not apply to the case sets `found = .false.`; a rejected
-case's bound arrays are still allocated, e.g. filled with `0.0_dp`.
+values: a rejected case's bound arrays are still allocated, e.g. filled with `0.0_dp`.
 
 ## 3. Module-level state in Fortran
 
-The current case's state lives in the bound module-level variables of §1-b, and a cross-case
-accumulator in other module-level variables of `<spec_id>_checks`. Nothing else is
+The current case's state lives in the bound module-level variables of §1-b. Nothing else is
 language-specific here.
 
 ## 4. Prohibitions in Fortran
@@ -170,17 +139,10 @@ This section applies to every leaf-authored Fortran source of any `Generate` nod
 (the model, this checks module, and the hand-authored runner of an `infrastructure`
 node's self-test).
 
-- **`intent(out)` character dummies** must be fixed-length (`character(len=4)`)
+- **`intent(out)` character dummies** must be fixed-length (`character(len=<n>)`)
   or a deferred-length allocatable (`character(len=:), allocatable`) — an
   assumed-length `intent(out)` (`character(len=*)`) is illegal, matching the
   harness's own rule.
-- **`metric_compute`'s `reason_na` keeps its §1 declaration on every node.** The
-  runner passes an UNALLOCATED deferred-length actual for it, and a fixed-length dummy
-  passes the lint gate, the syntax check and Build, then faults at the first call (the
-  assumed-length form is the lint gate's, per the first bullet above). The bundle
-  acceptance gate refuses a dummy without the attribute (`m3c_checks_abi_violation`,
-  issue #261) — a no-metrics stub included; the rendered runner states the declaration
-  in a comment.
 - **A §5.1 module parameter (`dp`, `case_id_len`, …) has ONE binding in the model file**,
   the model module's own `parameter`. An import counts as a binding, so a further module in
   that file spells the kind or length under a name of its own (`real64`, a literal length)
@@ -197,7 +159,7 @@ node's self-test).
   `-Werror=unused-dummy-argument -Werror=unused-variable -Werror=ampersand`, so an
   unreferenced dummy argument in any leaf-authored source is a compile failure. When an
   **interface fixes** the dummy — an inert input the algorithm defines as unused, an
-  ABI-fixed argument such as `name` / `case_id` — it stays a live `intent(in)` dummy and is
+  ABI-fixed argument such as `case_id` — it stays a live `intent(in)` dummy and is
   bound immediately after its declarations with
   `associate (unused_<name> => <name>); end associate`. An arithmetic no-op (`0*<name>` and
   equivalents) is forbidden as the binding. `! allow(...)`
@@ -211,8 +173,8 @@ node's self-test).
 - **`intent(out)` dummies the body never sets** are the same promoted class
   (`-Werror=unused-dummy-argument` also rejects *"Dummy argument … was declared INTENT(OUT)
   but was not set"*). Every `intent(out)` dummy of every leaf-authored procedure is assigned
-  on every path, including the degenerate one: a `metric_compute` with no metric still
-  assigns `val` / `is_na` / `reason_na` and `found = .false.`.
+  on every path, including the degenerate one: a `case_run` of a rejected case still assigns
+  `steps`, `cells_updated` and `ok`.
 - **A continued character literal resumes with a leading `&`** — the third promoted class
   (`-Werror=ampersand`). gfortran accepts a resume line without one as an extension, which
   put a counted-`do` spelling written inside a string at a physical line start, where the
@@ -245,9 +207,7 @@ node's self-test).
   literal, a local deferred-length variable the component was assigned to, or an expression
   (`trim(src(j)%id)`, `src(j)%id // ''`) is correct, and so is appending the element itself
   (`[acc, src(j)]`); the array constructor is not the trigger (a scalar
-  `one = t(src(j)%id, 'pass')` is empty too). No gate reads for it: the defect surfaces where
-  the runner's output is checked at `Validate.execute` (every folded id is `""`, so the
-  output's checks reduce to one `""` entry, which the post-execute check refuses). Copy such a
+  `one = t(src(j)%id, 'pass')` is empty too). No gate reads for it. Copy such a
   component through a local DEFERRED-LENGTH variable or an expression, or assign the new
   element's components one by one with the subscript an integer variable or arithmetic on one
   (`k = size(acc)`, then `acc(k)%id = src(j)%id`), rather than through the constructor. A

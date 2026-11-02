@@ -14922,7 +14922,7 @@ class SnapshotDeliverableGapTest(unittest.TestCase):
             sdir = Path(tmp) / "raw" / "state_snapshots"
             c = self._conductor(Path(tmp))
             self.assertEqual(
-                c._snapshot_deliverable_gap(sdir, ["l0_pass"], ["metrics_basis.json"]),
+                c._snapshot_deliverable_gap(sdir, ["l0_pass"], []),
                 "")
             # No case_ids -> nothing to require.
             self.assertEqual(
@@ -16858,6 +16858,29 @@ def _record_build_site(repo: Path, refs: wc.NodeRefs, site: str = "local") -> No
     path.write_text(json.dumps(meta), encoding="utf-8")
 
 
+#: One test over one case, judged by `final.v`: what a run must hold for its verdict to exist.
+_CLEAN_C_ALPHA_IR = (
+    "case:\n  test_case_set:\n    - case_id: c_alpha\n"
+    "io_contract:\n  raw_requirements:\n    required_evidence:\n"
+    "      - artifact: state_snapshots\n        required: true\n"
+    "        schema:\n          variables:\n            - {name: v, shape_expr: scalar}\n"
+    "          time_variable: t\n          time_shape_expr: scalar\n"
+    "  tests:\n    - test_id: t_alpha\n      expected_outcome: pass\n"
+    "      target_cases: [c_alpha]\n      quantities: [max_abs_dev]\n"
+    "  predicates:\n    - test_id: t_alpha\n      quantity: max_abs_dev\n"
+    "      target_cases: [c_alpha]\n      per_case: true\n      expr: final.v\n"
+    "      op: le\n      value: 1.0e-12\n")
+
+
+def _write_c_alpha_captures(run_dir: Path, value: float = 0.0) -> None:
+    """The real captures the `_B1_IR_CLEAN_VERDICT` / `_CLEAN_C_ALPHA_IR` predicate reads."""
+    sdir = run_dir / "raw" / "state_snapshots"
+    (sdir / "initial").mkdir(parents=True, exist_ok=True)
+    (sdir / "initial" / "c_alpha.json").write_text(json.dumps({"v": 0.0, "t": 0.0}),
+                                                   encoding="utf-8")
+    (sdir / "c_alpha.json").write_text(json.dumps({"v": value, "t": 1.0}), encoding="utf-8")
+
+
 class DeterministicBuildTest(unittest.TestCase):
     """WS-A/C: build runs in-process (no leaf) yet reuses the same bookkeeping."""
 
@@ -17551,7 +17574,7 @@ class DeterministicBuildTest(unittest.TestCase):
             real_author = wc.Conductor._author_quality_check
 
             def spy_author(*args, **kwargs):
-                authored.append(args[3])
+                authored.append(args[2])
                 return real_author(*args, **kwargs)
 
             with mock.patch.object(build_runtime, "_run_command", fake_run_command), \
@@ -17695,7 +17718,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                ir_text or "case:\n  test_case_set:\n    - case_id: c_alpha\n",
+                ir_text or _CLEAN_C_ALPHA_IR,
                 encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
             run_calls: list[dict] = []
@@ -17703,16 +17726,14 @@ class DeterministicBuildTest(unittest.TestCase):
             def fake_run_program(args):
                 run_calls.append(dict(args))
                 run_tmp = Path(args["project_dir"])
-                (run_tmp / "diagnostics.json").write_text(
-                    json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+                _write_c_alpha_captures(run_tmp)
                 (run_tmp / "perf.json").write_text("{}", encoding="utf-8")
                 return {"ok": True, "command_id": "R"}
 
             def fake_qc(args):
                 qc_tmp = Path(args["env"]["RUNDIR"])
                 qc_tmp.mkdir(parents=True, exist_ok=True)
-                (qc_tmp / "diagnostics.json").write_text(
-                    json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+                _write_c_alpha_captures(qc_tmp)
                 return {"ok": True, "command_id": "Q"}
 
             with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
@@ -17810,7 +17831,7 @@ class DeterministicBuildTest(unittest.TestCase):
             run_id="run_1", source_binary_id="bin_1")
         (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
         (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-            "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
+            _CLEAN_C_ALPHA_IR, encoding="utf-8")
         (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
         node_dir = repo / refs.run_node_dir()
         if stale is not None:
@@ -17823,8 +17844,7 @@ class DeterministicBuildTest(unittest.TestCase):
             sweep = run_tmp.parent.name == "sweep"
             if sweep or not calls or calls[-1][0] != "run":
                 calls.append(("sweep" if sweep else "run", dict(args)))
-                (run_tmp / "diagnostics.json").write_text(
-                    json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+                _write_c_alpha_captures(run_tmp)
                 # An honest distributed harness reports the grid it was launched on (#512).
                 grid = (args.get("env") or {}).get("ATMOFAB_PROCESS_GRID")
                 perf = {} if grid is None else {"parallelism": {
@@ -17846,8 +17866,7 @@ class DeterministicBuildTest(unittest.TestCase):
             calls.append(("qc", dict(args)))
             qc_tmp = Path(args["env"]["RUNDIR"])
             qc_tmp.mkdir(parents=True, exist_ok=True)
-            (qc_tmp / "diagnostics.json").write_text(
-                json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
+            _write_c_alpha_captures(qc_tmp)
             return {"ok": True, "command_id": "Q"}
 
         def fake_subprocess_run(argv, *args, **kwargs):
@@ -17985,14 +18004,14 @@ class DeterministicBuildTest(unittest.TestCase):
                                               for r in shape_runs]),
                 ("grid", None)):
             with self.subTest(name):
-                def spy(node_dir, qc_diag, qc_cmd_id, preset, **kw):
+                def spy(node_dir, qc_cmd_id, preset, **kw):
                     if patch is not None:
                         kw["shape_runs"] = patch(kw["shape_runs"])
                     else:
                         d = Path(kw["shape_runs"][1]["dir"])
                         (d / "perf.json").write_text(json.dumps({"parallelism": {
                             "mpi_ranks": 4, "process_grid": [4, 1]}}), encoding="utf-8")
-                    return real(node_dir, qc_diag, qc_cmd_id, preset, **kw)
+                    return real(node_dir, qc_cmd_id, preset, **kw)
 
                 with mock.patch.object(wc.Conductor, "_author_quality_check", staticmethod(spy)):
                     result, _calls, node_dir, *_ = self._drive_traced_execute(target)
@@ -18301,20 +18320,47 @@ class DeterministicBuildTest(unittest.TestCase):
                 c.classify_failure(refs, "validate", post_fail).reason,
                 "validate_post_judge_meta_missing")
 
-    def _predicate_ir(self) -> dict:
-        return {"io_contract": {"test_predicates": [
-            {"test_id": "l0_scale_identity_pass", "expected_outcome": "pass",
-             "target_cases": ["l0_scale_identity_pass"],
-             "pass_when": {"all": [{"ref": "checks.scale_identity.status", "op": "eq", "value": "pass"},
-                                   {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}},
-            {"test_id": "l0_invalid_length_xfail", "expected_outcome": "xfail",
-             "target_cases": ["l0_invalid_length_xfail"],
-             "pass_when": {"all": [{"ref": "checks.input_guard.status", "op": "eq", "value": "pass"},
-                                   {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]}}
+    def _predicate_ir(self, n: int = 4) -> dict:
+        """A `pass` test judging `u` and a guard test judging the `record` flag, as the corpus's
+        are: `final.guard_pass == 0` is the guard's whole judgment (issue #582 D5)."""
+        pass_case, guard_case = "l0_scale_identity_pass", "l0_invalid_length_xfail"
+        return {
+            "case": {"test_case_set": [{"case_id": pass_case, "inputs": {"n": n}},
+                                       {"case_id": guard_case, "inputs": {"n": n}}]},
+            "io_contract": {
+                "raw_requirements": {"required_evidence": [
+                    {"artifact": "state_snapshots", "required": True,
+                     "schema": {"variables": [{"name": "u", "shape_expr": "[n]"},
+                                              {"name": "guard_pass", "shape_expr": "scalar",
+                                               "source": "record"}],
+                                "time_variable": "t", "time_shape_expr": "scalar"}}]},
+                "tests": [
+                    {"test_id": pass_case, "expected_outcome": "pass",
+                     "target_cases": [pass_case], "quantities": ["scale"]},
+                    {"test_id": guard_case, "expected_outcome": "xfail",
+                     "target_cases": [guard_case], "quantities": ["input_guard"]}],
+                "predicates": [
+                    {"test_id": pass_case, "quantity": "scale", "target_cases": [pass_case],
+                     "expr": "maxabs(final.u - 2 * initial.u)", "op": "le", "value": 0.0,
+                     "per_case": True},
+                    {"test_id": guard_case, "quantity": "input_guard",
+                     "target_cases": [guard_case], "expr": "final.guard_pass", "op": "eq",
+                     "value": 0.0, "per_case": True}]}}
 
-    def test_author_execute_verdict_pass_and_physics(self) -> None:
-        # R2: execute authors verdict.json deterministically from the IR predicates + the
-        # runner's diagnostics.json — the judge no longer writes it.
+    @staticmethod
+    def _write_predicate_captures(root: Path, u1: list, *, guard_pass: float = 0.0) -> None:
+        sdir = root / "raw" / "state_snapshots"
+        (sdir / "initial").mkdir(parents=True, exist_ok=True)
+        u0 = [x / 2.0 for x in [2.0, 4.0, 6.0, 8.0][:len(u1)]]
+        for cid, flag in (("l0_scale_identity_pass", 1.0), ("l0_invalid_length_xfail", guard_pass)):
+            (sdir / "initial" / f"{cid}.json").write_text(json.dumps(
+                {"u": u0, "guard_pass": -1.0, "t": 0.0}))
+            (sdir / f"{cid}.json").write_text(json.dumps({"u": u1, "guard_pass": flag, "t": 1.0}))
+
+    def test_author_execute_verdict_pass_xfail_and_physics(self) -> None:
+        # Execute authors verdict.json deterministically from the IR's predicates over the
+        # promoted captures, and nothing else: the judge no longer writes it, and no runner
+        # document exists to read (issue #582).
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18322,27 +18368,27 @@ class DeterministicBuildTest(unittest.TestCase):
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             ir = self._predicate_ir()
-            good = {"checks": {"scale_identity": {"status": "pass"}, "input_guard": {"status": "pass"}},
-                    "verdict": {"overall": "pass", "failed_checks": []}}
-            doc = c._author_execute_verdict(refs, ir, good)
+            node = repo / refs.run_node_dir()
+            self._write_predicate_captures(node, [2.0, 4.0, 6.0, 8.0])
+            doc = c._author_execute_verdict(refs, ir)
             self.assertEqual(doc["self_verdict"], "pass")
             self.assertEqual(doc["failure_class"], "pass")
-            on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
+            on_disk = json.loads((node / "verdict.json").read_text())
+            # the guard's predicate holding is what makes it `xfail`, never its failure
             self.assertEqual([p["status"] for p in on_disk["per_test"]], ["pass", "xfail"])
-            # a physics failure (scale check false) -> self_verdict fail / physics_fail
-            bad = {"checks": {"scale_identity": {"status": "fail"}, "input_guard": {"status": "pass"}},
-                   "verdict": {"overall": "fail", "failed_checks": ["scale_identity"]}}
-            doc2 = c._author_execute_verdict(refs, ir, bad)
-            self.assertEqual(doc2["self_verdict"], "fail")
-            self.assertEqual(doc2["failure_class"], "physics_fail")
+            # a guard that did not fire -> `fail`, not a quiet xfail
+            self._write_predicate_captures(node, [2.0, 4.0, 6.0, 8.0], guard_pass=1.0)
+            doc2 = c._author_execute_verdict(refs, ir)
+            self.assertEqual([p["status"] for p in doc2["per_test"]], ["pass", "fail"])
+            self.assertEqual((doc2["self_verdict"], doc2["failure_class"]),
+                             ("fail", "physics_fail"))
 
-    def test_author_execute_verdict_conjoins_the_primary_predicates(self) -> None:
-        """Z6 PR-2 (issue #255), pinned at the HANDLER: `_author_execute_verdict` reads the
-        promoted captures under the run node dir and conjoins the host-evaluated primary
-        predicates with the diagnostics predicates. A passing diagnostics with a tampered
-        final capture is `physics_fail` with `corroboration=disagree`, the `[execute fail:
-        verdict]` report names the primary quantity, and an unreadable capture is
-        `structural_violation` rather than a crash."""
+    def test_author_execute_verdict_reads_the_promoted_captures(self) -> None:
+        """Z6 PR-2 (issue #255) and issue #582, pinned at the HANDLER: `_author_execute_verdict`
+        reads the promoted captures under the run node dir. A tampered final capture is
+        `physics_fail`, the `[execute fail: verdict]` report names the quantity and the value, a
+        capture that cannot be read is `structural_violation` rather than a crash, and the basis
+        is the predicate records with what each read."""
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18350,61 +18396,59 @@ class DeterministicBuildTest(unittest.TestCase):
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
             ir = self._predicate_ir()
-            ir["case"] = {"test_case_set": [
-                {"case_id": "l0_scale_identity_pass", "inputs": {"n": 4}},
-                {"case_id": "l0_invalid_length_xfail", "inputs": {"n": 4}}]}
-            ir["io_contract"]["raw_requirements"] = {"required_evidence": [
-                {"artifact": "state_snapshots", "required": True,
-                 "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
-                            "time_variable": "t", "time_shape_expr": "scalar"}}]}
-            ir["io_contract"]["primary_predicates"] = [
-                {"test_id": "l0_scale_identity_pass", "quantity": "scale",
-                 "target_cases": ["l0_scale_identity_pass"],
-                 "expr": "maxabs(final.u - 2 * initial.u)", "op": "le", "value": 0.0,
-                 "per_case": True}]
-            sdir = repo / refs.run_node_dir() / "raw" / "state_snapshots"
-            (sdir / "initial").mkdir(parents=True)
-
-            def _write(cid: str, u0: list, u1: list) -> None:
-                (sdir / "initial" / f"{cid}.json").write_text(json.dumps({"u": u0, "t": 0.0}))
-                (sdir / f"{cid}.json").write_text(json.dumps({"u": u1, "t": 1.0}))
-
-            good = {"checks": {"scale_identity": {"status": "pass"}, "input_guard": {"status": "pass"}},
-                    "verdict": {"overall": "pass", "failed_checks": []}}
-            _write("l0_scale_identity_pass", [1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 8.0])
-            _write("l0_invalid_length_xfail", [1.0] * 4, [1.0] * 4)
-            doc = c._author_execute_verdict(refs, ir, good)
+            node = repo / refs.run_node_dir()
+            self._write_predicate_captures(node, [2.0, 4.0, 6.0, 8.0])
+            doc = c._author_execute_verdict(refs, ir)
             self.assertEqual(doc["self_verdict"], "pass")
             basis = doc["per_test"][0]["basis"]
-            self.assertEqual(basis["corroboration"], "agree")
-            self.assertEqual(basis["primary"][0]["evaluated"][0]["value"], 0.0)
-            on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
-            self.assertEqual(on_disk["per_test"][0]["basis"]["primary"][0]["quantity"], "scale")
-            self.assertNotIn("primary", on_disk["per_test"][1]["basis"])
+            self.assertEqual(set(basis), {"predicates"})
+            self.assertEqual(basis["predicates"][0]["evaluated"][0]["value"], 0.0)
+            self.assertEqual(basis["predicates"][0]["sources_read"],
+                             {"operation": ["l0_scale_identity_pass"]})
+            on_disk = json.loads((node / "verdict.json").read_text())
+            self.assertEqual(on_disk["per_test"][0]["basis"]["predicates"][0]["quantity"], "scale")
+            self.assertEqual(on_disk["per_test"][1]["basis"]["predicates"][0]["sources_read"],
+                             {"record": ["l0_invalid_length_xfail"]})
 
-            # the generated checks report pass; the captured state says the kernel did not scale
-            _write("l0_scale_identity_pass", [1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 9.0])
-            doc = c._author_execute_verdict(refs, ir, good)
+            # the captured state says the kernel did not scale
+            self._write_predicate_captures(node, [2.0, 4.0, 6.0, 9.0])
+            doc = c._author_execute_verdict(refs, ir)
             self.assertEqual(doc["self_verdict"], "fail")
             self.assertEqual(doc["failure_class"], "physics_fail")
-            self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "disagree")
             report = wc._verdict_failure_report(doc)
-            self.assertIn("primary quantity='scale'", report)
+            self.assertIn("test l0_scale_identity_pass: fail", report)
+            self.assertIn("quantity='scale'", report)
             self.assertIn("value=1.0", report)
-            self.assertIn("corroboration=disagree", report)
 
+            sdir = node / "raw" / "state_snapshots"
             (sdir / "l0_scale_identity_pass.json").write_text("{")
-            doc = c._author_execute_verdict(refs, ir, good)
+            doc = c._author_execute_verdict(refs, ir)
             self.assertEqual(doc["failure_class"], "structural_violation")
-            report = wc._verdict_failure_report(doc)
-            self.assertIn("unreadable", report)
-            self.assertIn("corroboration=unevaluated", report)
+            self.assertEqual(doc["self_verdict"], "fail")
+            self.assertIn("unreadable", wc._verdict_failure_report(doc))
 
-            # a malformed primary shape (which Compile refuses) is the structural doc, not a crash
-            ir["io_contract"]["primary_predicates"][0]["op"] = "includes"
-            doc = c._author_execute_verdict(refs, ir, good)
+            # a malformed predicate shape (which Compile refuses) is the structural doc, not a crash
+            ir["io_contract"]["predicates"][0]["op"] = "includes"
+            doc = c._author_execute_verdict(refs, ir)
             self.assertEqual(doc["failure_class"], "structural_violation")
+            self.assertEqual(doc["per_test"], [])
             self.assertIn("PrimaryEvidenceError", doc["predicate_error"])
+
+    def test_a_recorded_verdict_of_the_retired_shape_stays_readable(self) -> None:
+        """Issue #582 §4.2: `verdict.json` files under `workspace/` keep the retired basis
+        (`conditions` / `primary` / `corroboration`). `_verdict_failure_report`, the one reader of
+        a verdict's `basis` in `tools/`, names the failing test of such a record without raising,
+        and reports no predicate line it does not hold."""
+        old = {"self_verdict": "fail", "failure_class": "physics_fail", "per_test": [
+            {"test_id": "t_old", "status": "fail", "basis": {
+                "conditions": [{"ref": "checks.c.status", "op": "eq", "value": "pass",
+                                "evaluated": [{"satisfied": False, "lhs": "fail"}]}],
+                "primary": [{"quantity": "q", "satisfied": False, "evaluated": []}],
+                "corroboration": "disagree"}}]}
+        report = wc._verdict_failure_report(old)
+        self.assertIn("failure_class=physics_fail", report)
+        self.assertIn("- test t_old: fail", report)
+        self.assertEqual(report.splitlines()[2:], [])
 
     def test_author_execute_verdict_evaluates_no_cross_target_predicate(self) -> None:
         """Issue #383, at the HANDLER: the verdict reads no other target. A cross-target
@@ -18420,38 +18464,17 @@ class DeterministicBuildTest(unittest.TestCase):
             c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
-            ir = self._predicate_ir()
-            ir["case"] = {"test_case_set": [
-                {"case_id": "l0_scale_identity_pass", "inputs": {"n": 2}},
-                {"case_id": "l0_invalid_length_xfail", "inputs": {"n": 2}}]}
-            ir["io_contract"]["raw_requirements"] = {"required_evidence": [
-                {"artifact": "state_snapshots", "required": True,
-                 "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
-                            "time_variable": "t", "time_shape_expr": "scalar"}}]}
-            ir["io_contract"]["primary_predicates"] = [
-                {"test_id": "l0_scale_identity_pass", "quantity": "scale",
-                 "target_cases": ["l0_scale_identity_pass"],
-                 "expr": "maxabs(final.u - 2 * initial.u)", "op": "le", "value": 0.0,
-                 "per_case": True},
-                {"test_id": "l0_scale_identity_pass", "quantity": "cross_target_state_agreement",
-                 "target_cases": ["l0_scale_identity_pass"],
-                 "expr": "maxabs(final.u - comparand.final.u)", "op": "le", "value": 1e-12,
-                 "per_case": True}]
+            ir = self._predicate_ir(n=2)
+            ir["io_contract"]["predicates"].insert(1, {
+                "test_id": "l0_scale_identity_pass", "quantity": "cross_target_state_agreement",
+                "target_cases": ["l0_scale_identity_pass"],
+                "expr": "maxabs(final.u - comparand.final.u)", "op": "le", "value": 1e-12,
+                "per_case": True})
 
-            def _write(root: Path, u1: list) -> None:
-                sdir = root / "raw" / "state_snapshots"
-                (sdir / "initial").mkdir(parents=True, exist_ok=True)
-                for cid in ("l0_scale_identity_pass", "l0_invalid_length_xfail"):
-                    (sdir / "initial" / f"{cid}.json").write_text(json.dumps(
-                        {"u": [1.0, 2.0], "t": 0.0}))
-                    (sdir / f"{cid}.json").write_text(json.dumps({"u": u1, "t": 1.0}))
-
+            _write = self._write_predicate_captures
             _write(repo / refs.run_node_dir(), [2.0, 4.0])
             other = repo / "other_run"
             _write(other, [2.0, 4.0])
-            good = {"checks": {"scale_identity": {"status": "pass"},
-                               "input_guard": {"status": "pass"}},
-                    "verdict": {"overall": "pass", "failed_checks": []}}
 
             with mock.patch("tools.orchestration_runtime.resolve_comparands",
                             side_effect=AssertionError("resolved a comparand")):
@@ -18459,18 +18482,18 @@ class DeterministicBuildTest(unittest.TestCase):
                     # another target's run beside this one, agreeing then disagreeing:
                     # nothing of it reaches the verdict
                     _write(other, u1)
-                    doc = c._author_execute_verdict(refs, ir, good)
+                    doc = c._author_execute_verdict(refs, ir)
                     self.assertEqual((doc["self_verdict"], doc["failure_class"]),
                                      ("pass", "pass"))
-                    cross = doc["per_test"][0]["basis"]["primary"][1]
+                    cross = doc["per_test"][0]["basis"]["predicates"][1]
                     self.assertEqual((cross["kind"], cross["comparands"], cross["evaluated"]),
                                      ("no_comparand", [], []))
                     on_disk = json.loads(
                         (repo / refs.run_node_dir() / "verdict.json").read_text())
                     self.assertFalse({"own_verdict", "comparands_absent"} & set(on_disk))
                 broken = copy.deepcopy(ir)
-                del broken["io_contract"]["test_predicates"]
-                doc = c._author_execute_verdict(refs, broken, good)
+                del broken["io_contract"]["tests"]
+                doc = c._author_execute_verdict(refs, broken)
                 self.assertEqual(doc["failure_class"], "structural_violation")
                 self.assertFalse({"own_verdict", "comparands_absent"} & set(doc))
 
@@ -18480,7 +18503,7 @@ class DeterministicBuildTest(unittest.TestCase):
             c._phase_derivations[(refs.node_key, "validate")] = {
                 "derivation_key": "sha256:" + "0" * 64, "transformation": ["t"],
                 "derivation_inputs": {"ir": "sha256:" + "1" * 64}}
-            c._author_execute_verdict(refs, ir, good)
+            c._author_execute_verdict(refs, ir)
             on_disk = json.loads((repo / refs.run_node_dir() / "verdict.json").read_text())
             self.assertEqual(on_disk["ir_hash"], "sha256:" + "1" * 64)
 
@@ -18491,7 +18514,7 @@ class DeterministicBuildTest(unittest.TestCase):
             c = _TargetedConductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
             refs = self._refs()
-            doc = c._author_execute_verdict(refs, {"io_contract": {}}, {"verdict": {"overall": "pass"}})
+            doc = c._author_execute_verdict(refs, {"io_contract": {}})
             self.assertEqual(doc["self_verdict"], "fail")
             self.assertEqual(doc["failure_class"], "structural_violation")
             self.assertIn("predicate_error", doc)
@@ -18535,7 +18558,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     self.assertEqual(d_dev.action, "fail_closed", fclass)
 
     def test_execute_predicate_error_verdict_is_attributed_to_the_ir(self) -> None:
-        # A `predicate_error` verdict is the missing/malformed test_predicates DSL — a defect in
+        # A `predicate_error` verdict is a missing/malformed `io_contract.tests` or predicate — a defect in
         # the certified IR, which Generate cannot author. It must carry the `_ir` attribution
         # suffix so the dev `--resume` directive declines it (reopening Generate would rebuild and
         # deterministically re-fail) and the prod diagnostician sees the attribution.
@@ -18547,7 +18570,7 @@ class DeterministicBuildTest(unittest.TestCase):
             rn.mkdir(parents=True, exist_ok=True)
             (rn / "verdict.json").write_text(json.dumps(
                 {"self_verdict": "fail", "failure_class": "structural_violation", "per_test": [],
-                 "predicate_error": "PredicateError: io_contract.test_predicates missing/empty"}),
+                 "predicate_error": "PredicateError: io_contract.tests missing/empty"}),
                 encoding="utf-8")
             ex_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                        wc.SubstepOutcome("ex", "fail", [], 0)]
@@ -18945,25 +18968,26 @@ class DeterministicBuildTest(unittest.TestCase):
                         + "io_contract:\n  raw_requirements:\n    required_evidence:\n"
                           "      - artifact: state_snapshots\n        required: true\n"
                           "case:\n  test_case_set:\n    - case_id: c_alpha\n")
-    # A structurally clean run needs a SATISFIABLE predicate too, else _author_execute_verdict
-    # authors a structural_violation verdict (the missing-DSL guard) and the run fails anyway.
-    # `_b1_execute` seeds diagnostics `verdict.overall == pass`.
-    _B1_IR_CLEAN_VERDICT = (_B1_IR_MINIMAL
-                            + "case:\n  test_case_set:\n    - case_id: c_alpha\n"
-                              "io_contract:\n  test_predicates:\n    - test_id: t_alpha\n"
-                              "      expected_outcome: pass\n      target_cases: [c_alpha]\n"
-                              "      pass_when:\n        all:\n"
-                              "          - ref: verdict.overall\n            op: eq\n"
-                              "            value: pass\n")
-    # The same predicate, but over a per-case metric ADDRESS the seeded diagnostics never emits:
-    # every gate is clean, so execute reaches the verdict and fails it structurally (ref_absent).
-    _B1_IR_VERDICT_FAIL = (_B1_IR_MINIMAL
-                           + "case:\n  test_case_set:\n    - case_id: c_alpha\n"
-                             "io_contract:\n  test_predicates:\n    - test_id: t_alpha\n"
-                             "      expected_outcome: pass\n      target_cases: [c_alpha]\n"
-                             "      pass_when:\n        all:\n"
-                             "          - ref: metrics.max_abs_dev\n            op: le\n"
-                             "            value: 1.0e-12\n            per_case: true\n")
+    # A structurally clean run needs a SATISFIABLE predicate too, else every shape's verdict is
+    # unavailable and the quality check fails. `_b1_execute` writes `{"v": 0.0}` by default.
+    _B1_IO_SCHEMA = ("io_contract:\n  raw_requirements:\n    required_evidence:\n"
+                     "      - artifact: state_snapshots\n        required: true\n"
+                     "        schema:\n          variables:\n"
+                     "            - {name: v, shape_expr: scalar}\n"
+                     "            - {name: w, shape_expr: scalar}\n"
+                     "          time_variable: t\n          time_shape_expr: scalar\n"
+                     "  tests:\n    - test_id: t_alpha\n"
+                     "      expected_outcome: pass\n      target_cases: [c_alpha]\n"
+                     "      quantities: [max_abs_dev]\n"
+                     "  predicates:\n    - test_id: t_alpha\n      quantity: max_abs_dev\n"
+                     "      target_cases: [c_alpha]\n      per_case: true\n"
+                     "      op: le\n      value: 1.0e-12\n")
+    _B1_IR_CLEAN_VERDICT = (_B1_IR_MINIMAL + "case:\n  test_case_set:\n    - case_id: c_alpha\n"
+                            + _B1_IO_SCHEMA + "      expr: final.v\n")
+    # The same test over a declared capture the run never writes: every gate is clean, so execute
+    # reaches the verdict and fails it structurally.
+    _B1_IR_VERDICT_FAIL = (_B1_IR_MINIMAL + "case:\n  test_case_set:\n    - case_id: c_alpha\n"
+                           + _B1_IO_SCHEMA + "      expr: final.w\n")
 
     def _b1_refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
@@ -18972,13 +18996,15 @@ class DeterministicBuildTest(unittest.TestCase):
             run_id="run_1", source_binary_id="bin_1")
 
     def _b1_execute(self, repo: Path, ir_yaml: str, *, gate_result: tuple[int, str],
-                    matching_diagnostics: bool,
-                    diagnostics: dict | None = None,
+                    reference_captures: bool = True, value: float = 0.0,
                     captures=None, sweep_result=None, qc_ok: bool = True,
-                    calls: list | None = None) -> tuple[dict, dict]:
+                    calls: list | None = None,
+                    ir_evaluable: bool = True) -> tuple[dict, dict]:
         """Drive _execute_inproc with the post_execute gate subprocess stubbed to `gate_result`
-        (returncode, stdout) and the runner/make-test diagnostics seeded so the quality_check
-        passes (matching_diagnostics) or fails. Returns (result, trial_meta-or-{}).
+        (returncode, stdout). An IR that declares tests gets real captures (`v` = `value`) from
+        every shape and, unless `reference_captures` is False, from the quality check's re-run,
+        whose absence fails the quality check; `captures` replaces that writer. An IR that
+        declares none gets no capture. Returns (result, trial_meta-or-{}).
 
         ONE gate (issue #180), so the stub is exhaustive: any other subprocess is an error
         rather than a silent `gate_result`."""
@@ -18993,17 +19019,13 @@ class DeterministicBuildTest(unittest.TestCase):
         (repo / refs.ir_ref / "spec.ir.yaml").write_text(ir_yaml, encoding="utf-8")
         (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
 
-        # The runner's (mocked) output dirs: a matching pair of diagnostics makes
-        # _author_quality_check return "pass"; an absent candidate makes it "fail".
+        # The runner's (mocked) output dirs.
         run_tmp = repo / "workspace" / "tmp" / "child-1" / "run"
-        qc_tmp = repo / "workspace" / "tmp" / "child-1" / "qc_run"
         run_tmp.mkdir(parents=True, exist_ok=True)
-        diag = diagnostics or {"checks": {"k": {"status": "pass"}},
-                               "verdict": {"overall": "pass"}}
-        (run_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
-        if matching_diagnostics:
-            qc_tmp.mkdir(parents=True, exist_ok=True)
-            (qc_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
+        if captures is None and "\n  tests:\n" in ir_yaml:
+            def captures(d: Path, role: str) -> None:
+                if role == "run" or reference_captures:
+                    _write_c_alpha_captures(d, value)
 
         rc, out = gate_result
 
@@ -19015,11 +19037,8 @@ class DeterministicBuildTest(unittest.TestCase):
             return _sp.CompletedProcess(argv, rc, stdout=out, stderr="")
 
         def fake_run_program(args):
-            # Every shape's run writes the same diagnostics where it ran (issue #512: the
-            # checked-in target sweeps its thread count, each shape in a directory of its own).
-            Path(args["project_dir"], "diagnostics.json").write_text(json.dumps(diag),
-                                                                    encoding="utf-8")
-            # An honest harness reports the thread count the shape was launched with (#512).
+            # Every shape runs in a directory of its own (issue #512: the checked-in target sweeps
+            # its thread count). An honest harness reports the thread count the shape was launched with (#512).
             threads = (args.get("env") or {}).get("OMP_NUM_THREADS")
             if threads is not None:
                 Path(args["project_dir"], "perf.json").write_text(json.dumps(
@@ -19039,7 +19058,10 @@ class DeterministicBuildTest(unittest.TestCase):
 
         with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
              mock.patch.object(build_runtime, "tool_run_quality_checks", fake_qc), \
-             mock.patch.object(wc.subprocess, "run", fake_subprocess_run):
+             mock.patch.object(wc.subprocess, "run", fake_subprocess_run), \
+             mock.patch.object(wc.Conductor, "_ir_unevaluable",
+                               staticmethod(wc.Conductor._ir_unevaluable if ir_evaluable is None
+                                            else (lambda *_a: not ir_evaluable))):
             _record_build_site(c.repo_root, refs)
             result = c._execute_inproc(refs, "child-1")
 
@@ -19047,17 +19069,33 @@ class DeterministicBuildTest(unittest.TestCase):
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
         return result, meta
 
+    def test_an_ir_the_host_cannot_evaluate_is_a_structural_verdict_not_a_generate_repair(self) -> None:
+        """Issue #582 review of the fixture: an IR with no tests fails every comparison of the
+        quality check, and without this route it read as `quality_check_mismatch`, a Generate
+        repair that cannot fix an IR. A gate terminal exit code still dominates."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _out, meta = self._b1_execute(repo, self._B1_IR_MINIMAL, gate_result=(0, ""),
+                                          ir_evaluable=None)
+            self.assertNotIn("failure_category", meta)
+            verdict = json.loads((repo / self._b1_refs().run_node_dir() / "verdict.json")
+                                 .read_text(encoding="utf-8"))
+            self.assertEqual(verdict["failure_class"], "structural_violation")
+            self.assertIn("predicate_error", verdict)
+        with tempfile.TemporaryDirectory() as td:
+            _out, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL, gate_result=(3, "x"),
+                                          ir_evaluable=None)
+            self.assertEqual(meta["failure_category"], "static_frontend_unavailable")
+
     def test_execute_inproc_records_post_execute_violation(self) -> None:
         # A genuine gate report (the gate RAN and exited non-zero) becomes the category and its
         # text becomes the excerpt the warm repair leaf receives.
         import tempfile
-        violation = ("workspace/.../raw/metrics_basis.json: test 'l0_pass' is missing "
-                     "required_raw_variables: a1 — the missing variables are nested under the "
-                     "unrecognized wrapper key 'values'")
+        violation = ("workspace/.../raw/state_snapshots/l0_pass.json: declared variable a1 is "
+                     "absent — nested under the unrecognized wrapper key 'values'")
         with tempfile.TemporaryDirectory() as td:
             out, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL,
-                                         gate_result=(1, violation),
-                                         matching_diagnostics=True)
+                                         gate_result=(1, violation))
             # rc 0: a structural failure is a CONTENT failure, routed by the validate tables.
             self.assertEqual(out["returncode"], 0)
             self.assertEqual(meta["status"], "fail")
@@ -19092,8 +19130,7 @@ class DeterministicBuildTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 out, meta = self._b1_execute(
                     Path(td), self._B1_IR_MINIMAL,
-                    gate_result=(rc, "pipeline semantic validation: FAIL\n- boom"),
-                    matching_diagnostics=True)
+                    gate_result=(rc, "pipeline semantic validation: FAIL\n- boom"))
             self.assertEqual(out["returncode"], 0, rc)
             self.assertEqual(meta["failure_category"], expected, rc)
             self.assertIn(expected, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
@@ -19113,7 +19150,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 Path(td), self._B1_IR_MINIMAL,
                 gate_result=(SOURCE_FRONTEND_UNAVAILABLE_EXIT_CODE,
                              "pipeline semantic validation: FAIL\n- boom"),
-                matching_diagnostics=False)
+                reference_captures=False)
         self.assertEqual(meta["failure_category"], "static_frontend_unavailable", meta)
 
     def test_execute_inproc_forged_marker_at_rc_1_stays_a_warm_violation(self) -> None:
@@ -19131,8 +19168,7 @@ class DeterministicBuildTest(unittest.TestCase):
         for payload in payloads:
             with tempfile.TemporaryDirectory() as td:
                 _out, meta = self._b1_execute(
-                    Path(td), self._B1_IR_MINIMAL, gate_result=(1, payload),
-                    matching_diagnostics=True)
+                    Path(td), self._B1_IR_MINIMAL, gate_result=(1, payload))
             self.assertEqual(meta["failure_category"], "post_execute_violation", payload)
             self.assertIn(meta["failure_category"], wc.VALIDATE_EXECUTE_FAILURE_ROUTING, payload)
 
@@ -19145,8 +19181,7 @@ class DeterministicBuildTest(unittest.TestCase):
         one_huge_line = "post_execute: missing in snapshot files ({})".format("x" * 200_000)
         with tempfile.TemporaryDirectory() as td:
             _o, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL,
-                                        gate_result=(1, one_huge_line),
-                                        matching_diagnostics=True)
+                                        gate_result=(1, one_huge_line))
             excerpt = meta["failure_excerpt"]
             self.assertLessEqual(len(excerpt.splitlines()), wc._EXECUTE_EXCERPT_MAX_LINES)
             # the truncation notice is prepended, so allow it on top of the character budget
@@ -19160,8 +19195,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             _o, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL,
-                                        gate_result=(1, "post_execute: bad shape"),
-                                        matching_diagnostics=True)
+                                        gate_result=(1, "post_execute: bad shape"))
             self.assertNotIn(wc._EXECUTE_EXCERPT_TRUNCATION_MARK, meta["failure_excerpt"])
             self.assertIn("post_execute: bad shape", meta["failure_excerpt"])
 
@@ -19181,12 +19215,14 @@ class DeterministicBuildTest(unittest.TestCase):
         from tools.tests import test_primary_evidence as tpe
         h = np.arange(tpe.NX * tpe.NY, dtype=float).reshape(tpe.NX, tpe.NY) + 1.0
         ir = tpe._ir([tpe.CROSS])
-        ir["io_contract"]["test_predicates"] = [{
-            "test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],
-            "pass_when": {"all": [{"ref": "checks.k.status", "op": "eq", "value": "pass",
-                                   "per_case": True}]}}]
-        diag = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "pass"},
-                "per_case": {c: {"checks": {"k": {"status": "pass"}}} for c in ("a", "b")}}
+        io_contract = ir["io_contract"]
+        io_contract.pop("test_predicates", None)
+        io_contract.pop("primary_predicates", None)
+        io_contract["tests"] = [{"test_id": "t_mass", "expected_outcome": "pass",
+                                 "target_cases": ["a", "b"], "quantities": ["h_min"]}]
+        io_contract["predicates"] = [
+            {"test_id": "t_mass", "quantity": "h_min", "target_cases": ["a", "b"],
+             "expr": "min(final.h)", "op": "ge", "value": 0.5, "per_case": True}, tpe.CROSS]
         for scale, expected in ((1.0 + 1e-6, "fail"), (1.0, "pass")):
             def captures(d: Path, role: str, scale=scale) -> None:
                 sdir = d / "raw" / "state_snapshots"
@@ -19196,13 +19232,11 @@ class DeterministicBuildTest(unittest.TestCase):
                     for sub in (sdir / "initial", sdir):
                         (sub / f"{cid}.json").write_text(
                             json.dumps({"h": hh.tolist(), "s": 1.0, "t": 0.0}))
-                (d / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
 
             with self.subTest(scale=scale), tempfile.TemporaryDirectory() as td:
                 repo = Path(td)
                 _out, meta = self._b1_execute(repo, yaml.safe_dump(ir), gate_result=(0, ""),
-                                              matching_diagnostics=True, diagnostics=diag,
-                                              captures=captures)
+                                                                                            captures=captures)
                 quality = json.loads((repo / self._b1_refs().run_node_dir()
                                       / "quality_check.json").read_text())
                 self.assertGreater(len(quality["shapes"]), 1)
@@ -19230,6 +19264,7 @@ class DeterministicBuildTest(unittest.TestCase):
         constant = FORTRAN_CPU.threads_per_rank
 
         def literal(d: Path, role: str) -> None:
+            _write_c_alpha_captures(d)
             if role == "run":
                 (d / "perf.json").write_text(json.dumps(
                     {"parallelism": {"threads_per_rank": constant}}), encoding="utf-8")
@@ -19238,8 +19273,7 @@ class DeterministicBuildTest(unittest.TestCase):
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as td:
                 repo = Path(td)
                 _out, meta = self._b1_execute(repo, self._B1_IR_CLEAN_VERDICT,
-                                              gate_result=(0, ""), matching_diagnostics=True,
-                                              captures=captures)
+                                              gate_result=(0, ""), captures=captures)
                 quality = json.loads((repo / self._b1_refs().run_node_dir()
                                       / "quality_check.json").read_text())
                 self.assertEqual(quality["status"], expected, quality)
@@ -19273,8 +19307,8 @@ class DeterministicBuildTest(unittest.TestCase):
                    "stderr": ""}
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
-            _out, meta = self._b1_execute(repo, self._B1_IR_MINIMAL, gate_result=(0, ""),
-                                          matching_diagnostics=True, sweep_result=timeout)
+            _out, meta = self._b1_execute(repo, self._B1_IR_CLEAN_VERDICT, gate_result=(0, ""),
+                                          sweep_result=timeout)
             quality = json.loads((repo / self._b1_refs().run_node_dir()
                                   / "quality_check.json").read_text())
             first, *later = quality["shapes"][1:]
@@ -19289,8 +19323,8 @@ class DeterministicBuildTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             calls: list = []
-            _out, meta = self._b1_execute(repo, self._B1_IR_MINIMAL, gate_result=(0, ""),
-                                          matching_diagnostics=True, qc_ok=False, calls=calls)
+            _out, meta = self._b1_execute(repo, self._B1_IR_CLEAN_VERDICT, gate_result=(0, ""),
+                                          qc_ok=False, calls=calls)
             self.assertEqual([c.parent.name for c in calls], ["child-1"])  # the run alone
             quality = json.loads((repo / self._b1_refs().run_node_dir()
                                   / "quality_check.json").read_text())
@@ -19300,12 +19334,12 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
 
     def test_execute_inproc_records_quality_check_mismatch(self) -> None:
-        # Gates clean, no snapshot requirement -> the only failing input is the make-test re-run
-        # (no candidate diagnostics), so the category must be quality_check_mismatch.
+        # Gates clean, every shape's captures present -> the only failing input is the make-test
+        # re-run (which captured nothing), so the category must be quality_check_mismatch.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
-            out, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL, gate_result=(0, ""),
-                                         matching_diagnostics=False)
+            out, meta = self._b1_execute(Path(td), self._B1_IR_CLEAN_VERDICT, gate_result=(0, ""),
+                                         reference_captures=False)
             self.assertEqual(out["returncode"], 0)
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "quality_check_mismatch")
@@ -19331,8 +19365,7 @@ class DeterministicBuildTest(unittest.TestCase):
             with mock.patch("tools.orchestration_runtime._capture_repo_revision",
                             return_value=dict(rev)):
                 _o, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL,
-                                            gate_result=(1, "post_execute: bad shape"),
-                                            matching_diagnostics=True)
+                                            gate_result=(1, "post_execute: bad shape"))
             self.assertEqual(meta["repo_revision"], rev)
             self.assertEqual(meta["failure_category"], "post_execute_violation")
 
@@ -19341,8 +19374,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # runner never wrote -> snapshot_deliverable_gap, and the gap message is the excerpt.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
-            out, meta = self._b1_execute(Path(td), self._B1_IR_SNAPSHOTS, gate_result=(0, ""),
-                                         matching_diagnostics=True)
+            out, meta = self._b1_execute(Path(td), self._B1_IR_SNAPSHOTS, gate_result=(0, ""))
             self.assertEqual(out["returncode"], 0)
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
@@ -19367,8 +19399,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     "{}", encoding="utf-8")
                 with mock.patch.object(wc.Conductor, "_conductor_authors_runner",
                                        return_value=authored):
-                    _o, meta = self._b1_execute(repo, self._B1_IR_SNAPSHOTS, gate_result=(0, ""),
-                                                matching_diagnostics=True)
+                    _o, meta = self._b1_execute(repo, self._B1_IR_SNAPSHOTS, gate_result=(0, ""))
                 if authored:
                     self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
                     self.assertIn("initial/c_alpha.json", meta["failure_excerpt"])
@@ -19390,11 +19421,11 @@ class DeterministicBuildTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             _o, meta = self._b1_execute(Path(td), self._B1_IR_SNAPSHOTS,
                                         gate_result=(1, "post_execute: bad shape"),
-                                        matching_diagnostics=False)
+                                        reference_captures=False)
             self.assertEqual(meta["failure_category"], "post_execute_violation")
         with tempfile.TemporaryDirectory() as td:
             _o, meta = self._b1_execute(Path(td), self._B1_IR_SNAPSHOTS, gate_result=(0, ""),
-                                        matching_diagnostics=False)
+                                        reference_captures=False)
             self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
 
     def test_execute_inproc_structural_pass_writes_no_failure_fields(self) -> None:
@@ -19403,7 +19434,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             _out, meta = self._b1_execute(Path(td), self._B1_IR_CLEAN_VERDICT,
-                                          gate_result=(0, ""), matching_diagnostics=True)
+                                          gate_result=(0, ""))
             self.assertEqual(meta["status"], "pass")
             self.assertNotIn("failure_category", meta)
             self.assertNotIn("failure_excerpt", meta)
@@ -19413,21 +19444,18 @@ class DeterministicBuildTest(unittest.TestCase):
     def test_execute_inproc_verdict_fail_authors_a_failure_excerpt(self) -> None:
         # Every structural gate is clean, so execute reaches the deterministic verdict and the
         # predicate fails. The excerpt is what a dev `--resume` threads into the reopened
-        # Generate, so it must name the failing predicate (test / ref / op / case / reason).
+        # Generate, so it must name the failing predicate (test / quantity / op / case / reason).
         import tempfile
-        diag = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "pass"},
-                "per_case": {"c_alpha": {"metrics": {"metrics.other": 0.0}}}}
         with tempfile.TemporaryDirectory() as td:
-            out, meta = self._b1_execute(Path(td), self._B1_IR_VERDICT_FAIL, gate_result=(0, ""),
-                                         matching_diagnostics=True, diagnostics=diag)
+            out, meta = self._b1_execute(Path(td), self._B1_IR_VERDICT_FAIL, gate_result=(0, ""))
             self.assertEqual(out["returncode"], 0)
             self.assertEqual(meta["status"], "fail")
             excerpt = meta["failure_excerpt"]
             self.assertIn(wc._VERDICT_FAIL_MARKER, excerpt)
             self.assertIn("failure_class=structural_violation", excerpt)
             self.assertIn("test t_alpha", excerpt)
-            self.assertIn("metrics.max_abs_dev", excerpt)
-            self.assertIn("reason=ref_absent", excerpt)
+            self.assertIn("quantity='max_abs_dev'", excerpt)
+            self.assertIn("expr='final.w'", excerpt)
             self.assertIn("case='c_alpha'", excerpt)
             self.assertIn(excerpt, out["stderr"])
             # The B1 routing table keys on failure_category; a verdict failure is NOT one of its
@@ -19443,17 +19471,13 @@ class DeterministicBuildTest(unittest.TestCase):
         attribution) table to consult. The clean row is the control."""
         import tempfile
         outcomes = [wc.SubstepOutcome("pj", "pass", [], 0), wc.SubstepOutcome("ex", "fail", [], 0)]
-        physics = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "fail"}}
-        structural = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "pass"},
-                      "per_case": {"c_alpha": {"metrics": {"metrics.other": 0.0}}}}
-        rows = (("physics_fail", self._B1_IR_CLEAN_VERDICT, physics),
-                ("structural_violation", self._B1_IR_VERDICT_FAIL, structural),
-                ("pass", self._B1_IR_CLEAN_VERDICT, None))
-        for expected, ir_yaml, diag in rows:
+        rows = (("physics_fail", self._B1_IR_CLEAN_VERDICT, 1.0),
+                ("structural_violation", self._B1_IR_VERDICT_FAIL, 0.0),
+                ("pass", self._B1_IR_CLEAN_VERDICT, 0.0))
+        for expected, ir_yaml, value in rows:
             with self.subTest(failure_class=expected), tempfile.TemporaryDirectory() as td:
                 repo = Path(td)
-                _out, meta = self._b1_execute(repo, ir_yaml, gate_result=(0, ""),
-                                              matching_diagnostics=True, diagnostics=diag)
+                _out, meta = self._b1_execute(repo, ir_yaml, gate_result=(0, ""), value=value)
                 verdict = json.loads((repo / self._b1_refs().run_node_dir() / "verdict.json")
                                      .read_text(encoding="utf-8"))
                 self.assertEqual(verdict["failure_class"], expected)
@@ -19472,29 +19496,31 @@ class DeterministicBuildTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             huge = {"self_verdict": "fail", "failure_class": "physics_fail",
                     "per_test": [{"test_id": f"t{i}", "status": "fail",
-                                  "basis": {"conditions": [{"ref": "metrics.x", "op": "le",
+                                  "basis": {"predicates": [{"quantity": "q", "op": "le",
                                                             "evaluated": [{"satisfied": False,
-                                                                           "lhs": "y" * 500}]}]}}
+                                                                           "error": "y" * 500}]}]}}
                                  for i in range(200)]}
             with mock.patch.object(wc.Conductor, "_author_execute_verdict",
-                                   lambda self, refs, ir, run_diag: huge):
+                                   lambda self, refs, ir: huge):
                 _out, meta = self._b1_execute(Path(td), self._B1_IR_CLEAN_VERDICT,
-                                              gate_result=(0, ""), matching_diagnostics=True)
+                                              gate_result=(0, ""))
             excerpt = meta["failure_excerpt"]
             self.assertLessEqual(len(excerpt.splitlines()), wc._EXECUTE_EXCERPT_MAX_LINES)
             self.assertLess(len(excerpt), wc._EXECUTE_EXCERPT_MAX_CHARS + 200)
 
-    def test_execute_inproc_verdict_fail_excerpt_reports_a_predicate_error(self) -> None:
-        # A missing/malformed predicate DSL is authored as a structural_violation verdict with an
-        # empty per_test; the excerpt must still carry the reason (the IR defect).
+    def test_a_predicate_error_verdict_s_report_carries_the_reason(self) -> None:
+        # A missing/malformed test or predicate is authored as a structural_violation verdict with
+        # an empty per_test; the report must still carry the reason (the IR defect).
         import tempfile
         with tempfile.TemporaryDirectory() as td:
-            _out, meta = self._b1_execute(Path(td), self._B1_IR_MINIMAL, gate_result=(0, ""),
-                                          matching_diagnostics=True)
-            self.assertEqual(meta["status"], "fail")
-            self.assertIn("predicate_error:", meta["failure_excerpt"])
-            self.assertIn("test_predicates missing/empty", meta["failure_excerpt"])
-            self.assertNotIn("failure_category", meta)
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="o",
+                                   orchestration_agent_run_id="O", llm_config=_cfg("claude"),
+                                   env={})
+            doc = c._author_execute_verdict(self._b1_refs(), {"io_contract": {}})
+            report = wc._verdict_failure_report(doc)
+            self.assertIn("predicate_error:", report)
+            self.assertIn("io_contract.tests missing/empty", report)
 
     def test_execute_inproc_clears_stale_trial_meta(self) -> None:
         # The runtime-error discriminator ("no trial_meta") must not depend on the external
@@ -22508,7 +22534,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
                 repo, refs,
                 [{"test_id": "t1", "status": "pass"}, {"test_id": "t2", "status": "xfail"}],
                 quality_check={"target_class": "cpu", "status": "pass",
-                               "checks": {"diagnostics_match": True, "verdict_match": True}})
+                               "checks": {"verdict_available": True, "verdict_match": True}})
             with mock.patch("tools.orchestration_runtime._resolve_dependency_facts",
                             autospec=True, return_value=[]):
                 c._author_derived_validate_artifacts(refs)
@@ -23058,19 +23084,19 @@ class ExecutePromoterTest(unittest.TestCase):
             self.assertTrue(any(p.endswith(f"/raw/state_snapshots/initial/{cid}.json")
                                 for p in m3c_outs), m3c_outs)
 
-        # metrics_basis.json alone: it is always an allowed output, and no snapshot
-        # path is added for an IR that does not declare state_snapshots.
-        basis = wc.build_launch_request(
-            refs, evidence_artifacts=("metrics_basis.json",), **common)
-        basis_outs = basis["allowed_output_paths"]
-        self.assertTrue(any(p.endswith("/raw/metrics_basis.json") for p in basis_outs))
-        self.assertFalse(any("/raw/state_snapshots/" in p for p in basis_outs))
+        # No snapshot path is added for an IR that does not declare state_snapshots, and neither
+        # retired runner document (issue #582) is an allowed output of any.
+        bare = wc.build_launch_request(refs, evidence_artifacts=(), **common)
+        self.assertFalse(any("/raw/state_snapshots/" in p for p in bare["allowed_output_paths"]))
+        for outs in (snap_outs, m3c_outs, bare["allowed_output_paths"]):
+            self.assertFalse(any(p.endswith(("/raw/metrics_basis.json", "/diagnostics.json"))
+                                 for p in outs), outs)
 
     def test_required_evidence_artifacts(self) -> None:
         c = self._conductor(_SHARED_REPO_ROOT)
         ir = {"io_contract": {"raw_requirements": {"required_evidence": [
             {"artifact": "state_snapshots", "required": True},
-            {"artifact": "metrics_basis.json", "required": False},
+            {"artifact": "state_snapshots_optional", "required": False},
         ]}}}
         self.assertEqual(c._required_evidence_artifacts(ir), ["state_snapshots"])
 
@@ -23080,23 +23106,18 @@ class ExecutePromoterTest(unittest.TestCase):
             repo = Path(td)
             c = self._conductor(repo)
             run = repo / "run"
-            self._write(run / "diagnostics.json", {"verdict": {"overall": "pass"}})
             self._write(run / "perf.json", {"case_id": "a"})
-            self._write(run / "raw" / "metrics_basis.json", {"x": 1})
             self._write(run / "raw" / "state_snapshots" / "caseA.json", {"u": [1]})
             self._write(run / "raw" / "state_snapshots" / "caseB.json", {"u": [2]})
             self._write(run / "raw" / "state_snapshots" / "initial" / "caseA.json", {"u": [0]})
             node = repo / "node"
             refs = c._promote_run_evidence(run, node, ["state_snapshots"])
-            self.assertTrue((node / "diagnostics.json").exists())
             self.assertTrue((node / "perf.json").exists())
-            self.assertTrue((node / "raw" / "metrics_basis.json").exists())
             self.assertTrue((node / "raw" / "state_snapshots" / "caseA.json").exists())
             self.assertTrue((node / "raw" / "state_snapshots" / "caseB.json").exists())
             # the host-rendered runner's initial capture is promoted beside the final one
             self.assertTrue((node / "raw" / "state_snapshots" / "initial" / "caseA.json").exists())
             self.assertIn("node/raw/state_snapshots/initial/caseA.json", refs)
-            self.assertIn("node/raw/metrics_basis.json", refs)
             # ...and an empty `initial/` (a harness node's own runner writes none) is not
             # promoted as an empty directory
             run2, node2 = repo / "run2", repo / "node2"
@@ -23106,9 +23127,9 @@ class ExecutePromoterTest(unittest.TestCase):
             self.assertFalse((node2 / "raw" / "state_snapshots" / "initial").exists())
 
     def test_promote_is_selective_and_drops_runner_aux_files(self) -> None:
-        """Promotion is per artifact type, not a copytree: a file the runner leaves
-        under raw/ that no artifact type names is dropped, and only metrics_basis.json
-        is promoted for an IR that declares nothing beyond it."""
+        """Promotion is per artifact type, not a copytree: a file the runner leaves under raw/
+        that no artifact type names is dropped, and so is a retired runner document a stale
+        runner still wrote (issue #582): nothing in the node directory reads as its evidence."""
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -23117,13 +23138,16 @@ class ExecutePromoterTest(unittest.TestCase):
             self._write(run / "diagnostics.json", {"verdict": {"overall": "pass"}})
             self._write(run / "perf.json", {"case_id": "a"})
             self._write(run / "raw" / "metrics_basis.json", {"x": 1})
+            self._write(run / "raw" / "state_snapshots" / "caseA.json", {"u": [1]})
             # an auxiliary file the runner also emits -> must be DROPPED
             self._write(run / "raw" / "some_aux.json", {"trace": ["a"]})
             node = repo / "node"
-            refs = c._promote_run_evidence(run, node, ["metrics_basis.json"])
-            self.assertTrue((node / "raw" / "metrics_basis.json").exists())
+            refs = c._promote_run_evidence(run, node, ["state_snapshots"])
+            self.assertTrue((node / "raw" / "state_snapshots" / "caseA.json").exists())
             self.assertFalse((node / "raw" / "some_aux.json").exists())
-            self.assertEqual(["node/raw/metrics_basis.json"], refs)
+            self.assertFalse((node / "raw" / "metrics_basis.json").exists())
+            self.assertFalse((node / "diagnostics.json").exists())
+            self.assertEqual(["node/raw/state_snapshots/caseA.json"], refs)
 
     def test_author_snapshot_schema_orders_by_ir_case(self) -> None:
         import tempfile
@@ -23159,10 +23183,12 @@ _INCIDENT_DICT_REASON = {
 
 
 class AuthorQualityCheckShapesTests(unittest.TestCase):
-    """`Conductor._author_quality_check` (issue #512): every execution shape's run is compared
-    with the serial reference — the quality check's one-process, one-thread re-run — by its
-    check statuses, its verdict, and its captured state under the IR's cross-target
-    predicates; a launcher target's harness must report the shape's rank count and grid."""
+    """`Conductor._author_quality_check` (issue #512, issue #582 D6): every execution shape's run
+    is compared with the serial reference — the quality check's one-process, one-thread re-run —
+    by each test's status in the host verdict over the shape's own captures, and by its captured
+    state under the IR's cross-target predicates; a launcher target's harness must report the
+    shape's rank count and grid. The fixture writes real captures: nothing of the evaluators is
+    mocked."""
 
     def setUp(self) -> None:
         import numpy as np
@@ -23179,30 +23205,58 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.shapes = [ExecutionShape("certified", 4, 1, None),
                        ExecutionShape("threads_2", 2, 1, None)]
         self.h = np.arange(tpe.NX * tpe.NY, dtype=float).reshape(tpe.NX, tpe.NY) + 1.0
-        self.diag = {"checks": {"c1": {"status": "pass"}},
-                     "verdict": {"overall": "pass", "failed_checks": []}}
         self.ref = self._run_dir("qc_run", self.h)
 
-    def _run_dir(self, name: str, h, *, diag=None, perf=None) -> Path:
+    def _ir(self, *, cross: bool = True, guard_outcome: str = "pass") -> dict:
+        """`t_h` judges `h` (and carries the cross-target predicate), `t_s` judges `s`. `owner`
+        is a capture no predicate reads, as the distributed harness's rank-dependent ones are."""
+        cases = ["a", "b"]
+        predicates = [
+            {"test_id": "t_h", "quantity": "h_min", "target_cases": cases,
+             "expr": "min(final.h)", "op": "ge", "value": 0.5, "per_case": True},
+            {"test_id": "t_s", "quantity": "s_value", "target_cases": cases,
+             "expr": "final.s", "op": "le", "value": 1.5, "per_case": True}]
+        if cross:
+            predicates.append(
+                {"test_id": "t_h", "quantity": "cross_target_state_agreement",
+                 "target_cases": cases,
+                 "expr": "maxabs(final.h - comparand.final.h)"
+                         " / max(maxabs(comparand.final.h), 1e-14)",
+                 "op": "le", "value": 1.0e-12, "per_case": True})
+        return {
+            "case": {"test_case_set": [self.tpe._case("a"), self.tpe._case("b")]},
+            "io_contract": {
+                "raw_requirements": {"required_evidence": [
+                    {"artifact": "state_snapshots", "required": True, "schema": {
+                        "variables": [{"name": "h", "shape_expr": "[nx, ny]"},
+                                      {"name": "s", "shape_expr": "scalar"},
+                                      {"name": "owner", "shape_expr": "scalar"}],
+                        "time_variable": "t", "time_shape_expr": "scalar"}}]},
+                "tests": [
+                    {"test_id": "t_h", "expected_outcome": "pass", "target_cases": cases,
+                     "quantities": ["h_min"]},
+                    {"test_id": "t_s", "expected_outcome": guard_outcome, "target_cases": cases,
+                     "quantities": ["s_value"]}],
+                "predicates": predicates}}
+
+    def _run_dir(self, name: str, h, *, s: float = 1.0, owner: float = 0.0, perf=None) -> Path:
         d = self.root / name
         sdir = d / "raw" / "state_snapshots"
         (sdir / "initial").mkdir(parents=True)
         for cid in ("a", "b"):
-            (sdir / "initial" / f"{cid}.json").write_text(
-                json.dumps({"h": h.tolist(), "s": 1.0, "t": 0.0}))
-            (sdir / f"{cid}.json").write_text(json.dumps({"h": h.tolist(), "s": 1.0, "t": 0.2}))
-        (d / "diagnostics.json").write_text(json.dumps(self.diag if diag is None else diag))
+            capture = {"h": h.tolist(), "s": s, "owner": owner}
+            (sdir / "initial" / f"{cid}.json").write_text(json.dumps({**capture, "t": 0.0}))
+            (sdir / f"{cid}.json").write_text(json.dumps({**capture, "t": 0.2}))
         if perf is not None:
             (d / "perf.json").write_text(json.dumps({"parallelism": perf}))
         return d
 
     def _author(self, runs: list[dict], *, ir=None, launcher: bool = False,
-                qc_diag=None, block_imposed: bool = False,
+                block_imposed: bool = False,
                 threads_checked: bool = False) -> tuple[str, dict]:
-        ir = self.tpe._ir([self.tpe.CROSS]) if ir is None else ir
+        ir = self._ir() if ir is None else ir
         status = wc.Conductor._author_quality_check(
-            self.node, self.diag if qc_diag is None else qc_diag, "Q", "make_test", ir=ir,
-            reference_dir=self.ref,
+            self.node, "Q", "make_test", ir=ir, reference_dir=self.ref,
             shape_runs=runs, launcher=launcher, block_imposed=block_imposed,
             threads_checked=threads_checked)
         return status, json.loads((self.node / "quality_check.json").read_text())
@@ -23228,12 +23282,15 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertEqual(doc["comparison"]["candidate"]["threads_per_rank"], 1)
         self.assertEqual(doc["comparison"]["candidate"]["ranks"], 1)
         self.assertEqual(set(doc["comparison"]), {"reference", "candidate"})
-        self.assertTrue(all(doc["checks"].values()))
+        self.assertEqual(doc["checks"], {"verdict_available": True, "verdict_match": True})
+        # What each row compared: the statuses of the host verdict over that shape's captures.
+        self.assertEqual(doc["shapes"][1]["verdict"],
+                         {"self_verdict": "pass", "per_test": {"t_h": "pass", "t_s": "pass"}})
         self.assertEqual(wc.Conductor._quality_check_failure_lines(self.node), [])
 
     def test_a_state_that_disagrees_fails_and_names_the_shape_case_and_quantity(self) -> None:
         """A shape whose state differs from the serial reference's by 1e-6 relative fails,
-        although its check statuses and verdict match; 1e-15 relative is round-off and agrees
+        although each test's status matches; 1e-15 relative is round-off and agrees
         (the cross-target bound is 1e-12)."""
         for scale, expected in ((1e-6, "fail"), (1e-15, "pass")):
             with self.subTest(scale=scale):
@@ -23243,7 +23300,7 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                     self._run_dir(f"run_{scale}", self.h), self._run_dir(f"t2_{scale}", bumped)))
                 self.assertEqual(status, expected)
                 row = doc["shapes"][1]
-                self.assertTrue(row["diagnostics_match"] and row["verdict_match"])
+                self.assertTrue(row["verdict_available"] and row["verdict_match"])
                 if expected == "fail":
                     self.assertEqual(row["state_agreement"]["status"], "disagree")
                     failure = row["state_agreement"]["failures"][0]
@@ -23255,16 +23312,62 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                     self.assertIn("case a cross_target_state_agreement", lines[0])
                     self.assertEqual(doc["shapes"][0]["status"], "pass")
 
-    def test_a_status_or_verdict_mismatch_fails_the_shape(self) -> None:
-        other = {"checks": {"c1": {"status": "fail"}},
-                 "verdict": {"overall": "fail", "failed_checks": ["c1"]}}
+    def test_a_per_test_status_that_differs_fails_the_shape(self) -> None:
+        """Issue #582 D6: a shape whose capture fails a test the reference passes fails on
+        `verdict_match`, and the excerpt names the comparison."""
         status, doc = self._author(self._runs(self._run_dir("run", self.h),
-                                              self._run_dir("t2", self.h, diag=other)))
+                                              self._run_dir("t2", self.h, s=2.0)))
         self.assertEqual(status, "fail")
-        self.assertFalse(doc["shapes"][1]["diagnostics_match"])
-        self.assertFalse(doc["shapes"][1]["verdict_match"])
+        row = doc["shapes"][1]
+        self.assertTrue(row["verdict_available"])
+        self.assertFalse(row["verdict_match"])
+        self.assertEqual(row["verdict"]["per_test"], {"t_h": "pass", "t_s": "fail"})
+        # The state the cross-target predicate reads agrees: the status is what failed it.
+        self.assertEqual(row["state_agreement"]["status"], "agree")
         # The certified shape still matches, and the top-level checks are its own.
+        self.assertEqual(doc["shapes"][0]["status"], "pass")
         self.assertTrue(all(doc["checks"].values()))
+        lines = wc.Conductor._quality_check_failure_lines(self.node)
+        self.assertTrue(any("shape threads_2" in ln and "verdict_match is false" in ln
+                            for ln in lines), lines)
+
+    def test_a_capture_no_predicate_reads_may_differ_between_shapes(self) -> None:
+        """Issue #582 D6, no exact-equality rule: the MPI harness's `owner` / `p1` / `p2` and the
+        GPU harness's `block_size` differ by shape by design, and a shape reporting its own value
+        passes. Its counterpart row above fails a difference a predicate does read."""
+        status, doc = self._author(self._runs(self._run_dir("run", self.h, owner=3.0),
+                                              self._run_dir("t2", self.h, owner=1.0)))
+        self.assertEqual(status, "pass", doc)
+        self.assertTrue(all(r["verdict_match"] for r in doc["shapes"]))
+
+    def test_a_capture_missing_from_one_shape_fails_it(self) -> None:
+        """A case's capture absent from one shape is a structural record of that shape's tests,
+        whose status differs from the reference's: never a test that simply was not judged."""
+        short = self._run_dir("t2", self.h)
+        (short / "raw" / "state_snapshots" / "b.json").unlink()
+        status, doc = self._author(self._runs(self._run_dir("run", self.h), short))
+        self.assertEqual(status, "fail")
+        row = doc["shapes"][1]
+        self.assertTrue(row["verdict_available"])
+        self.assertFalse(row["verdict_match"])
+        self.assertEqual(row["verdict"]["per_test"], {"t_h": "fail", "t_s": "fail"})
+        self.assertEqual(doc["shapes"][0]["status"], "pass")
+
+    def test_a_run_with_xfail_tests_compares_xfail(self) -> None:
+        """A guard test certifies as `xfail` under its predicates (D5): a shape that holds them
+        reads `xfail` like the reference, and one that does not reads `fail` and is refused."""
+        ir = self._ir(guard_outcome="xfail")
+        self.ref = self._run_dir("qc_xfail", self.h)
+        status, doc = self._author(self._runs(self._run_dir("run", self.h),
+                                              self._run_dir("t2", self.h)), ir=ir)
+        self.assertEqual(status, "pass", doc)
+        self.assertEqual(doc["shapes"][1]["verdict"]["per_test"], {"t_h": "pass", "t_s": "xfail"})
+        self.assertEqual(doc["comparison"]["candidate"]["verdict"]["per_test"]["t_s"], "xfail")
+        status, doc = self._author(self._runs(self._run_dir("run_b", self.h),
+                                              self._run_dir("t2_b", self.h, s=2.0)), ir=ir)
+        self.assertEqual(status, "fail")
+        self.assertEqual(doc["shapes"][1]["verdict"]["per_test"], {"t_h": "pass", "t_s": "fail"})
+        self.assertFalse(doc["shapes"][1]["verdict_match"])
 
     def test_many_failing_shapes_leave_room_for_the_gate_report(self) -> None:
         """Six sweep shapes that each failed with a 71-line stderr whose cause is its first
@@ -23319,21 +23422,15 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
 
     def test_the_certified_shape_is_compared_with_the_reference_too(self) -> None:
         """The certified run is a shape like any other: with no sweep at all (one shape), a
-        certified run whose check statuses or verdict differ from the serial reference's fails
-        the check, and the top-level `checks` say so — origin/main's comparison, kept."""
+        certified run one of whose tests reads otherwise than on the serial reference fails the
+        check, and the top-level `checks` say so — origin/main's comparison, kept."""
         self.shapes = self.shapes[:1]
-        other = {"checks": {"c1": {"status": "fail"}},
-                 "verdict": {"overall": "fail", "failed_checks": ["c1"]}}
-        statuses = {"checks": {"c1": {"status": "xfail"}}, "verdict": self.diag["verdict"]}
-        verdict = {"checks": self.diag["checks"], "verdict": {"overall": "fail"}}
-        for name, diag in (("both", other), ("statuses", statuses), ("verdict", verdict)):
-            with self.subTest(name):
-                status, doc = self._author([{"shape": self.shapes[0],
-                                             "dir": self._run_dir(f"c_{name}", self.h, diag=diag),
-                                             "ok": True, "command_id": "R"}])
-                self.assertEqual(len(doc["shapes"]), 1)
-                self.assertEqual((status, doc["shapes"][0]["status"]), ("fail", "fail"))
-                self.assertFalse(all(doc["checks"].values()))
+        status, doc = self._author([{"shape": self.shapes[0],
+                                     "dir": self._run_dir("c", self.h, s=2.0),
+                                     "ok": True, "command_id": "R"}])
+        self.assertEqual(len(doc["shapes"]), 1)
+        self.assertEqual((status, doc["shapes"][0]["status"]), ("fail", "fail"))
+        self.assertFalse(all(doc["checks"].values()))
 
     def test_a_captured_extent_that_differs_disagrees(self) -> None:
         """A shape whose captured state has another extent than the reference's disagrees
@@ -23348,31 +23445,30 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertTrue(any("comparand_shape_mismatch" in ln for ln in lines), lines)
 
     def test_each_comparison_alone_fails_the_shape(self) -> None:
-        """The shape's status is the conjunction: a check status that differs while the verdict
-        agrees fails it, and so does a verdict the shape did not write."""
-        statuses_only = {"checks": {"c1": {"status": "xfail"}}, "verdict": self.diag["verdict"]}
-        no_verdict = {"checks": self.diag["checks"]}
-        verdict_only = {"checks": self.diag["checks"],
-                        "verdict": {"overall": "fail", "failed_checks": ["c1"]}}
-        for name, diag, key in (("statuses", statuses_only, "diagnostics_match"),
-                                ("no verdict", no_verdict, "verdict_available"),
-                                ("verdict", verdict_only, "verdict_match")):
+        """The shape's status is the conjunction. A status that differs fails it while the verdict
+        is available; an IR the host cannot evaluate over any shape is `verdict_available: false`,
+        and two unavailable verdicts never agree."""
+        status, doc = self._author(self._runs(self._run_dir("run_m", self.h),
+                                              self._run_dir("t2_m", self.h, s=2.0)))
+        row = doc["shapes"][1]
+        self.assertTrue(row["verdict_available"])
+        self.assertFalse(row["verdict_match"])
+        self.assertEqual((status, row["status"]), ("fail", "fail"))
+        self.assertEqual(doc["shapes"][0]["status"], "pass")
+        ir = self._ir()
+        ir["io_contract"]["predicates"][0]["op"] = "includes"
+        for name, broken in (("malformed predicate", ir),
+                             ("no test", {**ir, "io_contract": {**ir["io_contract"], "tests": []}})):
             with self.subTest(name):
-                status, doc = self._author(self._runs(
-                    self._run_dir(f"run_{key}", self.h),
-                    self._run_dir(f"t2_{key}", self.h, diag=diag)))
-                row = doc["shapes"][1]
-                self.assertFalse(row[key])
-                self.assertEqual((status, row["status"]), ("fail", "fail"))
-                self.assertEqual(doc["shapes"][0]["status"], "pass")
-        # Neither the reference nor the shape wrote a verdict: the two agree (None == None),
-        # and only `verdict_available` refuses the comparison.
-        status, doc = self._author(self._runs(
-            self._run_dir("run_none", self.h, diag=no_verdict),
-            self._run_dir("t2_none", self.h, diag=no_verdict)), qc_diag=no_verdict)
-        self.assertTrue(all(r["verdict_match"] and not r["verdict_available"]
-                            for r in doc["shapes"]))
-        self.assertEqual(status, "fail")
+                status, doc = self._author(self._runs(self._run_dir(f"run_{name}", self.h),
+                                                      self._run_dir(f"t2_{name}", self.h)),
+                                           ir=broken)
+                self.assertEqual(status, "fail")
+                for row in doc["shapes"]:
+                    self.assertFalse(row["verdict_available"])
+                    self.assertFalse(row["verdict_match"])
+                    self.assertIsNone(row["verdict"])
+                    self.assertEqual(row["status"], "fail")
 
     def test_a_shape_that_failed_or_did_not_run_fails(self) -> None:
         for ids, failure, needles in (
@@ -23413,7 +23509,7 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         bumped = self.h * 2.0
         status, doc = self._author(
             self._runs(self._run_dir("run", self.h), self._run_dir("t2", bumped)),
-            ir=self.tpe._ir([]))
+            ir=self._ir(cross=False))
         self.assertEqual(status, "pass")
         self.assertFalse(doc["state_agreement_applies"])
         self.assertEqual(doc["shapes"][1]["state_agreement"], {"status": "not_applicable"})
@@ -23601,7 +23697,8 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                 status, doc = self._author(
                     self._runs(*dirs, ok=(True,) * len(dirs),
                                ids=tuple(f"R{i}" for i in range(len(dirs)))),
-                    ir=self.tpe._ir([]), threads_checked=FORTRAN_CPU.thread_count_observable)
+                    ir=self._ir(cross=False),
+                    threads_checked=FORTRAN_CPU.thread_count_observable)
                 self.assertEqual(status, expected)
                 self.assertEqual(
                     [(r["label"], r["observed_threads_per_rank"], r["thread_match"])
@@ -25088,9 +25185,6 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         qc_tmp = repo / "workspace" / "tmp" / "child-1" / "qc_run"
         run_tmp.mkdir(parents=True, exist_ok=True)
         qc_tmp.mkdir(parents=True, exist_ok=True)
-        diag = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "pass"}}
-        (run_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
-        (qc_tmp / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
         # perf.json is written by the leaf-authored runner and promoted verbatim by
         # `_promote_run_evidence`, so a malformed one is leaf-reachable. Written as BYTES
         # because one of the shapes is not valid UTF-8, which a leaf-authored Fortran runner
@@ -25124,7 +25218,10 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
                                     (b"not json", "perf.json: invalid json"),
                                     (b"\xff\xfe{}", "perf.json: invalid json")):
             with self.subTest(perf=perf_body), tempfile.TemporaryDirectory() as td:
-                result, meta = self._execute_with_real_gate(Path(td), perf_body)
+                # the row's IR declares no test; what it pins is the gate's perf.json refusal
+                with mock.patch.object(wc.Conductor, "_ir_unevaluable",
+                                       staticmethod(lambda *_a: False)):
+                    result, meta = self._execute_with_real_gate(Path(td), perf_body)
                 self.assertEqual(result["returncode"], 0)
                 self.assertEqual(meta["failure_category"], "post_execute_violation")
                 self.assertIn(meta["failure_category"], wc.VALIDATE_EXECUTE_FAILURE_ROUTING)

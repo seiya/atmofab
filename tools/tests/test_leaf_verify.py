@@ -211,9 +211,10 @@ class PureVerifyContextTests(unittest.TestCase):
             for present in ("### 1-b. The bound state in Fortran",
                             "## 2. The semantics, spelled in Fortran",
                             "## 4. Prohibitions in Fortran",
-                            "logical, intent(out) :: ok",
-                            "character(len=4), intent(out) :: status"):
+                            "logical, intent(out) :: ok"):
                 self.assertIn(present, doc[neutral_end:])
+            for retired in ("checks_compute", "metric_compute"):
+                self.assertNotIn(retired, doc)
             # Issue #399: the wording that gave a value of `ok` a meaning is gone from the
             # reviewer's document (the sentence-level rule is
             # `test_checks_module_loops_and_ok_are_not_findings_on_every_target`).

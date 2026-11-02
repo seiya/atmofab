@@ -1,79 +1,32 @@
-"""Deterministic per-test verdict evaluation (R2 of the workflow scaling redesign).
+"""Deterministic per-test verdict evaluation.
 
-Pure functions shared by the conductor (``Validate.execute`` authors ``verdict.json``
-in-process from these) and the Compile-stage predicate gate
-(``validate_pipeline_semantics --stage compile`` validates the DSL through the same
-schema check). No filesystem, no conductor dependency — the exact shape as
-``tools/dependency_graph.py``.
+Pure functions shared by the conductor (``Validate.execute`` authors ``verdict.json`` in-process
+from these) and the Compile-stage gate (``validate_pipeline_semantics --stage compile`` validates
+``io_contract.tests`` through the same schema check). No filesystem, no conductor dependency.
 
-The predicate DSL lives in the IR at ``io_contract.test_predicates`` (a sibling of
-``io_contract.test_evidence_requirements``). Each entry formalizes exactly one
-``tests.md`` test's ``pass_when`` / ``judgment`` rule as a machine-evaluable predicate
-over the runner's ``diagnostics.json``::
+A test is declared in the IR at ``io_contract.tests``, and the host predicates that judge it at
+``io_contract.predicates`` (`tools/primary_evidence.py`, whose records this module folds)::
 
     io_contract:
-      test_predicates:
+      tests:
         - test_id: <str>                 # one per tests.md test_id (set equality gated at Compile)
-          expected_outcome: pass|xfail    # the certifying outcome when the predicate holds
-          target_cases: [<case_id>, ...]  # the case_ids this predicate ranges over
-          pass_when:
-            all:                          # `all` is the only combinator (add any/not on real demand)
-              - ref: <diagnostics ref>     # e.g. checks.input_guard.status / verdict.overall / metrics.cfl_max
-                op: eq|ne|le|ge|lt|gt|includes
-                value: <scalar|bool|string|list>            # OR {per_case: {<case_id>: value}} for nx-dependent thresholds
-                per_case: <bool>          # optional: resolve `ref` inside each target case's diagnostics slice
-                case: <case_id>           # optional: resolve `ref` inside ONE target case's slice (excl. per_case)
-                na_allowed: <bool>        # optional: a null/absent lhs counts as satisfied (a "not applied" metric)
-                quantity: <name>          # what the condition measures; its corroborant is the primary
-                                          # predicate of the same test and quantity (Z6)
+          expected_outcome: pass|xfail   # the certifying outcome when every predicate holds
+          target_cases: [<case_id>, ...]  # the cases its predicates range over
+          quantities: [<name>, ...]      # the judgments its tests.md definition lists
 
-A multi-target test (a convergence sweep, a base/shifted equivariance pair) ranges its
-``target_cases`` over several cases and picks its scope per condition:
+A test's ``status`` is its ``expected_outcome`` when every predicate of the test holds, else
+``fail``; each record's value was computed by the host from the captures, with no generated code
+in the path but the captured arrays and the capture's time (issue #582, which retired the judging
+half of the checks module). ``xfail_condition`` is a case-construction fact (verified at Compile),
+never an evaluated runtime predicate: a guard test is judged by the predicates its ``tests.md``
+definition states in the failure direction.
 
-- ``per_case: true`` — the condition must hold in EVERY target case (e.g. positivity at
-  every resolution). Combine with a ``{per_case: {...}}`` value map for a per-case threshold.
-- ``case: <case_id>`` — the condition is resolved in exactly ONE target case's slice. This is
-  how a cross-case reduction is compared: the checks module accumulates across cases and emits
-  the derived metric (``convergence_order``, ``symmetry_h_l2_rel``) as a per-case metric of the
-  case where it first becomes computable, and the predicate reads it there.
-- neither — the condition resolves against the suite-level (top-level) diagnostics object.
-
-A ``ref`` resolves by its HEAD, over the same closed head vocabulary the Compile-stage gate
-(``_check_ref``) validates:
-
-- ``checks`` / ``verdict`` — a dotted path nested inside the diagnostics slice (a ``checks``
-  ref is exactly ``checks.<id>.status``).
-- any other head — an opaque per-case **metric address** (``metrics.*`` / ``errors.*`` /
-  ``cfl.*`` / ``convergence.*``, pinned in ``diagnostics_contract.metrics``), looked up as a
-  whole-string KEY of the slice's ``metrics`` map. The runner writes that map flat, keyed by the
-  full dotted address (``{"metrics": {"metrics.cfl_max": 0.4}}``), so the address is never
-  decomposed into path segments. An N/A metric is written as ``"<address>": null`` beside an
-  ``"<address>_reason_na"`` sibling, which the ``na_allowed`` handling consumes.
-
-The runner emits every numeric judgment already reduced to a diagnostics field (a
-``checks.<id>.status`` enum / a metric-address scalar / a ``verdict.overall`` enum), so
-the predicate never does arithmetic — it only compares a resolved diagnostics value
-against a constant/set and conjoins the results. ``xfail_condition`` is a case-construction
-fact (verified at Compile), never an evaluated runtime predicate.
-
-Every value a ``test_predicates`` condition reads is SECONDARY evidence: the generated checks
-module computed it. Its corroborant is ``io_contract.primary_predicates`` (Z6, issue #255):
-expressions over the PRIMARY state the host-rendered runner captured, valued by the host in
-``tools/primary_evidence.py`` with no generated code in the path. ``evaluate_verdict`` takes
-those records as ``primary=`` — already evaluated, since this module reads no file — and
-conjoins them with the test's ``pass_when``: a test's ``status`` holds only when both hold,
-``basis.primary[]`` carries each record, and ``basis.corroboration`` says whether the two
-kinds of evidence agree (``agree`` when both are satisfied or both are not, ``disagree``
-when exactly one is, ``unevaluated`` when either half is structural — a record the host could
-not value, or a diagnostics ref absent — so nothing was corroborated either way). A ``disagree`` — a kernel/checks
-inconsistency — or an ``unevaluated`` fails the test, so the judge (not spawned on a failing
-verdict) never sees one; the operator's ``[execute fail: verdict]`` report and the escalate
-diagnostician do. Every condition carries ``quantity: <name>`` — what it measures — and the
-primary predicate of the same test and ``quantity`` is its corroborant; the Compile gate
-(``tools.primary_evidence.coverage_violations``) refuses a condition with no corroborant, so
-no test's verdict rests on secondary evidence alone. That gate compares names and the cases
-a corroborant reads: whether the two sides measure the same quantity is ``Compile.verify``'s
-judgment.
+``evaluate_verdict`` re-checks, on the records it is handed, what the Compile gate states:
+a record ranges over its test's ``target_cases``; every test holds at least one record that is not
+cross-target, and those records value the state of every target case; and a record reading a ``source: reported`` snapshot variable stands beside a record
+of the same quantity that reads ``source: operation`` state, and no reported variable, over the
+same cases (`tools.primary_evidence.reported_read_violations`). A kernel's report of its own
+run-wide extremum therefore never judges a test alone.
 """
 
 from __future__ import annotations
@@ -81,24 +34,22 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Predicate comparison operators. `includes` is set/list membership (rhs in lhs);
-# the ordered ops require a numeric lhs.
-_OPS: frozenset[str] = frozenset({"eq", "ne", "le", "ge", "lt", "gt", "includes"})
-_ORDERED_OPS: frozenset[str] = frozenset({"le", "ge", "lt", "gt"})
 _EXPECTED_OUTCOMES: frozenset[str] = frozenset({"pass", "xfail"})
 # A `quantity` name (shared with `tools.primary_evidence.QUANTITY_RE`, which imports this
-# module and so cannot be imported here): a lowercase dotted identifier, the shape of a
-# metric address.
+# module and so cannot be imported here): a lowercase dotted identifier.
 _QUANTITY_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
 
 # A per-test evaluation result kind, folded into the top-level failure_class.
 _KIND_PASS = "pass"
-_KIND_PHYSICS = "physics"      # a diagnostics value was present but the comparison was false
-_KIND_STRUCTURAL = "structural"  # a required diagnostics ref was absent/unresolvable (contract gap)
+_KIND_PHYSICS = "physics"      # a predicate was valued and its comparison was false
+_KIND_STRUCTURAL = "structural"  # a predicate could not be valued
 #: A cross-target primary record with no comparand (issue #324): satisfied, nothing evaluated.
 #: Since issue #383 it is the only cross-target record a verdict holds — the verdict evaluates
 #: no comparison, and the cross-target agreement does, outside it.
 _KIND_NO_COMPARAND = "no_comparand"
+#: The `sources_read` keys D13 of issue #582 pairs (`tools.primary_evidence.SNAPSHOT_SOURCES`).
+_SOURCE_OPERATION = "operation"
+_SOURCE_REPORTED = "reported"
 
 
 def is_cross_target_record(rec: dict[str, Any]) -> bool:
@@ -110,125 +61,21 @@ def is_cross_target_record(rec: dict[str, Any]) -> bool:
 
 
 class PredicateError(ValueError):
-    """A malformed predicate DSL surfaced during evaluation (as opposed to a
-    schema-validation pass, which returns violation strings)."""
+    """A malformed test or record surfaced during evaluation (as opposed to a schema-validation
+    pass, which returns violation strings)."""
 
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _resolve_ref(obj: Any, ref: str) -> tuple[bool, Any]:
-    """Resolve a dotted ``ref`` inside ``obj``. Returns ``(present, value)``; ``present``
-    is False when any path segment is missing (or ``obj`` is not a mapping there)."""
-    cur = obj
-    for seg in ref.split("."):
-        if not isinstance(cur, dict) or seg not in cur:
-            return (False, None)
-        cur = cur[seg]
-    return (True, cur)
-
-
-# Heads whose `ref` is a NESTED path into the diagnostics slice. Every other head is an opaque
-# metric ADDRESS — the runner keys its `metrics` map by the whole dotted address, so decomposing
-# it into path segments would never resolve. Exactly mirrors `_check_ref`'s Compile-stage
-# vocabulary: that gate pins a metric ref against the declared addresses by whole-string equality,
-# which is the same key this resolves, and pins a `checks` ref to the one three-segment path
-# (`checks.<id>.CHECK_REF_LEAF`) the nested resolution can reach.
-_NESTED_REF_HEADS: frozenset[str] = frozenset({"checks", "verdict"})
-
-#: The one leaf a `checks.<id>` predicate ref may read. The certified harness writes each
-#: check as `{"status": "pass"|"fail"}` (the harness spec's controlled_spec §2) and the
-#: rendered runner carries `checks_compute`'s `status` there verbatim. Defined ONCE here; the
-#: documents that state the vocabulary are coupled to it by
-#: `test_verdict_evaluator.CheckRefLeafStatementSitesTest` (issue #269).
-CHECK_REF_LEAF = "status"
-
-#: The values a `checks.<id>.status` condition may compare against, in the order the documents
-#: state them. The top-level fold writes exactly these; a per-case slice may also hold `na` for
-#: a check that case cannot evaluate, which a predicate does not target — and a predicate
-#: comparing against anything else (`True`, `1`, a misspelt enum member) is either always
-#: false (a correct kernel reported `physics_fail`) or, under `ne`, always true. Coupled to the
-#: documents by the same test as `CHECK_REF_LEAF`.
-CHECK_STATUS_VALUES: tuple[str, ...] = ("pass", "fail")
-#: The one op a status condition admits. An ordered op on a string is always false at
-#: execute; `ne` is refused too, because `ne "fail"` is satisfied by the per-case `na` a
-#: check reports where it does not apply — a pass on an unevaluated check — and every
-#: `.status` predicate in `workspace/ir` says what it means with `eq` (547 of 547 across
-#: every ir_meta status, 2026-09-22).
-CHECK_STATUS_OPS: frozenset[str] = frozenset({"eq"})
-#: The verdict fields whose value shape the gate pins (issue #269 round 2 — the `verdict` arm
-#: is the `checks` arm's twin: the same fold writes both). `verdict.overall` is the same
-#: `"pass"|"fail"` enum as a check status, compared by the same one op; `verdict.failed_checks`
-#: is the list of failing check ids, read by `includes` against a DECLARED id, or by `eq`
-#: against a list of declared ids (`eq []` says "no check fails") — an undeclared id is a
-#: member no runner ever writes, so the condition can never be satisfied. A declared field
-#: outside this table is admitted with any op and value (none exists in the corpus; the host's
-#: render of the runner pins the M3c field set to these two).
-VERDICT_ENUM_FIELD = "overall"
-VERDICT_LIST_FIELD = "failed_checks"
-
-
-def _resolve_predicate_ref(obj: Any, ref: str) -> tuple[bool, Any]:
-    """Resolve a predicate ``ref`` against one diagnostics slice, dispatching on its head.
-
-    Returns ``(present, value)``. A metric address present with a ``null`` value (the runner's
-    honest-N/A encoding) resolves as ``(True, None)``; the caller's ``na_allowed`` handling
-    decides whether that satisfies the condition."""
-    if not isinstance(obj, dict):
-        return (False, None)
-    if ref.split(".", 1)[0] in _NESTED_REF_HEADS:
-        return _resolve_ref(obj, ref)
-    metrics = obj.get("metrics")
-    if not isinstance(metrics, dict) or ref not in metrics:
-        return (False, None)
-    return (True, metrics[ref])
-
-
-def _case_slice(diagnostics: dict[str, Any], case_id: str) -> tuple[bool, Any]:
-    """The diagnostics sub-object for one case. Supports the runner per-case container
-    shapes actually emitted (a ``cases``/``per_case`` map keyed by case_id, or a ``cases``
-    list of ``{"case_id": ..., ...}`` objects):
-
-    - ``cases`` / ``per_case`` is a map ``{<case_id>: {...}}``      -> container[case_id]
-    - ``cases`` is a list ``[{"case_id": ..., ...}]`` (problem form) -> first match
-
-    Returns ``(present, slice)``. ``present`` is False when a container exists but has no
-    entry for ``case_id``, AND when there is NO per-case container at all: a ``per_case``
-    predicate resolving a specific case against a container-less (component-flat) diagnostics
-    is a genuine shape mismatch, so it must report a structural absence rather than silently
-    broadcast the suite-level object to every case (which would evaluate the wrong data)."""
-    if not isinstance(diagnostics, dict):
-        return (False, None)
-    # Consult BOTH container keys, `cases` first: if the preferred container lacks this case,
-    # fall through to the other rather than reporting an absence (an off-contract runner might
-    # split cases across the two). Returns the first container that actually holds `case_id`.
-    for key in ("cases", "per_case"):
-        container = diagnostics.get(key)
-        if isinstance(container, dict):
-            if case_id in container:
-                return (True, container[case_id])
-        elif isinstance(container, list):
-            for item in container:
-                if isinstance(item, dict) and item.get("case_id") == case_id:
-                    return (True, item)
-    return (False, None)
-
-
 def _apply_op(lhs: Any, op: str, rhs: Any) -> bool:
+    """One comparison of a primary predicate. `eq` / `ne` compare numbers cross-type (1 == 1.0)
+    and never a bool with a number; the ordered ops require two numbers."""
     if op == "eq":
         return _values_equal(lhs, rhs)
     if op == "ne":
         return not _values_equal(lhs, rhs)
-    if op == "includes":
-        # membership in a list/tuple only — NOT a str (substring matching would be a
-        # silent, surprising semantic; every real use is set membership on a string array
-        # such as verdict.failed_checks). Element comparison goes through _values_equal so
-        # bool/number stay disjoint (1 does not "include"-match [True]).
-        if not isinstance(lhs, (list, tuple)):
-            return False
-        return any(_values_equal(x, rhs) for x in lhs)
-    # ordered numeric comparisons
     if not (_is_number(lhs) and _is_number(rhs)):
         return False
     if op == "le":
@@ -243,18 +90,13 @@ def _apply_op(lhs: Any, op: str, rhs: Any) -> bool:
 
 
 def _values_equal(lhs: Any, rhs: Any) -> bool:
-    """Equality with light normalization: numbers compare cross-type (1 == 1.0), and
-    bools compare only to bools (True != 1) so a boolean check and a numeric metric never
-    collide. Strings/enums compare verbatim."""
     if isinstance(lhs, bool) or isinstance(rhs, bool):
         return isinstance(lhs, bool) and isinstance(rhs, bool) and lhs == rhs
-    if _is_number(lhs) and _is_number(rhs):
-        return lhs == rhs
     return lhs == rhs
 
 
 def _resolve_value(value: Any, case_id: str | None) -> tuple[bool, Any]:
-    """Resolve a condition ``value``. A plain literal returns itself; a per-case map
+    """Resolve a predicate ``value``. A plain literal returns itself; a per-case map
     ``{"per_case": {<case_id>: v}}`` returns the entry for ``case_id`` (``present`` False
     when the case is not in the map)."""
     if isinstance(value, dict) and set(value.keys()) == {"per_case"}:
@@ -267,179 +109,79 @@ def _resolve_value(value: Any, case_id: str | None) -> tuple[bool, Any]:
     return (True, value)
 
 
-def _eval_condition(cond: dict[str, Any], diagnostics: dict[str, Any],
-                    target_cases: list[str]) -> tuple[bool, str, dict[str, Any]]:
-    """Evaluate one ``pass_when.all`` condition. Returns ``(satisfied, kind, basis)``
-    where kind is one of ``_KIND_PASS`` / ``_KIND_PHYSICS`` / ``_KIND_STRUCTURAL``.
+def _sources_read(rec: dict[str, Any], test_id: str) -> dict[str, set[str]]:
+    """A record's `sources_read` (source class -> the cases read through it). A record without
+    the map says nothing about what it read, so the pairing rule could not be asked of it."""
+    read = rec.get("sources_read")
+    if not isinstance(read, dict):
+        raise PredicateError(f"primary record for {test_id!r} quantity {rec.get('quantity')!r} "
+                             "carries no sources_read map")
+    return {str(k): {str(c) for c in v} for k, v in read.items() if isinstance(v, list)}
 
-    A ``per_case`` condition holds iff it holds for EVERY target case; the first
-    non-satisfying case fixes the kind (structural if the ref/case was absent, else
-    physics). A ``case: <case_id>`` condition resolves ``ref`` inside that ONE case's
-    diagnostics slice — the scope a cross-case reduction (a convergence order, a
-    symmetry residual) is read at, since the checks module emits it as a per-case metric
-    of the case where it first becomes computable. ``na_allowed`` turns an absent lhs
-    into a satisfied condition."""
-    ref = cond.get("ref")
-    op = cond.get("op")
-    # isinstance guards before the frozenset membership so an unhashable (list/map) op raises a
-    # PredicateError (caught by _author_execute_verdict) rather than a bare TypeError.
-    if not isinstance(ref, str) or not isinstance(op, str) or op not in _OPS:
-        raise PredicateError(f"invalid condition: ref={ref!r} op={op!r}")
-    per_case = bool(cond.get("per_case"))
-    na_allowed = bool(cond.get("na_allowed"))
-    value = cond.get("value")
-    # Keyed on PRESENCE, not on a non-None value: the schema gate rejects `case: null`, so the
-    # evaluator must too. Reading it as "absent" would silently widen the condition to
-    # suite-level scope — evaluating different data than the author wrote.
-    has_case = "case" in cond
-    case_sel = cond.get("case")
-    if has_case and (not isinstance(case_sel, str) or not case_sel.strip()):
-        raise PredicateError(f"condition `case` must be a non-empty string (got {case_sel!r})")
-    if per_case and has_case:
-        # `per_case` ranges over EVERY target case; `case` pins ONE. Together they express
-        # nothing coherent, and silently honoring one would evaluate a scope the author did
-        # not write. The Compile schema gate rejects the pair; this is the evaluator's mirror.
-        raise PredicateError(
-            f"condition sets both per_case and case={case_sel!r} (mutually exclusive scopes)")
 
-    contexts: list[tuple[str | None, Any, bool]]
-    if per_case:
-        if not target_cases:
-            # A per-case condition with no cases to range over evaluates nothing; treat it as
-            # NON-satisfying (structural), never vacuously true. (The Compile schema gate rejects
-            # empty target_cases, so this is a defense-in-depth guard for a direct evaluator call
-            # on an ungated/edited IR.)
-            return (False, _KIND_STRUCTURAL,
-                    {"ref": ref, "op": op, "evaluated": [{"reason": "no_target_cases"}]})
-        contexts = []
-        for cid in target_cases:
-            present, sl = _case_slice(diagnostics, cid)
-            contexts.append((cid, sl, present))
-    elif has_case:
-        cid = case_sel.strip()
-        present, sl = _case_slice(diagnostics, cid)
-        contexts = [(cid, sl, present)]
-    else:
-        contexts = [(None, diagnostics, True)]
-
-    evaluated: list[dict[str, Any]] = []
-    for cid, ctx, case_present in contexts:
-        if not case_present:
-            basis = {"case": cid, "ref": ref, "op": op, "satisfied": False,
-                     "reason": "case_absent"}
-            evaluated.append(basis)
-            return (False, _KIND_STRUCTURAL, {"ref": ref, "op": op, "evaluated": evaluated})
-        lhs_present, lhs = _resolve_predicate_ref(ctx, ref)
-        if not lhs_present or lhs is None:
-            if na_allowed:
-                evaluated.append({"case": cid, "ref": ref, "op": op,
-                                  "satisfied": True, "reason": "na_allowed"})
+def _check_reported_pairing(test_id: str, records: list[dict[str, Any]]) -> None:
+    """The Compile gate's reported-read rule (`primary_evidence.reported_read_violations`),
+    re-checked on the records: a record that reads a `reported` variable needs another record
+    of the same quantity, not cross-target, that reads `operation` state and no `reported`
+    variable, in every case the report is read in."""
+    for rec in records:
+        reported = _sources_read(rec, test_id).get(_SOURCE_REPORTED)
+        if not reported:
+            continue
+        paired = False
+        for other in records:
+            if other is rec or is_cross_target_record(other) \
+                    or other.get("quantity") != rec.get("quantity"):
                 continue
-            evaluated.append({"case": cid, "ref": ref, "op": op, "satisfied": False,
-                              "reason": "ref_absent"})
-            return (False, _KIND_STRUCTURAL, {"ref": ref, "op": op, "evaluated": evaluated})
-        val_present, rhs = _resolve_value(value, cid)
-        if not val_present:
-            evaluated.append({"case": cid, "ref": ref, "op": op, "satisfied": False,
-                              "reason": "value_absent_for_case"})
-            return (False, _KIND_STRUCTURAL, {"ref": ref, "op": op, "evaluated": evaluated})
-        ok = _apply_op(lhs, op, rhs)
-        evaluated.append({"case": cid, "ref": ref, "op": op, "lhs": lhs, "rhs": rhs,
-                          "satisfied": ok})
-        if not ok:
-            return (False, _KIND_PHYSICS, {"ref": ref, "op": op, "evaluated": evaluated})
-    return (True, _KIND_PASS, {"ref": ref, "op": op, "evaluated": evaluated})
+            read = _sources_read(other, test_id)
+            if not read.get(_SOURCE_REPORTED) and reported <= read.get(_SOURCE_OPERATION, set()):
+                paired = True
+                break
+        if not paired:
+            raise PredicateError(
+                f"primary record for {test_id!r} quantity {rec.get('quantity')!r} reads a "
+                f"source: reported variable in {sorted(reported)} and no record of that quantity "
+                "reads source: operation state alone in those cases")
 
 
-def _predicate_conditions(pred: dict[str, Any]) -> list[dict[str, Any]]:
-    pass_when = pred.get("pass_when")
-    if not isinstance(pass_when, dict):
-        raise PredicateError("pass_when must be a mapping with an `all` list")
-    conds = pass_when.get("all")
-    if not isinstance(conds, list) or not conds:
-        raise PredicateError("pass_when.all must be a non-empty list")
-    return conds
-
-
-def evaluate_predicate(pred: dict[str, Any],
-                       diagnostics: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
-    """Evaluate one predicate against ``diagnostics``. Returns
-    ``(status, kind, basis)`` where status ∈ {expected_outcome, "fail"} and kind ∈
-    {``_KIND_PASS``, ``_KIND_PHYSICS``, ``_KIND_STRUCTURAL``}."""
-    expected = str(pred.get("expected_outcome") or "").strip().lower()
-    if expected not in _EXPECTED_OUTCOMES:
-        raise PredicateError(f"expected_outcome must be one of {sorted(_EXPECTED_OUTCOMES)}")
-    target_cases = pred.get("target_cases")
-    target_cases = [str(c) for c in target_cases] if isinstance(target_cases, list) else []
-    conds = _predicate_conditions(pred)
-
-    cond_bases: list[dict[str, Any]] = []
-    fail_kind = _KIND_PASS
-    satisfied_all = True
-    for cond in conds:
-        if not isinstance(cond, dict):
-            raise PredicateError("each pass_when.all entry must be a mapping")
-        ok, kind, basis = _eval_condition(cond, diagnostics, target_cases)
-        cond_bases.append(basis)
-        if not ok:
-            satisfied_all = False
-            # structural dominates physics (a contract gap is the more fundamental defect).
-            if fail_kind != _KIND_STRUCTURAL:
-                fail_kind = kind
-    if satisfied_all:
-        return (expected, _KIND_PASS, {"satisfied": True, "conditions": cond_bases})
-    return ("fail", fail_kind, {"satisfied": False, "conditions": cond_bases})
-
-
-def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, Any], *,
+def evaluate_verdict(tests: Any, records: Any, *,
                      run_id: str | None = None,
-                     node_key: str | None = None,
-                     primary: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Author the deterministic ``verdict.json`` body from the IR predicates + the
-    runner's ``diagnostics.json``. Returns a dict with ``per_test`` (one
-    ``{test_id, status, basis}`` per predicate, in order), the reduced ``self_verdict``,
-    and the ``failure_class`` (``pass`` / ``physics_fail`` / ``structural_violation``).
+                     node_key: str | None = None) -> dict[str, Any]:
+    """Author the deterministic ``verdict.json`` body from the IR's ``io_contract.tests`` and the
+    list ``tools.primary_evidence.evaluate_primary_predicates`` returned for this run. Returns a
+    dict with ``per_test`` (one ``{test_id, status, basis}`` per test, in order, ``basis`` being
+    ``{predicates: [records]}``), the reduced ``self_verdict``, and the ``failure_class``
+    (``pass`` / ``physics_fail`` / ``structural_violation``).
 
-    ``primary`` is the list ``tools.primary_evidence.evaluate_primary_predicates`` returned
-    for this run (one record per ``io_contract.primary_predicates[]`` entry). A test with at
-    least one record takes ``status`` = its ``pass_when`` result AND every record satisfied,
-    ``basis.primary`` = its records and ``basis.corroboration`` (``agree`` / ``disagree`` /
-    ``unevaluated``); a record's ``structural`` kind folds into ``structural_violation``, a
-    ``physics`` one into ``physics_fail``. A record whose ``test_id`` no predicate carries raises
-    ``PredicateError``. With ``primary`` None or empty no ``primary`` / ``corroboration`` key
-    is written.
+    A test with no record, or with only cross-target records, raises ``PredicateError``: nothing
+    would judge it. So does a record of a test no entry carries, one over other cases than its
+    test's, a target case no record values, and a reported read with no state read beside it
+    (`_check_reported_pairing`).
 
-    A CROSS-TARGET record (`is_cross_target_record`, issue #324) is no corroborant:
-    ``basis.corroboration`` compares the ``pass_when`` result with the test's OTHER records
-    only, and the coverage re-check does not count it. Since issue #383 the verdict evaluates
-    no comparison: every cross-target record it is handed must be the ``no_comparand``
-    placeholder — satisfied, with no comparand and nothing evaluated — and one that is not
-    raises ``PredicateError`` (dropping it would leave an evaluated comparison silently
-    ignored). The comparison is the cross-target agreement
+    A CROSS-TARGET record (`is_cross_target_record`, issue #324) takes no part in the status.
+    Since issue #383 the verdict evaluates no comparison: every cross-target record it is handed
+    must be the ``no_comparand`` placeholder — satisfied, with no comparand and nothing evaluated
+    — and one that is not raises ``PredicateError`` (dropping it would leave an evaluated
+    comparison silently ignored). The comparison is the cross-target agreement
     (`orchestration_runtime.cross_target_agreement`), asked where "is this node ready" is
     asked, so a disagreement between two variants that each pass their own tests stops both
     (plan decision 6 of issue #324; `docs/RUNBOOK.md` §3-0, cross-target predicates, says how
     the operator resolves it).
-
-    The judge leaf no longer authors this — it authors ``semantic_review.json`` only.
     """
-    if not isinstance(diagnostics, dict):
-        diagnostics = {}
-    primary_by_test: dict[str, list[dict[str, Any]]] = {}
-    for rec in (primary if isinstance(primary, list) else []):
+    by_test: dict[str, list[dict[str, Any]]] = {}
+    for rec in (records if isinstance(records, list) else []):
         if not isinstance(rec, dict) or not isinstance(rec.get("test_id"), str):
             raise PredicateError("each primary record must be a mapping with a test_id")
-        primary_by_test.setdefault(rec["test_id"].strip(), []).append(rec)
-    # An empty predicate set is never a legitimate PASS: a node with no evaluable per-test rule
-    # cannot certify. Fail structurally rather than reduce an empty per_test to `pass` (a footgun
-    # for any direct caller; the conductor already guards this before calling, and Compile forbids
-    # it, so this is defense-in-depth).
-    if not isinstance(predicates, list) or not predicates:
-        doc: dict[str, Any] = {}
-        if node_key is not None:
-            doc["node_key"] = node_key
-        if run_id is not None:
-            doc["run_id"] = run_id
+        by_test.setdefault(rec["test_id"].strip(), []).append(rec)
+    doc: dict[str, Any] = {}
+    if node_key is not None:
+        doc["node_key"] = node_key
+    if run_id is not None:
+        doc["run_id"] = run_id
+    # An empty test set is never a legitimate PASS: a node with no evaluable test cannot certify.
+    # Fail structurally rather than reduce an empty per_test to `pass` (Compile forbids it, and
+    # the conductor guards it; this is for any direct caller).
+    if not isinstance(tests, list) or not tests:
         doc["self_verdict"] = "fail"
         doc["failure_class"] = "structural_violation"
         doc["per_test"] = []
@@ -447,105 +189,66 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
     per_test: list[dict[str, Any]] = []
     saw_structural = False
     saw_physics = False
-    for pred in predicates:
-        if not isinstance(pred, dict):
-            raise PredicateError("each test_predicates entry must be a mapping")
-        test_id = pred.get("test_id")
+    for test in tests:
+        if not isinstance(test, dict):
+            raise PredicateError("each tests entry must be a mapping")
+        test_id = test.get("test_id")
         if not isinstance(test_id, str) or not test_id.strip():
-            raise PredicateError("test_predicates entry missing a non-empty test_id")
-        status, kind, basis = evaluate_predicate(pred, diagnostics)
-        records = primary_by_test.pop(test_id.strip(), None)
-        if records:
-            own = [r for r in records if not is_cross_target_record(r)]
-            for rec in records:
-                if is_cross_target_record(rec) and not (
-                        rec.get("kind") == _KIND_NO_COMPARAND and rec.get("satisfied") is True
-                        and not rec.get("comparands") and not rec.get("evaluated")):
-                    # Issue #383: the verdict is evaluated with no comparand, so a cross-target
-                    # record is the placeholder. Anything else is a comparison this verdict
-                    # would otherwise ignore — refused, never dropped.
-                    raise PredicateError(
-                        f"primary record for {test_id.strip()!r} quantity "
-                        f"{rec.get('quantity')!r} is an evaluated cross-target comparison; the "
-                        "verdict evaluates none (the cross-target agreement does)")
-                # The Compile gate pins this; re-checked here so a record over a subset of the
-                # test's cases never reads as corroboration of the whole test.
-                if "target_cases" in rec and set(map(str, rec["target_cases"])) != {
-                        str(c) for c in (pred.get("target_cases") or [])}:
-                    raise PredicateError(
-                        f"primary record for {test_id.strip()!r} ranges over "
-                        f"{sorted(map(str, rec['target_cases']))}, not the test's target_cases")
-            # The Compile gate's coverage rule (`primary_evidence.coverage_violations`),
-            # re-checked here like the target_cases pin: some record of the condition's
-            # quantity must VALUE every case the condition holds in (the record's `cases_read`,
-            # `primary_evidence.cases_read`) — every target case for a per_case or
-            # suite-level condition, the one case for a `case:` one — else a corroborant
-            # reading one case would stand for the whole test.
-            for cond in _predicate_conditions(pred):
-                q = cond.get("quantity")
-                if not isinstance(q, str):
-                    continue
-                same = [r for r in own if r.get("quantity") == q]
-                if not same:
-                    continue   # the gate's coverage rule owns an uncovered quantity
-                if isinstance(cond.get("case"), str) and not cond.get("per_case"):
-                    holds = {cond["case"].strip()}
-                else:
-                    holds = {str(c) for c in (pred.get("target_cases") or [])}
-                if not any(isinstance(r.get("cases_read"), list)
-                           and holds <= {str(c) for c in r["cases_read"]} for r in same):
-                    raise PredicateError(
-                        f"no primary record for {test_id.strip()!r} quantity {q!r} reads every "
-                        f"case the condition on {cond.get('ref')!r} holds in")
-            secondary_ok = bool(basis.get("satisfied"))
-            primary_ok = all(bool(r.get("satisfied")) for r in own)
-            structural = any(r.get("kind") == _KIND_STRUCTURAL for r in own)
-            basis["primary"] = records
-            # An evidence GAP on EITHER side is neither agreement nor disagreement: a record
-            # the host could not value, or a diagnostics ref the checks module never emitted,
-            # says nothing about whether the two halves concur (rounds 3 and 4). A test whose
-            # every record is cross-target has no corroborant to compare (the Compile gate
-            # refuses that shape for a test with a condition).
-            if own:
-                if structural or kind == _KIND_STRUCTURAL:
-                    basis["corroboration"] = "unevaluated"
-                else:
-                    basis["corroboration"] = ("agree" if secondary_ok == primary_ok
-                                              else "disagree")
-            if not primary_ok:
-                status = "fail"
-                if structural:
-                    kind = _KIND_STRUCTURAL
-                elif kind == _KIND_PASS:
-                    kind = _KIND_PHYSICS
-        if kind == _KIND_STRUCTURAL:
-            saw_structural = True
-        elif kind == _KIND_PHYSICS:
-            saw_physics = True
-        per_test.append({"test_id": test_id.strip(), "status": status, "basis": basis})
-    if primary_by_test:
-        # A primary record for a test no predicate carries would silently judge nothing;
-        # Compile pins primary test_ids ⊆ tests.md == predicate test_ids, so this is an IR defect.
+            raise PredicateError("tests entry missing a non-empty test_id")
+        test_id = test_id.strip()
+        expected = str(test.get("expected_outcome") or "").strip().lower()
+        if expected not in _EXPECTED_OUTCOMES:
+            raise PredicateError(f"expected_outcome must be one of {sorted(_EXPECTED_OUTCOMES)}")
+        recs = by_test.pop(test_id, None) or []
+        own = [r for r in recs if not is_cross_target_record(r)]
+        if not own:
+            raise PredicateError(f"test {test_id!r} has no predicate record that is not "
+                                 "cross-target: nothing judges it")
+        targets = {str(c) for c in (test.get("target_cases") or [])}
+        for rec in recs:
+            if is_cross_target_record(rec) and not (
+                    rec.get("kind") == _KIND_NO_COMPARAND and rec.get("satisfied") is True
+                    and not rec.get("comparands") and not rec.get("evaluated")):
+                # Issue #383: the verdict is evaluated with no comparand, so a cross-target
+                # record is the placeholder. Anything else is a comparison this verdict would
+                # otherwise ignore — refused, never dropped.
+                raise PredicateError(
+                    f"primary record for {test_id!r} quantity "
+                    f"{rec.get('quantity')!r} is an evaluated cross-target comparison; the "
+                    "verdict evaluates none (the cross-target agreement does)")
+            # The Compile gate pins this; re-checked here so a record over a subset of the
+            # test's cases never reads as a judgment of the whole test.
+            if "target_cases" in rec and set(map(str, rec["target_cases"])) != targets:
+                raise PredicateError(
+                    f"primary record for {test_id!r} ranges over "
+                    f"{sorted(map(str, rec['target_cases']))}, not the test's target_cases")
+        unread = sorted(targets - {str(c) for r in own for c in (r.get("cases_read") or [])})
+        if unread:
+            raise PredicateError(f"no record of test {test_id!r} values the captured state of "
+                                 f"target case(s) {unread}")
+        _check_reported_pairing(test_id, recs)
+        satisfied = all(bool(r.get("satisfied")) for r in own)
+        structural = any(r.get("kind") == _KIND_STRUCTURAL for r in own)
+        if not satisfied:
+            if structural:
+                saw_structural = True
+            else:
+                saw_physics = True
+        per_test.append({"test_id": test_id, "status": expected if satisfied else "fail",
+                         "basis": {"predicates": recs}})
+    if by_test:
+        # A record for a test no entry carries would silently judge nothing; Compile pins
+        # predicate test_ids == tests[] test_ids, so this is an IR defect.
         raise PredicateError(
-            f"primary_predicates name test_id(s) with no test_predicates entry: "
-            f"{sorted(primary_by_test)}")
+            f"predicates name test_id(s) with no io_contract.tests entry: {sorted(by_test)}")
 
-    self_verdict = _reduce_statuses([item["status"] for item in per_test])
-
-    if not saw_structural and not saw_physics:
-        failure_class = "pass"
-    elif saw_structural:
-        failure_class = "structural_violation"
+    doc["self_verdict"] = _reduce_statuses([item["status"] for item in per_test])
+    if saw_structural:
+        doc["failure_class"] = "structural_violation"
+    elif saw_physics:
+        doc["failure_class"] = "physics_fail"
     else:
-        failure_class = "physics_fail"
-
-    doc: dict[str, Any] = {}
-    if node_key is not None:
-        doc["node_key"] = node_key
-    if run_id is not None:
-        doc["run_id"] = run_id
-    doc["self_verdict"] = self_verdict
-    doc["failure_class"] = failure_class
+        doc["failure_class"] = "pass"
     doc["per_test"] = per_test
     return doc
 
@@ -567,314 +270,56 @@ def _reduce_statuses(statuses: list[str]) -> str:
 
 # --------------------------------------------------------------------------- schema
 
-def validate_predicate_schema(
-    predicates: Any,
-    *,
-    case_ids: set[str],
-    test_ids: list[str],
-    check_ids: set[str],
-    verdict_fields: set[str],
-    metric_addrs: set[str],
-) -> list[str]:
-    """Validate the ``io_contract.test_predicates`` DSL at Compile. Returns a list of
-    human-readable violation strings (empty == valid). Every violation is prefixed with a
-    stable token so the conductor's post-gate classifier can route it.
+def validate_tests_schema(tests: Any, *, case_ids: set[str], test_ids: list[str]) -> list[str]:
+    """Validate ``io_contract.tests`` at Compile. Returns human-readable violation strings (empty
+    == valid), each prefixed with a stable token so the conductor's post-gate classifier can
+    route it.
 
-    Checks: structure + op/outcome enums; the predicate test_id set equals the ``tests.md``
-    set (``test_ids``); every ``target_cases`` entry is a declared case; and every ``ref``
-    resolves against the declared diagnostics vocabulary — ``verdict.<field>`` against
-    ``verdict_fields``, ``checks.<id>...`` against ``check_ids``, and any other head against
-    the ``metric_addrs`` per-case addressing pin (``diagnostics_contract.metrics``)."""
+    Checks: the structure and the outcome enum; the ``test_id`` set equals the ``tests.md`` set
+    (``test_ids``); ``target_cases`` is non-empty, each entry a declared case; ``quantities`` is a
+    non-empty list of distinct names of the ``quantity`` form."""
     v: list[str] = []
-    if not isinstance(predicates, list) or not predicates:
-        return ["io_contract.test_predicates must be a non-empty list"]
-
+    if not isinstance(tests, list) or not tests:
+        return ["io_contract.tests must be a non-empty list"]
     seen_ids: list[str] = []
-    for idx, pred in enumerate(predicates):
-        loc = f"test_predicates[{idx}]"
-        if not isinstance(pred, dict):
+    for idx, test in enumerate(tests):
+        loc = f"tests[{idx}]"
+        if not isinstance(test, dict):
             v.append(f"{loc} must be a mapping")
             continue
-        test_id = pred.get("test_id")
+        test_id = test.get("test_id")
         if not isinstance(test_id, str) or not test_id.strip():
             v.append(f"{loc}.test_id must be a non-empty string")
         else:
             seen_ids.append(test_id.strip())
-        outcome = str(pred.get("expected_outcome") or "").strip().lower()
-        if outcome not in _EXPECTED_OUTCOMES:
+        outcome = test.get("expected_outcome")
+        if not isinstance(outcome, str) or outcome.strip().lower() not in _EXPECTED_OUTCOMES:
             v.append(f"{loc}.expected_outcome must be one of {sorted(_EXPECTED_OUTCOMES)}")
-        targets = pred.get("target_cases")
+        targets = test.get("target_cases")
         if not isinstance(targets, list) or not targets:
             v.append(f"{loc}.target_cases must be a non-empty list")
             targets = []
         for cid in targets:
             if not isinstance(cid, str) or cid not in case_ids:
                 v.append(f"{loc}.target_cases references unknown case_id ({cid!r})")
-        pass_when = pred.get("pass_when")
-        if not isinstance(pass_when, dict) or not isinstance(pass_when.get("all"), list) \
-                or not pass_when.get("all"):
-            v.append(f"{loc}.pass_when must be a mapping with a non-empty `all` list")
+        quantities = test.get("quantities")
+        if not isinstance(quantities, list) or not quantities:
+            v.append(f"{loc}.quantities must be a non-empty list: the judgments the test's "
+                     "tests.md `quantities:` line lists")
             continue
-        for cidx, cond in enumerate(pass_when["all"]):
-            cloc = f"{loc}.pass_when.all[{cidx}]"
-            if not isinstance(cond, dict):
-                v.append(f"{cloc} must be a mapping")
-                continue
-            ref = cond.get("ref")
-            op = cond.get("op")
-            if not isinstance(ref, str) or not ref.strip():
-                v.append(f"{cloc}.ref must be a non-empty string")
-            elif ref != ref.strip():
-                # `_eval_condition` resolves the ref VERBATIM: a padded head is no nested head
-                # and no metric address, so the condition is `ref_absent` on every run — and
-                # with `na_allowed` it is satisfied on every run. Refuse it here rather than
-                # validate the stripped spelling the evaluator never sees (issue #269 round 1).
-                v.append(f"{cloc}.ref {ref!r} has leading or trailing whitespace, which the "
-                         f"evaluator does not strip — write {ref.strip()!r}")
-            else:
-                ref_v = _check_ref(cloc, ref, check_ids, verdict_fields, metric_addrs)
-                v.extend(ref_v)
-                if not ref_v:
-                    if ref.split(".", 1)[0] == "checks":
-                        v.extend(_check_status_condition(
-                            cloc, f"checks.<id>.{CHECK_REF_LEAF}", cond))
-                    elif ref == f"verdict.{VERDICT_ENUM_FIELD}":
-                        v.extend(_check_status_condition(cloc, ref, cond))
-                    elif ref == f"verdict.{VERDICT_LIST_FIELD}":
-                        v.extend(_check_failed_checks_condition(cloc, cond, check_ids))
-            # isinstance guard BEFORE the frozenset membership: a malformed `op` authored as a
-            # YAML list/map is unhashable and `op in _OPS` would raise TypeError, crashing the
-            # gate instead of reporting an actionable violation for warm-resume repair.
-            if not isinstance(op, str) or op not in _OPS:
-                v.append(f"{cloc}.op must be one of {sorted(_OPS)}")
-            # `case: <case_id>` pins the condition to ONE of the predicate's own target cases.
-            # It must name a case this predicate ranges over (a case outside `target_cases` is
-            # evidence the predicate does not own — the metrics-basis matrix would not carry it),
-            # and it is mutually exclusive with `per_case` (which ranges over all of them).
-            # The scope and N/A flags are read with `bool()` by every evaluator and by the
-            # coverage gate; only a real bool is admitted, so no reader can disagree on a
-            # truthy string.
-            for flag in ("per_case", "na_allowed"):
-                if flag in cond and not isinstance(cond.get(flag), bool):
-                    v.append(f"{cloc}.{flag} must be a boolean (got {cond.get(flag)!r})")
-            if "case" in cond:
-                case_sel = cond.get("case")
-                # Compare against — and report — the same list: the STRING members of
-                # `target_cases`. Stringifying a non-str member only for the message would print
-                # the offending case as if it were present ("'123' is not one of ['123', 'c2']").
-                # A non-str `target_cases` member is separately reported as an unknown case_id.
-                str_targets = [c for c in targets if isinstance(c, str)]
-                if not isinstance(case_sel, str) or not case_sel.strip():
-                    v.append(f"{cloc}.case must be a non-empty string")
-                elif case_sel not in str_targets:
-                    v.append(f"{cloc}.case {case_sel!r} is not one of this predicate's "
-                             f"target_cases ({sorted(str_targets)})")
-                if bool(cond.get("per_case")):
-                    v.append(f"{cloc} sets both `per_case` and `case` "
-                             "(mutually exclusive condition scopes)")
-            # The name a primary predicate corroborates this condition under (Z6, issue #255).
-            # Required on EVERY condition — a `verdict.*` one included, since the runner's own
-            # verdict is secondary evidence too — and well-formed, so the coverage comparison
-            # (`primary_evidence.coverage_violations`) never reads a malformed or absent one.
-            q = cond.get("quantity")
+        for q in quantities:
             if not isinstance(q, str) or not _QUANTITY_RE.match(q):
-                v.append(f"{cloc}.quantity must be present and match {_QUANTITY_RE.pattern} "
-                         f"(got {q!r}): the name of what this condition measures, under which "
-                         "a primary_predicates entry of the same test corroborates it")
-            if "value" not in cond or cond.get("value") is None:
-                # Every op needs a concrete rhs. A condition with no `value` (or an explicit
-                # null) would compare against None at execute and permanently fail its test —
-                # catch the authoring omission here rather than as an opaque physics_fail.
-                v.append(f"{cloc} must have a non-null `value`")
-            value = cond.get("value")
-            if isinstance(value, dict):
-                # The only legal dict form is the per-case threshold map {"per_case": {...}};
-                # any other dict is a malformed rhs that would slip through as a literal at
-                # execute (e.g. `op: ne` against a dict is vacuously true -> a false pass).
-                if set(value.keys()) != {"per_case"}:
-                    v.append(f"{cloc}.value must be a scalar/bool/string/list or a "
-                             f"{{per_case: {{case_id: value}}}} map")
-                else:
-                    if not bool(cond.get("per_case")):
-                        v.append(f"{cloc} has a per_case value map but per_case is not true")
-                    table = value["per_case"]
-                    if not isinstance(table, dict) or not table:
-                        v.append(f"{cloc}.value.per_case must be a non-empty map")
-                    else:
-                        for cid in table:
-                            if cid not in case_ids:
-                                v.append(f"{cloc}.value.per_case references unknown case_id ({cid!r})")
-                        # The map must supply a threshold for EVERY target case, else that case
-                        # deterministically fails at execute (value_absent_for_case ->
-                        # structural_violation) instead of being repaired at Compile.
-                        uncovered = sorted(str(c) for c in targets if str(c) not in table)
-                        if uncovered:
-                            v.append(f"{cloc}.value.per_case is missing a threshold for "
-                                     f"target case(s) {uncovered}")
-            # An ordered comparison (le/ge/lt/gt) requires a NUMERIC rhs — a YAML string like
-            # "1e-10" (or a per-case map of strings) passes the null check but at execute
-            # `_apply_op` needs both sides numeric, so it deterministically returns false and a
-            # correct run is misreported physics_fail. Catch the wrong-typed threshold here.
-            # A status / list ref — a refused tail on one included — owns its op refusal above
-            # (one repair per retry: a leaf told
-            # both "write op eq" and "make the value a number" can follow the wrong half).
-            is_status_or_list = (isinstance(ref, str) and (
-                ref.strip().split(".", 1)[0] == "checks"
-                or ref.strip().startswith((f"verdict.{VERDICT_ENUM_FIELD}",
-                                           f"verdict.{VERDICT_LIST_FIELD}"))))
-            if isinstance(op, str) and op in _ORDERED_OPS and value is not None \
-                    and not is_status_or_list:
-                if isinstance(value, dict) and set(value.keys()) == {"per_case"} \
-                        and isinstance(value["per_case"], dict):
-                    for cid, tv in value["per_case"].items():
-                        if not _is_number(tv):
-                            v.append(f"{cloc}.value.per_case[{cid!r}] must be a number for the "
-                                     f"ordered op {op!r} (got {tv!r})")
-                elif not isinstance(value, dict) and not _is_number(value):
-                    v.append(f"{cloc}.value must be a number for the ordered op {op!r} "
-                             f"(got {value!r})")
-
-    # test_id set equality with tests.md
-    pred_set = set(seen_ids)
-    if len(seen_ids) != len(pred_set):
+                v.append(f"{loc}.quantities entry {q!r} must match {_QUANTITY_RE.pattern}")
+        named = [q for q in quantities if isinstance(q, str)]
+        if len(named) != len(set(named)):
+            v.append(f"{loc}.quantities has a duplicated entry ({sorted(named)})")
+    if len(seen_ids) != len(set(seen_ids)):
         dups = sorted({t for t in seen_ids if seen_ids.count(t) > 1})
-        v.append(f"test_predicates has duplicated test_id ({dups})")
-    md_set = set(test_ids)
-    missing = sorted(md_set - pred_set)
-    extra = sorted(pred_set - md_set)
+        v.append(f"io_contract.tests has duplicated test_id ({dups})")
+    missing = sorted(set(test_ids) - set(seen_ids))
+    extra = sorted(set(seen_ids) - set(test_ids))
     if missing:
-        v.append(f"test_predicates missing tests from tests.md ({missing})")
+        v.append(f"io_contract.tests missing tests from tests.md ({missing})")
     if extra:
-        v.append(f"test_predicates has unknown test_id not in tests.md ({extra})")
+        v.append(f"io_contract.tests has unknown test_id not in tests.md ({extra})")
     return v
-
-
-def _status_vocabulary() -> str:
-    """`"pass"|"fail"` — the spelling the documents use, derived from the constant."""
-    return "|".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
-
-
-def _status_remedy() -> str:
-    """`— write op eq with value "pass" or "fail"`, derived from the two constants."""
-    ops = "|".join(sorted(CHECK_STATUS_OPS))
-    vals = " or ".join(f'"{v}"' for v in CHECK_STATUS_VALUES)
-    return f"— write op {ops} with value {vals}"
-
-
-def _check_status_condition(loc: str, what: str, cond: dict[str, Any]) -> list[str]:
-    """The op / value half of a status-enum condition — `checks.<id>.status` (issue #269 round
-    1) and `verdict.overall` (round 2, the same enum from the same fold). The ref refusal's
-    remedy used to name the ref alone; every `.pass` predicate in the corpus carried
-    `value: true`, and the half-follow (`checks.<id>.status eq true`) passed the gate and
-    reported a correct kernel `physics_fail` (`_values_equal` never equates a bool to a str).
-    Refused here, where it is repairable, together with `ne` (see `CHECK_STATUS_OPS`), and
-    `na_allowed` (a status leaf is never absent — the host-rendered runner writes every declared id per
-    case — so the flag never fires; a leaf reaching for it to cover a per-case `na` gets a
-    correct kernel `physics_fail`). A `{per_case: {...}}` value map is judged leaf by leaf (the
-    schema's own per-case-map rules judge its keys)."""
-    op, value = cond.get("op"), cond.get("value")
-    if isinstance(op, str) and op in _OPS and op not in CHECK_STATUS_OPS:
-        return [(f"{loc}.op {op} is not a status comparison: {what} is an enum, compared by "
-                 f"{'|'.join(sorted(CHECK_STATUS_OPS))} against {_status_vocabulary()} "
-                 f"{_status_remedy()}")]
-    if bool(cond.get("na_allowed")):
-        return [(f"{loc}.na_allowed has no meaning on {what}: the host-rendered runner writes it "
-                 f"for every declared id in every case, so the leaf is never absent and the flag never "
-                 f"fires — remove na_allowed (a case whose check does not apply is not targeted)")]
-    if value is None:  # the schema's own non-null rule already names this one
-        return []
-    leaves = (list(value["per_case"].values())
-              if isinstance(value, dict) and set(value) == {"per_case"}
-              and isinstance(value["per_case"], dict) else [value])
-    bad = [lv for lv in leaves if not (isinstance(lv, str) and lv in CHECK_STATUS_VALUES)]
-    if bad:
-        return [(f"{loc}.value {bad[0]!r} is not a status ({what} holds {_status_vocabulary()}; a "
-                 f"bool, a number, a padded or a misspelt member is never equal to it) "
-                 f"{_status_remedy()}")]
-    return []
-
-
-def _check_failed_checks_condition(loc: str, cond: dict[str, Any], check_ids: set[str]) -> list[str]:
-    """`verdict.failed_checks` is the list of failing check ids: read by `includes` against a
-    declared id, or by `eq` against a list of declared ids (`_values_equal` compares two lists
-    by `==`, so `eq []` is a real "no check fails"; round 3 restored it — round 2 had refused
-    it with a remedy that cannot say it). `ne` is refused as on a status (a misspelt member
-    never fails); an ordered op compares a list to a number (always false); an undeclared id
-    is a member no runner writes (issue #269 round 2)."""
-    op, value = cond.get("op"), cond.get("value")
-    what = f"verdict.{VERDICT_LIST_FIELD}"
-    if isinstance(op, str) and op in _OPS and op not in ("includes", "eq"):
-        return [(f"{loc}.op {op} is not a comparison of {what}, the list of failing check ids — "
-                 f"write op includes with value <a diagnostics_contract.checks id>, or op eq "
-                 f"with value <a list of them>")]
-    if bool(cond.get("na_allowed")):
-        return [(f"{loc}.na_allowed has no meaning on {what}: the runner writes the list in every "
-                 f"run — remove na_allowed")]
-    if value is None:
-        return []
-    members = value if (op == "eq" and isinstance(value, list)) else [value]
-    if op == "eq" and not isinstance(value, list):
-        return [(f"{loc}.value {value!r} is not a list: {what} eq compares the whole list of "
-                 f"failing check ids — write op eq with value <a list of declared ids> (`[]` for "
-                 f"none), or op includes with one id")]
-    bad = [m for m in members if not (isinstance(m, str) and m in check_ids)]
-    if bad:
-        return [(f"{loc}.value {bad[0]!r} is not a declared check id ({what} holds ids from "
-                 f"diagnostics_contract.checks: {sorted(check_ids)}) — write one of them")]
-    return []
-
-
-def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str],
-               metric_addrs: set[str]) -> list[str]:
-    """Resolve a predicate ``ref`` head against the declared diagnostics vocabulary."""
-    head = ref.split(".", 1)[0]
-    if head == "verdict":
-        parts = ref.split(".")
-        field = parts[1] if len(parts) > 1 else ""
-        if not field:
-            return [f"{loc}.ref `verdict` needs a field (e.g. verdict.overall)"]
-        if field not in verdict_fields:
-            return [f"{loc}.ref verdict.{field} not in diagnostics_contract.verdict.fields "
-                    f"({sorted(verdict_fields)})"]
-        # The `checks` arm's twin (round 2): `_resolve_ref` needs every segment, and a verdict
-        # field is a leaf, so any further tail is `ref_absent` on every run — satisfied on
-        # every run under `na_allowed`. Refuse it here, where it is repairable.
-        if len(parts) > 2:
-            return [(f"{loc}.ref {ref} has the tail `.{'.'.join(parts[2:])}` after verdict.{field}, "
-                     f"a leaf the runner writes with no members — write verdict.{field}")]
-        return []
-    if head == "checks":
-        parts = ref.split(".")
-        cid = parts[1] if len(parts) > 1 else ""
-        if not cid or cid not in check_ids:
-            return [f"{loc}.ref checks.{cid} not in diagnostics_contract.checks "
-                    f"({sorted(check_ids)})"]
-        # The runner writes each check as `{"status": ...}` and `_resolve_ref` needs every
-        # segment, so `checks.<id>.status` is the ONLY shape that resolves. Any other tail is
-        # `ref_absent` at execute — a structural_violation routed to Generate, which cannot
-        # repair the IR — and a BARE `checks.<id>` is worse: the dict is present, every
-        # `_apply_op` compares it false, and the test fails as `physics_fail` with no
-        # structural record. Refuse here, where it is repairable (the metric arm's reasoning).
-        tail = parts[2:]
-        if tail != [CHECK_REF_LEAF]:
-            if tail == ["pass"]:          # the spelling phase_01_compile.md stated before #269
-                what = "reads a `pass` leaf the runner never emits"
-            elif not tail:
-                what = "names the check object, not its status leaf, so every op compares false"
-            else:
-                what = f"has the tail `.{'.'.join(tail)}` where only `.{CHECK_REF_LEAF}` resolves"
-            return [(f"{loc}.ref {ref} {what} (the runner writes each check as "
-                     f"{{\"{CHECK_REF_LEAF}\": {_status_vocabulary()}}}) — write checks.{cid}.{CHECK_REF_LEAF} "
-                     f"compared by {'|'.join(sorted(CHECK_STATUS_OPS))} against {_status_vocabulary()}")]
-        return []
-    # Any other head is a per-case metric ADDRESS; the WHOLE ref must be pinned in
-    # diagnostics_contract.metrics (the intermediate per-case addressing contract). Exact match,
-    # never a head prefix: the renderer emits one metric key per declared address verbatim
-    # (the language backend runner's `_metrics`) and `_resolve_predicate_ref` looks the ref up as a whole-string
-    # key, so a `metrics: ["cfl"]` pin behind a `cfl.max` ref would emit `cfl`, resolve
-    # `ref_absent`, and fail every run as a structural_violation. Reject it here, where it is
-    # repairable, rather than at execute.
-    if ref not in metric_addrs:
-        return [f"{loc}.ref {ref} not declared in diagnostics_contract.metrics "
-                f"({sorted(metric_addrs)}) — the full dotted address must be pinned verbatim"]
-    return []

@@ -25,14 +25,8 @@ from tools.backends.language.fortran.signatures import parse_signatures_from_for
 from tools.validate_pipeline_semantics import (
     _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
     NodeExecution,
-    _diagnostics_contract_check_ids,
-    _diagnostics_contract_verdict_fields,
     _node_executions,
     _required_raw_evidence,
-    _validate_diagnostics_contract,
-    _validate_diagnostics_contract_output,
-    _validate_diagnostics_status_vocabulary,
-    _validate_diagnostics_per_case_status,
     _target_toolchain_from_pipeline_dir,
     _validate_generate_lint_command_logs,
     _validate_source_meta_json_files,
@@ -450,7 +444,6 @@ def _create_minimal_execution_tree(
     io_contract: dict[str, object] | None = None,
     dependency_resolved: dict[str, object] | None = None,
     impl_resolved: dict[str, object] | None = None,
-    metrics_basis: object | None = None,
 ) -> None:
     workspace = repo_root / "workspace"
     node_safe = "problem__shallow_water2d__0.3.0"
@@ -551,10 +544,8 @@ def _create_minimal_execution_tree(
             "fallback_policy": "fail_closed",
         }
     if io_contract is None:
-        # New IR: spec.ir.yaml.io_contract holds inputs / outputs /
-        # semantic_dependency / raw_requirements / test_evidence_requirements
-        # as siblings (the legacy `io_contract` wrapper that derived_contract.json
-        # used is dropped).
+        # spec.ir.yaml.io_contract holds inputs / outputs / semantic_dependency /
+        # raw_requirements / tests / predicates as siblings.
         io_contract = {
             "inputs": [
                 {
@@ -567,14 +558,13 @@ def _create_minimal_execution_tree(
                 {
                     "name": "metric",
                     "shape_expr": "scalar",
-                    "evidence_ref": "raw/metrics_basis.json",
+                    "evidence_ref": "perf.json",
                     "raw_variables": ["h", "hu", "hv", "t"],
                 }
             ],
             "semantic_dependency": {"required_sources": []},
             "raw_requirements": {
                 "required_evidence": [
-                    {"artifact": "metrics_basis.json", "required": True},
                     {
                         "artifact": "state_snapshots",
                         "required": True,
@@ -590,6 +580,11 @@ def _create_minimal_execution_tree(
                     },
                 ]
             },
+            "tests": [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                       "quantities": ["mass_drift_rel"]}],
+            "predicates": [{"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
+                            "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le", "value": 0.5,
+                            "per_case": True}],
         }
     # A real spec.ir.yaml always carries schema_version / meta / case as well as the four
     # sections below. Fixtures that omitted them silently disabled every gate that reaches the
@@ -626,7 +621,6 @@ def _create_minimal_execution_tree(
         spec_ir_doc,
     )
 
-    _write_json(node_dir / "diagnostics.json", {"metric": 1.0})
     _write_json(
         node_dir / "perf.json",
         {
@@ -644,9 +638,6 @@ def _create_minimal_execution_tree(
             },
         },
     )
-    if metrics_basis is None:
-        metrics_basis = {"basis": 2.0}
-    _write_json(raw_dir / "metrics_basis.json", metrics_basis)
     _write_json(
         snapshots_dir / "snapshot_schema.json",
         {
@@ -675,7 +666,6 @@ def _create_minimal_execution_tree(
             "status": "pass",
             "checks": {
                 "verdict_available": True,
-                "diagnostics_match": True,
                 "verdict_match": True,
             },
             "shapes": passing_shape_rows(),
@@ -721,7 +711,7 @@ def _create_minimal_execution_tree(
             "runner_command": "./simulate",
             "process_trace_ref": f"workspace/{log_path.relative_to(workspace).as_posix()}",
             "raw_artifact_refs": [
-                f"workspace/{(raw_dir / 'metrics_basis.json').relative_to(workspace).as_posix()}",
+                f"workspace/{(node_dir / 'perf.json').relative_to(workspace).as_posix()}",
                 f"workspace/{(snapshots_dir / 'snapshot000.json').relative_to(workspace).as_posix()}",
             ],
         },
@@ -835,7 +825,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 "model_ref": f"workspace/{(src_dir / 'shallow_water2d_model.f90').relative_to(workspace).as_posix()}",
                 "runner_ref": f"workspace/{(src_dir / 'shallow_water2d_runner.f90').relative_to(workspace).as_posix()}",
                 "raw_refs": [
-                    f"workspace/{(raw_dir / 'metrics_basis.json').relative_to(workspace).as_posix()}",
+                    f"workspace/{(node_dir / 'perf.json').relative_to(workspace).as_posix()}",
                 ],
             },
             "findings": [],
@@ -1131,419 +1121,6 @@ class LegacyLaunchPromptMarkerTests(unittest.TestCase):
         self.assertEqual(missing_en, [], f"english prompt rejected: {missing_en}")
 
 
-def _seed_metrics_basis_per_test_tree(
-    repo_root: Path, metrics_basis: object, target_cases: list[str] | None = None
-) -> None:
-    """Seed a tree whose contract demands raw variables `h` and `time` for `test_a`.
-
-    `target_cases` is `test_a`'s predicate range — the (test_id, case_id) evidence rows the
-    metrics_basis is checked against. Defaults to the single-target `["case_a"]`."""
-    target_cases = ["case_a"] if target_cases is None else list(target_cases)
-    _seed_shape_expr_schema_into(repo_root)
-    tests_path = (
-        repo_root
-        / "spec"
-        / "problem"
-        / "mock_domain"
-        / "mock_family"
-        / "mock_spec"
-        / "tests.md"
-    )
-    tests_path.parent.mkdir(parents=True, exist_ok=True)
-    tests_path.write_text(
-        "## 7. Test definitions\n### 7-1. `test_a`\n",
-        encoding="utf-8",
-    )
-    model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-    runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-    _create_minimal_execution_tree(
-        repo_root,
-        dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-        model_text=model_text,
-        runner_text=runner_text,
-        run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-        io_contract={
-            "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml"}],
-            "outputs": [
-                {
-                    "name": "metric",
-                    "shape_expr": "scalar",
-                    "evidence_ref": "raw/metrics_basis.json",
-                    "raw_variables": ["h", "time"],
-                }
-            ],
-            "semantic_dependency": {"required_sources": []},
-            "raw_requirements": {
-                "required_evidence": [
-                    {"artifact": "metrics_basis.json", "required": True},
-                    {
-                        "artifact": "state_snapshots",
-                        "required": True,
-                        "schema": {
-                            "variables": [{"name": "h", "shape_expr": "[2,2]"}],
-                            "time_variable": "time",
-                            "time_shape_expr": "scalar",
-                        },
-                    },
-                ]
-            },
-            "test_evidence_requirements": [
-                {
-                    "test_id": "test_a",
-                    "required_raw_variables": ["h", "time"],
-                }
-            ],
-            # The (test_id, case_id) evidence matrix is anchored on target_cases, so a
-            # metrics_basis fixture must name the case each of its entries came from.
-            "test_predicates": [
-                {
-                    "test_id": "test_a",
-                    "expected_outcome": "pass",
-                    "target_cases": target_cases,
-                    "pass_when": {
-                        "all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]
-                    },
-                }
-            ],
-        },
-        metrics_basis=metrics_basis,
-    )
-
-
-class MetricsBasisEvidenceMatrixTests(unittest.TestCase):
-    """R3-core: post_execute pins metrics_basis against the (test_id, target case_id) product.
-
-    The anchor is `io_contract.test_predicates[].target_cases` — the same field the
-    host-rendered runner emits its entries from (`the fortran backend runner's _target_cases`), so the
-    gate mirrors the renderer instead of guessing.
-    """
-
-    _VARS = {"h": [[1.0, 1.0], [1.0, 1.0]], "time": 0.5}
-
-    def _violations_for(self, metrics_basis: object,
-                        target_cases: list[str] | None = None) -> list[str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_metrics_basis_per_test_tree(repo_root, metrics_basis, target_cases)
-            return validate(repo_root=repo_root, workspace_root="workspace")
-
-    @classmethod
-    def _entry(cls, case_id: str) -> dict:
-        return {"test_id": "test_a", "case_id": case_id, **cls._VARS}
-
-    def _matrix_violations(self, violations: list[str]) -> list[str]:
-        return [v for v in violations if "per-test evidence for (test_id, case_id)" in v
-                or "per-test evidence (test_id, case_id)" in v]
-
-    def test_multi_target_test_needs_one_entry_per_target_case(self) -> None:
-        v = self._violations_for(
-            {"per_test": [self._entry("case_a"), self._entry("case_b")]},
-            target_cases=["case_a", "case_b"])
-        self.assertEqual(self._matrix_violations(v), [], v)
-
-    def test_missing_row_is_rejected(self) -> None:
-        # The old shape — one entry per test_id — silently dropped the second case.
-        v = self._violations_for({"per_test": [self._entry("case_a")]},
-                                 target_cases=["case_a", "case_b"])
-        matched = [x for x in v if "missing per-test evidence for (test_id, case_id)" in x]
-        self.assertEqual(len(matched), 1, v)
-        self.assertIn("('test_a', 'case_b')", matched[0])
-
-    def test_extra_row_is_rejected(self) -> None:
-        v = self._violations_for(
-            {"per_test": [self._entry("case_a"), self._entry("case_ghost")]},
-            target_cases=["case_a"])
-        matched = [x for x in v if "unknown per-test evidence (test_id, case_id)" in x]
-        self.assertEqual(len(matched), 1, v)
-        self.assertIn("('test_a', 'case_ghost')", matched[0])
-
-    def test_entry_without_case_id_is_rejected(self) -> None:
-        v = self._violations_for({"per_test": [{"test_id": "test_a", **self._VARS}]})
-        self.assertTrue(any("must carry a non-empty `case_id`" in x for x in v), v)
-
-    def test_duplicate_test_case_pair_is_rejected(self) -> None:
-        v = self._violations_for(
-            {"per_test": [self._entry("case_a"), self._entry("case_a")]})
-        self.assertTrue(
-            any("duplicated (test_id, case_id) ((test_a, case_a))" in x for x in v), v)
-
-    def test_tests_object_form_cannot_express_a_multi_target_test(self) -> None:
-        # Keyed by test_id, it physically cannot hold both rows. Say that, rather than
-        # reporting the second row as merely "missing".
-        v = self._violations_for(
-            {"tests": {"test_a": {"case_id": "case_a", **self._VARS}}},
-            target_cases=["case_a", "case_b"])
-        matched = [x for x in v if "deprecated `tests` object form" in x]
-        self.assertEqual(len(matched), 1, v)
-        self.assertIn("emit a `per_test` LIST with one entry per (test_id, case_id)", matched[0])
-        # It is reported INSTEAD of a bare missing-row message, not alongside it.
-        self.assertEqual(self._matrix_violations(v), [], v)
-
-    def test_tests_object_keys_that_normalize_to_one_test_id_are_rejected(self) -> None:
-        # JSON object keys are unique as written, but this reader strips them, so `"test_a"`
-        # and `" test_a "` name one entry. Silently keeping the last would let a malformed row
-        # (here, the one missing `time`) vanish.
-        v = self._violations_for({"tests": {
-            "test_a": {"case_id": "case_a", "h": self._VARS["h"]},
-            " test_a ": {"case_id": "case_a", **self._VARS},
-        }})
-        self.assertTrue(
-            any("tests has duplicated (test_id, case_id) ((test_a, case_a))" in x for x in v), v)
-
-    def test_tests_object_form_still_accepted_for_a_single_target_test(self) -> None:
-        v = self._violations_for({"tests": {"test_a": {"case_id": "case_a", **self._VARS}}})
-        self.assertEqual(self._matrix_violations(v), [], v)
-        self.assertEqual([x for x in v if "deprecated `tests` object form" in x], [], v)
-
-    def test_test_with_no_target_case_is_reported_not_silently_dropped(self) -> None:
-        # Without target_cases the expected rows cannot be derived; reporting them as
-        # "unknown" entries instead would blame the runner for an IR defect.
-        v = self._violations_for({"per_test": [self._entry("case_a")]}, target_cases=[])
-        self.assertTrue(
-            any("no io_contract.test_predicates[].target_cases" in x for x in v), v)
-        self.assertEqual(self._matrix_violations(v), [], v)
-
-
-class MetricsBasisWrapperGuidanceTests(unittest.TestCase):
-    """The `values`-wrapper repair guidance appended to the missing-variable violation.
-
-    Acceptance must not move: only the message text changes.
-
-    The `stay_accepted` cases assert an absence, so they would pass vacuously if
-    the fixture ever stopped reaching this gate. `test_values_wrapper_...` seeds
-    the same tree and asserts the violation *is* raised, so a fixture that fails
-    to reach the gate fails there loudly rather than silently greening these.
-    """
-
-    _MISSING_PREFIX = (
-        "metrics_basis.json: test_id test_a case_id case_a missing required_raw_variables"
-    )
-
-    def _violations_for(self, metrics_basis: object) -> list[str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_metrics_basis_per_test_tree(repo_root, metrics_basis)
-            return validate(repo_root=repo_root, workspace_root="workspace")
-
-    def test_values_wrapper_violation_names_the_wrapper_and_shows_sibling_form(self) -> None:
-        violations = self._violations_for(
-            {
-                "per_test": [
-                    {
-                        "test_id": "test_a",
-                        "case_id": "case_a",
-                        "values": {
-                            "h": [[1.0, 1.0], [1.0, 1.0]],
-                            "time": 0.5,
-                        },
-                    }
-                ]
-            }
-        )
-        matched = [v for v in violations if self._MISSING_PREFIX in v]
-        self.assertEqual(len(matched), 1, violations)
-        message = matched[0]
-        self.assertIn("missing required_raw_variables (['h', 'time'])", message)
-        self.assertIn("unrecognized wrapper key 'values'", message)
-        self.assertIn("direct sibling key of test_id", message)
-        self.assertIn('{"test_id": ..., "h": ...}', message)
-        self.assertIn("do not wrap them under 'values'", message)
-
-    def test_partial_coverage_message_claims_only_what_the_wrapper_holds(self) -> None:
-        violations = self._violations_for(
-            {
-                "per_test": [
-                    {
-                        "test_id": "test_a",
-                        "case_id": "case_a",
-                        "aa": {"h": [[1.0, 1.0], [1.0, 1.0]]},
-                        "zz": {"time": 0.5},
-                    }
-                ]
-            }
-        )
-        matched = [v for v in violations if self._MISSING_PREFIX in v]
-        self.assertEqual(len(matched), 1, violations)
-        message = matched[0]
-        self.assertIn("missing required_raw_variables (['h', 'time'])", message)
-        self.assertIn("the missing variables ['h'] are nested under", message)
-        self.assertIn("unrecognized wrapper key 'aa'", message)
-        self.assertIn('{"test_id": ..., "h": ...}', message)
-
-    def test_missing_variable_without_wrapper_keeps_the_bare_message(self) -> None:
-        violations = self._violations_for(
-            {
-                "per_test": [
-                    {
-                        "test_id": "test_a",
-                        "case_id": "case_a",
-                        "raw_variables": {"h": [[1.0, 1.0], [1.0, 1.0]]},
-                    }
-                ]
-            }
-        )
-        matched = [v for v in violations if self._MISSING_PREFIX in v]
-        self.assertEqual(len(matched), 1, violations)
-        self.assertTrue(matched[0].endswith("missing required_raw_variables (['time'])"))
-        self.assertNotIn("wrapper", matched[0])
-
-    def test_recognized_nesting_keys_stay_accepted(self) -> None:
-        for field_name in ("raw_variables", "variables", "evidence"):
-            with self.subTest(field_name=field_name):
-                violations = self._violations_for(
-                    {
-                        "per_test": [
-                            {
-                                "test_id": "test_a",
-                                "case_id": "case_a",
-                                field_name: {
-                                    "h": [[1.0, 1.0], [1.0, 1.0]],
-                                    "time": 0.5,
-                                },
-                            }
-                        ]
-                    }
-                )
-                self.assertEqual(
-                    [v for v in violations if self._MISSING_PREFIX in v], [], violations
-                )
-
-    def test_flat_sibling_entry_stays_accepted(self) -> None:
-        violations = self._violations_for(
-            {
-                "per_test": [
-                    {
-                        "test_id": "test_a",
-                        "case_id": "case_a",
-                        "h": [[1.0, 1.0], [1.0, 1.0]],
-                        "time": 0.5,
-                    }
-                ]
-            }
-        )
-        self.assertEqual(
-            [v for v in violations if self._MISSING_PREFIX in v], [], violations
-        )
-
-
-class MetricsBasisUnrecognizedWrapperUnitTests(unittest.TestCase):
-    def test_returns_none_when_no_dict_valued_key_holds_a_missing_variable(self) -> None:
-        entry = {"test_id": "t", "h": [1.0], "notes": {"h": "irrelevant"}}
-        self.assertIsNone(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["time"], {"h", "time"})
-        )
-
-    def test_bookkeeping_keys_are_never_reported_as_wrappers(self) -> None:
-        entry = {"test_id": "t", "meta": {"time": 0.5}, "artifacts": {"time": 0.5}}
-        self.assertIsNone(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["time"], {"time"})
-        )
-
-    def test_recognized_nesting_keys_are_never_reported_as_wrappers(self) -> None:
-        entry = {"test_id": "t", "raw_variables": {"h": 1.0}}
-        self.assertIsNone(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["time"], {"h", "time"})
-        )
-
-    def test_shadowed_nesting_key_is_never_reported_as_a_wrapper(self) -> None:
-        """`evidence` is ignored by the reader only because `raw_variables` wins.
-
-        It is still a contract-recognized nesting name, so calling it
-        "unrecognized" would misdirect the repair turn.
-        """
-        entry = {
-            "test_id": "t",
-            "raw_variables": {"h": 1.0},
-            "evidence": {"time": 0.5},
-        }
-        self.assertIsNone(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["time"], {"h", "time"})
-        )
-
-    def test_padded_nesting_key_is_reported_verbatim_because_the_reader_rejects_it(
-        self,
-    ) -> None:
-        """`_metrics_basis_variable_keys` matches nesting fields via exact `get()`.
-
-        A padded variant is therefore a real wrapper, not a recognized field, and
-        it must be reported with its padding intact — reporting the stripped name
-        would call the recognized nesting key "unrecognized".
-        """
-        entry = {"test_id": "t", " raw_variables ": {"h": 1.0, "time": 0.5}}
-        self.assertEqual(
-            vps._metrics_basis_unrecognized_wrapper(
-                entry, ["h", "time"], {"h", "time"}
-            ),
-            (" raw_variables ", ["h", "time"]),
-        )
-
-    def test_keys_differing_only_by_padding_resolve_deterministically(self) -> None:
-        forward = {"test_id": "t", "values": {"time": 0.5}, " values ": {"time": 0.5}}
-        reverse = {"test_id": "t", " values ": {"time": 0.5}, "values": {"time": 0.5}}
-        self.assertEqual(
-            vps._metrics_basis_unrecognized_wrapper(forward, ["time"], {"time"}),
-            vps._metrics_basis_unrecognized_wrapper(reverse, ["time"], {"time"}),
-        )
-
-    def test_dict_valued_contract_variable_is_not_named_as_its_own_wrapper(self) -> None:
-        """`h` is an accepted flat variable; only `time` is missing.
-
-        Naming `h` would tell the model not to wrap under a key it must emit.
-        """
-        entry = {"test_id": "t", "h": {"time": 0.5}}
-        self.assertEqual(vps._metrics_basis_variable_keys(entry), {"h"})
-        self.assertIsNone(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["time"], {"h", "time"})
-        )
-
-    def test_reports_the_wrapper_covering_the_most_missing_variables(self) -> None:
-        entry = {
-            "test_id": "t",
-            "zz_payload": {"h": 1.0, "time": 0.5},
-            "aa_partial": {"h": 1.0},
-        }
-        self.assertEqual(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["h", "time"], {"h", "time"}),
-            ("zz_payload", ["h", "time"]),
-        )
-
-    def test_reports_only_the_variables_the_winning_wrapper_actually_holds(self) -> None:
-        """Two wrappers, one variable each: the winner must not claim both."""
-        entry = {"test_id": "t", "aa": {"h": 1.0}, "zz": {"time": 0.5}}
-        self.assertEqual(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["h", "time"], {"h", "time"}),
-            ("aa", ["h"]),
-        )
-
-    def test_equal_coverage_ties_break_lexicographically(self) -> None:
-        entry = {"test_id": "t", "zz": {"time": 0.5}, "aa": {"time": 0.5}}
-        self.assertEqual(
-            vps._metrics_basis_unrecognized_wrapper(entry, ["time"], {"time"}),
-            ("aa", ["time"]),
-        )
-
-    def test_tie_break_is_independent_of_insertion_order(self) -> None:
-        forward = {"test_id": "t", "aa": {"time": 0.5}, "zz": {"time": 0.5}}
-        reverse = {"test_id": "t", "zz": {"time": 0.5}, "aa": {"time": 0.5}}
-        self.assertEqual(
-            vps._metrics_basis_unrecognized_wrapper(forward, ["time"], {"time"}),
-            vps._metrics_basis_unrecognized_wrapper(reverse, ["time"], {"time"}),
-        )
-
-
 class PipelineHarnessDagTests(unittest.TestCase):
     """The target's harness is a closure node of every physics pipeline (issue #284, R4-a
     PR-3), so the whole-workspace DAG checks require it: validated in its OWN pipeline for the
@@ -1674,14 +1251,14 @@ end program shallow_water2d_runner
             )
             self.assertEqual({"run_test_001"}, {e.exec_dir.name for e in scoped})
 
-    def test_required_raw_evidence_set_is_ir_driven_with_metrics_basis_baseline(self) -> None:
-        """The required raw-evidence set is IR-driven; metrics_basis.json is the only baseline.
+    def test_required_raw_evidence_set_is_ir_driven_with_no_baseline(self) -> None:
+        """The required raw-evidence set is IR-driven and has no baseline.
 
-        An IR that declares only metrics_basis.json requires nothing else (no fixed
-        minimal set is imposed, phase_04_validate.md "The required composition of the
-        primary evidence"); declaring state_snapshots required:true adds it. Both
-        halves read `_required_raw_evidence` directly, so what is pinned is the set
-        it returns, not the missing-file violation `_validate_raw_evidence` derives.
+        An IR that declares nothing requires nothing (no fixed minimal set is imposed,
+        phase_04_validate.md "The required composition of the primary evidence"); declaring
+        state_snapshots required:true adds it; `required: false` does not. All read
+        `_required_raw_evidence` directly, so what is pinned is the set it returns, not the
+        missing-file violation `_validate_raw_evidence` derives.
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -1709,848 +1286,148 @@ end program shallow_water2d_runner
                 pipeline_dir=pipeline_dir,
             )
 
-            spec_ir_path = ir_dir / "spec.ir.yaml"
+            for entries, expected in (
+                    ([], set()),
+                    ([{"artifact": "state_snapshots", "required": False}], set()),
+                    ([{"artifact": "state_snapshots", "required": True}], {"state_snapshots"})):
+                with self.subTest(entries=entries):
+                    _write_json(ir_dir / "spec.ir.yaml", {"io_contract": {"raw_requirements": {
+                        "required_evidence": entries}}})
+                    self.assertEqual(expected, _required_raw_evidence(repo_root, execution))
 
-            # IR declares only the baseline -> nothing beyond metrics_basis.json.
-            _write_json(
-                spec_ir_path,
-                {
-                    "io_contract": {
-                        "raw_requirements": {
-                            "required_evidence": [
-                                {"artifact": "metrics_basis.json", "required": True},
-                            ]
-                        }
-                    }
-                },
-            )
-            required = _required_raw_evidence(repo_root, execution)
-            self.assertEqual({"metrics_basis.json"}, required)
-
-            # IR declares state_snapshots required -> added; baseline kept.
-            _write_json(
-                spec_ir_path,
-                {
-                    "io_contract": {
-                        "raw_requirements": {
-                            "required_evidence": [
-                                {"artifact": "metrics_basis.json", "required": True},
-                                {
-                                    "artifact": "state_snapshots",
-                                    "required": True,
-                                },
-                            ]
-                        }
-                    }
-                },
-            )
-            required = _required_raw_evidence(repo_root, execution)
-            self.assertEqual({"metrics_basis.json", "state_snapshots"}, required)
-
-    def test_snapshot_state_variables_scoped_to_per_case_evidence(self) -> None:
-        """A state_snapshot file is only required to carry the raw variables its
-        own case's test declares in io_contract.test_evidence_requirements, not
-        the global union of declared variables.
-
-        Motivating case (demo_dep_base, billed E2E 2026-06-25): an input-guard
-        rejection case (n <= 0) produces no output state, so its snapshot
-        legitimately carries only the rejected input `x` and omits the output
-        `y`. The IR correctly scopes that case to required_raw_variables=[x],
-        yet the post_execute completeness gate demanded {x, y} in *every*
-        snapshot and falsely failed validate.execute. This asserts:
-          (a) the guard case (y-less) does NOT raise 'declared state_variables
-              missing' now that the gate honors per-case evidence;
-          (b) strictness is preserved: a *valid* case that needs y but omits it
-              still raises the missing-variable violation.
-        """
-        for omit_y_from_valid_case in (False, True):
-            with tempfile.TemporaryDirectory() as tmp:
-                repo_root = Path(tmp)
-                node_safe = "component__demo_scope__0.1.0"
-                ir_ref = f"workspace/ir/{node_safe}/demo-scope_20260625_001"
-                pipeline_dir = (
-                    repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                    / "demo-scope_20260625_001"
-                )
-                ir_dir = repo_root / ir_ref
-                pipeline_dir.mkdir(parents=True, exist_ok=True)
-                ir_dir.mkdir(parents=True, exist_ok=True)
-                _write_json(pipeline_dir / "lineage.json", {"ir_ref": ir_ref})
-
-                schema = {
-                    "variables": [
-                        {"name": "x", "shape_expr": "[n]"},
-                        {"name": "y", "shape_expr": "[n]"},
-                    ],
-                    "time_variable": "snapshot_index",
-                    "time_shape_expr": "scalar",
-                }
-                _write_json(
-                    ir_dir / "spec.ir.yaml",
-                    {
-                        "case": {
-                            "test_case_set": [
-                                {"case_id": "c_valid", "test_id": "t_valid"},
-                                {"case_id": "c_guard", "test_id": "t_guard"},
-                            ]
-                        },
-                        "io_contract": {
-                            "inputs": [{"name": "x", "shape_expr": "[n]"}],
-                            "outputs": [{"name": "y", "shape_expr": "[n]"}],
-                            "raw_requirements": {
-                                "required_evidence": [
-                                    {
-                                        "artifact": "state_snapshots",
-                                        "required": True,
-                                        "schema": schema,
-                                    }
-                                ]
-                            },
-                            "test_evidence_requirements": [
-                                {
-                                    "test_id": "t_valid",
-                                    "required_raw_variables": ["x", "y"],
-                                },
-                                {
-                                    "test_id": "t_guard",
-                                    "required_raw_variables": ["x"],
-                                },
-                            ],
-                        },
-                    },
-                )
-
-                node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-                snapshots_dir = node_dir / "raw" / "state_snapshots"
-                snapshots_dir.mkdir(parents=True, exist_ok=True)
-                _write_json(snapshots_dir / "snapshot_schema.json", {
-                    **schema,
-                    "samples": ["c_valid.json", "c_guard.json"],
-                })
-                valid_case = {"snapshot_index": 0, "case_id": "c_valid",
-                              "x": [1.0, 2.0, 3.0]}
-                if not omit_y_from_valid_case:
-                    valid_case["y"] = [2.0, 4.0, 6.0]
-                _write_json(snapshots_dir / "c_valid.json", valid_case)
-                # Guard (rejection) case: only the rejected input, no output y.
-                _write_json(snapshots_dir / "c_guard.json",
-                            {"snapshot_index": 1, "case_id": "c_guard", "x": []})
-
-                execution = NodeExecution(
-                    node_key="component/demo_scope@0.1.0",
-                    node_dir=node_dir,
-                    exec_dir=pipeline_dir / "runs" / "run_test_001",
-                    pipeline_dir=pipeline_dir,
-                )
-                violations: list[str] = []
-                vps._validate_raw_evidence(repo_root, execution, violations)
-
-                missing_state = [
-                    v for v in violations
-                    if "declared state_variables missing in snapshot files" in v
-                ]
-                # The guard case must never be flagged for the absent output y.
-                self.assertFalse(
-                    any("c_guard.json" in v for v in missing_state),
-                    f"guard case wrongly flagged; got: {missing_state}",
-                )
-                if omit_y_from_valid_case:
-                    # (b) strictness preserved: the valid case needs y.
-                    self.assertTrue(
-                        any("c_valid.json" in v for v in missing_state),
-                        f"valid case missing y should be flagged; got: {violations}",
-                    )
-                else:
-                    # (a) fully-formed run is clean of the completeness violation.
-                    self.assertFalse(
-                        missing_state,
-                        f"unexpected missing-state violation; got: {missing_state}",
-                    )
-
-    def test_snapshot_scope_resolves_via_in_file_test_id_when_case_map_empty(self) -> None:
-        """C-class IR-shape robustness: scope per-case evidence even when
-        `case.test_case_set` omits `test_id` (so the case_id->test_id map is
-        empty) by reading the snapshot's own `test_id` field.
-
-        This is the second observed Compile/runner output shape (billed dev E2E
-        2026-06-25, orch `…150418Z_6571ad31`): snapshots are named
-        `<test_id>_NNNN.json` and carry in-file `test_id` (and a `case_id` equal
-        to the test_id), while `test_case_set[].test_id` is null. The first fix
-        keyed only on the case_id->test_id map and fell back to the strict union
-        here, wrongly failing the guard case for the absent output `y`.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_tid__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-tid_20260625_001"
-            pipeline_dir = (
-                repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                / "demo-tid_20260625_001"
-            )
-            ir_dir = repo_root / ir_ref
-            pipeline_dir.mkdir(parents=True, exist_ok=True)
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(pipeline_dir / "lineage.json", {"ir_ref": ir_ref})
-
-            schema = {
-                "variables": [
-                    {"name": "x", "shape_expr": "[n]"},
-                    {"name": "y", "shape_expr": "[n]"},
-                ],
-                "time_variable": "snapshot_index",
-                "time_shape_expr": "scalar",
-            }
-            _write_json(
-                ir_dir / "spec.ir.yaml",
-                {
-                    # test_case_set carries case_id but NULL test_id -> the
-                    # case_id->test_id map is empty.
-                    "case": {
-                        "test_case_set": [
-                            {"case_id": "l0_scale_identity_pass", "test_id": None},
-                            {"case_id": "l0_invalid_length_xfail", "test_id": None},
-                        ]
-                    },
-                    "io_contract": {
-                        "inputs": [{"name": "x", "shape_expr": "[n]"}],
-                        "outputs": [{"name": "y", "shape_expr": "[n]"}],
-                        "raw_requirements": {
-                            "required_evidence": [
-                                {
-                                    "artifact": "state_snapshots",
-                                    "required": True,
-                                    "schema": schema,
-                                }
-                            ]
-                        },
-                        "test_evidence_requirements": [
-                            {"test_id": "l0_scale_identity_pass",
-                             "required_raw_variables": ["x", "y"]},
-                            {"test_id": "l0_invalid_length_xfail",
-                             "required_raw_variables": ["x"]},
-                        ],
-                    },
-                },
-            )
-
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema,
-                "samples": ["l0_scale_identity_pass_0000.json",
-                            "l0_invalid_length_xfail_0000.json"],
-            })
-            _write_json(snapshots_dir / "l0_scale_identity_pass_0000.json", {
-                "snapshot_index": 0, "case_id": "l0_scale_identity_pass",
-                "test_id": "l0_scale_identity_pass",
-                "x": [1.0, 2.0, 3.0], "y": [2.0, 4.0, 6.0],
-            })
-            # Guard case: in-file test_id present, only the rejected input x.
-            _write_json(snapshots_dir / "l0_invalid_length_xfail_0000.json", {
-                "snapshot_index": 0, "case_id": "l0_invalid_length_xfail",
-                "test_id": "l0_invalid_length_xfail", "x": [],
-            })
-
-            execution = NodeExecution(
-                node_key="component/demo_tid@0.1.0",
-                node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir,
-            )
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-
-            missing_state = [
-                v for v in violations
-                if "declared state_variables missing in snapshot files" in v
-            ]
-            self.assertFalse(
-                missing_state,
-                f"guard case should be excused via in-file test_id; got: {missing_state}",
-            )
-
-    def _write_target_cases_ir(self, repo_root: Path, node_safe: str, ir_ref: str,
-                               pipeline_dir: Path, *, predicates: list[dict] | None,
-                               evidence: list[dict], schema: dict,
-                               test_case_set: list[dict] | None = None) -> None:
+    def _d7_violations(self, repo_root: Path, snapshots: dict[str, dict]) -> list[str]:
+        """`_validate_raw_evidence` over a node whose IR declares `x` and `y`, with `snapshots`
+        as the capture files, reduced to what the completeness gate (D7) says."""
+        node_safe = "component__demo_strict__0.1.0"
+        ir_ref = f"workspace/ir/{node_safe}/demo-strict_20260625_001"
+        pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
+                        / "demo-strict_20260625_001")
         ir_dir = repo_root / ir_ref
         pipeline_dir.mkdir(parents=True, exist_ok=True)
         ir_dir.mkdir(parents=True, exist_ok=True)
         _write_json(pipeline_dir / "lineage.json", {"ir_ref": ir_ref})
-        io_contract: dict = {
-            "inputs": [{"name": "U_L", "shape_expr": "[3]"}],
-            "outputs": [{"name": "F_star", "shape_expr": "[3]"}],
-            "raw_requirements": {
-                "required_evidence": [
-                    {"artifact": "state_snapshots", "required": True,
-                     "schema": schema}
-                ]
-            },
-            "test_evidence_requirements": evidence,
-        }
-        if predicates is not None:
-            io_contract["test_predicates"] = predicates
-        _write_json(
-            ir_dir / "spec.ir.yaml",
-            {
-                # The M3c shape by default: case_id declared, `test_id` absent entirely (it is
-                # not a required field per phase_01_compile.md), so the case->test map is empty.
-                "case": {"test_case_set": test_case_set or [{"case_id": "case_equal_state"},
-                                                            {"case_id": "case_dry_state"}]},
-                "io_contract": io_contract,
-            },
-        )
-
-    def test_snapshot_scope_resolves_via_target_cases_when_no_test_id_anywhere(self) -> None:
-        """A host-rendered (M3c) runner writes `<case_id>.json` carrying `case_id` and no
-        `test_id`, while the IR's `case.test_case_set[]` omits `test_id` too — so neither the
-        case->test map, the in-file `test_id`, nor the file stem resolves a per-test contract.
-        `io_contract.test_predicates[].target_cases` is the remaining anchor, and it is the
-        exact field `the fortran backend runner's _per_case_vars` renders the snapshot from.
-
-        Regression for the billed dev E2E 2026-07-09 (orch `…075057Z_89f9f59a`,
-        `dynamics_shallow_water_flux_2d_rusanov_p0`): the gate fell back to the strict union
-        and reported `F_star`/`G_star`/`guard_fired` missing from cases that legitimately omit
-        them, contradicting the `state_snapshots` bullet of phase_04_validate.md. The runner
-        output was conformant.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_tc__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-tc_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                            / "demo-tc_20260709_001")
-            schema = {
-                "variables": [
-                    {"name": "U_L", "shape_expr": "[3]"},
-                    {"name": "F_star", "shape_expr": "[3]"},
-                    {"name": "guard_fired", "shape_expr": "scalar"},
-                ],
-                "time_variable": "t",
-                "time_shape_expr": "scalar",
-            }
-            self._write_target_cases_ir(
-                repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-                predicates=[
-                    {"test_id": "l0_equal_state_pass", "target_cases": ["case_equal_state"]},
-                    {"test_id": "l0_dry_state_xfail", "target_cases": ["case_dry_state"]},
-                ],
-                evidence=[
-                    {"test_id": "l0_equal_state_pass",
-                     "required_raw_variables": ["U_L", "F_star"]},
-                    {"test_id": "l0_dry_state_xfail",
-                     "required_raw_variables": ["U_L", "guard_fired"]},
-                ],
-            )
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema,
-                "samples": ["case_equal_state.json", "case_dry_state.json"]})
-            # Exactly what the host renderer emits: only this case's required variables.
-            _write_json(snapshots_dir / "case_equal_state.json", {
-                "t": 0.0, "case_id": "case_equal_state",
-                "U_L": [1.0, 2.0, 3.0], "F_star": [0.5, 0.5, 0.5]})
-            _write_json(snapshots_dir / "case_dry_state.json", {
-                "t": 0.0, "case_id": "case_dry_state",
-                "U_L": [0.0, 0.5, 0.25], "guard_fired": 1.0})
-
-            execution = NodeExecution(
-                node_key="component/demo_tc@0.1.0", node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir)
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-            missing_state = [v for v in violations
-                             if "declared state_variables missing in snapshot files" in v]
-            self.assertFalse(
-                missing_state,
-                f"per-case snapshots scoped via target_cases must pass; got: {missing_state}")
-
-    def test_snapshot_scope_in_file_test_id_outranks_the_target_cases_union(self) -> None:
-        """Anchor order is load-bearing: a snapshot that names its own `test_id` is a per-TEST
-        file and must be scoped to that test, not to the union over every test ranging over its
-        case. Scoping it to the union would require variables the file legitimately omits.
-
-        Pins the ordering against a reorder that puts the union anchor first."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_ord__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-ord_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                            / "demo-ord_20260709_001")
-            schema = {
-                "variables": [
-                    {"name": "U_L", "shape_expr": "[3]"},
-                    {"name": "F_star", "shape_expr": "[3]"},
-                    {"name": "guard_fired", "shape_expr": "scalar"},
-                ],
-                "time_variable": "t",
-                "time_shape_expr": "scalar",
-            }
-            # One case, two tests: the union is {U_L, F_star, guard_fired}.
-            self._write_target_cases_ir(
-                repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-                predicates=[
-                    {"test_id": "t_a", "target_cases": ["case_equal_state"]},
-                    {"test_id": "t_b", "target_cases": ["case_equal_state"]},
-                    {"test_id": "t_c", "target_cases": ["case_dry_state"]},
-                ],
-                evidence=[
-                    {"test_id": "t_a", "required_raw_variables": ["U_L", "F_star"]},
-                    {"test_id": "t_b", "required_raw_variables": ["U_L", "guard_fired"]},
-                    {"test_id": "t_c", "required_raw_variables": ["U_L"]},
-                ],
-            )
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema,
-                "samples": ["case_equal_state.json", "case_dry_state.json"]})
-            # A per-TEST snapshot for t_a: it carries `test_id` and omits `guard_fired`, which
-            # only the SIBLING test t_b requires. Correct under the t_a scope; a violation if
-            # the union anchor were consulted first.
-            _write_json(snapshots_dir / "case_equal_state.json", {
-                "t": 0.0, "case_id": "case_equal_state", "test_id": "t_a",
-                "U_L": [1.0, 2.0, 3.0], "F_star": [0.5, 0.5, 0.5]})
-            _write_json(snapshots_dir / "case_dry_state.json", {
-                "t": 0.0, "case_id": "case_dry_state", "U_L": [0.0, 0.5, 0.25]})
-
-            execution = NodeExecution(
-                node_key="component/demo_ord@0.1.0", node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir)
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-            missing_state = [v for v in violations
-                             if "declared state_variables missing in snapshot files" in v]
-            self.assertFalse(
-                missing_state,
-                f"an in-file test_id must outrank the union anchor; got: {missing_state}")
-
-    def _untargeted_case_violations(self, repo_root: Path, *, snapshot_case_id: str) -> list[str]:
-        """One targeted case + one DECLARED case no predicate ranges over. The second snapshot's
-        in-file `case_id` is parameterized so the undeclared-token path can be exercised too."""
-        node_safe = "component__demo_untargeted__0.1.0"
-        ir_ref = f"workspace/ir/{node_safe}/demo-untargeted_20260709_001"
-        pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                        / "demo-untargeted_20260709_001")
-        schema = {
-            "variables": [
-                {"name": "U_L", "shape_expr": "[3]"},
-                {"name": "F_star", "shape_expr": "[3]"},
-                {"name": "guard_fired", "shape_expr": "scalar"},
-            ],
-            "time_variable": "t",
-            "time_shape_expr": "scalar",
-        }
-        self._write_target_cases_ir(
-            repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-            # Only case_equal_state is targeted; case_dry_state is declared but targeted by nothing.
-            predicates=[{"test_id": "t_a", "target_cases": ["case_equal_state"]}],
-            evidence=[{"test_id": "t_a", "required_raw_variables": ["U_L", "F_star"]}],
-        )
+        schema = {"variables": [{"name": "x", "shape_expr": "[n]"},
+                                {"name": "y", "shape_expr": "[n]", "source": "record"}],
+                  "time_variable": "snapshot_index", "time_shape_expr": "scalar"}
+        # The per-test reader is gone with its inputs: a `tests` entry that targets only `c_only`
+        # and a guard case asks for nothing narrower than the schema.
+        _write_json(ir_dir / "spec.ir.yaml", {
+            "case": {"test_case_set": [{"case_id": "c_only"}, {"case_id": "c_guard"}]},
+            "io_contract": {
+                "raw_requirements": {"required_evidence": [
+                    {"artifact": "state_snapshots", "required": True, "schema": schema}]},
+                "tests": [{"test_id": "t", "expected_outcome": "pass",
+                           "target_cases": ["c_only"], "quantities": ["q"]}],
+                "predicates": [{"test_id": "t", "quantity": "q", "target_cases": ["c_only"],
+                                "expr": "sum(final.x)", "op": "le", "value": 1.0,
+                                "per_case": True}]}})
         node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
         snapshots_dir = node_dir / "raw" / "state_snapshots"
         snapshots_dir.mkdir(parents=True, exist_ok=True)
-        _write_json(snapshots_dir / "snapshot_schema.json", {
-            **schema,
-            "samples": ["case_equal_state.json", "other.json"]})
-        _write_json(snapshots_dir / "case_equal_state.json", {
-            "t": 0.0, "case_id": "case_equal_state",
-            "U_L": [1.0, 2.0, 3.0], "F_star": [0.5, 0.5, 0.5]})
-        # The renderer emits an EMPTY-state snapshot for an untargeted case (`allocate(vals(0))`).
-        _write_json(snapshots_dir / "other.json", {"t": 0.0, "case_id": snapshot_case_id})
-
-        execution = NodeExecution(
-            node_key="component/demo_untargeted@0.1.0", node_dir=node_dir,
-            exec_dir=pipeline_dir / "runs" / "run_test_001",
-            pipeline_dir=pipeline_dir)
+        _write_json(snapshots_dir / "snapshot_schema.json", schema)
+        for name, doc in snapshots.items():
+            _write_json(snapshots_dir / name, doc)
+        execution = NodeExecution(node_key="component/demo_strict@0.1.0", node_dir=node_dir,
+                                  exec_dir=pipeline_dir / "runs" / "run_test_001",
+                                  pipeline_dir=pipeline_dir)
         violations: list[str] = []
         vps._validate_raw_evidence(repo_root, execution, violations)
-        return [v for v in violations
-                if "declared state_variables missing in snapshot files" in v]
+        return [v for v in violations if "missing in snapshot" in v]
 
-    def test_snapshot_scope_declared_but_untargeted_case_requires_nothing(self) -> None:
-        """A case declared in `case.test_case_set[]` that NO predicate ranges over has an empty
-        union, and `the fortran backend runner's _per_case_vars` renders it as an empty-state snapshot
-        (`allocate(vals(0))`). The gate must mirror that instead of demanding every declared
-        variable — otherwise it false-rejects a conformant runner, the very defect the
-        `target_cases` anchor was added to remove. An untargeted case is schema-valid:
-        `validate_predicate_schema` checks each `target_cases` entry is a declared case, never
-        that every declared case is targeted."""
+    def _post_execute_tree(self, repo_root: Path) -> Path:
+        """The shared tree, whose run node is otherwise clean of the artifact gates below."""
+        _seed_shape_expr_schema_into(repo_root)
+        _create_minimal_execution_tree(
+            repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+            model_text=("module shallow_water2d_model\n"
+                        "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+                        "implicit none\ncontains\nsubroutine solve(flag)\n"
+                        "  logical, intent(out) :: flag\n"
+                        "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+                        "end subroutine solve\nend module shallow_water2d_model\n"),
+            runner_text=("program shallow_water2d_runner\nimplicit none\nwrite(*,*) 'ok'\n"
+                         "end program shallow_water2d_runner\n"),
+            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+        return (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
+                / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                / "problem__shallow_water2d__0.3.0")
+
+    def test_post_execute_holds_the_quality_check_to_its_two_checks(self) -> None:
+        """`quality_check.json#checks` is `verdict_available` and `verdict_match` since issue
+        #582: each must be literally true, and `diagnostics_match`, which no file answers any
+        more, is asked of nobody."""
+        for key in ("verdict_available", "verdict_match"):
+            for label, value in (("false", False), ("absent", _ABSENT), ("truthy", 1)):
+                with self.subTest(key=key, value=label), tempfile.TemporaryDirectory() as tmp:
+                    node_dir = self._post_execute_tree(Path(tmp))
+                    path = node_dir / "quality_check.json"
+                    doc = json.loads(path.read_text(encoding="utf-8"))
+                    doc["checks"].pop(key)
+                    if value is not _ABSENT:
+                        doc["checks"][key] = value
+                    _write_json(path, doc)
+                    v = validate(repo_root=Path(tmp), workspace_root="workspace")
+                    self.assertIn(f"{path}:checks.{key} must be true", v)
         with tempfile.TemporaryDirectory() as tmp:
-            missing_state = self._untargeted_case_violations(
-                Path(tmp), snapshot_case_id="case_dry_state")
-            self.assertFalse(
-                missing_state,
-                f"a declared-but-untargeted case requires no state variables; got: {missing_state}")
+            node_dir = self._post_execute_tree(Path(tmp))
+            doc = json.loads((node_dir / "quality_check.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(doc["checks"]), {"verdict_available", "verdict_match"})
+            self.assertEqual(validate(repo_root=Path(tmp), workspace_root="workspace"), [])
 
-    def test_snapshot_scope_undeclared_case_token_keeps_the_strict_requirement(self) -> None:
-        """The empty-union relaxation is gated on the case being DECLARED. A snapshot whose
-        `case_id` matches no declared case cannot be scoped by anything, so the strict
-        all-declared requirement stands (it is not a renderer-emitted per-case file)."""
+    def test_post_execute_reads_no_diagnostics_and_no_metrics_basis(self) -> None:
+        """Neither file is an artifact since issue #582: absent is clean (the row above), and a
+        stray one of any content is read by no gate."""
         with tempfile.TemporaryDirectory() as tmp:
-            missing_state = self._untargeted_case_violations(
-                Path(tmp), snapshot_case_id="case_not_in_the_ir")
-            self.assertTrue(missing_state, "an unknown case token keeps the strict requirement")
-            self.assertIn("other.json", missing_state[0])
-            self.assertNotIn("case_equal_state.json", missing_state[0])
+            node_dir = self._post_execute_tree(Path(tmp))
+            (node_dir / "diagnostics.json").write_text("not json", encoding="utf-8")
+            (node_dir / "raw" / "metrics_basis.json").write_text("[]", encoding="utf-8")
+            self.assertEqual(validate(repo_root=Path(tmp), workspace_root="workspace"), [])
 
-    def test_snapshot_scope_union_outranks_the_legacy_single_test_mapping(self) -> None:
-        """A hybrid IR carries BOTH a legacy `case.test_case_set[].test_id` and predicates that
-        range several tests over the same case. The union is authoritative — it mirrors
-        `_per_case_vars`, which is what the runner emits — while the legacy map names one test
-        and would under-require a multi-test case. Pins anchor (2) ahead of anchor (3)."""
+    def test_post_execute_refuses_placeholder_content_in_a_snapshot(self) -> None:
+        """The placeholder scan of the metrics-basis era survives on the captures: every file
+        under `raw/state_snapshots`, nested ones included."""
+        for pattern in vps.PLACEHOLDER_TEXT_PATTERNS:
+            for rel in ("snapshot000.json", "initial/c1.json"):
+                with self.subTest(pattern=pattern, rel=rel), tempfile.TemporaryDirectory() as tmp:
+                    node_dir = self._post_execute_tree(Path(tmp))
+                    path = node_dir / "raw" / "state_snapshots" / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(pattern, encoding="utf-8")
+                    v = validate(repo_root=Path(tmp), workspace_root="workspace")
+                    self.assertIn(f"{path}: placeholder content detected ({pattern})", v)
+
+    def test_every_declared_variable_is_required_in_every_snapshot(self) -> None:
+        """D7 (issue #582): the `post_execute` gate requires every declared schema variable in
+        every snapshot, initial and final, of every case. It reversed the per-case required set
+        (a guard case omitting its output state, an untargeted case with an empty one, an
+        in-file `test_id`, a legacy `test_case_set[].test_id`): each of those spellings is now
+        one refusal, and it names the file and the variable."""
+        full = {"snapshot_index": 0, "x": [1.0], "y": [1.0]}
+        no_y = {"snapshot_index": 0, "x": [1.0]}
+        rows = {
+            "an initial capture": ("c_only.initial.json", {**no_y, "case_id": "c_only"}),
+            "a final capture": ("c_only.final.json", {**no_y, "case_id": "c_only"}),
+            "a guard case": ("c_guard.final.json", {**no_y, "case_id": "c_guard"}),
+            "an in-file test_id": ("c_guard.initial.json", {**no_y, "test_id": "t"}),
+            "an undeclared case": ("ghost.final.json", {**no_y, "case_id": "ghost"}),
+        }
+        for label, (name, doc) in rows.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                # the other capture of the pair is complete: only the named file is at fault
+                v = self._d7_violations(Path(tmp), {name: doc, "complete.final.json": full})
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("declared state_variables missing in snapshot files", v[0])
+                self.assertIn(f"'{name}': ['y']", v[0])
+                self.assertNotIn("complete.final.json", v[0])
         with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_hybrid__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-hybrid_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                            / "demo-hybrid_20260709_001")
-            schema = {
-                "variables": [{"name": "U_L", "shape_expr": "[3]"},
-                              {"name": "F_star", "shape_expr": "[3]"}],
-                "time_variable": "t",
-                "time_shape_expr": "scalar",
-            }
-            self._write_target_cases_ir(
-                repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-                predicates=[{"test_id": "t_a", "target_cases": ["c1"]},
-                            {"test_id": "t_b", "target_cases": ["c1"]}],
-                test_case_set=[{"case_id": "c1", "test_id": "t_legacy"}],
-                evidence=[{"test_id": "t_legacy", "required_raw_variables": ["U_L"]},
-                          {"test_id": "t_a", "required_raw_variables": ["U_L"]},
-                          {"test_id": "t_b", "required_raw_variables": ["U_L", "F_star"]}],
-            )
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "samples": ["c1.json"]})
-            # Omits F_star, which the union {t_a, t_b} requires but the legacy t_legacy does not.
-            _write_json(snapshots_dir / "c1.json", {
-                "t": 0.0, "case_id": "c1", "U_L": [1.0, 2.0, 3.0]})
-
-            execution = NodeExecution(
-                node_key="component/demo_hybrid@0.1.0", node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir)
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-            missing_state = [v for v in violations
-                             if "declared state_variables missing in snapshot files" in v]
-            self.assertTrue(missing_state, "the union must win over the legacy single-test map")
-            self.assertIn("F_star", missing_state[0])
-
-    def test_snapshot_scope_empty_union_relaxation_requires_predicates(self) -> None:
-        """The empty-union relaxation is confined to the predicate-driven world by the
-        `case_to_tests` guard. A legacy IR that declares `test_evidence_requirements` but NO
-        `test_predicates` must keep the strict all-declared requirement for a declared case
-        it cannot otherwise scope — dropping the guard would silently accept a snapshot that
-        omits variables a test really requires."""
+            self.assertEqual(self._d7_violations(Path(tmp), {
+                "c_only.initial.json": full, "c_only.final.json": full,
+                "c_guard.final.json": full}), [])
+        # the time variable, which is not a schema variable, is required the same way
         with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_nopred__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-nopred_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                            / "demo-nopred_20260709_001")
-            schema = {
-                "variables": [{"name": "U_L", "shape_expr": "[3]"},
-                              {"name": "F_star", "shape_expr": "[3]"}],
-                "time_variable": "t",
-                "time_shape_expr": "scalar",
-            }
-            self._write_target_cases_ir(
-                repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-                predicates=None,  # no test_predicates at all
-                test_case_set=[{"case_id": "case_equal_state"}],
-                evidence=[{"test_id": "t_a", "required_raw_variables": ["U_L", "F_star"]}],
-            )
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "samples": ["case_equal_state.json"]})
-            _write_json(snapshots_dir / "case_equal_state.json", {
-                "t": 0.0, "case_id": "case_equal_state", "U_L": [1.0, 2.0, 3.0]})
-
-            execution = NodeExecution(
-                node_key="component/demo_nopred@0.1.0", node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir)
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-            missing_state = [v for v in violations
-                             if "declared state_variables missing in snapshot files" in v]
-            self.assertTrue(missing_state, "without predicates the strict requirement stands")
-            self.assertIn("F_star", missing_state[0])
-
-    def test_snapshot_scope_legacy_mapping_outranks_the_empty_union(self) -> None:
-        """The empty-union relaxation is ordered LAST. A case that no predicate ranges over but
-        that the legacy `case.test_case_set[].test_id` map does resolve must take the legacy
-        test's required set, not the empty union. Pins anchor (4) behind anchor (3)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_mixed__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-mixed_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                            / "demo-mixed_20260709_001")
-            schema = {
-                "variables": [{"name": "U_L", "shape_expr": "[3]"},
-                              {"name": "F_star", "shape_expr": "[3]"}],
-                "time_variable": "t",
-                "time_shape_expr": "scalar",
-            }
-            self._write_target_cases_ir(
-                repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-                # c_legacy is declared and carries a legacy test_id, but no predicate targets it.
-                predicates=[{"test_id": "t_a", "target_cases": ["c_used"]}],
-                test_case_set=[{"case_id": "c_used"},
-                               {"case_id": "c_legacy", "test_id": "t_b"}],
-                evidence=[{"test_id": "t_a", "required_raw_variables": ["U_L"]},
-                          {"test_id": "t_b", "required_raw_variables": ["U_L", "F_star"]}],
-            )
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "samples": ["c_used.json", "c_legacy.json"]})
-            _write_json(snapshots_dir / "c_used.json", {
-                "t": 0.0, "case_id": "c_used", "U_L": [1.0, 2.0, 3.0]})
-            # c_legacy omits F_star, which its legacy test t_b requires.
-            _write_json(snapshots_dir / "c_legacy.json", {
-                "t": 0.0, "case_id": "c_legacy", "U_L": [1.0, 2.0, 3.0]})
-
-            execution = NodeExecution(
-                node_key="component/demo_mixed@0.1.0", node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir)
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-            missing_state = [v for v in violations
-                             if "declared state_variables missing in snapshot files" in v]
-            self.assertTrue(missing_state, "the legacy mapping must win over the empty union")
-            self.assertIn("c_legacy.json", missing_state[0])
-            self.assertIn("F_star", missing_state[0])
-            self.assertNotIn("c_used.json", missing_state[0])
-
-    def test_snapshot_scope_targeted_case_whose_tests_declare_no_evidence(self) -> None:
-        """A predicate whose `test_id` has no `test_evidence_requirements` entry contributes
-        nothing to the union. The renderer likewise emits no state for it, so the gate must not
-        raise (the `t in per_test_required` filter) nor demand every declared variable."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_noevidence__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-noevidence_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                            / "demo-noevidence_20260709_001")
-            schema = {
-                "variables": [
-                    {"name": "U_L", "shape_expr": "[3]"},
-                    {"name": "F_star", "shape_expr": "[3]"},
-                    {"name": "guard_fired", "shape_expr": "scalar"},
-                ],
-                "time_variable": "t",
-                "time_shape_expr": "scalar",
-            }
-            self._write_target_cases_ir(
-                repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-                predicates=[
-                    {"test_id": "t_a", "target_cases": ["case_equal_state"]},
-                    # t_missing ranges over the case but declares no evidence requirement.
-                    {"test_id": "t_missing", "target_cases": ["case_equal_state"]},
-                ],
-                evidence=[{"test_id": "t_a", "required_raw_variables": ["U_L"]}],
-            )
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "samples": ["case_equal_state.json"]})
-            _write_json(snapshots_dir / "case_equal_state.json", {
-                "t": 0.0, "case_id": "case_equal_state", "U_L": [1.0, 2.0, 3.0]})
-
-            execution = NodeExecution(
-                node_key="component/demo_noevidence@0.1.0", node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir)
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)  # must not raise
-            missing_state = [v for v in violations
-                             if "declared state_variables missing in snapshot files" in v]
-            self.assertFalse(missing_state, f"scoped to t_a only; got: {missing_state}")
-
-    def test_case_id_to_test_ids_reads_the_unflattened_io_contract(self) -> None:
-        """`_io_contract_for_execution` hoists `test_predicates` out of the nested section, but a
-        doc that was never flattened still nests it; both shapes must resolve."""
-        predicates = [{"test_id": "t_a", "target_cases": ["c1", "c2"]},
-                      {"test_id": "t_b", "target_cases": ["c2"]}]
-        expected = {"c1": ["t_a"], "c2": ["t_a", "t_b"]}
-        self.assertEqual(vps._case_id_to_test_ids({"test_predicates": predicates}), expected)
-        self.assertEqual(
-            vps._case_id_to_test_ids({"io_contract": {"test_predicates": predicates}}), expected)
-        # Malformed entries are ignored rather than raising.
-        self.assertEqual(vps._case_id_to_test_ids({"test_predicates": "nope"}), {})
-        self.assertEqual(vps._case_id_to_test_ids({}), {})
-        self.assertEqual(
-            vps._case_id_to_test_ids({"test_predicates": [
-                "not-a-dict",
-                {"test_id": "", "target_cases": ["c1"]},
-                {"test_id": "t_x", "target_cases": [" ", 3, None]},
-                {"test_id": "t_y"},
-            ]}),
-            {},
-        )
-        # Identifiers are normalized, and a test naming the same case twice is recorded once.
-        self.assertEqual(
-            vps._case_id_to_test_ids({"test_predicates": [
-                {"test_id": " t_a ", "target_cases": [" c1 ", "c1"]},
-                {"test_id": "t_a", "target_cases": ["c1"]},
-            ]}),
-            {"c1": ["t_a"]},
-        )
-
-    def test_snapshot_scope_target_cases_takes_the_union_and_stays_strict(self) -> None:
-        """A case ranged over by SEVERAL tests requires the union of their raw variables
-        (what `_per_case_vars` emits) — and omitting one of them is still a violation, so the
-        anchor narrows the required set without weakening it."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_tcu__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-tcu_20260709_001"
-            pipeline_dir = (repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                            / "demo-tcu_20260709_001")
-            schema = {
-                "variables": [
-                    {"name": "U_L", "shape_expr": "[3]"},
-                    {"name": "F_star", "shape_expr": "[3]"},
-                    {"name": "guard_fired", "shape_expr": "scalar"},
-                ],
-                "time_variable": "t",
-                "time_shape_expr": "scalar",
-            }
-            # Two tests both range over case_equal_state -> union {U_L, F_star, guard_fired}.
-            self._write_target_cases_ir(
-                repo_root, node_safe, ir_ref, pipeline_dir, schema=schema,
-                predicates=[
-                    {"test_id": "t_a", "target_cases": ["case_equal_state"]},
-                    {"test_id": "t_b", "target_cases": ["case_equal_state"]},
-                    {"test_id": "t_c", "target_cases": ["case_dry_state"]},
-                ],
-                evidence=[
-                    {"test_id": "t_a", "required_raw_variables": ["U_L", "F_star"]},
-                    {"test_id": "t_b", "required_raw_variables": ["U_L", "guard_fired"]},
-                    {"test_id": "t_c", "required_raw_variables": ["U_L"]},
-                ],
-            )
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema,
-                "samples": ["case_equal_state.json", "case_dry_state.json"]})
-            # Union member `guard_fired` omitted -> must be flagged.
-            _write_json(snapshots_dir / "case_equal_state.json", {
-                "t": 0.0, "case_id": "case_equal_state",
-                "U_L": [1.0, 2.0, 3.0], "F_star": [0.5, 0.5, 0.5]})
-            # Its own test needs only U_L; omitting F_star/guard_fired is legitimate.
-            _write_json(snapshots_dir / "case_dry_state.json", {
-                "t": 0.0, "case_id": "case_dry_state", "U_L": [0.0, 0.5, 0.25]})
-
-            execution = NodeExecution(
-                node_key="component/demo_tcu@0.1.0", node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir)
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-            missing_state = [v for v in violations
-                             if "declared state_variables missing in snapshot files" in v]
-            self.assertTrue(missing_state, "the missing union member must be flagged")
-            self.assertIn("case_equal_state.json", missing_state[0])
-            self.assertIn("guard_fired", missing_state[0])
-            self.assertNotIn("case_dry_state.json", missing_state[0])
-
-    def test_snapshot_completeness_falls_back_to_strict_union_without_per_test_contract(self) -> None:
-        """Backward-compat: when the IR carries no per-test evidence scoping
-        (`io_contract.test_evidence_requirements`) and/or no `case.test_case_set`
-        mapping, the snapshot completeness gate falls back to requiring EVERY
-        declared schema variable in every snapshot file. A snapshot omitting a
-        declared variable must still be flagged — the per-case fix must not
-        silently weaken the gate for specs that don't declare per-test evidence.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            node_safe = "component__demo_strict__0.1.0"
-            ir_ref = f"workspace/ir/{node_safe}/demo-strict_20260625_001"
-            pipeline_dir = (
-                repo_root / "workspace" / "pipelines" / node_safe / _TARGET_ID
-                / "demo-strict_20260625_001"
-            )
-            ir_dir = repo_root / ir_ref
-            pipeline_dir.mkdir(parents=True, exist_ok=True)
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(pipeline_dir / "lineage.json", {"ir_ref": ir_ref})
-
-            schema = {
-                "variables": [
-                    {"name": "x", "shape_expr": "[n]"},
-                    {"name": "y", "shape_expr": "[n]"},
-                ],
-                "time_variable": "snapshot_index",
-                "time_shape_expr": "scalar",
-            }
-            # No `case` section and no `test_evidence_requirements` -> no per-case
-            # scoping is resolvable, so the strict union {x, y} applies.
-            _write_json(
-                ir_dir / "spec.ir.yaml",
-                {
-                    "io_contract": {
-                        "inputs": [{"name": "x", "shape_expr": "[n]"}],
-                        "outputs": [{"name": "y", "shape_expr": "[n]"}],
-                        "raw_requirements": {
-                            "required_evidence": [
-                                {
-                                    "artifact": "state_snapshots",
-                                    "required": True,
-                                    "schema": schema,
-                                }
-                            ]
-                        },
-                    },
-                },
-            )
-
-            node_dir = pipeline_dir / "runs" / "run_test_001" / node_safe
-            snapshots_dir = node_dir / "raw" / "state_snapshots"
-            snapshots_dir.mkdir(parents=True, exist_ok=True)
-            _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "samples": ["c_only.json"],
-            })
-            # Snapshot omits the declared output `y`.
-            _write_json(snapshots_dir / "c_only.json",
-                        {"snapshot_index": 0, "case_id": "c_only", "x": [1.0]})
-
-            execution = NodeExecution(
-                node_key="component/demo_strict@0.1.0",
-                node_dir=node_dir,
-                exec_dir=pipeline_dir / "runs" / "run_test_001",
-                pipeline_dir=pipeline_dir,
-            )
-            violations: list[str] = []
-            vps._validate_raw_evidence(repo_root, execution, violations)
-
-            self.assertTrue(
-                any(
-                    "declared state_variables missing in snapshot files" in v
-                    and "c_only.json" in v
-                    for v in violations
-                ),
-                f"strict fallback should flag the absent y; got: {violations}",
-            )
+            v = self._d7_violations(Path(tmp), {"c_only.final.json": {"x": [1.0], "y": [1.0]}})
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("declared time_variable missing in snapshots (snapshot_index", v[0])
 
     def test_post_execute_run_id_scope_requires_every_pipeline_root(self) -> None:
         """With repeated --pipeline-root, --run-id scoping must fail when any
@@ -5005,7 +3882,7 @@ end program shallow_water2d_runner
                             {
                                 "name": "metric",
                                 "shape_expr": "scalar",
-                                "evidence_ref": "raw/metrics_basis.json",
+                                "evidence_ref": "perf.json",
                                 "raw_variables": ["h", "hu", "hv", "time"],
                             }
                         ],
@@ -8810,13 +7687,12 @@ end program shallow_water2d_runner
                             {
                                 "name": "metric",
                                 "shape_expr": "scalar",
-                                "evidence_ref": "raw/metrics_basis.json",
+                                "evidence_ref": "perf.json",
                             }
                         ],
                     "semantic_dependency": {"required_sources": []},
                     "raw_requirements": {
                         "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
                             {"artifact": "state_snapshots", "required": False},
                         ]
                     },
@@ -8845,7 +7721,7 @@ end program shallow_water2d_runner
             shutil.rmtree(node_dir / "raw" / "state_snapshots")
 
             violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertFalse(any("state_snapshots" in v for v in violations))
+            self.assertFalse(any("state_snapshots" in v for v in violations), violations)
 
     def test_detects_invalid_io_contract_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8878,7 +7754,6 @@ end program shallow_water2d_runner
                     "semantic_dependency": {"required_sources": []},
                     "raw_requirements": {
                         "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
                         ]
                     },
                 },
@@ -9363,13 +8238,12 @@ end program shallow_water2d_runner
                             {
                                 "name": "metric",
                                 "shape_expr": "scalar",
-                                "evidence_ref": "raw/metrics_basis.json",
+                                "evidence_ref": "perf.json",
                             }
                         ],
                     "semantic_dependency": {"required_sources": []},
                     "raw_requirements": {
                         "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
                         ]
                     },
                 },
@@ -9454,12 +8328,11 @@ end program shallow_water2d_runner
                 io_contract={
                     "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml"}],
                         "outputs": [
-                            {"name": "metric_mass", "shape_expr": "scalar", "evidence_ref": "raw/metrics_basis.json"},
+                            {"name": "metric_mass", "shape_expr": "scalar", "evidence_ref": "perf.json"},
                         ],
                     "semantic_dependency": {"required_sources": []},
                     "raw_requirements": {
                         "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -9475,12 +8348,6 @@ end program shallow_water2d_runner
                             },
                         ]
                     },
-                    "test_evidence_requirements": [
-                        {
-                            "test_id": "l1_refinement_mass_and_positivity",
-                            "required_raw_variables": ["h", "hu", "hv", "time"],
-                        }
-                    ],
                 },
             )
 
@@ -9528,189 +8395,6 @@ end program shallow_water2d_runner
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(
                 any(".raw_variables must be non-empty list when evidence_ref is non-snapshot and state_snapshots is required" in v for v in violations)
-            )
-
-    def test_detects_missing_test_evidence_requirements(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            tests_md = (
-                repo_root / "spec" / "problem" / "mock_domain" / "mock_family" / "mock_spec" / "tests.md"
-            )
-            tests_md.parent.mkdir(parents=True, exist_ok=True)
-            tests_md.write_text(
-                "## 7. Test definitions\n"
-                "### 7-1. `test_a`\n"
-                "### 7-2. `test_b`\n",
-                encoding="utf-8",
-            )
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                io_contract={
-                            "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml"}],
-                        "outputs": [
-                            {
-                                "name": "metric",
-                                "shape_expr": "scalar",
-                                "evidence_ref": "raw/metrics_basis.json",
-                                "raw_variables": ["h", "hu", "hv", "time"],
-                            }
-                        ],
-                    "semantic_dependency": {"required_sources": []},
-                    "raw_requirements": {
-                        "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
-                            {
-                                "artifact": "state_snapshots",
-                                "required": True,
-                                "schema": {
-                                    "variables": [
-                                        {"name": "h", "shape_expr": "[2,2]"},
-                                        {"name": "hu", "shape_expr": "[2,2]"},
-                                        {"name": "hv", "shape_expr": "[2,2]"},
-                                    ],
-                                    "time_variable": "time",
-                                    "time_shape_expr": "scalar",
-                                },
-                            },
-                        ]
-                    },
-                },
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("test_evidence_requirements must be non-empty list" in v for v in violations)
-            )
-
-    def test_detects_metrics_basis_without_per_test_evidence_index(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            tests_path = (
-                repo_root
-                / "spec"
-                / "problem"
-                / "mock_domain"
-                / "mock_family"
-                / "mock_spec"
-                / "tests.md"
-            )
-            tests_path.parent.mkdir(parents=True, exist_ok=True)
-            tests_path.write_text(
-                "## 7. Test definitions\n"
-                "### 7-1. `test_a`\n"
-                "### 7-2. `test_b`\n",
-                encoding="utf-8",
-            )
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                io_contract={
-                            "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml"}],
-                        "outputs": [
-                            {
-                                "name": "metric",
-                                "shape_expr": "scalar",
-                                "evidence_ref": "raw/metrics_basis.json",
-                                "raw_variables": ["h", "time"],
-                            }
-                        ],
-                    "semantic_dependency": {"required_sources": []},
-                    "raw_requirements": {
-                        "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
-                            {
-                                "artifact": "state_snapshots",
-                                "required": True,
-                                "schema": {
-                                    "variables": [
-                                        {"name": "h", "shape_expr": "[2,2]"}
-                                    ],
-                                    "time_variable": "time",
-                                    "time_shape_expr": "scalar",
-                                },
-                            },
-                        ]
-                    },
-                    "test_evidence_requirements": [
-                        {
-                            "test_id": "test_a",
-                            "case_id": "case_a",
-                            "required_raw_variables": ["h", "time"],
-                        },
-                        {
-                            "test_id": "test_b",
-                            "required_raw_variables": ["h", "time"],
-                        },
-                    ],
-                },
-                metrics_basis={
-                    "wave_speed_x": -1.0,
-                    "wave_speed_y": -1.0,
-                },
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("metrics_basis.json: must contain per_test list or tests object" in v for v in violations)
-            )
-
-    def test_detects_metrics_basis_missing_required_variable_in_per_test_entry(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_metrics_basis_per_test_tree(
-                repo_root,
-                {
-                    "per_test": [
-                        {
-                            "test_id": "test_a",
-                            "case_id": "case_a",
-                            "raw_variables": {
-                                "h": [[1.0, 1.0], [1.0, 1.0]],
-                            },
-                        }
-                    ]
-                },
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("metrics_basis.json: test_id test_a case_id case_a missing required_raw_variables (['time'])" in v for v in violations)
             )
 
     def test_detects_snapshot_shape_mismatch_against_io_contract(self) -> None:
@@ -10438,7 +9122,6 @@ end program shallow_water2d_runner
                         "semantic_dependency": {"required_sources": []},
                         "raw_requirements": {
                             "required_evidence": [
-                                {"artifact": "metrics_basis.json", "required": True},
                                 {"artifact": "execution_trace.json", "required": required},
                             ]
                         },
@@ -10447,9 +9130,9 @@ end program shallow_water2d_runner
                 return validate(repo_root=repo_root, workspace_root="workspace")
 
         violations = _violations(required=True)
-        enum_hits = [v for v in violations if "required_evidence[1].artifact 'execution_trace.json' must be one of" in v]
+        enum_hits = [v for v in violations if "required_evidence[0].artifact 'execution_trace.json' must be one of" in v]
         self.assertEqual(1, len(enum_hits), violations)
-        self.assertIn("['metrics_basis.json', 'state_snapshots']", enum_hits[0])
+        self.assertIn("['state_snapshots']", enum_hits[0])
         # The enum message says the members and then the remedy; split on the separator.
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
@@ -10457,8 +9140,7 @@ end program shallow_water2d_runner
             "valued numerically (a snapshot variable is a float64 module variable the runner "
             "serializes); a case INPUT — an enumerated selector included — is not an evidence "
             "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
-            "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "
-            "variables",
+            "not echoed into the snapshot",
             enum_remedy,
         )
         input_hits = [v for v in violations if "io_contract.inputs[1].evidence_ref 'raw/execution_trace.json' names no raw-evidence artifact the workflow produces; " in v]
@@ -10469,12 +9151,12 @@ end program shallow_water2d_runner
             self.assertEqual(enum_remedy, hit.split("produces; ", 1)[1])
         # A retired token is refused whatever its `required` value: `required: false` is
         # not a way to keep naming an artifact the workflow does not produce.
-        self.assertTrue(any("required_evidence[1].artifact 'execution_trace.json' must be one of" in v for v in _violations(required=False)))
+        self.assertTrue(any("required_evidence[0].artifact 'execution_trace.json' must be one of" in v for v in _violations(required=False)))
 
         contract = (Path(__file__).resolve().parents[2] / "docs" / "workflow" / "phases" / "phase_01_compile.md").read_text(encoding="utf-8")
         self.assertIn(enum_remedy, contract)
         self.assertIn("naming `execution_trace.json` (with or without `raw/`, any case) is a `fail`", contract)
-        self.assertIn("or the retired `execution_trace.json` — is a `fail` whatever its `required` value", contract)
+        self.assertIn("the retired `metrics_basis.json` and `execution_trace.json` among them, is a `fail` whatever its `required` value", contract)
 
     def test_numeric_coded_scalar_snapshot_variable_passes_post_execute(self) -> None:
         """The premise behind retiring `execution_trace.json` (issue #235): an enumerated
@@ -10657,7 +9339,6 @@ end program shallow_water2d_runner
                     "semantic_dependency": {"required_sources": ["h"]},
                     "raw_requirements": {
                         "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -10723,7 +9404,6 @@ end program shallow_water2d_runner
                         "semantic_dependency": {"required_sources": ["h"]},
                         "raw_requirements": {
                             "required_evidence": [
-                                {"artifact": "metrics_basis.json", "required": True},
                                 {
                                     "artifact": "state_snapshots",
                                     "required": True,
@@ -10793,7 +9473,6 @@ end program shallow_water2d_runner
                     "semantic_dependency": {"required_sources": ["h"]},
                     "raw_requirements": {
                         "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
@@ -10994,72 +9673,6 @@ end program shallow_water2d_runner
                 {"l0_pass", "l0_xfail"}),
             "a hardcoded name not matching any case_id must be flagged",
         )
-
-    def test_detects_unknown_required_raw_variables_from_tests_mapping(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            tests_path = repo_root / MOCK_TESTS_REF
-            tests_path.parent.mkdir(parents=True, exist_ok=True)
-            tests_path.write_text("### 1-1. `l0_case_pass`\n", encoding="utf-8")
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'diagnostics only'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                io_contract={
-                    "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml"}],
-                        "outputs": [
-                            {
-                                "name": "metric",
-                                "shape_expr": "scalar",
-                                "evidence_ref": "raw/metrics_basis.json",
-                                "raw_variables": ["h"],
-                            }
-                        ],
-                    "semantic_dependency": {"required_sources": ["h"]},
-                    "raw_requirements": {
-                        "required_evidence": [
-                            {"artifact": "metrics_basis.json", "required": True},
-                            {
-                                "artifact": "state_snapshots",
-                                "required": True,
-                                "schema": {
-                                    "variables": [
-                                        {"name": "h", "shape_expr": "[2,2]"}
-                                    ],
-                                    "time_variable": "time",
-                                    "time_shape_expr": "scalar",
-                                },
-                            },
-                        ]
-                    },
-                    "test_evidence_requirements": [
-                        {
-                            "test_id": "l0_case_pass",
-                            "required_raw_variables": ["ghost_cells_x"],
-                        }
-                    ],
-                },
-            )
-            violations = validate(repo_root=repo_root, workspace_root="workspace")
-            self.assertTrue(any("required_raw_variables[0] must reference declared state_snapshots variable/time_variable" in v for v in violations))
 
     def test_detects_missing_plan_step_result_when_orchestration_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11767,15 +10380,10 @@ end program shallow_water2d_runner
             )
 
     def test_validate_compile_stage_passes_for_resolved_plan_directory(self) -> None:
-        # A fully-formed IR (incl. a valid R2 test_predicates DSL + the diagnostics_contract
-        # vocabulary its refs resolve against) passes the compile stage cleanly.
+        # A fully-formed IR (`tests` + the host `predicates` that judge them) passes the compile
+        # stage cleanly.
         with tempfile.TemporaryDirectory() as tmp:
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [
-                          {"ref": "verdict.overall", "op": "eq", "value": "pass"},
-                          {"ref": "checks.g.status", "op": "eq", "value": "pass"}]}}]
-            v = self._compile_with_io_contract(
-                Path(tmp), self._io_contract_with_predicates(preds))
+            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates())
             self.assertEqual(v, [])
 
     def test_validate_compile_stage_rejects_a_traversal_case_id(self) -> None:
@@ -11784,8 +10392,6 @@ end program shallow_water2d_runner
         # gate is invoked directly. This is the non-M3c path — the minimal tree declares no
         # infrastructure dep, so the M3c render precondition does not fire. (Spec-input rejects
         # that shape upstream; the compile gates keep it covered for a hand-crafted IR.)
-        preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                  "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -11795,7 +10401,7 @@ end program shallow_water2d_runner
                 model_text="module m\nimplicit none\nend module m\n",
                 runner_text="program r\nimplicit none\nend program r\n",
                 run_command=["x", "y"],
-                io_contract=self._io_contract_with_predicates(preds),
+                io_contract=self._io_contract_with_predicates(),
                 dependency_resolved={
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "direct_deps": [{"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0", "kind": "component", "operations": ["dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux"]}],
@@ -11820,13 +10426,17 @@ end program shallow_water2d_runner
             self.assertTrue(any("not safe tokens" in x and "raw/state_snapshots" in x for x in v), v)
             self.assertTrue(any("'-c1'" in x for x in v), v)
 
-    def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",)) -> None:
+    def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",),
+                        quantities: tuple[str, ...] = ("mass_drift_rel",)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
-        gated (`_validate_ir_source_refs_tests`) and the test-id pins read the file through it."""
+        gated (`_validate_ir_source_refs_tests`) and the test-id and `quantities:` pins read the
+        file through it."""
         tests_md = repo_root / MOCK_TESTS_REF
         tests_md.parent.mkdir(parents=True, exist_ok=True)
+        line = ", ".join(f"`{q}`" for q in quantities)
         tests_md.write_text(
-            "".join(f"### 1-{i}. `{t}`\n" for i, t in enumerate(test_ids, start=1)),
+            "".join(f"### 1-{i}. `{t}`\n- `quantities`: {line}\n"
+                    for i, t in enumerate(test_ids, start=1)),
             encoding="utf-8",
         )
 
@@ -11867,46 +10477,19 @@ end program shallow_water2d_runner
             repo_root, "workspace",
             "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
 
-    @staticmethod
-    def _corroborated(predicates: list) -> tuple[list, list]:
-        """The Z6 PR-3 coverage gate needs every condition to carry a `quantity` and every
-        (test, quantity) to have a primary predicate: give each untagged condition the quantity
-        `q` and each test one trivially satisfiable corroborant per quantity, so a fixture about
-        some OTHER gate passes the compile stage as a real IR does. Returns (predicates,
-        primary_predicates)."""
-        preds = copy.deepcopy(predicates)
-        primary: list[dict] = []
-        for pred in preds:
-            if not isinstance(pred, dict):
-                continue
-            conds = (pred.get("pass_when") or {}).get("all") if isinstance(
-                pred.get("pass_when"), dict) else None
-            quantities: list[str] = []
-            for cond in (conds if isinstance(conds, list) else []):
-                if isinstance(cond, dict):
-                    cond.setdefault("quantity", "q")
-                    if cond["quantity"] not in quantities:
-                        quantities.append(cond["quantity"])
-            for q in quantities:
-                primary.append({"test_id": pred.get("test_id"), "quantity": q,
-                                "target_cases": list(pred.get("target_cases") or []),
-                                "expr": "sum(final.h)", "op": "le", "value": 1.0e9,
-                                "per_case": True})
-        return preds, primary
-
-    def _io_contract_with_predicates(self, predicates, *, corroborate: bool = True) -> dict:
-        primary = None
-        if corroborate and isinstance(predicates, list):
-            predicates, primary = self._corroborated(predicates)
+    def _io_contract_with_predicates(self, predicates: object = _ABSENT,
+                                     tests: object = _ABSENT) -> dict:
+        """The default judges test `t1` on `c1` by one predicate of the quantity the planted
+        tests.md lists, so a fixture about some OTHER gate passes the compile stage as a real IR
+        does. `predicates` / `tests` replace those halves."""
         io = {
             "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml",
                         "evidence_ref": "spec.ir.yaml"}],
             "outputs": [{"name": "metric", "shape_expr": "scalar",
-                         "evidence_ref": "raw/metrics_basis.json",
+                         "evidence_ref": "perf.json",
                          "raw_variables": ["h", "hu", "hv", "t"]}],
             "semantic_dependency": {"required_sources": []},
             "raw_requirements": {"required_evidence": [
-                {"artifact": "metrics_basis.json", "required": True},
                 # `min_samples` is inert since issue #396; kept here as the witness that an IR
                 # still carrying it passes the Compile-static gate — at a value (0) the deleted
                 # `integer >= 1` type check refused, so restoring that check is red too.
@@ -11915,19 +10498,9 @@ end program shallow_water2d_runner
                                           {"name": "hu", "shape_expr": "[2,2]"},
                                           {"name": "hv", "shape_expr": "[2,2]"}],
                             "time_variable": "t", "time_shape_expr": "scalar"}}]},
-            "diagnostics_contract": {
-                "checks": [{"id": "g"}],
-                "verdict": {"required": True, "fields": ["overall", "failed_checks"]},
-                "metrics": ["metrics.mass_drift_rel"]},
-            # The canonical test-id set of this fixture is tests.md (planted by the compile helpers
-            # at MOCK_TESTS_REF), so the evidence requirements must cover it exactly — a real IR
-            # always carries both.
-            "test_evidence_requirements": [
-                {"test_id": "t1", "required_raw_variables": ["h"]}],
-            "test_predicates": predicates,
+            "tests": ([self._test_entry()] if tests is _ABSENT else tests),
+            "predicates": ([self._primary_predicate()] if predicates is _ABSENT else predicates),
         }
-        if primary is not None:
-            io["primary_predicates"] = primary
         return io
 
     def _compile_with_state_contract(self, repo_root: Path, state_contract: object):
@@ -11936,20 +10509,13 @@ end program shallow_water2d_runner
         real wiring (`_plan_dependency_node_key` -> `_validate_algorithm_contract_file`)."""
         _seed_shape_expr_schema_into(repo_root)
         self._plant_tests_md(repo_root)
-        # A checks.<id> condition (beyond bare verdict.*) keeps this pass set non-degenerate so the
-        # degenerate-predicate gate does not fire — this fixture exercises the state-contract gate,
-        # not the predicate DSL.
-        preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                  "pass_when": {"all": [
-                      {"ref": "verdict.overall", "op": "eq", "value": "pass"},
-                      {"ref": "checks.g.status", "op": "eq", "value": "pass"}]}}]
         _create_minimal_execution_tree(
             repo_root,
             dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
             model_text="module m\nimplicit none\nend module m\n",
             runner_text="program r\nimplicit none\nend program r\n",
             run_command=["x", "y"],
-            io_contract=self._io_contract_with_predicates(preds),
+            io_contract=self._io_contract_with_predicates(),
             algorithm_contract={
                 "algorithm_id": "shallow_water2d_test_algorithm",
                 "execution_mode": "sequence",
@@ -12206,13 +10772,8 @@ end program shallow_water2d_runner
             # Note: the ordered-op threshold must be a YAML float (a decimal point). Bare
             # exponential notation like `1e-10` is parsed by YAML 1.1 as a STRING and is
             # (correctly) rejected by the numeric-threshold gate; use `1.0e-10` / `0.1`.
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [
-                          {"ref": "verdict.overall", "op": "eq", "value": "pass"},
-                          {"ref": "checks.g.status", "op": "eq", "value": "pass"},
-                          {"ref": "metrics.mass_drift_rel", "op": "le", "value": 0.1,
-                           "per_case": True}]}}]
-            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
+            io = self._io_contract_with_predicates([self._primary_predicate(value=0.1)])
+            v = self._compile_with_io_contract(Path(tmp), io)
             self.assertEqual(v, [])
 
     def test_a_certified_ir_the_current_validator_rejects_is_refused_at_readiness(self) -> None:
@@ -12239,12 +10800,8 @@ end program shallow_water2d_runner
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [
-                          {"ref": "verdict.overall", "op": "eq", "value": "pass"},
-                          {"ref": "checks.g.status", "op": "eq", "value": "pass"}]}}]
             self.assertEqual(
-                self._compile_with_io_contract(repo, self._io_contract_with_predicates(preds)),
+                self._compile_with_io_contract(repo, self._io_contract_with_predicates()),
                 [], "the seeded tree must pass --stage compile or the witness observes nothing")
             ir_ref = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
             ir_path = repo / ir_ref / "spec.ir.yaml"
@@ -12294,7 +10851,7 @@ end program shallow_water2d_runner
                 f"ir_rejected_by_current_validator:{len(direct)}:{ir_ref}/spec.ir.yaml:"), reason)
             self.assertNotIn(str(repo.resolve()), reason)
 
-    def test_a_certified_ir_carrying_a_pass_leaf_ref_is_refused_at_readiness(self) -> None:
+    def test_a_certified_ir_carrying_a_retired_key_is_refused_at_readiness(self) -> None:
         """Issue #269's witness for NOT bumping `COMPILE_INLINED_DOCUMENTS_VERSION`: a certified
         IR whose predicate reads `checks.<id>.pass` — the spelling four IRs in
         `workspace/ir` carried — is refused by the same `_check_ref` rule at readiness
@@ -12309,11 +10866,8 @@ end program shallow_water2d_runner
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [
-                          {"ref": "checks.g.status", "op": "eq", "value": "pass"}]}}]
             self.assertEqual(
-                self._compile_with_io_contract(repo, self._io_contract_with_predicates(preds)),
+                self._compile_with_io_contract(repo, self._io_contract_with_predicates()),
                 [], "the seeded tree must pass --stage compile or the witness observes nothing")
             ir_ref = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
             ir_path = repo / ir_ref / "spec.ir.yaml"
@@ -12340,9 +10894,7 @@ end program shallow_water2d_runner
             self.assertTrue(ok, detail)
 
             doc = json.loads(ir_path.read_text())
-            cond = doc["io_contract"]["test_predicates"][0]["pass_when"]["all"][0]
-            self.assertEqual(cond["ref"], "checks.g.status")
-            cond["ref"], cond["value"] = "checks.g.pass", True
+            doc["io_contract"]["test_predicates"] = []
             ir_path.write_text(json.dumps(doc))
             _stamp()
             with mock.patch.object(ort.DerivationResolver, "select", _selected):
@@ -12352,62 +10904,69 @@ end program shallow_water2d_runner
             reason = detail["reason"]
             self.assertTrue(reason.startswith(
                 f"ir_rejected_by_current_validator:1:{ir_ref}/spec.ir.yaml:"
-                "test_predicates[0].pass_when.all[0].ref checks.g.pass reads a `pass` leaf"),
-                reason)
-            # The readiness reason quotes a 200-character HEAD of the finding (measured: the
-            # `— write checks.g.status` remedy lies past it under this ir_ref), and it is read
-            # by nobody who repairs — the refused IR re-derives. The full sentence is the
+                "io_contract.test_predicates is retired (issue #582)"), reason)
+            # The readiness reason quotes a 200-character HEAD of the finding, and it is read by
+            # nobody who repairs — the refused IR re-derives. The full sentence is the
             # compile-stage verdict, which is what the operator's `--stage compile` prints.
             self.assertFalse(detail["revoked"])
             direct = validate_compile_stage(repo, "workspace", ir_ref)
             self.assertEqual(len(direct), 1, direct)
-            self.assertIn("— write checks.g.status compared by eq against", str(direct[0]))
-            # Round 2: the `verdict` arm's twin refusal reaches readiness by the same route.
+            self.assertIn("write io_contract.tests and io_contract.predicates", str(direct[0]))
+            # A predicate the grammar refuses reaches readiness by the same route.
             doc = json.loads(ir_path.read_text())
-            cond = doc["io_contract"]["test_predicates"][0]["pass_when"]["all"][0]
-            cond["ref"], cond["value"], cond["na_allowed"] = "verdict.overall.status", "pass", True
+            del doc["io_contract"]["test_predicates"]
+            doc["io_contract"]["predicates"][0]["expr"] = "final.h[0]"
             ir_path.write_text(json.dumps(doc))
             _stamp()
             with mock.patch.object(ort.DerivationResolver, "select", _selected):
                 ok, detail = ort._ir_certification(
                     repo, node_key, resolver=ort.DerivationResolver(repo, target=_TP))
             self.assertFalse(ok, detail)
-            self.assertIn("verdict.overall.status has the tail", detail["reason"])
+            self.assertIn("predicates[0]", detail["reason"])
+            self.assertIn("Subscript is not admitted", str(validate_compile_stage(
+                repo, "workspace", ir_ref)))
 
     def test_compile_predicate_gate_rejects_missing_predicates(self) -> None:
+        """No `tests` is the schema gate's refusal. No `predicates` leaves every listed quantity
+        unjudged, which the omission gate names; so does an empty list."""
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates([])
-            io.pop("test_predicates")
+            io = self._io_contract_with_predicates()
+            io.pop("tests")
             v = self._compile_with_io_contract(Path(tmp), io)
-            self.assertTrue(any("test_predicates must be a non-empty list" in x for x in v), v)
+            self.assertTrue(any("io_contract.tests must be a non-empty list" in x for x in v), v)
+        for label, mutate in (("absent", lambda io: io.pop("predicates")),
+                              ("empty", lambda io: io.update(predicates=[]))):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates()
+                mutate(io)
+                v = self._compile_with_io_contract(Path(tmp), io)
+                self.assertTrue(any("no predicate (one that is not cross-target) judges "
+                                    "['mass_drift_rel']" in x for x in v), v)
 
-    def _primary_predicate(self, **override) -> dict:
+    @staticmethod
+    def _primary_predicate(**override) -> dict:
         return {"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
                 "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le", "value": 0.5,
                 "per_case": True, **override}
 
-    def _preds_with_quantity(self, quantity: object) -> list[dict]:
-        return [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                 "pass_when": {"all": [
-                     {"ref": "verdict.overall", "op": "eq", "value": "pass",
-                      "quantity": quantity},
-                     {"ref": "checks.g.status", "op": "eq", "value": "pass",
-                      "quantity": quantity}]}}]
+    @staticmethod
+    def _test_entry(**override) -> dict:
+        return {"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                "quantities": ["mass_drift_rel"], **override}
 
     def test_compile_gate_accepts_a_resolvable_primary_predicate(self) -> None:
-        """Z6 PR-2 (issue #255): `io_contract.primary_predicates` is gated at `--stage compile`
-        through the REAL wiring (`_validate_test_predicates` -> `validate_primary_predicate_schema`),
-        so a well-formed entry with a secondary `quantity` beside it passes the stage."""
+        """`io_contract.predicates` is gated at `--stage compile` through the REAL wiring
+        (`_validate_tests_and_predicates` -> `validate_primary_predicate_schema`), so a
+        well-formed entry passes the stage."""
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
-            io["primary_predicates"] = [self._primary_predicate()]
+            io = self._io_contract_with_predicates([self._primary_predicate()])
             self.assertEqual(self._compile_with_io_contract(Path(tmp), io), [])
 
     def test_compile_gate_rejects_an_unresolvable_primary_predicate(self) -> None:
-        """Each refusal class the primary gate owns, observed at the stage: an unknown capture
+        """Each refusal class the predicate gate owns, observed at the stage: an unknown capture
         variable, a bare name, a disallowed construct, a case input that is not a number in the
         target case, an `at()` outside the target cases, a state read only inside a term
-        constant by form (issue #483), and a malformed secondary `quantity`."""
+        constant by form (issue #483), and a malformed `quantity`."""
         rows = [
             (self._primary_predicate(expr="sum(final.zeta)"), "not a snapshot schema variable"),
             (self._primary_predicate(expr="nx"), "name 'nx' is not a coordinate"),
@@ -12423,21 +10982,15 @@ end program shallow_water2d_runner
         ]
         for pred, fragment in rows:
             with self.subTest(fragment=fragment), tempfile.TemporaryDirectory() as tmp:
-                io = self._io_contract_with_predicates(
-                    self._preds_with_quantity("mass_drift_rel"))
-                io["primary_predicates"] = [pred]
+                io = self._io_contract_with_predicates([pred])
                 v = self._compile_with_io_contract(Path(tmp), io)
                 self.assertTrue(any(fragment in x for x in v), (fragment, v))
                 self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
         with tempfile.TemporaryDirectory() as tmp:
-            # the SECONDARY refusal, through the stage (round 1: `corroborate=False`, or the
-            # helper's auto-added primary of the same malformed name answers the fragment)
-            io = self._io_contract_with_predicates(self._preds_with_quantity("Mass Drift"),
-                                                   corroborate=False)
+            # a malformed `quantity` on a predicate, through the stage
+            io = self._io_contract_with_predicates([self._primary_predicate(quantity="Mass Drift")])
             v = self._compile_with_io_contract(Path(tmp), io)
-            self.assertTrue(any("quantity must be present and match" in x for x in v), v)
-            self.assertFalse(any("primary_predicates[" in x and "quantity must match" in x
-                                 for x in v), v)
+            self.assertTrue(any("predicates[0]" in x and "quantity" in x for x in v), v)
 
     def test_compile_gate_refuses_a_coordinate_paired_below_the_state_rank(self) -> None:
         """Issue #440 through the real wiring: a stacked `[3,2,2]` capture beside the `[2,2]`
@@ -12451,16 +11004,14 @@ end program shallow_water2d_runner
                  "maxabs(final.hv + f_rows * initial.hu))")
         # (YAML reads a JSON-dumped `1e-05` as a string, so the constants carry a decimal point)
         inputs = {"grid": {"ny": 2}, "constants": {"f0": 0.25, "df": 0.5}}
-        for stacked, expected in ((True, ("primary_predicates[0].expr: operator *: operands of "
+        for stacked, expected in ((True, ("predicates[0].expr: operator *: operands of "
                                           "rank 3 and 2")), (False, None)):
             with self.subTest(stacked=stacked), tempfile.TemporaryDirectory() as tmp:
-                io = self._io_contract_with_predicates(
-                    self._preds_with_quantity("mass_drift_rel"))
-                schema = io["raw_requirements"]["required_evidence"][1]["schema"]
+                io = self._io_contract_with_predicates([pred])
+                schema = io["raw_requirements"]["required_evidence"][0]["schema"]
                 schema["coordinates"] = [coord]
                 if stacked:
                     schema["variables"].append({"name": "U", "shape_expr": "[3,2,2]"})
-                io["primary_predicates"] = [pred]
                 v = self._compile_with_io_contract(Path(tmp), io, case_inputs=inputs)
                 if expected is None:
                     self.assertEqual(v, [])
@@ -12469,21 +11020,24 @@ end program shallow_water2d_runner
                     self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
 
     def test_compile_gate_pins_primary_target_cases_to_the_tests(self) -> None:
-        """Round 1 (security axis): a primary predicate over a SUBSET of its test's cases was
-        accepted and recorded as corroboration of the whole test. Through the real wiring: the
-        secondary ranges over c1 and c2, the primary over c1 alone -> refused; over both -> not."""
-        preds = self._preds_with_quantity("mass_drift_rel")
-        preds[0]["target_cases"] = ["c1", "c2"]
-        with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(copy.deepcopy(preds))
-            io["primary_predicates"] = [self._primary_predicate(target_cases=["c1"])]
-            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
-            self.assertTrue(any("must equal the target_cases of test 't1'" in x for x in v), v)
-        with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(copy.deepcopy(preds))
-            io["primary_predicates"] = [self._primary_predicate(target_cases=["c2", "c1"])]
-            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
-                                                            case_ids=("c1", "c2")), [])
+        """D10 (c): a predicate over a SUBSET of its test's cases would judge the rest by
+        nothing. Through the real wiring: the test ranges over c1 and c2, the predicate over c1
+        alone -> refused, and over c1 and c2 in either order -> not. The other direction, a
+        predicate over more than its test's cases, is refused the same way."""
+        test = self._test_entry(target_cases=["c1", "c2"])
+        for label, tests, targets, refused in (
+                ("subset", [test], ["c1"], True),
+                ("reordered", [test], ["c2", "c1"], False),
+                ("superset", [self._test_entry()], ["c1", "c2"], True)):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates(
+                    [self._primary_predicate(target_cases=targets)], tests)
+                v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
+                if refused:
+                    self.assertTrue(any("must equal the target_cases of test 't1'" in x
+                                        for x in v), v)
+                else:
+                    self.assertEqual(v, [])
 
     def test_compile_gate_resolves_input_paths_against_the_cases_it_is_given(self) -> None:
         """Round 2 census: with every fixture case carrying `inputs: {}`, the wiring's
@@ -12491,9 +11045,8 @@ end program shallow_water2d_runner
         through the real stage and a string one at the same path is refused."""
         for value, expected in ((8, []), ("8", ["not a number"])):
             with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
-                io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
-                io["primary_predicates"] = [
-                    self._primary_predicate(expr="sum(final.h) / inputs.grid.nx")]
+                io = self._io_contract_with_predicates(
+                    [self._primary_predicate(expr="sum(final.h) / inputs.grid.nx")])
                 v = self._compile_with_io_contract(Path(tmp), io,
                                                    case_inputs={"grid": {"nx": value}})
                 if expected:
@@ -12507,23 +11060,24 @@ end program shallow_water2d_runner
                       "max(maxabs(final.h), maxabs(comparand.final.h), 1.0)",
               "op": "le", "value": 1.0e-12, "per_case": True}
 
-    def _compile_with_tests_md_body(self, repo_root: Path, body: str, cross: list[dict]):
-        io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
-        io["primary_predicates"] = [self._primary_predicate(), *cross]
+    def _compile_with_tests_md_body(self, repo_root: Path, body: str, cross: list[dict],
+                                    *, primary: bool = True):
+        io = self._io_contract_with_predicates(
+            [*([self._primary_predicate()] if primary else []), *cross])
         tests_md = repo_root / MOCK_TESTS_REF
         tests_md.parent.mkdir(parents=True, exist_ok=True)
         tests_md.write_text(body, encoding="utf-8")
         return self._compile_with_io_contract(repo_root, io, plant_tests_md=False)
 
     def test_compile_gate_pins_the_cross_target_transcription_set(self) -> None:
-        """Issue #324 (R4-d PR-2): a cross-target predicate covers no condition, so the
-        coverage gate cannot see one omitted. `_validate_test_predicates` pins the set: a test
+        """Issue #324 (R4-d PR-2): a cross-target predicate judges no verdict, so the omission
+        gate cannot see one omitted. `_validate_tests_and_predicates` pins the set: a test
         whose tests.md definition applies the cross-target judgment carries a cross-target
         predicate, and no other test does — both directions, through the real stage."""
-        applied = ("### 1-1. `t1`\n- `expected_outcome`: `pass`\n"
+        applied = ("### 1-1. `t1`\n- `expected_outcome`: `pass`\n- `quantities`: `mass_drift_rel`\n"
                    "  - The cross-target judgment is applied. The evaluation expression is "
                    "`cross_target_state_agreement` over `h`, and the threshold is 1e-12.\n")
-        not_applied = ("### 1-1. `t1`\n- `expected_outcome`: `pass`\n"
+        not_applied = ("### 1-1. `t1`\n- `expected_outcome`: `pass`\n- `quantities`: `mass_drift_rel`\n"
                        "  - The cross-target judgment is not applied. The non-application "
                        "basis is \"none\".\n")
         rows = [
@@ -12535,15 +11089,16 @@ end program shallow_water2d_runner
             (not_applied, [self._CROSS], ("test_id 't1', whose tests.md definition does not",)),
             (not_applied, [], ()),
             # wrapped across two lines, bullet form
-            ("- `test_id`: `t1`\n  - `judgment`: equal. The cross-target\n  judgment is "
+            ("- `test_id`: `t1`\n  - `quantities`: mass_drift_rel\n  - `judgment`: equal. The cross-target\n  judgment is "
              "applied: over `h` is `<= 1e-12`.\n", [],
              ("tests.md applies the cross-target judgment to test 't1'",)),
             # a `## ` section after the last test ends its definition: the sentence there is
             # about the suite, not t1
-            ("### 1-1. `t1`\n- ok\n\n## 7. Pass/fail aggregation rules\n"
+            ("### 1-1. `t1`\n- quantities: mass_drift_rel\n\n## 7. Pass/fail aggregation rules\n"
              "- The cross-target judgment is applied to every pass test.\n", [], ()),
             # the sentence under ANOTHER test does not ask t1 for one
-            ("### 1-1. `t1`\n- ok\n### 1-2. `t2`\n- The cross-target judgment is applied.\n",
+            ("### 1-1. `t1`\n- quantities: mass_drift_rel\n### 1-2. `t2`\n- quantities: mass_drift_rel\n"
+             "- The cross-target judgment is applied.\n",
              [self._CROSS], ("test_id 't1', whose tests.md definition does not",
                              "tests.md applies the cross-target judgment to test 't2'")),
         ]
@@ -12609,42 +11164,35 @@ end program shallow_water2d_runner
 
     def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(self._preds_with_quantity("mass_drift_rel"))
-            io["primary_predicates"] = [self._primary_predicate()]
-            io["raw_requirements"]["required_evidence"] = [
-                {"artifact": "metrics_basis.json", "required": True}]
+            io = self._io_contract_with_predicates()
+            io["raw_requirements"]["required_evidence"] = []
             v = self._compile_with_io_contract(Path(tmp), io)
             self.assertTrue(any("requires a state_snapshots required_evidence" in x
                                 for x in v), v)
 
     def test_compile_predicate_gate_rejects_unknown_case_and_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["nope"],
-                      "pass_when": {"all": [{"ref": "checks.absent.status", "op": "eq",
-                                             "value": "pass"}]}}]
-            # `corroborate=False` (round 2 census): the helper's auto-added corroborant copies
-            # `target_cases: ["nope"]` and the PRIMARY gate would answer the fragment too
-            v = self._compile_with_io_contract(
-                Path(tmp), self._io_contract_with_predicates(preds, corroborate=False))
-            self.assertTrue(any("test_predicates[0].target_cases references unknown case_id"
-                                in x for x in v), v)
-            self.assertTrue(any("diagnostics_contract.checks" in x for x in v), v)
+            io = self._io_contract_with_predicates(
+                [self._primary_predicate(target_cases=["nope"])],
+                [self._test_entry(target_cases=["nope"])])
+            v = self._compile_with_io_contract(Path(tmp), io)
+            self.assertTrue(any("tests[0].target_cases references unknown case_id" in x
+                                for x in v), v)
+            self.assertTrue(any("predicates[0].target_cases" in x for x in v), v)
 
-    def test_compile_predicate_gate_uses_test_evidence_requirements_fallback(self) -> None:
-        # F2: when tests.md does NOT resolve, the predicate gate falls back to the same-IR
-        # test_evidence_requirements id set, so a predicate id absent from it is still caught.
-        # The fixture must therefore withhold tests.md — planting it (the default now) resolves the
-        # ref and routes the gate through its tests.md branch instead, leaving this fallback
-        # unexercised. An unresolvable ref is itself a violation (_validate_ir_source_refs_tests),
-        # which is why this asserts the specific fallback finding rather than the whole list.
+    def test_compile_predicate_gate_uses_the_tests_ids_when_tests_md_is_unresolved(self) -> None:
+        # When tests.md does NOT resolve, the predicate gate falls back to the same-IR
+        # `tests[]` id set, so a predicate id absent from it is still caught. The fixture must
+        # therefore withhold tests.md — planting it (the default) resolves the ref and routes the
+        # gate through its tests.md branch instead, leaving this fallback unexercised. An
+        # unresolvable ref is itself a violation (_validate_ir_source_refs_tests), which is why
+        # this asserts the specific fallback finding rather than the whole list.
         with tempfile.TemporaryDirectory() as tmp:
             io = self._io_contract_with_predicates(
-                [{"test_id": "not_in_ter", "expected_outcome": "pass", "target_cases": ["c1"],
-                  "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}])
-            io["test_evidence_requirements"] = [
-                {"test_id": "t1", "required_raw_variables": ["h"]}]
+                [self._primary_predicate(), self._primary_predicate(test_id="not_in_tests")])
             v = self._compile_with_io_contract(Path(tmp), io, plant_tests_md=False)
-            self.assertTrue(any("unknown test_id not in tests.md" in x for x in v), v)
+            self.assertTrue(any("predicates[1]" in x and "not a tests.md test_id" in x
+                                for x in v), v)
 
     def test_parse_test_ids_handles_heading_and_bullet_forms(self) -> None:
         from tools.validate_pipeline_semantics import _parse_test_ids_from_tests_md
@@ -12669,11 +11217,9 @@ end program shallow_water2d_runner
 
     def test_compile_predicate_gate_flags_tests_md_resolved_but_empty(self) -> None:
         # Fail-closed: a resolvable tests.md that parses to 0 test_ids (unrecognized form) must
-        # be a violation, not a silent fall-back to test_evidence_requirements.
+        # be a violation, not a silent fall-back to the IR's own `tests[]` ids.
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(
-                [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                  "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}])
+            io = self._io_contract_with_predicates()
             _seed_shape_expr_schema_into(Path(tmp))
             _create_minimal_execution_tree(
                 Path(tmp), dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -12702,319 +11248,443 @@ end program shallow_water2d_runner
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
             self.assertTrue(any("resolved but parsed 0 test_ids" in x for x in v), v)
 
-    def test_compile_predicate_gate_rejects_verdict_ref_when_not_required(self) -> None:
-        # A verdict.* ref is only allowed when diagnostics_contract.verdict.required=true;
-        # with required=false the runner is not contracted to emit verdict -> reject at Compile.
+    def test_a_test_whose_predicates_read_one_of_its_cases_is_refused_at_the_gate(self) -> None:
+        """The stage hands `quantity_violations` the snapshot's state names: a `case: a` predicate
+        as the only judgment of a test over [a, b] names every target case and values one. The
+        names-only half of that gate cannot see it."""
+        ir = {"case": {"test_case_set": [{"case_id": c, "inputs": {}} for c in "ab"]},
+              "io_contract": {
+                  "raw_requirements": {"required_evidence": [
+                      {"artifact": "state_snapshots", "schema": {
+                          "variables": [{"name": "s", "shape_expr": "scalar"}],
+                          "time_variable": "t"}}]},
+                  "tests": [{"test_id": "t1", "expected_outcome": "pass",
+                             "target_cases": ["a", "b"], "quantities": ["q"]}],
+                  "predicates": [{"test_id": "t1", "quantity": "q", "target_cases": ["a", "b"],
+                                  "expr": "final.s", "op": "le", "value": 1.0, "case": "a"}]}}
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(
-                [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                  "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}])
-            io["diagnostics_contract"]["verdict"] = {
-                "required": False, "fields": ["overall", "failed_checks"]}
-            v = self._compile_with_io_contract(Path(tmp), io)
-            self.assertTrue(any("verdict.overall" in x for x in v), v)
+            ir_dir = Path(tmp) / "ir"
+            ir_dir.mkdir()
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            violations: list[str] = []
+            vps._validate_tests_and_predicates(Path(tmp), ir_dir, violations)
+        self.assertEqual(len([v for v in violations if "target case(s) ['b']" in v]), 1, violations)
 
-    def test_compile_predicate_gate_rejects_unpinned_metric(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [{"ref": "errors.analytic_h.l2_rel_tend", "op": "le",
-                                             "value": 0.2, "per_case": True}]}}]
-            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
-            self.assertTrue(any("diagnostics_contract.metrics" in x for x in v), v)
-
-    def test_compile_predicate_gate_rejects_check_ref_without_status_leaf(self) -> None:
-        """Issue #269, through the production entry (`validate_compile_stage` ->
-        `_validate_test_predicates` -> `validate_predicate_schema` -> `_check_ref`): a `checks`
-        ref is exactly `checks.<id>.status`, the one leaf the runner writes. The three refused
-        shapes are the spelling `phase_01_compile.md` offered before #269 (`.pass`), the bare
-        object (present at execute, so every op compared false as a `physics_fail`), and any
-        other tail. The control spelling passes the stage. Each condition is corroborated
-        (`_io_contract_with_predicates` default) so the coverage gate stays silent and the
-        only violation this row sees is the ref gate's."""
-        loc = ("workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
-               "/spec.ir.yaml:test_predicates[0].pass_when.all[0].ref ")
-        for ref, value in (("checks.g.pass", True), ("checks.g", True),
-                           ("checks.g.status.x", "pass")):
-            with self.subTest(ref=ref), tempfile.TemporaryDirectory() as tmp:
-                preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                          "pass_when": {"all": [{"ref": ref, "op": "eq", "value": value}]}}]
+    def test_compile_omission_gate_through_the_stage(self) -> None:
+        """D10 (issue #582), THROUGH the full compile stage (`_validate_tests_and_predicates` ->
+        `primary_evidence.quantity_violations`): the set of `quantity` over a test's predicates
+        equals its `quantities`, both directions; a cross-target predicate does not stand for a
+        listed judgment."""
+        cross = {**self._CROSS, "quantity": "mass_drift_rel", "value": 0.001}
+        applied = ("### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
+                   "- The cross-target judgment is applied.\n")
+        rows = [
+            ("listed, unjudged", [self._primary_predicate(quantity="other")],
+             "['mass_drift_rel'], which its quantities line lists"),
+            ("judged, unlisted", [self._primary_predicate(),
+                                  self._primary_predicate(quantity="other")],
+             "predicates judge ['other'], which its quantities line does not list"),
+        ]
+        for label, preds, fragment in rows:
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
                 v = self._compile_with_io_contract(
                     Path(tmp), self._io_contract_with_predicates(preds))
-                # the validator spells its subject as an ABSOLUTE path under the tmp checkout
-                hits = [x for x in v if f"/{loc}{ref} " in str(x)]
-                self.assertEqual(len(hits), 1, v)
-                self.assertIn("— write checks.g.status", hits[0])
-        # Round 1: the half-follow of the remedy — the ref corrected, the corpus's `value: true`
-        # kept — is refused through the same entry, on the value.
-        with tempfile.TemporaryDirectory() as tmp:
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [{"ref": "checks.g.status", "op": "eq",
-                                             "value": True}]}}]
-            v = self._compile_with_io_contract(Path(tmp), self._io_contract_with_predicates(preds))
-            hits = [x for x in v if ".pass_when.all[0].value True is not a status" in str(x)]
-            self.assertEqual(len(hits), 1, v)
-        with tempfile.TemporaryDirectory() as tmp:
-            preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                      "pass_when": {"all": [{"ref": "checks.g.status", "op": "eq",
-                                             "value": "pass"}]}}]
-            self.assertEqual(self._compile_with_io_contract(
-                Path(tmp), self._io_contract_with_predicates(preds)), [])
-
-    def test_compile_predicate_gate_refuses_an_xfail_suite_failure_assertion(self) -> None:
-        """Issue #530, through the production entry (`validate_compile_stage` ->
-        `_validate_test_predicates` -> `_xfail_suite_failure_violations`): the top-level
-        verdict and checks are the harness's xfail-excluded fold, which leaves out every target
-        case of an xfail predicate (`runner_ir.xfail_cases`), so a failure asserted there with
-        neither `per_case` nor `case:` is satisfied by no failure of the test's own cases. Each
-        refused spelling is refused once, at its own condition; each control — the same
-        condition scoped either way, a suite-level PASS assertion (what the fold reports when only the guard fails), and the same
-        failure assertion in a `pass` predicate — leaves the stage clean."""
-        refused = (
-            {"ref": "verdict.overall", "op": "eq", "value": "fail"},
-            {"ref": "verdict.failed_checks", "op": "includes", "value": "g"},
-            {"ref": "verdict.failed_checks", "op": "eq", "value": ["g"]},
-            {"ref": "checks.g.status", "op": "eq", "value": "fail"},
-        )
-        admitted = (
-            ("xfail", {"ref": "verdict.overall", "op": "eq", "value": "fail", "per_case": True}),
-            ("xfail", {"ref": "verdict.failed_checks", "op": "includes", "value": "g",
-                       "case": "c1"}),
-            ("xfail", {"ref": "verdict.overall", "op": "eq", "value": "pass"}),
-            ("xfail", {"ref": "checks.g.status", "op": "eq", "value": "pass"}),
-            ("xfail", {"ref": "verdict.failed_checks", "op": "eq", "value": []}),
-            ("pass", {"ref": "verdict.overall", "op": "eq", "value": "fail"}),
-            ("pass", {"ref": "checks.g.status", "op": "eq", "value": "fail"}),
-        )
-
-        def stage(outcome: str, cond: dict) -> list[str]:
-            preds = [{"test_id": "t1", "expected_outcome": outcome, "target_cases": ["c1"],
-                      "pass_when": {"all": [{"ref": "metrics.mass_drift_rel", "op": "le",
-                                             "value": 1.0, "per_case": True},
-                                            dict(cond)]}}]
-            with tempfile.TemporaryDirectory() as tmp:
-                return self._compile_with_io_contract(
-                    Path(tmp), self._io_contract_with_predicates(preds))
-
-        for cond in refused:
-            with self.subTest(refused=cond):
-                v = stage("xfail", cond)
-                hits = [x for x in v if "test_predicates[0].pass_when.all[1] (test 't1', "
-                        "expected_outcome xfail) asserts" in str(x)]
-                self.assertEqual(len(hits), 1, v)
-                self.assertIn("xfail-excluded fold", hits[0])
-                self.assertEqual(len(v), 1, v)
-        for outcome, cond in admitted:
-            with self.subTest(outcome=outcome, admitted=cond):
-                self.assertEqual(stage(outcome, cond), [])
-        # The outcome is read as the schema gate and `runner_ir.xfail_cases` read it — stripped
-        # and case-folded — so a spelling both of them take as xfail is refused here too.
-        v = stage(" XFail ", refused[0])
-        self.assertEqual(
-            [x for x in v if "(test 't1', expected_outcome xfail) asserts" in str(x)][:1],
-            v[:1], v)
-        self.assertEqual(len(v), 1, v)
-        # The scope is read as the evaluator reads it: `per_case: false` is the suite scope, so
-        # it is refused here; a malformed scope the evaluator would not read as suite-level
-        # (`per_case: "true"`, `case: null`) is the schema gate's alone.
-        v = stage("xfail", {**refused[0], "per_case": False})
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("xfail-excluded fold", v[0])
-        for malformed, schema_says in ((("per_case", "true"), "per_case must be a boolean"),
-                                       (("case", None), "case must be a non-empty string")):
-            with self.subTest(malformed=malformed):
-                v = stage("xfail", {**refused[0], malformed[0]: malformed[1]})
-                self.assertTrue([x for x in v if schema_says in str(x)], v)
-                self.assertFalse([x for x in v if "xfail-excluded fold" in str(x)], v)
-        # ... while a falsy malformed `per_case` IS read as suite scope, so both gates report it.
-        for falsy in (0, ""):
-            with self.subTest(falsy=falsy):
-                v = stage("xfail", {**refused[0], "per_case": falsy})
-                self.assertTrue([x for x in v if "per_case must be a boolean" in str(x)], v)
-                self.assertTrue([x for x in v if "xfail-excluded fold" in str(x)], v)
-        # A malformed `checks` ref is the schema gate's alone to report (once, on the ref).
-        v = stage("xfail", {"ref": "checks.g", "op": "eq", "value": "fail"})
-        self.assertTrue(v, v)
-        self.assertFalse([x for x in v if "xfail-excluded fold" in str(x)], v)
-
-    def test_compile_coverage_gate_through_the_stage(self) -> None:
-        """Z6 PR-3 (issue #255): the per-test coverage gate, THROUGH the full compile stage
-        (`_validate_test_predicates` -> `primary_evidence.coverage_violations`), replacing the
-        set-level degenerate gate. A pass test asserting only `verdict.*` — the shape that gate
-        refused — is accepted once a corroborant of that quantity exists; what is refused is an
-        absent `primary_predicates`, an empty one, a condition with no `quantity`, and a
-        quantity no corroborant of the same test carries."""
-        verdict_only = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                         "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq",
-                                                "value": "pass", "quantity": "overall"}]}}]
-        corroborant = {"test_id": "t1", "quantity": "overall", "target_cases": ["c1"],
-                       "expr": "sum(final.h)", "op": "le", "value": 1.0e9, "per_case": True}
-        with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(verdict_only, corroborate=False)
-            io["primary_predicates"] = [corroborant]
-            self.assertEqual(self._compile_with_io_contract(Path(tmp), io), [])
-        rows = [
-            ("absent", None, "io_contract.primary_predicates missing"),
-            ("empty", [], ("condition on 'verdict.overall' (quantity 'overall') has no "
-                           "host-evaluated corroborant")),
-            ("other quantity", [{**corroborant, "quantity": "mass"}],
-             ("condition on 'verdict.overall' (quantity 'overall') has no host-evaluated "
-              "corroborant: add a primary_predicates entry with test_id 't1' and quantity "
-              "'overall'")),
-        ]
-        for label, primary, fragment in rows:
-            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
-                io = self._io_contract_with_predicates(verdict_only, corroborate=False)
-                if primary is not None:
-                    io["primary_predicates"] = primary
-                v = self._compile_with_io_contract(Path(tmp), io)
                 self.assertTrue(any(fragment in x and "spec.ir.yaml:" in x for x in v),
                                 (fragment, v))
-        # round 1 (security axis): a `case:`-scoped corroborant of a per_case condition passed
-        # every gate through the stage; refused now, with the pinned scope named
-        per_case = copy.deepcopy(verdict_only)
-        per_case[0]["target_cases"] = ["c1", "c2"]
-        per_case[0]["pass_when"]["all"][0]["per_case"] = True
+        # A cross-target predicate of the listed quantity judges nothing: no run's verdict
+        # evaluates it, so the listed judgment is still unjudged. The cross-target SET is
+        # satisfied here (tests.md applies the judgment), so this is the omission gate's alone.
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(per_case, corroborate=False)
-            narrow = {**corroborant, "target_cases": ["c1", "c2"], "case": "c1"}
-            del narrow["per_case"]
-            io["primary_predicates"] = [narrow]
-            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
-            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
-                                and "spec.ir.yaml:" in x for x in v), v)
-            # round 2: the same corroborant against a SUITE-LEVEL condition over both cases
-            suite = copy.deepcopy(per_case)
-            del suite[0]["pass_when"]["all"][0]["per_case"]
-            io = self._io_contract_with_predicates(suite, corroborate=False)
-            io["primary_predicates"] = [narrow]
-            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
-            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
-                                for x in v), v)
-            # ... and a `case: c1` corroborant whose at('c2') reaches the other case passes
-            io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) + sum(at('c2').final.h)"}]
-            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
-                                                            case_ids=("c1", "c2")), [])
-            # issue #567: an at('c2') only in a bind `expr` never reaches values nothing, so
-            # it reaches no case — refused through the stage like the narrow corroborant
-            io["primary_predicates"] = [{**narrow,
-                                         "bind": {"dead": "sum(at('c2').final.h)"}}]
-            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
-            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
-                                and "(each reads [['c1']])" in x for x in v), v)
-            # round 2 (blank-slate axis): the stage builds the state-name set from the IR's
-            # OWN snapshot schema — the time variable `t` is not in it (an at('c2').final.t
-            # values nothing of c2), and a variable with a name no fixture elsewhere declares
-            # IS in it (an at('c2').final.zeta_q read values c2) — so a stage that added the
-            # time variable, or passed a hard-coded name set, is red here
-            io["primary_predicates"] = [{**narrow, "expr": "sum(final.h) * at('c2').final.t"}]
-            v = self._compile_with_io_contract(Path(tmp), io, case_ids=("c1", "c2"))
-            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
-                                and "(each reads [['c1']])" in x for x in v), v)
-            io["raw_requirements"]["required_evidence"][1]["schema"]["variables"].append(
-                {"name": "zeta_q", "shape_expr": "[2,2]"})
-            io["primary_predicates"] = [{**narrow,
-                                         "expr": "sum(final.h) + sum(at('c2').final.zeta_q)"}]
-            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
-                                                            case_ids=("c1", "c2")), [])
-            io = self._io_contract_with_predicates(per_case, corroborate=False)
-            io["primary_predicates"] = [{**corroborant, "target_cases": ["c1", "c2"]}]
-            self.assertEqual(self._compile_with_io_contract(Path(tmp), io,
-                                                            case_ids=("c1", "c2")), [])
+            v = self._compile_with_tests_md_body(Path(tmp), applied, [cross], primary=False)
+            self.assertEqual(len([x for x in v if "no predicate (one that is not cross-target) "
+                                  "judges ['mass_drift_rel']" in x]), 1, v)
+            self.assertFalse([x for x in v if "cross-target judgment to test" in x], v)
+        # ... and beside a predicate that does judge it, the same entry is clean.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._compile_with_tests_md_body(Path(tmp), applied, [cross]), [])
         # issue #567 review round 2: a snapshot variable whose `shape_expr` is of no recognised
-        # form made the stage RAISE out of the coverage call (origin/main returned the schema
-        # gate's "snapshot schema unreadable" violation); the stage returns its list again,
-        # with the schema gate's finding and, fail-closed, every condition uncovered
+        # form must not make the stage RAISE out of a gate that reads the schema: it returns the
+        # schema gate's finding.
         with tempfile.TemporaryDirectory() as tmp:
-            io = self._io_contract_with_predicates(verdict_only, corroborate=False)
-            io["primary_predicates"] = [corroborant]
-            io["raw_requirements"]["required_evidence"][1]["schema"]["variables"][0][
+            io = self._io_contract_with_predicates()
+            io["raw_requirements"]["required_evidence"][0]["schema"]["variables"][0][
                 "shape_expr"] = "nx*ny"
             v = self._compile_with_io_contract(Path(tmp), io)
             self.assertTrue(any("snapshot schema unreadable" in x for x in v), v)
-            self.assertTrue(any("no corroborant of that quantity reads every such case" in x
-                                and "(each reads [[]])" in x for x in v), v)
-        with tempfile.TemporaryDirectory() as tmp:
-            no_q = copy.deepcopy(verdict_only)
-            del no_q[0]["pass_when"]["all"][0]["quantity"]
-            io = self._io_contract_with_predicates(no_q, corroborate=False)
-            io["primary_predicates"] = [corroborant]
-            v = self._compile_with_io_contract(Path(tmp), io)
-            self.assertTrue(any("quantity must be present" in x for x in v), v)
-            # and the coverage gate does not ALSO report the untagged condition
-            self.assertFalse(any("has no host-evaluated corroborant" in x for x in v), v)
 
-    def test_real_predicate_set_is_reached_by_the_coverage_gate(self) -> None:
-        # The coverage gate (Z6 PR-3, replacing the degenerate gate this row used to calibrate)
-        # reaches a REAL full-fidelity IR's predicates. The tracked fixture predates Z6: it
-        # carries no `quantity` and no `primary_predicates`, which is exactly the shape every
-        # certified legacy IR has: the current validator refuses it (plan decision 10; in a
-        # real tree the version bumps' key mismatch precedes the validator clause of
-        # `_ir_certification`, and either way the node re-derives) — so the captured drive
-        # must name the absent corroborant set, and the
-        # same fixture with every condition tagged and corroborated must be clean of both
-        # complaints. Driving the fixture twice, in both directions, is what shows the gate
-        # reached real predicates rather than falling out early on a document it could not
-        # read (an unparseable or empty IR returns nothing at all, and `{}` a different
-        # complaint entirely).
+    def _stage_with_tests_md(self, repo_root: Path, body: str, io: dict,
+                             case_ids: tuple[str, ...] = ("c1",)) -> list[str]:
+        tests_md = repo_root / MOCK_TESTS_REF
+        tests_md.parent.mkdir(parents=True, exist_ok=True)
+        tests_md.write_text(body, encoding="utf-8")
+        return self._compile_with_io_contract(repo_root, io, plant_tests_md=False,
+                                              case_ids=case_ids)
+
+    def test_each_retired_io_contract_key_is_refused_by_name(self) -> None:
+        """Each key issue #582 retired, through the stage, beside a well-formed `tests` and
+        `predicates`: the one violation names the key and what replaced it, so a leaf that reaches
+        for one is redirected at Compile. The value is not read: an empty one is refused too."""
+        for key, replacement in vps._RETIRED_IO_CONTRACT_KEYS.items():
+            for value in ([], [{"test_id": "t1"}]):
+                with self.subTest(key=key, value=value), tempfile.TemporaryDirectory() as tmp:
+                    io = self._io_contract_with_predicates()
+                    io[key] = value
+                    v = self._compile_with_io_contract(Path(tmp), io)
+                    self.assertEqual(len(v), 1, v)
+                    self.assertIn(f"io_contract.{key} is retired (issue #582)", v[0])
+                    self.assertIn(f"write {replacement}", v[0])
+        self.assertEqual(set(vps._RETIRED_IO_CONTRACT_KEYS),
+                         {"test_predicates", "primary_predicates", "diagnostics_contract",
+                          "test_evidence_requirements"})
+
+    def test_tests_ids_equal_the_tests_md_ids_in_both_directions(self) -> None:
+        one = "### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
+        two = one + "### 1-2. `t2`\n- `quantities`: `mass_drift_rel`\n"
+        t2_pred = self._primary_predicate(test_id="t2")
+        rows = [
+            ("tests.md has more", two, [self._test_entry()], [self._primary_predicate()],
+             "io_contract.tests missing tests from tests.md (['t2'])"),
+            ("the IR has more", one, [self._test_entry(), self._test_entry(test_id="t2")],
+             [self._primary_predicate(), t2_pred],
+             "io_contract.tests has unknown test_id not in tests.md (['t2'])"),
+        ]
+        for label, body, tests, preds, fragment in rows:
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                v = self._stage_with_tests_md(
+                    Path(tmp), body, self._io_contract_with_predicates(preds, tests))
+                self.assertTrue(any(fragment in x and "spec.ir.yaml:" in x for x in v), v)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._stage_with_tests_md(
+                Path(tmp), two, self._io_contract_with_predicates(
+                    [self._primary_predicate(), t2_pred],
+                    [self._test_entry(), self._test_entry(test_id="t2")])), [])
+
+    def test_tests_quantities_equal_the_tests_md_line_in_both_directions(self) -> None:
+        """D10: the leaf copies the line, so the comparison is against the spec rather than
+        against anything the leaf wrote for itself. Each IR is self-consistent (its predicates
+        judge exactly its `quantities`), so only this comparison can answer."""
+        def preds(*names):
+            return [self._primary_predicate(quantity=n) for n in names]
+
+        rows = [
+            ("the line lists more", "`a`, `b`", ["a"], "quantities ['a'] must equal"),
+            ("the IR lists more", "`a`", ["a", "b"], "quantities ['a', 'b'] must equal"),
+            ("disjoint", "`a`", ["b"], "quantities ['b'] must equal"),
+        ]
+        for label, line, listed, fragment in rows:
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                v = self._stage_with_tests_md(
+                    Path(tmp), f"### 1-1. `t1`\n- `quantities`: {line}\n",
+                    self._io_contract_with_predicates(
+                        preds(*listed), [self._test_entry(quantities=listed)]))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(f"io_contract.tests entry 't1': {fragment}", v[0])
+                self.assertIn("`quantities:` line of its tests.md definition", v[0])
+        # set equality: the order on the line is no judgment
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self._stage_with_tests_md(
+                Path(tmp), "### 1-1. `t1`\n- `quantities`: `b`, `a`\n",
+                self._io_contract_with_predicates(
+                    preds("a", "b"), [self._test_entry(quantities=["a", "b"])])), [])
+
+    def test_a_tests_md_definition_holds_exactly_one_well_formed_quantities_line(self) -> None:
+        """`docs/TESTS.md` §Description format, each refusal in both spellings the corpus uses
+        (the bullet with backticks, and a plain line), through the stage. Each row's IR would
+        otherwise pass, and a definition that fails names its test alone: the sibling is read."""
+        ok = "### 1-2. `t2`\n- `quantities`: `mass_drift_rel`\n"
+        bad_rows = [
+            ("no line", "- `expected_outcome`: `pass`\n",
+             "test 't1' has no `quantities:` line"),
+            ("two, bullet", "- `quantities`: `mass_drift_rel`\n- `quantities`: `other`\n",
+             "test 't1' has 2 `quantities:` lines"),
+            ("two, plain", "quantities: mass_drift_rel\nquantities: other\n",
+             "test 't1' has 2 `quantities:` lines"),
+            ("two, mixed", "- `quantities`: `mass_drift_rel`\nquantities: mass_drift_rel\n",
+             "test 't1' has 2 `quantities:` lines"),
+            ("garbage, bullet", "- `quantities`: `mass_drift_rel <= 1e-10`\n",
+             "not quantity names"),
+            ("garbage, plain", "quantities: the mass drift judgment\n", "not quantity names"),
+            ("capitals, plain", "quantities: Mass_Drift\n", "not quantity names"),
+            ("empty, bullet", "- `quantities`:\n", "not quantity names"),
+            ("empty, plain", "quantities:\n", "not quantity names"),
+            ("trailing comma", "quantities: mass_drift_rel,\n", "not quantity names"),
+        ]
+        io = self._io_contract_with_predicates(
+            [self._primary_predicate(), self._primary_predicate(test_id="t2")],
+            [self._test_entry(), self._test_entry(test_id="t2")])
+        for label, definition, fragment in bad_rows:
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                v = self._stage_with_tests_md(Path(tmp), f"### 1-1. `t1`\n{definition}{ok}",
+                                              copy.deepcopy(io))
+                hits = [x for x in v if fragment in x]
+                self.assertEqual(len(hits), 1, v)
+                self.assertIn("tests.md (", hits[0])
+                self.assertIn("'t1'", hits[0])
+                self.assertFalse([x for x in v if "'t2'" in x], v)
+        for label, definition in (("bullet", "- `quantities`: `mass_drift_rel`\n"),
+                                  ("star bullet", "* quantities: `mass_drift_rel`\n"),
+                                  ("indented", "  - `quantities`: mass_drift_rel\n"),
+                                  ("plain", "quantities: mass_drift_rel\n")):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(self._stage_with_tests_md(
+                    Path(tmp), f"### 1-1. `t1`\n{definition}{ok}", copy.deepcopy(io)), [])
+
+    def test_parse_test_quantities_reads_only_names(self) -> None:
+        """The reader alone, for what the stage row cannot see: the names in order, a dotted name
+        admitted, a `## ` section ending the last definition, and None for an unreadable file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text(
+                "## 6. Test definitions\n"
+                "### 6-1. `t1`\n- `quantities`: `b.c_d`, a\n"
+                "- `test_id`: `t2`\n  - quantities: q\n"
+                "### 6-3. `t3`\n- ok\n"
+                "## 7. Rules\nquantities: not_a_definition\n", encoding="utf-8")
+            stated, problems = vps._parse_test_quantities_from_tests_md(path)
+            self.assertEqual(stated, {"t1": ["b.c_d", "a"], "t2": ["q"]})
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("test 't3' has no `quantities:` line", problems[0])
+            self.assertIsNone(vps._parse_test_quantities_from_tests_md(Path(tmp) / "absent.md"))
+
+    # --- the reported-read gate (issue #582, D13) -----------------------------------------------
+
+    _STATE_READ = {"test_id": "t1", "quantity": "cfl_max", "target_cases": ["c1"],
+                   "expr": "maxabs(final.h)", "op": "le", "value": 1.0, "per_case": True}
+    _REPORT_READ = {**_STATE_READ, "expr": "final.cfl_run_max"}
+    _REPORT_FRAGMENT = "reads a source: reported variable in"
+
+    def _reported_stage(self, predicates: list[dict], *, cases: tuple[str, ...] = ("c1",),
+                        variables: tuple[dict, ...] = ()) -> list[str]:
+        """The compile stage over an IR that declares `cfl_run_max` as `source: reported` (and
+        `guard_pass` as `source: record`) and whose one test judges `cfl_max`."""
+        io = self._io_contract_with_predicates(
+            predicates, [self._test_entry(quantities=["cfl_max"], target_cases=list(cases))])
+        schema = io["raw_requirements"]["required_evidence"][0]["schema"]
+        schema["variables"] += [
+            {"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"},
+            {"name": "guard_pass", "shape_expr": "scalar", "source": "record"},
+            *variables]
+        with tempfile.TemporaryDirectory() as tmp:
+            return self._stage_with_tests_md(
+                Path(tmp), "### 1-1. `t1`\n- `quantities`: `cfl_max`\n", io, case_ids=cases)
+
+    def test_a_reported_read_paired_with_state_passes_the_stage(self) -> None:
+        for label, pair in (("state beside it", [self._STATE_READ, self._REPORT_READ]),
+                            ("declared order is no part of it",
+                             [self._REPORT_READ, self._STATE_READ])):
+            with self.subTest(label):
+                self.assertEqual(self._reported_stage(pair), [])
+        # A `source: operation` variable is the default, and may be spelled.
+        self.assertEqual(self._reported_stage(
+            [{**self._STATE_READ, "expr": "maxabs(final.w)"}, self._REPORT_READ],
+            variables=({"name": "w", "shape_expr": "[2,2]", "source": "operation"},)), [])
+        # A `record` read carries no such requirement: no state counterpart exists.
+        self.assertEqual(self._reported_stage([{**self._STATE_READ, "expr": "final.guard_pass"}]),
+                         [])
+
+    def test_a_reported_read_with_no_pairing_is_refused_at_the_stage(self) -> None:
+        """Each spelling of "no pairing", one refusal each, on the reported read: alone; beside a
+        predicate that reads the report too (the same-predicate form `report + eps * state` is
+        judged by the report alone); beside state of another quantity; beside state of another
+        test; beside a cross-target predicate; beside a `record` read; and beside a pairing whose
+        state read sits only in a term constant by form or only in a bind nothing reaches."""
+        rows = [
+            ("alone", [self._REPORT_READ], 0),
+            ("the pair reads the report too",
+             [self._REPORT_READ,
+              {**self._STATE_READ, "expr": "final.cfl_run_max + 1.0e-3 * maxabs(final.h)"}], None),
+            ("the state read of another quantity",
+             [self._REPORT_READ, {**self._STATE_READ, "quantity": "other"}], 0),
+            ("a cross-target pair",
+             [self._REPORT_READ,
+              {**self._STATE_READ, "expr": "maxabs(final.h - comparand.final.h)"}], 0),
+            ("a record read beside it",
+             [self._REPORT_READ, {**self._STATE_READ, "expr": "final.guard_pass"}], 0),
+            ("state only in a term constant by form",
+             [self._REPORT_READ,
+              {**self._STATE_READ, "expr": "final.guard_pass + 0 * maxabs(final.h)"}], 0),
+            ("state only in a bind nothing reaches",
+             [self._REPORT_READ,
+              {**self._STATE_READ, "bind": {"dead": "maxabs(final.h)"},
+               "expr": "final.guard_pass"}], 0),
+            ("the time variable beside it",
+             [self._REPORT_READ, {**self._STATE_READ, "expr": "final.guard_pass + final.t"}], 0),
+        ]
+        for label, preds, index in rows:
+            with self.subTest(label):
+                v = self._reported_stage(preds)
+                hits = [x for x in v if self._REPORT_FRAGMENT in x]
+                if index is None:   # each of the two reads the report and neither is a pair
+                    self.assertEqual(len(hits), 2, v)
+                else:
+                    self.assertEqual(len(hits), 1, v)
+                    self.assertIn(f"io_contract.predicates[{index}] (test 't1', quantity "
+                                  "'cfl_max') reads a source: reported", hits[0])
+                self.assertTrue(all("spec.ir.yaml:" in x for x in hits), hits)
+        # another test's state read does not pair it either
+        io = self._io_contract_with_predicates(
+            [self._REPORT_READ, {**self._STATE_READ, "test_id": "t2"}],
+            [self._test_entry(quantities=["cfl_max"]),
+             self._test_entry(test_id="t2", quantities=["cfl_max"])])
+        io["raw_requirements"]["required_evidence"][0]["schema"]["variables"].append(
+            {"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"})
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._stage_with_tests_md(
+                Path(tmp), "### 1-1. `t1`\n- quantities: cfl_max\n### 1-2. `t2`\n"
+                           "- quantities: cfl_max\n", io)
+        hits = [x for x in v if self._REPORT_FRAGMENT in x]
+        self.assertEqual(len(hits), 1, v)
+        self.assertIn("(test 't1', quantity 'cfl_max')", hits[0])
+
+    def test_a_pairing_over_fewer_cases_is_refused_at_the_stage(self) -> None:
+        """The pairing reads state in EVERY case the report is read in. `cases_read` values a
+        `case:` scope at that case and an `at()` at its own, so the at() reach counts only when it
+        enters the value: in a bind nothing reaches, on the time variable, or on a name the IR's
+        own schema does not declare as state, it adds no case (issue #567's rows, on this gate)."""
+        cases = ("c1", "c2")
+        report = {**self._REPORT_READ, "target_cases": ["c1", "c2"]}
+        narrow = {**self._STATE_READ, "target_cases": ["c1", "c2"], "case": "c1"}
+        del narrow["per_case"]
+        refused = {
+            "one case of two": narrow,
+            "at() only in an unreached bind": {
+                **narrow, "bind": {"dead": "maxabs(at('c2').final.h)"}},
+            "at() only on the time variable": {
+                **narrow, "expr": "maxabs(final.h) * at('c2').final.t"},
+            "at() only in a term constant by form": {
+                **narrow, "expr": "maxabs(final.h) + 0 * maxabs(at('c2').final.h)"},
+        }
+        for label, pair in refused.items():
+            with self.subTest(label):
+                v = self._reported_stage([report, pair], cases=cases)
+                hits = [x for x in v if self._REPORT_FRAGMENT in x]
+                self.assertEqual(len(hits), 1, v)
+                self.assertIn("['c1', 'c2']", hits[0])
+        admitted = {
+            "every case": ({**self._STATE_READ, "target_cases": ["c1", "c2"]}, ()),
+            "at() reaches the other case": (
+                {**narrow, "expr": "maxabs(final.h) + maxabs(at('c2').final.h)"}, ()),
+            # the state-name set is the IR's OWN schema: a name no other fixture declares
+            "at() on a schema variable": (
+                {**narrow, "expr": "maxabs(final.h) + maxabs(at('c2').final.zeta_q)"},
+                ({"name": "zeta_q", "shape_expr": "[2,2]"},)),
+        }
+        for label, (pair, variables) in admitted.items():
+            with self.subTest(label):
+                self.assertEqual(
+                    self._reported_stage([report, pair], cases=cases, variables=variables), [])
+
+    def test_the_stage_refuses_a_malformed_source(self) -> None:
+        """`schema.variables[].source`, each refusal once, through the stage."""
+        rows = [
+            ("non-scalar reported", {"name": "w", "shape_expr": "[2,2]", "source": "reported"},
+             "a source: reported variable is a scalar"),
+            ("unknown class", {"name": "w", "shape_expr": "[2,2]", "source": "kernel"},
+             "source must be one of"),
+            ("non-string class", {"name": "w", "shape_expr": "[2,2]", "source": 1},
+             "source must be one of"),
+        ]
+        for label, variable, fragment in rows:
+            with self.subTest(label):
+                v = self._reported_stage([self._STATE_READ], variables=(variable,))
+                hits = [x for x in v if fragment in x]
+                self.assertEqual(len(hits), 1, v)
+                self.assertIn("state_snapshots.schema.variables[5]", hits[0])
+        for source in ("operation", "record", "reference"):
+            with self.subTest(source=source):
+                self.assertEqual(self._reported_stage(
+                    [self._STATE_READ],
+                    variables=({"name": "w", "shape_expr": "[2,2]", "source": source},)), [])
+
+    def test_metrics_basis_is_refused_as_an_artifact_and_as_a_reference(self) -> None:
+        """`metrics_basis.json` is no artifact since issue #582, refused by name in each place an
+        IR could name it, whatever the spelling and whatever its `required` value."""
+        def stage(mutate) -> list[str]:
+            io = self._io_contract_with_predicates()
+            mutate(io)
+            with tempfile.TemporaryDirectory() as tmp:
+                return self._compile_with_io_contract(Path(tmp), io)
+
+        self.assertNotIn("metrics_basis.json", vps.RAW_EVIDENCE_ARTIFACTS)
+        for required in (True, False):
+            with self.subTest(required=required):
+                v = stage(lambda io: io["raw_requirements"]["required_evidence"].append(
+                    {"artifact": "metrics_basis.json", "required": required}))
+                self.assertTrue(any("required_evidence[1].artifact 'metrics_basis.json' must be "
+                                    "one of ['state_snapshots']" in x for x in v), v)
+        for token in ("raw/metrics_basis.json", "metrics_basis.json", "RAW\\Metrics_Basis.JSON"):
+            with self.subTest(token=token):
+                v = stage(lambda io: io["outputs"][0].update(evidence_ref=token))
+                self.assertTrue(any(f"io_contract.outputs[0].evidence_ref {token!r} names no "
+                                    "raw-evidence artifact" in x for x in v), v)
+                v = stage(lambda io: io["inputs"][0].update(evidence_ref=token))
+                self.assertTrue(any(f"io_contract.inputs[0].evidence_ref {token!r} names no "
+                                    "raw-evidence artifact" in x for x in v), v)
+
+    def test_real_predicate_set_is_reached_by_the_omission_gate(self) -> None:
+        # The omission gate (issue #582, D10) reaches a REAL full-fidelity IR's tests and schema.
+        # The tracked fixture is a certified IR hand-converted to the #582 shape: its pass_when
+        # conditions were not host predicates, so the conversion leaves every test with empty
+        # `quantities` and no predicates. The current validator refuses that, naming each test;
+        # the same fixture with one predicate per test is clean of both complaints. Driving it in
+        # both directions is what shows the gate reached real tests rather than falling out early
+        # on a document it could not read (an unparseable or empty IR returns nothing at all, and
+        # `{}` a different complaint entirely).
         #
         # The input is a TRACKED fixture, not a live run directory. This test used to read
         # `workspace/ir/.../spec.ir.yaml` and skipTest when it was absent; `workspace*` is the
         # operator's execution workspace and is gitignored, so that made the calibration a
-        # permanent silent skip (the suite's standing "1 skipped") on every fresh clone. A missing
-        # fixture is now repository corruption, not an environment difference — so it fails.
-        # The report check, `tools/tests/skip_probes.py`, refuses that skip; it cannot stop a
-        # future edit from simply returning early instead, which is the same defect without a
-        # skip in it. Nothing in the suite watches for that, and saying so beats implying
-        # otherwise — an earlier version of this comment claimed "any route" and was wrong.
+        # permanent silent skip on every fresh clone. A missing fixture is now repository
+        # corruption, not an environment difference — so it fails. The report check,
+        # `tools/tests/skip_probes.py`, refuses that skip; it cannot stop a future edit from simply
+        # returning early instead, which is the same defect without a skip in it.
         #
         # `repo_root` is the temp dir, not the real one, deliberately: it leaves
         # `meta.source_refs.tests` unresolvable so the canonical test-id set falls back to the IR's
-        # own `test_evidence_requirements`. Passing the real root would additionally drive the
-        # tests.md set-equality path, mixing drift unrelated to the degenerate gate into this
-        # calibration. This preserves the semantics the test had before the fixture move: only the
-        # input's provenance changed.
+        # own `tests`, whose ids this row reads. Passing the real root would also drive the tests.md
+        # `quantities:` comparison, which a spec reaches once its tests.md carries the line.
         def drive(document: str) -> list[str]:
             with tempfile.TemporaryDirectory() as tmp:
                 ir_dir = Path(tmp) / "ir"
                 ir_dir.mkdir()
                 (ir_dir / "spec.ir.yaml").write_text(document, encoding="utf-8")
                 violations: list[str] = []
-                vps._validate_test_predicates(Path(tmp), ir_dir, violations)
+                vps._validate_tests_and_predicates(Path(tmp), ir_dir, violations)
                 return violations
 
         captured = _REAL_IR_FIXTURE.read_text(encoding="utf-8")
-        legacy = drive(captured)
-        self.assertTrue(any("io_contract.primary_predicates missing" in v for v in legacy),
-                        legacy)
-        self.assertTrue(any("quantity must be present" in v for v in legacy), legacy)
-
         # Parsed and shape-checked before mutating, so a fixture the gate cannot read fails on a
-        # sentence naming what is wrong. Reviewers overwrote it with `{}` and with broken YAML;
-        # both did fail, but on a raw KeyError/ParserError from building the mutant below — the
-        # right outcome reached by a mechanism neither the test nor its comment named.
+        # sentence naming what is wrong.
         try:
             document = yaml.safe_load(captured)
         except yaml.YAMLError as exc:
-            self.fail(f"the calibration fixture no longer parses, so the drive above "
+            self.fail(f"the calibration fixture no longer parses, so the drive below "
                       f"asserted nothing: {exc}")
         self.assertIsInstance(document, dict, "calibration fixture is not a mapping")
-        predicates = document.get("io_contract", {}).get("test_predicates")
-        self.assertTrue(predicates, "calibration fixture carries no io_contract.test_predicates, "
-                                    "so the gate has nothing to read and a clean run is vacuous")
-        tagged, primary = self._corroborated(predicates)
-        self.assertGreater(len(primary), 0, "fixture carries no condition to corroborate")
-        document["io_contract"]["test_predicates"] = tagged
-        document["io_contract"]["primary_predicates"] = primary
-        covered = drive(yaml.safe_dump(document, sort_keys=False))
-        self.assertFalse(any("host-evaluated corroborant" in v or "quantity must be present" in v
-                             or "primary_predicates missing" in v for v in covered), covered)
-        # one corroborant removed -> exactly its test's conditions of that quantity are named
-        dropped = document["io_contract"]["primary_predicates"].pop()
+        tests = document.get("io_contract", {}).get("tests")
+        self.assertGreater(len(tests or []), 1,
+                           "calibration fixture carries no io_contract.tests, so the gate has "
+                           "nothing to read and a clean run is vacuous")
+        legacy = drive(captured)
+        for idx in range(len(tests)):
+            self.assertTrue(any(f"tests[{idx}].quantities must be a non-empty list" in v
+                                for v in legacy), (idx, legacy))
+
+        predicates = []
+        for test in tests:
+            test["quantities"] = ["state_mass"]
+            # `inputs.grid.nx` is resolved against the real cases each test ranges over.
+            predicates.append({"test_id": test["test_id"], "quantity": "state_mass",
+                               "target_cases": list(test["target_cases"]),
+                               "expr": "sum(final.h) / inputs.grid.nx", "op": "le",
+                               "value": 1.0e9, "per_case": True})
+        document["io_contract"]["predicates"] = predicates
+        self.assertEqual(drive(yaml.safe_dump(document, sort_keys=False)), [])
+        # one predicate removed -> exactly its test is named
+        dropped = document["io_contract"]["predicates"].pop()
         partial = drive(yaml.safe_dump(document, sort_keys=False))
-        named = [v for v in partial if "host-evaluated corroborant" in v]
-        self.assertTrue(named, partial)
-        self.assertTrue(all(f"{dropped['test_id']}: condition on" in v
-                            and f"(quantity {dropped['quantity']!r})" in v for v in named), named)
+        self.assertEqual(len(partial), 1, partial)
+        self.assertIn(f"test {dropped['test_id']!r}: no predicate", partial[0])
 
     def test_validate_compile_stage_rejects_non_plans_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -14962,8 +13632,6 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                            "shapes[threads_3].run_ok must be true"),
             "verdict absent": (mpi, edited(mpi, 0, verdict_available=_ABSENT),
                                "shapes[certified].verdict_available must be true"),
-            "diagnostics": (mpi, edited(mpi, 1, diagnostics_match=False),
-                            "shapes[grid_4x1].diagnostics_match must be true"),
             "verdict": (mpi, edited(mpi, 2, verdict_match=False),
                         "shapes[grid_1x3].verdict_match must be true"),
             "state disagrees": (mpi, edited(mpi, 1, state_agreement={"status": "disagree"}),
@@ -15442,187 +14110,6 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 source_id="src_20260415_001",
             )
             self.assertEqual(violations, [])
-
-    def test_create_minimal_execution_tree_writes_metrics_basis_to_raw(self) -> None:
-        """The metrics_basis argument is reflected in raw/metrics_basis.json (premise of the trivial-verification test)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            payload = {"probe": 3.25}
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                metrics_basis=payload,
-            )
-            metrics_path = (
-                repo_root
-                / "workspace"
-                / "pipelines"
-                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
-                / "shallow-water2d_20260415_001"
-                / "runs"
-                / "run_test_001"
-                / "problem__shallow_water2d__0.3.0"
-                / "raw"
-                / "metrics_basis.json"
-            )
-            self.assertTrue(metrics_path.is_file())
-            self.assertEqual(json.loads(metrics_path.read_text(encoding="utf-8")), payload)
-
-
-    def test_validate_rejects_all_zero_metrics_basis(self) -> None:
-        """A violation occurs when all numbers in metrics_basis.json are 0.0."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                metrics_basis={"value_a": 0.0, "value_b": 0.0},
-            )
-            violations = validate(repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("trivial placeholder" in v for v in violations),
-                f"Expected trivial placeholder violation, got: {violations}",
-            )
-
-    def test_validate_rejects_all_null_metrics_basis(self) -> None:
-        """A violation occurs when all fields of metrics_basis.json are null."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                metrics_basis={"value_a": None, "value_b": None},
-            )
-            violations = validate(repo_root, workspace_root="workspace")
-            self.assertTrue(
-                any("trivial placeholder" in v for v in violations),
-                f"Expected trivial placeholder violation, got: {violations}",
-            )
-
-    def test_validate_accepts_partially_nonzero_metrics_basis(self) -> None:
-        """It passes if some part of metrics_basis.json has a non-zero real value."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                metrics_basis={"value_a": 0.0, "value_b": 1.5},
-            )
-            violations = validate(repo_root, workspace_root="workspace")
-            self.assertFalse(
-                any("trivial placeholder" in v for v in violations),
-                f"Expected no trivial placeholder violation, got: {violations}",
-            )
-
-    def test_validate_skips_metrics_basis_check_if_no_numeric_fields(self) -> None:
-        """If metrics_basis.json has no numeric field at all, skip the trivial check."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            model_text = """module shallow_water2d_model
-use dynamics_shallow_water_flux_2d_rusanov_p0_model
-implicit none
-contains
-subroutine solve(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine solve
-end module shallow_water2d_model
-"""
-            runner_text = """program shallow_water2d_runner
-implicit none
-write(*,*) 'ok'
-end program shallow_water2d_runner
-"""
-            _create_minimal_execution_tree(
-                repo_root,
-                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text=model_text,
-                runner_text=runner_text,
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
-                metrics_basis={"label": "test", "tags": ["a", "b"]},
-            )
-            violations = validate(repo_root, workspace_root="workspace")
-            self.assertFalse(
-                any("trivial placeholder" in v for v in violations),
-                f"Expected no trivial placeholder violation, got: {violations}",
-            )
 
     def test_shape_expr_schema_load_is_lazy_and_errors_are_structured(self) -> None:
         """Regression: a missing or malformed shape_expr schema must NOT crash
@@ -17564,7 +16051,7 @@ class MakefileTestInvokesCasesTest(unittest.TestCase):
     """post_generate gate: the `test`/`check` target must invoke the runner with
     `--cases $(SPEC) $(CASES)` so the make-test re-run matches run_program's argv.
     A bare invocation makes the runner abort (no `--cases`) -> the make-test
-    candidate emits no diagnostics.json -> quality_check verdict_available=false
+    candidate emits no captures -> quality_check verdict_available=false
     -> Validate.execute fail (orch_20260629T065607Z_011f8fc6)."""
 
     def _run(
@@ -18497,617 +16984,6 @@ class MakefileTestNoRelinkTest(unittest.TestCase):
             unknown = repo / pipe_ref("component__x__0.1.0", "x_20260101_001", "no_such")
             unknown.mkdir(parents=True)
             self.assertEqual((None, None), _target_toolchain_from_pipeline_dir(repo, unknown))
-
-
-class DiagnosticsContractTest(unittest.TestCase):
-    """Tests for the io_contract.diagnostics_contract (the tests.md Diagnostics contract, §5) field."""
-
-    @staticmethod
-    def _struct(contract: dict) -> list[str]:
-        violations: list[str] = []
-        _validate_diagnostics_contract(Path("spec.ir.yaml"), contract, violations)
-        return violations
-
-    def test_absent_diagnostics_contract_is_allowed(self) -> None:
-        # A node whose tests.md has no Diagnostics contract section omits the field entirely.
-        self.assertEqual([], self._struct({"io_contract": {}}))
-
-    def test_wellformed_contract_passes_lifted_and_nested(self) -> None:
-        section = {
-            "checks": [
-                {"id": "equal_state_consistency"},
-                {"id": "wave_speed_nonnegative"},
-                {"id": "input_guard"},
-            ],
-            "verdict": {"required": True, "fields": ["overall", "failed_checks"]},
-        }
-        self.assertEqual([], self._struct({"diagnostics_contract": section}))
-        self.assertEqual([], self._struct({"io_contract": {"diagnostics_contract": section}}))
-
-    def test_empty_checks_and_required_verdict_without_fields_flagged(self) -> None:
-        violations = self._struct(
-            {"diagnostics_contract": {"checks": [], "verdict": {"required": True}}}
-        )
-        self.assertTrue(any("checks must be non-empty list" in v for v in violations))
-        self.assertTrue(
-            any("verdict.fields must be non-empty list" in v for v in violations)
-        )
-
-    def test_present_but_non_object_section_is_flagged(self) -> None:
-        # Regression: a present-but-malformed section (e.g. `diagnostics_contract: []`)
-        # must be rejected, not silently skipped as if absent.
-        for malformed in ([], "nope", 3):
-            self.assertTrue(
-                any(
-                    "diagnostics_contract must be object when present" in v
-                    for v in self._struct({"diagnostics_contract": malformed})
-                ),
-                f"malformed value {malformed!r} must be flagged",
-            )
-            self.assertTrue(
-                any(
-                    "diagnostics_contract must be object when present" in v
-                    for v in self._struct(
-                        {"io_contract": {"diagnostics_contract": malformed}}
-                    )
-                ),
-                f"nested malformed value {malformed!r} must be flagged",
-            )
-
-    def test_missing_id_and_duplicate_id_flagged(self) -> None:
-        violations = self._struct(
-            {"diagnostics_contract": {"checks": [{"id": "a"}, {"id": "a"}, {"foo": 1}]}}
-        )
-        self.assertTrue(any("duplicate (a)" in v for v in violations))
-        self.assertTrue(any("must be non-empty string" in v for v in violations))
-
-    def test_accessors_only_return_verdict_fields_when_required(self) -> None:
-        contract = {
-            "diagnostics_contract": {
-                "checks": [{"id": "c1"}, {"id": "c2"}],
-                "verdict": {"required": False, "fields": ["overall"]},
-            }
-        }
-        self.assertEqual(["c1", "c2"], _diagnostics_contract_check_ids(contract))
-        self.assertEqual([], _diagnostics_contract_verdict_fields(contract))
-
-    def test_compile_stage_unaffected_when_field_absent(self) -> None:
-        # Regression guard: existing IRs without diagnostics_contract stay valid.
-        self.assertEqual([], self._struct({"io_contract": {"inputs": [], "outputs": []}}))
-
-
-class DiagnosticsStatusVocabularyTest(unittest.TestCase):
-    """The post_execute/pre_judge status-vocabulary check of diagnostics.json (issue #437).
-
-    PINNED: every branch of the rule — top-level checks (absent / non-object / non-object
-    entry / no status / non-string / non-member), both `verdict.overall` levels, both
-    container keys with no early exit after the first, the object and list container shapes,
-    a non-object slice or container, the padding suffix only for a value that is a member once
-    its trailing blanks are removed, and silence on a file other checks own. Each violating row
-    has a conforming twin. SAMPLED: the wording beyond the address and the named literal."""
-
-    PATH_TAIL = "diagnostics.json:"
-
-    def _run(self, diagnostics: object, *, raw: str | None = None) -> list[str]:
-        node_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, node_dir, ignore_errors=True)
-        if raw is not None:
-            (node_dir / "diagnostics.json").write_text(raw, encoding="utf-8")
-        elif diagnostics is not None:
-            (node_dir / "diagnostics.json").write_text(json.dumps(diagnostics), encoding="utf-8")
-        execution = NodeExecution(node_key="component/n@0.1.0", node_dir=node_dir,
-                                  exec_dir=node_dir, pipeline_dir=node_dir)
-        violations: list[str] = []
-        _validate_diagnostics_status_vocabulary(execution, violations)
-        return violations
-
-    def _where(self, violations: list[str]) -> list[str]:
-        """The address of each violation: the text between the path and the value."""
-        return [v.split(self.PATH_TAIL, 1)[1].split(" ", 1)[0] for v in violations]
-
-    @staticmethod
-    def _doc(top: object = "pass", case: object = "na", overall: object = "pass",
-             case_overall: object = "pass") -> dict:
-        return {
-            "checks": {"a": {"status": top}},
-            "verdict": {"overall": overall, "failed_checks": []},
-            "per_case": {"c1": {"checks": {"a": {"status": case}},
-                                "verdict": {"overall": case_overall, "failed_checks": []},
-                                "metrics": {}}},
-        }
-
-    def test_literal_statuses_and_overalls_pass(self) -> None:
-        doc = {
-            "checks": {"a": {"status": "pass"}, "b": {"status": "fail"}},
-            "verdict": {"overall": "fail", "failed_checks": ["b"]},
-            "per_case": {
-                "c1": {"checks": {"a": {"status": "pass"}, "b": {"status": "fail"},
-                                  "c": {"status": "na"}},
-                       "verdict": {"overall": "fail", "failed_checks": ["b"]}},
-                "c2": {"checks": {"a": {"status": "na"}}, "verdict": {"overall": "pass"}},
-            },
-        }
-        self.assertEqual(self._run(doc), [])
-
-    def test_padded_per_case_na_is_refused_and_names_the_literal(self) -> None:
-        """The incident shape (orch_20261007T022737Z_8a970a99)."""
-        doc = {
-            "checks": {"left_wrap": {"status": "pass"}, "right_wrap": {"status": "pass"}},
-            "verdict": {"overall": "pass", "failed_checks": []},
-            "per_case": {"l0_invalid_nx1_ng1": {
-                "checks": {"left_wrap": {"status": "na  "}, "right_wrap": {"status": "na  "}},
-                "verdict": {"overall": "pass", "failed_checks": []}}},
-        }
-        violations = self._run(doc)
-        self.assertEqual(self._where(violations), [
-            "per_case.l0_invalid_nx1_ng1.checks.left_wrap.status",
-            "per_case.l0_invalid_nx1_ng1.checks.right_wrap.status",
-        ])
-        for v in violations:
-            self.assertIn("'na  '", v)
-            self.assertIn("must write the literal 'na'", v)
-            self.assertIn("harness", v)
-        twin = json.loads(json.dumps(doc).replace('"na  "', '"na"'))
-        self.assertEqual(self._run(twin), [])
-
-    def test_top_level_na_is_refused(self) -> None:
-        self.assertEqual(self._where(self._run(self._doc(top="na"))), ["checks.a.status"])
-        padded = self._run(self._doc(top="na  "))
-        self.assertEqual(self._where(padded), ["checks.a.status"])
-        # a top-level "na  " is no member even with the blanks removed: no padding remedy
-        self.assertNotIn("fixed width", padded[0])
-        self.assertEqual(self._run(self._doc(case="na")), [])
-
-    def test_unknown_or_case_variant_member_is_refused(self) -> None:
-        for value in ("PASS", "ok", "", " pass"):
-            with self.subTest(value=value):
-                top = self._run(self._doc(top=value))
-                self.assertEqual(self._where(top), ["checks.a.status"])
-                case = self._run(self._doc(case=value))
-                self.assertEqual(self._where(case), ["per_case.c1.checks.a.status"])
-                self.assertNotIn("fixed width", top[0] + case[0])
-        for value, at in (("pass ", "checks.a.status"), ("fail   ", "checks.a.status")):
-            with self.subTest(value=value):
-                got = self._run(self._doc(top=value))
-                self.assertEqual(self._where(got), [at])
-                self.assertIn(f"must write the literal {value.rstrip()!r}", got[0])
-        got = self._run(self._doc(case="fail "))
-        self.assertIn("must write the literal 'fail'", got[0])
-
-    def test_non_string_status_is_refused(self) -> None:
-        for value in (True, 1, None, ["pass"]):
-            with self.subTest(value=value):
-                self.assertEqual(self._where(self._run(self._doc(top=value))),
-                                 ["checks.a.status"])
-                self.assertEqual(self._where(self._run(self._doc(case=value))),
-                                 ["per_case.c1.checks.a.status"])
-
-    def test_entry_without_status_is_refused(self) -> None:
-        for entry in ({}, {"pass": True}):
-            with self.subTest(entry=entry):
-                doc = self._doc()
-                doc["checks"]["a"] = entry
-                self.assertEqual(self._where(self._run(doc)), ["checks.a"])
-                doc = self._doc()
-                doc["per_case"]["c1"]["checks"]["a"] = entry
-                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks.a"])
-
-    def test_non_object_entry_is_refused(self) -> None:
-        for entry in ("pass", ["pass"]):
-            with self.subTest(entry=entry):
-                doc = self._doc()
-                doc["checks"]["a"] = entry
-                self.assertEqual(self._where(self._run(doc)), ["checks.a"])
-                doc = self._doc()
-                doc["per_case"]["c1"]["checks"]["a"] = entry
-                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks.a"])
-
-    def test_non_object_checks_container_is_refused(self) -> None:
-        doc = self._doc()
-        doc["checks"] = [{"id": "a", "status": "pass"}]
-        self.assertEqual(self._where(self._run(doc)), ["checks"])
-        for checks in ([{"id": "a", "status": "na"}], "pass"):
-            with self.subTest(checks=checks):
-                doc = self._doc()
-                doc["per_case"]["c1"]["checks"] = checks
-                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks"])
-        doc = self._doc()
-        del doc["per_case"]["c1"]["checks"]
-        del doc["checks"]
-        self.assertEqual(self._run(doc), [])
-
-    def test_each_case_container_shape_is_read(self) -> None:
-        shapes = {
-            "per_case.c1.checks.a.status":
-                lambda s: {"per_case": {"c1": {"checks": {"a": {"status": s}}}}},
-            "cases.c1.checks.a.status":
-                lambda s: {"cases": {"c1": {"checks": {"a": {"status": s}}}}},
-            "cases[0].checks.a.status":
-                lambda s: {"cases": [{"case_id": "c1", "checks": {"a": {"status": s}}}]},
-        }
-        for where, build in shapes.items():
-            with self.subTest(where=where):
-                self.assertEqual(self._where(self._run(build("na  "))), [where])
-                self.assertEqual(self._run(build("na")), [])
-
-    def test_every_slice_is_read_not_only_the_first(self) -> None:
-        """A padded status in the SECOND slice (the incident's guard case is declared first;
-        15 real files carry an `na` only in a later slice)."""
-        good = {"checks": {"a": {"status": "na"}}}
-        bad = {"checks": {"a": {"status": "na  "}}}
-        self.assertEqual(self._where(self._run({"per_case": {"c1": good, "c2": bad}})),
-                         ["per_case.c2.checks.a.status"])
-        self.assertEqual(self._where(self._run({"cases": [good, bad]})),
-                         ["cases[1].checks.a.status"])
-        self.assertEqual(self._where(self._run({"per_case": {"c1": bad, "c2": bad}})),
-                         ["per_case.c1.checks.a.status", "per_case.c2.checks.a.status"])
-
-    def test_both_container_keys_are_read(self) -> None:
-        good = {"c1": {"checks": {"a": {"status": "na"}}}}
-        bad = {"c1": {"checks": {"a": {"status": "na  "}}}}
-        self.assertEqual(self._where(self._run({"cases": good, "per_case": bad})),
-                         ["per_case.c1.checks.a.status"])
-        self.assertEqual(self._where(self._run({"per_case": good, "cases": bad})),
-                         ["cases.c1.checks.a.status"])
-        self.assertEqual(self._run({"per_case": good, "cases": good}), [])
-
-    def test_non_object_case_slice_and_container_are_refused(self) -> None:
-        self.assertEqual(self._where(self._run({"per_case": {"c1": "x"}})), ["per_case.c1"])
-        self.assertEqual(self._where(self._run({"cases": ["x"]})), ["cases[0]"])
-        self.assertEqual(self._where(self._run({"per_case": 3})), ["per_case"])
-        self.assertEqual(self._where(self._run({"cases": "x"})), ["cases"])
-        self.assertEqual(self._run({"per_case": {}, "cases": []}), [])
-
-    def test_verdict_overall_vocabulary_at_both_levels(self) -> None:
-        for value in ("na", "PASS", True, "pass "):
-            with self.subTest(value=value):
-                self.assertEqual(self._where(self._run(self._doc(overall=value))),
-                                 ["verdict.overall"])
-                self.assertEqual(self._where(self._run(self._doc(case_overall=value))),
-                                 ["per_case.c1.verdict.overall"])
-        self.assertIn("must write the literal 'pass'",
-                      self._run(self._doc(overall="pass "))[0])
-        doc = self._doc()
-        del doc["verdict"]["overall"]
-        del doc["per_case"]["c1"]["verdict"]
-        self.assertEqual(self._run(doc), [])
-        doc = self._doc()
-        del doc["verdict"]
-        del doc["per_case"]["c1"]["verdict"]["overall"]
-        self.assertEqual(self._run(doc), [])
-
-    def test_absent_or_unparsable_diagnostics_adds_no_vocabulary_violation(self) -> None:
-        self.assertEqual(self._run(None), [])
-        self.assertEqual(self._run(None, raw="[]"), [])
-        self.assertEqual(self._run(None, raw="{"), [])
-        self.assertEqual(self._run(None, raw='"na  "'), [])
-
-
-class DiagnosticsPerCaseStatusTest(unittest.TestCase):
-    """`diagnostics_contract.checks[].per_case_status` (issue #437): the compile gate on its
-    shape, and the post_execute comparison of the written per-case status with it.
-
-    PINNED: compile — non-object / empty refused, unknown case_id refused, a value outside the
-    per-case vocabulary (padded, upper-case, non-string) refused, an id without the key and a
-    conforming declaration accepted; post_execute — an equal literal accepted, a different
-    literal / a padded one / an absent status / an absent case refused, the slice resolved
-    under `cases` and `per_case` and as a list, and a malformed declaration skipped (the
-    compile gate's). SAMPLED: the message wording beyond the case and id."""
-
-    def _ir_dir(self, checks: list, case_ids: tuple[str, ...] = ("c1", "c2"),
-                tests_md: str | None = None) -> Path:
-        ir_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, ir_dir, ignore_errors=True)
-        doc: dict = {
-            "case": {"test_case_set": [{"case_id": c, "inputs": {}} for c in case_ids]},
-            "io_contract": {"diagnostics_contract": {"checks": checks}},
-        }
-        if tests_md is not None:
-            (ir_dir / "tests.md").write_text(tests_md, encoding="utf-8")
-            doc["meta"] = {"source_refs": {"tests": str(ir_dir / "tests.md")}}
-        _write_json(ir_dir / "spec.ir.yaml", doc)
-        return ir_dir
-
-    def _compile(self, checks: list, tests_md: str | None = None) -> list[str]:
-        violations: list[str] = []
-        _validate_diagnostics_per_case_status(
-            Path("/nonexistent"), self._ir_dir(checks, tests_md=tests_md), violations)
-        return violations
-
-    @staticmethod
-    def _stated(cid: str, body: str) -> str:
-        return ("- The `io_contract.diagnostics_contract.checks` entry of "
-                f"`{cid}` carries `per_case_status: {{ {body} }}`, compared literally.\n")
-
-    def test_compile_requires_exactly_the_statements_of_tests_md(self) -> None:
-        stated = self._stated("b", "c1: na")
-        self.assertEqual(self._compile([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "na"}}],
-                                       stated), [])
-        # omitted, on another id, inverted, extended
-        for checks, why in (
-                ([{"id": "a"}, {"id": "b"}], "omitted"),
-                ([{"id": "a", "per_case_status": {"c1": "na"}}, {"id": "b"}], "misplaced"),
-                ([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "pass"}}], "inverted"),
-                ([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "na", "c2": "na"}}],
-                 "extended")):
-            with self.subTest(why=why):
-                got = self._compile(checks, stated)
-                self.assertTrue([v for v in got
-                                 if "entry 'b' must carry per_case_status {'c1': 'na'}" in v], got)
-        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}}, {"id": "b"}], stated)
-        self.assertTrue([v for v in got if "entry 'a' carries per_case_status, which" in v], got)
-        # a stated id the IR does not declare at all
-        got = self._compile([{"id": "a"}], stated)
-        self.assertTrue([v for v in got if "found '<no such check id>'" in v], got)
-
-    def test_compile_refuses_an_undeclared_per_case_status_when_tests_md_states_none(self) -> None:
-        """A physics tests.md saying a check is `na` elsewhere states no mapping: the IR may not
-        invent one (round 2: V3's earlier wording asked a Compile leaf to)."""
-        prose = "- Each check is `na` on every other case.\n"
-        self.assertEqual(self._compile([{"id": "a"}], prose), [])
-        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}}], prose)
-        self.assertEqual(len(got), 1, got)
-        self.assertIn("entry 'a' carries per_case_status, which tests.md does not state", got[0])
-
-    def test_compile_compares_every_stated_id_and_case(self) -> None:
-        """Two ids each stated with two cases; only the SECOND id's SECOND case differs."""
-        stated = self._stated("a", "c1: pass, c2: na") + self._stated("b", "c1: fail, c2: na")
-        good = [{"id": "a", "per_case_status": {"c1": "pass", "c2": "na"}},
-                {"id": "b", "per_case_status": {"c1": "fail", "c2": "na"}}]
-        self.assertEqual(self._compile(good, stated), [])
-        bad = copy.deepcopy(good)
-        bad[1]["per_case_status"]["c2"] = "pass"
-        got = self._compile(bad, stated)
-        self.assertEqual(len(got), 1, got)
-        self.assertIn("entry 'b' must carry", got[0])
-
-    def test_a_malformed_or_doubled_statement_is_refused(self) -> None:
-        for body in ("c1 na", "c1: na: x", ": na", "c1:", "c1: na, c1: na", ""):
-            with self.subTest(body=body):
-                got = self._compile([{"id": "b"}], self._stated("b", body))
-                self.assertTrue([v for v in got if "per_case_status statement for 'b'" in v], got)
-        for body in ("c1: NA", 'c1: "na"', "c1: ok"):
-            with self.subTest(body=body):
-                got = self._compile([{"id": "b"}], self._stated("b", body))
-                self.assertEqual(len(got), 1, got)
-                self.assertIn("states a status outside", got[0])
-        got = self._compile([{"id": "b", "per_case_status": {"c1": "na"}}],
-                            self._stated("b", "c1: na") + self._stated("b", "c1: na"))
-        self.assertTrue([v for v in got if "stated twice for 'b'" in v], got)
-
-    def test_the_harness_statement_parses(self) -> None:
-        """The real harness tests.md statement parses to the mapping its IR must carry."""
-        for sid in ("harness_fortran_cpu", "harness_fortran_cpu_mpi", "harness_cpp_gpu"):
-            with self.subTest(sid=sid):
-                tests_path = (Path(__file__).resolve().parents[2]
-                              / "spec/infrastructure/infra/harness" / sid / "tests.md")
-                violations: list[str] = []
-                self.assertEqual(
-                    vps._parse_per_case_status_statements(tests_path, violations),
-                    {"status_na": {"l0_metric_leaf_pass": "na"}})
-                self.assertEqual(violations, [])
-
-    def test_compile_accepts_a_conforming_declaration_and_an_id_without_one(self) -> None:
-        self.assertEqual(self._compile([{"id": "a"},
-                                        {"id": "b", "per_case_status": {"c1": "na"}},
-                                        {"id": "c", "per_case_status": {"c1": "pass",
-                                                                        "c2": "fail"}}]), [])
-
-    def test_compile_refuses_a_non_object_or_empty_declaration(self) -> None:
-        for bad in ({}, [], "na", ["c1"], None):
-            with self.subTest(bad=bad):
-                got = self._compile([{"id": "a", "per_case_status": bad}])
-                self.assertEqual(len(got), 1, got)
-                self.assertIn("checks[0].per_case_status must be a non-empty object", got[0])
-
-    def test_compile_refuses_an_unknown_case(self) -> None:
-        got = self._compile([{"id": "a", "per_case_status": {"c1": "na", "c9": "na"}}])
-        self.assertEqual(len(got), 1, got)
-        self.assertIn("references unknown case_id ('c9')", got[0])
-
-    def test_compile_reads_every_checks_item_not_only_the_first(self) -> None:
-        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}},
-                             {"id": "b", "per_case_status": {"c9": "na  "}}])
-        self.assertEqual(len(got), 2, got)
-        self.assertTrue(all("checks[1].per_case_status" in v for v in got), got)
-
-    def test_compile_refuses_a_value_outside_the_per_case_vocabulary(self) -> None:
-        for bad in ("na  ", "NA", "", "ok", True, None, 1):
-            with self.subTest(bad=bad):
-                got = self._compile([{"id": "a", "per_case_status": {"c1": bad}}])
-                self.assertEqual(len(got), 1, got)
-                self.assertIn(f"per_case_status.c1 {bad!r} is not one of", got[0])
-        for good in ("pass", "fail", "na"):
-            with self.subTest(good=good):
-                self.assertEqual(self._compile([{"id": "a", "per_case_status": {"c1": good}}]),
-                                 [])
-
-    def test_compile_stage_runs_the_rule(self) -> None:
-        """Through `validate_compile_stage` on the shared fixture IR, which gains a
-        diagnostics_contract and a tests.md stating `a`'s mapping: a declaration naming an
-        unknown case is refused on both halves, the stated one is accepted."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            _create_minimal_execution_tree(
-                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
-                model_text="module m\nimplicit none\nend module m\n",
-                runner_text="program r\nimplicit none\nend program r\n",
-                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
-            ir_path = repo_root / _FIXTURE_IR_REL
-            ir = json.loads(ir_path.read_text(encoding="utf-8"))
-            tests_md = repo_root / MOCK_TESTS_REF
-            tests_md.parent.mkdir(parents=True, exist_ok=True)
-            tests_md.write_text(self._stated("a", "c1: na"), encoding="utf-8")
-            results = {}
-            for label, case_id in (("bad", "c9"), ("good", "c1")):
-                ir["io_contract"]["diagnostics_contract"] = {
-                    "checks": [{"id": "a", "per_case_status": {case_id: "na"}}]}
-                _write_json(ir_path, ir)
-                results[label] = validate_compile_stage(
-                    repo_root, "workspace", str(Path(_FIXTURE_IR_REL).parent))
-        self.assertTrue([v for v in results["bad"]
-                         if "per_case_status references unknown case_id ('c9')" in v],
-                        results["bad"])
-        self.assertTrue([v for v in results["bad"]
-                         if "entry 'a' must carry per_case_status {'c1': 'na'}" in v],
-                        results["bad"])
-        self.assertFalse([v for v in results["good"] if "per_case_status" in v], results["good"])
-
-    # --- post_execute ----------------------------------------------------------------
-
-    def _post(self, diagnostics: dict, per_case_status: object = None) -> list[str]:
-        checks = [{"id": "a"}, {"id": "b", "per_case_status": (
-            {"c1": "na"} if per_case_status is None else per_case_status)}]
-        return DiagnosticsContractOutputTest._run(
-            self, diagnostics, {"diagnostics_contract": {"checks": checks}})
-
-    @staticmethod
-    def _diag(status: object = "na", key: str = "per_case", case: str = "c1") -> dict:
-        slc = {"checks": {"a": {"status": "pass"}, "b": {"status": status}}}
-        container: object = ([{"case_id": case, **slc}] if key == "cases_list"
-                             else {case: slc})
-        return {"checks": {"a": {"status": "pass"}, "b": {"status": "pass"}},
-                ("cases" if key == "cases_list" else key): container}
-
-    def _mine(self, violations: list[str]) -> list[str]:
-        return [v for v in violations if "per_case_status" in v]
-
-    def test_post_execute_accepts_the_declared_literal(self) -> None:
-        for key in ("per_case", "cases", "cases_list"):
-            with self.subTest(key=key):
-                self.assertEqual(self._post(self._diag(key=key)), [])
-
-    def test_post_execute_refuses_another_value(self) -> None:
-        for actual in ("pass", "fail", "na  ", "NA", True, None):
-            for key in ("per_case", "cases", "cases_list"):
-                with self.subTest(actual=actual, key=key):
-                    got = self._mine(self._post(self._diag(actual, key=key)))
-                    self.assertEqual(len(got), 1, got)
-                    self.assertIn(f"case 'c1' checks.b.status {actual!r} is not the 'na'",
-                                  got[0])
-
-    def test_post_execute_refuses_an_absent_status_or_case(self) -> None:
-        diag = self._diag()
-        del diag["per_case"]["c1"]["checks"]["b"]["status"]
-        got = self._mine(self._post(diag))
-        self.assertEqual(len(got), 1, got)
-        self.assertIn("case 'c1' carries no checks.b.status", got[0])
-        for diag in (self._diag(case="c2"), {"checks": {"a": {"status": "pass"},
-                                                        "b": {"status": "pass"}}}):
-            with self.subTest(diag=diag):
-                got = self._mine(self._post(diag))
-                self.assertEqual(len(got), 1, got)
-                self.assertIn("case 'c1' carries no checks.b.status", got[0])
-        diag = self._diag()
-        diag["per_case"]["c1"]["checks"] = []
-        self.assertIn("carries no checks.b.status", self._mine(self._post(diag))[0])
-
-    def test_post_execute_compares_every_declared_case_and_id(self) -> None:
-        checks = [{"id": "a", "per_case_status": {"c1": "pass", "c2": "na"}},
-                  {"id": "b", "per_case_status": {"c1": "na", "c2": "na"}}]
-        diag = {"checks": {"a": {"status": "pass"}, "b": {"status": "pass"}},
-                "per_case": {"c1": {"checks": {"a": {"status": "pass"}, "b": {"status": "na"}}},
-                             "c2": {"checks": {"a": {"status": "na"}, "b": {"status": "na"}}}}}
-        run = lambda d: self._mine(DiagnosticsContractOutputTest._run(  # noqa: E731
-            self, d, {"diagnostics_contract": {"checks": checks}}))
-        self.assertEqual(run(diag), [])
-        for case, cid in (("c2", "a"), ("c2", "b"), ("c1", "b")):
-            with self.subTest(case=case, cid=cid):
-                bad = copy.deepcopy(diag)
-                bad["per_case"][case]["checks"][cid]["status"] = "fail"
-                got = run(bad)
-                self.assertEqual(len(got), 1, got)
-                self.assertIn(f"case {case!r} checks.{cid}.status 'fail'", got[0])
-
-    def test_post_execute_skips_a_malformed_declaration(self) -> None:
-        for bad in ("na", ["c1"], 3):
-            with self.subTest(bad=bad):
-                self.assertEqual(self._mine(self._post(self._diag("pass"), bad)), [])
-
-
-class DiagnosticsContractOutputTest(unittest.TestCase):
-    """Tests for the post_execute/pre_judge diagnostics.json output check."""
-
-    CONTRACT = {
-        "diagnostics_contract": {
-            "checks": [
-                {"id": "equal_state_consistency"},
-                {"id": "wave_speed_nonnegative"},
-                {"id": "input_guard"},
-            ],
-            "verdict": {"required": True, "fields": ["overall", "failed_checks"]},
-        }
-    }
-
-    def _run(self, diagnostics: dict, contract: dict | None = CONTRACT) -> list[str]:
-        """Reach the contract through the production accessor, not a monkeypatch.
-
-        `_io_contract_for_execution` hoists `io_contract.diagnostics_contract` to the top level of
-        the dict this gate reads; every real IR nests it, and none carries it at document level.
-        Substituting a pre-flattened dict here left that hoist — one entry in a key tuple — as the
-        only route to the gate on 109 of 116 certified IRs, with nothing pinning it.
-        """
-        repo_root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, repo_root, ignore_errors=True)
-        pipeline_dir = repo_root / "workspace" / "pipelines" / "n" / "p_001"
-        node_dir = pipeline_dir / "runs" / "run_001" / "n"
-        node_dir.mkdir(parents=True, exist_ok=True)
-        (node_dir / "diagnostics.json").write_text(json.dumps(diagnostics))
-
-        ir_ref = "workspace/ir/component__n__0.1.0/n_001"
-        _write_json(
-            pipeline_dir / "lineage.json",
-            {"node_key": "component/n@0.1.0", "ir_ref": ir_ref, "dependency_ref": ir_ref},
-        )
-        io_contract: dict[str, object] = {
-            "inputs": [{"name": "case_resolved", "source": "spec.ir.yaml"}],
-            "outputs": [],
-        }
-        if contract is not None:
-            io_contract.update(contract)  # nested, exactly as a real IR authors it
-        _write_json(repo_root / ir_ref / "spec.ir.yaml", {"io_contract": io_contract})
-
-        execution = NodeExecution(
-            node_key="component/n@0.1.0",
-            node_dir=node_dir,
-            exec_dir=node_dir,
-            pipeline_dir=pipeline_dir,
-        )
-        violations: list[str] = []
-        _validate_diagnostics_contract_output(repo_root, execution, violations)
-        return violations
-
-    def test_broken_per_case_array_is_flagged(self) -> None:
-        # The exact failure shape from orch_20260616T071613Z_5d13cc57.
-        violations = self._run(
-            {"cases": [{"case_id": "x", "guard_pass": True, "a_x": 1.0, "a_y": 2.0}]}
-        )
-        self.assertTrue(any("checks must be an object" in v for v in violations))
-        self.assertTrue(any("verdict must be an object" in v for v in violations))
-
-    def test_conformant_diagnostics_passes(self) -> None:
-        good = {
-            "checks": {
-                "equal_state_consistency": {"pass": True},
-                "wave_speed_nonnegative": {"pass": True},
-                "input_guard": {"pass": True},
-            },
-            "verdict": {"overall": "fail", "failed_checks": ["input_guard"]},
-        }
-        self.assertEqual([], self._run(good))
-
-    def test_partial_checks_and_verdict_flagged(self) -> None:
-        partial = {
-            "checks": {"equal_state_consistency": {}, "input_guard": {}},
-            "verdict": {"overall": "pass"},
-        }
-        violations = self._run(partial)
-        self.assertTrue(any("wave_speed_nonnegative" in v for v in violations))
-        self.assertTrue(any("failed_checks" in v for v in violations))
-
-    def test_no_contract_means_no_check(self) -> None:
-        self.assertEqual([], self._run({"cases": []}, contract={"io_contract": {}}))
 
 
 class ModelSourceNotFoundMessageTests(unittest.TestCase):
@@ -22943,7 +20819,6 @@ module bx_checks
   private
   real(real64), allocatable :: u(:)
   public :: case_setup, case_run, get_time
-  public :: checks_compute, metric_compute
   public :: u
 contains
   subroutine case_setup(case_id, ok)
@@ -23220,7 +21095,7 @@ def _reach_checks(run_body: str, *, uses: str = "  use bx_model, only: bx__step\
     return ("module bx_checks\n  use, intrinsic :: iso_fortran_env, only: real64\n" + uses
             + "  implicit none\n  private\n  real(real64), allocatable :: u(:)\n"
             "  public :: case_setup, case_run, get_time\n"
-            "  public :: checks_compute, metric_compute\n  public :: u\ncontains\n"
+            "  public :: u\ncontains\n"
             "  subroutine case_setup(case_id, ok)\n    character(len=*), intent(in) :: case_id\n"
             "    logical, intent(out) :: ok\n" + setup_body + "    ok = len_trim(case_id) >= 0\n"
             "  end subroutine case_setup\n"
@@ -23805,9 +21680,9 @@ class ChecksSourceGateTests(unittest.TestCase):
                          "a continuation-split declaration was reported missing")
 
     def test_missing_public_name(self) -> None:
-        bad = _CHECKS_OK.replace("checks_compute, metric_compute", "checks_compute")
+        bad = _CHECKS_OK.replace("case_run, get_time", "case_run")
         v = self._run(bad)
-        self.assertTrue(any("metric_compute" in x for x in v), v)
+        self.assertTrue(any("get_time" in x for x in v), v)
 
     def test_bound_state_must_be_published(self) -> None:
         # Z6 (issue #255): the host-rendered runner imports every IR snapshot variable as
@@ -23862,7 +21737,7 @@ class ChecksSourceGateTests(unittest.TestCase):
                "    logical, intent(out) :: ok\n    ok = .true.\n"
                "  end subroutine case_setup\nend module bx_checks\n")
         v = self._run(bad)
-        self.assertTrue(any("metric_compute" in x for x in v), v)
+        self.assertTrue(any("get_time" in x for x in v), v)
 
     def test_bare_public_all_defined_passes(self) -> None:
         # A bare-`public` module that DEFINES every ABI name passes the name check.
@@ -23895,21 +21770,21 @@ class ChecksSourceGateTests(unittest.TestCase):
 
     def test_private_entity_excludes_name(self) -> None:
         # Default-public module, but one ABI name is explicitly `private ::`'d → not published.
-        bad = self._module_defining_all(extra_spec="  private :: metric_compute\n")
+        bad = self._module_defining_all(extra_spec="  private :: get_time\n")
         v = self._run(bad)
-        self.assertTrue(any("metric_compute" in x for x in v), v)
+        self.assertTrue(any("get_time" in x for x in v), v)
 
     def test_interface_prototype_is_not_a_definition(self) -> None:
         # A default-public module that only PROTOTYPES an ABI name in an `interface` block
         # (never defining it) must still be caught — an interface header is not a definition.
         body = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES if n != "metric_compute")
-        proto = ("  abstract interface\n    subroutine metric_compute()\n"
-                 "    end subroutine metric_compute\n  end interface\n")
+            for n in _ABI_NAMES if n != "get_time")
+        proto = ("  abstract interface\n    subroutine get_time()\n"
+                 "    end subroutine get_time\n  end interface\n")
         bad = f"module bx_checks\n  implicit none\n{proto}contains\n{body}end module bx_checks\n"
         v = self._run(bad)
-        self.assertTrue(any("metric_compute" in x for x in v), v)
+        self.assertTrue(any("get_time" in x for x in v), v)
 
     def test_nested_internal_procedure_is_not_a_definition(self) -> None:
         # A default-public module that defines an ABI name ONLY as an internal procedure
@@ -23917,13 +21792,13 @@ class ChecksSourceGateTests(unittest.TestCase):
         # procedure is not a module entity the host-rendered runner can `use ... only:`.
         nine = "".join(
             f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES if n != "metric_compute")
+            for n in _ABI_NAMES if n != "get_time")
         holder = ("  subroutine holder()\n  contains\n"
-                  "    subroutine metric_compute()\n    end subroutine metric_compute\n"
+                  "    subroutine get_time()\n    end subroutine get_time\n"
                   "  end subroutine holder\n")
         bad = f"module bx_checks\n  implicit none\ncontains\n{nine}{holder}end module bx_checks\n"
         v = self._run(bad)
-        self.assertTrue(any("metric_compute" in x for x in v), v)
+        self.assertTrue(any("get_time" in x for x in v), v)
 
     def test_abi_defined_in_second_module_is_caught(self) -> None:
         # ABI procedures defined in a SECOND module (or after `end module <sid>_checks`) are
@@ -27486,13 +25361,11 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
                     {"artifact": "state_snapshots", "required": True, "schema": {
                         "time_variable": "t",
                         "variables": [{"name": "U", "shape_expr": "[nx, ny]"}]}}]},
-                "diagnostics_contract": {
-                    "checks": [{"id": "c1"}],
-                    "verdict": {"required": True, "fields": ["overall", "failed_checks"]}},
-                "test_predicates": [
-                    {"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c_a"]}],
-                "test_evidence_requirements": [
-                    {"test_id": "t1", "required_raw_variables": ["U"]}],
+                "tests": [{"test_id": "t1", "expected_outcome": "pass",
+                           "target_cases": ["c_a"], "quantities": ["q"]}],
+                "predicates": [{"test_id": "t1", "quantity": "q", "target_cases": ["c_a"],
+                                "expr": "sum(final.U)", "op": "le", "value": 1.0,
+                                "per_case": True}],
             },
         }
 
@@ -27565,13 +25438,6 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
             "variables"].append({"name": "step", "shape_expr": "scalar"})
         v = self._run(ir)
         self.assertTrue(any("'step'" in x and "reserved" in x for x in v), v)
-
-    def test_verdict_fields_unsupported_fails(self) -> None:
-        ir = self._baseline_ir()
-        ir["io_contract"]["diagnostics_contract"]["verdict"]["fields"] = [
-            "overall", "failed_checks", "score"]
-        v = self._run(ir)
-        self.assertTrue(any("verdict.fields" in x and "score" in x for x in v), v)
 
     def test_rank_over_4_fails(self) -> None:
         ir = self._baseline_ir()
@@ -27703,7 +25569,7 @@ class IrFixtureShapeTests(unittest.TestCase):
     Three gates were silently dead under a green suite because their fixtures used a shape the
     pipeline never produces — a passing test proved only that the gate COULD fire, never that it
     DOES on a real artifact (`_plan_dependency_node_key`; `_validate_problem_state_array_usage`;
-    and the tests.md resolution behind `_validate_test_evidence_requirements` /
+    and the tests.md resolution behind `_validate_tests_and_predicates` /
     `_validate_tests_verdict_summary_consistency`, which read a `source:` key no IR has). These
     tests pin the shared factory's document against the real shape so the class cannot recur.
     """
@@ -27775,15 +25641,14 @@ class IrFixtureShapeTests(unittest.TestCase):
         repo_root: Path,
         *,
         test_ids: tuple[str, ...] = ("t1",),
-        evidence: object = _UNSET,
+        tests: object = _UNSET,
         drop_tests_ref: bool = False,
         tests_md_body: str | None = None,
     ) -> list[str]:
         """Drive the compile stage over the shared fixture with a real tests.md in place.
 
         This is the state the revived gates actually run in: `meta.source_refs.tests` resolves, so
-        `tests.md` is the canonical test-id set and `io_contract.test_evidence_requirements` is
-        pinned against it.
+        `tests.md` is the canonical test-id set and `io_contract.tests` is pinned against it.
         """
         self._fixture_ir(repo_root)
         tests_md = repo_root / MOCK_TESTS_REF
@@ -27791,14 +25656,17 @@ class IrFixtureShapeTests(unittest.TestCase):
         tests_md.write_text(
             tests_md_body
             if tests_md_body is not None
-            else "".join(f"### 1-{i}. `{t}`\n" for i, t in enumerate(test_ids, start=1)),
+            else "".join(f"### 1-{i}. `{t}`\n- `quantities`: `mass_drift_rel`\n"
+                         for i, t in enumerate(test_ids, start=1)),
             encoding="utf-8",
         )
 
         ir_path = repo_root / _FIXTURE_IR_REL
         doc = json.loads(ir_path.read_text(encoding="utf-8"))
-        if evidence is not _UNSET:
-            doc["io_contract"]["test_evidence_requirements"] = evidence
+        if tests is not _UNSET:
+            doc["io_contract"]["tests"] = [
+                {"test_id": t, "expected_outcome": "pass", "target_cases": ["c1"],
+                 "quantities": ["mass_drift_rel"]} for t in tests]
         if drop_tests_ref:
             doc["meta"]["source_refs"].pop("tests", None)
         ir_path.write_text(json.dumps(doc), encoding="utf-8")
@@ -27806,55 +25674,35 @@ class IrFixtureShapeTests(unittest.TestCase):
             repo_root, "workspace", str(Path(_FIXTURE_IR_REL).parent)
         )
 
-    def test_evidence_requirements_must_cover_every_tests_md_test(self) -> None:
-        """The pin the revival exists for: an IR that omits one test's evidence requirement used to
-        certify clean, because tests.md was never resolved."""
+    def test_tests_must_cover_every_tests_md_test(self) -> None:
+        """The pin the revival exists for: an IR that omits one test used to certify clean, because
+        tests.md was never resolved."""
         with tempfile.TemporaryDirectory() as tmp:
-            violations = self._compile_with_tests_md(
-                Path(tmp),
-                test_ids=("t1", "t2"),
-                evidence=[{"test_id": "t1", "required_raw_variables": ["h"]}],
-            )
+            violations = self._compile_with_tests_md(Path(tmp), test_ids=("t1", "t2"), tests=["t1"])
         self.assertTrue(
             [v for v in violations if "missing tests from tests.md" in v and "t2" in v], violations
         )
 
-    def test_evidence_requirements_reject_a_test_id_absent_from_tests_md(self) -> None:
+    def test_tests_reject_a_test_id_absent_from_tests_md(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            violations = self._compile_with_tests_md(
-                Path(tmp),
-                test_ids=("t1",),
-                evidence=[
-                    {"test_id": "t1", "required_raw_variables": ["h"]},
-                    {"test_id": "t_ghost", "required_raw_variables": ["h"]},
-                ],
-            )
+            violations = self._compile_with_tests_md(Path(tmp), test_ids=("t1",),
+                                                     tests=["t1", "t_ghost"])
         self.assertTrue(
             [v for v in violations if "unknown test_id" in v and "t_ghost" in v], violations
         )
 
-    def test_evidence_requirements_reject_a_duplicated_test_id(self) -> None:
+    def test_tests_reject_a_duplicated_test_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            violations = self._compile_with_tests_md(
-                Path(tmp),
-                test_ids=("t1",),
-                evidence=[
-                    {"test_id": "t1", "required_raw_variables": ["h"]},
-                    {"test_id": "t1", "required_raw_variables": ["hu"]},
-                ],
-            )
+            violations = self._compile_with_tests_md(Path(tmp), test_ids=("t1",),
+                                                     tests=["t1", "t1"])
         self.assertTrue([v for v in violations if "duplicated test_id" in v], violations)
 
-    def test_evidence_requirements_are_clean_when_the_set_matches(self) -> None:
+    def test_tests_are_clean_when_the_set_matches(self) -> None:
         """The negative twin: the pin does not simply reject everything."""
         with tempfile.TemporaryDirectory() as tmp:
-            violations = self._compile_with_tests_md(
-                Path(tmp),
-                test_ids=("t1",),
-                evidence=[{"test_id": "t1", "required_raw_variables": ["h"]}],
-            )
+            violations = self._compile_with_tests_md(Path(tmp), test_ids=("t1",), tests=["t1"])
         self.assertFalse(
-            [v for v in violations if "test_evidence_requirements" in v], violations
+            [v for v in violations if "io_contract.tests" in v or "tests.md" in v], violations
         )
 
     def test_absent_tests_ref_fails_compile(self) -> None:
@@ -27964,7 +25812,8 @@ class IrFixtureShapeTests(unittest.TestCase):
             )
 
             (repo_root / MOCK_TESTS_REF).parent.mkdir(parents=True, exist_ok=True)
-            (repo_root / MOCK_TESTS_REF).write_text("### 1-1. `t1`\n", encoding="utf-8")
+            (repo_root / MOCK_TESTS_REF).write_text(
+                    "### 1-1. `t1`\n- quantities: mass_drift_rel\n", encoding="utf-8")
             with_tests_md = validate_compile_stage(repo_root, "workspace", ir_ref)
         self.assertFalse(
             [v for v in with_tests_md if "meta.source_refs.tests" in v],
@@ -28002,13 +25851,11 @@ class IrFixtureShapeTests(unittest.TestCase):
                 repo_root = Path(tmp)
                 self._fixture_ir(repo_root)
                 (repo_root / MOCK_TESTS_REF).parent.mkdir(parents=True, exist_ok=True)
-                (repo_root / MOCK_TESTS_REF).write_text("### 1-1. `t1`\n", encoding="utf-8")
+                (repo_root / MOCK_TESTS_REF).write_text(
+                    "### 1-1. `t1`\n- quantities: mass_drift_rel\n", encoding="utf-8")
                 ir_path = repo_root / _FIXTURE_IR_REL
                 doc = json.loads(ir_path.read_text(encoding="utf-8"))
                 doc["algorithm"][stray] = "1.0"
-                doc["io_contract"]["test_evidence_requirements"] = [
-                    {"test_id": "t1", "required_raw_variables": ["h"]}
-                ]
                 ir_path.write_text(json.dumps(doc), encoding="utf-8")
                 violations = validate_compile_stage(  # must not raise
                     repo_root, "workspace", str(Path(_FIXTURE_IR_REL).parent)
@@ -28060,12 +25907,10 @@ class IrFixtureShapeTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._fixture_ir(repo_root)
             (repo_root / MOCK_TESTS_REF).parent.mkdir(parents=True, exist_ok=True)
-            (repo_root / MOCK_TESTS_REF).write_text("### 1-1. `t1`\n", encoding="utf-8")
+            (repo_root / MOCK_TESTS_REF).write_text(
+                    "### 1-1. `t1`\n- quantities: mass_drift_rel\n", encoding="utf-8")
             ir_path = repo_root / _FIXTURE_IR_REL
             doc = json.loads(ir_path.read_text(encoding="utf-8"))
-            doc["io_contract"]["test_evidence_requirements"] = [
-                {"test_id": "t1", "required_raw_variables": ["h"]}
-            ]
             clean = yaml.safe_dump(doc, sort_keys=False).encode("utf-8")
             self.assertFalse(
                 [v for v in self._compile(repo_root, ir_path, clean) if "invalid json" in v],
@@ -28090,7 +25935,7 @@ class IrFixtureShapeTests(unittest.TestCase):
         from tools.validate_pipeline_semantics import _read_json
 
         with tempfile.TemporaryDirectory() as tmp:
-            bad = Path(tmp) / "metrics_basis.json"
+            bad = Path(tmp) / "perf.json"
             bad.write_bytes(b"\xff{}")
             with self.assertRaises(json.JSONDecodeError):  # not UnicodeDecodeError
                 _read_json(bad)
@@ -28104,7 +25949,7 @@ class IrFixtureShapeTests(unittest.TestCase):
         from tools.validate_pipeline_semantics import _read_json
 
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "diagnostics.json"
+            path = Path(tmp) / "perf.json"
             path.write_text('{"m": NaN, "p": Infinity, "n": -Infinity}', encoding="utf-8")
             doc = _read_json(path)
             self.assertTrue(math.isnan(doc["m"]))
@@ -29352,10 +27197,10 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
             "io_contract": {
                 "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
                 "outputs": [{"name": "metric", "shape_expr": "scalar",
-                             "evidence_ref": "raw/metrics_basis.json"}],
+                             "evidence_ref": "perf.json"}],
                 "semantic_dependency": {"required_sources": []},
                 "raw_requirements": {"required_evidence": [
-                    {"artifact": "metrics_basis.json", "required": True}]},
+                    {"artifact": "state_snapshots", "required": False}]},
             },
         })
         install_target_profile(tmp)
@@ -29606,10 +27451,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
     _HEALTHY_IO_CONTRACT: dict = {
         "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"}],
         "outputs": [{"name": "metric", "shape_expr": "scalar",
-                     "evidence_ref": "raw/metrics_basis.json"}],
+                     "evidence_ref": "perf.json"}],
         "semantic_dependency": {"required_sources": []},
         "raw_requirements": {"required_evidence": [
-            {"artifact": "metrics_basis.json", "required": True}]},
+            {"artifact": "state_snapshots", "required": False}]},
     }
 
     def _seed(self, tmp: Path, *, module_parameters: object | None,
@@ -29713,10 +27558,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
             "inputs": [{"name": "case_resolved", "evidence_ref": "spec.ir.yaml"},
                        {"name": "topography_profile", "evidence_ref": evidence_ref}],
             "outputs": [{"name": "metric", "shape_expr": "scalar",
-                         "evidence_ref": "raw/metrics_basis.json"}],
+                         "evidence_ref": "perf.json"}],
             "semantic_dependency": {"required_sources": []},
             "raw_requirements": {"required_evidence": [
-                {"artifact": "metrics_basis.json", "required": True}]},
+                {"artifact": "state_snapshots", "required": False}]},
         }
         ir_path.write_text(json.dumps(doc), encoding="utf-8")
         return pipeline_dir, "workspace/ir/x"
@@ -29805,7 +27650,7 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
             tmp = Path(t)
             _seed_shape_expr_schema_into(tmp)
             pipeline_dir, _ = self._seed_io_contract_ir(
-                tmp, evidence_ref="raw/metrics_basis.json")
+                tmp, evidence_ref="perf.json")
             proc = self._run_cli(tmp, pipeline_dir)
         self.assertNotEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
                             (proc.stdout, proc.stderr))
@@ -29844,7 +27689,7 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
             tmp = Path(t)
             _seed_shape_expr_schema_into(tmp)
             pipeline_dir, _ = self._seed_io_contract_ir(
-                tmp, evidence_ref="raw/metrics_basis.json", source=self._DRIFTED_SOURCE)
+                tmp, evidence_ref="perf.json", source=self._DRIFTED_SOURCE)
             proc = self._run_cli(tmp, pipeline_dir)
         self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
         self.assertTrue([line for line in proc.stdout.splitlines() if line.startswith("- ")],
@@ -29932,24 +27777,25 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
 
 
 class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase):
-    """Well-formedness of the five artifacts the two deterministic conductor gates read,
+    """Well-formedness of the four artifacts the two deterministic conductor gates read,
     asserted against the validator that answers for them alone.
 
     Until issue #180 a separate tool parsed each of these and checked its top-level type ahead
     of the validator, at `compile.static` (`spec.ir.yaml` + `ir_meta.json`) and at
-    `validate.execute` (`diagnostics.json` / `perf.json` / `quality_check.json`). It was retired
+    `validate.execute` (`perf.json` / `quality_check.json`; `diagnostics.json` went with issue
+    #582, which retired the file and its rows). It was retired
     because both stages already report the same shapes; this class is the enumeration behind
     that claim, taken through the real `validate_compile_stage` / `validate` entrypoints.
 
-    THE GRID IS 5 FILES x 3 OF THE TOOL'S 4 FAILURE MODES (missing / unparsable / not the
-    expected top-level type) = 15, AND THERE ARE 14 ROWS. The three run artifacts share ONE
-    `missing` row (the stage reports all three from the same required-set check), which is -2;
-    and one extra row pins the empty-IR violation COUNT, which is +1. Nothing in those 15 is
+    THE GRID IS 4 FILES x 3 OF THE TOOL'S 4 FAILURE MODES (missing / unparsable / not the
+    expected top-level type) = 12, AND THERE ARE 12 ROWS. The two run artifacts share ONE
+    `missing` row (the stage reports both from the same required-set check), which is -1;
+    and one extra row pins the empty-IR violation COUNT, which is +1. Nothing in those 12 is
     unrepresented.
 
     THE FOURTH MODE IS NOT COVERED HERE, AND IS NOT SUBSUMED. The retired tool also reported
     `<path>: not a file` and, from `except (OSError, ...)`, an unreadable file — for any of the
-    five. `--stage compile` / `--stage post_execute` let the `OSError` escape instead
+    four. `--stage compile` / `--stage post_execute` let the `OSError` escape instead
     (`IsADirectoryError`, `PermissionError`), and `_main_dispatch` catches only
     `FortranStructureUnavailableError` / `RuntimeError`, so the leaf receives a traceback where
     every mode above gives it a repairable violation. rc is 1 either way and the routing is
@@ -30063,7 +27909,7 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             [v for v in violations if v.endswith("ir_meta.json: must be json object")], violations
         )
 
-    # --- post_execute: diagnostics.json / perf.json / quality_check.json -----------------
+    # --- post_execute: perf.json / quality_check.json -----------------
 
     def _post_execute(self, tmp: str, name: str, body: str) -> tuple[Path, list[str]]:
         repo_root = self._tree(tmp)
@@ -30072,27 +27918,17 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
         path.write_text(body, encoding="utf-8")
         return path, validate(repo_root=repo_root, workspace_root="workspace")
 
-    def test_post_execute_reports_the_three_run_artifacts_as_missing(self) -> None:
+    def test_post_execute_reports_the_run_artifacts_as_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._tree(tmp)
             node_dir = self._node_dir(repo_root)
-            for name in ("diagnostics.json", "perf.json", "quality_check.json"):
+            for name in ("perf.json", "quality_check.json"):
                 (node_dir / name).unlink()
             violations = validate(repo_root=repo_root, workspace_root="workspace")
-        for name in ("diagnostics.json", "perf.json", "quality_check.json"):
+        for name in ("perf.json", "quality_check.json"):
             self.assertTrue(
                 [v for v in violations if v.endswith(f"{name}: missing")], (name, violations)
             )
-
-    def test_post_execute_reports_a_non_object_diagnostics(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path, violations = self._post_execute(tmp, "diagnostics.json", "[]")
-        self.assertIn(f"{path}: must be json object", violations)
-
-    def test_post_execute_reports_an_unparsable_diagnostics(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path, violations = self._post_execute(tmp, "diagnostics.json", "not json")
-        self.assertIn(f"{path}: invalid json", violations)
 
     def test_post_execute_reports_a_non_object_perf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -30117,56 +27953,6 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             path, violations = self._post_execute(tmp, "quality_check.json", "[]")  # must not raise
         self.assertIn(f"{path}: must be json object", violations)
 
-
-    # --- post_execute: the status vocabulary of diagnostics.json (issue #437) -----------
-
-    _PADDED_DIAGNOSTICS = json.dumps({
-        "checks": {"wrap": {"status": "pass"}},
-        "verdict": {"overall": "pass", "failed_checks": []},
-        "per_case": {"c1": {"checks": {"wrap": {"status": "na  "}},
-                            "verdict": {"overall": "pass", "failed_checks": []}}},
-    })
-
-    def test_post_execute_refuses_a_padded_per_case_status(self) -> None:
-        """Through `validate()`, on a node whose IR declares NO diagnostics_contract, so the rule
-        is shown not to sit behind `_validate_diagnostics_contract_output`'s early return."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._tree(tmp)
-            ir = json.loads((repo_root / _FIXTURE_IR_REL).read_text(encoding="utf-8"))
-            self.assertNotIn("diagnostics_contract", json.dumps(ir))
-            path, violations = self._post_execute(tmp, "diagnostics.json",
-                                                  self._PADDED_DIAGNOSTICS)
-        with tempfile.TemporaryDirectory() as tmp:
-            _, literal = self._post_execute(
-                tmp, "diagnostics.json", self._PADDED_DIAGNOSTICS.replace('"na  "', '"na"'))
-        address = f"{path}:per_case.c1.checks.wrap.status 'na  '"
-        self.assertEqual([v for v in violations if "is not one of" in v],
-                         [v for v in violations if v.startswith(address)])
-        self.assertEqual(len([v for v in violations if v.startswith(address)]), 1, violations)
-        # the conforming twin: the same document with the literal adds none of this rule's
-        self.assertFalse([v for v in literal if "is not one of" in v], literal)
-
-    def test_the_cli_answers_1_for_a_padded_status_in_a_real_subprocess(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._tree(tmp)
-            node_dir = self._node_dir(repo_root)
-            pipeline_dir = node_dir.parent.parent.parent
-            cli = [sys.executable, str(Path(vps.__file__).resolve()), "--repo-root",
-                   str(repo_root), "--workspace-root", "workspace", "--stage", "post_execute",
-                   "--pipeline-root", str(pipeline_dir), "--run-id", node_dir.parent.name]
-            here = str(Path(vps.__file__).resolve().parent.parent)
-            results = {}
-            for label, status in (("padded", "na  "), ("literal", "na")):
-                (node_dir / "diagnostics.json").write_text(
-                    self._PADDED_DIAGNOSTICS.replace('"na  "', json.dumps(status)),
-                    encoding="utf-8")
-                results[label] = subprocess.run(cli, cwd=here, capture_output=True, text=True,
-                                                check=False)
-        padded, literal = results["padded"], results["literal"]
-        self.assertEqual(padded.returncode, 1, (padded.stdout, padded.stderr))
-        self.assertIn("per_case.c1.checks.wrap.status 'na  ' is not one of", padded.stdout)
-        self.assertIn("must write the literal 'na'", padded.stdout)
-        self.assertNotIn("is not one of", literal.stdout)
 
 class ProcedureTypedSurfaceGateTests(unittest.TestCase):
     """Issue #266: a §5.1 with an `interfaces` prototype and a `{type: procedure, interface}`

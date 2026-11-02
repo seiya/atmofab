@@ -2961,7 +2961,6 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         "  private\n"
         "  real(real64), allocatable :: q(:)\n"
         "  public :: case_setup, case_run, get_time\n"
-        "  public :: checks_compute, metric_compute\n"
         "  public :: q\n"
         "contains\n"
         "  subroutine case_setup(case_id, ok)\n"
@@ -3057,7 +3056,7 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         nk = "problem/bx@0.1.0"
         doc = self._bundle(nk, [])
         doc["entrypoints"] = [
-            {"symbol": "checks_compute", "kind": "checks_interface", "node_key": nk,
+            {"symbol": "case_run", "kind": "checks_interface", "node_key": nk,
              "defined_in": "bx_checks.f90", "module": "bx_checks"},
             # A `problem` publishes exactly one operation, and it is deliberately NOT the
             # `bx__anything` the pin names: the surface layer must stay inert on this kind
@@ -3489,46 +3488,39 @@ class PureStateBindingLayerTests(unittest.TestCase):
             self.assertEqual(r[0], "bundle_checks_abi_violation")
             self.assertIn("could not be stated (RuntimeError('no words'))", r[1])
 
-    def test_metric_compute_dummy_declaration_is_judged_at_the_handler(self) -> None:
-        """Issue #261: the backend's `checks_abi_dummy_violation` runs inside the ABI layer, after
-        the procedure clause and before the bound-state clause. Pinned here through
-        `pure_bundle_contract_violation` so a gate that stopped calling the seam cannot stay
-        green; the spellings themselves are the backend test's (`test_fortran_runner`)."""
-        pinned = "    character(len=:), allocatable, intent(out) :: reason_na\n"
-        bad = "    character(len=64), intent(out) :: reason_na\n"
-        defined = self._CHECKS.replace(
-            "contains\n",
-            "contains\n"
-            "  subroutine metric_compute(case_id, name, val, is_na, reason_na, found)\n"
-            "    character(len=*), intent(in) :: case_id, name\n"
-            "    real(real64), intent(out) :: val\n"
-            "    logical, intent(out) :: is_na, found\n"
-            + pinned +
-            "    val = 0.0_real64; is_na = .false.; found = .false.; reason_na = ''\n"
-            "  end subroutine metric_compute\n", 1)
-        self.assertNotEqual(defined, self._CHECKS)
-        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=defined), ["q"]))
-        r = self._run(self._bundle([self._binding("q")], checks=defined.replace(pinned, bad)),
-                      ["q"])
-        self.assertIsNotNone(r)
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("module bx_checks: metric_compute's dummy argument 'reason_na'", r[1])
-        self.assertIn("without the `allocatable` attribute", r[1])
-        # ordering: an unpublished ABI name is reported before the declaration ...
-        r = self._run(self._bundle([self._binding("q")], checks=defined.replace(
-            pinned, bad).replace("  public :: checks_compute, metric_compute\n",
-                                 "  public :: checks_compute\n")), ["q"])
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("not published by module bx_checks: metric_compute", r[1])
-        self.assertNotIn("allocatable", r[1])
-        # ... and the declaration before an unpublished bound state variable
-        r = self._run(self._bundle([self._binding("q")], checks=defined.replace(
-            pinned, bad).replace("  public :: q\n", "")), ["q"])
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("without the `allocatable` attribute", r[1])
-        self.assertNotIn("bound state", r[1])
-        # the fixture that publishes the name without defining it is not judged on it
+    def test_the_abi_layer_requires_exactly_the_three_procedures(self) -> None:
+        """Issue #582: the checks ABI is `case_setup`, `case_run`, `get_time`, pinned at the
+        handler. A module publishing those three passes (no `metric_compute`, no
+        `checks_compute`); one that still publishes a retired name beside them adds nothing the
+        layer reads; one missing any of the three is refused, naming it, and a missing procedure
+        is reported before an unpublished bound state variable."""
+        self.assertNotIn("metric_compute", self._CHECKS)
+        self.assertNotIn("checks_compute", self._CHECKS)
         self.assertIsNone(self._run(self._bundle([self._binding("q")]), ["q"]))
+        extra = self._CHECKS.replace("  public :: q\n",
+                                     "  public :: q\n  public :: metric_compute\n")
+        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=extra), ["q"]))
+        abi_line = "  public :: case_setup, case_run, get_time\n"
+        self.assertIn(abi_line, self._CHECKS)
+        for gone, kept in (("get_time", "case_setup, case_run"),
+                           ("case_run", "case_setup, get_time"),
+                           ("case_setup", "case_run, get_time")):
+            # The fixture defines `case_setup`, so its removal also takes the definition out.
+            checks = self._CHECKS.replace(abi_line, f"  public :: {kept}\n")
+            if gone == "case_setup":
+                checks = checks[:checks.index("  subroutine case_setup")] + (
+                    checks[checks.index("end module bx_checks"):])
+            with self.subTest(gone):
+                r = self._run(self._bundle([self._binding("q")], checks=checks), ["q"])
+                self.assertIsNotNone(r)
+                self.assertEqual(r[0], "bundle_checks_abi_violation")
+                self.assertIn(f"not published by module bx_checks: {gone}", r[1])
+        r = self._run(self._bundle([self._binding("q")], checks=self._CHECKS.replace(
+            abi_line, "  public :: case_setup, case_run\n").replace("  public :: q\n", "")),
+                      ["q"])
+        self.assertEqual(r[0], "bundle_checks_abi_violation")
+        self.assertIn("not published by module bx_checks: get_time", r[1])
+        self.assertNotIn("bound state", r[1])
 
     def test_harness_shape_refuses_a_binding(self) -> None:
         doc = BundleShapeAdmissibilityTest()._harness_doc()

@@ -6,7 +6,7 @@ The judgment defined in this document constitutes the basis that forms the relev
 
 ## Basic rules
 - The judgeable items differ per physics problem, but **always include the definable items in the verification scope**.
-- Do not silently omit an item that cannot be defined; clearly state **N/A and the reason** in `diagnostics.json` / `verdict.json`.
+- Do not silently omit an item that cannot be defined; clearly state **N/A and the reason** in `tests.md`.
 
 ## Required checks (when definable)
 1. **CFL condition check**

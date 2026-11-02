@@ -34,6 +34,10 @@ distributed harness under a backend with no launcher (`target_profile._process_m
   onto rank 0 at each capture point, sums the ranks' updated-cell counts, and calls the writers
   on rank 0 only. Which arrays are partitioned, and how, is the checks module's partition
   metadata (`docs/backends/language/fortran/CHECKS_ABI.md` §1-c).
+- A `source: reported` scalar (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-b) is the whole-domain
+  reduction: the capture writes rank 0's copy of a bound scalar, so the kernel reduces it with
+  `<harness>__reduce_max` / `__reduce_min` (on `fortran_cpu_mpi`,
+  `harness_fortran_cpu_mpi__reduce_max` / `__reduce_min`) before the operation returns.
 - A bundle that distributes its state declares `target_lowering_plan.state_residency:
   distributed`, `distributed_state@2` among its `capability_requirements`, and says how in the
   plan's `parallelization` (`"model": "mpi"`) and `decomposition` members.
@@ -75,8 +79,8 @@ coordinate `0`'s, and the state agrees; the reviewer is told that the second spa
 partitioned along dimension 2. Both are `Generate.verify`
 G6's judgment, told in the `mpi` reviewer fragment: whether each rank computes only the cells
 it owns, whether the partition metadata describes the cells it contributes to the declared global array, whether the halo exchange precedes every
-stencil read with the spec's periodicity, and whether every global quantity a check or a metric
-reads goes through a reduction. The same class as the OpenMP floor's "a directive on some loops
+stencil read with the spec's periodicity, and whether every global quantity the kernel reports
+goes through a reduction. The same class as the OpenMP floor's "a directive on some loops
 only".
 
 A plan that declines MPI is the producer's own claim; the floor trusts it, and G6 holds it to

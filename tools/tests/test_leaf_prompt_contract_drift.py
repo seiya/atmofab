@@ -1122,6 +1122,8 @@ PINNED: dict[str, str] = {
     # leaf-86 (issue #574): `DEPENDENCIES.md` loses the certified refs of each dependency, and its
     # fixed text joins the tuple as `dependency_facts_render`. The first version in no key.
     "leaf-86": "c8fcb173cdb1d18a1d32e9991ad6673de285b747d88aaad8d37280a395fbec6e",
+    # leaf-87 (issue #582): the judging half of the checks module is retired.
+    "leaf-87": "08e4545b252cd91493f7a065c22c43af5b270a9174ab29e559ef3b4ed9772dfd",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1129,8 +1131,11 @@ PINNED: dict[str, str] = {
 # "valid" means for that phase.
 PINNED_READER: dict[str, str] = {
     "compile-verify-1": "584d9da4ce298797da0bdc8923b042b9cc0a17e22bbd9a5d4bfe510b39e1b4f1",
+    "compile-verify-2": "8bcc329a4dc4df59fb5ba994c20029a1a4eca90d3b2de02fb0607912e68b6759",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
+    "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
+    "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
@@ -1178,15 +1183,11 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         # The five file tools an HTTP workshop leaf is declared: their names, descriptions and
         # schemas are what the model reads.
         "http_file_tool_declarations": list(leaf_contract.HTTP_FILE_TOOL_DECLARATIONS),
-        # The checks ABI's names and status width, PER LANGUAGE that renders a runner (issue #289,
+        # The checks ABI's names, PER LANGUAGE that renders a runner (issue #289,
         # R4-b PR-6): until the second renderer these named the Fortran module, so a `cuda_cpp`
         # runner's ABI could change with the digest unmoved.
         "checks_public_names": {
             language: list(_runner_module(language).CHECKS_PUBLIC_NAMES)
-            for language in _runner_languages()
-        },
-        "check_status_width": {
-            language: _runner_module(language).CHECK_STATUS_WIDTH
             for language in _runner_languages()
         },
         # The §1-4 SLICE of the checks-module contract, not the file: since issue #142 those
@@ -1359,14 +1360,12 @@ READER_MEMBERS_BY_PHASE: dict[str, frozenset[str]] = {
         "runner_output_contract_document",
         "runner_output_binding_document",
         "checks_public_names",
-        "check_status_width",
         "dependency_facts_render",
     },
     "validate": _EVERY_READER | {
         "templates/workshop_validate_judge.txt",
         "runner_output_contract_sections",
         "checks_public_names",
-        "check_status_width",
         "dependency_facts_render",
     },
 }
@@ -1466,7 +1465,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "file-tool declarations, the language backends' checks-ABI constants, lint rules, "
             "gate-guard and binding sections or exemplar note, or an inlined document slice — "
             "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
-            "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file, or the fixed text of "
+            "RUNNER_OUTPUT_CONTRACT.md §3 AND the whole of that file, or the fixed text of "
             "DEPENDENCIES.md).\n"
             "A member only a producer reads needs this bump alone, and it moves no derivation key. "
             "A member a reader reads needs its phase's reader constant too "
@@ -1612,8 +1611,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
                 ("runner-output binding", prompts, "runner_output_document", lambda: "changed"),
                 ("exemplar gate-drift note", prompts, "EXEMPLAR_GATE_DRIFT_NOTE", "changed"),
                 ("lint rule set", lint, "lint_rules_document", lambda: "changed"),
-                ("checks-ABI names", runner, "CHECKS_PUBLIC_NAMES", ("case_setup",)),
-                ("check status width", runner, "CHECK_STATUS_WIDTH", 5)):
+                ("checks-ABI names", runner, "CHECKS_PUBLIC_NAMES", ("case_setup",))):
             with self.subTest(label=label), mock.patch.object(target, attribute, value):
                 self.assertNotEqual(base, _digest())
 

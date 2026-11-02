@@ -431,8 +431,8 @@ the issue records this as a departure from `zero_base_architecture.md` §A4 as w
 `state_registration@1` is defined as: the host-rendered runner reads every IR snapshot
 variable straight from the module-level storage of the bundle's checks module
 (`use <spec_id>_checks, only: sb_<var> => <var>`) and serializes it through the harness's
-`__emit_*` / `__write_snapshot` right after `case_setup` and right after `case_run`, before
-any check or metric callback of that case (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-b).
+`__emit_*` / `__write_snapshot` right after `case_setup` and right after `case_run`
+(`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-b).
 The harness source needs no new operation for it, so the harness version is unchanged.
 
 `sync_single_case@1` is defined as exactly the canonical interface block of
@@ -554,7 +554,7 @@ compile or link failure. The exporting module is declared, never inferred from t
   would silently capture the same evidence for both.
 - `capture: checks_getter` (1.1.0) is **retired** with the snapshot getters
   (`get_scalar` / `get_r1..r4`) it read through: a value that passed through a generated
-  procedure was secondary evidence, and `Z6` makes that path unrepresentable rather than
+  procedure could have been anything the procedure wrote, and `Z6` makes that path unrepresentable rather than
   policed. The token is no longer a member of the `capture` enum, so a 1.1.0 document that
   declares it fails the schema layer; there is no backfill (the 1.1.0 → 1.2.0 bump is the
   minor a document of the old shape does not satisfy — see "Version compatibility").

@@ -41,7 +41,9 @@ _RUNNER = textwrap.dedent('''\
     #!/usr/bin/env python3
     import json, os, sys
     cases = sys.argv[sys.argv.index("--cases") + 2:]
-    json.dump({"verdict": {c: "pass" for c in cases}}, open("diagnostics.json", "w"))
+    os.makedirs("raw/state_snapshots", exist_ok=True)
+    for c in cases:
+        json.dump({"v": 0.0, "t": 1.0}, open("raw/state_snapshots/" + c + ".json", "w"))
     # An honest harness reports the thread count the run was launched with (issue #512).
     threads = os.environ.get("OMP_NUM_THREADS")
     json.dump({} if threads is None else {"parallelism": {"threads_per_rank": int(threads)}},
@@ -66,6 +68,34 @@ _MAKEFILE = textwrap.dedent('''\
     BIN ?= spec_x_runner
     test:
     \tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
+''')
+
+
+#: One test over both cases, judged from the capture the runner writes: the host verdict of each
+#: shape's run is what the quality check compares (issue #582).
+_IR = textwrap.dedent('''\
+    case:
+      test_case_set:
+        - case_id: c_alpha
+        - case_id: c_beta
+    io_contract:
+      raw_requirements:
+        required_evidence:
+          - artifact: state_snapshots
+            required: true
+            schema:
+              variables:
+                - {name: v, shape_expr: scalar}
+              time_variable: t
+              time_shape_expr: scalar
+      tests:
+        - test_id: t_v
+          expected_outcome: pass
+          target_cases: [c_alpha, c_beta]
+          quantities: [v_bound]
+      predicates:
+        - {test_id: t_v, quantity: v_bound, target_cases: [c_alpha, c_beta], expr: final.v,
+           op: le, value: 1.0, per_case: true}
 ''')
 
 
@@ -109,9 +139,7 @@ class _Node:
             source_id="src_1", binary_id="bin_1", run_id="run_1", source_binary_id="bin_1")
         ir = self.repo / self.refs.ir_ref
         ir.mkdir(parents=True)
-        (ir / "spec.ir.yaml").write_text(
-            "case:\n  test_case_set:\n    - case_id: c_alpha\n    - case_id: c_beta\n",
-            encoding="utf-8")
+        (ir / "spec.ir.yaml").write_text(_IR, encoding="utf-8")
         self.src = self.repo / self.refs.source_dir() / "src"
         self.src.mkdir(parents=True)
         (self.src / "Makefile").write_text(_MAKEFILE, encoding="utf-8")
@@ -221,7 +249,7 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertTrue((run_tmp / "raw" / "state_snapshots").is_dir())
         self.assertFalse((run_tmp / "raw" / "state_snapshots" / "initial").exists())
         # Promoted from the collected run directory, as the local path promotes its own.
-        self.assertTrue((n.node_dir / "diagnostics.json").is_file())
+        self.assertTrue((n.node_dir / "raw" / "state_snapshots" / "c_alpha.json").is_file())
         self.assertEqual(json.loads((n.node_dir / "quality_check.json").read_text())["status"],
                          "pass")
         self.assertEqual((n.node_dir / "stdout.log").read_text(), "runner out\n")

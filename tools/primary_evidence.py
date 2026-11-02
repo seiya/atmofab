@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
-"""Host-evaluated primary predicates (Z6, issue #255; `zero_base_architecture.md` §A4).
+"""Host-evaluated predicates (Z6, issue #255; issue #582; `zero_base_architecture.md` §A4).
 
-A `test_predicates[]` condition compares a value the GENERATED checks module computed and
-wrote into `diagnostics.json` — secondary evidence, produced by the same leaf turn that
-produced the kernel under test. A `primary_predicates[]` entry is the corroborant: an
-arithmetic expression over the PRIMARY state the host-rendered runner captured through the
-certified harness emitters (`raw/state_snapshots/initial/<case_id>.json` right after
-`case_setup`, `raw/state_snapshots/<case_id>.json` right after `case_run`), over the case's
-declared inputs, and over grid coordinates the host derives from those inputs — evaluated
+An `io_contract.predicates[]` entry is an arithmetic expression over the state the host-rendered
+runner captured through the certified harness emitters (`raw/state_snapshots/initial/<case_id>.json`
+right after `case_setup`, `raw/state_snapshots/<case_id>.json` right after `case_run`), over the
+case's declared inputs, and over grid coordinates the host derives from those inputs — evaluated
 HERE, by the host, with the generated code contributing nothing to the value but the
 captured arrays themselves and the capture's time (`initial.t` / `final.t` is what the
 generated `get_time` reported; an expression that needs the case's end time reads the
 declared `inputs.time.t_end`). The LLM writes the expression at Compile; no LLM holds the
-number.
+number. These predicates alone decide a test (issue #582, `tools/verdict_evaluator.py`).
+
+**Who wrote a captured variable** is its `source` (`SNAPSHOT_SOURCES`; the schema field, default
+`operation`): `operation` — an argument of the published operation; `record` — a value the checks
+module records of the operation's observable behaviour without computing a judgment (its logical
+result as `-1 / 0 / 1`, a count of callback invocations, a state copied at a callback or after an
+intermediate call); `reported` — a run-wide reduction over the integration path the operation
+returns as an output argument, a scalar; `reference` — a field the checks module computes from the
+spec's closed forms as a comparison reference. A record names what it read in `sources_read`, and a
+`reported` read stands only beside a predicate of the same test and quantity that reads `operation`
+state (`reported_read_violations`, re-checked by `verdict_evaluator.evaluate_verdict`).
 
 The IR shape (`docs/workflow/phases/phase_01_compile.md` §`spec.ir.yaml` schema)::
 
@@ -21,11 +28,11 @@ The IR shape (`docs/workflow/phases/phase_01_compile.md` §`spec.ir.yaml` schema
         required_evidence:
           - artifact: state_snapshots
             schema:
-              variables: [{name: h, shape_expr: "[nx, ny]"}, ...]
+              variables: [{name: h, shape_expr: "[nx, ny]"}, ...]  # optional per entry: source
               coordinates:                       # optional; each axis the expressions need
                 - {name: x, axis: 0, count: inputs.grid.nx, length: inputs.grid.L_x,
                    placement: cell_center}
-      primary_predicates:
+      predicates:
         - test_id: <a tests.md test_id>
           quantity: <name>                       # the quantity the expression evaluates
           target_cases: [<case_id>, ...]
@@ -74,9 +81,8 @@ Names, and where each resolves:
   comparand run the host selected (`orchestration_runtime.resolve_comparands`). A predicate
   that names one is a CROSS-TARGET predicate: it is evaluated once per comparand, it must read
   this run's own state too (a comparison of the comparand with a constant values nothing this
-  run produced), and it is no corroborant — `coverage_violations` does not count it, because
-  it has no secondary condition (generated code cannot read another target's state) and
-  because a run's own verdict never evaluates it. Since issue #383 a cross-target predicate is
+  run produced), and it judges no quantity of the test's `quantities` line (`quantity_violations`
+  does not count it), because a run's own verdict never evaluates it. Since issue #383 a cross-target predicate is
   not part of any run's verdict: `verdict.json` carries a `no_comparand` placeholder for it,
   and the comparison is the cross-target agreement, evaluated on demand
   (`orchestration_runtime.cross_target_agreement`) wherever "is this node ready" is asked. `comparand.inputs` / `comparand.<coordinate>`
@@ -110,14 +116,9 @@ refusal is not the same in every case, and adds the coordinate's rank to an oper
 refusal of a predicate that names a coordinate. Extents are not declared numerically, so an extent
 mismatch stays an evaluation error.
 
-`verdict_evaluator.evaluate_verdict` labels each test's `basis.corroboration` `agree` /
-`disagree` / `unevaluated`; a `disagree` or an `unevaluated` fails the test, so the judge (never
-spawned on a failing verdict) never sees either — the `[execute fail: verdict]` report the
-operator reads and the escalate diagnostician do.
-
-A primary predicate ranges over EXACTLY the `target_cases` of its test's `test_predicates`
-entry — the gate pins set equality and `evaluate_verdict` re-checks it — so a corroborant
-cannot quietly cover the easiest case of a test alone.
+A predicate ranges over EXACTLY the `target_cases` of its `io_contract.tests` entry — the gate
+pins set equality and `evaluate_verdict` re-checks it — so a predicate cannot quietly cover the
+easiest case of a test alone.
 
 Pure with respect to the conductor: reads the run node directory it is given, and the
 comparand run node directories it is handed, and nothing else, like
@@ -144,18 +145,24 @@ from tools.verdict_evaluator import _QUANTITY_RE, _apply_op, _is_number, _resolv
 #: The version of the expression grammar: the allowed `ast` nodes, the function table, the
 #: name roots and the broadcasting rule. Bumped when any of them changes; recorded on every
 #: evaluated predicate so a verdict says which grammar valued it. Grammar 4 (issue #327) adds
-#: `atan2`: a discrete mode's phase, which a corroborant of `G**n_step` needs. Grammar 5 (issue
+#: `atan2`: a discrete mode's phase, which a predicate of `G**n_step` needs. Grammar 5 (issue
 #: #513) adds `transpose`, `flip` and `coarsen`: a symmetry pair reads its base case's state
 #: through the axis exchange or a mirror, and a refinement family judged against its finest
 #: level restricts that level to each coarser grid by the block mean.
 GRAMMAR_VERSION = 5
 
-#: `quantity` names: lowercase identifiers with dots, the same shape as a metric address.
-#: ONE definition, in the evaluator that reads it on the secondary side too.
+#: `quantity` names: lowercase identifiers with dots.
+#: ONE definition, in the verdict evaluator's module.
 QUANTITY_RE = _QUANTITY_RE
 
-#: The comparison operators a primary predicate admits. `includes` is a set-membership test on
-#: a diagnostics list and has no meaning for a scalar the host computed.
+#: The `source` classes of a snapshot variable (`zero_base_architecture.md` §A4, issue #582).
+SOURCE_OPERATION = "operation"
+SOURCE_RECORD = "record"
+SOURCE_REPORTED = "reported"
+SOURCE_REFERENCE = "reference"
+SNAPSHOT_SOURCES = (SOURCE_OPERATION, SOURCE_RECORD, SOURCE_REPORTED, SOURCE_REFERENCE)
+
+#: The comparison operators a predicate admits.
 PRIMARY_OPS: frozenset[str] = frozenset({"eq", "ne", "le", "ge", "lt", "gt"})
 
 #: The one coordinate placement the host derives in this grammar version: cell centres of a
@@ -433,7 +440,7 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
     """Whether a predicate's `expr`, or a `bind` that `expr` reaches (transitively), reads a
     captured state variable. A predicate that reads none — a constant, an input, the time
     alone, or a state read only in a bind the expression never uses — values nothing the
-    kernel produced and corroborates nothing; the gate and the evaluator both refuse it.
+    kernel produced and judges nothing; the gate and the evaluator both refuse it.
 
     SYNTACTIC: the rule sees that the state is read, not that the value depends on it. The
     schema gate first prunes the terms constant by form (`effective_names`: a factor of
@@ -442,8 +449,8 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
     `sum(final.h) * 0` is refused there (issue #483); the evaluator applies this rule to the
     raw references, and a gated IR never reaches it with such a term. Dependence in any
     other way, and whether the expression is the test's own quantity, is `Compile.verify`
-    V3's judgment (`phase_01_compile.md`); PR-3's coverage gate over `quantity` names closes
-    omission, not vacuity."""
+    V3's judgment (`phase_01_compile.md`); the gate over `quantity` names
+    (`quantity_violations`) closes omission, not vacuity."""
     if reads_captured_state(expr_refs, state_names):
         return True
     return any(reads_captured_state(bind_refs[name], state_names)
@@ -489,7 +496,7 @@ def _predicate_refs(pred: dict[str, Any]) -> tuple[list[NameRef], dict[str, list
 
 
 def is_cross_target_predicate(pred: Any) -> bool:
-    """Whether one `primary_predicates[]` entry is a cross-target predicate. A malformed
+    """Whether one `predicates[]` entry is a cross-target predicate. A malformed
     entry (not a mapping, an expression outside the grammar) answers False here: the Compile
     gate refuses it, and `evaluate_primary_predicates` raises on it."""
     if not isinstance(pred, dict):
@@ -502,7 +509,7 @@ def is_cross_target_predicate(pred: Any) -> bool:
 
 
 def cross_target_predicates(ir: dict[str, Any]) -> list[dict[str, Any]]:
-    """The cross-target entries of an IR's `io_contract.primary_predicates`, in order. A node
+    """The cross-target entries of an IR's `io_contract.predicates`, in order. A node
     is asked for its cross-target agreement exactly when this is non-empty (issue #383)."""
     return [p for p in primary_predicates(ir) if is_cross_target_predicate(p)]
 
@@ -638,6 +645,45 @@ def schema_variables(schema: dict[str, Any]) -> dict[str, list[str]]:
         if isinstance(entry, dict) and isinstance(entry.get("name"), str):
             out[entry["name"].strip()] = _shape_dims(entry.get("shape_expr"))
     return out
+
+
+def variable_sources(schema: dict[str, Any]) -> dict[str, str]:
+    """variable name -> its `source` class, over `schema.variables[]`; an entry without the key
+    is `operation`. A value outside `SNAPSHOT_SOURCES` is kept verbatim: `source_violations`
+    refuses it, and no pairing rule treats it as state."""
+    out: dict[str, str] = {}
+    for entry in (schema.get("variables") if isinstance(schema.get("variables"), list) else []):
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            out[entry["name"].strip()] = (str(entry["source"]) if "source" in entry
+                                          else SOURCE_OPERATION)
+    return out
+
+
+def source_violations(schema: dict[str, Any] | None) -> list[str]:
+    """The Compile gate over `schema.variables[].source` (issue #582, D2): a declared class, and
+    a `reported` variable is a scalar. Which class is the right one, and that a `reference` is
+    one `tests.md` §2 defines, is `Compile.verify` V3 (iv)'s judgment."""
+    v: list[str] = []
+    if schema is None:
+        return v
+    entries = schema.get("variables")
+    for idx, entry in enumerate(entries if isinstance(entries, list) else []):
+        if not isinstance(entry, dict) or "source" not in entry:
+            continue
+        loc = f"state_snapshots.schema.variables[{idx}]"
+        source = entry["source"]
+        if not isinstance(source, str) or source not in SNAPSHOT_SOURCES:
+            v.append(f"{loc}.source must be one of {list(SNAPSHOT_SOURCES)} (got {source!r})")
+            continue
+        if source == SOURCE_REPORTED:
+            try:
+                scalar = _shape_dims(entry.get("shape_expr")) == []
+            except PrimaryEvidenceError:
+                continue   # the schema gate reports an unreadable shape_expr
+            if not scalar:
+                v.append(f"{loc}: a source: reported variable is a scalar, the operation's one "
+                         f"reduction over the run (got shape_expr {entry.get('shape_expr')!r})")
+    return v
 
 
 def state_rank(schema: dict[str, Any]) -> int:
@@ -1184,7 +1230,7 @@ def _cases_by_id(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def primary_predicates(ir: dict[str, Any]) -> list[Any]:
     io = ir.get("io_contract") if isinstance(ir, dict) else None
-    preds = io.get("primary_predicates") if isinstance(io, dict) else None
+    preds = io.get("predicates") if isinstance(io, dict) else None
     return preds if isinstance(preds, list) else []
 
 
@@ -1192,15 +1238,16 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                                 comparands: Sequence[ComparandEvidence] = (),
                                 cross_target_only: bool = False,
                                 ) -> list[dict[str, Any]]:
-    """Evaluate every `io_contract.primary_predicates[]` entry of ``ir`` against the captures
+    """Evaluate every `io_contract.predicates[]` entry of ``ir`` against the captures
     under ``run_dir``. Returns one record per predicate, in order::
 
-        {test_id, quantity, expr, op, scope, target_cases, cases_read, grammar_version,
-         comparands, satisfied, kind,
+        {test_id, quantity, expr, op, scope, target_cases, cases_read, sources_read,
+         grammar_version, comparands, satisfied, kind,
          evaluated: [{case, value, rhs, satisfied} | {case, satisfied: false, reason, error}]}
 
     ``cases_read`` is the cases the predicate VALUES (`cases_read`: reached binds, outside a
-    term constant by form; the key keeps its name). ``kind`` is ``pass`` / ``physics`` (a
+    term constant by form; the key keeps its name), and ``sources_read`` the same per `source`
+    class (`sources_read`). ``kind`` is ``pass`` / ``physics`` (a
     comparison was false) / ``structural`` (the
     expression could not be evaluated: `PrimaryEvidenceError`) / ``no_comparand``. An empty
     list when the IR declares no primary predicate. A predicate whose own shape is malformed
@@ -1229,7 +1276,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     schema = snapshot_schema(ir)
     if schema is None:
         raise PrimaryEvidenceError(
-            "primary_predicates declared but the IR has no state_snapshots evidence entry")
+            "predicates declared but the IR has no state_snapshots evidence entry")
+    sources = variable_sources(schema)
     cases = _cases_by_id(ir)
     env_cache: dict[tuple[str, str], CaseEnv] = {}
     comparand_list = list(comparands)
@@ -1243,7 +1291,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
 
     out: list[dict[str, Any]] = []
     for idx, pred in enumerate(preds):
-        loc = f"primary_predicates[{idx}]"
+        loc = f"predicates[{idx}]"
         if not isinstance(pred, dict):
             raise PrimaryEvidenceError(f"{loc} must be a mapping")
         test_id = pred.get("test_id")
@@ -1274,10 +1322,11 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),
             "op": op, "scope": scope, "target_cases": list(targets),
-            # the cases this record values the state of (`cases_read`), so the verdict
-            # evaluator can re-check the coverage rule against the records it is handed
+            # the cases this record values the state of (`cases_read`), in all and per `source`
+            # class, so the verdict evaluator can re-check the reported-read rule on the records
             "cases_read": sorted(cases_read({**pred, "target_cases": targets},
                                             set(schema_variables(schema))) or []),
+            "sources_read": sources_read({**pred, "target_cases": targets}, sources),
             "grammar_version": GRAMMAR_VERSION,
             "comparands": [c.detail() for c in comparand_list] if cross else [],
             "satisfied": True, "kind": "pass", "evaluated": [],
@@ -1526,11 +1575,12 @@ def validate_primary_predicate_schema(
     cases: dict[str, dict[str, Any]],
     test_target_cases: dict[str, list[str]] | None = None,
 ) -> list[str]:
-    """The Compile-stage gate over `io_contract.primary_predicates` (present-or-absent; the
-    per-test coverage rule is a separate gate). Returns violation strings (empty == valid).
+    """The Compile-stage gate over `io_contract.predicates` (present-or-absent; the per-test
+    rules over quantities and reported reads are `quantity_violations` and
+    `reported_read_violations`). Returns violation strings (empty == valid).
 
     Checks each entry's shape (`test_id` ∈ tests.md, `quantity`, `op`, a non-null `value` of
-    the same forms as a `test_predicates` condition, exactly one scope, `target_cases` ⊆
+    a number or a per-case map, exactly one scope, `target_cases` ⊆
     cases), parses `expr` and every `bind` under the closed grammar, and resolves every name:
     a capture name is a snapshot schema variable or the time variable; an `inputs.<path>` is a
     number or a rectangular numeric list in EVERY case the scope evaluates the predicate in
@@ -1541,8 +1591,8 @@ def validate_primary_predicate_schema(
     variable, like a capture, and the predicate that reads one must read this run's own state
     as well (the state rule below counts only this run's captures). `coordinates[]` is
     resolved against every declared case, since every case is captured. With
-    ``test_target_cases`` (test_id -> the `test_predicates` entry's target_cases), a
-    predicate's `target_cases` must equal its test's as a set: a corroborant over a subset
+    ``test_target_cases`` (test_id -> the `io_contract.tests` entry's target_cases), a
+    predicate's `target_cases` must equal its test's as a set: a predicate over a subset
     of the test's cases would certify the test on its easiest case alone.
 
     A predicate whose names all resolve is then ranked (`expr_rank`, issue #440): every bind
@@ -1560,14 +1610,14 @@ def validate_primary_predicate_schema(
     if predicates is None:
         return v
     if not isinstance(predicates, list):
-        return ["io_contract.primary_predicates must be a list"]
+        return ["io_contract.predicates must be a list"]
     if schema is None:
-        return ["io_contract.primary_predicates requires a state_snapshots required_evidence "
+        return ["io_contract.predicates requires a state_snapshots required_evidence "
                 + "entry (the captures it evaluates)"]
     try:
         variables = schema_variables(schema)
     except PrimaryEvidenceError as exc:
-        return [f"io_contract.primary_predicates: snapshot schema unreadable ({exc})"]
+        return [f"io_contract.predicates: snapshot schema unreadable ({exc})"]
     tv = schema.get("time_variable")
     capture_names = set(variables) | ({tv.strip()} if isinstance(tv, str) and tv.strip()
                                       else set())
@@ -1581,7 +1631,7 @@ def validate_primary_predicate_schema(
     md_set = set(test_ids)
 
     for idx, pred in enumerate(predicates):
-        loc = f"primary_predicates[{idx}]"
+        loc = f"predicates[{idx}]"
         if not isinstance(pred, dict):
             v.append(f"{loc} must be a mapping")
             continue
@@ -1608,8 +1658,8 @@ def validate_primary_predicate_schema(
                 and test_id.strip() in test_target_cases \
                 and set(targets) != set(test_target_cases[test_id.strip()]):
             v.append(f"{loc}.target_cases {sorted(set(targets))} must equal the target_cases of "
-                     f"test {test_id.strip()!r} in test_predicates "
-                     f"({sorted(set(test_target_cases[test_id.strip()]))}): a corroborant "
+                     f"test {test_id.strip()!r} in io_contract.tests "
+                     f"({sorted(set(test_target_cases[test_id.strip()]))}): a predicate "
                      "ranges over every case its test ranges over")
         # The cases an own-case `inputs.<path>` is read in: those the scope evaluates the
         # predicate in (issue #532), or every target case when the scope is malformed, as
@@ -1622,9 +1672,8 @@ def validate_primary_predicate_schema(
                 v.append(str(exc))
         for key in ("na_allowed", "expected_outcome"):
             if key in pred:
-                v.append(f"{loc}: {key} is not a primary predicate key (the test's "
-                         "expected_outcome is on its test_predicates entry; the host always "
-                         "has the state)")
+                v.append(f"{loc}: {key} is not a predicate key (the test's expected_outcome "
+                         "is on its io_contract.tests entry; the host always has the state)")
         value = pred.get("value")
         if value is None:
             v.append(f"{loc} must have a non-null `value`")
@@ -1731,7 +1780,7 @@ def validate_primary_predicate_schema(
                 v.append(rank_v)
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, set(variables)):
             v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
-                     "expr or a bind expr reaches: a corroborant values the state the kernel "
+                     "expr or a bind expr reaches: a predicate values the state the kernel "
                      "produced (a comparand.<point>.<var> is another target's state, not this "
                      "run's)")
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
@@ -1740,10 +1789,22 @@ def validate_primary_predicate_schema(
                      "outside a term multiplied by a literal zero, raised to a literal zero, or "
                      "subtracted from itself or added to its own negation (the same expression "
                      "spelled the same): the expression is constant in the captured values "
-                     "and corroborates nothing (a cell count is the case's inputs.<grid path>; a "
+                     "and judges nothing (a cell count is the case's inputs.<grid path>; a "
                      "quantity no captured state enters takes the tests.md §5 primary-evidence "
                      "statement, its state term included)")
     return v
+
+
+def sources_read(pred: dict[str, Any], sources: dict[str, str]) -> dict[str, list[str]]:
+    """Per `source` class, the cases a predicate VALUES variables of that class in (`cases_read`,
+    over that class's names), classes with none left out: what a record carries, and what the
+    reported-read rule compares. A malformed scope or expression gives the empty map."""
+    out: dict[str, list[str]] = {}
+    for source in sorted(set(sources.values())):
+        read = cases_read(pred, {name for name, s in sources.items() if s == source})
+        if read:
+            out[source] = sorted(read)
+    return out
 
 
 def cases_read(pred: dict[str, Any], state_names: set[str]) -> set[str] | None:
@@ -1788,102 +1849,114 @@ def cases_read(pred: dict[str, Any], state_names: set[str]) -> set[str] | None:
     return read
 
 
-def coverage_violations(test_predicates: Any, primary_predicates: Any, *,
-                        state_names: set[str]) -> list[str]:
-    """The per-test coverage gate (Z6, issue #255; `zero_base_architecture.md` §A4 "every
-    test_id resting on secondary evidence has a same-quantity corroborant"). For every
-    `test_predicates[]` entry, every `pass_when.all[]` condition's `quantity` must be carried
-    by a `primary_predicates[]` entry of the same `test_id` that READS every case the
-    condition holds in — every target case for a `per_case: true` or a suite-level condition,
-    the one case for a `case: X` condition — where the cases a corroborant reads are the
-    cases its captured STATE reads that enter its value name (`cases_read` over
-    ``state_names``, the snapshot schema's variables: an own-case read values every case the
-    scope evaluates, an `at('<case>')` read values that case; a read in `expr` or a bind
-    `expr` reaches, outside a term constant by form; an `at('<case>').inputs.<path>`, a time
-    or coordinate read values no state). The two readers of that fact — this gate and the
-    record's `cases_read` the verdict evaluator re-checks — are one function. Every
-    condition is secondary evidence — a `verdict.*` or `checks.<id>` one
-    as much as a metric address — so every one needs a corroborant, and a test therefore
-    always has at least one primary predicate. `primary_predicates` absent is the same
-    omission for every test and is refused as such. Rounds 1 and 2 of PR-3's review each
-    found a corroborant pinned to one case standing for a condition over several — first
-    against a `per_case` condition, then a suite-level one — which is the "easiest case
-    alone" the target_cases pin says it closes; reading is what a corroborant does, so the
-    rule is stated over the cases read.
+def quantity_violations(tests: Any, predicates: Any,
+                        state_names: set[str] | None = None) -> list[str]:
+    """The per-test omission gate (issue #582, D10): over each `io_contract.tests[]` entry, the
+    set of `quantity` over the test's predicates that are not cross-target must equal the test's
+    `quantities`, which `validate_pipeline_semantics` holds to the `tests.md` line. A judgment the
+    spec lists therefore cannot go unjudged, and a test always has a predicate its verdict
+    evaluates. A cross-target predicate is out of the comparison: no run's verdict evaluates it
+    (issue #383), so its `quantity` standing for a listed judgment would pass that judgment on
+    every run, and the set of tests that carry one is pinned separately against `tests.md`
+    (`CROSS_TARGET_JUDGMENT_PHRASE`). Names only: whether an expression measures that judgment
+    is `Compile.verify` V3's. A malformed entry is the schema gates' to report.
 
-    This compares names and cases read and nothing else: whether a same-named pair measures
-    the same quantity, and whether the primary expression can fail at all beyond the
-    constant-by-form terms the primary schema gate refuses, is `Compile.verify`'s judgment
-    (V3). Malformed entries are left to the two schema gates
-    that run before this one: a condition with no `quantity` is skipped here (the secondary
-    schema gate refuses it), and so is a primary predicate with no `test_id` or `quantity`,
-    a malformed scope or an unparsable expression (each covers nothing).
-
-    A CROSS-TARGET predicate (`is_cross_target_predicate`) covers nothing either, whatever its
-    `test_id` and `quantity` (issue #324): it compares this run with another target's, is a
-    `no_comparand` placeholder in every run's own verdict (issue #383), and so cannot stand in
-    for a corroborant of this run's own secondary evidence."""
-    if not isinstance(test_predicates, list):
-        return []
-    if not isinstance(primary_predicates, list):
-        return [("io_contract.primary_predicates missing: every test_predicates condition needs "
-                 "a host-evaluated corroborant of the same test_id and quantity")]
-    # test_id -> quantity -> the case sets its corroborants read
-    corroborated: dict[str, dict[str, list[set[str]]]] = {}
-    for pred in primary_predicates:
-        if not isinstance(pred, dict):
-            continue
-        test_id, quantity = pred.get("test_id"), pred.get("quantity")
-        if not (isinstance(test_id, str) and isinstance(quantity, str)):
-            continue
-        if is_cross_target_predicate(pred):
-            continue
-        read = cases_read(pred, state_names)
-        if read is None:
-            continue
-        corroborated.setdefault(test_id.strip(), {}).setdefault(quantity, []).append(read)
+    With ``state_names``, every target case of a test must be valued by some predicate of the test
+    (`cases_read`): what remains of the coverage gate's reads-every-case rule without a condition
+    to compare against. A `case: a` predicate over `[a, b]` as the test's only judgment would
+    certify it on case a alone (Z6 PR-3 rounds 1 and 2). Per test and not per quantity: a
+    refinement order reads the cases of its own pair, so a quantity may read fewer."""
     v: list[str] = []
-    for pred in test_predicates:
+    if not isinstance(tests, list):
+        return v
+    valued: dict[str, set[str]] = {}
+    declared: dict[str, set[str]] = {}
+    for test in tests:
+        if not isinstance(test, dict) or not isinstance(test.get("test_id"), str) \
+                or not isinstance(test.get("quantities"), list):
+            continue
+        declared[test["test_id"].strip()] = {q for q in test["quantities"] if isinstance(q, str)}
+    carried: dict[str, set[str]] = {tid: set() for tid in declared}
+    for pred in (predicates if isinstance(predicates, list) else []):
         if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str):
             continue
-        test_id = pred["test_id"].strip()
-        targets = pred.get("target_cases")
-        targets = {c.strip() for c in targets if isinstance(c, str)} \
-            if isinstance(targets, list) else set()
-        pass_when = pred.get("pass_when")
-        conds = pass_when.get("all") if isinstance(pass_when, dict) else None
-        for cond in (conds if isinstance(conds, list) else []):
-            if not isinstance(cond, dict) or not isinstance(cond.get("quantity"), str):
+        tid = pred["test_id"].strip()
+        if tid not in carried or not isinstance(pred.get("quantity"), str) \
+                or is_cross_target_predicate(pred):
+            continue
+        carried[tid].add(pred["quantity"])
+        if state_names is not None:
+            valued.setdefault(tid, set()).update(cases_read(pred, state_names) or ())
+    if state_names is not None:
+        for test in tests:
+            if not isinstance(test, dict) or not isinstance(test.get("test_id"), str) \
+                    or not isinstance(test.get("target_cases"), list):
                 continue
-            reads = corroborated.get(test_id, {}).get(cond["quantity"], [])
-            if not reads:
-                v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
-                         f"{cond['quantity']!r}) has no host-evaluated corroborant: add a "
-                         f"primary_predicates entry with test_id {test_id!r} and quantity "
-                         f"{cond['quantity']!r} that values it from the captured state (an "
-                         "entry of that test and quantity whose expr or a bind does not parse, "
-                         "or whose scope is malformed, is no corroborant: repair it rather than "
-                         "adding one)")
-                continue
-            if isinstance(cond.get("case"), str) and not cond.get("per_case"):
-                holds = {cond["case"].strip()}
-                where = f"is read in case {cond['case'].strip()!r}"
-            else:
-                holds = targets
-                where = "holds in every target case"
-            if not any(holds <= read for read in reads):
-                v.append(f"{test_id}: condition on {cond.get('ref')!r} (quantity "
-                         f"{cond['quantity']!r}) {where}, but no corroborant of that quantity "
-                         f"reads every such case (each reads {sorted(map(sorted, reads))}): "
-                         "give one primary_predicates entry `per_case: true` reading its own "
-                         "case's state, or a `case:` whose at('<case>').<initial|final>.<state "
-                         "var> reads — in expr or a bind expr reaches, "
-                         "outside a term constant by form — reach the rest — a corroborant "
-                         "reading one case would certify the test on that case alone")
+            tid = test["test_id"].strip()
+            unread = sorted({c.strip() for c in test["target_cases"] if isinstance(c, str)}
+                            - valued.get(tid, set()))
+            if unread and carried.get(tid):
+                v.append(f"test {tid!r}: no predicate values the captured state of target "
+                         f"case(s) {unread}: a test certified without reading a case says "
+                         "nothing about it. Read it with `per_case: true`, or through "
+                         "at('<case>').<initial|final>.<var> in the value")
+    for tid, listed in sorted(declared.items()):
+        missing = sorted(listed - carried[tid])
+        extra = sorted(carried[tid] - listed)
+        if missing:
+            v.append(f"test {tid!r}: no predicate (one that is not cross-target) judges "
+                     f"{missing}, which its quantities line lists: add one entry with this "
+                     "test_id and quantity")
+        if extra:
+            v.append(f"test {tid!r}: predicates judge {extra}, which its quantities line does "
+                     "not list: tests.md defines what a test judges")
     return v
 
 
-# ------------------------------------------------------------------------------------- CLI
+def reported_read_violations(predicates: Any, schema: dict[str, Any] | None) -> list[str]:
+    """The reported-read gate (issue #582, D13): a predicate that reads a `source: reported`
+    variable needs ANOTHER predicate of the same test and `quantity`, not cross-target, that
+    reads `source: operation` state and no reported variable, in every case the report is read
+    in. The two are one rule because a reported scalar is one number the kernel writes: a kernel
+    whose report is frozen at its initial state would otherwise pass every comparison whatever
+    its end state does. Reads are the ones that enter the value (`sources_read`), so a read in
+    an unreached bind or in a term constant by form counts for neither side. Same-predicate
+    pairing is refused because `final.report + 1e-300 * sum(final.h)` reads both and is judged by
+    the report alone. Whether the state predicate measures the same thing is V3's judgment. A
+    `record` or `reference` read carries no such requirement: no state counterpart exists. A
+    malformed entry is the schema gate's to report."""
+    v: list[str] = []
+    if schema is None or not isinstance(predicates, list):
+        return v
+    try:
+        sources = variable_sources(schema)
+    except PrimaryEvidenceError:
+        return v
+    reads: list[tuple[int, str, str, dict[str, list[str]], bool]] = []
+    for idx, pred in enumerate(predicates):
+        if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str) \
+                or not isinstance(pred.get("quantity"), str):
+            continue
+        read = sources_read(pred, sources)
+        reads.append((idx, pred["test_id"].strip(), pred["quantity"], read,
+                      is_cross_target_predicate(pred)))
+    for idx, tid, quantity, read, _cross in reads:
+        cases = set(read.get(SOURCE_REPORTED, ()))
+        if not cases:
+            continue
+        paired = any(
+            j != idx and t == tid and q == quantity and not other_cross
+            and not other.get(SOURCE_REPORTED)
+            and cases <= set(other.get(SOURCE_OPERATION, ()))
+            for j, t, q, other, other_cross in reads)
+        if not paired:
+            v.append(f"predicates[{idx}] (test {tid!r}, quantity {quantity!r}) reads a source: "
+                     f"reported variable in {sorted(cases)} and no other predicate of that test "
+                     "and quantity reads source: operation state, without a reported variable, "
+                     "in those cases: a kernel's report of its own extremum stands beside the "
+                     "host's endpoint predicate, it does not replace it")
+    return v
+
 
 def _read_ir(path: Path) -> dict[str, Any]:
     import yaml  # the host reader; PyYAML is a runtime dependency of the conductor
@@ -1902,7 +1975,7 @@ def main(argv: list[str] | None = None) -> int:
     and print the records as JSON. The offline measurement the plan of issue #255 names."""
     parser = argparse.ArgumentParser(
         prog="python3 -m tools.primary_evidence",
-        description="Evaluate io_contract.primary_predicates against a run's captures and "
+        description="Evaluate io_contract.predicates against a run's captures and "
                     "print the records as JSON. Exit 0: every predicate satisfied (or none "
                     "declared); 1: a predicate unsatisfied (a physics or structural record); "
                     "2: the IR or the run directory could not be read, or a predicate is "

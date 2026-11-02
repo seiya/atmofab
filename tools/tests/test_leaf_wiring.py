@@ -141,10 +141,9 @@ def _pure_judge_context() -> dict[str, str]:
     validator's "every declared key is a non-empty string"."""
     return {
         "tests_document": "- test: conserves mass",
-        "io_contract_document": "test_evidence_requirements:\n- test_id: t_a\n",
+        "io_contract_document": "tests:\n- test_id: t_a\n",
         "runner_output_contract_document": (
-            "## 1. `diagnostics.json`\nchecks and verdict\n"),
-        "diagnostics_document": '{"per_case": {"case_a": {"metrics": {}}}}',
+            "## 3. `raw/` primary evidence\nstate snapshots\n"),
         "verdict_document": '{"per_test": [{"test_id": "t_a", "status": "pass"}]}',
         "perf_document": '{"wall_time_s": 1.0}',
         "trial_meta_document": '{"trial": 1}',
@@ -152,8 +151,7 @@ def _pure_judge_context() -> dict[str, str]:
         "binary_meta_document": '{"binary_id": "bin_20260101_001"}',
         "source_meta_document": '{"verification_status": "pass"}',
         "raw_evidence_excerpt_document": (
-            '{"policy_version": 1, "coverage": {"missing": []}, '
-            '"metrics_basis_arrays": [], "problems": []}'),
+            '{"policy_version": 3, "state_snapshots": {"cases": []}, "problems": []}'),
     }
 
 
@@ -865,13 +863,13 @@ class PureRenderTests(unittest.TestCase):
         # clauses, not merely the fact that the rule is stated.
         # The load-bearing half is the POLARITY: the contract may overrule a runner-behaviour
         # claim and its SILENCE may not. Round 2 showed the earlier "contradicts or does not
-        # state" turned §1-4's silence about a wrong `found` into an instruction to drop the only
-        # finding that catches a stub `metric_compute` — so pin the overrule/silence pair in both
+        # state" turned §1-4's silence about a wrong result into an instruction to drop the only
+        # finding that catches a stub — so pin the overrule/silence pair in both
         # statements, not merely that a scope rule is present.
         self.assertIn(
             "The seeded checks-module contract can only OVERRULE one kind of claim — a claim "
-            "about what the host-rendered runner does with the RESULT a checks-module callback "
-            "returns",
+            "about what the host-rendered runner does with the RESULT a procedure of the checks "
+            "module returns",
             prompt)
         self.assertIn(
             "so drop a finding whose justification the contract CONTRADICTS. Its SILENCE "
@@ -1055,8 +1053,13 @@ class PureRenderTests(unittest.TestCase):
         #     its Diagnostics contract names nor any judgment of `tests.md` defines" — eight
         #     `component` and three `infrastructure` guards name `input_guard`, which only their Diagnostics contract
         #     defines, so the round-1 wording graded those valid specs `major`.
-        "compile": "18f4ad6e8b131d009274fe1ffc1a480156fc36c1fcda41dbc802db9af516d0de",
-        "generate": "e8aae7c7a1d458f535d045612b363602220dbaef993b21711843a52b9dcf34e1",
+        #   - issue #582, BOTH steps, and only inside example lists and the scope bullet: phase_01's
+        #     `minor` and `major` examples name `predicates` and `quantities` where they named the
+        #     retired keys, and phase_02's scope bullet names a procedure of the checks module and
+        #     its counters where it named a callback and a metric. READ: the axis, the tie-breaks
+        #     and the pointer are byte-identical, and no severity value moved.
+        "compile": "ba4b635dfd9e25aa14976c8fdafd0c1c96bdfc7a2d87ad890d8cd45c077239d7",
+        "generate": "751c8c9738110aad7fcbf4a1fa71962ad810b7b91254b23df06f122d77313360",
     }
 
     def test_each_rubric_section_number_is_a_heading_of_its_phase_doc(self) -> None:
@@ -1613,13 +1616,16 @@ class PureRenderTests(unittest.TestCase):
         #   three verify templates, orders the rubric's values to fold several per-finding
         #   grades into the one verdict field `classify_verify_severity` routes on; it assigns
         #   no value to any finding or checklist item — the rubric still chooses each one.
+        # Re-taken for `leaf-87` (issue #582): the `Review checklist` line's scope sentences name
+        # the checks-module procedures and the captures where they named the callbacks and a
+        # metric. READ: no severity word moved, the same pointer to the rubric, nothing assigned.
         # Re-taken for `leaf-85`: the generate verify `Review checklist` line and the harness
         # verify input-side clause name "the seeded severity rubric" (and the former "the seeded
         # checks-module contract") where they said "inlined" (the documents are seed files since
         # issue #534 PR-J4-b). READ: no severity word moved, the same pointer to the rubric,
         # nothing assigned.
         "tools/prompt_templates/workshop_generate_verify.txt: Review checklist (the semantic "
-        "items to judge the bundle aga #6b024d08100a",
+        "items to judge the bundle aga #a950ba287f1c",
         "tools/prompt_templates/workshop_generate_verify_harness.txt: One kind of finding is NOT "
         "code-vs-IR and is still yours to  #a06371e39fb9",
         ("tools/prompt_templates/workshop_compile_verify.txt: Output contract (verify verdict): "
@@ -3135,8 +3141,9 @@ class PureRenderTests(unittest.TestCase):
              / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8"))
         self.assertIn(
             "The runner does not read `ok`, here or from `case_run`: every case proceeds, so its "
-            "snapshot and its input-guard check are produced, and that check is the guard's "
-            "evidence — the value of `ok` is never a finding.", contract)
+            "snapshot is produced, and what the captures hold (a `record` of the operation's "
+            "logical result, §1-b, or the state it left) is the guard's evidence — the value of "
+            "`ok` is never a finding.", contract)
         templates = ort._load_launch_prompt_templates()
 
         def composed(key: str, language: str, parallel: str) -> str:
@@ -3166,8 +3173,8 @@ class PureRenderTests(unittest.TestCase):
                     "its loops need no lowering, and the plan names them only where a target "
                     "fragment below requires it.",
                     "Assign `ok` on every path like every other `out` argument; the runner does "
-                    "not read it, and a rejected input is reported by the IR's input-guard "
-                    "check, not by `ok`.",
+                    "not read it, and what a rejected input leaves in the captures (the `record` "
+                    "the IR declares for it, or the state) is the evidence, not `ok`.",
                 ):
                     self.assertIn(sentence, generate)
                 if language == "cuda_cpp":

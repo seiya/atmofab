@@ -9,11 +9,10 @@ It renders two files of a `component` / `problem` node from the node's IR:
 
 * ``<spec_id>_runner.cu`` (`render_runner`) — the deterministic main program that drives the
   node's ``<spec_id>_checks`` callbacks and emits the standard runner outputs THROUGH the
-  certified ``harness_cpp_gpu`` plumbing, which owns the JSON envelope assembly and the verdict
-  fold (harness controlled_spec §3 / §5.1). The runner holds no serialization knowledge: it builds
-  the harness's record types and calls the writers — it never formats a JSON token, folds a
-  verdict, or excludes an xfail itself.
-* ``<spec_id>_checks.cuh`` (`render_checks_header`) — the DECLARATIONS of the checks ABI: the five
+  certified ``harness_cpp_gpu`` plumbing, which owns the JSON envelope assembly (harness
+  controlled_spec §3 / §5.1). The runner holds no serialization knowledge: it calls the writers —
+  it never formats a JSON token, and it judges nothing.
+* ``<spec_id>_checks.cuh`` (`render_checks_header`) — the DECLARATIONS of the checks ABI: the three
   callbacks and one ``extern`` per bound state variable, in namespace ``<spec_id>_checks``. The
   leaf's ``<spec_id>_checks.cu`` includes it and DEFINES every name it declares.
 
@@ -38,13 +37,12 @@ Split of authorship on a physics node:
 The runner captures the bound state (Z6, issue #255): every snapshot variable is a namespace-scope
 variable of ``<spec_id>_checks`` named exactly as the IR declares it, read by the runner as
 ``<spec_id>_checks::<var>`` and serialized by the harness emitters twice per case — right after
-``case_setup`` and right after ``case_run`` — before any check or metric callback of that case
+``case_setup`` and right after ``case_run`` — before any later callback of that case
 runs. A scalar is a ``double``, a rank-1 array a ``std::vector<double>``, a rank-R array an
 ``atmofab::Array<double, R>`` (the owning column-major array the published-surface header defines);
 the runner hands the emitters a non-owning ``atmofab::View`` over it.
 
-The language-neutral IR readers — the snapshot schema, the cases, the checks, the metrics basis,
-and their refusals — are `tools/runner_ir.py`'s, shared with every backend that renders a runner.
+The language-neutral IR readers — the snapshot schema, the cases, and their refusals — are `tools/runner_ir.py`'s, shared with every backend that renders a runner.
 This module adds the refusals CUDA C++ imposes on a name it binds (`_check_snapshot_name`). It
 imposes no rendered-line width: the declared lint rule set of this language reads no column
 (`tools/backends/linter/nvcc/lint.py`), so a width bound here would refuse IR the lint accepts.
@@ -77,15 +75,6 @@ from tools.host_render import RenderError
 CHECKS_PUBLIC_NAMES = checks_abi.CHECKS_PUBLIC_NAMES
 CHECKS_ABI_PARAMS = checks_abi.CHECKS_ABI_PARAMS
 
-#: The width the neutral contract gives a check status (`pass` / `fail` / `na` right-padded to
-#: it). A C++ status is a `std::string`, so nothing is truncated to it; the not-applicable status
-#: is written `"na  "` as the contract states it. The rendered runner drops the trailing blanks
-#: of each status `checks_compute` returns before it hands the record to the harness (issue
-#: #437), so no padding reaches `__write_diagnostics` from a physics node whatever the certified
-#: writer does; the harness spec obliges that writer to drop it too, and the `post_execute` gate
-#: refuses a padded status, so `diagnostics.json` is one document across targets.
-CHECK_STATUS_WIDTH = 4
-
 #: The harness's `case_id_len` — the neutral reader's bound on a declared case id, restated as
 #: the value the runner pins the certified harness header to (`static_assert`, see
 #: `render_runner`).
@@ -105,11 +94,10 @@ _IDENTIFIER_RE = re.compile(bundle.IDENTIFIER_PATTERN)
 #: The harness symbols this template calls, pinned by `assert_harness_pin` against the certified
 #: harness IR and source. Emitters are added per rank on demand (`_used_harness_ops`).
 _HARNESS_TYPES = (
-    "h_named", "h_check", "h_metric", "h_case_result", "h_mb_entry",
+    "h_named",
 )
 _HARNESS_CORE_OPS = (
-    "parse_cases", "box", "write_snapshot",
-    "write_metrics_basis", "write_diagnostics", "write_perf", "block_size",
+    "parse_cases", "box", "write_snapshot", "write_perf", "block_size",
 )
 
 #: The target a DRY render is given: `ir_content_violations` renders only to learn whether the
@@ -172,7 +160,7 @@ def _state_type(rank: int) -> str:
 def _clit(value: str) -> str:
     """`value` as the contents of a C++ string literal.
 
-    IR-sourced names (case ids, snapshot variable names, metric addresses, test ids) are only
+    IR-sourced names (case ids, snapshot variable names, test ids) are only
     required to be non-empty by the compile gates, so each is escaped: `\\`, `"` and `?` (a `??`
     sequence would be a trigraph to a compiler that reads them, and a warning under the lint's
     `-Wall` where it does not). Everything embedded must be printable ASCII, as the Fortran
@@ -196,8 +184,7 @@ def _used_harness_ops(ir: dict[str, Any]) -> list[str]:
     if 0 in ranks:
         ops.append("emit_real")
     ops += [f"emit_array_r{r}" for r in sorted(r for r in ranks if r >= 1)]
-    ops += ["box", "write_snapshot", "write_metrics_basis",
-            "write_diagnostics", "write_perf", "block_size"]
+    ops += ["box", "write_snapshot", "write_perf", "block_size"]
     return ops
 
 
@@ -247,7 +234,7 @@ def _abi_declaration(name: str) -> str:
 
 
 def render_checks_header(ir: dict[str, Any], spec_id: str) -> tuple[str, str]:
-    """`(basename, text)` of ``<spec_id>_checks.cuh``: the checks ABI's declarations — the five
+    """`(basename, text)` of ``<spec_id>_checks.cuh``: the checks ABI's declarations — the three
     callbacks (`CHECKS_ABI_PARAMS`) and one ``extern`` per bound state variable of the IR's
     snapshot schema, typed by rank — in namespace ``<spec_id>_checks``, after the array types the
     published-surface header also defines (`header.VIEW_DEFINITION`, guarded, so either header
@@ -269,7 +256,7 @@ def render_checks_header(ir: dict[str, Any], spec_id: str) -> tuple[str, str]:
         cpp_header.VIEW_DEFINITION.rstrip("\n"),
         "",
         f"namespace {spec_id}_checks {{",
-        "// The five callbacks the host-rendered runner calls (CHECKS_ABI.md §1).",
+        "// The three callbacks the host-rendered runner calls (CHECKS_ABI.md §1).",
     ]
     lines += [_abi_declaration(name) for name in CHECKS_PUBLIC_NAMES]
     lines.append("// The bound state the runner captures after case_setup and after case_run "
@@ -307,13 +294,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # the Fortran renderer asks it, so an IR with several defects is told the same first one.
     schema_vars, time_var = _snapshot_schema(ir)
     runner_ir.require_time_variable_t(time_var)
-    runner_ir.verify_verdict_fields(ir)
-    case_ids = runner_ir.case_ids(ir)
-    runner_ir.per_case_vars(ir, schema_vars)
-    xfail = runner_ir.xfail_cases(ir)
-    checks = runner_ir.check_ids(ir)
-    metrics = runner_ir.metrics(ir)
-    evidence = runner_ir.test_evidence(ir)
+    runner_ir.case_ids(ir)   # the refusals of a case id (the runner takes the ids from argv)
     target_class = runner_ir.target_class(target)
     ranks, threads, devices = perf_parallelism(target)
     bound = [(v, runner_ir.rank_of_shape(shape, v)) for v, shape in schema_vars.items()]
@@ -331,7 +312,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a(f"// {bundle.runner_basename(spec_id)}: rendered by the host from the node's IR. Do not "
       "edit.")
     a(f"// It drives the {ck} callbacks and emits the standard runner outputs THROUGH the")
-    a(f"// certified {harness_spec_id} plumbing, which owns all JSON assembly and the verdict fold")
+    a(f"// certified {harness_spec_id} plumbing, which owns all JSON assembly")
     a("// (harness controlled_spec §3 / §5.1). This glue holds no serialization knowledge: it")
     a("// builds harness records and calls the writers.")
     a(f'#include "{hm}.cuh"')
@@ -363,16 +344,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
       'bounds case ids by");')
     a("")
     a(f"using Named = hm::{_hname(harness_spec_id, 'h_named')};")
-    a(f"using Check = hm::{_hname(harness_spec_id, 'h_check')};")
-    a(f"using Metric = hm::{_hname(harness_spec_id, 'h_metric')};")
-    a(f"using CaseResult = hm::{_hname(harness_spec_id, 'h_case_result')};")
-    a(f"using MbEntry = hm::{_hname(harness_spec_id, 'h_mb_entry')};")
     a("")
     # Every exit of the program, the successful one included, goes through `finish`, which
     # flushes and ends the process with `std::_Exit`: no namespace-scope destructor and no exit
     # handler of the leaf's sources runs after the harness has written the run's outputs (round
     # 3 of this change's review — a C++ program otherwise runs them after `main` returns, and a
-    # model source's destructor rewrote `diagnostics.json` there with every gate green).
+    # model source's destructor rewrote a run output there with every gate green).
     # `std::_Exit` also skips the exit hook through which a CUDA profiler flushes its kernel
     # records, so a trace of the run held no kernel and the device-kernel gate refused a node
     # whose kernels ran (issue #307, measured at a gpu site with the profiler the trace uses).
@@ -402,7 +379,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # Z6 capture contract (zero_base_architecture.md §A4): the harness serializes the BOUND
     # state — read straight from the checks namespace's storage — right after `case_setup` and
     # right after `case_run`, and the snapshot cache holds the serialized STRINGS, so nothing a
-    # later callback writes into that storage can reach a snapshot or the metrics basis.
+    # later callback writes into that storage can reach a snapshot.
     a("// Every declared snapshot variable, read from the checks namespace's bound storage and")
     a("// serialized by the harness emitters. The same set for every case: the snapshot is the")
     a("// full declared state.")
@@ -437,27 +414,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("  return out;")
     a("}")
     a("")
-    a("// Index of `target` in the parsed case list, or -1 when absent.")
-    a("int find_case_index(const std::vector<std::string>& ids, int n, const std::string& target) {")
-    a("  for (int k = 0; k < n; ++k) {")
-    a("    if (ids[static_cast<std::size_t>(k)] == target) {")
-    a("      return k;")
-    a("    }")
-    a("  }")
-    a("  return -1;")
-    a("}")
-    a("")
-    a("// The boxed value named `name` from a case's cached snapshot values.")
-    a("Named pick(const std::vector<Named>& values, const std::string& name) {")
-    a("  for (const Named& nv : values) {")
-    a("    if (nv.name == name) {")
-    a("      return nv;")
-    a("    }")
-    a("  }")
-    a('  std::cerr << "error: raw variable " << name << " absent from snapshot" << std::endl;')
-    a("  finish(1);")
-    a("}")
-    a("")
     a("}  // namespace")
     a("")
     a("int main(int argc, char** argv) {")
@@ -481,7 +437,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("  // --- the threads per block the host imposed on this run's kernels (harness §3.3) ----")
     a(f"  atmofab::launch_block_size = {H('block_size')}();")
     a("")
-    a("  std::vector<CaseResult> results;")
     a("  std::vector<std::vector<Named>> initial_cache;")
     a("  std::vector<double> initial_time;")
     a("  std::vector<std::vector<Named>> snap_cache;")
@@ -509,53 +464,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("    steps_total += steps_c;")
     a("    cells_total += cells_c;")
     a("")
-    a("    // --- final state: the same bound storage right after case_run, before any check")
-    a("    // --- or metric callback of this case runs (raw/state_snapshots/<case_id>.json) ---")
+    a("    // --- final state: the same bound storage right after case_run, before any later")
+    a("    // --- callback of this case runs (raw/state_snapshots/<case_id>.json) ---")
     a("    snap_cache.push_back(capture_state(cid));")
     a("    ck::get_time(tval);")
     a("    final_time.push_back(tval);")
     a("")
-    a("    CaseResult result{};")
-    a("    result.case_id = cid;")
-    xf = [c for c in case_ids if c in xfail]
-    xfail_expr = " || ".join(f'cid == "{_clit(c)}"' for c in xf) if xf else "false"
-    a(f"    result.expected_xfail = {xfail_expr};")
-    a("")
-    a("    // --- honest per-case checks (runner-driven ids; the xfail fold is the harness's) ---")
-    for cid_ in checks:
-        clit = _clit(cid_)
-        a("    {")
-        a("      std::string cstatus;")
-        a(f'      ck::checks_compute(cid, "{clit}", cstatus);')
-        a("      while (!cstatus.empty() && cstatus.back() == ' ') {")
-        a("        cstatus.pop_back();")
-        a("      }")
-        a("      Check check{};")
-        a(f'      check.id = "{clit}";')
-        a("      check.status = cstatus;")
-        a("      result.checks.push_back(check);")
-        a("    }")
-    if metrics:
-        a("")
-        a("    // --- per-case metric leaves (dotted addresses; NA carried honestly) ---")
-        for m in metrics:
-            mlit = _clit(m)
-            a("    {")
-            a("      double mval = 0.0;")
-            a("      bool mis_na = false;")
-            a("      std::string mreason;")
-            a("      bool mfound = false;")
-            a(f'      ck::metric_compute(cid, "{mlit}", mval, mis_na, mreason, mfound);')
-            a("      if (mfound) {")
-            a("        Metric metric{};")
-            a(f'        metric.name = "{mlit}";')
-            a("        metric.value = mval;")
-            a("        metric.is_na = mis_na;")
-            a("        metric.reason_na = mis_na ? mreason : std::string();")
-            a("        result.metrics.push_back(metric);")
-            a("      }")
-            a("    }")
-    a("    results.push_back(result);")
     a("  }")
     a("")
     a("  double walltime = std::chrono::duration<double>(std::chrono::steady_clock::now() - clock0)")
@@ -564,60 +478,24 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("    walltime = 1.0e-9;")
     a("  }")
     a("")
-    mb_rows = runner_ir.metrics_basis_rows(ir, evidence, schema_vars)
-    a("  // --- metrics-basis entries: one per (test_id, target case_id) --------------")
-    a("  std::vector<MbEntry> mb_entries;")
-    for tid, tcase, req_vars in mb_rows:
-        tlit = _clit(tcase)
-        a("  {")
-        a(f'    const int tci = find_case_index(case_ids, ncases, "{tlit}");')
-        a("    if (tci < 0) {")
-        a(f'      std::cerr << "error: target case not run: " << "{tlit}" << std::endl;')
-        a("      finish(1);")
-        a("    }")
-        a("    MbEntry entry{};")
-        a(f'    entry.test_id = "{_clit(tid)}";')
-        a(f'    entry.case_id = "{tlit}";')
-        for rv in req_vars:
-            a(f'    entry.values.push_back(pick(snap_cache[static_cast<std::size_t>(tci)], '
-              f'"{_clit(rv)}"));')
-        a("    mb_entries.push_back(entry);")
-        a("  }")
-    a("")
     # EVERY harness write happens here, after the last callback of the node has returned, and
     # `finish` follows: no code of the node's sources runs after the harness has written anything
-    # (round 5 of this change's review: a `checks_compute` that ran after the per-case snapshot
+    # (round 5 of this change's review: a callback that ran after the per-case snapshot
     # write replaced it through a self-declared `syscall`). The snapshots were serialized at
     # their capture points; only the writing is deferred.
     a("  // --- emit the run outputs, after the last callback of the node: the snapshots")
-    a("  // --- serialized at their capture points, then everything the harness folds -------")
+    a("  // --- serialized at their capture points, then the perf record -------------------")
     a("  for (int ci = 0; ci < ncases; ++ci) {")
     a("    const std::size_t k = static_cast<std::size_t>(ci);")
     a(f'    {H("write_snapshot")}("initial/" + case_ids[k], initial_cache[k], initial_time[k]);')
     a(f"    {H('write_snapshot')}(case_ids[k], snap_cache[k], final_time[k]);")
     a("  }")
-    a(f"  {H('write_metrics_basis')}(mb_entries, {len(mb_rows)});")
-    a(f"  {H('write_diagnostics')}(results, ncases);")
     a(f'  {H("write_perf")}(case_ids[static_cast<std::size_t>(ncases - 1)], '
       f'"{_clit(target_class)}", steps_total,')
     a(f"      cells_total, walltime, {ranks}, {threads}, {devices});")
     a("  finish(0);")
     a("}")
     return "\n".join(lines) + "\n"
-
-
-# --- checks ABI: the dummy declaration the compiler cannot check ------------------------------
-
-
-def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
-    """None, always. The Fortran backend reads one dummy attribute its compiler cannot check
-    against the runner's call (issue #261). In CUDA C++ the checks source includes the
-    host-rendered checks header, so a definition whose parameter types differ from the declared
-    ABI is an overload the runner's call never reaches, which `source.checks_module_abi_facts`
-    refuses by type; and every declared `out` argument is a reference to an object the runner
-    owns, so no actual is handed over in a state a definition could mis-declare."""
-    del text, spec_id
-    return None
 
 
 # --- harness interface signature pin (fail-closed, run before rendering) -----------------------
@@ -1110,8 +988,7 @@ def checks_abi_publication_violation(spec_id: str, unpublished: list[str],
             + f". Include that header and define each callback in namespace {spec_id}_checks, "
             f"with external linkage (not `static`, not in an unnamed namespace) and exactly the "
             f"declared parameter types (the parameter names are free): {_declared_abi()} The "
-            f"full set is required for EVERY physics node, whatever subset this node's runner "
-            f"calls (a node with no metrics still defines metric_compute).")
+            f"full set is required for EVERY physics node.")
 
 
 def bound_state_publication_violation(spec_id: str, hidden: list[str]) -> str:

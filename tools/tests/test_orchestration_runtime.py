@@ -2054,7 +2054,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
     def test_phase_contract_execute_authors_verdict_judge_does_not(self) -> None:
         """R2: verdict.json is part of the Validate.EXECUTE write-contract (host-authored from
-        io_contract.test_predicates) and is NOT a Validate.judge deliverable. Drives the REAL
+        io_contract.tests and io_contract.predicates) and is NOT a Validate.judge deliverable. Drives the REAL
         _allowed_output_paths_for_launch (not the _FakeConductor stub) so the mock gap that hid
         the execute record-launch crash cannot recur."""
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
@@ -3222,7 +3222,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             "allowed_output_paths": [
                 # Caller declares run_id=exec_real_001 but lists a path
                 # under a different run_id.
-                f"{_FIX_PIPE_REF}/runs/run_20260201_002/{node_safe}/diagnostics.json",
+                f"{_FIX_PIPE_REF}/runs/run_20260201_002/{node_safe}/perf.json",
             ],
         }
         with self.assertRaisesRegex(
@@ -3345,7 +3345,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             "pipeline_ref": _FIX_PIPE_REF,
             "run_id": run_id,
             "allowed_output_paths": [
-                f"{run_dir}/diagnostics.json",
                 f"{run_dir}/perf.json",
                 f"{run_dir}/quality_check.json",
             ],
@@ -4299,7 +4298,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             "ir_ref": _FIX_IR_REF,
             "pipeline_ref": _FIX_PIPE_REF,
             "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json",
                 f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
             ],
         }
@@ -4330,7 +4328,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             "pipeline_ref": _FIX_PIPE_REF,
             "run_id": run_id,
             "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json",
                 f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
             ],
         }
@@ -4353,7 +4350,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             "pipeline_ref": _FIX_PIPE_REF,
             "run_id": run_id,
             "allowed_output_paths": [
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json",
                 f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json",
             ],
         }
@@ -4361,7 +4357,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             request_payload=req,
         )
         self.assertIn(
-            f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json", out
+            f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json", out
         )
 
     def test_generate_non_make_launch_does_not_inject_makefile_pin(self) -> None:
@@ -5109,8 +5105,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             (repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260201_003/bin/main").write_text(
                 "binary\n", encoding="utf-8"
             )
-            diagnostics_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json"
+            perf_ref = (
+                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json"
             )
             other_log_ref = (
                 f"{_FIX_PIPE_REF}/source/{other_src}/src/command_log.jsonl"
@@ -5144,7 +5140,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "skill_ref": "skills/workflow-validate-execute/SKILL.md",
                         "skill_must_read_refs": "",
                         "deterministic": True,
-                        "allowed_output_paths": [diagnostics_ref, other_log_ref],
+                        "allowed_output_paths": [perf_ref, other_log_ref],
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_unrelated"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_unrelated"),
@@ -5205,8 +5201,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 }) + "\n",
                 encoding="utf-8",
             )
-            diagnostics_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json"
+            perf_ref = (
+                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json"
             )
             # Launch WITHOUT source_binary_id → reject regardless of cross-phase status.
             with self.assertRaisesRegex(
@@ -5236,7 +5232,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "skill_ref": "skills/workflow-validate-execute/SKILL.md",
                         "skill_must_read_refs": "",
                         "deterministic": True,
-                        "allowed_output_paths": [diagnostics_ref],
+                        "allowed_output_paths": [perf_ref],
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_no_build_id"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_no_build_id"),
@@ -5305,8 +5301,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 }) + "\n",
                 encoding="utf-8",
             )
-            diagnostics_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json"
+            perf_ref = (
+                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json"
             )
             with self.assertRaisesRegex(
                 ValueError,
@@ -5338,7 +5334,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "skill_ref": "skills/workflow-validate-execute/SKILL.md",
                         "skill_must_read_refs": "",
                         "deterministic": True,
-                        "allowed_output_paths": [diagnostics_ref],
+                        "allowed_output_paths": [perf_ref],
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_unrelated_gen"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_unrelated_gen"),
@@ -5407,8 +5403,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 }) + "\n",
                 encoding="utf-8",
             )
-            diagnostics_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json"
+            perf_ref = (
+                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json"
             )
             with self.assertRaisesRegex(
                 ValueError, "verification_status='fail'"
@@ -5436,7 +5432,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "skill_ref": "skills/workflow-validate-execute/SKILL.md",
                         "skill_must_read_refs": "",
                         "deterministic": True,
-                        "allowed_output_paths": [diagnostics_ref],
+                        "allowed_output_paths": [perf_ref],
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_failed_gen"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_failed_gen"),
@@ -5498,8 +5494,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 }) + "\n",
                 encoding="utf-8",
             )
-            diagnostics_ref = (
-                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json"
+            perf_ref = (
+                f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/perf.json"
             )
             with self.assertRaisesRegex(
                 ValueError, "unknown cross-phase source_id"
@@ -5527,7 +5523,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "skill_ref": "skills/workflow-validate-execute/SKILL.md",
                         "skill_must_read_refs": "",
                         "deterministic": True,
-                        "allowed_output_paths": [diagnostics_ref],
+                        "allowed_output_paths": [perf_ref],
                         "launch_prompt_full": _substep_launch_prompt("problem/shallow_water2d@0.3.0", "validate", "execute", "step_run_exec_forged"),
                     },
                     response_payload=_spawn_response_payload("sess_step_exec_forged"),
@@ -20813,12 +20809,12 @@ class CanonicalIdEnforcementTests(unittest.TestCase):
     def test_validate_execute_rejects_non_canonical_run_id(self) -> None:
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
         node_safe = "problem__shallow_water2d__0.3.0"
-        good = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}/diagnostics.json"
+        good = f"{_FIX_PIPE_REF}/runs/run_20260101_001/{node_safe}/perf.json"
         # `run_001` lacks the canonical date/seq suffix; `run-rsn-p0_20260605_001`
         # is slug-shaped (matches `_SLUG_DATE_SEQ3_PATTERN`) yet is NOT a
         # canonical run_id — run_id requires the literal `run_` prefix.
         for bad_run_id in ("run_001", "run-rsn-p0_20260605_001"):
-            bad = f"{_FIX_PIPE_REF}/runs/{bad_run_id}/{node_safe}/diagnostics.json"
+            bad = f"{_FIX_PIPE_REF}/runs/{bad_run_id}/{node_safe}/perf.json"
             with self.assertRaises(ValueError) as ctx:
                 _allowed_output_paths_for_launch(
                     request_payload=self._build_payload("validate", "execute", [bad]),
@@ -28639,7 +28635,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/workshop_compile_generate.txt:e3093e7a37e1f30f":
+        "tools/prompt_templates/workshop_compile_generate.txt:cb2803b0d18bfa79":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28653,7 +28649,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",
-        "docs/GLOSSARY.md:2f82a6a21ed0ec92":
+        "docs/GLOSSARY.md:a03f3d618914d955":
             "infrastructure spec: the harness is a target attribute no deps.yaml declares; "
             "the host adds it as a direct dependency after Compile (issue #284)",
         # The two block labels are byte-identical to the pure templates' (same digests), so
@@ -29396,7 +29392,7 @@ class ResolveComparandsTests(unittest.TestCase):
     carrying no comparand member — a legacy stamp that does reads as a mismatch on it."""
 
     NODE = "component/spec_x@0.1.0"
-    CROSS_IR = yaml.safe_dump({"io_contract": {"primary_predicates": [{
+    CROSS_IR = yaml.safe_dump({"io_contract": {"predicates": [{
         "test_id": "t", "quantity": "cross_target_state_agreement", "target_cases": ["a"],
         "expr": "maxabs(final.u - comparand.final.u)", "op": "le", "value": 1e-12,
         "per_case": True}]}})
@@ -29875,7 +29871,7 @@ class CrossTargetAgreementTests(unittest.TestCase):
                 "artifact": "state_snapshots", "required": True,
                 "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
                            "time_variable": "t", "time_shape_expr": "scalar"}}]},
-            "primary_predicates": [{
+            "predicates": [{
                 "test_id": "t", "quantity": "cross_target_state_agreement",
                 "target_cases": ["a"], "expr": "maxabs(final.u - comparand.final.u)",
                 "op": "le", "value": 1e-12, "per_case": True}]}})

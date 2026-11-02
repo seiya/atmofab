@@ -4025,8 +4025,7 @@ def _exemplar_contract_version_matches(model_src: Path) -> bool:
     ``model_src`` is ``.../source/<source_id>/src/<id>_model.f90``, so the pure ``bundle_meta.json``
     is two parents up. This gates the R5 M3c model+checks exemplar: a sibling's ``<id>_checks.f90``
     is authored against the checks-module ABI of the contract that certified it, and when that ABI
-    has since changed (e.g. the pure-8 per-id ``checks_compute`` replacing the buffered
-    ``checks_compute(case_id, ncheck, chk_ids, chk_status)``), an older-vintage sibling carries the
+    has since changed (e.g. issue #582 retiring its judging half), an older-vintage sibling carries the
     RETIRED signature. Injecting it as concrete prior art can steer the doc-blind leaf into a bundle
     the acceptance gate — which checks only procedure name/kind, not arity — admits, and which then
     fails ``Generate.gate`` against the current host-rendered runner (an unrepairable-until-
@@ -4596,9 +4595,8 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILIT
 # stage-meta keys, is deleted — `docs/workflow/WORKFLOW_CORE.md` §"Workflow common invariants"
 # and §"Stage meta keys" are canonical for both, for the host. Canonical rationale for the
 # restructure this ended: docs/design/leaf_must_read_restructure.md.
-# Consolidated runner-output contract, INLINED into the prompts that need it: §1/§3 to the
-# pure `validate.judge` (what it recomputes against the runner's emitted diagnostics.json /
-# raw evidence), and whole to the `harness` shape's producer and reviewer — the
+# Consolidated runner-output contract, INLINED into the prompts that need it: §3 to
+# `validate.judge` (what it reads the raw evidence against), and whole to the `harness` shape's producer and reviewer — the
 # runner-authoring leaf. An `m3c` physics producer does not receive it (it authors
 # model+checks over a host-rendered runner) and takes `CHECKS_MODULE_CONTRACT.md` instead.
 # The node-aware SELECTION used to be `leaf_contract_doc_refs`, deleted with the force-read
@@ -6456,9 +6454,8 @@ def _downstream_phase_launch_gate(
         )
         if base is None:
             return False, f"downstream:{err or 'judge_path'}"
-        for name in ("diagnostics.json", "perf.json"):
-            if not (base / name).is_file():
-                return False, f"downstream:judge_missing:{name}"
+        if not (base / "perf.json").is_file():
+            return False, "downstream:judge_missing:perf.json"
         raw_dir = base / "raw"
         if not raw_dir.is_dir():
             return False, "downstream:judge_raw_dir_missing"
@@ -6973,18 +6970,16 @@ def _allowed_output_paths_for_launch(
                 return False
             rel_under_node = "/".join(tail_parts[2:])
             allowed_files = {
-                "diagnostics.json",
                 "perf.json",
                 "quality_check.json",
                 "trial_meta.json",
                 "stdout.log",
                 "stderr.log",
-                "metrics_basis.json",
                 # `run_program` / `run_quality_checks` side-effect log
                 # (phase_04_validate.md).
                 "command_log.jsonl",
-                # R2: execute authors verdict.json deterministically (per-test predicate
-                # evaluation of diagnostics.json), so it is part of the execute write-contract
+                # R2: execute authors verdict.json deterministically (the host's predicates over
+                # the captures), so it is part of the execute write-contract
                 # (moved off the judge substep, below). Without this, record_launch for the
                 # deterministic execute substep would reject its own allowed_output_paths.
                 "verdict.json",
@@ -9881,7 +9876,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
     # obliged to be, the run's artifacts, and — in place of `raw/`, which is 13 MB of float
     # arrays — the host-computed excerpt of it.
     ("validate", "judge"): ("tests_document", "io_contract_document",
-                            "runner_output_contract_document", "diagnostics_document",
+                            "runner_output_contract_document",
                             "verdict_document", "perf_document", "trial_meta_document",
                             "quality_check_document", "binary_meta_document",
                             "source_meta_document", "raw_evidence_excerpt_document"),

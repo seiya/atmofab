@@ -927,7 +927,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
             "pipeline_ref": _FIX_PIPE_REF, "dependency_ref": _FIX_DEP_REF,
             "run_id": "run_20260201_003", "source_id": "gen_real_001", "deterministic": True,
             "allowed_output_paths": [(f"{_FIX_PIPE_REF}/runs/run_20260201_003/"
-                                      "problem__shallow_water2d__0.3.0/diagnostics.json")],
+                                      "problem__shallow_water2d__0.3.0/perf.json")],
             "launch_prompt_full": _substep_launch_prompt(
                 "problem/shallow_water2d@0.3.0", "validate", "execute", execute_arid),
         }

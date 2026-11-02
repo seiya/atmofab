@@ -2576,7 +2576,7 @@ class RegistryConsistencyTests(unittest.TestCase):
                              "EXEMPLAR_GATE_DRIFT_NOTE"),
         "checks_abi": ("document",),
         "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
-                          "CHECKS_PUBLIC_NAMES", "checks_abi_dummy_violation",
+                          "CHECKS_PUBLIC_NAMES",
                           # Issue #289, R4-b PR-4: the checks-ABI remedies the bundle layer and
                           # the validator show a leaf, in the runner language's words.
                           "checks_abi_publication_violation",
@@ -3099,7 +3099,6 @@ class CapabilityOwnershipTests(unittest.TestCase):
         runner.hidden_bound_state_remedy = lambda hidden: f"zz_second hides {hidden}"
         runner.state_binding_module_reason = lambda module: f"zz_second reads {module}"
         runner.state_binding_storage_reason = lambda variable: f"zz_second imports {variable}"
-        runner.checks_abi_dummy_violation = lambda text, spec_id: None
         other.runner = runner
         other.bundle = types.ModuleType("zz_second_lang.bundle")
         other.bundle.SOURCE_EXTENSIONS = (".zz",)

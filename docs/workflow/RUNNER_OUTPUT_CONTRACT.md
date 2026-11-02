@@ -1,9 +1,11 @@
-# Runner output contract (diagnostics.json / perf.json / raw/)
+# Runner output contract (perf.json / raw/)
 
 > **Audience: `Validate.judge` and a runner-authoring `Generate` leaf.** The single
-> canonical source for *what the `runner` must emit* and *how it serializes it* — §1
-> (`diagnostics.json`) and §3 (`raw/` evidence) are what the judge recomputes against
-> the runner's output. It supersedes the runner-output rules once duplicated in
+> canonical source for *what the `runner` must emit* and *how it serializes it* — §3
+> (`raw/` evidence) is what the judge holds the run's evidence against. There is no §1:
+> the diagnostics document it specified was retired by
+> [issue #582](https://github.com/seiya/atmofab/issues/582), and the other sections keep
+> their numbers so that a citation holds. It supersedes the runner-output rules once duplicated in
 > `phase_02_generate.md` §2-1, `phase_04_validate.md` §4-1, and
 > `PERFORMANCE_DIAGNOSTICS.md` §2/§6. The deterministic `Build` / `Validate.execute`
 > steps take their contract from `phase_03_build.md` / `phase_04_validate.md`.
@@ -11,38 +13,23 @@
 > **Scope note (R1/M3c-β → M3d).** On an *M3c node* (a physics node of a target the host
 > authors the build control file and renders the runner for, over that target's harness) the
 > `runner` is **host-rendered** — the leaf authors the model and the checks module (see
-> `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly + verdict fold.
+> `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly; the host authors the
+> verdict. A rendered runner calls no writer but the snapshot and performance ones, whatever
+> else the harness of its target still publishes.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
 > governs the runner-authoring one — the `infrastructure` self-test — and
 > `Validate.judge`. Both get it (issue #169) as the seed `runner_output_contract.md`: whole,
 > followed by the target language's runner-output binding (issue #289), in both
-> `harness`-shape `generate` trees, §1+§3 in the judge's. The *authoring* rules below survive as
+> `harness`-shape `generate` trees, §3 in the judge's. The *authoring* rules below survive as
 > **deterministic backstops** (name / forbidden-output / JSON-descriptor /
 > snapshot-filename gates in `validate_pipeline_semantics.py`).
 
-The `runner` emits **only** `diagnostics.json`, `perf.json`, and the `raw/`
-primary evidence (plus `stdout.log` / `stderr.log`). It must **never** write
+The `runner` emits **only** `perf.json` and the `raw/state_snapshots/` captures
+(plus `stdout.log` / `stderr.log`). It must **never** write
 `verdict.json`, `aggregate_verdict.json`, `summary.json`, or `trial_meta.json`
-— those are authored by `Validate.judge`. The check is a substring match
+— the host authors those at `Validate`. The check is a substring match
 against the **whole runner source including comments**: even an identical
 string inside a comment or example is a fail.
-
-## 1. `diagnostics.json`
-
-Must satisfy `spec.ir.yaml.io_contract.diagnostics_contract`:
-
-- a `checks.<id>` entry for **every** `io_contract.diagnostics_contract.checks[].id`;
-- when `diagnostics_contract.verdict.required=true`, a top-level `verdict`
-  object carrying the `diagnostics_contract.verdict.fields` keys (e.g.
-  `verdict.overall` / `verdict.failed_checks`).
-
-This is how the runner conveys the Diagnostics contract section of `tests.md`
-(§5 in the `docs/TESTS.md` layout) that `Generate` cannot read directly
-(Generate consumes only the IR). A custom per-case array that omits the
-contracted `checks.*` / `verdict` is a fail.
-Emitting a `verdict` **key inside `diagnostics.json`** is permitted and does not
-conflict with the forbidden-filename rule above (that rule targets the judge
-artifact *filenames*, not a diagnostics field name).
 
 ## 2. `perf.json` (required fields)
 
@@ -76,27 +63,6 @@ The required composition is IR-driven —
 `spec.ir.yaml.io_contract.raw_requirements.required_evidence` is the canonical
 source; do not uniformly require a fixed minimal composition.
 
-- **`raw/metrics_basis.json`** must hold a **`per_test` list** with exactly one entry per
-  (`test_id`, `case_id`) pair: every `test_id` of `io_contract.test_evidence_requirements`,
-  once per case named in that test's `io_contract.test_predicates[].target_cases`. So a
-  multi-target test (a convergence sweep, an equivariance pair) contributes one entry per
-  targeted case. `post_execute` pins that matrix both ways — a missing row and an unknown
-  row are equally rejected. Each entry is **flat**: `test_id`, `case_id`, plus that test's
-  `required_raw_variables` without omission as **direct sibling keys of `test_id`**, valued
-  from the entry's own case (an excerpt DERIVED from these values is what `Validate.judge` sees; `post_execute` checks only that the keys exist). An
-  entry omitting `case_id` is rejected. Wrapping the variables under an unrecognized key —
-  notably `values`, an identifier of the harness entry record and never a JSON key —
-  fails `post_execute`. So does a structure with no per-test index, e.g. a single
-  `evidence[]` (`must contain per_test list or tests object`). The legacy `tests` **object**
-  form still parses but is **deprecated**: keyed by `test_id`, it cannot hold a multi-target
-  test's several rows. `metrics_basis.json` holds only the primary evidence and must not
-  copy `diagnostics.json`; different (`test_id`, `case_id`) pairs must not overwrite each other.
-  - Correct: `{"test_id":"l0_emit_pass","case_id":"l0_emit_pass","a1":[0.5,1.5],"max_abs_deviation":0.0}`
-  - Wrong: `{"test_id":"l0_emit_pass","case_id":"l0_emit_pass","values":{"a1":[0.5,1.5],"max_abs_deviation":0.0}}` → `post_execute` fails with "missing required_raw_variables", naming the unrecognized wrapper key.
-  - **Never a zero-filled skeleton.** `post_execute` also rejects a file whose nested
-    numeric leaves (booleans excluded) are **all** `0` or `null`:
-    `all numeric fields are zero or null (trivial placeholder detected)`. Emit the
-    values the run computed.
 - **`raw/state_snapshots/<case_id>.json`** — when `state_snapshots` is required,
   the runner writes **exactly one snapshot per case**, named from the `case_id`
   it receives on argv (`--cases <spec.ir.yaml> <case_id>...`, one positional per
@@ -105,22 +71,20 @@ source; do not uniformly require a fixed minimal composition.
   (`snapshot_0001.json`) or a single combined file: a string-literal name is
   flagged by `post_generate`; a wrong runtime-built name fails
   `Validate.execute`'s per-`<case_id>.json` deliverable gate. Each snapshot must
-  hold **at least every** state variable in *that case's*
-  `test_evidence_requirements.required_raw_variables` (not the union across
-  cases; a host-rendered runner holds every declared variable) **plus the declared `time_variable`**, each shape-matching its
+  hold **every** declared state variable, in every case and on every node (a harness
+  self-test as a host-rendered runner), **plus the declared `time_variable`**, each
+  shape-matching its
   `snapshot_schema.json` declaration (state variables their `shape_expr`, the
   `time_variable` its `time_shape_expr`). A case that rejects its input or
   produces no meaningful values (e.g. a `*_xfail` length-guard case) **still
-  emits those required variables, shape-valid, and must not drop the key** — a
+  emits every declared variable, shape-valid, and must not drop the key** — a
   1-D var as the empty array `[]` (infers shape `[0]`, binding its extent to 0).
   Note a bare `[]` infers as 1-D `[0]` and satisfies **only** a 1-D `shape_expr`;
-  a rank-≥2 required var must instead emit a value whose JSON-inferred shape
+  a rank-≥2 var must instead emit a value whose JSON-inferred shape
   matches its `shape_expr` (a nested empty such as `[[]]` infers `[1,0]`). It may
-  additionally record a guard flag. "May omit" applies
-  **only** to variables *outside* that case's required set; never omit a declared
-  required variable.
-  - Correct (rejected length-0 guard case): `{"case_id":"l0_invalid_length_xfail","step":0,"n":0,"x":[],"invalid_rejected":true}` — required `x` present as `[]` (1-D, extent 0).
-  - Wrong: `{"case_id":"l0_invalid_length_xfail","step":0,"invalid_rejected":true}` — drops the required `x` (and any other required var) → `post_execute` fails with "declared state_variables missing".
+  additionally record a guard flag.
+  - Correct (rejected length-0 guard case): `{"case_id":"l0_invalid_length_xfail","step":0,"n":0,"x":[],"invalid_rejected":true}` — declared `x` present as `[]` (1-D, extent 0).
+  - Wrong: `{"case_id":"l0_invalid_length_xfail","step":0,"invalid_rejected":true}` — drops the declared `x` → `post_execute` fails with "declared state_variables missing".
   - **No placeholder text.** `post_execute` scans every file under
     `raw/state_snapshots/` (`snapshot_schema.json` included), spaces and newlines
     removed, for `"dummy"` / `"placeholder"` / `"sample": "state_recorded"`; a hit
@@ -143,7 +107,7 @@ source; do not uniformly require a fixed minimal composition.
 
 ## 4. JSON serialization (UTF-8)
 
-`diagnostics.json` / `perf.json` and every `.json` under `raw/` must be a UTF-8
+`perf.json` and every `.json` under `raw/` must be a UTF-8
 JSON object restorable by a standard JSON parser. Every finite numeric token follows
 RFC 8259 (`.123` / `-.123` with a missing leading zero are forbidden).
 
@@ -153,17 +117,14 @@ value to a numeric format. These three tokens are the one departure from RFC 825
 contract takes: they are exactly the non-finite tokens the host's reader accepts, and
 any other spelling a numeric format may print for the value (`nan`, `-nan`, `inf`;
 a processor-dependent `NaN(...)`) makes the document unreadable. A non-finite value is never written as
-`null` (`null` is the honest-N/A encoding a caller declares through `is_na`,
-`CHECKS_MODULE_CONTRACT.md`), and serializing one never stops the program: the token is
+`null`, and serializing one never stops the program: the token is
 written and the other cases' evidence is still owed. A writer may still stop on an input outside a
 range it states for its own arguments (a non-positive `walltime_sec`, which `-Infinity` also
 is); that is a refusal of the input, not a spelling of the value, and a value's being
 non-finite is never such a range. What the host does with the value is decided elsewhere —
 a non-finite value in a declared state variable or the time variable of a capture a
 primary predicate reads is a `structural_violation` naming the variable
-(`phase_04_validate.md`), and a non-finite metric is a value, not an N/A: `na_allowed`
-does not accept it, a `NaN` fails every ordered comparison and `eq` (and satisfies `ne`),
-and an infinity compares as the signed extreme it is.
+(`phase_04_validate.md`).
 
 The writer rules a runner of a given language follows to satisfy this — which of its
 format descriptors are forbidden for a JSON token and the canonical safe idiom — are that
@@ -180,6 +141,6 @@ to this document wherever this document is seeded whole.
   system's control-file document, `docs/backends/build_system/<id>/CONTROL_FILE.md` §2).
 - The `runner` is **always** invoked with `--cases <spec.ir.yaml> <case_id>...`:
   by `run_program` directly and by the `make test`/`check` target (which forwards
-  the same argv, so the re-run's `diagnostics.json` equals `run_program`'s). It
+  the same argv, so the re-run writes the same captures as `run_program`'s). It
   may treat a missing `--cases` as a hard error (no no-argv mode needed); it takes
   the spec path positionally and need not read the spec file.

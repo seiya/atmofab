@@ -1851,8 +1851,8 @@ def validate_runner_json_serialization(
 ) -> None:
     """Flag JSON-incompatible Fortran edit descriptors in runner write statements.
 
-    The ``runner`` emits only JSON artifacts (``diagnostics.json`` / ``perf.json``
-    / ``raw/metrics_basis.json`` / ``raw/state_snapshots/*.json``). Two descriptor
+    The ``runner`` emits only JSON artifacts (``perf.json``
+    / ``raw/state_snapshots/*.json``). Two descriptor
     classes in a ``write`` format spec break standard JSON parsing and must never
     reach a JSON token:
 

@@ -8,7 +8,7 @@
 > conductor (`tools/host_render.py` and the control-file writer). This is not read by
 > `Validate.judge`.
 >
-> This document is **language-neutral**: it names the callbacks, the role and direction of
+> This document is **language-neutral**: it names the procedures, the role and direction of
 > each argument, what the bound state means, and what the module must not do. How each of
 > those is spelled in a target language — the declarations, the accessibility rules, the
 > import form the runner uses, and the language's legality and gate-guard rules — is that
@@ -20,20 +20,21 @@
 > (Compile is target-free, so it is seeded no binding); the `generate.verify` reviewer §1-§4
 > followed by §1-§4 of the target language's binding (document key
 > `checks_module_contract_document`, issue #142); the `generate.generate` producer is told the
-> five names and the binding convention and seeded the rendered runner, gated by
+> three names and the binding convention and seeded the rendered runner, gated by
 > `m3c_checks_abi_violation`, with the §2/§3 behavioral contract distilled into its launch
-> template. All five callbacks bind every node. The language backend
+> template. All three procedures bind every node. The language backend
 > that renders the runner owns the ABI's names (`host_render.checks_public_names`) — keep it,
 > this document, the binding and the distilled paragraph in step. Since Z6
 > ([issue #255](https://github.com/seiya/atmofab/issues/255)) the module also carries the node's
 > **bound state** (§1-b): there is no snapshot getter, and the runner reads the snapshot
 > variables straight from the module's storage.
 
-The rendered runner is glue: it drives this module's callbacks, captures the module's bound
+The rendered runner is glue: it drives this module's procedures, captures the module's bound
 state, and emits the standard runner outputs **through the certified harness plumbing**, which
-owns all JSON serialization and the verdict fold. So the checks module holds **no serialization
-and no I/O**: it holds the case's state and computes honest per-case checks and metrics; the
-runner captures, and the harness folds and writes. Getting this split right is what lets the
+owns all JSON serialization. So the checks module holds **no serialization, no I/O and no
+judgment**: it drives the published operation and holds the case's state; the runner captures,
+the harness writes, and the host alone judges, by the IR's predicates over the captures
+([issue #582](https://github.com/seiya/atmofab/issues/582)). Getting this split right is what lets the
 runner be host-rendered (deterministic, no leaf regenerate loop), and it is what makes the
 snapshot **primary evidence** (`docs/design/zero_base_architecture.md` §A4): the generated code
 contributes the binding — the declaration and the allocation of the state variables — and
@@ -41,19 +42,17 @@ nothing downstream of it.
 
 ## 1. The fixed ABI
 
-The checks module (named `<spec_id>_checks`) publishes **exactly** these five non-prefixed
-callbacks, plus the bound state variables of §1-b. Each is a procedure with no return value,
+The checks module (named `<spec_id>_checks`) publishes **exactly** these three non-prefixed
+procedures, plus the bound state variables of §1-b. Each is a procedure with no return value,
 reached by the runner as a call. The argument roles, in order, are fixed:
 
-| Callback | Arguments (name: direction, type) | What it does |
+| Procedure | Arguments (name: direction, type) | What it does |
 |---|---|---|
-| `case_setup` | `case_id`: in, string; `ok`: out, logical | Initialize this case's state from the spec's fixed inputs and constants. The runner does not read `ok`, here or from `case_run`: every case proceeds, so its snapshot and its input-guard check are produced, and that check is the guard's evidence — the value of `ok` is never a finding. |
+| `case_setup` | `case_id`: in, string; `ok`: out, logical | Initialize this case's state from the spec's fixed inputs and constants. The runner does not read `ok`, here or from `case_run`: every case proceeds, so its snapshot is produced, and what the captures hold (a `record` of the operation's logical result, §1-b, or the state it left) is the guard's evidence — the value of `ok` is never a finding. |
 | `case_run` | `case_id`: in, string; `steps`: out, integer; `cells_updated`: out, integer; `ok`: out, logical | Run the model kernel's time loop for this case — by calling the model's published operation (`<spec_id>__<op>`), from `case_run` or from a procedure of the checks module that `case_run` reaches; the checks module computes no state update of its own, and the `Generate.gate` static check refuses a `case_run` from which no published operation is reachable; it checks a reach, not a use, so whether the state IS the operation's result stays the reviewer's to judge — and return the perf counters. A non-time-stepping component uses `steps` = 1 and `cells_updated` = the cells touched. |
 | `get_time` | `t`: out, float64 | The scalar time of this case at the capture point (0 for an untimed component). Called right AFTER each of the two captures, for the time the snapshot is written with, so no generated procedure runs between `case_setup` / `case_run` returning and the state being serialized. |
-| `checks_compute` | `case_id`: in, string; `check_id`: in, string; `status`: out, string of width 4 | The honest per-case result for ONE check. The runner calls it once per (case, check id), supplying `check_id` as a literal from the IR's `diagnostics_contract.checks[].id`; the module authors no id and sets `status` to one of `pass` / `fail` / `na` (width 4, right-padded) on EVERY `check_id` branch, the default branch included. An xfail case's failing guard still reports `fail` (the harness folds). |
-| `metric_compute` | `case_id`: in, string; `name`: in, string; `val`: out, float64; `is_na`: out, logical; `reason_na`: out, deferred-length string; `found`: out, logical | One `diagnostics_contract.metrics` leaf (dotted address, e.g. `error.l2`) for this case. `found` false when this case does not produce that metric (it is then omitted); `is_na` / `reason_na` carry an honestly-unavailable value. |
 
-Every `out` argument is assigned on every path of the callback. The five names must be published
+Every `out` argument is assigned on every path of the procedure. The three names must be published
 from the checks module **itself**; which declarations publish a name is the binding's rule, and
 the `Generate.gate` static check (`_validate_checks_source_files`) applies it.
 
@@ -66,10 +65,22 @@ of rank N for a rank-N `shape_expr`, a scalar for `shape_expr: scalar` — and i
 host-rendered runner reads each one directly from the module and serializes it through the
 harness emitters at two capture points per case: right after `case_setup` (written to
 `raw/state_snapshots/initial/<case_id>.json`) and right after `case_run` (written to
-`raw/state_snapshots/<case_id>.json`), both **before** the first `checks_compute` /
-`metric_compute` call of that case. There is no getter: no procedure of this module computes,
-filters or returns a snapshot value, and a value the checks compute (a norm, a maximum, a flag,
-an echoed input) is a metric, not a snapshot variable.
+`raw/state_snapshots/<case_id>.json`). There is no getter: no procedure of this module returns
+a snapshot value.
+
+The IR's `source` field of a variable says who writes it, and the module holds nothing else as
+bound state:
+
+| `source` | What the bound variable holds |
+|---|---|
+| `operation` (default) | An argument of the published operation: state in or out, a repeated call's result. `case_setup` fills the inputs and the operation writes the outputs. |
+| `record` | A value the module records of the operation's observable behaviour without computing a judgment: its logical result as `-1 / 0 / 1`, a count of callback invocations, a state copied at a callback or after an intermediate call. |
+| `reported` | A scalar: a run-wide reduction over the integration path, which the operation returns as an output argument and the module passes through. On an execution shape that distributes the state it is the whole-domain reduction, made before the operation returns (the target's parallel rules say how), because one rank's copy of a bound scalar is what the capture writes. |
+| `reference` | A field the module computes from the spec's closed forms as a comparison reference, only where `tests.md` §2 defines it and names it as leaf-computed. |
+
+A quantity the end state defines (an error norm, a mass, a symmetry residual, a per-case extremum)
+is evaluated by the host from the state and is never a bound variable, and neither is an input the
+case declares.
 
 The bundle declares this convention as its `state_bindings[]` — one entry per snapshot
 variable, `storage_symbol == state_variable`, `module == <spec_id>_checks`,
@@ -89,69 +100,25 @@ shape on every path, the rejected-input path included.
   `case_run`). Leave a defined placeholder (e.g. zeros of the right shape), never an
   unallocated array. `case_run` updates the state in the bound variables in place —
   a state kept in a private copy is one the capture never sees.
-- **`checks_compute` is honest, never judgmental.** The runner calls it once per
-  (case, IR check id). Report `fail` when a check fails, even for an xfail case. The
-  harness's diagnostics writer computes the per-case verdict (`overall` is `fail` iff any of
-  that case's checks is `fail`), the top-level fold, and the **xfail exclusion** (a failing case
-  whose `expected_xfail` is true — supplied by the runner from the IR predicates
-  — is excluded from the top-level `failed_checks`). Do not pre-adjust for xfail
-  here; doing so double-counts and breaks the guard-passes-at-top-level rule.
-- **NA metrics.** When a metric is honestly unavailable set `found` true,
-  `is_na` true, and `reason_na` to a short reason; the harness encodes it as
-  `"<address>": null` plus a sibling `"<address>_reason_na": "<reason>"`. A
-  metric that simply does not apply to a case sets `found` false (omitted). A
-  metric that was computed and came out non-finite (a NaN, an infinity) is not N/A:
-  leave `is_na` false, and the harness writes the token `RUNNER_OUTPUT_CONTRACT.md` §4
-  names.
 - **`case_run` perf counters** feed the single `perf.json` (`steps` summed,
   `cells_updated` summed across the run); make them the real work done.
-- **Metrics-basis is a test × target-case matrix.** The host-rendered runner records one
-  `raw/metrics_basis.json` entry per (`test_id`, target `case_id`) pair, from
-  `io_contract.test_predicates[].target_cases`. A multi-target test (a convergence sweep, a
-  base/shifted pair) therefore records evidence for *every* case it ranges over; partial
-  evidence fails the `post_execute` completeness matrix.
-- **Cross-case reductions are per-case metrics.** A quantity that exists only across cases (a
-  convergence order, a symmetry residual) is accumulated by the §3 module-level pattern and
-  returned by `metric_compute` as a per-case metric of the case where it first becomes
-  computable — the `n064` case carries `convergence.order_n032_to_n064`, the `n128` case
-  `order_n064_to_n128`. Earlier cases return `found` false for it (a sparse metric is
-  normal). The predicate reads it with a `case: <case_id>` condition, so the runner still
-  reduces and the predicate still only compares.
-- **Accumulator ordering rule.** The runner receives its `case_id`s **sorted**, so an
-  accumulator may depend only on cases whose `case_id` sorts **before** the emitting case's.
-  Zero-padded resolutions (`n032` < `n064` < `n128`), zero-padded shifts, and suffix-extended
-  derivatives satisfy this naturally; the trap is a derived case sorting ahead of its base
-  (`..._dts050` before `..._dts100`). `test_case_set` declaration order is NOT the run order.
-- **Metrics-basis values must not be uniformly zero.** The runner fills
-  `raw/metrics_basis.json` from the final capture of each test's target cases (the
-  same serialized values as `raw/state_snapshots/<case_id>.json`, never a re-read of
-  the storage), so the bound variables must hold the values the run computed. The
-  zeros a rejected guard case leaves are admissible only alongside cases that hold
-  real values; a metrics_basis zero-filled across the whole run fails `post_execute`
-  (`trivial placeholder detected`). The exact rejection condition is canonical in
-  `RUNNER_OUTPUT_CONTRACT.md` §3.
-- **A callback cannot reach the snapshot through the state.** Each capture of a case is
+- **A procedure cannot reach a capture already taken.** Each capture of a case is
   taken straight after `case_setup` / `case_run` returns, before the `get_time` that
-  follows it and before every `checks_compute` / `metric_compute` call, and the runner
-  keeps the serialized copy — whatever a callback writes into a bound variable afterwards
-  is invisible to that capture and to the metrics basis (a write from the initial
+  follows it, and the runner keeps the serialized copy — whatever `get_time` writes into a
+  bound variable afterwards is invisible to that capture (a write from the initial
   capture's `get_time` reaches the final capture exactly as a write in `case_run` would:
-  it is the state). Callbacks compute from the state;
-  they do not stage it. (A callback that rewrote the snapshot FILE would be the §4 file-I/O
+  it is the state). (A procedure that rewrote the snapshot FILE would be the §4 file-I/O
   prohibition broken; the record of what the gate does and does not see is
   `docs/design/zero_base_architecture.md`, the Z6 item.)
 
 ## 3. Module-level state is expected
 
-The runner calls `case_setup`, captures, calls `case_run`, captures again, and then
-the check and metric callbacks, for one case at a time. The current case's state
-lives in the **bound module-level variables** of §1-b — that is what the captures
-read — and any cross-case accumulators a metric needs live in **other** module-level
-variables. Key any cross-case accumulation by `case_id`.
-
-A cross-case reduction (§2) uses exactly this: accumulate each case's contribution as it runs;
-when `metric_compute` is called for the case that completes the reduction, return the derived
-value (`found` true), and `found` false for the earlier cases.
+The runner calls `case_setup`, captures, calls `case_run` and captures again, for one case at a
+time. The current case's state lives in the **bound module-level variables** of §1-b — that is
+what the captures read. A quantity that exists only across cases (a convergence order, a symmetry
+residual) needs nothing here: the host's predicate reads the other case's capture
+(`at('<case_id>')`, `phase_01_compile.md`). The runner receives its `case_id`s **sorted**, not in
+`test_case_set` declaration order.
 
 ## 4. Prohibitions
 
@@ -164,8 +131,7 @@ value (`found` true), and `found` false for the earlier cases.
   linked via the dependency closure.)
 - **No file I/O in the checks module** — no file is opened or written, and none of
   `verdict.json` / `aggregate_verdict.json` / `summary.json` / `trial_meta.json` appears in it,
-  even as a comment or example string. Emission is the harness's exclusive job; the checks
-  module only computes.
+  even as a comment or example string. Emission is the harness's exclusive job.
 - **No local entity named as a published operation** — the checks module calls the model's
   operation (`<spec_id>__*`) and gives that name to nothing of its own: no procedure,
   procedure pointer, variable, dummy or other declaration of that name — a call to such a name

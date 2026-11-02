@@ -695,7 +695,6 @@
   "skill_ref": "",
   "skill_must_read_refs": "",
   "pure_context": {
-    "diagnostics_document": "<redacted: 141608 bytes sha256:66b5602073acdbe50729e70228997b53ddd24fef3d4e83fd59f0419bf65a42e2>",
     "verdict_document": "<redacted: 919340 bytes sha256:b74c202bcd0aea1709cbfbccc5080b2f60ee1e01c9b7bdb6c1ea82f56162464e>",
     "perf_document": "<redacted: 323 bytes sha256:7c351681c7b6d20336e6bd721fbe5a1a23dd002b30ff1994e95e650bf3490f63>",
     "trial_meta_document": "<redacted: 20401 bytes sha256:e221b5afa153644c8b3fc9d084ac9b908f240e226c40ba80e25b033e61aeece0>",

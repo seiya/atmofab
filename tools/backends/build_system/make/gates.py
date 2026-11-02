@@ -584,7 +584,7 @@ def validate_test_invokes_cases(
     the canonical recipe ``$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`` is
     byte-identical to ``run_program``. Two recipes desync the two invocations and
     are flagged: (a) a bare run (no ``--cases``) — the runner aborts, the
-    candidate emits no ``diagnostics.json`` (``verdict_available=false``); and
+    candidate captures no state and every test's status differs; and
     (b) a run that hardcodes ``--cases <spec> <ids>`` instead of referencing the
     ``$(SPEC)``/``$(CASES)`` variables — the env override has no effect and make
     test runs a different spec/case set than ``run_program`` (wrong-evidence

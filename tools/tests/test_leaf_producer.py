@@ -103,24 +103,9 @@ def _checks_symbols() -> tuple[str, ...]:
     return CHECKS_PUBLIC_NAMES
 
 
-_METRIC_COMPUTE_STUB = (
-    "subroutine metric_compute(case_id, name, val, is_na, reason_na, found)\n"
-    "  character(len=*), intent(in) :: case_id, name\n"
-    "  real(real64), intent(out) :: val\n"
-    "  logical, intent(out) :: is_na, found\n"
-    "  character(len=:), allocatable, intent(out) :: reason_na\n"
-    "end subroutine metric_compute\n")
-
-
 def _stub(sym: str, *, indent: str = "  ", prefix: str = "", named_end: bool = True) -> str:
     """A minimal module-level definition of ABI name `sym` for a fixture that tests the
-    PUBLICATION half of the ABI layer. Four of the five are zero-dummy stubs (only their name
-    and subroutine-ness are read); `metric_compute` carries the pinned dummy list, because
-    since issue #261 the same layer reads its fifth dummy's declaration when it is defined
-    here and refuses a zero-dummy stub as "0 dummy argument(s)"."""
-    if sym == "metric_compute":
-        return "".join(indent + prefix * (i == 0) + line + "\n"
-                       for i, line in enumerate(_METRIC_COMPUTE_STUB.splitlines()))
+    PUBLICATION half of the ABI layer: only its name and subroutine-ness are read."""
     end = f"end subroutine {sym}" if named_end else "end subroutine"
     return f"{indent}{prefix}subroutine {sym}()\n{indent}{end}\n"
 
@@ -201,14 +186,12 @@ def _node_ir(state_vars=("h", "u", "v")) -> dict:
                     "variables": [{"name": "h", "shape_expr": "[4, 4]"}],
                     "time_variable": "t"}},
             ]},
-            "test_evidence_requirements": [{"test_id": "c1", "required_raw_variables": ["h"]}],
-            "diagnostics_contract": {
-                "checks": [{"id": "mass"}],
-                "metrics": ["error.l2"],
-                "verdict": {"required": True, "fields": ["overall", "failed_checks"]},
-            },
-            "test_predicates": [
-                {"test_id": "c1", "expected_outcome": "pass", "target_cases": ["c1"]}],
+            "tests": [
+                {"test_id": "c1", "expected_outcome": "pass", "target_cases": ["c1"],
+                 "quantities": ["h_min"]}],
+            "predicates": [
+                {"test_id": "c1", "quantity": "h_min", "target_cases": ["c1"],
+                 "expr": "min(final.h)", "op": "ge", "value": 0.0, "per_case": True}],
         },
     }
 
@@ -640,46 +623,39 @@ class PureBundleViolationsTests(unittest.TestCase):
         # The registry's own clause, carried rather than re-worded.
         self.assertIn("runner_render", violation)
 
-    def test_runner_imported_subset_is_not_the_required_set(self) -> None:
-        # Pins the direction of the Codex P1 fix: the runner here imports a PROPER subset of the
-        # ABI (a node with no metrics imports no `metric_compute`), and a bundle publishing only
-        # that subset must be REJECTED (Generate.static wants the full ABI). The fixture IR
-        # declares metrics, so drop them here to make the import set a proper subset.
+    def test_the_required_set_is_the_abi_the_runner_imports(self) -> None:
+        # The direction of the Codex P1 fix, on the ABI of issue #582: the required set is the
+        # fixed ABI, and the runner imports all of it (no name is optional any more), so a bundle
+        # publishing less is REJECTED naming what it left out.
         c, refs = self._c_refs()
         from tools.backends.language.fortran.runner import (
             CHECKS_PUBLIC_NAMES,
             render_runner,
         )
-        ir = _node_ir()
-        ir["io_contract"]["diagnostics_contract"]["metrics"] = []
-        imported = cb_runner_imports(render_runner(ir, _SPEC_ID, _HARNESS_SPEC_ID, target=_TARGET_PROFILE.doc), _SPEC_ID)
-        self.assertTrue(set(imported) < set(CHECKS_PUBLIC_NAMES), imported)
+        imported = cb_runner_imports(
+            render_runner(_node_ir(), _SPEC_ID, _HARNESS_SPEC_ID, target=_TARGET_PROFILE.doc),
+            _SPEC_ID)
+        self.assertEqual(set(imported), set(CHECKS_PUBLIC_NAMES))
+        self.assertEqual(set(CHECKS_PUBLIC_NAMES), {"case_setup", "case_run", "get_time"})
         bad = _valid_bundle()
-        syms = list(imported)
-        bad["files"][1]["content"] = (
-            f"module {_SPEC_ID}_checks\n  private\n"
-            + "".join(f"  public :: {s}\n" for s in syms) + "  public :: h\n"
-            + "contains\n"
-            + "".join(_stub(s) for s in syms)
-            + "end module\n")
+        bad["files"][1]["content"] = _checks_content(omit="case_run")
         cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
-        for absent in set(CHECKS_PUBLIC_NAMES) - set(imported):
-            self.assertIn(absent, findings)
+        self.assertIn("case_run", findings)
 
     def test_checks_abi_missing_symbol(self) -> None:
         # Z2 defect D, shape 1 (sw2d src_003): the checks module omits names the runner imports
         # -> Generate.syntax "Symbol 'x' not found in module". Now a bounded in-loop repair.
         c, refs = self._c_refs()
         bad = _valid_bundle()
-        bad["files"][1]["content"] = _checks_content(omit="checks_compute")
+        bad["files"][1]["content"] = _checks_content(omit="case_run")
         cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
-        self.assertIn("checks_compute", findings)
+        self.assertIn("case_run", findings)
 
     def test_checks_abi_quoted_type_function_form_rejected(self) -> None:
         # Codex review: a legal type-spec can hold a quote in its parens —
-        # `character(kind=kind('a')) function metric_compute()`. Excluding quotes from the
+        # `character(kind=kind('a')) function get_time()`. Excluding quotes from the
         # proc-header prefix made that header unmatchable, so the function was published-but-not-
         # defined and the gate ACCEPTED it; the runner then `call`s it and Generate.syntax fails —
         # the phase reopen this gate exists to prevent. Matching a string-masked line catches it.
@@ -690,13 +666,13 @@ class PureBundleViolationsTests(unittest.TestCase):
             f"module {_SPEC_ID}_checks\n  private\n"
             + "".join(f"  public :: {s}\n" for s in syms) + "contains\n"
             + "".join(_stub(s)
-                      for s in syms if s != "metric_compute")
-            + "  character(kind=kind('a')) function metric_compute()\n"
-            "    metric_compute = 'x'\n  end function metric_compute\n"
+                      for s in syms if s != "get_time")
+            + "  character(kind=kind('a')) function get_time()\n"
+            "    get_time = 'x'\n  end function get_time\n"
             "end module\n")
         cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
-        self.assertIn("metric_compute", findings)
+        self.assertIn("get_time", findings)
         self.assertIn("FUNCTION", findings)
 
     def test_checks_abi_function_form_rejected(self) -> None:
@@ -704,10 +680,10 @@ class PureBundleViolationsTests(unittest.TestCase):
         # while the runner `call`s it -> "has a type, which is not consistent with the CALL".
         c, refs = self._c_refs()
         bad = _valid_bundle()
-        bad["files"][1]["content"] = _checks_content(as_function="metric_compute")
+        bad["files"][1]["content"] = _checks_content(as_function="get_time")
         cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
-        self.assertIn("metric_compute", findings)
+        self.assertIn("get_time", findings)
         self.assertIn("FUNCTION", findings)
 
     def test_checks_abi_accepts_names_not_defined_locally(self) -> None:
@@ -741,10 +717,10 @@ class PureBundleViolationsTests(unittest.TestCase):
         # definition alone would fail open on half of the shape this layer exists to catch.
         c, refs = self._c_refs()
         bad = _valid_bundle()
-        bad["files"][1]["content"] = _checks_content(unexported="checks_compute")
+        bad["files"][1]["content"] = _checks_content(unexported="case_run")
         cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
-        self.assertIn("checks_compute", findings)
+        self.assertIn("case_run", findings)
         self.assertIn("not published", findings)
 
     def test_checks_abi_explicit_private_name_rejected(self) -> None:
@@ -833,13 +809,13 @@ class PureBundleViolationsTests(unittest.TestCase):
         bad["files"][1]["content"] = (
             f"module {_SPEC_ID}_checks\n"
             + "".join(_stub(s, indent="")
-                      for s in _checks_symbols() if s != "metric_compute")
-            + "! the runner also calls subroutine metric_compute\n"
-            + "function metric_compute() result(r)\nend subroutine metric_compute\n"
+                      for s in _checks_symbols() if s != "get_time")
+            + "! the runner also calls subroutine get_time\n"
+            + "function get_time() result(r)\nend subroutine get_time\n"
             + "end module\n")
         cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
-        self.assertIn("metric_compute", findings)
+        self.assertIn("get_time", findings)
 
     def test_checks_abi_accepts_prefixed_subroutine_forms(self) -> None:
         # ...while the anchoring must not reject a legal `pure subroutine foo()` definition.
@@ -883,7 +859,7 @@ class PureBundleViolationsTests(unittest.TestCase):
     def test_checks_abi_extra_checks_file_does_not_mask_a_real_violation(self) -> None:
         c, refs = self._c_refs()
         bad = _valid_bundle()
-        bad["files"][1]["content"] = _checks_content(omit="checks_compute")
+        bad["files"][1]["content"] = _checks_content(omit="case_run")
         bad["files"].append({
             "logical_path": "helper_checks.f90", "role": "checks", "language": "fortran",
             "member_node_key": _NODE,
@@ -891,7 +867,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             "modules": ["helper_checks"]})
         cat, findings = c._leaf_bundle_violations(refs, bad)
         self.assertEqual(cat, "bundle_checks_abi_violation")
-        self.assertIn("checks_compute", findings)
+        self.assertIn("case_run", findings)
 
     def test_checks_abi_fail_closed_when_declared_module_is_not_defined(self) -> None:
         # `modules[]` is leaf-declared; if the content defines no such module the runner's import
@@ -1655,7 +1631,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         # The whole point of the layer: what cost the sw2d P-arm its retry budget (a phase reopen
         # per guess) is now ONE bounded in-conversation repair.
         bad = _valid_bundle()
-        bad["files"][1]["content"] = _checks_content(as_function="metric_compute")
+        bad["files"][1]["content"] = _checks_content(as_function="get_time")
         c, refs, oc = self._run([_envelope(bad), _envelope(_valid_bundle())])
         self.assertEqual(oc.status, "pass")
         self.assertEqual(oc.attempts, 2)
@@ -2949,17 +2925,15 @@ class PureColdRepairPromptTests(unittest.TestCase):
     def test_style_lint_distills_c072_character_dummy_widths(self) -> None:
         # Fail #1 (orch_9a5fe93e): the leaf authored `character(len=*), intent(out)` and
         # burned a retry on fortitude C072. The doc-blind producer learns the rule only if the
-        # launch template states it. Under the per-id ABI (pure-8) the sole `intent(out)` character
-        # dummy is `status`, whose width MUST match the one authority the runner renders against
-        # (the fortran backend runner's CHECK_STATUS_WIDTH), not a hand-copied number that could drift.
-        from tools.backends.language.fortran.runner import CHECK_STATUS_WIDTH
+        # launch template states it. The `status` dummy this rule's example named went with
+        # `checks_compute` (issue #582); the rule itself holds of any such dummy a module declares.
         template = composed_pure_template("workshop generate.generate")
         start = template.index("(1) Style lint")
         end = template.index("\n(2)", start)
         style = template[start:end]
         self.assertIn("C072", style)
-        self.assertIn("checks_compute(case_id, check_id, status)", style)
-        self.assertIn(f"character(len={CHECK_STATUS_WIDTH})", style)
+        self.assertIn("give every character `intent(out)`/`intent(inout)` dummy an EXPLICIT "
+                      "length", style)
 
 
 # ======================================================================================
@@ -3099,7 +3073,7 @@ class PurePostGenerateBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo, gen, ir_ref = self._gen_dir(tmp)
             bundle = json.loads((gen / "codegen_bundle.json").read_text())
-            bundle["files"][1]["content"] = _checks_content(omit="checks_compute")
+            bundle["files"][1]["content"] = _checks_content(omit="case_run")
             (gen / "codegen_bundle.json").write_text(json.dumps(bundle), encoding="utf-8")
             (gen / "src" / f"{_SPEC_ID}_checks.f90").write_text(
                 bundle["files"][1]["content"], encoding="utf-8")
@@ -3224,10 +3198,10 @@ def _harness_ir() -> dict:
         },
         "io_contract": {
             "raw_requirements": {"required_evidence": []},
-            "test_evidence_requirements": [{"test_id": "c1", "required_raw_variables": []}],
-            "diagnostics_contract": {"checks": [{"id": "plumbing"}]},
-            "test_predicates": [
-                {"test_id": "c1", "expected_outcome": "pass", "target_cases": ["c1"]}],
+            "tests": [
+                {"test_id": "c1", "expected_outcome": "pass", "target_cases": ["c1"],
+                 "quantities": ["plumbing"]}],
+            "predicates": [],
         },
     }
 
