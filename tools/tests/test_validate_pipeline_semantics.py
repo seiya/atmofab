@@ -12570,8 +12570,9 @@ end program shallow_water2d_runner
                       (repo / "docs/TESTS.md").read_text(encoding="utf-8"))
 
     def test_cross_target_judged_ids_of_the_real_corpus(self) -> None:
-        """Every pass test of the 17 physics tests.md applies the judgment and no xfail test
-        does (the reader against the real prose, both forms); a harness applies none."""
+        """`docs/TESTS.md` §Cross-target judgment states the rule: a pass test applies it and an
+        xfail or fail test does not. This pins the reader against the 17 physics tests.md under
+        that rule, both prose forms; a harness applies none."""
         import glob
         repo = Path(__file__).resolve().parents[2]
         files = sorted(glob.glob(str(repo / "spec/*/*/*/*/tests.md")))
@@ -12584,7 +12585,7 @@ end program shallow_water2d_runner
             if "/infrastructure/" in f:
                 self.assertEqual(judged, set(), f)
                 continue
-            passes, current = set(), None
+            passes, classified, current = set(), set(), None
             for raw in text.splitlines():
                 m = (vps.TEST_ID_HEADING_PATTERN.match(raw.strip())
                      or vps.TEST_ID_BULLET_PATTERN.match(raw.strip()))
@@ -12594,7 +12595,13 @@ end program shallow_water2d_runner
                     current = None
                 elif current and "`expected_outcome`: `pass`" in raw:
                     passes.add(current)
-            self.assertEqual(set(ids) >= passes and len(passes) > 0, True, f)
+                    classified.add(current)
+                elif current and ("`expected_outcome`: `xfail`" in raw
+                                  or "`expected_outcome`: `fail`" in raw):
+                    classified.add(current)
+            # An outcome in another spelling must not leave its test outside `passes` unnoticed.
+            self.assertEqual(set(ids), classified, f)
+            self.assertGreater(len(passes), 0, f)
             self.assertEqual(judged, passes, f)
             judged_total += len(judged)
         self.assertEqual(len(files), 20)
