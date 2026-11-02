@@ -43,6 +43,18 @@ Measured with an independent kernel written from the two Controlled Specs and wi
 
 Of those four, the comparison reads part of the threshold. A threshold of `2e-6` exits 1 on `compare saturation` and 0 on `compare kessler`; so do `3e-6` and `1e-5`, which fail the saturation suite only (the Kessler suite is false 0 on both). A threshold of `1.5e-6` exits 0 on both and is false 0 on both suites, with or without a comparand. A limit of `150` or `1000`, the kept `temp` and the clip exit 0 on both: the comparison skips `xfail` cases, and the other differences fall under its `1e-15` floor. Those are held by §3 and §6 of the Controlled Specs and a `Generate` reviewer alone. A threshold change is therefore read on `compare saturation`.
 
+## Results
+Commit `db90db3e`, 2026-11-02, `fortran_cpu`, Claude leaves. Both nodes pass, with no framework change. The full record is on [issue #578](https://github.com/seiya/atmofab/issues/578#issuecomment-6568076705).
+
+| | saturation | Kessler |
+|---|---:|---:|
+| orchestration | `orch_20261102T020111Z_9efd6f58` | `orch_20261102T020110Z_1cf6f9ce` |
+| cost | $9.94 | $13.49 (one `Generate.verify` retry, $1.89) |
+| `Compile.generate + Compile.verify` | 37.9% | 33.5% |
+| share on the test representation | 50.4–61.4% | 50.2–57.8% |
+| comparison rows beyond tolerance | 0 of 46 | 0 of 134 |
+| largest relative difference | 3.24e-14 | 2.22e-16 |
+
 ## Deviations from the original
 Listed, not banded, in `DEVIATIONS` of `compare.py`, which the comparison prints, and in §1 of each node's Controlled Spec.
 
