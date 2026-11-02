@@ -367,6 +367,14 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 # `rNc` amplifies round-off `pcsat`, so the comparison reads what the scheme defines.
                 r = [max(-x, 0.0) for x in ref["pcsat"]]
                 g = [max(-x, 0.0) for x in got["pcsat"]]
+            if var == "rhoe_t":
+                # At a near no-op it is round-off in `qv` times `dens * L00 / dt`, so it is read as
+                # the mixing ratio it stands for, under the same floor as `pcsat`.
+                c = case_inputs(suite, case)["constants"]
+                l00 = c["lhv0"] - (c["cpvap"] - c["cl"]) * c["tem00"]
+                scale = [case["dt"] / (d * l00) for d in ref["dens"]]
+                r = [x * s for x, s in zip(ref[var], scale)]
+                g = [x * s for x, s in zip(got[var], scale)]
             max_rel = max_abs = 0.0
             for k in range(grid["ks"] - 1, grid["ke"]):
                 diff = abs(r[k] - g[k])
