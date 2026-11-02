@@ -59,6 +59,7 @@ cases:
 - {case_id: l0_tv_bad_range, operation: terminal_velocity, expected: xfail, refusal: {}, grid: {ks: 7, ke: 2}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}}
 - {case_id: l0_tv_dens_nonpositive, operation: terminal_velocity, expected: xfail, refusal: {}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}, overrides: [{var: dens, k: 4, value: 0.0}]}
 - {case_id: l0_tv_refstate_nonpositive, operation: terminal_velocity, expected: xfail, refusal: {}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}, overrides: [{var: refstate_dens, k: 4, value: 0.0}]}
+- {case_id: l0_rain_above_saturation, operation: adjustment, expected: pass, dt: 10.0, columns: {temp: [280.0, 3.0], dens: [1.1, -0.05], pres: [95000.0, -3000.0], qv: [0.009, 0.003], qc: [1.0e-3, 2.0e-4], qr: [5.0e-4, 1.0e-4]}}
 ```
 
 ## 3. Execution-control rules
@@ -68,7 +69,7 @@ cases:
 `N/A`: the `L0` suite uses the fixed cases of §2 and defines no `case` sweep.
 
 ## 5. Diagnostics contract
-- Require outputting `checks.dry_noop`, `checks.autoconversion`, `checks.accretion`, `checks.evaporation`, `checks.eps_floor`, `checks.water_energy`, `checks.limiter`, `checks.saturated`, `checks.evaporate_number`, `checks.tv_formula`, `checks.tv_zerosw`, `checks.tv_refstate`, `checks.tv_cloud_zero`, `checks.halo_untouched` and `checks.input_guard` in `diagnostics.json`. Each is computed on the cases of the test that names it in §6 and is `na` on every other case; `checks.input_guard` is defined in the next item.
+- Require outputting `checks.dry_noop`, `checks.autoconversion`, `checks.accretion`, `checks.evaporation`, `checks.eps_floor`, `checks.water_energy`, `checks.limiter`, `checks.saturated`, `checks.evaporate_number`, `checks.heat_capacity`, `checks.rain_above_saturation`, `checks.tv_formula`, `checks.tv_zerosw`, `checks.tv_refstate`, `checks.tv_cloud_zero`, `checks.halo_untouched` and `checks.input_guard` in `diagnostics.json`. Each is computed on the cases of the test that names it in §6 and is `na` on every other case; `checks.input_guard` is defined in the next item.
 - The state of a case, captured after setup and after the run, consists of `temp`, `qv`, `qc`, `qr`, `cptot`, `cvtot`, `dens`, `pres`, `rhoe_t`, `evaporate`, `pcsat`, `vterm_c`, `vterm_r`, `rhoq_c`, `rhoq_r`, `refstate_dens` (each with extent `ka`, at the §2 values at setup) and the scalar `guard_pass`, recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. A variable an `operation` does not publish keeps its setup value. `checks.input_guard` is `pass` when `guard_pass = 1` and `fail` otherwise.
 - A judgment reads a halo cell only through the masks below. With $i=k-1$ and $c=i+1/2$ the cell-centre coordinate of a unit-length cell, `coordinates[]` axis `0`, `count` and `length` `ka`, placement `cell_center`: `interior` $=\min(1,\max(0,\lfloor c\rfloor-(ks-2)))\cdot\min(1,\max(0,ke-\lfloor c\rfloor))$, `halo` $=1-$`interior`, `first` $=\max(0,1-|\lfloor c\rfloor-(ks-1)|)$ marks the cell $k=ks$, and `pairs` $=\min(1,\max(0,\lfloor c\rfloor-(ks-2)))\cdot\min(1,\max(0,ke-1-\lfloor c\rfloor))$ marks the cells $k=ks..ke-1$.
 - `qs` is $q_s$ of the dependency's Controlled Spec §3 at `initial.temp`, `initial.dens`; `qs_final` and `dqs_final` are $q_s$ and $dq_s/dT$ at `final.temp`, `final.dens`, over every cell (the halo sentinels keep them finite). `L00` and `cvv` are the derived constants of Controlled Spec §2. `dq_auto`, `dq_accr` and `dq_evap` are $d_{auto}$, $d_{accr}$, $d_{evap}$ of Controlled Spec §3 step 1 over the `initial` state and `qs`. `dv`, `dc` and `dr` are `final - initial` of `qv`, `qc`, `qr`.
@@ -108,12 +109,12 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_dry_column`, `l0_autoconv_below`, `l0_autoconv_above`, `l0_accretion`, `l0_evaporation`, `l0_cloud_evaporates`, `l0_supersaturated`, where no limiter binds, and on `l0_limiter_qr`, `l0_limiter_qc`, where the `qv` limiter does not: `maxabs(interior*(dv + dc + dr))` is `<= 1e-15`; with `em = final.temp*final.cvtot + final.qv*L00` and `em0 = initial.temp*initial.cvtot + initial.qv*L00`, `max(interior*abs(em - em0)/(2e-6*dqs_final*(L00 + final.temp*(cvv - cl))))` is `<= 1`; and `maxabs(interior*(rhoe_t*dt + dens*L00*dv)) / max(maxabs(interior*dens*L00*dv), 10)` is `<= 1e-12` (`checks.water_energy`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `qv`, `qc` and `qr` is `<= 1e-12`.
+  - `judgment`: on `l0_dry_column`, `l0_autoconv_below`, `l0_autoconv_above`, `l0_accretion`, `l0_evaporation`, `l0_cloud_evaporates`, `l0_supersaturated`, `l0_rain_above_saturation`, where no limiter binds, and on `l0_limiter_qr`, `l0_limiter_qc`, where the `qv` limiter does not: `maxabs(interior*(dv + dc + dr))` is `<= 1e-15`; with `em = final.temp*final.cvtot + final.qv*L00` and `em0 = initial.temp*initial.cvtot + initial.qv*L00`, `max(interior*abs(em - em0)/(2e-6*dqs_final*(L00 + final.temp*(cvv - cl))))` is `<= 1`; and `maxabs(interior*(rhoe_t*dt + dens*L00*dv)) / max(maxabs(interior*dens*L00*dv), 10)` is `<= 1e-12` (`checks.water_energy`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `qv`, `qc` and `qr` is `<= 1e-12`.
 - `test_id`: `l0_limiter_positivity_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_limiter_qr` the `qr` limiter binds at every interior cell: `maxabs(interior*final.qr)` is `<= 1e-17`. On `l0_limiter_qc` the `qc` limiter binds at every interior cell and each cell ends subsaturated through the virtual branch: `maxabs(interior*final.qc)` is `== 0`. On `l0_limiter_qv` the `qv` limiter binds at every interior cell: `maxabs(interior*final.qv)` is `<= 1e-17`. On all three, `min(interior*X)` is `>= -1e-17` for each of `qv`, `qc`, `qr` (`checks.limiter`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
+  - `judgment`: on `l0_limiter_qr` the `qr` limiter binds at every interior cell: `maxabs(interior*final.qr)` is `<= 1e-17`. On `l0_limiter_qc` the `qc` limiter binds at every interior cell and each cell ends subsaturated through the virtual branch: `maxabs(interior*final.qc)` is `== 0`. On `l0_limiter_qv` the `qv` limiter binds at every interior cell: `maxabs(interior*final.qv)` is `<= 1e-17`. On `l0_limiter_qv` total water is not conserved, and rain is not scaled to conserve it: with `ref = (dq_auto + dq_accr - dq_evap)*dt`, `maxabs(interior*(dr - ref)) / maxabs(interior*ref)` is `<= 1e-12`. On all three, `min(interior*X)` is `>= -1e-17` for each of `qv`, `qc`, `qr` (`checks.limiter`). A clip of a limited result to non-negative (Controlled Spec §6) is not judged: it changes only a remainder of order `1e-19` whose sign depends on rounding, so no bound separates it from a correct kernel on another target. The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
 - `test_id`: `l0_supersaturated_saturates_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
@@ -226,6 +227,16 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `xfail_condition`: `refstate_dens(4) <= 0`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`.
+- `test_id`: `l0_heat_capacity_pass`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `pass`
+  - `judgment`: on every `pass` case of `__adjustment`, the heat capacities follow the mixing ratios, across step 3 and the saturation step together: `maxabs(interior*(final.cptot - initial.cptot - (cpvap*dv + cl*(dc + dr))))` and `maxabs(interior*(final.cvtot - initial.cvtot - (cvv*dv + cl*(dc + dr))))` are `<= 1e-11`, the rounding of a sum of values of order `1e3` (`checks.heat_capacity`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `cptot` and `cvtot` is `<= 1e-12`.
+- `test_id`: `l0_rain_above_saturation_pass`
+  - `level`: `L0`
+  - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
+  - `expected_outcome`: `pass`
+  - `judgment`: on `l0_rain_above_saturation` (`qv > qs` and `qr > 0`, so `min(S, 1)` decides), rain does not grow by evaporating in reverse: `qr` is not touched by the saturation step, and with `ref = (dq_auto + dq_accr)*dt`, `maxabs(interior*(dr - ref)) / maxabs(interior*ref)` is `<= 1e-12` (`checks.rain_above_saturation`). The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv`, `qc`, `qr`, `cptot` and `cvtot` is `<= 1e-12`.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
