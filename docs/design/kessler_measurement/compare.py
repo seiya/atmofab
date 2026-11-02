@@ -112,8 +112,6 @@ def case_inputs(suite: dict, case: dict) -> dict:
     inputs = {"grid": grid, "constants": constants}
     if "dt" in case:
         inputs["dt"] = case["dt"]
-    for key in case.get("parameters", {}):
-        inputs[key] = case["parameters"][key]
     return inputs
 
 
