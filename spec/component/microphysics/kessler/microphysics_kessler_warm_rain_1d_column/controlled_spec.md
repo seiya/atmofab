@@ -17,6 +17,8 @@ Out of scope, each a recorded difference from that source or a part of it not ta
 - The source's `_setup`, `_cloud_fraction`, `_effective_radius`, `_qtrc2qhyd` and `_qhyd2qtrc`: the first writes log lines and aborts on a flag the module never sets; the other four are driver-tier diagnostics and conversions with no physics the scheme owns.
 - `QC_t_sat`, which the source writes to the history output, is the output argument `pcsat` here.
 - The termination of the program on a cell that does not converge: this `component` refuses the column instead (§4).
+- The refusal of invalid input (§4): the source has no check on the index range or `dt`, and `terminal_velocity` none on `dens` or `refstate_dens`.
+- The array form: the source's `(KA,IA,JA)` arrays and tracer dimension are rank-1 columns `qv`, `qc`, `qr`, `rhoq_c`, `rhoq_r`, `vterm_c`, `vterm_r` here, and its constants, read from module state, are arguments (§2).
 - The refusal of negative moisture and of non-positive heat capacities (§4), which the source does not make. A driver that steps this `component` must fix negative moisture before the call, as the source's driver does: the output of one call can hold a value of order `-1e-19` in a limited variable, and the next call refuses it.
 - A halo cell of an output array: the source leaves it undefined, and this `component` writes `0` there (§2).
 - Single precision, and any setup or module state: every constant is an argument (§2).

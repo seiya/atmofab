@@ -17,6 +17,8 @@ Out of scope, each a recorded difference from that source:
 - The ice phase and the cold-rain branch: `QI` is absent and only the liquid branch exists.
 - The termination of the program on a cell that does not converge: the source aborts, and leaves that cell's state at the last iterate, non-finite values included. This `component` returns a finite refusal state for that cell (§4) and leaves the action to its caller.
 - A halo cell of an output array: the source leaves it undefined, and this `component` writes `0` there (§2).
+- The refusal of invalid input (§4): the source has no check on the index range, `temp`, `dens`, `cptot` or `cvtot`.
+- The array form: the source's `(KA,IA,JA)` arrays are rank-1 columns here, and its constants, read from module state, are arguments (§2).
 - Single precision, which is not specified here.
 - Setup and module state: every constant is an argument of the `operation` (§2), so this `component` has no setup step.
 

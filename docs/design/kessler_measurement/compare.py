@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Runs the original SCALE procedures on the cases of a node's `tests.md` and reads the result.
+"""Runs the original SCALE procedures on the `pass` cases of a node's `tests.md` and reads the result.
 
-`screen`: every case of §2 goes through the driver, its columns become the state snapshots the
-workflow's capture would be, and every judgment of the node's predicate file is evaluated by
-`tools.primary_evidence.evaluate_primary_predicates`, the function the host itself runs.
+`screen`: every `pass` case of §2 goes through the driver, its columns become the state snapshots
+the workflow's capture would be, and every judgment of the node's predicate file is evaluated by
+`tools.primary_evidence.evaluate_primary_predicates`, the function the host itself runs. The
+expanded predicates also go through `validate_primary_predicate_schema` against the real test ids.
 `compare`: the same driver columns against the snapshots of a certified run.
 
-A refused case has no SCALE result: SCALE aborts or runs on. Its snapshot is the refusal state the
-Controlled Spec defines, so the screen shows only that its judgment is expressible and evaluable,
-and each case's forcing condition is checked on its inputs (`forcing`, and the driver's per-cell
-`converged` where the condition is non-convergence).
+An `xfail` case does not run through the driver: the original has no guard, and it aborts or runs
+on where the Controlled Spec refuses. Its snapshot is the refusal state the Controlled Spec defines,
+written by this script, so the evaluation of its judgment shows only that the judgment is expressible
+and evaluable, and says nothing of any kernel. What is checked of it is its forcing, with a nonzero
+exit on a miss: a case's inputs must meet a refusal clause of Controlled Spec §4 exactly when the case
+is `xfail`, and a non-convergence case must abort in the original at cell 4.
 """
 from __future__ import annotations
 
@@ -40,13 +43,19 @@ RETURNS = {
     "adjustment": ["temp", "qv", "qc", "qr", "cptot", "cvtot", "rhoe_t", "evaporate", "pcsat"],
     "terminal_velocity": ["vterm_c", "vterm_r"],
 }
-#: The intended differences from SCALE, printed beside the maxima (`README.md`).
+#: The intended differences from the original, printed beside the maxima. Each node's §1 states them.
 DEVIATIONS = [
-    "pcsat is an output; SCALE writes QC_t_sat to history (D4)",
-    "abort replaced by converged / guard_pass with a finite refusal state (D8, D20)",
-    "QI and the cold-rain branch absent (D8)",
-    "halo cells of an output are written with 0 (D17)",
-    "negative moisture and non-positive cptot / cvtot are refused (D18, D20)",
+    "rank-1 column arrays in place of (KA,IA,JA) and the tracer dimension; constants are arguments "
+    "(Controlled Spec §2 of both nodes)",
+    "`pcsat` is an output; the original writes QC_t_sat to history (Kessler §1)",
+    "a non-converged cell returns a finite refusal state and `converged`; the original aborts "
+    "(saturation §4)",
+    "the Kessler operation refuses the whole column on non-convergence and restores it (Kessler §4)",
+    "the ice argument and the cold-rain branch are absent (saturation §1)",
+    "a halo cell of an output is written with 0 (§2 of both nodes)",
+    "saturation guards: index range, temp, dens, cptot, cvtot; the original has none (saturation §4)",
+    "Kessler guards: index range, dt, negative qv / qc / qr, cptot, cvtot; terminal-velocity guards: "
+    "index range, dens, refstate_dens; the original has none (Kessler §4)",
 ]
 FLOOR = 1e-15
 #: Driver -> the same sources built with `ALT_CONSTANTS=1`, for the cases with `constants: alt`.
@@ -283,14 +292,59 @@ def cmd_screen(args: argparse.Namespace) -> int:
     uncovered = sorted({c["case_id"] for c in suite["cases"]} - covered_cases)
     print(f"predicates {len(records)}, false {failed}; tests {len(tests)}, "
           f"cases {len(suite['cases'])}, cases no predicate reads {uncovered}")
-    for case in suite["cases"]:
-        if case.get("nonconvergence_check"):
-            initial = build_initial(suite, case)
-            got = run_driver(Path(args.driver), "moist_conversion", suite["grid"], 1.0, initial)
-            print(f"forcing {case['case_id']}: driver converged per cell "
-                  f"{got['converged_per_cell']}")
+    misses = forcing_misses(suite, Path(args.driver))
+    for line in misses:
+        print(f"FORCING {line}")
+    print(f"forcing misses {len(misses)}")
     print(f"gate violations {len(violations)}")
-    return 1 if failed or uncovered or violations else 0
+    return 1 if failed or uncovered or violations or misses else 0
+
+
+def refusal_clauses(suite: dict, case: dict) -> list[str]:
+    """The clauses of Controlled Spec §4 this case's inputs meet."""
+    grid = case_inputs(suite, case)["grid"]
+    base = suite["grid"]
+    state = build_initial(suite, case)
+    out = []
+    if grid["ks"] < 1:
+        out.append("ks < 1")
+    if grid["ke"] > grid["ka"]:
+        out.append("ke > ka")
+    if grid["ks"] > grid["ke"]:
+        out.append("ks > ke")
+    if case["operation"] == "adjustment" and case["dt"] <= 0:
+        out.append("dt <= 0")
+    positive = {"dens2qsat_liq": ("temp", "dens"),
+                "saturation_adjustment": ("temp", "dens", "cptot", "cvtot"),
+                "adjustment": ("temp", "dens", "cptot", "cvtot"),
+                "terminal_velocity": ("dens", "refstate_dens")}[case["operation"]]
+    signed = ("qv", "qc", "qr") if case["operation"] == "adjustment" else ()
+    for k in range(base["ks"] - 1, base["ke"]):
+        out += [f"{n}({k + 1}) <= 0" for n in positive if state[n][k] <= 0]
+        out += [f"{n}({k + 1}) < 0" for n in signed if state[n][k] < 0]
+    return out
+
+
+def forcing_misses(suite: dict, driver: Path) -> list[str]:
+    """Every case whose inputs do not force what its `expected` states."""
+    misses = []
+    for case in suite["cases"]:
+        clauses = refusal_clauses(suite, case)
+        if case.get("nonconvergence_check"):
+            if clauses:
+                misses.append(f"{case['case_id']}: also meets {clauses}")
+            try:
+                run_driver(driver, case["operation"], suite["grid"], case.get("dt", 1.0),
+                           build_initial(suite, case))
+                misses.append(f"{case['case_id']}: the original did not abort")
+            except RuntimeError as exc:
+                if not re.search(r"not converged!\s+4\s", str(exc)):
+                    misses.append(f"{case['case_id']}: aborted elsewhere: {str(exc)[:160]}")
+        elif refused(case) and not clauses:
+            misses.append(f"{case['case_id']}: xfail, and no refusal clause holds")
+        elif not refused(case) and clauses:
+            misses.append(f"{case['case_id']}: pass, and {clauses} holds")
+    return misses
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
