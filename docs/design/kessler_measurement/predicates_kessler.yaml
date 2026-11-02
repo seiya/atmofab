@@ -157,13 +157,13 @@ tests:
     judgments:
     - {quantity: scaling, binds: [mask], expr: 'maxabs(interior * final.vterm_r / sum(first * final.vterm_r) - interior * sum(first * final.refstate_dens) / final.refstate_dens)', op: le, value: 1e-12}
   l0_terminal_velocity_cloud_zero_pass:
-    cases: [l0_tv_formula, l0_tv_refstate, l0_tv_zerosw]
+    cases: [l0_tv_formula, l0_tv_refstate, l0_tv_zerosw, l0_tv_mixed]
     guard: 1
     cross_target: [vterm_c]
     judgments:
     - {quantity: vterm_c_zero, expr: 'maxabs(final.vterm_c)', op: eq, value: 0.0}
   l0_tv_halo_untouched_pass:
-    cases: [l0_tv_formula, l0_tv_refstate, l0_tv_zerosw]
+    cases: [l0_tv_formula, l0_tv_refstate, l0_tv_zerosw, l0_tv_mixed]
     guard: 1
     cross_target: [vterm_r]
     judgments:
@@ -223,3 +223,9 @@ tests:
     cross_target: [temp, qv, qc, qr, cptot, cvtot]
     judgments:
     - {quantity: dqr_rel, binds: [mask, const, diffs, rates], bind: {ref: '(dq_auto + dq_accr) * inputs.dt'}, expr: 'maxabs(interior * (dr - ref)) / maxabs(interior * ref)', op: le, value: 1.0e-12}
+  l0_terminal_velocity_mixed_column_pass:
+    cases: [l0_tv_mixed]
+    guard: 1
+    cross_target: [vterm_r]
+    judgments:
+    - {quantity: vterm_r_rel, binds: [mask], bind: {qr: 'final.rhoq_r / final.dens', z: '1 - min(1, floor(qr / 1e-12))', ref: '-36.34 * (final.dens * (qr + z)) ** 0.1364 * sum(first * final.refstate_dens) / final.refstate_dens * (1 - z)'}, expr: 'maxabs(interior * (final.vterm_r - ref)) / maxabs(interior * ref)', op: le, value: 1.0e-12}
