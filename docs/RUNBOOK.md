@@ -425,7 +425,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 7. **Validate**: per target `node`, the deterministic `Validate.pre_judge` substep checks dependency-DAG readiness, the `Validate.execute` substep runs the binary and generates primary evidence, the `Validate.judge` substep reviews the evidence the host seeds into its tree and finalizes the `verdict`, and the deterministic `Validate.post_judge` substep runs the `--stage pre_judge` gate and classifies violation severity.
    - `Validate.execute` runs the `runner` with the build-runtime library's `run_program`, and always includes `spec.ir.yaml.case` in the `run_program` execution command.
    - `Validate.execute` saves the primary evidence for judgment recomputation into `runs/<run_id>/<node_key_safe>/raw/`. The required condition of the `raw` composition uses `spec.ir.yaml.io_contract.raw_requirements.required_evidence` as the canonical source.
-   - `Validate.judge` reconciles `diagnostics` against the `raw` primary evidence — since Z3 (issue #169) through the host-computed excerpt of it, never by reading `raw/` itself — and a mismatch is a `Validate.judge fail`. In addition to the fixed-script check, it performs an `LLM` semantic check, and makes `decision=pass` of `semantic_review.json` a required condition.
+   - `Validate.judge` reconciles the host's `verdict.json` records against the `raw` primary evidence — since Z3 (issue #169) through the host-computed excerpt of it, never by reading `raw/` itself — and a mismatch is a `Validate.judge fail`. In addition to the fixed-script check, it performs an `LLM` semantic check, and makes `decision=pass` of `semantic_review.json` a required condition.
    - The judgment including dependencies is output to `aggregate_verdict.json`. When an immediate dependency `node` is `fail` or `blocked`, the upper `node` ends as `blocked`.
 8. **Forced stop**: when the relevant phase cannot proceed due to an input shortage or a preceding-stage artifact shortage, stop the relevant phase with `fail`. It must not proceed with estimated completion or artificial file generation.
 9. **Recording**: save `spec_version` / `test_profile_version` / `case_hash` / `git_sha`.
@@ -448,7 +448,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 | Generate verification fail (implementation inconsistent with the IR) | `Generate` (and `Compile` if the IR is wrong) |
 | Build failure (compile error) | `Generate` (deterministically go back to Generate) |
 | Physics fail (the execution result is a judgment failure) | one of `Generate` / `Compile` / `Spec` — specify the detail in `judge.findings` |
-| Validate judgment fail (divergence of the primary evidence and diagnostics) | `Generate` (code-quality problem) |
+| Validate judgment fail (a host predicate fails, or the judge finds the evidence does not support the verdict) | `Generate` (code-quality problem) |
 | `semantic_review.decision=fail` (implementation differs from the IR's intent) | `Generate` |
 | `semantic_review.decision=fail` (the IR itself differs from the spec's intent) | `Compile` |
 | Dependency integration fail (missing dependency `operation` call) | `Generate` or `Build` |
@@ -668,7 +668,7 @@ python3 tools/run_workflow.py --resume build
 - The required composition of `raw` matches `spec.ir.yaml.io_contract.raw_requirements.required_evidence`.
 - In the metadata of the `LLM`-using phase, `verification_status` is `pass`.
 - In a trial with `debug_mode=false`, no failed-attempt artifacts are saved.
-- `diagnostics` / `perf` / `verdict` all come out.
+- `perf` / `verdict` and the state snapshots all come out.
 - `aggregate_verdict` and `summary.dependency_summary` are consistent with `spec.ir.yaml.dependency`.
 - The `node_key` set of the `dependency_graph.json` sidecar's `all_nodes` matches the `node` set of `workspace/ir` / `workspace/pipelines`.
 - `orchestration_meta.json` / `agent_graph.json` / `agent_runs.jsonl` exist in `workspace/orchestrations/<orchestration_id>/`.
@@ -680,7 +680,7 @@ python3 tools/run_workflow.py --resume build
 - From the execution evidence, it can be confirmed that it is an independent `agent` execution of `orchestration -> step` or `orchestration -> substep`, not a batch `script` execution.
 - In a trial without an explicit specification, no reference or viewing of existing workflow output has been performed.
 - `lineage.json` is separated per `node`, and a single `lineage` does not mix multiple `node_key`.
-- The `Validate.judge` input is limited to the `run_program` execution record and `diagnostics` / `perf` of the same `run_id`.
+- The `Validate.judge` input is limited to the `run_program` execution record and `verdict` / `perf` of the same `run_id`, with the excerpt of its `raw` evidence.
 - A `node` that has dependencies calls the dependency `operation` resolved by `spec.ir.yaml.dependency`.
 - A function equivalent to a dependency `operation` is not re-implemented in the depending `node`.
 - The implementation body of a dependency `node` is not copied, relocated, or redefined in the upper `node`'s `source/<source_id>/src/`.

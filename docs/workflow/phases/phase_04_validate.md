@@ -153,7 +153,7 @@ When `Validate.judge` detects a failure, it records the following keys in `seman
 | field | range | meaning |
 |---|---|---|
 | `attribution` | `code` / `ir` / `spec` / `evidence` | the attribution category of the failure |
-| `evidence_refs[]` | path list | references to the raw / diagnostics / source / IR used as the basis |
+| `evidence_refs[]` | path list | references to the raw / verdict / source / IR used as the basis |
 | `confidence` | `high` / `medium` / `low` | the judge's confidence |
 | `description` | text | a natural-language explanation of the basis (for review) |
 

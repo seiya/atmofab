@@ -93,7 +93,7 @@ The prompt-prefix-caching item of R6 is the default behavior here: the fixed con
 The current threat model (a leaf forging evidence, writing outside scope, deriving rules from validator code, tampering with audit logs) exists because the untrusted actor holds a shell inside the repository. Under A2 the untrusted actor holds nothing:
 
 - It cannot write: the host writes all artifacts.
-- It cannot forge the evidence channel: `diagnostics.json` / `perf.json` / snapshots are produced only by host execution of the built binary under the host-rendered runner.
+- It cannot forge the evidence channel: `perf.json` / snapshots are produced only by host execution of the built binary under the host-rendered runner.
 - It cannot read out of scope: it reads only what the host inlined.
 - Audit is total by construction: every prompt and response is recorded at the gateway.
 
