@@ -615,8 +615,9 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # pattern). `post_execute_violation` and `quality_check_mismatch` stay on the Generate route even
 # on an M3c node: the renderer captures every declared variable for every case straight from
 # the checks module's bound storage, so the key set and shapes are host-fixed by the IR, but every
-# VALUE comes from the leaf's sources — a trivial (all-zero) state or a NaN is exactly what a warm
-# repair fixes.
+# VALUE comes from the leaf's sources — a placeholder or a per-test status that differs between
+# shapes is what a warm repair fixes. An all-zero state trips neither category since issue #582
+# deleted the all-zero gate: it reaches the predicates, and a test that demands a value fails there.
 HOST_RENDERED_RUNNER_UNREPAIRABLE: frozenset[str] = frozenset({"snapshot_deliverable_gap"})
 
 # --- Z2 pure-leaf CodegenBundle producer routing (M-C) -------------------------
