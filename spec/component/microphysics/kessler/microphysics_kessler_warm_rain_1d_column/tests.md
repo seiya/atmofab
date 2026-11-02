@@ -25,7 +25,7 @@ The block below is the suite's whole input. Every case has `ka=8`, and every cas
 - `dt` is the case's time step.
 - `grid`, on an index-range case, replaces the `ks`, `ke` passed to the `operation` after the state is built with `ks=2`, `ke=7`.
 - The literal `qv` cells of `l0_autoconv_below`, `l0_autoconv_above` and `l0_accretion` are $q_s$ of the dependency's Controlled Spec §3 at the case's `temp` and `dens`, computed once in double precision by that closed form and printed to 17 significant digits. The kernel's own $q_s$ is a second evaluation of the same form, so such a cell is saturated to within a few units in the last place, and the saturation step is a near no-op, not an exact one.
-- `parameters.qsat_ratio`, on `l0_nonconverged`, states the multiple of $q_s$ at `temp=277.8`, `dens=1` that the literal `qv` of cell 4 is; it is the condition the case's `xfail_condition` reads.
+- `l0_nonconverged` has at cell 4 the literal `qv` of `0.66357706133254214`, at `temp=277.8`, `dens=1`, `qc=0`. Non-convergence is chaotic in `qv`: at this `temp` and `dens` the multiples of $q_s$ that end the iteration without a finite `temp` include 65 to 67, 90, 100 to 120 and 150, and those that converge include 68 to 80, 95, 130 and 200 or more, so no threshold on `qv` states it. The case is this literal; it stayed non-converged in 20,000 trials with `temp` jittered by `1e-14`, `qv` by `4e-16` and $q_s$ by `1e-15`, all relative.
 
 No case sits on the boundary between the two branches of the saturation step, where a change of the last bit changes the branch: at every interior cell of every `pass` case, $q_\Sigma$ and $q_s$ at the virtual temperature differ by more than `10%` of $q_s$.
 - `l0_tv_mixed` has `qr = rhoq_r/dens` of `5e-13`, `2e-12`, `5e-13`, `2e-12`, `1e-9` and `1e-3`, with `dens` different from `1`, so that `qr` and `rhoq_r` fall on opposite sides of `1e-12` in cells 2 and 3.
@@ -215,7 +215,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_nonconverged`
-  - `xfail_condition`: `qsat_ratio >= 100`
+  - `xfail_condition`: `qv(4) == 0.66357706133254214`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
   - `judgment`: `guard_pass` is `0`, and each input-updated array holds its input at every cell, as `l0_dt_nonpositive_xfail`, although the rates and the saturation step of the column's other cells, which hold `qc > 0` and `qr > 0`, have changed them before the refusal. Cell 4, with `qc = qr = 0`, does not converge.
 - `test_id`: `l0_tv_bad_range_xfail`

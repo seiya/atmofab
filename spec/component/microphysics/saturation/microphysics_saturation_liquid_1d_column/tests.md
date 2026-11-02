@@ -23,7 +23,7 @@ The block below is the suite's whole input. Every case has `ka=8`, and every cas
 - `overrides` set one cell after every other rule, and are what force the guard cases.
 - `operation` names the published `operation` a case calls and `expected` the outcome §6 states. `refusal` states the flags a refused case's run leaves: `guard_pass = 0` where it is empty, and otherwise the values it lists. `nonconvergence_check` marks the case whose cell 4 does not converge.
 - `grid`, on an index-range case, replaces the `ks`, `ke` passed to the `operation` after the state is built with `ks=2`, `ke=7`.
-- `parameters.qsat_ratio`, on `l0_satadj_nonconverged`, states the multiple of $q_s$ at `temp=277.8`, `dens=1` that the literal `qv` of cell 4 is; it is the condition the case's `xfail_condition` reads. The literal is $q_s(277.8,1)$ of Controlled Spec §3 in double precision, multiplied by `qsat_ratio`.
+- `l0_satadj_nonconverged` has at cell 4 the literal `qv` of `0.66357706133254214`, at `temp=277.8`, `dens=1`, `qc=0`. Non-convergence is chaotic in `qv`: at this `temp` and `dens` the multiples of $q_s$ that end the iteration without a finite `temp` include 65 to 67, 90, 100 to 120 and 150, and those that converge include 68 to 80, 95, 130 and 200 or more, so no threshold on `qv` states it. The case is this literal; it stayed non-converged in 20,000 trials with `temp` jittered by `1e-14`, `qv` by `4e-16` and $q_s$ by `1e-15`, all relative.
 
 No case sits on the boundary between the two branches of Controlled Spec §3, where a change of the last bit changes the branch: at every interior cell of every `pass` case, $q_\Sigma$ and $q_s$ at the virtual temperature differ by more than `50%` of $q_s$.
 
@@ -52,7 +52,7 @@ cases:
 - {case_id: l0_satadj_temp_nonpositive, operation: saturation_adjustment, expected: xfail, refusal: {}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}, overrides: [{var: temp, k: 4, value: -1.0}]}
 - {case_id: l0_satadj_cvtot_nonpositive, operation: saturation_adjustment, expected: xfail, refusal: {}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}, overrides: [{var: cvtot, k: 4, value: 0.0}]}
 - {case_id: l0_satadj_bad_range, operation: saturation_adjustment, expected: xfail, refusal: {}, grid: {ks: 7, ke: 2}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}}
-- {case_id: l0_satadj_nonconverged, operation: saturation_adjustment, expected: xfail, refusal: {guard_pass: 1.0, converged: 0.0}, nonconvergence_check: true, parameters: {qsat_ratio: 100.0}, columns: {temp: [277.8, 0.0], dens: [1.0, 0.0], qv: {cells: [0.001, 0.001, 0.66357706133254214, 0.009, 0.001, 0.012]}, qc: {cells: [0.0, 5.0e-4, 0.0, 1.0e-3, 5.0e-4, 1.0e-3]}}}
+- {case_id: l0_satadj_nonconverged, operation: saturation_adjustment, expected: xfail, refusal: {guard_pass: 1.0, converged: 0.0}, nonconvergence_check: true, columns: {temp: [277.8, 0.0], dens: [1.0, 0.0], qv: {cells: [0.001, 0.001, 0.66357706133254214, 0.009, 0.001, 0.012]}, qc: {cells: [0.0, 5.0e-4, 0.0, 1.0e-3, 5.0e-4, 1.0e-3]}}}
 - {case_id: l0_satadj_branch, operation: saturation_adjustment, expected: pass, columns: {temp: [285.0, 0.0], dens: [1.0, 0.0], qv: {cells: [0.0095, 0.0095, 0.0095, 0.0100, 0.0102, 0.0104]}, qc: {cells: [5.0e-4, 6.0e-4, 7.0e-4, 1.5e-3, 1.5e-3, 1.5e-3]}}}
 - {case_id: l0_satadj_slow, operation: saturation_adjustment, expected: pass, columns: {temp: {cells: [243.8, 243.8, 243.8, 294.848, 289.937, 290.097]}, dens: {cells: [0.799, 0.799, 0.799, 1.148, 1.224, 1.039]}, qv: {cells: [0.0185, 0.0185, 0.0185, 0.62658, 0.45295, 0.54852]}, qc: {cells: [0.006, 0.006, 0.006, 0.0, 0.0, 0.0]}}}
 - {case_id: l0_satadj_limit, operation: saturation_adjustment, expected: xfail, refusal: {guard_pass: 1.0, converged: 0.0}, nonconvergence_check: true, columns: {temp: {cells: [280.0, 280.0, 279.2327, 280.0, 280.0, 280.0]}, dens: {cells: [1.0, 1.0, 0.88584, 1.0, 1.0, 1.0]}, qv: {cells: [0.001, 0.001, 0.45708, 0.001, 0.001, 0.001]}, qc: [0.0, 0.0]}}
@@ -191,7 +191,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `operation_id`: `microphysics_saturation_liquid_1d_column__saturation_adjustment`
   - `expected_outcome`: `xfail`
   - `case`: `l0_satadj_nonconverged`
-  - `xfail_condition`: `qsat_ratio >= 100`
+  - `xfail_condition`: `qv(4) == 0.66357706133254214`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'converged'`
   - `judgment`: `guard_pass` is `1` and `converged` is `0`. Cell 4 does not converge, and it holds its inputs: with `at4` the mask of cell 4, `maxabs(at4*(final - initial))` is `== 0` for each of `temp`, `qv`, `qc`, `cptot` and `cvtot`, and `maxabs(at4*rhoe_d)` is `== 0`. The cells on either side of it are still evaluated, so the state changes there: cells 3 and 6 are subsaturated with `qc > 0` and end with `qc == 0` (`maxabs(m36*final.qc)`, `m36` their mask); cells 5 and 7 are supersaturated and end saturated, `max(m57*abs(final.qv - qs_final)/(2e-6*dqs_final))` is `<= 1` and `min(m57*final.qc + (1 - m57))` is `> 0`; over every interior cell but cell 4, total water is conserved to `1e-15`. Every published value is finite.
 - `test_id`: `l0_satadj_limit_xfail`
