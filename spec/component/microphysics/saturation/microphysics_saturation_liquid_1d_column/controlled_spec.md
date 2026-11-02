@@ -95,7 +95,7 @@ and $|\delta|<10^{-6}$ bounds it. The term $C_v^{prev}-C_v$ vanishes as the iter
 
 On invalid input `guard_pass` is false, every input-updated array holds its input value at every cell, and the output arrays and `converged` are not defined. On valid input `guard_pass` is true.
 
-A cell that is not converged (§3) is not invalid input: `guard_pass` stays true, `converged` is false, and at that cell `temp`, `qv`, `qc`, `cptot`, `cvtot` hold their input values and `rhoe_d` is `0`. The other cells follow §3. The state a caller receives is therefore finite on every path. Non-convergence is reachable and chaotic in the input: at `temp=277.8`, `dens=1`, `qc=0`, `qv=0.66357706133254214` the iteration ends without a finite temperature, while neighbouring and larger values of `qv` converge.
+A cell that is not converged (§3) is not invalid input: `guard_pass` stays true, `converged` is false, and at that cell `temp`, `qv`, `qc`, `cptot`, `cvtot` hold their input values and `rhoe_d` is `0`. The other cells follow §3. The state a caller receives is therefore finite on every path. Non-convergence is reachable and chaotic in the input: at `temp=277.8`, `dens=1`, `qc=0`, `qv=0.66357706133254214` the iteration ends without a finite temperature, and whether a larger or smaller `qv` converges is not monotone in `qv` (`tests.md` §2 of this node lists measured values).
 
 ## 5. Public API and compatibility
 The published `operation_id`s are exactly: `microphysics_saturation_liquid_1d_column__dens2qsat_liq` and `microphysics_saturation_liquid_1d_column__saturation_adjustment`.
