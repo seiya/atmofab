@@ -6,6 +6,9 @@ $(error SCALE_ROOT is not set: pass the scale-dev tree, see README.md)
 endif
 BUILD ?= build
 FC := gfortran
+# gfortran's module-directory flag; ifort and ifx ignore -J and leave .mod files in the working
+# directory, so they take MODFLAG="-module " and FFLAGS without -ffree-line-length-none.
+MODFLAG ?= -J
 FFLAGS ?= -O2 -cpp -ffree-line-length-none
 SELF := $(dir $(lastword $(MAKEFILE_LIST)))
 
@@ -45,7 +48,7 @@ $(BUILD)/driver: $(OBJECTS)
 # One serial rule per source: each object needs every module before it in `SOURCES`.
 define COMPILE_RULE
 $(BUILD)/$(notdir $(1:.F90=.o)): $(1) $(2) | $(BUILD)
-	$(FC) $(FFLAGS) -I$(SCALE_ROOT)/scalelib/include -J$(BUILD) -c $(1) -o $$@
+	$(FC) $(FFLAGS) -I$(SCALE_ROOT)/scalelib/include $(MODFLAG)$(BUILD) -c $(1) -o $$@
 endef
 PREVIOUS :=
 $(foreach src,$(SOURCES),$(eval $(call COMPILE_RULE,$(src),$(PREVIOUS)))$(eval PREVIOUS += $(BUILD)/$(notdir $(src:.F90=.o))))

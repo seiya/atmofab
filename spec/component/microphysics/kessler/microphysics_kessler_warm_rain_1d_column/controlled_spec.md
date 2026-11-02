@@ -21,7 +21,8 @@ Out of scope, each a recorded difference from that source or a part of it not ta
 - The array form: the source's `(KA,IA,JA)` arrays and tracer dimension are rank-1 columns `qv`, `qc`, `qr`, `rhoq_c`, `rhoq_r`, `vterm_c`, `vterm_r` here, and its constants, read from module state, are arguments (§2).
 - The refusal of negative moisture and of non-positive heat capacities (§4), which the source does not make. A driver that steps this `component` must fix negative moisture before the call, as the source's driver does: the output of one call can hold a value of order `-1e-19` in a limited variable, and the next call refuses it.
 - A halo cell of an output array: the source leaves it undefined, and this `component` writes `0` there (§2).
-- Single precision, and any setup or module state: every constant is an argument (§2).
+- Single precision, which is not specified or measured here, and any setup or module state: every constant is an argument (§2).
+- The log lines and the profiling calls of the source.
 
 ## 2. input/output contract
 A column has `ka` cells numbered $k=1..ka$. The interior cells are $k=ks..ke$; the other cells are halo cells, which no `operation` reads. Every array argument has rank 1 and extent `ka`.
