@@ -12585,7 +12585,7 @@ end program shallow_water2d_runner
             if "/infrastructure/" in f:
                 self.assertEqual(judged, set(), f)
                 continue
-            passes, current = set(), None
+            passes, classified, current = set(), set(), None
             for raw in text.splitlines():
                 m = (vps.TEST_ID_HEADING_PATTERN.match(raw.strip())
                      or vps.TEST_ID_BULLET_PATTERN.match(raw.strip()))
@@ -12595,7 +12595,13 @@ end program shallow_water2d_runner
                     current = None
                 elif current and "`expected_outcome`: `pass`" in raw:
                     passes.add(current)
-            self.assertEqual(set(ids) >= passes and len(passes) > 0, True, f)
+                    classified.add(current)
+                elif current and ("`expected_outcome`: `xfail`" in raw
+                                  or "`expected_outcome`: `fail`" in raw):
+                    classified.add(current)
+            # An outcome in another spelling must not leave its test outside `passes` unnoticed.
+            self.assertEqual(set(ids), classified, f)
+            self.assertGreater(len(passes), 0, f)
             self.assertEqual(judged, passes, f)
             judged_total += len(judged)
         self.assertEqual(len(files), 20)
