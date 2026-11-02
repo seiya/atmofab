@@ -23372,6 +23372,10 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertEqual(doc["shapes"][0]["status"], "pass")
         self.assertTrue(all(doc["checks"].values()))
         lines = wc.Conductor._quality_check_failure_lines(self.node)
+        # Round 3 D6: the excerpt names the test that disagrees, with both statuses.
+        self.assertTrue(any("shape threads_2" in ln and "verdict_match is false" in ln
+                            and "t_s: fail, the serial reference pass" in ln and "t_h" not in ln
+                            for ln in wc.Conductor._quality_check_failure_lines(self.node)))
         self.assertTrue(any("shape threads_2" in ln and "verdict_match is false" in ln
                             for ln in lines), lines)
 

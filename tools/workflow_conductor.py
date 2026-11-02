@@ -495,6 +495,19 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _shape_test_disagreement(row: Mapping[str, Any], doc: Mapping[str, Any]) -> str:
+    """The tests on which a shape's host verdict differs from the serial reference's."""
+    def statuses(verdict: Any) -> dict[str, Any]:
+        per_test = verdict.get("per_test") if isinstance(verdict, dict) else None
+        return per_test if isinstance(per_test, dict) else {}
+    comparison = doc.get("comparison") if isinstance(doc.get("comparison"), dict) else {}
+    candidate = comparison.get("candidate") if isinstance(comparison.get("candidate"), dict) else {}
+    own, reference = statuses(row.get("verdict")), statuses(candidate.get("verdict"))
+    differ = [f"{t}: {own.get(t)}, the serial reference {reference.get(t)}"
+              for t in sorted(set(own) | set(reference)) if own.get(t) != reference.get(t)]
+    return "; " + "; ".join(differ) if differ else ""
+
+
 def _cross_target_disagreement_report(cross: Mapping[str, Any]) -> list[str]:
     """One line per unsatisfied evaluation of a cross-target agreement (issue #383; the
     `cross_target` document `check-phase-certified` reports): the quantity, the expression,
@@ -13020,6 +13033,8 @@ class Conductor:
                                else "against the serial reference (one process, one thread)")
                     lines.append(f"[execute fail: quality_check] {where}: {key} is false "
                                  f"{against}"
+                                 + (_shape_test_disagreement(row, doc)
+                                    if key == "verdict_match" else "")
                                  + (f"; harness reported mpi_ranks="
                                     f"{row.get('observed_mpi_ranks')!r}, process_grid="
                                     f"{row.get('observed_process_grid')!r}"

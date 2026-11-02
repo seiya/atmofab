@@ -1597,7 +1597,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # `tools/host_execution.py` (the `perf_parallelism` docstring).
     "execute-12": "f83edc25a1fdb1b31c2b275ea41b7ed3ceee3cb6f24e7d11869e70541e35f182",
     # execute-13 (issue #582): the judging half of the checks module is retired.
-    "execute-13": "452ba8d23fb518eb47e8456bd1a7de3cbe8aad88745beb68ee2263daa76964ca",
+    "execute-13": "bc1e143ed29bd5f116810e5ac2c1b2c6e2072c1cf0c806b9d811cb05c11c954b",
     # Re-pinned, behaviour-preserving: the `tools/remote_execution.py` docstring states the
     # loader's two exit codes as measured, no longer that a launch prefix replaces the 127.
     # (Measured by diffing `execute_tuple()` against fb25d422's: that row and no other.) The digest
