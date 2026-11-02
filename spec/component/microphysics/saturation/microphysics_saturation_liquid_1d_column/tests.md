@@ -90,7 +90,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_qsat_ref`, where `temp = tem00` so that the saturation pressure is `psat0` exactly, `maxabs(interior*(qsat - psat0/(dens*rvap*tem00))) / maxabs(interior*psat0/(dens*rvap*tem00))` is `<= 1e-12` (`checks.qsat_reference`). The cross-target judgment is applied: `cross_target_state_agreement` over `qsat` is `<= 1e-12`.
+  - `judgment`: on `l0_qsat_ref`, where `temp = tem00` so that the saturation pressure is `psat0` exactly, with `ref = psat0/(dens*rvap*tem00)`, `maxabs(interior*(qsat - ref)) / maxabs(interior*ref)` is `<= 1e-12` (`checks.qsat_reference`). The cross-target judgment is applied: `cross_target_state_agreement` over `qsat` is `<= 1e-12`.
 - `test_id`: `l0_qsat_clausius_clapeyron_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_saturation_liquid_1d_column__dens2qsat_liq`

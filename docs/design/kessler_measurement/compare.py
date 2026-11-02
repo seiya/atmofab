@@ -55,8 +55,8 @@ DEVIATIONS = [
     "double precision only; the original's single-precision build is not specified or measured "
     "(§1 of both nodes)",
     "`_setup` and the four driver-tier procedures are not taken (Kessler §1)",
-    "log lines and profiling calls are omitted, and the history call is the `pcsat` output "
-    "(§1 of both nodes)",
+    "log lines and profiling calls are omitted (§1 of both nodes); the history call is the "
+    "`pcsat` output (Kessler §1)",
     "a halo cell of an output is written with 0 (§2 of both nodes)",
     "saturation guards: index range, temp, dens, cptot, cvtot; the original has none (saturation §4)",
     "Kessler guards: index range, dt, negative qv / qc / qr, cptot, cvtot; terminal-velocity guards: "

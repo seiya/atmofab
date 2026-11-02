@@ -121,7 +121,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_eps_floor`, where `qs` is below `eps` at every interior cell (`temp` near `108`, `qs` near `3e-17`) so that the floor decides the saturation ratio, with `ref = dq_evap*dt` and `dq_evap` over `max(qs, eps)`: `maxabs(interior*(dv - ref)) / maxabs(interior*ref)` is `<= 1e-12` (`checks.eps_floor`). The saturation ratio is at most `0.0045` with the floor, where `qv/qs` alone reaches `0.03`. The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv` and `qr` is `<= 1e-12`.
+  - `judgment`: on `l0_eps_floor`, where `qs` is below `eps` at every interior cell (`temp` near `108`, `qs` from `3.7e-17` to `6.3e-17`) so that the floor decides the saturation ratio, with `ref = dq_evap*dt` and `dq_evap` over `max(qs, eps)`: `maxabs(interior*(dv - ref)) / maxabs(interior*ref)` is `<= 1e-12` (`checks.eps_floor`). The saturation ratio is at most `0.0045` with the floor, where `qv/qs` alone reaches `0.027`. The cross-target judgment is applied: `cross_target_state_agreement` over each of `temp`, `qv` and `qr` is `<= 1e-12`.
 - `test_id`: `l0_total_water_and_energy_pass`
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__adjustment`
