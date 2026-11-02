@@ -27,7 +27,7 @@ Out of scope, each a recorded difference from that source or a part of it not ta
 ## 2. input/output contract
 A column has `ka` cells numbered $k=1..ka$. The interior cells are $k=ks..ke$; the other cells are halo cells, which no `operation` reads. Every array argument has rank 1 and extent `ka`.
 
-The constants are arguments of `__adjustment`, with no default value: `rvap`, `cpvap`, `cl`, `lhv0`, `psat0`, `tem00`, whose meanings and units are those of the dependency `microphysics_saturation_liquid_1d_column` (its Controlled Spec §2); `eps`, the floor of the saturation mixing ratio in the saturation ratio (dimensionless); `dwatr`, the density of liquid water (`kg/m3`).
+The constants are arguments of `__adjustment`, with no default value: `rvap`, `cpvap`, `cl`, `lhv0`, `psat0`, `tem00`, respectively the specific gas constant of water vapour (`J/kg/K`), the specific heat of water vapour at constant pressure (`J/kg/K`), the specific heat of liquid water (`J/kg/K`), the latent heat of vaporization at `tem00` (`J/kg`), the saturation vapour pressure at `tem00` (`Pa`) and the reference temperature (`K`); `eps`, the floor of the saturation mixing ratio in the saturation ratio (dimensionless); `dwatr`, the density of liquid water (`kg/m3`).
 
 **`adjustment`.** Inputs: `ka`, `ks`, `ke`, time step `dt` (`s`), density `dens` (`kg/m3`), pressure `pres` (`Pa`), the constants. Inputs updated in place: temperature `temp` (`K`), `qv`, `qc`, `qr` (`kg/kg`), total heat capacities `cptot`, `cvtot` (`J/kg/K`). Outputs: the tendency of the density of internal energy `rhoe_t` (`J/m3/s`), the number of evaporated cloud droplets `evaporate` (`1/m3/s`), the cloud-water production of the saturation step `pcsat` (`kg/kg/s`), and the input guard `guard_pass` (§4). The published arguments are exactly, in this order: `ka`, `ks`, `ke`, `dt`, `dens`, `pres`, `temp`, `qv`, `qc`, `qr`, `cptot`, `cvtot`, `rvap`, `cpvap`, `cl`, `lhv0`, `psat0`, `tem00`, `eps`, `dwatr`, `rhoe_t`, `evaporate`, `pcsat`, `guard_pass`.
 
@@ -35,7 +35,7 @@ The constants are arguments of `__adjustment`, with no default value: `rvap`, `c
 
 **Halo cells.** On a call that `guard_pass` does not refuse, an input-updated array keeps its input value at every halo cell, and an output array holds `0` at every halo cell.
 
-**Dependency.** `__adjustment` calls `microphysics_saturation_liquid_1d_column__dens2qsat_liq` and `microphysics_saturation_liquid_1d_column__saturation_adjustment`, and uses the dependency's definition of the derived constants $c_{vv}=\mathtt{cpvap}-\mathtt{rvap}$ and $L_{00}=\mathtt{lhv0}-(\mathtt{cpvap}-\mathtt{cl})\,\mathtt{tem00}$.
+**Dependency.** `__adjustment` calls `microphysics_saturation_liquid_1d_column__dens2qsat_liq` and `microphysics_saturation_liquid_1d_column__saturation_adjustment`, and passes each the six constants above unchanged. The derived constants are $c_{vv}=\mathtt{cpvap}-\mathtt{rvap}$ and $L_{00}=\mathtt{lhv0}-(\mathtt{cpvap}-\mathtt{cl})\,\mathtt{tem00}$. `__dens2qsat_liq` returns the saturation mixing ratio of each interior cell at the `temp` and `dens` it is given, and `guard_pass`. `__saturation_adjustment` updates `temp`, `qv`, `qc`, `cptot`, `cvtot` of the interior cells in place at the given `dens`, and returns `rhoe_d`, the density of internal energy released (`J/m3`), `converged` and `guard_pass`, with `rhoe_d` $=-L_{00}\,\Delta q_v\,\rho$ over its own change $\Delta q_v$ of `qv`.
 
 ## 3. Operation definition
 The published `operation`s are `microphysics_kessler_warm_rain_1d_column__adjustment` and `microphysics_kessler_warm_rain_1d_column__terminal_velocity`. Both are pointwise in $k$, except that `__terminal_velocity` reads `refstate_dens(ks)` in every cell.
@@ -78,7 +78,7 @@ $$
 \mathtt{vterm\_r}(k)=-36.34\,\left(\mathtt{dens}(k)(q_r+z)\right)^{0.1364}\,\frac{\mathtt{refstate\_dens}(ks)}{\mathtt{refstate\_dens}(k)}\,(1-z).
 $$
 
-**Conservation.** Where the $\dot q_v$ limiter does not bind, step 3 conserves $q_v+q_c+q_r$ and the moist internal energy $TC_v+q_vL_{00}$, and `__saturation_adjustment` conserves both as its Controlled Spec §3 states. So `rhoe_t`$\,\mathtt{dt}=-\rho L_{00}(q_v^{final}-q_v^{input})$. Where the $\dot q_v$ limiter binds, total water is not conserved, as in the source.
+**Conservation.** Where the $\dot q_v$ limiter does not bind, step 3 conserves $q_v+q_c+q_r$ and the moist internal energy $TC_v+q_vL_{00}$, and `__saturation_adjustment` conserves $q_v+q_c$ and conserves $TC_v+q_vL_{00}$ to within its convergence threshold of `1e-6 K`. So `rhoe_t`$\,\mathtt{dt}=-\rho L_{00}(q_v^{final}-q_v^{input})$. Where the $\dot q_v$ limiter binds, total water is not conserved, as in the source.
 
 **Not defined here.** The CFL number is not defined, because the `operation`s have no transport. A column admits no spatial symmetry of the scheme: `__adjustment` is pointwise, and `__terminal_velocity` couples cells only through the reference level $ks$, so a translation with a translated reference profile gives the same result translated.
 
