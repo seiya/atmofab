@@ -23,10 +23,15 @@ definition states in the failure direction.
 
 ``evaluate_verdict`` re-checks, on the records it is handed, what the Compile gate states:
 a record ranges over its test's ``target_cases``; every test holds at least one record that is not
-cross-target, and those records value the state of every target case; and a record reading a ``source: reported`` snapshot variable stands beside a record
-of the same quantity that reads ``source: operation`` state, and no reported variable, over the
-same cases (`tools.primary_evidence.reported_read_violations`). A kernel's report of its own
-run-wide extremum therefore never judges a test alone.
+cross-target, and those records value the state of every target case; a record reading a
+``source: reported`` snapshot variable stands beside a record of the same quantity that reads
+``source: operation`` state, and no reported variable, over the same cases
+(`tools.primary_evidence.reported_read_violations`); and a record reading a ``source: reference``
+variable has ``source: operation`` state read in those cases by itself or another record of the same
+quantity (`_check_reference_state`). Both rules key on the label, which the Compile leaf writes: a
+kernel's report of its own run-wide extremum never judges a test alone under a ``reported`` label,
+and the ``tests.md`` ``reported:`` line holds that label for the names it gives, not for a report
+declared under another name, which is `Compile.verify` V3 (iv)'s.
 """
 
 from __future__ import annotations
@@ -175,8 +180,9 @@ def evaluate_verdict(tests: Any, records: Any, *,
 
     A test with no record, or with only cross-target records, raises ``PredicateError``: nothing
     would judge it. So does a record of a test no entry carries, one over other cases than its
-    test's, a target case no record values, and a reported read with no state read beside it
-    (`_check_reported_pairing`).
+    test's, a target case no record values, a reported read with no state read beside it
+    (`_check_reported_pairing`), and a reference read with no state read in its cases
+    (`_check_reference_state`).
 
     A CROSS-TARGET record (`is_cross_target_record`, issue #324) takes no part in the status.
     Since issue #383 the verdict evaluates no comparison: every cross-target record it is handed

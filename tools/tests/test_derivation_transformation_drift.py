@@ -1786,7 +1786,7 @@ PINNED_VERDICT: dict[str, str] = {
     # Round 3: a docstring sentence that was inexact about `_predicate_scope` is deleted.
     "verdict-11": "7327cb51dfbf36f29441cf6b918275bdb2bf3b3f2be70e86228d30c6a870b96b",
     # verdict-12 (issue #582): the judging half of the checks module is retired.
-    "verdict-12": "b304027ad3000c616b8151a65c2ae65abcba40914d8fe8defb1c84fa75ea0107",
+    "verdict-12": "48cf3bbbf0da29c071cf56b0825499548fac7a975562968c86fe386e600e8702",
 }
 
 
