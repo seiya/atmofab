@@ -23671,7 +23671,7 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
 
     def test_the_harness_self_tests_own_writer_is_what_the_thread_sweep_checks(self) -> None:
         """Issue #512, round 1 of its review: the thread count `perf.json` records is obtained
-        INSIDE the harness's `__write_perf` (`harness_fortran_cpu@0.8.0` §3.2), so the harness
+        INSIDE the harness's `__write_perf` (`harness_fortran_cpu@0.9.0` §3.2), so the harness
         node's own Validate sweep runs the code every consumer records the count through. A
         self-test program built with the OpenMP backend's flags around a writer that records a
         constant fails the quality check of the harness's own run (an IR without cross-target
@@ -25538,7 +25538,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
 
     SID = "boundary_x"
     DEP = "component/dep_a@0.1.0"
-    HARNESS = "infrastructure/harness_cpp_gpu@0.2.0"
+    HARNESS = "infrastructure/harness_cpp_gpu@0.3.0"
 
     def _conductor(self, repo: Path, target: str = "cpp_gpu") -> _FakeConductor:
         from tools import target_profile as tp

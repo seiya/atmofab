@@ -834,7 +834,7 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
         if name not in doc:
             # A capture carries the variables its writer holds for this case: the
             # host-rendered runner every declared one (it `error stop`s on an unbound one), a
-            # harness self-test's own runner the case's required set. A predicate naming an absent one
+            # harness self-test's own runner every declared one too, by contract. A predicate naming an absent one
             # fails at `_capture_value`, on that predicate.
             continue
         raw = doc[name]

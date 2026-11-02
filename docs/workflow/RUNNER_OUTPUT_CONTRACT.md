@@ -14,8 +14,7 @@
 > authors the build control file and renders the runner for, over that target's harness) the
 > `runner` is **host-rendered** — the leaf authors the model and the checks module (see
 > `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly; the host authors the
-> verdict. A rendered runner calls no writer but the snapshot and performance ones, whatever
-> else the harness of its target still publishes.
+> verdict. A rendered runner calls no writer but the snapshot and performance ones.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
 > governs the runner-authoring one — the `infrastructure` self-test — and
 > `Validate.judge`. Both get it (issue #169) as the seed `runner_output_contract.md`: whole,
@@ -77,14 +76,11 @@ source; do not uniformly require a fixed minimal composition.
   `snapshot_schema.json` declaration (state variables their `shape_expr`, the
   `time_variable` its `time_shape_expr`). A case that rejects its input or
   produces no meaningful values (e.g. a `*_xfail` length-guard case) **still
-  emits every declared variable, shape-valid, and must not drop the key** — a
-  1-D var as the empty array `[]` (infers shape `[0]`, binding its extent to 0).
-  Note a bare `[]` infers as 1-D `[0]` and satisfies **only** a 1-D `shape_expr`;
-  a rank-≥2 var must instead emit a value whose JSON-inferred shape
-  matches its `shape_expr` (a nested empty such as `[[]]` infers `[1,0]`). It may
-  additionally record a guard flag.
-  - Correct (rejected length-0 guard case): `{"case_id":"l0_invalid_length_xfail","step":0,"n":0,"x":[],"invalid_rejected":true}` — declared `x` present as `[]` (1-D, extent 0).
-  - Wrong: `{"case_id":"l0_invalid_length_xfail","step":0,"invalid_rejected":true}` — drops the declared `x` → `post_execute` fails with "declared state_variables missing".
+  emits every declared variable, shape-valid, and must not drop the key**: a value
+  whose JSON shape matches its `shape_expr`, `0.0` or zeros of the declared extents
+  (the host refuses an empty array in any capture). It may additionally record a guard flag.
+  - Correct (a guard case, `x` declared `[3]`): `{"case_id":"l0_invalid_length_xfail","step":0,"x":[0.0,0.0,0.0],"invalid_rejected":true}`.
+  - Wrong: `{"case_id":"l0_invalid_length_xfail","step":0,"invalid_rejected":true}` — drops the declared `x` → `post_execute` fails with "declared state_variables missing"; and `"x":[]` — the host refuses an empty capture.
   - **No placeholder text.** `post_execute` scans every file under
     `raw/state_snapshots/` (`snapshot_schema.json` included), spaces and newlines
     removed, for `"dummy"` / `"placeholder"` / `"sample": "state_recorded"`; a hit
@@ -102,8 +98,8 @@ source; do not uniformly require a fixed minimal composition.
   does not write it, and nothing requires it to. The host pre-creates
   `raw/state_snapshots/` in the run directory of every runner, and
   `raw/state_snapshots/initial/` only for a host-rendered one, so a hand-authored
-  runner's run directory `raw/state_snapshots/` holds exactly the files it writes: a
-  self-test may check its case fan-out strictly ([issue #368](https://github.com/seiya/atmofab/issues/368)).
+  runner's run directory `raw/state_snapshots/` holds exactly the files it writes
+  ([issue #368](https://github.com/seiya/atmofab/issues/368)).
 
 ## 4. JSON serialization (UTF-8)
 

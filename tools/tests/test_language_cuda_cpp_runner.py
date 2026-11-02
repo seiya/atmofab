@@ -162,36 +162,6 @@ def _harness_stub() -> str:
           write("raw/state_snapshots/" + case_id + ".json",
                 "{\\"t\\": " + real(time) + object(values) + "}");
         }
-        void harness_cpp_gpu__write_metrics_basis(
-            const std::vector<harness_cpp_gpu__h_mb_entry>& entries, int n) {
-          std::string out = "{\\"per_test\\": [";
-          for (int k = 0; k < n; ++k) {
-            const harness_cpp_gpu__h_mb_entry& e = entries[static_cast<std::size_t>(k)];
-            out += (k > 0 ? ", " : "") + std::string("{\\"test_id\\": ") + q(e.test_id)
-                   + ", \\"case_id\\": " + q(e.case_id) + object(e.values) + "}";
-          }
-          write("raw/metrics_basis.json", out + "]}");
-        }
-        void harness_cpp_gpu__write_diagnostics(
-            const std::vector<harness_cpp_gpu__h_case_result>& results, int n) {
-          std::string out = "{\\"per_case\\": {";
-          for (int k = 0; k < n; ++k) {
-            const harness_cpp_gpu__h_case_result& r = results[static_cast<std::size_t>(k)];
-            out += (k > 0 ? ", " : "") + q(r.case_id) + ": {\\"expected_xfail\\": "
-                   + (r.expected_xfail ? "true" : "false") + ", \\"checks\\": {";
-            for (std::size_t c = 0; c < r.checks.size(); ++c) {
-              out += (c > 0 ? ", " : "") + q(r.checks[c].id) + ": " + q(r.checks[c].status);
-            }
-            out += "}, \\"metrics\\": {";
-            for (std::size_t m = 0; m < r.metrics.size(); ++m) {
-              out += (m > 0 ? ", " : "") + q(r.metrics[m].name) + ": "
-                     + (r.metrics[m].is_na ? q("na:" + r.metrics[m].reason_na)
-                                           : real(r.metrics[m].value));
-            }
-            out += "}}";
-          }
-          write("diagnostics.json", out + "}}");
-        }
         void harness_cpp_gpu__write_perf(const std::string& case_id, const std::string& target,
                                          int steps, int cells_updated, dp walltime_sec,
                                          int mpi_ranks, int threads_per_rank, int gpu_devices) {

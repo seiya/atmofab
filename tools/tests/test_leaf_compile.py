@@ -744,9 +744,9 @@ class PureIrDocumentViolationTests(_Fixture):
         for label, doc in (
                 ("dependency key absent", with_keys(dep=None)),
                 ("dependency key absent, meta foreign",
-                 with_keys(dep=None, meta="infrastructure/harness_fortran_cpu@0.8.0")),
+                 with_keys(dep=None, meta="infrastructure/harness_fortran_cpu@0.9.0")),
                 ("dependency key foreign", with_keys(dep="problem/shallow_water2d@0.4.0")),
-                ("meta key foreign", with_keys(meta="infrastructure/harness_fortran_cpu@0.8.0")),
+                ("meta key foreign", with_keys(meta="infrastructure/harness_fortran_cpu@0.9.0")),
                 ("another version", with_keys(dep=_NODE.replace("0.2.0", "0.2.1")))):
             with self.subTest(case=label):
                 result = self.violations(doc)

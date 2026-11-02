@@ -234,37 +234,13 @@ _HARNESS_STUB = textwrap.dedent("""\
         character(len=:), allocatable :: name
         character(len=:), allocatable :: json
       end type harness_fortran_cpu__h_named
-      type :: harness_fortran_cpu__h_check
-        character(len=:), allocatable :: id
-        character(len=4) :: status
-      end type harness_fortran_cpu__h_check
-      type :: harness_fortran_cpu__h_metric
-        character(len=:), allocatable :: name
-        real(dp) :: value
-        logical :: is_na
-        character(len=:), allocatable :: reason_na
-      end type harness_fortran_cpu__h_metric
-      type :: harness_fortran_cpu__h_case_result
-        character(len=:), allocatable :: case_id
-        logical :: expected_xfail
-        type(harness_fortran_cpu__h_check), allocatable :: checks(:)
-        type(harness_fortran_cpu__h_metric), allocatable :: metrics(:)
-      end type harness_fortran_cpu__h_case_result
-      type :: harness_fortran_cpu__h_mb_entry
-        character(len=:), allocatable :: test_id
-        character(len=:), allocatable :: case_id
-        type(harness_fortran_cpu__h_named), allocatable :: values(:)
-      end type harness_fortran_cpu__h_mb_entry
-      public :: harness_fortran_cpu__h_named, harness_fortran_cpu__h_check
-      public :: harness_fortran_cpu__h_metric, harness_fortran_cpu__h_case_result
-      public :: harness_fortran_cpu__h_mb_entry
+      public :: harness_fortran_cpu__h_named
       public :: harness_fortran_cpu__parse_cases, harness_fortran_cpu__emit_real
       public :: harness_fortran_cpu__emit_int, harness_fortran_cpu__emit_bool
       public :: harness_fortran_cpu__emit_array_r1, harness_fortran_cpu__emit_array_r2
       public :: harness_fortran_cpu__emit_array_r3, harness_fortran_cpu__emit_array_r4
       public :: harness_fortran_cpu__box, harness_fortran_cpu__write_snapshot
-      public :: harness_fortran_cpu__write_metrics_basis
-      public :: harness_fortran_cpu__write_diagnostics, harness_fortran_cpu__write_perf
+      public :: harness_fortran_cpu__write_perf
     contains
       subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)
         character(len=*), intent(in) :: tokens(:)
@@ -374,41 +350,6 @@ _HARNESS_STUB = textwrap.dedent("""\
         write(u, '(A)') '}'
         close(u)
       end subroutine harness_fortran_cpu__write_snapshot
-      subroutine harness_fortran_cpu__write_metrics_basis(entries, n)
-        type(harness_fortran_cpu__h_mb_entry), intent(in) :: entries(:)
-        integer, intent(in) :: n
-        integer :: u, k, j
-        open(newunit=u, file='raw/metrics_basis.json', status='replace')
-        write(u, '(A)') '{ "per_test": ['
-        do k = 1, n
-          if (k > 1) write(u, '(A)') '  ,'
-          write(u, '(A)') '  { "test_id": "'//trim(entries(k)%test_id)//'"'
-          write(u, '(A)') '  , "case_id": "'//trim(entries(k)%case_id)//'"'
-          do j = 1, size(entries(k)%values)
-            write(u, '(A)') '  , "'//trim(entries(k)%values(j)%name)//'": '//entries(k)%values(j)%json
-          end do
-          write(u, '(A)') '  }'
-        end do
-        write(u, '(A)') '] }'
-        close(u)
-      end subroutine harness_fortran_cpu__write_metrics_basis
-      subroutine harness_fortran_cpu__write_diagnostics(results, n)
-        type(harness_fortran_cpu__h_case_result), intent(in) :: results(:)
-        integer, intent(in) :: n
-        integer :: u, k, c
-        open(newunit=u, file='diagnostics.json', status='replace')
-        write(u, '(A)') '{ "per_case": {'
-        do k = 1, n
-          write(u, '(A)') '  "'//trim(results(k)%case_id)//'": {'
-          do c = 1, size(results(k)%checks)
-            write(u, '(A)') '    "'//trim(results(k)%checks(c)%id)//'": "'// &
-              trim(results(k)%checks(c)%status)//'"'
-          end do
-          write(u, '(A)') '  }'
-        end do
-        write(u, '(A)') '} }'
-        close(u)
-      end subroutine harness_fortran_cpu__write_diagnostics
       subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, &
           walltime_sec, mpi_ranks, gpu_devices)
     !$  use omp_lib, only: omp_get_max_threads
@@ -431,7 +372,7 @@ _HARNESS_STUB = textwrap.dedent("""\
     end module harness_fortran_cpu_model
     """)
 
-# The writer of `_HARNESS_STUB` (`harness_fortran_cpu@0.8.0` §3.2: it obtains the thread count
+# The writer of `_HARNESS_STUB` (`harness_fortran_cpu@0.9.0` §3.2: it obtains the thread count
 # itself) and the eight-argument one the distributed harness publishes and `harness_fortran_cpu`
 # published up to `0.7.0` (its caller passes the count). `_EIGHT_ARG_HARNESS_STUB` is the stub
 # with the second in place of the first.
@@ -638,7 +579,7 @@ class RenderShapeTest(unittest.TestCase):
     def test_terminal_writer(self) -> None:
         self.assertEqual(1, self.txt.count("call harness_fortran_cpu__write_perf("))
         # perf parallelism: mpi=1, gpu=0, and no thread count — the harness's writer obtains
-        # the count the run is given itself (`harness_fortran_cpu@0.8.0` §3.2, issue #512:
+        # the count the run is given itself (`harness_fortran_cpu@0.9.0` §3.2, issue #512:
         # Validate runs the binary at several counts, so the profile's is the wrong one for
         # every sweep shape).
         self.assertIn("    steps_total, cells_total, walltime, 1, 0)\n", self.txt)
@@ -1184,7 +1125,7 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_a_certified_harness_whose_writer_takes_the_thread_count_fails_the_pin(self) -> None:
         """Issue #512: the single-process runner calls the seven-argument `__write_perf` of
-        `harness_fortran_cpu@0.8.0` §3.2, whose writer obtains the thread count itself, so a
+        `harness_fortran_cpu@0.9.0` §3.2, whose writer obtains the thread count itself, so a
         certified harness whose writer still takes `threads_per_rank` — a `0.7.0` one — is
         refused before Build, in its IR signatures and in its model source alike, naming the
         writer. The pinned interface is the distributed harness's block but for that argument."""
@@ -2453,15 +2394,16 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
             self.assertEqual(text, render_runner(changed, sid, harness,
                                                  target=_TARGET_PROFILE.doc))
 
-    def test_the_pin_asks_only_for_what_the_runner_calls(self) -> None:
-        """A certified harness stays good for this runner whatever it still publishes beside
-        them: the retired writers and record types are not among the symbols the pin requires."""
-        sigs = [s for s in _harness_signatures()
-                if not s["symbol"].endswith(("__write_diagnostics", "__write_metrics_basis",
-                                             "__h_check", "__h_metric", "__h_case_result",
-                                             "__h_mb_entry"))]
-        self.assertLess(len(sigs), len(_harness_signatures()))
-        assert_harness_pin(_boundary_ir(), BOUNDARY_SID, HARNESS, sigs, _HARNESS_STUB)
+    def test_the_pin_asks_for_no_retired_symbol(self) -> None:
+        """The surface the pin holds a harness to names none of the retired writers and record
+        types, and a harness publishing that surface passes it."""
+        symbols = [s["symbol"] for s in _harness_signatures()]
+        self.assertEqual(
+            [s for s in symbols if s.endswith((
+                "__write_diagnostics", "__write_metrics_basis", "__h_check", "__h_metric",
+                "__h_case_result", "__h_mb_entry"))], [])
+        assert_harness_pin(_boundary_ir(), BOUNDARY_SID, HARNESS, _harness_signatures(),
+                           _HARNESS_STUB)
 
     def test_the_checks_abi_is_the_three_procedures(self) -> None:
         self.assertEqual(CHECKS_PUBLIC_NAMES, ("case_setup", "case_run", "get_time"))
