@@ -148,7 +148,7 @@ Forbid automatic fallback to a periodic boundary on the wall axis or to any othe
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/tests.md`, with `test_profile_version` of `0.3.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/tests.md`, with `test_profile_version` of `0.4.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The periodic-index wrap and the sign reversal at the wall are made explicit as discrete operations; the choice of `wall_axis` is a selection between two such mappings, not a non-differentiable operation on the field.

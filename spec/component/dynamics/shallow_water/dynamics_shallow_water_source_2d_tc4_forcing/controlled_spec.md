@@ -271,7 +271,7 @@ Forbid evaluating the forcing from the state of the run (the forcing is a functi
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/tests.md`, with `test_profile_version` of `0.3.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/tests.md`, with `test_profile_version` of `0.4.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The operation holds no non-differentiable operation: the discrete operations of §3 are `exp`, `sin`, `cos` and arithmetic, each differentiable in the inputs, and `along_axis` selects between two such evaluations. The operation does not depend on the state, so its derivative with respect to the state is zero.

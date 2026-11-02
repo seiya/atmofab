@@ -3,7 +3,7 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `advdiff1d_linear_baseline`
-- `test_profile_version`: `0.5.0`
+- `test_profile_version`: `0.6.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
 - `spec_ref.spec_version`: `0.4.5`
@@ -66,17 +66,13 @@ The sweep and fixed values per `family` are defined below.
 - Add the `case_id` `advdiff1d_ref_nx128_shift000_dts100_amir`.
 - The `base_case_id` references `advdiff1d_ref_nx128_shift000_dts100`, and overrides only `a` to $-1.0$ (the mirror case of 2-2; the `case_id` keeps its base's and carries the suffix `_amir`, so it sorts after its base case and reads the base's final state).
 
-## 5. Diagnostics contract
-### 5-1. Artifacts
-- The diagnostic output file is `diagnostics.json`.
-- The judgment output file is `verdict.json`.
+## 5. Judged quantities
+### 5-1. How a quantity is judged
+A test is judged by the host's predicates over the captures alone (`docs/TESTS.md` requirement 9). A name below is what a test's `quantities` line lists; a two-sided band is two names, `<name>.lower` and `<name>.upper`, each with its own predicate. The definitions of 5-4 are expressions over the captured state, the captured time and the case inputs, and a value measured on the reference implementation is a calibration, not an input.
 
-### 5-2. Required diagnostic items
-`diagnostics.json` requires the following fields.
+### 5-2. Judged names
+The names, each a scalar.
 - `cfl.combined_max`
-- `conserved.mass.initial`
-- `conserved.mass.final`
-- `conserved.mass.abs_initial`
 - `metrics.mass_drift_rel`
 - `errors.analytic.l1_rel_tend`
 - `errors.analytic.l2_rel_tend`
@@ -87,16 +83,16 @@ The sweep and fixed values per `family` are defined below.
 - `convergence.nx64_to_nx128.l1_order`, `convergence.nx64_to_nx128.l2_order`, `convergence.nx64_to_nx128.linf_order`
 - `convergence.nx128_to_nx256.l1_order`, `convergence.nx128_to_nx256.l2_order`, `convergence.nx128_to_nx256.linf_order`
 
-### 5-3. `N/A` rule
-- When a diagnostic item is incomputable, make the output value `null` and require `reason_na`.
-- `errors.symmetry_l2_rel` is `N/A` for anything other than a translation-pair evaluation, and is emitted on the `shifted` case of the pair.
+### 5-3. Cases of each quantity
+- A quantity is evaluated on the target cases of the tests that list it. `N/A` below means it is not defined on that case, so no test judges it there.
+- `errors.symmetry_l2_rel` is `N/A` for anything other than a translation-pair evaluation, and is evaluated on the `shifted` case of the pair.
 - `errors.mirror.l2_rel` is `N/A` for anything other than the mirror case of 2-2; it is carried by `advdiff1d_ref_nx128_shift000_dts100_amir`, which sorts after its base case and reads the base case's final state.
 - The threshold-definition source is this file, and a per-test threshold override is permitted.
 
-### 5-4. Definition of the metrics
-Every judged metric name below is bound to the `diagnostics.json` field of 5-2 that carries its value. A metric that is a derived quantity is emitted by the runner under its own field address, already reduced to a scalar; the definition below fixes how that value is computed. No correspondence other than the ones fixed here is permitted.
+### 5-4. Definition of the quantities
+Every judged name of 5-2 is bound to the definition below. No correspondence other than the ones fixed here is permitted.
 
-`cfl_combined_max` is emitted as the field `cfl.combined_max`. Its value is $\max_n (|C|+2D)$ over the integration steps of the case, where $C=a\,dt/dx$ and $D=\nu\,dt/dx^2$.
+`cfl_combined_max` is judged under the name `cfl.combined_max`. Its value is $\max_n (|C|+2D)$ over the integration steps of the case, where $C=a\,dt/dx$ and $D=\nu\,dt/dx^2$.
 
 The value of `cfl_combined_max` is fixed by the case inputs, the constants and the $dt$ of 3 alone; no captured state variable enters it, so its definition is not its primary evidence (`docs/TESTS.md` requirement 9). The primary evidence of the CFL judgment, evaluated by the host, is
 $$
@@ -113,16 +109,16 @@ M=\sum_i u_i\,dx,
 \quad
 M^{abs}_0=\sum_i |u_i(0)|\,dx
 $$
-Here $M_0$ is the field `conserved.mass.initial`, $M_{end}$ is `conserved.mass.final`, and $M^{abs}_0$ is `conserved.mass.abs_initial`. The signed initial mass of the initial condition in 2-1 is zero, so the normalizer is $M^{abs}_0$ and not $|M_0|$. The reduced value is emitted as the field `metrics.mass_drift_rel`.
+Here $M_0$ and $M_{end}$ are the mass at the initial and the final capture, and $M^{abs}_0$ is the sum of $|u_i(0)|\,dx$. The signed initial mass of the initial condition in 2-1 is zero, so the normalizer is $M^{abs}_0$ and not $|M_0|$. The reduced value is named `metrics.mass_drift_rel`.
 
 The theoretical-comparison errors are defined in three norms by the following, for $k\in\{1,2,\infty\}$ with $\|e\|_1=\sum_i|e_i|$, $\|e\|_2=(\sum_i e_i^2)^{1/2}$ and $\|e\|_\infty=\max_i|e_i|$ over the cells.
 $$
 \mathrm{l}k\mathrm{\_rel\_error\_to\_analytic\_tend}=
 \frac{\|u_{num}(t_{end})-u_{exact}(t_{end})\|_k}{\|u_{exact}(t_{end})\|_k}
 $$
-Here $u_{exact}$ is the theoretical solution of 2-1 with the case's `a`, and the values are emitted as the fields `errors.analytic.l1_rel_tend`, `errors.analytic.l2_rel_tend` and `errors.analytic.linf_rel_tend`.
+Here $u_{exact}$ is the theoretical solution of 2-1 with the case's `a`, and the values are named `errors.analytic.l1_rel_tend`, `errors.analytic.l2_rel_tend` and `errors.analytic.linf_rel_tend`.
 
-The mirror-pair residual is defined by the following, with $u'$ the state at $t_{end}$ of `advdiff1d_ref_nx128_shift000_dts100_amir` and $u$ that of `advdiff1d_ref_nx128_shift000_dts100`, and $\mathrm{flip}(u)_i=u_{nx-1-i}$ (the grammar's `flip(·, 0)`); it is emitted as the field `errors.mirror.l2_rel` on the former.
+The mirror-pair residual is defined by the following, with $u'$ the state at $t_{end}$ of `advdiff1d_ref_nx128_shift000_dts100_amir` and $u$ that of `advdiff1d_ref_nx128_shift000_dts100`, and $\mathrm{flip}(u)_i=u_{nx-1-i}$ (the grammar's `flip(·, 0)`); it is named `errors.mirror.l2_rel` on the former.
 $$
 \mathrm{mirror\_l2\_rel}=\frac{\|u'(t_{end})+\mathrm{flip}(u(t_{end}))\|_2}{\|u(t_{end})\|_2}
 $$
@@ -132,11 +128,11 @@ $$
 \mathrm{symmetry\_l2\_rel}=
 \frac{\|u_{shifted}(t_{end})-\mathrm{shift}(u_{ref}(t_{end}),+\delta_s)\|_2}{\|u_{ref}(t_{end})\|_2}
 $$
-Here $u_{ref}$ is the numerical solution of the `reference` case of the pair, $u_{shifted}$ that of the `shifted` case, and $\delta_s=\text{shift\_fraction}\cdot L$ is the shift distance of the `shifted` case. $\delta_s$ is a distance and is not the grid spacing $dx$. The value is emitted as the field `errors.symmetry_l2_rel`.
+Here $u_{ref}$ is the numerical solution of the `reference` case of the pair, $u_{shifted}$ that of the `shifted` case, and $\delta_s=\text{shift\_fraction}\cdot L$ is the shift distance of the `shifted` case. $\delta_s$ is a distance and is not the grid spacing $dx$. The value is named `errors.symmetry_l2_rel`.
 
-`convergence_order` is a cross-case reduction over each of `errors.analytic.l1_rel_tend`, `errors.analytic.l2_rel_tend` and `errors.analytic.linf_rel_tend`, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, and is accumulated only over the target cases of the test that judges it. It is emitted as a per-case field of the finer case of each pair: `advdiff1d_ref_nx128_shift000_dts100` carries `convergence.nx64_to_nx128.<k>_order`, and `advdiff1d_ref_nx256_shift000_dts100` carries `convergence.nx128_to_nx256.<k>_order`, for `<k>` each of `l1`, `l2`, `linf`. The cases preceding the one that completes a reduction omit that field.
+`convergence_order` is a cross-case reduction over each of `errors.analytic.l1_rel_tend`, `errors.analytic.l2_rel_tend` and `errors.analytic.linf_rel_tend`, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, and is accumulated only over the target cases of the test that judges it. It is evaluated at the finer case of each pair: `advdiff1d_ref_nx128_shift000_dts100` carries `convergence.nx64_to_nx128.<k>_order`, and `advdiff1d_ref_nx256_shift000_dts100` carries `convergence.nx128_to_nx256.<k>_order`, for `<k>` each of `l1`, `l2`, `linf`. The cases preceding the one that completes a reduction omit that field.
 
-`mode_scheme_fidelity` is emitted as the field `errors.mode_scheme_fidelity`. It measures whether the kernel advances each discrete Fourier mode by the amplification rate of the discrete update of `controlled_spec.md` §5. That update is linear and periodic, so it advances the mode $m$ by exactly $G_{num}(m)$ per step, and by $G_{num}(m)^{n_{step}}$ over the case, up to round-off.
+`mode_scheme_fidelity` is emitted as `errors.mode_scheme_fidelity`. It measures whether the kernel advances each discrete Fourier mode by the amplification rate of the discrete update of `controlled_spec.md` §5. That update is linear and periodic, so it advances the mode $m$ by exactly $G_{num}(m)$ per step, and by $G_{num}(m)^{n_{step}}$ over the case, up to round-off.
 
 Let the discrete mode number be $m \in \{1,2\}$, $\theta_m=2\pi m/nx$, and $k_m=2\pi m/L$. The cell centres are $x_i=(i+1/2)\,dx$ for $i=0,\dots,nx-1$.
 The dimensionless numbers are $C=a\,dt/dx$ and $D=\nu\,dt/dx^2$, with the `dt` and `n_step` that 3 decides for the case.
@@ -161,7 +157,7 @@ Here $\hat u_m(0)$ is the coefficient of the initial state and $\hat u_m(t_{end}
 $$
 \mathrm{cross\_target\_state\_agreement}=\frac{\max_i |u_i-u^{ref}_i|}{\max(\max_i|u_i|,\ \max_i|u^{ref}_i|,\ 1)}
 $$
-Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is evaluated by the host from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is evaluated by the host from the captured state, against each other variant separately; on a target with no other certified variant it holds vacuously.
 
 ### 5-5. Default thresholds
 - $\text{cfl\_combined\_max} \le 1.0$
@@ -189,6 +185,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
   - `advdiff1d_ref_nx128_shift000_dts100`
   - `advdiff1d_ref_nx256_shift000_dts100`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.combined_max`, `convergence.nx128_to_nx256.l1_order`, `convergence.nx128_to_nx256.l2_order`, `convergence.nx128_to_nx256.linf_order`, `convergence.nx64_to_nx128.l1_order`, `convergence.nx64_to_nx128.l2_order`, `convergence.nx64_to_nx128.linf_order`, `errors.analytic.l1_rel_tend.lower`, `errors.analytic.l1_rel_tend.upper`, `errors.analytic.l2_rel_tend.lower`, `errors.analytic.l2_rel_tend.upper`, `errors.analytic.linf_rel_tend.lower`, `errors.analytic.linf_rel_tend.upper`, `errors.mode_scheme_fidelity`, `metrics.mass_drift_rel`
 - judgment conditions:
   - The CFL judgment is applied. The evaluation expression is `cfl_combined_max`, and the threshold is $\le 1.0$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-12}$.
@@ -205,6 +202,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
 - target cases:
   - `advdiff1d_ref_nx128_shift000_dts100_tend200`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.combined_max`, `errors.analytic.l2_rel_tend`, `metrics.mass_drift_rel`
 - judgment conditions:
   - The CFL judgment is applied. The evaluation expression is `cfl_combined_max`, and the threshold is $\le 1.0$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 3.0e{-12}$.
@@ -219,6 +217,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
   - `reference` is `advdiff1d_ref_nx128_shift000_dts100`
   - `shifted` is `advdiff1d_sym_nx128_shift025_dts100`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.combined_max`, `errors.analytic.l2_rel_tend`, `errors.symmetry_l2_rel`, `metrics.mass_drift_rel`
 - judgment conditions:
   - The CFL judgment is applied. The evaluation expression is `cfl_combined_max`, and the threshold is $\le 1.0$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-12}$.
@@ -233,10 +232,10 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
   - `advdiff1d_guard_nx064_shift000_dts120`
 - `expected_outcome`: `xfail`
 - `xfail_condition`: `cfl.combined_max > 1.0`
-- `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'cfl'`
+- `quantities`: `cfl.combined_max`
 - judgment conditions:
-  - The CFL judgment is applied. The evaluation expression is `cfl_combined_max`, and the threshold is $\le 1.0$.
-  - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is `informational_only`.
+  - The CFL judgment is applied in the failure direction: the evidence of 5-4 is $> 1.0$.
+  - The mass-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The symmetry judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because under an unstable condition, the cannot-continue-execution judgment is prioritized over the theoretical-agreement judgment".
   - The cross-target judgment is not applied. The non-application basis is "because the state an unstable case leaves at $t_{end}$ is not a result two variants must agree on".
@@ -248,6 +247,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
   - `reference` is `advdiff1d_ref_nx128_shift000_dts100`
   - `mirrored` is `advdiff1d_ref_nx128_shift000_dts100_amir`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.combined_max`, `errors.mirror.l2_rel`, `errors.mode_scheme_fidelity`, `metrics.mass_drift_rel`
 - judgment conditions:
   - The CFL judgment is applied. The evaluation expression is `cfl_combined_max`, and the threshold is $\le 1.0$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-12}$.
@@ -256,15 +256,14 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `u`, and the threshold is $\le 1.0e{-12}$.
 
 ## 7. Pass/fail aggregation rules
-- `per_test.pass_rule`: pass when all applicable checks pass.
-- `per_test.xfail_rule`: xfail when `expected_outcome == xfail` and `xfail_condition` is true and `pass_when` is satisfied.
+- `per_test.pass_rule`: `pass` when every predicate of the test holds.
+- `per_test.xfail_rule`: `xfail` when `expected_outcome` is `xfail`, `xfail_condition` is true and every predicate of the test holds, in the failure direction.
 - `suite.pass_rule`: pass when all `test_id` satisfy `pass_rule` or `xfail_rule`.
 
 ## 8. Traceability
 ### 8-1. Output requirements
-- `verdict.json` requires each check's `status`, `metric_value`, `threshold`, and `reason_na` when `applicable=false`.
-- `summary.json` requires the counts of `pass`, `fail`, `xfail`, and `skipped`.
+The host writes `verdict.json` from the predicates: each test's `status` and, in `basis.predicates`, each predicate's value and threshold. `summary.json` carries the counts of `pass`, `fail`, `xfail`, and `skipped`.
 
 ### 8-2. Traceability records
 - The `test_profile_id` and `test_profile_version` of this document must be recorded under each case's `inputs` in `spec.ir.yaml` and in `trial_meta.json`.
-- The judgment conditions of this document must be mappable to the evaluation basis of `verdict.json`.
+- The judgment conditions of this document must be mappable to the predicates of `spec.ir.yaml` through the `quantities` lines.

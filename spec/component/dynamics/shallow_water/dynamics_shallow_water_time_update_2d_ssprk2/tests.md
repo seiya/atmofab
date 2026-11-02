@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_shallow_water_time_update_2d_ssprk2_l0`
-- `test_profile_version`: `0.5.0`
+- `test_profile_version`: `0.6.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_shallow_water_time_update_2d_ssprk2`
@@ -29,49 +29,61 @@ Of the transformations of `docs/TESTS.md` §Symmetry pairs, the suite carries th
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 
-## 5. Diagnostics contract
-- Require outputting `checks.zero_rhs_invariance`, `checks.stage_weight_consistency`, `checks.input_guard`, `checks.zb_invariance`, `checks.frozen_rhs_exactness`, and `checks.symmetry_pair` in `diagnostics.json`. `checks.frozen_rhs_exactness` is computed on `l0_frozen_rhs` and `l0_frozen_rhs_axis`; `checks.symmetry_pair` is computed on `l0_frozen_rhs_axis` and is `na` on every other case; it reads the `U_np1` of `l0_frozen_rhs`, which the checks module keeps from that case's run (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §2, the accumulator ordering rule).
-- `pair_residual` of `l0_frozen_rhs_axis` is `norm2(U_np1 - T(U_np1_base)) / norm2(U_np1_base)` over every element, where `U_np1_base` is the `U_np1` of `l0_frozen_rhs` captured after its run and `T` the axis exchange: the spatial axes transposed and the second and third components exchanged. The host evaluates it from the captured states (`at('l0_frozen_rhs')` with `roll(flip(transpose(q, 1, 2), 0), 1, 0, 0)`, `docs/TESTS.md` §Symmetry pairs).
-- The state of a case, captured after setup and after the run, consists of the inputs `U_n`, `L_flux`, `S_b` (`ncomp` × `nx` × `ny` each) and `z_b` (`nx` × `ny`), written at setup; `U_np1` (`ncomp` × `nx` × `ny`, the sentinel `-999` at setup), the result of the `operation`; on the `z_b`-invariance case also the second `z_b` field and `U_np1_zb2` (the sentinel at setup), the result of the second evaluation; and `guard_pass`, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the last call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. Every `pass` judgment of §6 requires `guard_pass = 1` on the cases it names, and every `xfail` judgment requires `guard_pass = 0` on its case; these are host-evaluated from the capture after the run (an output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed update). `checks.input_guard` is `pass` when `guard_pass = 1` and `fail` otherwise.
-- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+## 5. Judged quantities
+A test is judged by the host's predicates over the captures alone (`docs/TESTS.md` requirement 9). Each quantity below is named on the `quantities` line of the tests that judge it, and is evaluated from the state captured after the run in each of the test's target cases.
+
+The state of a case, captured after setup and after the run, consists of the inputs `U_n`, `L_flux`, `S_b` (`ncomp` × `nx` × `ny` each) and `z_b` (`nx` × `ny`), written at setup; `U_np1` (`ncomp` × `nx` × `ny`, the sentinel `-999` at setup), the result of the `operation`; on the `z_b`-invariance case also the second `z_b` field and `U_np1_zb2` (the sentinel at setup); and `guard_pass`. `U_n`, `L_flux`, `S_b`, `z_b` and `U_np1` are arguments of the `operation`, and the second `z_b` field and `U_np1_zb2` are arguments of its second call on that case: `U_np1_zb2` is the result of the second evaluation. `guard_pass` is a `record` the checks module writes of the `operation`'s logical result, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the last call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. An output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed update.
+
+- `input_guard`: the captured flag `guard_pass`. It is `== 1` on the cases of a `pass` test and `== 0` on the cases of an `xfail` test.
+- `zero_rhs_deviation`: `max|U_np1 - U_n|` over every component and cell.
+- `stage_weight_deviation`: `max|U_np1 - U2|` over every component and cell, where, from the captured inputs, `rhs = L_flux + S_b`, `U1 = U_n + dt*rhs` and `U2 = 0.5*U_n + 0.5*(U1 + dt*rhs)`: the 2-stage composition with the weights `1/2,1/2`.
+- `frozen_rhs_deviation`: `max|U_np1 - (U_n + dt*(L_flux + S_b))|` over every component and cell, with the case's own fields and `dt`.
+- `zb_deviation`: `max|U_np1_zb2 - U_np1|` over every component and cell.
+- `pair_residual`: on `l0_frozen_rhs_axis`, `norm2(U_np1 - T(U_np1_base)) / norm2(U_np1_base)` over every element, where `U_np1_base` is the `U_np1` of `l0_frozen_rhs` captured after its run and `T` the axis exchange: the spatial axes transposed and the second and third components exchanged. The host reads the base through `at('l0_frozen_rhs')` and applies `roll(flip(transpose(q, 1, 2), 0), 1, 0, 0)` (`docs/TESTS.md` §Symmetry pairs).
+- `cross_target_state_agreement`: this target's run compared with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; on a target with no other certified variant it holds vacuously. It is outside the `quantities` line.
 
 ## 6. Test definitions
 - `test_id`: `l0_zero_rhs_invariance_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: with `L_flux=0` and `S_b=0`, satisfy `U^{n+1}=U^n` within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
+  - `quantities`: `input_guard`, `zero_rhs_deviation`
+  - `judgment`: with `L_flux=0` and `S_b=0`, `input_guard == 1` and `U^{n+1}=U^n` within an absolute tolerance of `1e-12` (`zero_rhs_deviation <= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
 - `test_id`: `l0_stage_weight_consistency_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: the weights of the 2-stage composition are applied as `1/2,1/2`. The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
+  - `quantities`: `input_guard`, `stage_weight_deviation`
+  - `judgment`: `input_guard == 1` and the weights of the 2-stage composition are applied as `1/2,1/2` (`stage_weight_deviation <= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
 - `test_id`: `l0_frozen_rhs_exactness_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_frozen_rhs` and `l0_frozen_rhs_axis`, each with its own fields of §2, with fixed nonzero `L_flux` and `S_b`, satisfy `U^{n+1} = U^n + dt*(L_flux + S_b)` within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`; frozen-field closed form; both stages use the identical RHS). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
+  - `quantities`: `frozen_rhs_deviation`, `input_guard`
+  - `judgment`: on `l0_frozen_rhs` and `l0_frozen_rhs_axis`, each with its own fields of §2, with fixed nonzero `L_flux` and `S_b`, `input_guard == 1` and `U^{n+1} = U^n + dt*(L_flux + S_b)` within an absolute tolerance of `1e-12` (`frozen_rhs_deviation <= 1e-12`; frozen-field closed form; both stages use the identical RHS). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
 - `test_id`: `l0_zb_invariance_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: with `U^n`, `L_flux`, and `S_b` held fixed, the update evaluated for two distinct `z_b` fields yields the identical `U^{n+1}` (`U_np1_zb2 = U_np1`, `z_b` is inert at L0). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` and over `U_np1_zb2` is `<= 1e-12`.
+  - `quantities`: `input_guard`, `zb_deviation`
+  - `judgment`: with `U^n`, `L_flux`, and `S_b` held fixed, `input_guard == 1` and the update evaluated for two distinct `z_b` fields yields the identical `U^{n+1}` (`zb_deviation == 0`: `U_np1_zb2 = U_np1`, `z_b` is inert at L0). The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` and over `U_np1_zb2` is `<= 1e-12`.
 - `test_id`: `l0_symmetry_pairs_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_frozen_rhs_axis`, `pair_residual` against `l0_frozen_rhs` is `<= 1.0e-12` (`checks.symmetry_pair`), and `guard_pass = 1`. Every element of the transformed case is computed by the same operations as the element of the base it is the image of, so a conforming kernel gives round-off at most (measured `0` with an independent reference of the Controlled Spec §3.1, which also meets the closed form exactly on either case); the bound is the suite's cross-target bound. Measured with that reference: a kernel whose loop over `j` in the second stage is bounded by `nx` passes the frozen-`RHS` judgment on `l0_frozen_rhs` (its out-of-range iterations write past the array, which no judgment reads) and gives `pair_residual = 262` on the axis case, whose last row keeps the setup sentinel `-999` (closed-form deviation `1001.71` there); one whose loop over `j` in the first stage is bounded by `nx` leaves the last row of its stage state unset, and with that stage state zeroed gives `0.27` (closed-form deviation `1.35` there; an unset local array gives another value, never the closed form). On the axis case the frozen-`RHS` judgment fails with the pair: the transformed case is the evidence, and the pair states it as an equivariance of the base. The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
+  - `quantities`: `input_guard`, `pair_residual`
+  - `judgment`: on `l0_frozen_rhs_axis`, `pair_residual` against `l0_frozen_rhs` is `<= 1.0e-12`, and `input_guard == 1` on that case and on `l0_frozen_rhs`. Every element of the transformed case is computed by the same operations as the element of the base it is the image of, so a conforming kernel gives round-off at most (measured `0` with an independent reference of the Controlled Spec §3.1, which also meets the closed form exactly on either case); the bound is the suite's cross-target bound. Measured with that reference: a kernel whose loop over `j` in the second stage is bounded by `nx` passes the frozen-`RHS` judgment on `l0_frozen_rhs` (its out-of-range iterations write past the array, which no judgment reads) and gives `pair_residual = 262` on the axis case, whose last row keeps the setup sentinel `-999` (closed-form deviation `1001.71` there); one whose loop over `j` in the first stage is bounded by `nx` leaves the last row of its stage state unset, and with that stage state zeroed gives `0.27` (closed-form deviation `1.35` there; an unset local array gives another value, never the closed form). On the axis case the frozen-`RHS` judgment fails with the pair: the transformed case is the evidence, and the pair states it as an equivariance of the base. The cross-target judgment is applied: `cross_target_state_agreement` over `U_np1` is `<= 1e-12`.
 - `test_id`: `l0_invalid_dt_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `dt<=0`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
-  - `judgment`: on the abnormal case, `guard_pass = 0` and `checks.input_guard` fails.
+  - `quantities`: `input_guard`
+  - `judgment`: on the abnormal case of §2 (`l0_invalid_dt`), the `operation` refuses the input: `input_guard == 0`, in the failure direction. The cross-target judgment is not applied.
 
 ## 7. Pass/fail aggregation rules
-- `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
-- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and `pass_when` is satisfied.
+- `per_test.pass_rule`: `pass` when every predicate of the test holds.
+- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and every predicate of the test holds.
 - `suite.pass_rule`: `pass` when all `test_id` are `pass` or `xfail`.
 
 ## 8. Traceability

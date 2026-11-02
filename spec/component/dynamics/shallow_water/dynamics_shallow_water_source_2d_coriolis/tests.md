@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_shallow_water_source_2d_coriolis_l0`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.4.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_shallow_water_source_2d_coriolis`
@@ -29,49 +29,61 @@ The symmetry pairs (`docs/TESTS.md` §Symmetry pairs) are the **axis exchange** 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 
-## 5. Diagnostics contract
-- Require outputting `checks.zero_f`, `checks.pointwise`, `checks.energy_neutral`, `checks.symmetry_pair`, and `checks.input_guard` in `diagnostics.json`. `checks.symmetry_pair` is computed on the three transformed cases and is `na` on every other case; it reads the source of `l0_general_f`, which the checks module keeps from that case's run (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §2, the accumulator ordering rule).
-- `pair_residual` of a transformed case is `norm2(S - T(S_base)) / norm2(S_base)` over every element, where `S_base` is the source of `l0_general_f` captured after its run and `T` the case's transformation of §1 (for the exchange, the spatial axes transposed and the second and third components exchanged; for a mirror, the array reversed along the mirrored axis and the sign of one momentum component reversed). The host evaluates it from the captured states (`at('l0_general_f')` with `transpose`, `flip` and `roll`, `docs/TESTS.md` §Symmetry pairs).
-- The state of a case, captured after setup and after the run, consists of `U` (the state of §2, written at setup) and `S` (`ncomp` × `nx` × `ny`, the sentinel `-999` at setup) and `guard_pass`, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. Every `pass` judgment of §6 requires `guard_pass = 1` on the cases it names, and every `xfail` judgment requires `guard_pass = 0` on its cases; these are host-evaluated from the capture after the run (the refusal's observable consequence: an output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed mapping). `checks.input_guard` is `pass` when `guard_pass = 1` and `fail` otherwise.
-- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+## 5. Judged quantities
+A test is judged by the host's predicates over the captures alone (`docs/TESTS.md` requirement 9). Each quantity below is named on the `quantities` line of the tests that judge it, and is evaluated from the state captured after the run in each of the test's target cases.
+
+The state of a case, captured after setup and after the run, consists of `U` (the state of §2, written at setup), `S` (`ncomp` × `nx` × `ny`, the sentinel `-999` at setup) and `guard_pass`. `U` and `S` are arguments of the `operation`. `guard_pass` is a `record` the checks module writes of the `operation`'s logical result, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. An output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed mapping.
+
+- `guard_pass`: the captured flag. It is `== 1` on the cases of a `pass` test and `== 0` on the cases of an `xfail` test.
+- `max_abs_s`: `max|S|` over every component and cell.
+- `pointwise_max_dev`: the largest of `|S(1,i,j)|`, `|S(2,i,j) - f(i,j)*hv(i,j)|` and `|S(3,i,j) + f(i,j)*hu(i,j)|` over every cell, with `f`, `hu`, `hv` those of the case's §2 inputs.
+- `energy_max_abs`: `max|hu(i,j)*S(2,i,j) + hv(i,j)*S(3,i,j)|` over every cell.
+- `pair_residual`: on a transformed case, `norm2(S - T(S_base)) / norm2(S_base)` over every element, where `S_base` is the source of `l0_general_f` captured after its run and `T` the case's transformation of §1 (for the exchange, the spatial axes transposed and the second and third components exchanged; for a mirror, the array reversed along the mirrored axis and the sign of one momentum component reversed). The host reads `S_base` through `at('l0_general_f')` and applies `T` with `transpose`, `flip` and `roll` (`docs/TESTS.md` §Symmetry pairs).
+- `cross_target_state_agreement`: this target's run compared with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; on a target with no other certified variant it holds vacuously. It is outside the `quantities` line.
 
 ## 6. Test definitions
 - `test_id`: `l0_zero_f_gives_zero_source_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_zero_f` (`f=0` at every cell), every component of `S` is exactly `0` at every cell (component-wise max `|S| == 0`). The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
+  - `quantities`: `guard_pass`, `max_abs_s`
+  - `judgment`: on `l0_zero_f` (`f=0` at every cell), `guard_pass == 1` and every component of `S` is exactly `0` at every cell (`max_abs_s == 0`). The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
 - `test_id`: `l0_pointwise_formula_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_row_f`, `l0_general_f` and the three transformed cases, each with its own `f` and state of §2, satisfy `S(1,i,j) = 0`, `S(2,i,j) = f(i,j)*hv(i,j)`, and `S(3,i,j) = -f(i,j)*hu(i,j)` at every cell within an absolute tolerance of `1e-12` (component-wise max deviation `<= 1e-12`). On `l0_general_f` a kernel that reads `f` from the first column for every column deviates by `6.3e-6`. The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
+  - `quantities`: `guard_pass`, `pointwise_max_dev`
+  - `judgment`: on `l0_row_f`, `l0_general_f` and the three transformed cases, each with its own `f` and state of §2, `guard_pass == 1` and `S(1,i,j) = 0`, `S(2,i,j) = f(i,j)*hv(i,j)`, and `S(3,i,j) = -f(i,j)*hu(i,j)` at every cell within an absolute tolerance of `1e-12` (`pointwise_max_dev <= 1e-12`). On `l0_general_f` a kernel that reads `f` from the first column for every column deviates by `6.3e-6`. The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
 - `test_id`: `l0_energy_neutral_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on the cases of `l0_pointwise_formula_pass`, satisfy `hu(i,j)*S(2,i,j) + hv(i,j)*S(3,i,j) = 0` at every cell within an absolute tolerance of `1e-12` (max over cells of the absolute value `<= 1e-12`): the discrete evidence that the source does no work. The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
+  - `quantities`: `energy_max_abs`, `guard_pass`
+  - `judgment`: on the cases of `l0_pointwise_formula_pass`, `guard_pass == 1` and `hu(i,j)*S(2,i,j) + hv(i,j)*S(3,i,j) = 0` at every cell within an absolute tolerance of `1e-12` (`energy_max_abs <= 1e-12`): the discrete evidence that the source does no work. The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
 - `test_id`: `l0_symmetry_pairs_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_general_f_axis`, `l0_general_f_xmir` and `l0_general_f_ymir`, `pair_residual` against `l0_general_f` is `<= 1.0e-12` (`checks.symmetry_pair`). Every product of the source is the base's product with both factors' signs reversed or with neither, so a conforming kernel gives the rounding of the transformed `f` alone (measured `1.0e-16`, `7.2e-17` and `1.8e-16` on the axis, `x`-mirror and `y`-mirror cases); the bound is the suite's cross-target bound. The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
+  - `quantities`: `guard_pass`, `pair_residual`
+  - `judgment`: on `l0_general_f_axis`, `l0_general_f_xmir` and `l0_general_f_ymir`, `guard_pass == 1` and `pair_residual` against `l0_general_f` is `<= 1.0e-12`. Every product of the source is the base's product with both factors' signs reversed or with neither, so a conforming kernel gives the rounding of the transformed `f` alone (measured `1.0e-16`, `7.2e-17` and `1.8e-16` on the axis, `x`-mirror and `y`-mirror cases); the bound is the suite's cross-target bound. The cross-target judgment is applied: `cross_target_state_agreement` over `S` is `<= 1e-12`.
 - `test_id`: `l0_invalid_ncomp_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ncomp<3`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `quantities`: `guard_pass`
+  - `judgment`: on `l0_ncomp2`, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
 - `test_id`: `l0_invalid_ncomp_above_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_source_2d_coriolis__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ncomp>3`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `quantities`: `guard_pass`
+  - `judgment`: on `l0_ncomp4`, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
 
 ## 7. Pass/fail aggregation rules
-- `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
-- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and `pass_when` is satisfied.
+- `per_test.pass_rule`: `pass` when every predicate of the test holds.
+- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and every predicate of the test holds.
 - `suite.pass_rule`: `pass` when all `test_id` are `pass` or `xfail`.
 
 ## 8. Traceability

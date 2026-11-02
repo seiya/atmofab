@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_shallow_water_boundary_2d_periodic_copy_l0`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.4.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_shallow_water_boundary_2d_periodic_copy`
@@ -29,39 +29,47 @@ The mapping admits four transformations (`docs/TESTS.md` §Symmetry pairs); the 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 
-## 5. Diagnostics contract
-- Require outputting `checks.x_wrap`, `checks.y_wrap`, `checks.symmetry_pair`, and `checks.input_guard` in `diagnostics.json`. `checks.x_wrap` and `checks.y_wrap` are computed on the four normal cases and are `na` on `l0_invalid_ny`; `checks.symmetry_pair` is computed on the three transformed cases and is `na` on every other case; `checks.input_guard` is computed on every case. `checks.symmetry_pair` reads the `U_out` of `l0_ng1`, which the checks module keeps from that case's run (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §2, the accumulator ordering rule: each transformed case sorts after its base).
-- `pair_residual` of a transformed case is `norm2(U_out - T(U_out_base)) / norm2(U_out_base)` over every element of the padded field, where `U_out_base` is the `U_out` of `l0_ng1` captured after its run and `T` the case's transformation: the transpose for `l0_ng1_axis`, the reversal along the first array axis for `l0_ng1_xmir`, along the second for `l0_ng1_ymir`. The host evaluates it from the captured states (`at('l0_ng1')` with `transpose` / `flip`, `docs/workflow/phases/phase_01_compile.md`).
-- The state of a case, captured after setup and after the run, consists of `U_in` (the padded input of §2, written at setup) and `U_out` (`nx_total` × `ny_total`, the sentinel `-999` at setup) and `grid_valid`, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. Every `pass` judgment of §6 requires `grid_valid = 1` on the cases it names, and every `xfail` judgment requires `grid_valid = 0` on its cases; these are host-evaluated from the capture after the run (the refusal's observable consequence: an output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed mapping). `checks.input_guard` is `pass` when `grid_valid = 1` and `fail` otherwise.
-- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+## 5. Judged quantities
+A test is judged by the host's predicates over the captures alone (`docs/TESTS.md` requirement 9). Each quantity below is named on the `quantities` line of the tests that judge it, and is evaluated from the state captured after the run in each of the test's target cases.
+
+The state of a case, captured after setup and after the run, consists of `U_in` (the padded input of §2, written at setup), `U_out` (`nx_total` × `ny_total`, the sentinel `-999` at setup) and `grid_valid`. `U_in` and `U_out` are arguments of the `operation`. `grid_valid` is a `record` the checks module writes of the `operation`'s logical result, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. An output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed mapping.
+
+- `grid_valid`: the captured flag. It is `== 1` on the cases of a `pass` test and `== 0` on the cases of an `xfail` test.
+- `x_wrap_residual`: over every interior row `j`, the largest of `|U_out(k,j) - U_in(k+nx,j)|` and `|U_out(ng+nx+k,j) - U_in(ng+k,j)|` for `k` in `1..ng`, and `|U_out(i,j) - U_in(i,j)|` for the interior columns `i`, with each case's own extents.
+- `y_wrap_residual`: over every column `i` in `1..nx_total`, the largest of `|U_out(i,k) - U_in(p(i),k+ny)|` and `|U_out(i,ng+ny+k) - U_in(p(i),ng+k)|` for `k` in `1..ng`, with `p` the column map of `l0_periodic_y_wrap_pass` and each case's own extents.
+- `pair_residual`: on a transformed case, `norm2(U_out - T(U_out_base)) / norm2(U_out_base)` over every element of the padded field, where `U_out_base` is the `U_out` of `l0_ng1` captured after its run and `T` the case's transformation: the transpose for `l0_ng1_axis`, the reversal along the first array axis for `l0_ng1_xmir`, along the second for `l0_ng1_ymir`. The host reads the base through `at('l0_ng1')` and applies `transpose` / `flip` (`docs/workflow/phases/phase_01_compile.md`).
+- `cross_target_state_agreement`: this target's run compared with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; on a target with no other certified variant it holds vacuously. It is outside the `quantities` line.
 
 ## 6. Test definitions
 - `test_id`: `l0_periodic_x_wrap_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_periodic_copy__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on the four normal cases of §2, for every interior row `j` and every `k` in `1..ng`, the `x` ghost cells satisfy `U_out(k,j) = U_in(k+nx,j)` and `U_out(ng+nx+k,j) = U_in(ng+k,j)` exactly, and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
+  - `quantities`: `grid_valid`, `x_wrap_residual`
+  - `judgment`: on the four normal cases of §2, `grid_valid == 1` and, for every interior row `j` and every `k` in `1..ng`, the `x` ghost cells satisfy `U_out(k,j) = U_in(k+nx,j)` and `U_out(ng+nx+k,j) = U_in(ng+k,j)` exactly, and the interior cells satisfy `U_out(i,j) = U_in(i,j)` exactly (`x_wrap_residual == 0`). The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
 - `test_id`: `l0_periodic_y_wrap_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_periodic_copy__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on the four normal cases of §2, for every column `i` in `1..nx_total` (the `x` ghost columns included) and every `k` in `1..ng`, the `y` ghost cells satisfy `U_out(i,k) = U_in(p(i),k+ny)` and `U_out(i,ng+ny+k) = U_in(p(i),ng+k)` exactly, where `p(i) = i` for an interior column, `p(k) = k+nx` and `p(ng+nx+k) = ng+k` for the `x` ghost columns: the `y` mapping is applied after the `x` mapping (Controlled Spec §3), so a corner ghost cell holds the periodic image of the interior along both axes and no cell of `U_out` holds the sentinel. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
+  - `quantities`: `grid_valid`, `y_wrap_residual`
+  - `judgment`: on the four normal cases of §2, `grid_valid == 1` and, for every column `i` in `1..nx_total` (the `x` ghost columns included) and every `k` in `1..ng`, the `y` ghost cells satisfy `U_out(i,k) = U_in(p(i),k+ny)` and `U_out(i,ng+ny+k) = U_in(p(i),ng+k)` exactly (`y_wrap_residual == 0`), where `p(i) = i` for an interior column, `p(k) = k+nx` and `p(ng+nx+k) = ng+k` for the `x` ghost columns: the `y` mapping is applied after the `x` mapping (Controlled Spec §3), so a corner ghost cell holds the periodic image of the interior along both axes and no cell of `U_out` holds the sentinel. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
 - `test_id`: `l0_symmetry_pairs_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_periodic_copy__apply`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_ng1_axis`, `l0_ng1_xmir` and `l0_ng1_ymir`, `pair_residual` against `l0_ng1` is `<= 1.0e-12` (`checks.symmetry_pair`). The mapping copies values, so a conforming kernel gives exactly `0` (measured on the three pairs with an independent reference of §3); the bound is the suite's cross-target bound, not a measured round-off. Measured with that reference: a kernel whose `x` wrap loops over the rows `j = ng+1..ng+nx` (the `x` extent bounding the row loop) passes both judgments above on `l0_ng1`, where `nx > ny` makes the loop reach the top ghost row that the `y` wrap then overwrites, and gives `pair_residual = 9.6` on `l0_ng1_axis`, where `nx < ny` leaves the last interior row's two `x` ghost cells, and the two bottom corner cells the `y` wrap copies from them, holding the sentinel (the `x`-wrap judgment on `l0_ng1_axis` fails as well); a kernel whose right `x` ghost column reads one column too far (`U_in(ng+k+1,j)`) gives `0.098` on the axis pair and `0.14` on the `x`-mirror pair, and one whose top `y` ghost row reads one row too far gives `0.10` on the axis pair and `0.016` on the `y`-mirror pair, both also failing the wrap judgments on `l0_ng1`. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
+  - `quantities`: `grid_valid`, `pair_residual`
+  - `judgment`: `grid_valid == 1` on `l0_ng1` and its three transformed cases, and on `l0_ng1_axis`, `l0_ng1_xmir` and `l0_ng1_ymir` `pair_residual` against `l0_ng1` is `<= 1.0e-12`. The mapping copies values, so a conforming kernel gives exactly `0` (measured on the three pairs with an independent reference of §3); the bound is the suite's cross-target bound, not a measured round-off. Measured with that reference: a kernel whose `x` wrap loops over the rows `j = ng+1..ng+nx` (the `x` extent bounding the row loop) passes both judgments above on `l0_ng1`, where `nx > ny` makes the loop reach the top ghost row that the `y` wrap then overwrites, and gives `pair_residual = 9.6` on `l0_ng1_axis`, where `nx < ny` leaves the last interior row's two `x` ghost cells, and the two bottom corner cells the `y` wrap copies from them, holding the sentinel (the `x`-wrap judgment on `l0_ng1_axis` fails as well); a kernel whose right `x` ghost column reads one column too far (`U_in(ng+k+1,j)`) gives `0.098` on the axis pair and `0.14` on the `x`-mirror pair, and one whose top `y` ghost row reads one row too far gives `0.10` on the axis pair and `0.016` on the `y`-mirror pair, both also failing the wrap judgments on `l0_ng1`. The cross-target judgment is applied: `cross_target_state_agreement` over `U_out` is `<= 1e-12`.
 - `test_id`: `l0_invalid_ny_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_periodic_copy__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ny<2`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
-  - `judgment`: on `l0_invalid_ny`, `grid_valid = 0` and `checks.input_guard` fails.
+  - `quantities`: `grid_valid`
+  - `judgment`: on `l0_invalid_ny`, the `operation` refuses the input: `grid_valid == 0`, in the failure direction. The cross-target judgment is not applied.
 
 ## 7. Pass/fail aggregation rules
-- `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
-- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and `pass_when` is satisfied.
+- `per_test.pass_rule`: `pass` when every predicate of the test holds.
+- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and every predicate of the test holds.
 - `suite.pass_rule`: `pass` when all `test_id` are `pass` or `xfail`.
 
 ## 8. Traceability

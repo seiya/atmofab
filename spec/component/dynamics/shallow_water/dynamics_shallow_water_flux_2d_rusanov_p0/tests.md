@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_shallow_water_flux_2d_rusanov_p0_l0`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.4.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_shallow_water_flux_2d_rusanov_p0`
@@ -29,38 +29,47 @@ The symmetry pairs (`docs/TESTS.md` §Symmetry pairs) are carried on the distinc
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed single-interface states and defines no `case` sweep. Case expansion is defined at the `problem` level.
 
-## 5. Diagnostics contract
-- Require outputting `checks.equal_state_consistency`, `checks.wave_speed_nonnegative`, `checks.symmetry_pair`, and `checks.input_guard` in `diagnostics.json`. `checks.symmetry_pair` is computed on the three transformed cases and is `na` on every other case; it reads the outputs of `l0_distinct`, which the checks module keeps from that case's run (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §2, the accumulator ordering rule: each transformed case sorts after its base).
-- `pair_residual` of a transformed case and one output `q` (`F_star`, `G_star`, `a_x` or `a_y`) is `norm2(q - T_q(base)) / norm2(T_q(base))` over every element, where `T_q(base)` is the output of `l0_distinct`, captured after its run, that §1 maps to `q`: for the exchange, `F_star` is compared with the base's `G_star` with its last two components exchanged (`roll(flip(G_star, 0), 1)`), `G_star` with the base's `F_star` exchanged the same way, `a_x` with the base's `a_y` and `a_y` with its `a_x`; for a mirror, `F_star` is compared with the base's `F_star` and `G_star` with the base's `G_star`, each multiplied by the case's `pair_sign_F` or `pair_sign_G`, and each wave speed with the base's. The host evaluates it from the captured states (`at('l0_distinct')`, `docs/workflow/phases/phase_01_compile.md`); the transformation preserves the `l2` norm, so the normaliser is the `l2` norm of the base output it reads.
-- The state of a case, captured after setup and after the run, consists of `U_L`, `U_R`, `U_B`, `U_T` (3 values each, the supplied states, written at setup), `F_star`, `G_star` (3 values each, the sentinel `-999` at setup), `a_x`, `a_y` (scalars, the sentinel `-999` at setup), and `guard_ok`, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. Every `pass` judgment of §6 requires `guard_ok = 1` on the cases it names, and every `xfail` judgment requires `guard_ok = 0` on its cases; these are host-evaluated from the capture after the run (the refusal's observable consequence: the outputs of a rejected input are not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed flux). `checks.input_guard` is `pass` when `guard_ok = 1` and `fail` otherwise.
-- `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+## 5. Judged quantities
+A test is judged by the host's predicates over the captures alone (`docs/TESTS.md` requirement 9). Each quantity below is named on the `quantities` line of the tests that judge it, and is evaluated from the state captured after the run in each of the test's target cases.
+
+The state of a case, captured after setup and after the run, consists of `U_L`, `U_R`, `U_B`, `U_T` (3 values each, the supplied states, written at setup), `F_star`, `G_star` (3 values each, the sentinel `-999` at setup), `a_x`, `a_y` (scalars, the sentinel `-999` at setup) and `guard_ok`. The states, the fluxes and the wave speeds are arguments of the `operation`. `guard_ok` is a `record` the checks module writes of the `operation`'s logical result, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. The outputs of a rejected input are not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed flux.
+
+- `input_guard`: the captured flag `guard_ok`. It is `== 1` on the cases of a `pass` test and `== 0` on the cases of an `xfail` test.
+- `equal_state_consistency`: on the equal-state case, evaluated for each interface: `max|F_star_i - F(U_L)_i|` over the three components, with `F(U) = [hu, hu*hu/h + g*h*h/2, hu*hv/h]` of the captured `U_L`, and `max|G_star_i - G(U_B)_i|`, with `G(U) = [hv, hu*hv/h, hv*hv/h + g*h*h/2]` of the captured `U_B`, `g` that of the case's inputs.
+- `wave_speed_nonnegative`: `min(a_x, a_y)`, the smaller of the two captured wave speeds.
+- `pair_residual`: on a transformed case and for one output `q` (`F_star`, `G_star`, `a_x` or `a_y`), `norm2(q - T_q(base)) / norm2(T_q(base))` over every element, where `T_q(base)` is the output of `l0_distinct`, captured after its run, that §1 maps to `q`: for the exchange, `F_star` is compared with the base's `G_star` with its last two components exchanged (`roll(flip(G_star, 0), 1)`), `G_star` with the base's `F_star` exchanged the same way, `a_x` with the base's `a_y` and `a_y` with its `a_x`; for a mirror, `F_star` is compared with the base's `F_star` and `G_star` with the base's `G_star`, each multiplied by the case's `pair_sign_F` or `pair_sign_G`, and each wave speed with the base's. The host reads the base through `at('l0_distinct')` (`docs/workflow/phases/phase_01_compile.md`); the transformation preserves the `l2` norm, so the normaliser is the `l2` norm of the base output it reads.
+- `cross_target_state_agreement`: this target's run compared with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; on a target with no other certified variant it holds vacuously. It is outside the `quantities` line.
 
 ## 6. Test definitions
 - `test_id`: `l0_equal_state_consistency_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: with `U_L=U_R`, the dissipation term is analytically zero, so satisfy `$\max_i |F^{*}_i - F(U_L)_i| \le 10^{-12}$` component-wise (and the same for `G*` with `U_B=U_T`). The cross-target judgment is applied: `cross_target_state_agreement` over `F_star`, `G_star`, `a_x`, and `a_y` is `<= 1e-12`.
+  - `quantities`: `equal_state_consistency`, `input_guard`
+  - `judgment`: with `U_L=U_R`, the dissipation term is analytically zero, so `input_guard == 1` and `$\max_i |F^{*}_i - F(U_L)_i| \le 10^{-12}$` component-wise, and the same for `G*` with `U_B=U_T` (`equal_state_consistency <= 1e-12` at both interfaces). The cross-target judgment is applied: `cross_target_state_agreement` over `F_star`, `G_star`, `a_x`, and `a_y` is `<= 1e-12`.
 - `test_id`: `l0_wave_speed_nonnegative_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: on every normal case (the equal-state case, `l0_distinct` and its three transformed copies), the computed wave speeds `a_x`,`a_y` are non-negative. The cross-target judgment is applied: `cross_target_state_agreement` over `a_x` and `a_y` is `<= 1e-12`.
+  - `quantities`: `input_guard`, `wave_speed_nonnegative`
+  - `judgment`: on every normal case (the equal-state case, `l0_distinct` and its three transformed copies), `input_guard == 1` and the computed wave speeds `a_x`,`a_y` are non-negative (`wave_speed_nonnegative >= 0`). The cross-target judgment is applied: `cross_target_state_agreement` over `a_x` and `a_y` is `<= 1e-12`.
 - `test_id`: `l0_symmetry_pairs_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux`
   - `expected_outcome`: `pass`
-  - `judgment`: on `l0_distinct_axis`, `l0_distinct_xmir` and `l0_distinct_ymir`, `pair_residual` against `l0_distinct` of each of `F_star`, `G_star`, `a_x` and `a_y` is `<= 1.0e-12`, and `guard_ok = 1` (`checks.symmetry_pair`). Every term of a transformed flux is the base's term with its sign reversed or not, and every wave speed is the same maximum of the same two sums, so a conforming kernel gives the rounding of the reordered operations alone (measured `0` on each output of the three cases); the bound is the suite's cross-target bound. This suite judges no closed form, so the pairs are what pins the wave speed and its place in the dissipation term: a kernel without the absolute value in `a_x` (`u + c`) reads `0.145` (`a_x` of `l0_distinct_xmir`, `a_y` of `l0_distinct_axis`), one without it in `a_y` reads `0.127` (`a_y` of `l0_distinct_axis`) and `0.0488` (`a_y` of `l0_distinct_ymir`), and a kernel whose `y` flux is dissipated with `a_x` in place of `a_y` reads `0.0172` (`F_star` of `l0_distinct_axis`); each passes `l0_equal_state_consistency_pass` (the equal states have positive normal velocities and no dissipation) and `l0_wave_speed_nonnegative_pass`. The cross-target judgment is applied: `cross_target_state_agreement` over `F_star`, `G_star`, `a_x`, and `a_y` is `<= 1e-12`.
+  - `quantities`: `input_guard`, `pair_residual`
+  - `judgment`: on `l0_distinct_axis`, `l0_distinct_xmir` and `l0_distinct_ymir`, `pair_residual` against `l0_distinct` of each of `F_star`, `G_star`, `a_x` and `a_y` is `<= 1.0e-12`, and `input_guard == 1` on those cases and on `l0_distinct`. Every term of a transformed flux is the base's term with its sign reversed or not, and every wave speed is the same maximum of the same two sums, so a conforming kernel gives the rounding of the reordered operations alone (measured `0` on each output of the three cases); the bound is the suite's cross-target bound. This suite judges no closed form, so the pairs are what pins the wave speed and its place in the dissipation term: a kernel without the absolute value in `a_x` (`u + c`) reads `0.145` (`a_x` of `l0_distinct_xmir`, `a_y` of `l0_distinct_axis`), one without it in `a_y` reads `0.127` (`a_y` of `l0_distinct_axis`) and `0.0488` (`a_y` of `l0_distinct_ymir`), and a kernel whose `y` flux is dissipated with `a_x` in place of `a_y` reads `0.0172` (`F_star` of `l0_distinct_axis`); each passes `l0_equal_state_consistency_pass` (the equal states have positive normal velocities and no dissipation) and `l0_wave_speed_nonnegative_pass`. The cross-target judgment is applied: `cross_target_state_agreement` over `F_star`, `G_star`, `a_x`, and `a_y` is `<= 1e-12`.
 - `test_id`: `l0_invalid_dry_state_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `h<=0`
-  - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `quantities`: `input_guard`
+  - `judgment`: on the abnormal case of §2 (`l0_invalid_dry`), the `operation` refuses the input: `input_guard == 0`, in the failure direction. The cross-target judgment is not applied.
 
 ## 7. Pass/fail aggregation rules
-- `per_test.pass_rule`: `pass` when the judgment expression is satisfied.
-- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and `pass_when` is satisfied.
+- `per_test.pass_rule`: `pass` when every predicate of the test holds.
+- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and every predicate of the test holds.
 - `suite.pass_rule`: `pass` when all `test_id` are `pass` or `xfail`.
 
 ## 8. Traceability

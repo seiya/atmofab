@@ -348,7 +348,7 @@ Forbid a default value for a constant, and forbid reading a constant from anythi
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`). The constants the suite fixes fall into the `case` section of `spec.ir.yaml` as case inputs.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/microphysics/kessler/microphysics_kessler_warm_rain_1d_column/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/component/microphysics/kessler/microphysics_kessler_warm_rain_1d_column/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. `max` and `min` of §3 steps 1 and 2, the step $z$ of `terminal_velocity`, the powers of $q_r$ at $q_r=0$, the dependency's iteration, and the refusal of §4 are made explicit as non-differentiable operations.

@@ -3,7 +3,7 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_baseline`
-- `test_profile_version`: `0.6.0`
+- `test_profile_version`: `0.7.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d`
 - `spec_ref.spec_version`: `0.4.7`
@@ -109,7 +109,7 @@ On `williamson_tc5_cone + oblique_mode` the initial momentum is zero in both dir
 The functionals of 2-7 are end-state functionals and move by less than `2%` (`0.9%` in the transverse momentum at `nx=32`, `1.8%` in the momentum exchange of 6-5) when the source term $S_b$ of the Controlled Spec §5 step 4 is evaluated once per step at $U^n$ instead of at each stage state, the error that makes the topographic forcing first order in time; each stays inside its band. The time integration of the forced case is judged by a pair of `williamson_tc5_cone + linear_wave_x` runs at `nx=64` that differ only in `dt_scale` (`1.0` and `0.5`): the difference of their final `hv`, normalised by the initial `hu` of the base case, is `errors.time_pair.hv_l2_rel` (5-4). Its reference value is `8.781e-6`; the pair at `dt_scale` `0.5` and `0.25` gives `2.178e-6`, a ratio of `4.0`, the second order of the §5 step 5 composition. Measured on the reference implementation of 5-5 with one substitution at a time: $S_b$ evaluated at $U^n$ for the second call gives `1.17e-4`; the one-call step `6.26e-4`; `dt` left at $\mathrm{dt\_raw}$ without step 4 of §3 (the run ends past $t_{end}$) `1.28e-4`; half the steps `1.07e-4`; a state left at its initial value `0`; a gravitational acceleration halved `4.29e-6`; the interface elevation taken as the minimum `7.74e-6`; $\lambda_0$ from one direction `3.56e-5` and `cfl_target=0.5` `1.09e-5`. Each lies outside the band of 5-5. The interface elevation taken as the average (`8.25e-6`) and the interface state carrying the cell momentum (`7.94e-6`) lie inside it and are excluded by the `nx=32` band of `transverse_momentum_l2_rel` (5-5, 2-7). The pair does not fix the exchange of `dx` and `dy` in the dt rule (2-5).
 
 ### 2-9. The `CFL` guard case
-`swe2d_guard_n032_sx000_sy000_dts240` carries `dt_scale=2.40`, so the §3 procedure gives $\mathrm{n\_step}=38$ and $dt=5.263\times10^{-3}$, and the stability index of the Controlled Spec §5 is `1.056` at the initial state and at its maximum over the run (`cfl.max`, 5-2) — above the threshold `1.0` of the `CFL` judgment, which is what 6-7 detects. The case performs all of its §3 steps and stays wet: the depth minimum over the initial state and every committed state is the initial minimum, `0.999005`, against the positivity threshold `5.0e-2` of 5-5, measured on the reference implementation of 5-5. The wet-domain error of the Controlled Spec §5 is not reached by this case. A run of this case whose step loop stops on that error performs fewer steps: its `run.n_step` is the count of steps performed (§3), its judgment against the §3 $\mathrm{n\_step}$ in 6-7 reports `fail`, and 6-7 states what that status decides. The step count and the depth minimum stated here are properties of the fixed discretization at the case's inputs, not conditions of the `pass_when` of 6-7, which reads the `CFL` judgment alone: the `run.n_step` and depth-positivity judgments of the case are applied and their values and statuses reported (6-7).
+`swe2d_guard_n032_sx000_sy000_dts240` carries `dt_scale=2.40`, so the §3 procedure gives $\mathrm{n\_step}=38$ and $dt=5.263\times10^{-3}$, and the stability index of the Controlled Spec §5 is `1.056` at the initial state and at its maximum over the run (`cfl.max`, 5-4) — above the threshold `1.0` of the `CFL` judgment, which is what 6-7 detects. The case performs all of its §3 steps and stays wet: the depth minimum over the initial state and every committed state is the initial minimum, `0.999005`, against the positivity threshold `5.0e-2` of 5-5, measured on the reference implementation of 5-5. The wet-domain error of the Controlled Spec §5 is not reached by this case. A run of this case whose step loop stops on that error performs fewer steps: its `run.n_step` is the count of steps performed (§3), and 6-7 does not judge it. The step count and the depth minimum stated here are properties of the fixed discretization at the case's inputs; 6-7 judges the `CFL` alone.
 
 ### 2-10. The rectangular topography case and the initial topography
 Every `williamson_tc5_cone` case of §4 but one is square, and on a square grid an exchange of `dx` and `dy` in the source term of the Controlled Spec §5 step 4, or of `L_x` and `L_y` in the topography of 2-2, is the identity. `swe2d_lake_n064_sx000_sy000_dts100_rect` (4-3) carries the grid of 2-5 and `williamson_tc5_cone + lake_at_rest`. The §3 procedure gives $\mathrm{n\_step}=223$ and $dt=8.969\times10^{-4}$; on the reference implementation of 5-5 the case gives `5e-16` in `lake_rest.max_velocity`, `0` in `lake_rest.max_surface_deviation`, `0.4494` in `cfl.max` and `0.8225` in `extrema.h.min`. Measured on the same implementation with one substitution at a time: the `y` component of the source term divided by `dx` instead of `dy` gives `0.14` in `lake_rest.max_velocity`, and the two spacings exchanged in the source term `0.35`; both are the identity on every other case of §4.
@@ -140,7 +140,7 @@ The error of the three cases of the `swe2d_flat_ref` sweep (4-1) and of the rect
   3. $\mathrm{n\_step}=\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$.
   4. $dt=(t_{end}-t_{start})/\mathrm{n\_step}$.
 - $\mathrm{cfl\_target}=0.45$.
-- The stop condition is $n=\mathrm{n\_step}$. The number of steps performed is a state variable of the case: the state the host captures after `case_setup` and after `case_run` consists of `h`, `hu`, `hv`, `z_b` (`nx` × `ny` each) and the scalar `n_step` (`0` after setup, the count of `SSPRK2` steps of the Controlled Spec §5 step 5 performed after the run, incremented by the step loop at each step), and it is emitted as the diagnostic `run.n_step`.
+- The stop condition is $n=\mathrm{n\_step}$. The number of steps performed is a state variable of the case: the state the host captures after `case_setup` and after `case_run` consists of `h`, `hu`, `hv`, `z_b` (`nx` × `ny` each) and the scalar `n_step` (`0` after setup, the count of `SSPRK2` steps of the Controlled Spec §5 step 5 performed after the run, incremented by the step loop at each step), and it is judged as `run.n_step`. The state also holds the two scalars the published operation returns as output arguments, `cfl_run_max` and `h_min_run` (`source: reported`, 5-4; `0` after setup).
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
@@ -189,29 +189,23 @@ The symmetry-pair cases of 2-11. The `base_case_id` of each is the base whose fi
   - `swe2d_flat_ref_n064_sx000_sy000_dts100_rectymir`: the `base_case_id` references `swe2d_flat_ref_n064_sx000_sy000_dts100_recty`; overrides only `wave_sign` to `-1` and `shift_y_fraction` to `0.5`.
   - `swe2d_ref_n064_sx000_sy000_dts100_ymir`: the `base_case_id` references `swe2d_ref_n064_sx000_sy000_dts100`; overrides only `y_c_fraction` to `1/3`.
 
-## 5. Diagnostics contract
-### 5-1. Artifacts
-- The diagnostic output file is `diagnostics.json`.
-- The judgment output file is `verdict.json`.
+## 5. Judged quantities
+### 5-1. How a quantity is judged
+A test is judged by the host's predicates over the captures alone (`docs/TESTS.md` requirement 9). A name below is what a test's `quantities` line lists; a two-sided band is two names, `<name>.lower` and `<name>.upper`, each with its own predicate. The definitions of 5-4 are expressions over the captured state, the captured time and the case inputs, and a value measured on the reference implementation is a calibration, not an input.
 
-### 5-2. Required diagnostic items
-`diagnostics.json` requires the following fields, each a scalar. `<v>` stands for each of `h`, `hu`, `hv`; `<k>` for each of `l1`, `l2`, `linf`; `<pair>` for each of `n032_to_n064` and `n064_to_n128`; `<n>` for each of `n032`, `n064`, `n128`; `<r>` for each of `eta`, `hu`, `hv`.
+### 5-2. Judged names
+The names, each a scalar. `<v>` stands for each of `h`, `hu`, `hv`; `<k>` for each of `l1`, `l2`, `linf`; `<pair>` for each of `n032_to_n064` and `n064_to_n128`; `<n>` for each of `n032`, `n064`, `n128`; `<r>` for each of `eta`, `hu`, `hv`.
 - `cfl.max`
-- `conserved.mass.initial`
-- `conserved.mass.final`
-- `conserved.momentum_x.initial`
-- `conserved.momentum_x.final`
-- `conserved.momentum_y.initial`
-- `conserved.momentum_y.final`
 - `extrema.h.min`
-- `errors.analytic_<v>.<k>_rel_tend` (nine fields; `errors.analytic_h.l2_rel_tend` among them)
-- `convergence.<pair>.<k>_order` (the order of `h`; six fields)
-- `convergence.<pair>.hu_<k>_order` (six fields)
-- `errors.restricted.<n>.<r>_<k>_rel` (twenty-seven fields)
-- `convergence.restricted.<pair>.<r>_<k>_order` (eighteen fields)
-- `errors.axis_exchange.<v>_l2_rel` (three fields)
-- `errors.mirror_x.<v>_l2_rel` (three fields)
-- `errors.mirror_y.<v>_l2_rel` (three fields)
+- `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`
+- `errors.analytic_<v>.<k>_rel_tend` (nine; `errors.analytic_h.l2_rel_tend` among them)
+- `convergence.<pair>.<k>_order` (the order of `h`; six)
+- `convergence.<pair>.hu_<k>_order` (six)
+- `errors.restricted.<n>.<r>_<k>_rel` (twenty-seven)
+- `convergence.restricted.<pair>.<r>_<k>_order` (eighteen)
+- `errors.axis_exchange.<v>_l2_rel` (three)
+- `errors.mirror_x.<v>_l2_rel` (three)
+- `errors.mirror_y.<v>_l2_rel` (three)
 - `errors.symmetry_h_l2_rel`
 - `invariants.lake_rest.max_velocity`
 - `invariants.lake_rest.max_surface_deviation`
@@ -220,21 +214,21 @@ The symmetry-pair cases of 2-11. The `base_case_id` of each is the base whose fi
 - `errors.time_pair.hv_l2_rel`
 - `errors.initial_zb.linf_rel`
 
-### 5-3. `N/A` rule
-- When a diagnostic item is incomputable or non-applicable, make the output value `null` and require `reason_na`.
-- The nine `errors.analytic_*` fields are `N/A` for anything other than `topography_profile=flat` with `initial_profile=linear_wave_x` or `linear_wave_y`.
-- The `convergence.n032_to_n064.*` fields (the three of `h` and the three of `hu`) are carried by `swe2d_flat_ref_n064_sx000_sy000_dts100` and the `convergence.n064_to_n128.*` fields by `swe2d_flat_ref_n128_sx000_sy000_dts100`; every other case omits them (5-4).
-- The `errors.restricted.*` and `convergence.restricted.*` fields are carried by `swe2d_ref_n256_sx000_sy000_dts100`, which sorts after the three coarser levels of its family and reads their final states; every other case omits them (5-4).
-- `errors.axis_exchange.*` is carried by each axis-exchange case of 4-3, `errors.mirror_x.*` by each mirror-in-`x` case and `errors.mirror_y.*` by each mirror-in-`y` case, each reading its base's final state; every other case omits them.
+### 5-3. Cases of each quantity
+- A quantity is evaluated on the target cases of the tests that list it. `N/A` below means it is not defined on that case, so no test judges it there.
+- The nine `errors.analytic_*` quantities are `N/A` for anything other than `topography_profile=flat` with `initial_profile=linear_wave_x` or `linear_wave_y`.
+- The `convergence.n032_to_n064.*` quantities (the three of `h` and the three of `hu`) are carried by `swe2d_flat_ref_n064_sx000_sy000_dts100` and the `convergence.n064_to_n128.*` quantities by `swe2d_flat_ref_n128_sx000_sy000_dts100`; no other case evaluates them (5-4).
+- The `errors.restricted.*` and `convergence.restricted.*` quantities are carried by `swe2d_ref_n256_sx000_sy000_dts100`, which sorts after the three coarser levels of its family and reads their final states; no other case evaluates them (5-4).
+- `errors.axis_exchange.*` is carried by each axis-exchange case of 4-3, `errors.mirror_x.*` by each mirror-in-`x` case and `errors.mirror_y.*` by each mirror-in-`y` case, each reading its base's final state; no other case evaluates them.
 - `errors.symmetry_h_l2_rel` is `N/A` for anything other than a translation-pair evaluation.
-- `momx_drift_rel` and `momy_drift_rel` are computed for every case: judged against the thresholds of 5-5 for `topography_profile=flat` in the tests that apply the momentum-conservation judgment (6-2, 6-6, 6-8, 6-9), as the two-sided band of 5-5 for `swe2d_resp_n064_sx000_sy000_dts100` (6-5), and reported and not judged for the other `williamson_tc5_cone` cases, where the source term exchanges momentum and the response is judged by `response.transverse_momentum.l2_rel_tend` (6-1, 6-4, 6-10) or the lake-at-rest invariance (6-3).
+- `momx_drift_rel` and `momy_drift_rel` are computed for every case: judged against the thresholds of 5-5 for `topography_profile=flat` in the tests that apply the momentum-conservation judgment (6-2, 6-6, 6-8, 6-9), as the two-sided band of 5-5 for `swe2d_resp_n064_sx000_sy000_dts100` (6-5), and not judged for the other `williamson_tc5_cone` cases, where the source term exchanges momentum and the response is judged by `response.transverse_momentum.l2_rel_tend` (6-1, 6-4, 6-10) or the lake-at-rest invariance (6-3).
 - `response.transverse_momentum.l2_rel_tend` is `N/A` for anything other than `topography_profile=williamson_tc5_cone` with `initial_profile=linear_wave_x`.
 - `errors.time_pair.hv_l2_rel` is `N/A` for anything other than the halved-`dt` case of the time-refinement pair; it is carried by `swe2d_ref_n064_sx000_sy000_dts100_half`, which sorts after its base case, and reads the base case's initial and final state.
 - `invariants.lake_rest.*` is `N/A` for anything other than `initial_profile=lake_at_rest`.
 - `run.n_step` is computed for every case and is never `N/A`.
 - `errors.initial_zb.linf_rel` is `N/A` for anything other than `topography_profile=williamson_tc5_cone`.
 
-### 5-4. Definition of the metrics
+### 5-4. Definition of the quantities
 The relative mass-drift value is defined by the following.
 $$
 \mathrm{mass\_drift\_rel}=
@@ -266,7 +260,7 @@ the error of $q$ in the norm $k\in\{1, 2, \infty\}$ is
 $$
 \frac{\|q-q_{ref}\|_k}{N_{q,k}}
 $$
-with the normaliser $N_{q,k}$: for `h` and for the momentum component along the wave (`hu` for `linear_wave_x`, `hv` for `linear_wave_y`), $\|q_{ref}\|_k$; for the other momentum component, whose reference is zero, $\max(\|hu_{ref}\|_k, \|hv_{ref}\|_k)$. They are emitted as `errors.analytic_<v>.<k>_rel_tend`; the `l2` error of `h`,
+with the normaliser $N_{q,k}$: for `h` and for the momentum component along the wave (`hu` for `linear_wave_x`, `hv` for `linear_wave_y`), $\|q_{ref}\|_k$; for the other momentum component, whose reference is zero, $\max(\|hu_{ref}\|_k, \|hv_{ref}\|_k)$. They are named `errors.analytic_<v>.<k>_rel_tend`; the `l2` error of `h`,
 $$
 \mathrm{analytic\_h\_l2\_rel}=
 \frac{\|h_{num}(t_{end})-h_{ref}(t_{end})\|_2}{\|h_{ref}(t_{end})\|_2},
@@ -280,13 +274,13 @@ $$
 $$
 Here $\Delta x=\mathrm{shift\_x\_fraction}\cdot L_x$ and $\Delta y=\mathrm{shift\_y\_fraction}\cdot L_y$.
 
-`convergence_order` is a cross-case reduction, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, over the error of each norm of `h` and of `hu` (`errors.analytic_h.<k>_rel_tend`, `errors.analytic_hu.<k>_rel_tend`) between the cases `swe2d_flat_ref_n032_sx000_sy000_dts100` and `swe2d_flat_ref_n064_sx000_sy000_dts100` (the pair `n032_to_n064`) and between `swe2d_flat_ref_n064_sx000_sy000_dts100` and `swe2d_flat_ref_n128_sx000_sy000_dts100` (the pair `n064_to_n128`). It is emitted as a per-case field of the finer case of each pair: `convergence.<pair>.<k>_order` for `h` (`convergence.<pair>.l2_order` is the order of `analytic_h_l2_rel`) and `convergence.<pair>.hu_<k>_order` for `hu`. The cases preceding the one that completes a reduction omit those fields, and so do the override cases of 4-3, which are not members of a refinement pair. The cross-wave momentum `hv` of the family is zero up to round-off (2-12) and has no order.
+`convergence_order` is a cross-case reduction, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, over the error of each norm of `h` and of `hu` (`errors.analytic_h.<k>_rel_tend`, `errors.analytic_hu.<k>_rel_tend`) between the cases `swe2d_flat_ref_n032_sx000_sy000_dts100` and `swe2d_flat_ref_n064_sx000_sy000_dts100` (the pair `n032_to_n064`) and between `swe2d_flat_ref_n064_sx000_sy000_dts100` and `swe2d_flat_ref_n128_sx000_sy000_dts100` (the pair `n064_to_n128`). It is evaluated at the finer case of each pair: `convergence.<pair>.<k>_order` for `h` (`convergence.<pair>.l2_order` is the order of `analytic_h_l2_rel`) and `convergence.<pair>.hu_<k>_order` for `hu`. The cases preceding the one that completes a reduction do not evaluate them, and so do the override cases of 4-3, which are not members of a refinement pair. The cross-wave momentum `hv` of the family is zero up to round-off (2-12) and has no order.
 
 The restricted-reference errors of the cone family are defined by the following, with $q^{(n)}$ the final state of `swe2d_ref_n<n>_sx000_sy000_dts100` for $n=32, 64, 128$ and $q^{(256)}$ that of `swe2d_ref_n256_sx000_sy000_dts100`, $q$ one of the free surface $\eta=h+z_b$ (with each level's own captured `z_b`), `hu` and `hv`, and $\mathrm{coarsen}(q^{(256)}, 256/n)$ the mean of $q^{(256)}$ over the $(256/n)\times(256/n)$ blocks of cells that cover each cell of the level $n$ (the cell $(i, j)$ of level $n$ is covered by the cells $((i-1)f+1..if,\ (j-1)f+1..jf)$ of level `256`, $f=256/n$):
 $$
 \mathrm{restricted}^{(n)}_{q,k}=\frac{\|q^{(n)}-\mathrm{coarsen}(q^{(256)},256/n)\|_k}{N^{(n)}_{q,k}}
 $$
-with $N^{(n)}_{q,k}=\|\mathrm{coarsen}(q^{(256)},f)\|_k$ for $\eta$ and `hu`, and the maximum of that norm over the two restricted momentum components for `hv` (2-13). They are emitted on `swe2d_ref_n256_sx000_sy000_dts100` as `errors.restricted.<n>.<r>_<k>_rel` with `<n>` the zero-padded level (`n032`, `n064`, `n128`) and `<r>` one of `eta`, `hu`, `hv` (5-2), and the orders $\log_2(\mathrm{restricted}^{(n)}/\mathrm{restricted}^{(2n)})$ as `convergence.restricted.<pair>.<r>_<k>_order`.
+with $N^{(n)}_{q,k}=\|\mathrm{coarsen}(q^{(256)},f)\|_k$ for $\eta$ and `hu`, and the maximum of that norm over the two restricted momentum components for `hv` (2-13). They are evaluated on `swe2d_ref_n256_sx000_sy000_dts100` as `errors.restricted.<n>.<r>_<k>_rel` with `<n>` the zero-padded level (`n032`, `n064`, `n128`) and `<r>` one of `eta`, `hu`, `hv` (5-2), and the orders $\log_2(\mathrm{restricted}^{(n)}/\mathrm{restricted}^{(2n)})$ as `convergence.restricted.<pair>.<r>_<k>_order`.
 
 The symmetry-pair residuals are defined by the following, with $q'$ the final state of the transformed case and $q$ that of its base (4-3), every norm the `l2` norm over all cells, $N_h=\|h\|_2$ and $N_m=\max(\|hu\|_2,\|hv\|_2)$ the base's norms, $\cdot^T$ the exchange of the two array axes, $\mathrm{flip}_x$ the reversal of the first array axis, `x` (the cell $(i, j)$ taken from $(nx+1-i, j)$; the grammar's `flip(·, 0)`, whose axes count from `0`), and $\mathrm{flip}_y$ the reversal of the second array axis, `y` (the cell $(i, j)$ taken from $(i, ny+1-j)$; `flip(·, 1)`):
 $$
@@ -298,7 +292,7 @@ $$
 $$
 \mathrm{mirror\_y}:\quad \frac{\|h'-\mathrm{flip}_y(h)\|}{N_h},\quad \frac{\|hu'-\mathrm{flip}_y(hu)\|}{N_m},\quad \frac{\|hv'+\mathrm{flip}_y(hv)\|}{N_m}
 $$
-They are emitted as `errors.axis_exchange.{h,hu,hv}_l2_rel`, `errors.mirror_x.{h,hu,hv}_l2_rel` and `errors.mirror_y.{h,hu,hv}_l2_rel` on the transformed case.
+They are named `errors.axis_exchange.{h,hu,hv}_l2_rel`, `errors.mirror_x.{h,hu,hv}_l2_rel` and `errors.mirror_y.{h,hu,hv}_l2_rel` on the transformed case.
 
 The velocity metric of lake-at-rest invariance is defined by the following.
 $$
@@ -315,26 +309,28 @@ $$
 
 `run.n_step` is the state variable `n_step` after the run (§3); its judged value is the $\mathrm{n\_step}$ of the §3 procedure evaluated from the case's inputs, $\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$ with $\mathrm{dt\_raw}$ from the initial state.
 
-The transverse-momentum response (`williamson_tc5_cone + linear_wave_x` only) is defined by the following, over all cells, and emitted as `response.transverse_momentum.l2_rel_tend`.
+The transverse-momentum response (`williamson_tc5_cone + linear_wave_x` only) is defined by the following, over all cells, and named `response.transverse_momentum.l2_rel_tend`.
 $$
 \mathrm{transverse\_momentum\_l2\_rel}=\frac{\|hv(t_{end})\|_2}{\|hu(0)\|_2}
 $$
 
-The time-refinement difference is defined by the following, with $hv_{base}$ and $hu_{base}(0)$ the final `hv` and the initial `hu` of `swe2d_ref_n064_sx000_sy000_dts100` and $hv_{half}$ the final `hv` of `swe2d_ref_n064_sx000_sy000_dts100_half`; it is emitted as `errors.time_pair.hv_l2_rel` on the latter.
+The time-refinement difference is defined by the following, with $hv_{base}$ and $hu_{base}(0)$ the final `hv` and the initial `hu` of `swe2d_ref_n064_sx000_sy000_dts100` and $hv_{half}$ the final `hv` of `swe2d_ref_n064_sx000_sy000_dts100_half`; it is named `errors.time_pair.hv_l2_rel` on the latter.
 $$
 \mathrm{time\_pair\_hv\_l2\_rel}=\frac{\|hv_{half}(t_{end})-hv_{base}(t_{end})\|_2}{\|hu_{base}(0)\|_2}
 $$
 
-The initial-topography error (`williamson_tc5_cone` only) is defined by the following, with $z_b^{ref}$ the closed form of 2-2 evaluated at the cell centres $(x_i,y_j)=((i+\tfrac12)\,dx,\ (j+\tfrac12)\,dy)$ and $z_b(0)$ the `z_b` captured after `case_setup` (§3); it is emitted as `errors.initial_zb.linf_rel`.
+The initial-topography error (`williamson_tc5_cone` only) is defined by the following, with $z_b^{ref}$ the closed form of 2-2 evaluated at the cell centres $(x_i,y_j)=((i+\tfrac12)\,dx,\ (j+\tfrac12)\,dy)$ and $z_b(0)$ the `z_b` captured after `case_setup` (§3); it is named `errors.initial_zb.linf_rel`.
 $$
 \mathrm{initial\_zb\_linf\_rel}=\frac{\max_{i,j}\left|z_{b,i,j}(0)-z_b^{ref}(x_i,y_j)\right|}{h_s}
 $$
+
+`cfl.max` is judged by two predicates under that one name, and `extrema.h.min` likewise, because a run-wide extremum cannot be evaluated from the two captures. The end-point predicate is the host's: `cfl.max` as `dt * max(lam0, lam1)`, with $\lambda_0$ and $\lambda_1$ the stability index of the Controlled Spec §5 divided by $dt$ at the initial and the final capture and $dt$ the one the §3 procedure gives from $\lambda_0$; `extrema.h.min` as the smaller of the minima of `h` at the two captures. The other predicate reads the kernel's report: `cfl_run_max`, the maximum of that index over the initial state and every committed state of the run, with the case's `dt`, and `h_min_run`, the minimum of $h$ over all interior cells and over the initial state and every committed state. These two are `source: reported`: outputs of the published operation under exactly these names, whatever the kernel calls its dummy arguments, each a whole-domain reduction on a distributed shape, and each test that reads one names it on its `reported` line. The Compile gate refuses a read of one with no end-point predicate of the same quantity beside it. A kernel whose report hides a mid-run excursion while the end points are sound passes both; per-step capture is not built yet.
 
 `cross_target_state_agreement` compares this target's numerical solution with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment). For each of the state variables `h`, `hu`, and `hv` at $t_{end}$ of a case, with $q$ that variable and $q^{ref}$ the same variable at $t_{end}$ of the same case in the other variant,
 $$
 \mathrm{cross\_target\_state\_agreement}=\frac{\max_{i,j} |q_{i,j}-q^{ref}_{i,j}|}{N_q}
 $$
-The normaliser of `h` is $N_h=\max(\max_{i,j}|h_{i,j}|,\ \max_{i,j}|h^{ref}_{i,j}|,\ 1)$. The two momentum components share one normaliser, the momentum scale of the two variants, $N_{hu}=N_{hv}=\max(\max_{i,j}|hu_{i,j}|,\ \max_{i,j}|hv_{i,j}|,\ \max_{i,j}|hu^{ref}_{i,j}|,\ \max_{i,j}|hv^{ref}_{i,j}|,\ 1)$: a component that is a small residue of the flow (the cross-stream `hv` of a zonal jet) carries the rounding of the whole momentum field, so its own maximum is not its rounding scale. It is evaluated by the host from the captured state, against each other variant separately and for each variable separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
+The normaliser of `h` is $N_h=\max(\max_{i,j}|h_{i,j}|,\ \max_{i,j}|h^{ref}_{i,j}|,\ 1)$. The two momentum components share one normaliser, the momentum scale of the two variants, $N_{hu}=N_{hv}=\max(\max_{i,j}|hu_{i,j}|,\ \max_{i,j}|hv_{i,j}|,\ \max_{i,j}|hu^{ref}_{i,j}|,\ \max_{i,j}|hv^{ref}_{i,j}|,\ 1)$: a component that is a small residue of the flow (the cross-stream `hv` of a zonal jet) carries the rounding of the whole momentum field, so its own maximum is not its rounding scale. It is evaluated by the host from the captured state, against each other variant separately and for each variable separately; on a target with no other certified variant it holds vacuously.
 
 ### 5-5. Default thresholds
 The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentum exchange of 6-5 and `time_pair_hv_l2_rel` are calibrated against independent reference implementations of the Controlled Spec §5 scheme, and every measurement this document attributes to "the reference implementation of 5-5" was taken on one of them: the bands of the three `swe2d_flat_ref` sweep cases and of `swe2d_flat_ref_n064_sx000_sy000_dts100_rect`, and 2-5, on the implementation recorded on issue #491 (calibration comment), which reproduces the values of the certified variants of versions `0.4.1` to `0.4.3` of this node to five digits; 2-6 to 2-10 and the bands of `transverse_momentum_l2_rel`, the momentum exchange, `time_pair_hv_l2_rel` and the `y`-direction case on the implementation recorded on issues #494 and #495 (calibration comments), which reproduces the captured state of the certified variant of version `0.4.5` of this node on every case to `3e-15`; 2-11 to 2-13, the three-norm bands and orders, the restricted-reference bands and orders, the `nx=256` band of `transverse_momentum_l2_rel` and the symmetry pairs on the same implementation with the inputs of 2-1 to 2-3 added, recorded on issue #513 (calibration comment). Every band introduced in this version follows the rule of the `analytic_h_l2_rel` bands below — `0.9` and `1.1` times the reference value, rounded outward to two digits, the value being a property of the fixed discretization that moves by round-off alone — and every order bound is the reference order minus `0.3`, rounded down to one decimal (`0.4` where the reference order is below `0.7`), except the `l2` order of `h`, `0.80`, kept from the previous version.
@@ -342,10 +338,10 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
 - $\mathrm{cfl.max} \le 1.0$, and `run.n_step` equals the §3 $\mathrm{n\_step}$ of the case (an integer; judged as $|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$)
 - $h_{min} \ge 5.0e{-2}$
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$
-- $\mathrm{momx\_drift\_rel} \le 1.0e{-10}$ and $\mathrm{momy\_drift\_rel} \le 1.0e{-10}$ for the `topography_profile=flat` cases. For `swe2d_resp_n064_sx000_sy000_dts100` (6-5) each is judged as the two-sided band $[1.3e{-6},\ 1.7e{-6}]$ (references `1.509e-6` and `1.511e-6`, 2-7; `0.9` and `1.1` times them, rounded outward to two digits): the two momenta are zero at $t=0$ and their value at $t_{end}$ is the integral of the source term of the Controlled Spec §5 over the run, a property of the fixed discretization — a value below the band is a run that did not perform the §5 update or a source term weaker than §5's, and a value above it a stronger one. Each bound is a DISTINCT judged quantity of the test with its own host-evaluated corroborant over the captured state, as for `analytic_h_l2_rel`.
-- `analytic_h_l2_rel` is judged as a two-sided band (6-2, 6-8, 6-9). The Controlled Spec §5 fixes every term of the discretization (`p0` interface states, the Rusanov flux, the periodic ghost, the two-stage `SSPRK2` composition of its step 5) and §3 fixes `dt`, so the error against the linear-wave solution at $t_{end}$ is a property of the discretization — its truncation error and numerical diffusion — and not a free quantity: a value below the band is not a better scheme, it is a run that did not perform the §5 update (a state that holds the theoretical solution at $t_{end}$ without the update has zero error and passes an upper bound alone), and a value above it is a state left at its initial value (`1.304e-3` on every `linear_wave_x` case of `swe2d_flat_ref`, `1.009e-3` on the `y`-direction case of 2-6), a stopped update (half the steps gives `1.13e-3` at `nx=64`) or a wrong one. The value moves by round-off alone under a conforming implementation — the certified variants of versions `0.4.1` to `0.4.3` of this node agree to `3e-12` relative, and `dt_scale` from `0.5` to `2.0` moves it by at most `0.12%` — so the bounds are `0.9` and `1.1` times the reference value, rounded outward to two digits. The lower bound and the upper bound are two DISTINCT judged quantities of the test — each names its own `quantity` and each requires its own host-evaluated corroborant over the captured state — not two thresholds on one quantity: a corroborant that reads only the upper bound leaves the lower bound to the checks module's own report, and a state that holds the theoretical solution with a reported value inside the band would then pass. For `swe2d_flat_ref` the band is $[2.0e{-4},\ 2.5e{-4}]$ for `nx=32` (reference `2.2671e-4`), $[1.1e{-4},\ 1.4e{-4}]$ for `nx=64` (reference `1.2428e-4`), and $[5.8e{-5},\ 7.2e{-5}]$ for `nx=128` (reference `6.5158e-5`); for the rectangular case `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` it is $[1.1e{-4},\ 1.4e{-4}]$ (reference `1.2427e-4`, 2-5); for the `y`-direction case `swe2d_flat_ref_n064_sx000_sy000_dts100_recty` it is $[2.5e{-4},\ 3.2e{-4}]$ (reference `2.8482e-4`, 2-6). The one-call step $U^{n+1}=U^n+\Delta t\,L(U^n)$ (the forward-Euler step the Controlled Spec §5 step 5 excludes) gives `0.78` to `0.83` of the reference value on every case and fails the lower bound; a gravitational acceleration in error by `5%` moves the value outside the band on `nx=128` in either direction, and one in error by `1%` on no case.
-- `transverse_momentum_l2_rel` is judged as a two-sided band (6-1, 6-4, 6-10). The Controlled Spec §5 fixes the reconstruction and the source term, so the transverse momentum the cone generates from a `y`-uniform wave is a property of the discretization (2-7): a value below the band is a run that did not perform the §5 update or a reconstruction weaker than §5's, and a value above it a stronger one. The bounds are `0.9` and `1.1` times the reference value, rounded outward to two digits: $[1.4e{-2},\ 1.8e{-2}]$ for `nx=32` (reference `1.583e-2`), $[1.6e{-2},\ 2.1e{-2}]$ for `nx=64` (reference `1.861e-2`; the halved case of 2-8 carries the same band, its reference `1.861e-2` equal to its base's to four digits), $[1.7e{-2},\ 2.2e{-2}]$ for `nx=128` (reference `1.998e-2`), $[1.8e{-2},\ 2.3e{-2}]$ for `nx=256` (reference `2.074e-2`, 2-13), and $[1.4e{-4},\ 1.8e{-4}]$ for `swe2d_ref_n064_sx000_sy000_dts100_tend500` (reference `1.573e-4`). The lower bound and the upper bound are two DISTINCT judged quantities of the test, each with its own host-evaluated corroborant over the captured state, as for `analytic_h_l2_rel`.
-- `time_pair_hv_l2_rel` is judged as a two-sided band $[7.9e{-6},\ 9.7e{-6}]$ on `swe2d_ref_n064_sx000_sy000_dts100_half` (reference `8.781e-6`, 2-8; `0.9` and `1.1` times it, rounded outward to two digits), as two distinct judged quantities, each with its own host-evaluated corroborant over the captured states of the two cases.
+- $\mathrm{momx\_drift\_rel} \le 1.0e{-10}$ and $\mathrm{momy\_drift\_rel} \le 1.0e{-10}$ for the `topography_profile=flat` cases. For `swe2d_resp_n064_sx000_sy000_dts100` (6-5) each is judged as the two-sided band $[1.3e{-6},\ 1.7e{-6}]$ (references `1.509e-6` and `1.511e-6`, 2-7; `0.9` and `1.1` times them, rounded outward to two digits): the two momenta are zero at $t=0$ and their value at $t_{end}$ is the integral of the source term of the Controlled Spec §5 over the run, a property of the fixed discretization — a value below the band is a run that did not perform the §5 update or a source term weaker than §5's, and a value above it a stronger one. Each bound is a DISTINCT judged quantity of the test with its own host predicate over the captured state, as for `analytic_h_l2_rel`.
+- `analytic_h_l2_rel` is judged as a two-sided band (6-2, 6-8, 6-9). The Controlled Spec §5 fixes every term of the discretization (`p0` interface states, the Rusanov flux, the periodic ghost, the two-stage `SSPRK2` composition of its step 5) and §3 fixes `dt`, so the error against the linear-wave solution at $t_{end}$ is a property of the discretization — its truncation error and numerical diffusion — and not a free quantity: a value below the band is not a better scheme, it is a run that did not perform the §5 update (a state that holds the theoretical solution at $t_{end}$ without the update has zero error and passes an upper bound alone), and a value above it is a state left at its initial value (`1.304e-3` on every `linear_wave_x` case of `swe2d_flat_ref`, `1.009e-3` on the `y`-direction case of 2-6), a stopped update (half the steps gives `1.13e-3` at `nx=64`) or a wrong one. The value moves by round-off alone under a conforming implementation — the certified variants of versions `0.4.1` to `0.4.3` of this node agree to `3e-12` relative, and `dt_scale` from `0.5` to `2.0` moves it by at most `0.12%` — so the bounds are `0.9` and `1.1` times the reference value, rounded outward to two digits. The lower bound and the upper bound are two DISTINCT judged quantities of the test — `<name>.lower` and `<name>.upper`, each with its own host predicate over the captured state — not two thresholds on one quantity: a state that holds the transverse momentum at zero falls below the lower bound. For `swe2d_flat_ref` the band is $[2.0e{-4},\ 2.5e{-4}]$ for `nx=32` (reference `2.2671e-4`), $[1.1e{-4},\ 1.4e{-4}]$ for `nx=64` (reference `1.2428e-4`), and $[5.8e{-5},\ 7.2e{-5}]$ for `nx=128` (reference `6.5158e-5`); for the rectangular case `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` it is $[1.1e{-4},\ 1.4e{-4}]$ (reference `1.2427e-4`, 2-5); for the `y`-direction case `swe2d_flat_ref_n064_sx000_sy000_dts100_recty` it is $[2.5e{-4},\ 3.2e{-4}]$ (reference `2.8482e-4`, 2-6). The one-call step $U^{n+1}=U^n+\Delta t\,L(U^n)$ (the forward-Euler step the Controlled Spec §5 step 5 excludes) gives `0.78` to `0.83` of the reference value on every case and fails the lower bound; a gravitational acceleration in error by `5%` moves the value outside the band on `nx=128` in either direction, and one in error by `1%` on no case.
+- `transverse_momentum_l2_rel` is judged as a two-sided band (6-1, 6-4, 6-10). The Controlled Spec §5 fixes the reconstruction and the source term, so the transverse momentum the cone generates from a `y`-uniform wave is a property of the discretization (2-7): a value below the band is a run that did not perform the §5 update or a reconstruction weaker than §5's, and a value above it a stronger one. The bounds are `0.9` and `1.1` times the reference value, rounded outward to two digits: $[1.4e{-2},\ 1.8e{-2}]$ for `nx=32` (reference `1.583e-2`), $[1.6e{-2},\ 2.1e{-2}]$ for `nx=64` (reference `1.861e-2`; the halved case of 2-8 carries the same band, its reference `1.861e-2` equal to its base's to four digits), $[1.7e{-2},\ 2.2e{-2}]$ for `nx=128` (reference `1.998e-2`), $[1.8e{-2},\ 2.3e{-2}]$ for `nx=256` (reference `2.074e-2`, 2-13), and $[1.4e{-4},\ 1.8e{-4}]$ for `swe2d_ref_n064_sx000_sy000_dts100_tend500` (reference `1.573e-4`). The lower bound and the upper bound are two DISTINCT judged quantities of the test, each with its own host predicate over the captured state, as for `analytic_h_l2_rel`.
+- `time_pair_hv_l2_rel` is judged as a two-sided band $[7.9e{-6},\ 9.7e{-6}]$ on `swe2d_ref_n064_sx000_sy000_dts100_half` (reference `8.781e-6`, 2-8; `0.9` and `1.1` times it, rounded outward to two digits), as two distinct judged quantities, each with its own host predicate over the captured states of the two cases.
 - The other theoretical-comparison errors of 2-12 are judged as two-sided bands on the same ground, two distinct judged quantities each; the rows of `h` in the `l2` norm are the bands above. The cross-wave momentum (`hv` of a `linear_wave_x` case, `hu` of the `y`-direction case) is judged by the upper bound $\le 1.0e{-10}$ in each norm (2-12). The bands are, per case, variable and norm (reference values in parentheses):
 
 | case | variable | `l1` | `l2` | `linf` |
@@ -361,7 +357,7 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
 | `swe2d_flat_ref_n064_sx000_sy000_dts100_recty` | `h` | $[2.3e{-4},\ 2.9e{-4}]$ (`2.563e-4`) | $[2.5e{-4},\ 3.2e{-4}]$ (`2.848e-4`) | $[3.6e{-4},\ 4.5e{-4}]$ (`4.025e-4`) |
 | | `hv` | $[3.6e{-1},\ 4.5e{-1}]$ (`4.024e-1`) | $[3.6e{-1},\ 4.5e{-1}]$ (`4.028e-1`) | $[3.6e{-1},\ 4.5e{-1}]$ (`4.030e-1`) |
 
-- `convergence_order` uses $p=\log(e_{coarse}/e_{fine})/\log(2)$ over each error of `h` and `hu` of the three cases of `swe2d_flat_ref` that 6-2 judges, and is emitted as a per-case field of the finer case of each pair (5-4); the override cases of 4-3 are not members of a refinement pair and omit the fields. It requires the following lower bounds (reference orders in parentheses):
+- `convergence_order` uses $p=\log(e_{coarse}/e_{fine})/\log(2)$ over each error of `h` and `hu` of the three cases of `swe2d_flat_ref` that 6-2 judges, and is evaluated at the finer case of each pair (5-4); the override cases of 4-3 are not members of a refinement pair and do not evaluate them. It requires the following lower bounds (reference orders in parentheses):
 
 | pair | variable | `l1` | `l2` | `linf` |
 | --- | --- | --- | --- | --- |
@@ -407,6 +403,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `swe2d_ref_n128_sx000_sy000_dts100`
   - `swe2d_ref_n256_sx000_sy000_dts100`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `convergence.restricted.n032_to_n064.eta_l1_order`, `convergence.restricted.n032_to_n064.eta_l2_order`, `convergence.restricted.n032_to_n064.eta_linf_order`, `convergence.restricted.n032_to_n064.hu_l1_order`, `convergence.restricted.n032_to_n064.hu_l2_order`, `convergence.restricted.n032_to_n064.hu_linf_order`, `convergence.restricted.n032_to_n064.hv_l1_order`, `convergence.restricted.n032_to_n064.hv_l2_order`, `convergence.restricted.n032_to_n064.hv_linf_order`, `convergence.restricted.n064_to_n128.eta_l1_order`, `convergence.restricted.n064_to_n128.eta_l2_order`, `convergence.restricted.n064_to_n128.eta_linf_order`, `convergence.restricted.n064_to_n128.hu_l1_order`, `convergence.restricted.n064_to_n128.hu_l2_order`, `convergence.restricted.n064_to_n128.hu_linf_order`, `convergence.restricted.n064_to_n128.hv_l1_order`, `convergence.restricted.n064_to_n128.hv_l2_order`, `convergence.restricted.n064_to_n128.hv_linf_order`, `errors.initial_zb.linf_rel`, `errors.restricted.n032.eta_l1_rel.lower`, `errors.restricted.n032.eta_l1_rel.upper`, `errors.restricted.n032.eta_l2_rel.lower`, `errors.restricted.n032.eta_l2_rel.upper`, `errors.restricted.n032.eta_linf_rel.lower`, `errors.restricted.n032.eta_linf_rel.upper`, `errors.restricted.n032.hu_l1_rel.lower`, `errors.restricted.n032.hu_l1_rel.upper`, `errors.restricted.n032.hu_l2_rel.lower`, `errors.restricted.n032.hu_l2_rel.upper`, `errors.restricted.n032.hu_linf_rel.lower`, `errors.restricted.n032.hu_linf_rel.upper`, `errors.restricted.n032.hv_l1_rel.lower`, `errors.restricted.n032.hv_l1_rel.upper`, `errors.restricted.n032.hv_l2_rel.lower`, `errors.restricted.n032.hv_l2_rel.upper`, `errors.restricted.n032.hv_linf_rel.lower`, `errors.restricted.n032.hv_linf_rel.upper`, `errors.restricted.n064.eta_l1_rel.lower`, `errors.restricted.n064.eta_l1_rel.upper`, `errors.restricted.n064.eta_l2_rel.lower`, `errors.restricted.n064.eta_l2_rel.upper`, `errors.restricted.n064.eta_linf_rel.lower`, `errors.restricted.n064.eta_linf_rel.upper`, `errors.restricted.n064.hu_l1_rel.lower`, `errors.restricted.n064.hu_l1_rel.upper`, `errors.restricted.n064.hu_l2_rel.lower`, `errors.restricted.n064.hu_l2_rel.upper`, `errors.restricted.n064.hu_linf_rel.lower`, `errors.restricted.n064.hu_linf_rel.upper`, `errors.restricted.n064.hv_l1_rel.lower`, `errors.restricted.n064.hv_l1_rel.upper`, `errors.restricted.n064.hv_l2_rel.lower`, `errors.restricted.n064.hv_l2_rel.upper`, `errors.restricted.n064.hv_linf_rel.lower`, `errors.restricted.n064.hv_linf_rel.upper`, `errors.restricted.n128.eta_l1_rel.lower`, `errors.restricted.n128.eta_l1_rel.upper`, `errors.restricted.n128.eta_l2_rel.lower`, `errors.restricted.n128.eta_l2_rel.upper`, `errors.restricted.n128.eta_linf_rel.lower`, `errors.restricted.n128.eta_linf_rel.upper`, `errors.restricted.n128.hu_l1_rel.lower`, `errors.restricted.n128.hu_l1_rel.upper`, `errors.restricted.n128.hu_l2_rel.lower`, `errors.restricted.n128.hu_l2_rel.upper`, `errors.restricted.n128.hu_linf_rel.lower`, `errors.restricted.n128.hu_linf_rel.upper`, `errors.restricted.n128.hv_l1_rel.lower`, `errors.restricted.n128.hv_l1_rel.upper`, `errors.restricted.n128.hv_l2_rel.lower`, `errors.restricted.n128.hv_l2_rel.upper`, `errors.restricted.n128.hv_linf_rel.lower`, `errors.restricted.n128.hv_linf_rel.upper`, `extrema.h.min`, `mass_drift_rel`, `response.transverse_momentum.l2_rel_tend.lower`, `response.transverse_momentum.l2_rel_tend.upper`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
@@ -428,12 +426,14 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `swe2d_flat_ref_n064_sx000_sy000_dts100`
   - `swe2d_flat_ref_n128_sx000_sy000_dts100`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `convergence.n032_to_n064.hu_l1_order`, `convergence.n032_to_n064.hu_l2_order`, `convergence.n032_to_n064.hu_linf_order`, `convergence.n032_to_n064.l1_order`, `convergence.n032_to_n064.l2_order`, `convergence.n032_to_n064.linf_order`, `convergence.n064_to_n128.hu_l1_order`, `convergence.n064_to_n128.hu_l2_order`, `convergence.n064_to_n128.hu_linf_order`, `convergence.n064_to_n128.l1_order`, `convergence.n064_to_n128.l2_order`, `convergence.n064_to_n128.linf_order`, `errors.analytic_h.l1_rel_tend.lower`, `errors.analytic_h.l1_rel_tend.upper`, `errors.analytic_h.l2_rel_tend.lower`, `errors.analytic_h.l2_rel_tend.upper`, `errors.analytic_h.linf_rel_tend.lower`, `errors.analytic_h.linf_rel_tend.upper`, `errors.analytic_hu.l1_rel_tend.lower`, `errors.analytic_hu.l1_rel_tend.upper`, `errors.analytic_hu.l2_rel_tend.lower`, `errors.analytic_hu.l2_rel_tend.upper`, `errors.analytic_hu.linf_rel_tend.lower`, `errors.analytic_hu.linf_rel_tend.upper`, `errors.analytic_hv.l1_rel_tend`, `errors.analytic_hv.l2_rel_tend`, `errors.analytic_hv.linf_rel_tend`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is applied. The evaluation expressions are `momx_drift_rel` and `momy_drift_rel`, and the threshold for both is $\le 1.0e{-10}$.
-  - The theoretical-comparison judgment is applied. Each of the six `errors.analytic_h.<k>_rel_tend` and `errors.analytic_hu.<k>_rel_tend` of each case applies its band of the 5-5 table (rows `swe2d_flat_ref_n032_sx000_sy000_dts100`, `_n064_`, `_n128_`) as two judged quantities, each of the three `errors.analytic_hv.<k>_rel_tend` the upper bound $\le 1.0e{-10}$, and each of the six `convergence.n032_to_n064.*_order` fields (carried by `swe2d_flat_ref_n064_sx000_sy000_dts100`) and the six `convergence.n064_to_n128.*_order` fields (carried by `swe2d_flat_ref_n128_sx000_sy000_dts100`) its lower bound of the 5-5 order table.
+  - The theoretical-comparison judgment is applied. Each of the six `errors.analytic_h.<k>_rel_tend` and `errors.analytic_hu.<k>_rel_tend` of each case applies its band of the 5-5 table (rows `swe2d_flat_ref_n032_sx000_sy000_dts100`, `_n064_`, `_n128_`) as two judged quantities, each of the three `errors.analytic_hv.<k>_rel_tend` the upper bound $\le 1.0e{-10}$, and each of the six `convergence.n032_to_n064.*_order` quantities (carried by `swe2d_flat_ref_n064_sx000_sy000_dts100`) and the six `convergence.n064_to_n128.*_order` quantities (carried by `swe2d_flat_ref_n128_sx000_sy000_dts100`) its lower bound of the 5-5 order table.
   - The translation-equivariance and symmetry-pair judgments are not applied. The non-application basis is "because the cases are judged here as refinement levels; the pair whose base is `swe2d_flat_ref_n064_sx000_sy000_dts100` is judged in 6-12".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
@@ -445,6 +445,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `swe2d_lake_n064_sx000_sy000_dts100`
   - `swe2d_lake_n064_sx000_sy000_dts100_rect`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.initial_zb.linf_rel`, `extrema.h.min`, `invariants.lake_rest.max_surface_deviation`, `invariants.lake_rest.max_velocity`, `mass_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of each case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
@@ -462,6 +464,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
 - target cases:
   - `swe2d_ref_n064_sx000_sy000_dts100_tend500`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.initial_zb.linf_rel`, `extrema.h.min`, `mass_drift_rel`, `response.transverse_momentum.l2_rel_tend.lower`, `response.transverse_momentum.l2_rel_tend.upper`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
@@ -480,6 +484,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
 - target cases:
   - `swe2d_resp_n064_sx000_sy000_dts100`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.initial_zb.linf_rel`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel.lower`, `momx_drift_rel.upper`, `momy_drift_rel.lower`, `momy_drift_rel.upper`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
@@ -498,6 +504,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `reference` is `swe2d_flat_sym_n064_sx000_sy000_dts100`
   - `shifted` is `swe2d_flat_sym_n064_sx025_sy012_dts100`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.symmetry_h_l2_rel`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of each case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
@@ -516,10 +524,11 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `swe2d_guard_n032_sx000_sy000_dts240`
 - `expected_outcome`: `xfail`
 - `xfail_condition`: `cfl.max > 1.0`
-- `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'cfl'`
+- `quantities`: `cfl.max`
+- `reported`: `cfl_run_max`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$. `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$), and its real value and status are reported: the case performs all of its steps (2-9), and a run whose step loop stops on the wet-domain error of the Controlled Spec §5 reports the count performed and a `fail` (2-9). The `run.n_step` judgment is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome, which the `CFL` judgment decides.
-  - The depth-positivity judgment is applied and its real `extrema.h.min` value and status are reported against the threshold $\ge 5.0e{-2}$ (it is never `N/A`; the §5-3 rule does not apply to it). It is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome.
+  - The `CFL` judgment is applied in the failure direction: both predicates of `cfl.max` (5-4) read $> 1.0$, the end-point expression and the kernel's `cfl_run_max`.
+  - The `run.n_step` and depth-positivity judgments are not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation; a run that stops on the wet-domain error of the Controlled Spec §5 performs fewer steps (2-9), and the `CFL` judgment alone decides this test".
   - The mass-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The momentum-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because under an unstable condition, the can-continue-execution evaluation is done before the theoretical-agreement judgment".
@@ -533,6 +542,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
 - target cases:
   - `swe2d_flat_ref_n064_sx000_sy000_dts100_rect`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.analytic_h.l1_rel_tend.lower`, `errors.analytic_h.l1_rel_tend.upper`, `errors.analytic_h.l2_rel_tend.lower`, `errors.analytic_h.l2_rel_tend.upper`, `errors.analytic_h.linf_rel_tend.lower`, `errors.analytic_h.linf_rel_tend.upper`, `errors.analytic_hu.l1_rel_tend.lower`, `errors.analytic_hu.l1_rel_tend.upper`, `errors.analytic_hu.l2_rel_tend.lower`, `errors.analytic_hu.l2_rel_tend.upper`, `errors.analytic_hu.linf_rel_tend.lower`, `errors.analytic_hu.linf_rel_tend.upper`, `errors.analytic_hv.l1_rel_tend`, `errors.analytic_hv.l2_rel_tend`, `errors.analytic_hv.linf_rel_tend`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
@@ -549,6 +560,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
 - target cases:
   - `swe2d_flat_ref_n064_sx000_sy000_dts100_recty`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.analytic_h.l1_rel_tend.lower`, `errors.analytic_h.l1_rel_tend.upper`, `errors.analytic_h.l2_rel_tend.lower`, `errors.analytic_h.l2_rel_tend.upper`, `errors.analytic_h.linf_rel_tend.lower`, `errors.analytic_h.linf_rel_tend.upper`, `errors.analytic_hu.l1_rel_tend`, `errors.analytic_hu.l2_rel_tend`, `errors.analytic_hu.linf_rel_tend`, `errors.analytic_hv.l1_rel_tend.lower`, `errors.analytic_hv.l1_rel_tend.upper`, `errors.analytic_hv.l2_rel_tend.lower`, `errors.analytic_hv.l2_rel_tend.upper`, `errors.analytic_hv.linf_rel_tend.lower`, `errors.analytic_hv.linf_rel_tend.upper`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
@@ -566,6 +579,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `reference` is `swe2d_ref_n064_sx000_sy000_dts100`
   - `halved` is `swe2d_ref_n064_sx000_sy000_dts100_half`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.initial_zb.linf_rel`, `errors.time_pair.hv_l2_rel.lower`, `errors.time_pair.hv_l2_rel.upper`, `extrema.h.min`, `mass_drift_rel`, `response.transverse_momentum.l2_rel_tend.lower`, `response.transverse_momentum.l2_rel_tend.upper`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The time-refinement judgment is applied. The evaluation expression is `errors.time_pair.hv_l2_rel` (carried by the halved case), and the band is $[7.9e{-6},\ 9.7e{-6}]$ as two judged quantities.
   - The `CFL` judgment is applied to both cases. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of each case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
@@ -587,6 +602,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `swe2d_flat_sym_n064_sx012_sy025_dts100` → `swe2d_flat_sym_n064_sx025_sy012_dts100`
   - `swe2d_ref_n064_sx000_sy000_dts100` → `swe2d_ref_n064_sx000_sy000_dts100_axis`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.axis_exchange.h_l2_rel`, `errors.axis_exchange.hu_l2_rel`, `errors.axis_exchange.hv_l2_rel`, `errors.initial_zb.linf_rel`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The symmetry-pair judgment is applied to each transformed case. The evaluation expressions are `errors.axis_exchange.h_l2_rel`, `errors.axis_exchange.hu_l2_rel` and `errors.axis_exchange.hv_l2_rel`, each with the threshold $\le 2.0e{-11}$.
   - The `CFL` judgment is applied to each case. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of each case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$), which is the base's (2-11).
@@ -604,6 +621,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `swe2d_flat_ref_n064_sx000_sy000_dts100` → `swe2d_flat_ref_n064_sx000_sy000_dts100_xmir`
   - `swe2d_ref_n064_sx000_sy000_dts100` → `swe2d_ref_n064_sx000_sy000_dts100_xmir`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.initial_zb.linf_rel`, `errors.mirror_x.h_l2_rel`, `errors.mirror_x.hu_l2_rel`, `errors.mirror_x.hv_l2_rel`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The symmetry-pair judgment is applied to each transformed case. The evaluation expressions are `errors.mirror_x.h_l2_rel`, `errors.mirror_x.hu_l2_rel` and `errors.mirror_x.hv_l2_rel`, each with the threshold $\le 2.0e{-11}$.
   - The `CFL` judgment is applied to each case. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of each case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$), which is the base's (2-11).
@@ -621,6 +640,8 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - `swe2d_flat_ref_n064_sx000_sy000_dts100_recty` → `swe2d_flat_ref_n064_sx000_sy000_dts100_rectymir`
   - `swe2d_ref_n064_sx000_sy000_dts100` → `swe2d_ref_n064_sx000_sy000_dts100_ymir`
 - `expected_outcome`: `pass`
+- `quantities`: `cfl.max`, `errors.initial_zb.linf_rel`, `errors.mirror_y.h_l2_rel`, `errors.mirror_y.hu_l2_rel`, `errors.mirror_y.hv_l2_rel`, `extrema.h.min`, `mass_drift_rel`, `momx_drift_rel`, `momy_drift_rel`, `run.n_step`
+- `reported`: `cfl_run_max`, `h_min_run`
 - judgment conditions:
   - The symmetry-pair judgment is applied to each transformed case. The evaluation expressions are `errors.mirror_y.h_l2_rel`, `errors.mirror_y.hu_l2_rel` and `errors.mirror_y.hv_l2_rel`, each with the threshold $\le 2.0e{-11}$.
   - The `CFL` judgment is applied to each case. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of each case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$), which is the base's (2-11).
@@ -632,15 +653,14 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ## 7. Pass/fail aggregation rules
-- `per_test.pass_rule`: `pass` when all applicable checks are `pass`.
-- `per_test.xfail_rule`: `xfail` when `expected_outcome == xfail` and `xfail_condition` is true and `pass_when` is satisfied.
+- `per_test.pass_rule`: `pass` when every predicate of the test holds.
+- `per_test.xfail_rule`: `xfail` when `expected_outcome` is `xfail`, `xfail_condition` is true and every predicate of the test holds, in the failure direction.
 - `suite.pass_rule`: `pass` when all `test_id` satisfy `pass_rule` or `xfail_rule`.
 
 ## 8. Traceability
 ### 8-1. Output requirements
-- `verdict.json` requires each check's `status`, `metric_value`, `threshold`, and `reason_na` when `applicable=false`.
-- `summary.json` requires the counts of `pass`, `fail`, `xfail`, and `skipped`.
+The host writes `verdict.json` from the predicates: each test's `status` and, in `basis.predicates`, each predicate's value and threshold. `summary.json` carries the counts of `pass`, `fail`, `xfail`, and `skipped`.
 
 ### 8-2. Traceability records
 - The `test_profile_id` and `test_profile_version` of this document must be recorded under each case's `inputs` in `spec.ir.yaml` and in `trial_meta.json`.
-- The judgment conditions of this document must be mappable to the evaluation basis of `verdict.json`.
+- The judgment conditions of this document must be mappable to the predicates of `spec.ir.yaml` through the `quantities` lines.
