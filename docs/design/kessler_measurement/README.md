@@ -30,6 +30,13 @@ python3 compare.py compare kessler   --driver <dir>/O2/driver --alt-driver <dir>
 
 **Comparison.** The same driver columns against a certified run's `raw/state_snapshots/<case_id>.json`, at interior cells, every returned variable: `1e-12` relative with a `1e-15` absolute floor. `evaporate` is compared as `max(-pcsat, 0)`, because the droplet-number factor amplifies a round-off `pcsat`. A difference beyond the tolerance is a finding on the `spec` or on the generated code, never a tolerance change. The script prints the deviation list beside the maxima.
 
+## What the suites do not separate
+Measured with an independent kernel written from the two Controlled Specs and with deliberately wrong variants of it, every judgment evaluated by `evaluate_primary_predicates`, on `xfail` cases too. These pass both suites, and each `tests.md` leaves them unstated because a `Generate` producer reads it:
+- a convergence threshold within a factor of 2 of `1e-6`, since the Newton-branch bounds carry that factor (`1.5e-6` passes, `3e-6` fails);
+- an iteration limit above 100 (`150` and `1000` leave `l0_satadj_limit` unconverged and every other case unchanged);
+- the virtual branch keeping `temp` when `qc = 0`, which the bound `2e-13` admits;
+- a clip of a limited result to non-negative, which changes only a remainder of order `1e-19` whose sign depends on rounding, so no bound separates it from a correct kernel on another target.
+
 ## Deviations from the original
 Listed, not banded, in `DEVIATIONS` of `compare.py`, which the comparison prints, and in §1 of each node's Controlled Spec.
 

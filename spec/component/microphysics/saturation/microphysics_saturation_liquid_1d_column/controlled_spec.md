@@ -317,7 +317,7 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid a default value for a constant, and forbid reading a constant from anything but the arguments. Forbid evaluating $q_s$ at the final temperature in place of the iterate §3 names. Forbid a change of the iteration limit or of the convergence threshold, an iteration or relaxation other than §3, and any automatic switch to another scheme. Forbid terminating the program on a cell that does not converge, and forbid publishing a non-finite value. Forbid reading or writing a halo cell other than as §2 states, and forbid silently completing an invalid input.
+Forbid a default value for a constant, and forbid reading a constant from anything but the arguments. Forbid evaluating $q_s$ at the final temperature in place of the iterate §3 names. Forbid a change of the iteration limit or of the convergence threshold, an iteration or relaxation other than §3, and any automatic switch to another scheme. Forbid clipping a result to non-negative: `qc` is what §3 gives, of either sign. Forbid terminating the program on a cell that does not converge, and forbid publishing a non-finite value. Forbid reading or writing a halo cell other than as §2 states, and forbid silently completing an invalid input.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`). The constants the suite fixes fall into the `case` section of `spec.ir.yaml` as case inputs.
