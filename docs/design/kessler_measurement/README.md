@@ -36,12 +36,12 @@ The bound `1e-3` and the statement that the kept cells measure below `1e-5` come
 
 ## What the suites do not separate
 Measured with an independent kernel written from the two Controlled Specs and with deliberately wrong variants of it, every judgment evaluated by `evaluate_primary_predicates`, on `xfail` cases too. These pass both suites, and each `tests.md` leaves them unstated because a `Generate` producer reads it:
-- a convergence threshold within a factor of 2 of `1e-6`, since the Newton-branch bounds carry that factor (`1.5e-6` and `2e-6` pass, `3e-6` fails);
+- a convergence threshold within a factor of 2 of `1e-6`, since the Newton-branch bounds carry that factor (`1.5e-6` passes in every setting; `2e-6` passes only where the node has no comparand, because against a correct second target the saturation suite's `cross_target_state_agreement` goes false on 12 rows; `3e-6` fails the saturation suite and passes the Kessler suite);
 - an iteration limit above 100 (`150` and `1000` leave `l0_satadj_limit` unconverged and every other case unchanged);
 - the virtual branch keeping `temp` when `qc = 0`, which the bound `2e-13` admits;
 - a clip of a limited result to non-negative, which changes only a remainder of order `1e-19` whose sign depends on rounding, so no bound separates it from a correct kernel on another target.
 
-Of those four, the comparison holds part of the threshold alone. A threshold of `2e-6` exits 1 on `compare saturation`, where `l0_satadj_slow` differs, and 0 on `compare kessler`; so does `3e-6` and `1e-5`, which the suites also fail. A threshold of `1.5e-6` exits 0 on both. A limit of `150` or `1000`, the kept `temp` and the clip exit 0 on both: the comparison skips `xfail` cases, and the other differences fall under its `1e-15` floor. Those are held by §3 and §6 of the Controlled Specs and a `Generate` reviewer alone. A threshold change is therefore read on `compare saturation`.
+Of those four, the comparison reads part of the threshold. A threshold of `2e-6` exits 1 on `compare saturation` and 0 on `compare kessler`; so do `3e-6` and `1e-5`, which fail the saturation suite only (the Kessler suite is false 0 on both). A threshold of `1.5e-6` exits 0 on both and is false 0 on both suites, with or without a comparand. A limit of `150` or `1000`, the kept `temp` and the clip exit 0 on both: the comparison skips `xfail` cases, and the other differences fall under its `1e-15` floor. Those are held by §3 and §6 of the Controlled Specs and a `Generate` reviewer alone. A threshold change is therefore read on `compare saturation`.
 
 ## Deviations from the original
 Listed, not banded, in `DEVIATIONS` of `compare.py`, which the comparison prints, and in §1 of each node's Controlled Spec.
