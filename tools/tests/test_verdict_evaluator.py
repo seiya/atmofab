@@ -124,6 +124,22 @@ class VerdictTest(unittest.TestCase):
         with self.assertRaisesRegex(PredicateError, "not the test's target_cases"):
             evaluate_verdict([_test(cases=("a", "b"))], [_rec(cases=("a",))])
 
+    def test_a_target_case_no_record_values_raises(self) -> None:
+        """Review round 1 F3: over [a, b], records whose `cases_read` holds a alone. Set-equal
+        `target_cases` say nothing of what a record read, and a cross-target record reads no
+        case for this rule; one own record reading b is enough."""
+        tests = [_test(cases=("a", "b"))]
+
+        def rec(*read: str) -> dict:
+            return {**_rec(cases=("a", "b")), "cases_read": list(read)}
+        with self.assertRaisesRegex(PredicateError, r"target case\(s\) \['b'\]"):
+            evaluate_verdict(tests, [rec("a")])
+        placeholder = {**CrossTargetTest.PLACEHOLDER, "target_cases": ["a", "b"],
+                       "cases_read": ["a", "b"]}
+        with self.assertRaisesRegex(PredicateError, r"target case\(s\) \['b'\]"):
+            evaluate_verdict(tests, [rec("a"), placeholder])
+        self.assertEqual(evaluate_verdict(tests, [rec("a"), rec("b")])["self_verdict"], "pass")
+
 
 class CrossTargetTest(unittest.TestCase):
     PLACEHOLDER = {"test_id": "t", "quantity": "agree", "kind": "no_comparand", "satisfied": True,
