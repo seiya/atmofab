@@ -41,7 +41,7 @@ The Controlled Spec §5 states the mirror equivariance: the case with `a` → `-
 - $\text{cfl\_adv}=0.6$ and $\text{cfl\_dif}=0.25$.
 - The default of `dt_scale` is `1.0`, and the case value is fixed by the 4-1 table. `dt_scale` enters the procedure only at step 1; it does not scale $dt$ or $\text{n\_step}$ directly, so the integration still lands exactly on $t_{end}$.
 - The stop condition is $n = \text{n\_step}$.
-- The per-case state snapshot is emitted at $t_{end}$, which is the evaluation time of every metric of 5-4.
+- The per-case state snapshot is captured at $t_{end}$, which is the evaluation time of every metric of 5-4.
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
@@ -130,9 +130,9 @@ $$
 $$
 Here $u_{ref}$ is the numerical solution of the `reference` case of the pair, $u_{shifted}$ that of the `shifted` case, and $\delta_s=\text{shift\_fraction}\cdot L$ is the shift distance of the `shifted` case. $\delta_s$ is a distance and is not the grid spacing $dx$. The value is named `errors.symmetry_l2_rel`.
 
-`convergence_order` is a cross-case reduction over each of `errors.analytic.l1_rel_tend`, `errors.analytic.l2_rel_tend` and `errors.analytic.linf_rel_tend`, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, and is accumulated only over the target cases of the test that judges it. It is evaluated at the finer case of each pair: `advdiff1d_ref_nx128_shift000_dts100` carries `convergence.nx64_to_nx128.<k>_order`, and `advdiff1d_ref_nx256_shift000_dts100` carries `convergence.nx128_to_nx256.<k>_order`, for `<k>` each of `l1`, `l2`, `linf`. The cases preceding the one that completes a reduction omit that field.
+`convergence_order` is a cross-case reduction over each of `errors.analytic.l1_rel_tend`, `errors.analytic.l2_rel_tend` and `errors.analytic.linf_rel_tend`, using $p=\log(e_{coarse}/e_{fine})/\log(2)$, and is accumulated only over the target cases of the test that judges it. It is evaluated at the finer case of each pair: `advdiff1d_ref_nx128_shift000_dts100` carries `convergence.nx64_to_nx128.<k>_order`, and `advdiff1d_ref_nx256_shift000_dts100` carries `convergence.nx128_to_nx256.<k>_order`, for `<k>` each of `l1`, `l2`, `linf`. The cases preceding the one that completes a reduction do not evaluate it.
 
-`mode_scheme_fidelity` is emitted as `errors.mode_scheme_fidelity`. It measures whether the kernel advances each discrete Fourier mode by the amplification rate of the discrete update of `controlled_spec.md` §5. That update is linear and periodic, so it advances the mode $m$ by exactly $G_{num}(m)$ per step, and by $G_{num}(m)^{n_{step}}$ over the case, up to round-off.
+`mode_scheme_fidelity` is named `errors.mode_scheme_fidelity`. It measures whether the kernel advances each discrete Fourier mode by the amplification rate of the discrete update of `controlled_spec.md` §5. That update is linear and periodic, so it advances the mode $m$ by exactly $G_{num}(m)$ per step, and by $G_{num}(m)^{n_{step}}$ over the case, up to round-off.
 
 Let the discrete mode number be $m \in \{1,2\}$, $\theta_m=2\pi m/nx$, and $k_m=2\pi m/L$. The cell centres are $x_i=(i+1/2)\,dx$ for $i=0,\dots,nx-1$.
 The dimensionless numbers are $C=a\,dt/dx$ and $D=\nu\,dt/dx^2$, with the `dt` and `n_step` that 3 decides for the case.

@@ -109,7 +109,7 @@ On `williamson_tc5_cone + oblique_mode` the initial momentum is zero in both dir
 The functionals of 2-7 are end-state functionals and move by less than `2%` (`0.9%` in the transverse momentum at `nx=32`, `1.8%` in the momentum exchange of 6-5) when the source term $S_b$ of the Controlled Spec §5 step 4 is evaluated once per step at $U^n$ instead of at each stage state, the error that makes the topographic forcing first order in time; each stays inside its band. The time integration of the forced case is judged by a pair of `williamson_tc5_cone + linear_wave_x` runs at `nx=64` that differ only in `dt_scale` (`1.0` and `0.5`): the difference of their final `hv`, normalised by the initial `hu` of the base case, is `errors.time_pair.hv_l2_rel` (5-4). Its reference value is `8.781e-6`; the pair at `dt_scale` `0.5` and `0.25` gives `2.178e-6`, a ratio of `4.0`, the second order of the §5 step 5 composition. Measured on the reference implementation of 5-5 with one substitution at a time: $S_b$ evaluated at $U^n$ for the second call gives `1.17e-4`; the one-call step `6.26e-4`; `dt` left at $\mathrm{dt\_raw}$ without step 4 of §3 (the run ends past $t_{end}$) `1.28e-4`; half the steps `1.07e-4`; a state left at its initial value `0`; a gravitational acceleration halved `4.29e-6`; the interface elevation taken as the minimum `7.74e-6`; $\lambda_0$ from one direction `3.56e-5` and `cfl_target=0.5` `1.09e-5`. Each lies outside the band of 5-5. The interface elevation taken as the average (`8.25e-6`) and the interface state carrying the cell momentum (`7.94e-6`) lie inside it and are excluded by the `nx=32` band of `transverse_momentum_l2_rel` (5-5, 2-7). The pair does not fix the exchange of `dx` and `dy` in the dt rule (2-5).
 
 ### 2-9. The `CFL` guard case
-`swe2d_guard_n032_sx000_sy000_dts240` carries `dt_scale=2.40`, so the §3 procedure gives $\mathrm{n\_step}=38$ and $dt=5.263\times10^{-3}$, and the stability index of the Controlled Spec §5 is `1.056` at the initial state and at its maximum over the run (`cfl.max`, 5-4) — above the threshold `1.0` of the `CFL` judgment, which is what 6-7 detects. The case performs all of its §3 steps and stays wet: the depth minimum over the initial state and every committed state is the initial minimum, `0.999005`, against the positivity threshold `5.0e-2` of 5-5, measured on the reference implementation of 5-5. The wet-domain error of the Controlled Spec §5 is not reached by this case. A run of this case whose step loop stops on that error performs fewer steps: its `run.n_step` is the count of steps performed (§3), and 6-7 does not judge it. The step count and the depth minimum stated here are properties of the fixed discretization at the case's inputs; 6-7 judges the `CFL` alone.
+`swe2d_guard_n032_sx000_sy000_dts240` carries `dt_scale=2.40`, so the §3 procedure gives $\mathrm{n\_step}=38$ and $dt=5.263\times10^{-3}$, and the stability index of the Controlled Spec §5 is `1.056` at the initial state and at its maximum over the run (`cfl_run_max`, 5-4) — above the threshold `1.0` of the `CFL` judgment, which is what 6-7 detects. The case performs all of its §3 steps and stays wet: the depth minimum over the initial state and every committed state is the initial minimum, `0.999005`, against the positivity threshold `5.0e-2` of 5-5, measured on the reference implementation of 5-5. The wet-domain error of the Controlled Spec §5 is not reached by this case. A run of this case whose step loop stops on that error performs fewer steps: its `run.n_step` is the count of steps performed (§3), and 6-7 does not judge it. The step count and the depth minimum stated here are properties of the fixed discretization at the case's inputs; 6-7 judges the `CFL` alone.
 
 ### 2-10. The rectangular topography case and the initial topography
 Every `williamson_tc5_cone` case of §4 but one is square, and on a square grid an exchange of `dx` and `dy` in the source term of the Controlled Spec §5 step 4, or of `L_x` and `L_y` in the topography of 2-2, is the identity. `swe2d_lake_n064_sx000_sy000_dts100_rect` (4-3) carries the grid of 2-5 and `williamson_tc5_cone + lake_at_rest`. The §3 procedure gives $\mathrm{n\_step}=223$ and $dt=8.969\times10^{-4}$; on the reference implementation of 5-5 the case gives `5e-16` in `lake_rest.max_velocity`, `0` in `lake_rest.max_surface_deviation`, `0.4494` in `cfl.max` and `0.8225` in `extrema.h.min`. Measured on the same implementation with one substitution at a time: the `y` component of the source term divided by `dx` instead of `dy` gives `0.14` in `lake_rest.max_velocity`, and the two spacings exchanged in the source term `0.35`; both are the identity on every other case of §4.
@@ -140,7 +140,7 @@ The error of the three cases of the `swe2d_flat_ref` sweep (4-1) and of the rect
   3. $\mathrm{n\_step}=\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$.
   4. $dt=(t_{end}-t_{start})/\mathrm{n\_step}$.
 - $\mathrm{cfl\_target}=0.45$.
-- The stop condition is $n=\mathrm{n\_step}$. The number of steps performed is a state variable of the case: the state the host captures after `case_setup` and after `case_run` consists of `h`, `hu`, `hv`, `z_b` (`nx` × `ny` each) and the scalar `n_step` (`0` after setup, the count of `SSPRK2` steps of the Controlled Spec §5 step 5 performed after the run, incremented by the step loop at each step), and it is judged as `run.n_step`. The state also holds the two scalars the published operation returns as output arguments, `cfl_run_max` and `h_min_run` (`source: reported`, 5-4; `0` after setup).
+- The stop condition is $n=\mathrm{n\_step}$. The number of steps performed is a state variable of the case: the state the host captures after `case_setup` and after `case_run` consists of `h`, `hu`, `hv`, `z_b` (`nx` × `ny` each) and the scalar `n_step` (`0` after setup, the count of `SSPRK2` steps of the Controlled Spec §5 step 5 performed after the run, incremented by the step loop of the published operation at each step, so it is `source: operation`), and it is judged as `run.n_step`. The state also holds the two scalars the published operation returns as output arguments, `cfl_run_max` and `h_min_run` (`source: reported`, 5-4; `0` after setup). The Controlled Spec fixes no signature for the published operation of a `problem`, so these two outputs are this document's requirement on it.
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
@@ -221,7 +221,7 @@ The names, each a scalar. `<v>` stands for each of `h`, `hu`, `hv`; `<k>` for ea
 - The `errors.restricted.*` and `convergence.restricted.*` quantities are carried by `swe2d_ref_n256_sx000_sy000_dts100`, which sorts after the three coarser levels of its family and reads their final states; no other case evaluates them (5-4).
 - `errors.axis_exchange.*` is carried by each axis-exchange case of 4-3, `errors.mirror_x.*` by each mirror-in-`x` case and `errors.mirror_y.*` by each mirror-in-`y` case, each reading its base's final state; no other case evaluates them.
 - `errors.symmetry_h_l2_rel` is `N/A` for anything other than a translation-pair evaluation.
-- `momx_drift_rel` and `momy_drift_rel` are computed for every case: judged against the thresholds of 5-5 for `topography_profile=flat` in the tests that apply the momentum-conservation judgment (6-2, 6-6, 6-8, 6-9), as the two-sided band of 5-5 for `swe2d_resp_n064_sx000_sy000_dts100` (6-5), and not judged for the other `williamson_tc5_cone` cases, where the source term exchanges momentum and the response is judged by `response.transverse_momentum.l2_rel_tend` (6-1, 6-4, 6-10) or the lake-at-rest invariance (6-3).
+- `momx_drift_rel` and `momy_drift_rel` are computed for every case: judged against the thresholds of 5-5 for `topography_profile=flat` in the tests that apply the momentum-conservation judgment (6-2, 6-6, 6-8, 6-9, and 6-11 to 6-13 on their flat cases), as the two-sided band of 5-5 for `swe2d_resp_n064_sx000_sy000_dts100` (6-5), and not judged for the other `williamson_tc5_cone` cases, where the source term exchanges momentum and the response is judged by `response.transverse_momentum.l2_rel_tend` (6-1, 6-4, 6-10) or the lake-at-rest invariance (6-3).
 - `response.transverse_momentum.l2_rel_tend` is `N/A` for anything other than `topography_profile=williamson_tc5_cone` with `initial_profile=linear_wave_x`.
 - `errors.time_pair.hv_l2_rel` is `N/A` for anything other than the halved-`dt` case of the time-refinement pair; it is carried by `swe2d_ref_n064_sx000_sy000_dts100_half`, which sorts after its base case, and reads the base case's initial and final state.
 - `invariants.lake_rest.*` is `N/A` for anything other than `initial_profile=lake_at_rest`.
@@ -299,6 +299,7 @@ $$
 \mathrm{lake\_rest\_max\_velocity}=
 \max_{i,j}\left(\sqrt{u_{i,j}^2+v_{i,j}^2}\right)
 $$
+with $u$, $v$ at $t_{end}$; it is named `invariants.lake_rest.max_velocity`.
 
 The surface-deviation metric of lake-at-rest invariance is defined by the following.
 $$
@@ -388,9 +389,9 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
 
 - Every symmetry-pair residual `errors.axis_exchange.*`, `errors.mirror_x.*` and `errors.mirror_y.*` is $\le 2.0e{-11}$ for each of `h`, `hu` and `hv` (2-11; the reference implementation reads at most `8.7e-13`)
 - `initial_zb_linf_rel` $\le 1.0e{-12}$ (6-1, 6-3, 6-4, 6-5, 6-10): the topography is a closed form of the case's inputs evaluated once at setup, so a conforming value differs from it by round-off alone.
-- `lake_rest.max_velocity \le 1.0e{-12}`
-- `lake_rest.max_surface_deviation \le 1.0e{-12}`
-- `symmetry_h_l2_rel \le 2.0e{-11}`
+- `invariants.lake_rest.max_velocity \le 1.0e{-12}`
+- `invariants.lake_rest.max_surface_deviation \le 1.0e{-12}`
+- `errors.symmetry_h_l2_rel \le 2.0e{-11}`
 - $\mathrm{cross\_target\_state\_agreement} \le 1.0e{-10}$ for each of `h`, `hu`, and `hv`
 
 ## 6. Test definitions
@@ -453,7 +454,7 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is not applied. The non-application basis is "because the bottom-topography source term exchanges momentum".
   - The initial-topography judgment is applied. The evaluation expression is `errors.initial_zb.linf_rel`, and the threshold is $\le 1.0e{-12}$.
-  - The lake-at-rest invariance judgment is applied to both cases. It requires `lake_rest.max_velocity \le 1.0e{-12}` and `lake_rest.max_surface_deviation \le 1.0e{-12}`.
+  - The lake-at-rest invariance judgment is applied to both cases. It requires `invariants.lake_rest.max_velocity \le 1.0e{-12}` and `invariants.lake_rest.max_surface_deviation \le 1.0e{-12}`.
   - The theoretical-comparison judgment is not applied. The non-application basis is "because it is a topography lake-at-rest case".
   - The translation-equivariance and symmetry-pair judgments are not applied. The non-application basis is "because no translation or symmetry pair is run on these cases".
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
@@ -511,7 +512,7 @@ The thresholds of `analytic_h_l2_rel`, `transverse_momentum_l2_rel`, the momentu
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is applied. The evaluation expressions are `momx_drift_rel` and `momy_drift_rel`, and the threshold for both is $\le 1.0e{-10}$.
-  - The translation-equivariance judgment is applied. The evaluation expression is `symmetry_h_l2_rel`, and the threshold is $\le 2.0e{-11}$.
+  - The translation-equivariance judgment is applied. The evaluation expression is `errors.symmetry_h_l2_rel`, and the threshold is $\le 2.0e{-11}$.
   - The symmetry-pair judgment is not applied. The non-application basis is "because the shifted case's axis-exchange pair is judged in 6-11".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because `oblique_mode` is outside the target of the theoretical-agreement judgment".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".

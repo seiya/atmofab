@@ -128,15 +128,17 @@ def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
     return out
 
 
-#: What a harness `tests.md` no longer states since issue #582: the judging half and its carriers.
-_RETIRED_TEST_TOKENS = ("checks.", "pass_when", "required_raw_variables", "diagnostics.json",
-                        "metrics_basis", "primary_predicate", "verdict.overall", "failed_checks")
+#: What a `tests.md` no longer states since issue #582: the judging half and its carriers.
+_RETIRED_TEST_TOKENS = ("pass_when", "required_raw_variables", "diagnostics.json",
+                        "metrics_basis", "primary_predicate", "verdict.overall", "failed_checks",
+                        "`quantity`")
+_RETIRED_CHECK_REF = re.compile(r"\bchecks\.[a-z_]")
 RUN_WIDE_EXTREMA = {"cfl.max": "cfl_run_max", "extrema.h.min": "h_min_run"}
 
 
 def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
     """Every `tests.md` naming a retired token, or that the Compile gate's own parsers refuse: a
-    test with no `quantities` line, with two, or with a non-name entry. The gate refuses those only
+    test with no `quantities` line, with two, with a non-name entry, or with two `reported` lines. The gate refuses those only
     after the leaf has spent its cost. This pins the statements' presence, not what they mean."""
     out: list[str] = []
     for e in entries:
@@ -148,8 +150,12 @@ def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
         for token in _RETIRED_TEST_TOKENS:
             if token in tests:
                 out.append(f"{sid}: tests.md names the retired {token}")
+        if _RETIRED_CHECK_REF.search(tests):
+            out.append(f"{sid}: tests.md names the retired checks.<id>")
         parsed = _parse_test_quantities_from_tests_md(root / tp)
         stated, problems = parsed if parsed is not None else ({}, [])
+        reported = _parse_reported_variables_from_tests_md(root / tp)
+        problems = problems + (reported[1] if reported is not None else [])
         if not stated and not problems:
             out.append(f"{sid}: tests.md defines no test")
         out.extend(f"{sid}: {problem}" for problem in problems)
@@ -297,6 +303,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
     def test_every_suite_is_migrated(self) -> None:
         entries = self._entries()
         # a tests.md of every kind that has one: the three harnesses and the 17 physics nodes
+        self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 3)
         self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 20)
         self.assertEqual(suites_unmigrated(entries, REPO), [])
 
@@ -323,6 +330,10 @@ class SpecCorpusVersionTest(unittest.TestCase):
                                             "- `test_id`: `b`\n  - `judgment`: x\n")[0])
             self.assertIn("'a' has 2", run("- `test_id`: `a`\n  - `quantities`: `q`\n"
                                            "  - `quantities`: `r`\n")[0])
+            self.assertIn("retired checks.<id>", run(good + "checks.cfl.status\n")[0])
+            self.assertEqual(run(good + "the host checks.\n"), [])
+            self.assertEqual(len(run("- `test_id`: `a`\n- `test_id`: `b`\n")), 2)
+            self.assertIn("2 `reported:`", run(good + "  - `reported`: `x`\n  - `reported`: `y`\n")[0])
             self.assertIn("defines no test", run("nothing\n")[0])
             self.assertEqual(suites_unmigrated([{"spec_id": "p", "spec_kind": "profile"}], root), [])
 
@@ -330,10 +341,10 @@ class SpecCorpusVersionTest(unittest.TestCase):
         entries = self._entries()
         self.assertEqual(run_wide_extrema_unreported(entries, REPO), [])
         # not vacuous: the two shallow-water problems list both, in every test but the guard
-        lines = [text.count("`cfl_run_max`") for text in
-                 ((REPO / e["tests_path"]).read_text(encoding="utf-8") for e in entries
-                  if e["spec_id"] in ("shallow_water2d", "shallow_water2d_channel"))]
-        self.assertTrue(all(count > 10 for count in lines), lines)
+        for entry in entries:
+            if entry["spec_id"] in ("shallow_water2d", "shallow_water2d_channel"):
+                named = _parse_reported_variables_from_tests_md(REPO / entry["tests_path"])[0]
+                self.assertGreater(len(named), 10, entry["spec_id"])
 
     def test_the_run_wide_extrema_rule_is_driven_both_ways(self) -> None:
         import tempfile
@@ -350,6 +361,10 @@ class SpecCorpusVersionTest(unittest.TestCase):
             self.assertIn("does not name h_min_run", run(head + "- `reported`: `cfl_run_max`\n")[0])
             self.assertEqual(len(run(head)), 2)
             self.assertEqual(run("### 6-1. `a`\n- `quantities`: `mass`\n"), [])
+            # per test: another test's line does not answer for this one
+            self.assertIn("b lists cfl.max",
+                          run("### 6-1. `a`\n- `quantities`: `cfl.max`\n- `reported`: `cfl_run_max`\n"
+                              "### 6-2. `b`\n- `quantities`: `cfl.max`\n")[0])
 
 if __name__ == "__main__":
     unittest.main()
