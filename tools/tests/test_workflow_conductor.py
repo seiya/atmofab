@@ -23312,6 +23312,23 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                     self.assertIn("case a cross_target_state_agreement", lines[0])
                     self.assertEqual(doc["shapes"][0]["status"], "pass")
 
+    def test_two_shapes_failing_different_tests_do_not_match(self) -> None:
+        """Review round 1 m2: reference and shape both reduce to `self_verdict: fail`, on different
+        tests. The comparison is per test (D6), so an equal reduction is no match; a state that
+        differs is not what fails it here, since this IR has no cross-target predicate."""
+        self.ref = self._run_dir("ref_low_h", self.h * 0.0)      # fails t_h, passes t_s
+        status, doc = self._author(self._runs(self._run_dir("run", self.h * 0.0),
+                                              self._run_dir("t2", self.h, s=2.0)),
+                                   ir=self._ir(cross=False))
+        self.assertEqual(status, "fail")
+        certified, other = doc["shapes"]
+        self.assertTrue(certified["verdict_match"])
+        self.assertEqual(certified["verdict"]["self_verdict"], other["verdict"]["self_verdict"])
+        self.assertEqual(other["verdict"]["self_verdict"], "fail")
+        self.assertEqual(other["verdict"]["per_test"], {"t_h": "pass", "t_s": "fail"})
+        self.assertTrue(other["verdict_available"])
+        self.assertFalse(other["verdict_match"])
+
     def test_a_per_test_status_that_differs_fails_the_shape(self) -> None:
         """Issue #582 D6: a shape whose capture fails a test the reference passes fails on
         `verdict_match`, and the excerpt names the comparison."""
