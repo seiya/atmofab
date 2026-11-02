@@ -14052,24 +14052,32 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
         self.assertEqual(run({}, target=unimposed), [])
 
     def test_the_harness_block_variable_is_the_one_its_self_test_captures(self) -> None:
-        """`HARNESS_BLOCK_SNAPSHOT_VARIABLE` against the device harness's tests.md."""
+        """`HARNESS_BLOCK_SNAPSHOT_VARIABLE` against the device harness's tests.md: its test's
+        predicates read it, and §4 has every case capture the real value, because the gate reads
+        it in every snapshot and a placeholder there is a violation."""
         text = (Path(__file__).resolve().parents[2] / "spec/infrastructure/infra/harness/"
                 "harness_cpp_gpu/tests.md").read_text(encoding="utf-8")
+        name = vps.HARNESS_BLOCK_SNAPSHOT_VARIABLE
         block = text.split("- `test_id`: `l0_block_size_pass`", 1)[1].split("- `test_id`:", 1)[0]
-        line = next(ln for ln in block.splitlines() if "`required_raw_variables`" in ln)
-        self.assertIn(f"`{vps.HARNESS_BLOCK_SNAPSHOT_VARIABLE}`", line)
+        self.assertIn(f"final.{name}", block)
+        section = text.split("## 4. ", 1)[1].split("## 5. ", 1)[0]
+        self.assertIn(f"`{name}` is the exception: every case captures", section)
 
     def test_the_harness_grid_variables_are_the_ones_its_self_test_captures(self) -> None:
-        """`HARNESS_GRID_SNAPSHOT_VARIABLES` against the harness's tests.md: both grid
-        test cases list them among their required raw variables."""
+        """`HARNESS_GRID_SNAPSHOT_VARIABLES` against the harness's tests.md: both grid tests'
+        predicates read them, and §4 has every case capture the real values, because the gate
+        reads them in every snapshot and a placeholder there is a violation."""
         text = (Path(__file__).resolve().parents[2] / "spec/infrastructure/infra/harness/"
                 "harness_fortran_cpu_mpi/tests.md").read_text(encoding="utf-8")
         for test_id in ("l0_process_grid_pass", "l0_partition_tile_pass"):
             block = text.split(f"- `test_id`: `{test_id}`", 1)[1].split("- `test_id`:", 1)[0]
-            line = next(ln for ln in block.splitlines() if "`required_raw_variables`" in ln)
             for name in vps.HARNESS_GRID_SNAPSHOT_VARIABLES:
                 with self.subTest(test_id=test_id, name=name):
-                    self.assertIn(f"`{name}`", line)
+                    self.assertIn(f"final.{name}", block)
+        section = text.split("## 4. ", 1)[1].split("## 5. ", 1)[0]
+        first, second = vps.HARNESS_GRID_SNAPSHOT_VARIABLES
+        self.assertIn(f"`nranks`, `{first}` and `{second}` are the exception: every case captures",
+                      section)
 
     def test_the_syntax_stage_of_a_wrapper_target_is_certified_through_its_wrapper(
             self) -> None:
@@ -24342,7 +24350,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         # a bundle that followed an older token would be `bundle_capability_unsatisfied`.
         from tools.codegen_bundle import capability_name, harness_provided_capabilities
         provided = harness_provided_capabilities(
-            "infrastructure/harness_fortran_cpu_mpi@0.2.0") or frozenset()
+            "infrastructure/harness_fortran_cpu_mpi@0.3.0") or frozenset()
         token = next(t for t in provided if capability_name(t) == "distributed_state")
         self.assertIn(f"(with {token} in capability_requirements)", v[0])
         for model in ("none", "serial", "openmp"):
@@ -24420,7 +24428,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(
             model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
             plan={"precision": {}, "state_residency": "host"},
-            node_key="infrastructure/harness_fortran_cpu_mpi@0.2.0"), [])
+            node_key="infrastructure/harness_fortran_cpu_mpi@0.3.0"), [])
 
 
 class ExecutionModeContractCouplingGateTests(unittest.TestCase):

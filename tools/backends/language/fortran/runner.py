@@ -229,7 +229,7 @@ def _threads(target: dict[str, Any]) -> int:
     variant's perf record writes it (a launcher target runs one thread per rank, so every
     shape's count is 1); the single-process harness's `__write_perf` takes no thread count and
     writes the one the run's shared-memory runtime gives the program, obtained at run time
-    (`harness_fortran_cpu@0.8.0` §3.2, issue #512)."""
+    (`harness_fortran_cpu@0.9.0` §3.2, issue #512)."""
     return int(target["execution"]["threads_per_rank"])
 
 
@@ -414,7 +414,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # `__write_perf` obtains the count the shared-memory runtime gives the run itself, because
     # Validate runs one binary at several thread counts and compares each run's record with its
     # own, and the harness's own Validate run then checks the code every consumer records it
-    # through (`harness_fortran_cpu@0.8.0` §3.2, issue #512).
+    # through (`harness_fortran_cpu@0.9.0` §3.2, issue #512).
     _, _, devices = perf_parallelism(target)
     distributed = _is_distributed_harness(harness_spec_id)
 
@@ -816,9 +816,7 @@ EXPECTED_HARNESS_SPEC_ID = "harness_fortran_cpu"
 #: The harness that drives the program as several ranks (`distributed_state@2`).
 DISTRIBUTED_HARNESS_SPEC_ID = "harness_fortran_cpu_mpi"
 
-# The shared harness interface block (v3, harness spec_version 0.3.0: `h_mb_entry` gained the
-# `case_id` component so metrics-basis evidence is keyed by (test_id, case_id) and a multi-target
-# test records every targeted case — the pin compares signatures, not versions). It is the
+# The shared harness interface block (the pin compares signatures, not versions). It is the
 # eight-argument `__write_perf` form the distributed harness still publishes; the single-process
 # harness's pin, `_SINGLE_PROCESS_INTERFACE` below, is derived from it by replacing that one
 # stanza (harness_fortran_cpu 0.8.0's writer takes no thread count), so an edit to the
@@ -830,31 +828,6 @@ type :: harness_fortran_cpu__h_named
   character(len=:), allocatable :: name
   character(len=:), allocatable :: json
 end type harness_fortran_cpu__h_named
-
-type :: harness_fortran_cpu__h_check
-  character(len=:), allocatable :: id
-  character(len=4) :: status
-end type harness_fortran_cpu__h_check
-
-type :: harness_fortran_cpu__h_metric
-  character(len=:), allocatable :: name
-  real(dp) :: value
-  logical :: is_na
-  character(len=:), allocatable :: reason_na
-end type harness_fortran_cpu__h_metric
-
-type :: harness_fortran_cpu__h_case_result
-  character(len=:), allocatable :: case_id
-  logical :: expected_xfail
-  type(harness_fortran_cpu__h_check), allocatable :: checks(:)
-  type(harness_fortran_cpu__h_metric), allocatable :: metrics(:)
-end type harness_fortran_cpu__h_case_result
-
-type :: harness_fortran_cpu__h_mb_entry
-  character(len=:), allocatable :: test_id
-  character(len=:), allocatable :: case_id
-  type(harness_fortran_cpu__h_named), allocatable :: values(:)
-end type harness_fortran_cpu__h_mb_entry
 
 subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)
   character(len=*), intent(in) :: tokens(:)
@@ -910,16 +883,6 @@ subroutine harness_fortran_cpu__write_snapshot(case_id, values, time)
   type(harness_fortran_cpu__h_named), intent(in) :: values(:)
   real(dp), intent(in) :: time
 end subroutine harness_fortran_cpu__write_snapshot
-
-subroutine harness_fortran_cpu__write_metrics_basis(entries, n)
-  type(harness_fortran_cpu__h_mb_entry), intent(in) :: entries(:)
-  integer, intent(in) :: n
-end subroutine harness_fortran_cpu__write_metrics_basis
-
-subroutine harness_fortran_cpu__write_diagnostics(results, n)
-  type(harness_fortran_cpu__h_case_result), intent(in) :: results(:)
-  integer, intent(in) :: n
-end subroutine harness_fortran_cpu__write_diagnostics
 
 subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
   character(len=*), intent(in) :: case_id
@@ -1070,7 +1033,7 @@ end function harness_fortran_cpu_mpi__reduce_sum_int
 """
 
 
-# `harness_fortran_cpu@0.8.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
+# `harness_fortran_cpu@0.9.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
 # renders it: the stanza of `_HARNESS_V3_INTERFACE` without the `threads_per_rank` argument,
 # because that harness's writer obtains the thread count itself, at run time. Its §5.1 is
 # `_HARNESS_V3_INTERFACE` with this stanza in place of that one; the distributed harness keeps

@@ -422,9 +422,9 @@ source, so a spec-side `§capabilities` section would be a copy with no reader; 
 the issue records this as a departure from `zero_base_architecture.md` §A4 as written.
 
 ```
-"infrastructure/harness_fortran_cpu@0.8.0": {"sync_single_case@1", "state_registration@1"}
-"infrastructure/harness_cpp_gpu@0.2.0":     {"sync_single_case@1", "state_registration@1"}
-"infrastructure/harness_fortran_cpu_mpi@0.2.0": {"sync_single_case@1", "state_registration@1",
+"infrastructure/harness_fortran_cpu@0.9.0": {"sync_single_case@1", "state_registration@1"}
+"infrastructure/harness_cpp_gpu@0.3.0":     {"sync_single_case@1", "state_registration@1"}
+"infrastructure/harness_fortran_cpu_mpi@0.3.0": {"sync_single_case@1", "state_registration@1",
                                                  "distributed_state@2"}
 ```
 
@@ -436,18 +436,19 @@ variable straight from the module-level storage of the bundle's checks module
 The harness source needs no new operation for it, so the harness version is unchanged.
 
 `sync_single_case@1` is defined as exactly the canonical interface block of
-`harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
+`harness_fortran_cpu@0.9.0` §5.1 (11 operations, 1 published type, `dp = float64`,
 `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to its
-target language by that language's backend. One difference from that block is admitted, in the
-performance-record writer, which no consuming node's bundle code calls (the host-rendered runner
-calls it, `CHECKS_MODULE_CONTRACT.md` §4, and so does the providing harness's own self-test): §5.1 of the `0.8.0` release of the harness named above is the
-block with a `__write_perf` that takes no `threads_per_rank` argument, because it writes the
-thread count the run's shared-memory runtime gives the program itself (issue #512); the
-host-rendered runner over that harness calls that writer. `harness_cpp_gpu@0.2.0` §5.1 begins
+target language by that language's backend. The token predates that release: until `0.9.0`
+([issue #582](https://github.com/seiya/atmofab/issues/582)) the block also held the writers of two
+documents no runner writes now, and their types, which no consuming node's bundle code called.
+Its performance-record writer, which no consuming node's bundle code calls either (the
+host-rendered runner calls it, `CHECKS_MODULE_CONTRACT.md` §4, and so does the providing harness's
+own self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
+shared-memory runtime gives the program itself (issue #512); `harness_fortran_cpu_mpi@0.3.0` §5.1
+begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.3.0` §5.1 begins
 with the block,
 followed by `__block_size` (the threads per block the host imposes on the program's kernels,
-issue #512, which the CUDA C++ runner calls), and `harness_fortran_cpu_mpi@0.2.0` §5.1 begins
-with it.
+issue #512, which the CUDA C++ runner calls).
 The mechanical enforcer of that definition remains
 the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
 compares §5.1 against the certified
@@ -455,7 +456,7 @@ harness IR's `public_api.signatures` and the generated harness source; this cont
 adds a name for the ABI, not a second checker of it.
 
 `distributed_state@2` ([issue #512](https://github.com/seiya/atmofab/issues/512)) is defined as
-the distributed-state operations of `harness_fortran_cpu_mpi@0.2.0` §3.3, which that harness
+the distributed-state operations of `harness_fortran_cpu_mpi@0.3.0` §3.3, which that harness
 publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the two-dimensional
 process grid the host imposes and its queries, the block partition of a global index range over
 the ranks along one grid dimension, the halo exchange of an array along one grid dimension, the

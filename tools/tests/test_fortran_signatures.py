@@ -50,7 +50,7 @@ HARNESS_SPEC = (
 CONTROLLED_SPEC_DOC = REPO_ROOT / "docs/CONTROLLED_SPEC.md"
 
 
-#: The seventeen distributed-state operations of `harness_fortran_cpu_mpi@0.2.0` §3.3, as the Fortran
+#: The seventeen distributed-state operations of `harness_fortran_cpu_mpi@0.3.0` §3.3, as the Fortran
 #: backend renders its §5.1 block. Written out so that a change to any of them — a name, an
 #: argument's order, type, rank or intent, a result — is a visible edit here (issue #316, R4-c
 #: PR-3 round 2: eight such mutants of §5.1 survived the suite when only a count was pinned). The
@@ -208,11 +208,11 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
     def test_round_trip_harness_controlled_spec_section51(self) -> None:
         published = _real_section51_struct()
         struct = self._assert_round_trip(render_signatures_to_fortran(published))
-        # sanity on the parsed shape (the real harness surface): the 13 operations of the
+        # sanity on the parsed shape (the real harness surface): the 11 operations of the
         # `sync_single_case@1` block, its `__write_perf` without the `threads_per_rank` argument
         # (`0.8.0` §3.2, issue #512), and the whole surface renders as the copy the
         # host-rendered runner's pin carries.
-        self.assertEqual(len(struct["procedures"]), 13)
+        self.assertEqual(len(struct["procedures"]), 11)
         self.assertEqual(normalized_stanza_index(render_signatures_to_fortran(published)),
                          normalized_stanza_index(_SINGLE_PROCESS_INTERFACE))
         perf = next(p for p in published["procedures"]
@@ -220,7 +220,7 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         self.assertEqual([a["name"] for a in perf["args"]],
                          ["case_id", "target", "steps", "cells_updated", "walltime_sec",
                           "mpi_ranks", "gpu_devices"])
-        self.assertEqual(len(struct["types"]), 5)
+        self.assertEqual(len(struct["types"]), 1)
         self.assertEqual(
             {mp["name"] for mp in struct["module_parameters"]}, {"dp", "case_id_len"}
         )
@@ -238,13 +238,13 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         self.assertIsNone(err, err)
         rendered = render_signatures_to_fortran(published)
         struct = self._assert_round_trip(rendered)
-        self.assertEqual(len(struct["procedures"]), 30)
-        self.assertEqual(len(struct["types"]), 5)
+        self.assertEqual(len(struct["procedures"]), 28)
+        self.assertEqual(len(struct["types"]), 1)
         for rank in (1, 2, 3, 4):
             dims = ",".join([":"] * rank)
             self.assertIn(f"real(dp), allocatable, intent(out) :: g({dims})", rendered)
         self.assertEqual(
-            render_signatures_to_fortran({"procedures": published["procedures"][13:]}),
+            render_signatures_to_fortran({"procedures": published["procedures"][11:]}),
             _MPI_HARNESS_DISTRIBUTED_OPERATIONS)
         single = _real_section51_struct()
         renamed = yaml.safe_load(yaml.safe_dump(single).replace(
@@ -255,9 +255,9 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         # `__write_perf` obtains the thread count itself (`0.8.0` §3.2, issue #512), while the
         # distributed one's takes it from its runner (a launcher target runs one thread per
         # rank), as `0.7.0`'s did.
-        self.assertEqual(len(renamed["procedures"]), 13)
+        self.assertEqual(len(renamed["procedures"]), 11)
         name = "harness_fortran_cpu_mpi__write_perf"
-        for mine, single_p in zip(published["procedures"][:13], renamed["procedures"]):
+        for mine, single_p in zip(published["procedures"][:11], renamed["procedures"]):
             with self.subTest(procedure=mine["name"]):
                 if mine["name"] != name:
                     self.assertEqual(mine, single_p)

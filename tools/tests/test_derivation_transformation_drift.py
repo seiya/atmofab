@@ -1035,8 +1035,13 @@ PINNED_RENDER: dict[str, str] = {
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
     "render-12": "686b3a94c52a25ab973da285341b8f6b234c8ff800107087baee948e2d39bf6e",
-    # render-13 (issue #582): the judging half of the checks module is retired.
-    "render-13": "f09b4e3e6428b1f3e9282940d3de9396f90d9087cfbefc6c421b21b222989559",
+    # render-13 (issue #582): the judging half of the checks module is retired. Re-pinned (the
+    # issue's PR-3), behaviour-preserving: both renderers' pins of their harness drop the two
+    # writers and four types `0.9.0` / `0.3.0` no longer publish, and the runner they render, which
+    # stopped calling them in PR-H, is byte-identical. The digest `render-13` shipped with at
+    # bb06b9ef:
+    "render-13": "e9ae29cbbb3540a4059b8c5e0c1c973bb04c9e269822b337bac34a29bf0e8208",
+    "render-13@bb06b9ef": "f09b4e3e6428b1f3e9282940d3de9396f90d9087cfbefc6c421b21b222989559",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

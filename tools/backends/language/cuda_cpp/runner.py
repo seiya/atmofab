@@ -533,76 +533,6 @@ types:
       type: string
       len: deferred
       alloc: true
-- name: harness_cpp_gpu__h_check
-  components:
-  - name: id
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-  - name: status
-    spec:
-      type: string
-      len: '4'
-- name: harness_cpp_gpu__h_metric
-  components:
-  - name: name
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-  - name: value
-    spec:
-      type: real
-      kind: dp
-  - name: is_na
-    spec:
-      type: logical
-  - name: reason_na
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-- name: harness_cpp_gpu__h_case_result
-  components:
-  - name: case_id
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-  - name: expected_xfail
-    spec:
-      type: logical
-  - name: checks
-    rank: 1
-    spec:
-      type: derived
-      name: harness_cpp_gpu__h_check
-      alloc: true
-  - name: metrics
-    rank: 1
-    spec:
-      type: derived
-      name: harness_cpp_gpu__h_metric
-      alloc: true
-- name: harness_cpp_gpu__h_mb_entry
-  components:
-  - name: test_id
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-  - name: case_id
-    spec:
-      type: string
-      len: deferred
-      alloc: true
-  - name: values
-    rank: 1
-    spec:
-      type: derived
-      name: harness_cpp_gpu__h_named
-      alloc: true
 procedures:
 - kind: subroutine
   name: harness_cpp_gpu__parse_cases
@@ -768,32 +698,6 @@ procedures:
     spec:
       type: real
       kind: dp
-- kind: subroutine
-  name: harness_cpp_gpu__write_metrics_basis
-  args:
-  - name: entries
-    rank: 1
-    intent: in
-    spec:
-      type: derived
-      name: harness_cpp_gpu__h_mb_entry
-  - name: n
-    intent: in
-    spec:
-      type: integer
-- kind: subroutine
-  name: harness_cpp_gpu__write_diagnostics
-  args:
-  - name: results
-    rank: 1
-    intent: in
-    spec:
-      type: derived
-      name: harness_cpp_gpu__h_case_result
-  - name: n
-    intent: in
-    spec:
-      type: integer
 - kind: subroutine
   name: harness_cpp_gpu__write_perf
   args:
