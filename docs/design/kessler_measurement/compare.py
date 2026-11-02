@@ -136,6 +136,18 @@ def snapshot(suite: dict, case: dict, driver: Path) -> tuple[dict, dict]:
         final["guard_pass"] = case["refusal"].get("guard_pass", 0.0)
         if "converged" in final:
             final["converged"] = case["refusal"].get("converged", 0.0)
+        if case.get("nonconvergence_check") and case["operation"] == "saturation_adjustment":
+            # The original aborts on the column, so each other cell runs alone; cell 4 keeps its
+            # inputs and the halo of the output is 0, as Controlled Spec section 4 and section 2 state.
+            ka = suite["grid"]["ka"]
+            final["rhoe_d"] = [0.0] * ka
+            for k in range(suite["grid"]["ks"], suite["grid"]["ke"] + 1):
+                if k == 4:
+                    continue
+                one = {"ka": ka, "ks": k, "ke": k}
+                returned = run_driver(driver, case["operation"], one, 1.0, initial)
+                for name, cells in returned.items():
+                    final[name][k - 1] = cells[k - 1]
     else:
         grid = case_inputs(suite, case)["grid"]
         returned = run_driver(driver, case["operation"], grid, case.get("dt", 1.0), initial)

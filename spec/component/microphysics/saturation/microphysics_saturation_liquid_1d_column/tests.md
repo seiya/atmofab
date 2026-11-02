@@ -47,7 +47,7 @@ cases:
 - {case_id: l0_satadj_temp_nonpositive, operation: saturation_adjustment, expected: xfail, refusal: {}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}, overrides: [{var: temp, k: 4, value: -1.0}]}
 - {case_id: l0_satadj_cvtot_nonpositive, operation: saturation_adjustment, expected: xfail, refusal: {}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}, overrides: [{var: cvtot, k: 4, value: 0.0}]}
 - {case_id: l0_satadj_bad_range, operation: saturation_adjustment, expected: xfail, refusal: {}, grid: {ks: 7, ke: 2}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4]}}
-- {case_id: l0_satadj_nonconverged, operation: saturation_adjustment, expected: xfail, refusal: {guard_pass: 1.0, converged: 0.0}, nonconvergence_check: true, parameters: {qsat_ratio: 100.0}, columns: {temp: [277.8, 0.0], dens: [1.0, 0.0], qv: {cells: [0.001, 0.001, 0.66357706133254214, 0.001, 0.001, 0.001]}, qc: [0.0, 0.0]}}
+- {case_id: l0_satadj_nonconverged, operation: saturation_adjustment, expected: xfail, refusal: {guard_pass: 1.0, converged: 0.0}, nonconvergence_check: true, parameters: {qsat_ratio: 100.0}, columns: {temp: [277.8, 0.0], dens: [1.0, 0.0], qv: {cells: [0.001, 0.001, 0.66357706133254214, 0.009, 0.001, 0.012]}, qc: {cells: [0.0, 5.0e-4, 0.0, 1.0e-3, 5.0e-4, 1.0e-3]}}}
 ```
 
 ## 3. Execution-control rules
@@ -176,7 +176,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases, and each 
   - `case`: `l0_satadj_nonconverged`
   - `xfail_condition`: `qsat_ratio >= 100`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'converged'`
-  - `judgment`: `guard_pass` is `1` and `converged` is `0`. Cell 4 does not converge; the other five cells are unsaturated and take the virtual branch. Over every cell: `qv`, `qc`, `cptot` and `cvtot` hold their inputs exactly, `maxabs(interior*rhoe_d)` is `== 0`, and `maxabs(final.temp - initial.temp)` is `<= 2e-13`, so every published value is finite and the column's other cells were still evaluated.
+  - `judgment`: `guard_pass` is `1` and `converged` is `0`. Cell 4 does not converge, and it holds its inputs: with `at4` the mask of cell 4, `maxabs(at4*(final - initial))` is `== 0` for each of `temp`, `qv`, `qc`, `cptot` and `cvtot`, and `maxabs(at4*rhoe_d)` is `== 0`. The cells on either side of it are still evaluated, so the state changes there: cells 3 and 6 are subsaturated with `qc > 0` and end with `qc == 0` (`maxabs(m36*final.qc)`, `m36` their mask); cells 5 and 7 are supersaturated and end saturated, `max(m57*abs(final.qv - qs_final)/(2e-6*dqs_final))` is `<= 1` and `min(m57*final.qc + (1 - m57))` is `> 0`; over every interior cell but cell 4, total water is conserved to `1e-15`. Every published value is finite.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when the judgment expression is satisfied.

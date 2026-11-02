@@ -55,7 +55,7 @@ cases:
 - {case_id: l0_cvtot_nonpositive, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}, overrides: [{var: cvtot, k: 4, value: 0.0}]}
 - {case_id: l0_dens_nonpositive, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}, overrides: [{var: dens, k: 4, value: 0.0}]}
 - {case_id: l0_bad_range, operation: adjustment, expected: xfail, refusal: {}, dt: 10.0, grid: {ks: 7, ke: 2}, columns: {temp: [285.0, 3.0], dens: [1.05, -0.05], pres: [95000.0, -3000.0], qv: [0.002, 3.0e-4], qc: [5.0e-4, 1.0e-4], qr: [1.0e-4, 1.0e-5]}}
-- {case_id: l0_nonconverged, operation: adjustment, expected: xfail, refusal: {}, nonconvergence_check: true, dt: 10.0, parameters: {qsat_ratio: 100.0}, columns: {temp: [277.8, 0.0], dens: [1.0, 0.0], pres: [100000.0, 0.0], qv: {cells: [0.001, 0.001, 0.66357706133254214, 0.001, 0.001, 0.001]}, qc: [0.0, 0.0], qr: [0.0, 0.0]}}
+- {case_id: l0_nonconverged, operation: adjustment, expected: xfail, refusal: {}, nonconvergence_check: true, dt: 10.0, parameters: {qsat_ratio: 100.0}, columns: {temp: [277.8, 0.0], dens: [1.0, 0.0], pres: [100000.0, 0.0], qv: {cells: [0.001, 0.001, 0.66357706133254214, 0.001, 0.001, 0.001]}, qc: {cells: [5.0e-4, 5.0e-4, 0.0, 5.0e-4, 5.0e-4, 5.0e-4]}, qr: {cells: [1.0e-4, 1.0e-4, 0.0, 1.0e-4, 1.0e-4, 1.0e-4]}}}
 - {case_id: l0_tv_bad_range, operation: terminal_velocity, expected: xfail, refusal: {}, grid: {ks: 7, ke: 2}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}}
 - {case_id: l0_tv_dens_nonpositive, operation: terminal_velocity, expected: xfail, refusal: {}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}, overrides: [{var: dens, k: 4, value: 0.0}]}
 - {case_id: l0_tv_refstate_nonpositive, operation: terminal_velocity, expected: xfail, refusal: {}, columns: {dens: [1.1, -0.05], rhoq_c: [1.0e-4, 1.0e-5], rhoq_r: [1.0e-3, 2.0e-4], refstate_dens: [1.2, -0.08]}, overrides: [{var: refstate_dens, k: 4, value: 0.0}]}
@@ -201,7 +201,7 @@ Every `pass` test also requires `guard_pass = 1` on each of its cases.
   - `case`: `l0_nonconverged`
   - `xfail_condition`: `qsat_ratio >= 100`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
-  - `judgment`: `guard_pass` is `0`, and each input-updated array holds its input at every cell, as `l0_dt_nonpositive_xfail`, although the first step and the saturation step of the column's other cells have run. Cell 4 does not converge.
+  - `judgment`: `guard_pass` is `0`, and each input-updated array holds its input at every cell, as `l0_dt_nonpositive_xfail`, although the rates and the saturation step of the column's other cells, which hold `qc > 0` and `qr > 0`, have changed them before the refusal. Cell 4, with `qc = qr = 0`, does not converge.
 - `test_id`: `l0_tv_bad_range_xfail`
   - `level`: `L0`
   - `operation_id`: `microphysics_kessler_warm_rain_1d_column__terminal_velocity`
