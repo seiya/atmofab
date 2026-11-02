@@ -17,6 +17,11 @@ from pathlib import Path
 
 import yaml
 
+from tools.validate_pipeline_semantics import (
+    _parse_reported_variables_from_tests_md,
+    _parse_test_quantities_from_tests_md,
+)
+
 REPO = Path(__file__).resolve().parents[2]
 _SPEC_VERSION = re.compile(r"^- `spec_version`: `([^`]+)`", re.M)
 _REF_SPEC_VERSION = re.compile(r"^- `spec_ref\.spec_version`: `([^`]+)`", re.M)
@@ -123,31 +128,58 @@ def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
     return out
 
 
-#: What a harness `tests.md` no longer states since issue #582: the judging half and its carriers.
-_RETIRED_HARNESS_TEST_TOKENS = ("checks.", "pass_when", "required_raw_variables", "diagnostics.json",
-                                "metrics_basis", "primary_predicate", "`quantity`")
+#: What a `tests.md` no longer states since issue #582: the judging half and its carriers.
+_RETIRED_TEST_TOKENS = ("pass_when", "required_raw_variables", "diagnostics.json",
+                        "metrics_basis", "primary_predicate", "verdict.overall", "failed_checks",
+                        "`quantity`")
+_RETIRED_CHECK_REF = re.compile(r"\bchecks\.\S")
+RUN_WIDE_EXTREMA = {"cfl.max": "cfl_run_max", "extrema.h.min": "h_min_run"}
 
 
-def harness_tests_unmigrated(entries: list[dict], root: Path) -> list[str]:
-    """Every `infrastructure` `tests.md` naming a retired token, or a test whose definition lacks
-    its one `quantities` line (the Compile gate refuses that only after the leaf has spent its
-    cost). A harness suite is single-target, so its `case_id`s are its `test_id`s and §4 gives
-    their count; this pins the statements' presence, not what they mean."""
+def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
+    """Every `tests.md` naming a retired token, or that the Compile gate's own parsers refuse: a
+    test with no `quantities` line, with two, with a non-name entry, or with two `reported` lines. The gate refuses those only
+    after the leaf has spent its cost. This pins the statements' presence, not what they mean."""
     out: list[str] = []
     for e in entries:
-        if e.get("spec_kind") != "infrastructure":
+        tp = e.get("tests_path")
+        if not tp:
             continue
         sid = e["spec_id"]
-        tests = (root / e["tests_path"]).read_text(encoding="utf-8")
-        for token in _RETIRED_HARNESS_TEST_TOKENS:
+        tests = (root / tp).read_text(encoding="utf-8")
+        for token in _RETIRED_TEST_TOKENS:
             if token in tests:
                 out.append(f"{sid}: tests.md names the retired {token}")
-        blocks = re.split(r"^- `test_id`: ", tests, flags=re.M)[1:]
-        if not blocks:
+        if _RETIRED_CHECK_REF.search(tests):
+            out.append(f"{sid}: tests.md names the retired checks.<id>")
+        parsed = _parse_test_quantities_from_tests_md(root / tp)
+        stated, problems = parsed if parsed is not None else ({}, [])
+        reported = _parse_reported_variables_from_tests_md(root / tp)
+        problems = problems + (reported[1] if reported is not None else [])
+        if not stated and not problems:
             out.append(f"{sid}: tests.md defines no test")
-        for block in blocks:
-            if len(re.findall(r"^  - `quantities`: ", block, flags=re.M)) != 1:
-                out.append(f"{sid}: {block.split(chr(10), 1)[0]} has not one quantities line")
+        out.extend(f"{sid}: {problem}" for problem in problems)
+    return out
+
+
+def run_wide_extrema_unreported(entries: list[dict], root: Path) -> list[str]:
+    """Every `tests.md` test listing a quantity the kernel also reports (`RUN_WIDE_EXTREMA`) with no
+    `reported` line naming its variable. No gate asks for the line: with neither the line nor the
+    read, the Compile gate passes and the kernel's report goes unjudged. Reads no other quantity."""
+    out: list[str] = []
+    for e in entries:
+        tp = e.get("tests_path")
+        if not tp:
+            continue
+        parsed = _parse_test_quantities_from_tests_md(root / tp)
+        reported = _parse_reported_variables_from_tests_md(root / tp)
+        stated = parsed[0] if parsed is not None else {}
+        named = reported[0] if reported is not None else {}
+        for test_id, quantities in stated.items():
+            for quantity, variable in RUN_WIDE_EXTREMA.items():
+                if quantity in quantities and variable not in named.get(test_id, set()):
+                    out.append(f"{e['spec_id']}: {test_id} lists {quantity} and does not name "
+                               f"{variable} on a `reported` line")
     return out
 
 
@@ -268,34 +300,73 @@ class SpecCorpusVersionTest(unittest.TestCase):
             self.assertEqual(run("no perf paragraph\n", "y\n"), [])
 
 
-    def test_every_harness_suite_is_migrated(self) -> None:
+    def test_every_suite_is_migrated(self) -> None:
         entries = self._entries()
+        # a tests.md of every kind that has one: the three harnesses and the 17 physics nodes
         self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 3)
-        self.assertEqual(harness_tests_unmigrated(entries, REPO), [])
+        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 20)
+        self.assertEqual(suites_unmigrated(entries, REPO), [])
 
-    def test_the_harness_migration_rule_is_driven_both_ways(self) -> None:
-        """Synthetic: a migrated suite passes; a retired token, a missing or a doubled line, and
-        a suite with no test are each reported; a spec of another kind is not read."""
+    def test_the_migration_rule_is_driven_both_ways(self) -> None:
+        """Synthetic: a migrated suite in either id form passes; a retired token, a missing or a
+        doubled line, and a suite with no test are each reported; a spec with no tests.md is not
+        read."""
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            entry = {"spec_id": "s", "spec_kind": "infrastructure", "tests_path": "t.md"}
+            entry = {"spec_id": "s", "spec_kind": "component", "tests_path": "t.md"}
 
-            def run(text: str, e: dict = entry) -> list[str]:
+            def run(text: str) -> list[str]:
                 (root / "t.md").write_text(text)
-                return harness_tests_unmigrated([e], root)
+                return suites_unmigrated([entry], root)
 
             good = "- `test_id`: `a`\n  - `quantities`: `q`\n- `test_id`: `b`\n  - `quantities`: `r`\n"
             self.assertEqual(run(good), [])
-            for token in _RETIRED_HARNESS_TEST_TOKENS:
+            self.assertEqual(run("## 6. T\n### 6-1. `a`\n- `quantities`: `q`\n"), [])
+            for token in _RETIRED_TEST_TOKENS:
                 with self.subTest(token=token):
                     self.assertIn(f"retired {token}", run(good + token + "\n")[0])
-            self.assertIn("`b` has not one", run("- `test_id`: `a`\n  - `quantities`: `q`\n"
-                                                 "- `test_id`: `b`\n  - `judgment`: x\n")[0])
-            self.assertIn("`a` has not one",
-                          run("- `test_id`: `a`\n  - `quantities`: `q`\n  - `quantities`: `r`\n")[0])
+            self.assertIn("'b' has no", run("- `test_id`: `a`\n  - `quantities`: `q`\n"
+                                            "- `test_id`: `b`\n  - `judgment`: x\n")[0])
+            self.assertIn("'a' has 2", run("- `test_id`: `a`\n  - `quantities`: `q`\n"
+                                           "  - `quantities`: `r`\n")[0])
+            self.assertIn("retired checks.<id>", run(good + "checks.cfl.status\n")[0])
+            self.assertEqual(run(good + "the host checks.\n"), [])
+            for spelling in ("checks.<id>", "checks.Zero.status"):
+                self.assertIn("retired checks.<id>", run(good + spelling + "\n")[0])
+            self.assertEqual(len(run("- `test_id`: `a`\n- `test_id`: `b`\n")), 2)
+            self.assertIn("2 `reported:`", run(good + "  - `reported`: `x`\n  - `reported`: `y`\n")[0])
             self.assertIn("defines no test", run("nothing\n")[0])
-            self.assertEqual(run("checks.\n", {**entry, "spec_kind": "component"}), [])
+            self.assertEqual(suites_unmigrated([{"spec_id": "p", "spec_kind": "profile"}], root), [])
+
+    def test_every_test_listing_a_run_wide_extremum_names_the_report(self) -> None:
+        entries = self._entries()
+        self.assertEqual(run_wide_extrema_unreported(entries, REPO), [])
+        # not vacuous: the two shallow-water problems list both, in every test but the guard
+        for entry in entries:
+            if entry["spec_id"] in ("shallow_water2d", "shallow_water2d_channel"):
+                named = _parse_reported_variables_from_tests_md(REPO / entry["tests_path"])[0]
+                self.assertGreater(len(named), 10, entry["spec_id"])
+
+    def test_the_run_wide_extrema_rule_is_driven_both_ways(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = {"spec_id": "s", "spec_kind": "problem", "tests_path": "t.md"}
+
+            def run(text: str) -> list[str]:
+                (root / "t.md").write_text(text)
+                return run_wide_extrema_unreported([entry], root)
+
+            head = "### 6-1. `a`\n- `quantities`: `cfl.max`, `extrema.h.min`\n"
+            self.assertEqual(run(head + "- `reported`: `cfl_run_max`, `h_min_run`\n"), [])
+            self.assertIn("does not name h_min_run", run(head + "- `reported`: `cfl_run_max`\n")[0])
+            self.assertEqual(len(run(head)), 2)
+            self.assertEqual(run("### 6-1. `a`\n- `quantities`: `mass`\n"), [])
+            # per test: another test's line does not answer for this one
+            self.assertIn("b lists cfl.max",
+                          run("### 6-1. `a`\n- `quantities`: `cfl.max`\n- `reported`: `cfl_run_max`\n"
+                              "### 6-2. `b`\n- `quantities`: `cfl.max`\n")[0])
 
 if __name__ == "__main__":
     unittest.main()
