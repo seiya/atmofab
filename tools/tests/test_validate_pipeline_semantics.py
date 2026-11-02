@@ -11354,6 +11354,14 @@ end program shallow_water2d_runner
                 if not refused:
                     self.assertEqual(v, [])
 
+    def test_a_malformed_reported_line_is_refused_at_the_stage(self) -> None:
+        """Round 2 R4: the reader's problem reaches the stage. With an unmarked IR and a line that
+        names nothing, both sets are empty, so the problem is the only refusal."""
+        body = self._PLAIN_BODY + "- `reported`: cfl <= 1.0\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_reported(Path(tmp), body, None, True)
+        self.assertEqual(len([x for x in v if "not variable names" in x]), 1, v)
+
     def test_the_reported_line_reader_takes_only_its_own_form(self) -> None:
         """Over-refusal probe: prose that speaks of a report, in the definition or outside one,
         is no line; both spellings and several tests naming one variable are one set."""
