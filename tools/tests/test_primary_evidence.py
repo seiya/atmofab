@@ -2022,6 +2022,12 @@ class SourceGateTest(unittest.TestCase):
                 self.assertIn("variables[0].source must be one of", v[0])
 
     def test_a_reported_array_is_refused_and_another_class_may_be_one(self) -> None:
+        for shape in ("[nx]", "[nx, ny]", "[ncomp, nx, ny]"):   # rank 1 is an array too (round 2 R5)
+            with self.subTest(shape=shape):
+                self.assertEqual(len(pe.source_violations({"variables": [
+                    {"name": "c", "shape_expr": shape, "source": "reported"}]})), 1)
+        self.assertEqual(pe.source_violations({"variables": [
+            {"name": "c", "shape_expr": "scalar", "source": "reported"}]}), [])
         v = pe.source_violations({"variables": [
             {"name": "s", "shape_expr": "scalar"},
             {"name": "c", "shape_expr": "[nx, ny]", "source": "reported"}]})
