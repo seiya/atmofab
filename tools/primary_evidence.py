@@ -1947,7 +1947,13 @@ def reference_read_violations(predicates: Any, schema: dict[str, Any] | None) ->
     kernel. The same predicate counts here, unlike `reported_read_violations`, because comparing
     state against a reference in one expression is the normal form of this judgment. Reads are
     `sources_read`'s, so a read in a term constant by form counts for nothing. A malformed entry
-    is the schema gate's to report."""
+    is the schema gate's to report.
+
+    What this does NOT establish. The state term may be inert: `maxabs(final.ref - inputs.e) +
+    1e-300 * sum(final.h)` and `maxabs(final.ref - initial.h)` both pass, and neither compares the
+    reference with what the operation wrote. The label is the leaf's, and no seed pins it: a
+    variable left unlabelled or labelled `record` escapes the rule. `Compile.verify` V3 (i), (ii)
+    and (iv) are the backstop for all of it; this gate is a floor, not the judgment."""
     v: list[str] = []
     if schema is None or not isinstance(predicates, list):
         return v
