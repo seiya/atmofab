@@ -11314,6 +11314,46 @@ end program shallow_water2d_runner
             self.assertFalse([x for x in v if fragment in x], v)
             self.assertTrue([x for x in v if "reads a source: reported variable" in x], v)
 
+    def _two_tests_reported(self, repo: Path, body: str, reads: dict[str, list[str]]) -> list[str]:
+        """The stage over tests t1 and t2, each judging `q`, `reads` giving each test's exprs;
+        `cfl` is `source: reported`."""
+        preds = [{**self._primary_predicate(), "test_id": tid, "quantity": "q", "expr": expr}
+                 for tid, exprs in reads.items() for expr in exprs]
+        io = self._io_contract_with_predicates(preds, [
+            self._test_entry(test_id=tid, quantities=["q"]) for tid in reads])
+        io["raw_requirements"]["required_evidence"][0]["schema"]["variables"].append(
+            {"name": "cfl", "shape_expr": "scalar", "source": "reported"})
+        tests_md = repo / MOCK_TESTS_REF
+        tests_md.parent.mkdir(parents=True, exist_ok=True)
+        tests_md.write_text(body, encoding="utf-8")
+        return self._compile_with_io_contract(repo, io, plant_tests_md=False)
+
+    def test_a_reported_line_is_read_by_a_predicate_of_its_own_test(self) -> None:
+        """Round 2 R1: a variable on a test's `reported:` line must be read by a predicate of THAT
+        test, and a test reading a report names it. The union over the file let a declared report
+        go unread, and let a report named under t1 judge t2."""
+        state, report = "maxabs(final.h)", "final.cfl"
+        line = "- `quantities`: `q`\n- `reported`: `cfl`\n"
+        plain = "- `quantities`: `q`\n"
+        fragment = "`reported:` line of its tests.md definition"
+        one = "### 1-1. `t1`\n"
+        two = "### 1-2. `t2`\n"
+        for label, body, reads, refused in (
+                ("named, unread", one + line, {"t1": [state]}, True),
+                ("named under t1, read under t2", one + line + two + plain,
+                 {"t1": [state], "t2": [state, report]}, True),
+                ("read under both, named under one", one + line + two + plain,
+                 {"t1": [state, report], "t2": [state, report]}, True),
+                ("named and read per test", one + line + two + line,
+                 {"t1": [state, report], "t2": [state, report]}, False),
+                ("one test of two", one + line + two + plain,
+                 {"t1": [state, report], "t2": [state]}, False)):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                v = self._two_tests_reported(Path(tmp), body, reads)
+                self.assertEqual(any(fragment in x for x in v), refused, v)
+                if not refused:
+                    self.assertEqual(v, [])
+
     def test_the_reported_line_reader_takes_only_its_own_form(self) -> None:
         """Over-refusal probe: prose that speaks of a report, in the definition or outside one,
         is no line; both spellings and several tests naming one variable are one set."""
@@ -11327,7 +11367,7 @@ end program shallow_water2d_runner
                 "### 1-2. `t2`\nreported: cfl\n### 1-3. `t3`\n- `judgment`: nothing reported\n",
                 encoding="utf-8")
             self.assertEqual(vps._parse_reported_variables_from_tests_md(path),
-                             ({"cfl", "h_min_run"}, []))
+                             ({"t1": {"cfl", "h_min_run"}, "t2": {"cfl"}}, []))
             for line, token in (("- `reported`: `cfl`\n- `reported`: `h`\n", "2 `reported:` lines"),
                                 ("- `reported`:\n", "not variable names"),
                                 ("- `reported`: cfl <= 1.0\n", "not variable names")):
@@ -11526,13 +11566,17 @@ end program shallow_water2d_runner
         io = self._io_contract_with_predicates(
             predicates, [self._test_entry(quantities=["cfl_max"], target_cases=list(cases))])
         schema = io["raw_requirements"]["required_evidence"][0]["schema"]
+        # A declared report is read by its test (round 2 R1), so a row reading none declares none.
+        reads_report = any("cfl_run_max" in str(p) for p in predicates)
         schema["variables"] += [
-            {"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"},
+            *([{"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"}]
+              if reads_report else []),
             {"name": "guard_pass", "shape_expr": "scalar", "source": "record"},
             *variables]
         with tempfile.TemporaryDirectory() as tmp:
             return self._stage_with_tests_md(
-                Path(tmp), "### 1-1. `t1`\n- `quantities`: `cfl_max`\n- `reported`: `cfl_run_max`\n",
+                Path(tmp), "### 1-1. `t1`\n- `quantities`: `cfl_max`\n"
+                + ("- `reported`: `cfl_run_max`\n" if reads_report else ""),
                 io, case_ids=cases)
 
     def test_a_reported_read_paired_with_state_passes_the_stage(self) -> None:
@@ -11656,7 +11700,7 @@ end program shallow_water2d_runner
                 v = self._reported_stage([self._STATE_READ], variables=(variable,))
                 hits = [x for x in v if fragment in x]
                 self.assertEqual(len(hits), 1, v)
-                self.assertIn("state_snapshots.schema.variables[5]", hits[0])
+                self.assertIn("state_snapshots.schema.variables[4]", hits[0])
         for source in ("operation", "record", "reference"):
             with self.subTest(source=source):
                 self.assertEqual(self._reported_stage(

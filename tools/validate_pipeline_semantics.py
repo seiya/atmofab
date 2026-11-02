@@ -3570,14 +3570,14 @@ def _parse_test_quantities_from_tests_md(
 
 def _parse_reported_variables_from_tests_md(
     tests_path: Path,
-) -> tuple[set[str], list[str]] | None:
-    """The union of the `tests.md` definitions' `reported:` lines (`TEST_REPORTED_LINE`), and the
-    problems found: a definition with two, or an entry that is not a variable name. No line says
-    no variable is reported. None when the file cannot be read."""
+) -> tuple[dict[str, set[str]], list[str]] | None:
+    """Each `tests.md` definition's `reported:` line (`TEST_REPORTED_LINE`) as its names, keyed by
+    test id, and the problems found: a definition with two, or an entry that is not a variable
+    name. No line says the test reads no reported variable. None when the file cannot be read."""
     blocks = _tests_md_definition_blocks(tests_path)
     if blocks is None:
         return None
-    out: set[str] = set()
+    out: dict[str, set[str]] = {}
     problems: list[str] = []
     for tid, lines in blocks.items():
         found = [m for m in (TEST_REPORTED_LINE.match(line) for line in lines) if m]
@@ -3590,7 +3590,7 @@ def _parse_reported_variables_from_tests_md(
             if bad:
                 problems.append(f"test {tid!r} `reported:` line holds {bad}, not variable names")
                 continue
-            out.update(names)
+            out[tid] = set(names)
     return out, problems
 
 
@@ -9725,7 +9725,9 @@ def _validate_tests_and_predicates(
       threshold; whether an expression measures the judgment is ``Compile.verify`` V3's.
     - D13, the reported-read gate: ``primary_evidence.reported_read_violations``. The label it keys
       on is the leaf's, so the set of ``source: reported`` variables equals what the ``tests.md``
-      ``reported:`` lines name (``_parse_reported_variables_from_tests_md``; no line means none).
+      ``reported:`` lines name (``_parse_reported_variables_from_tests_md``; no line means none),
+      and per test the line equals what the test's predicates read
+      (``primary_evidence.reported_line_read_violations``).
     - Cross-target transcription (issue #324): a cross-target predicate is no judgment of the
       verdict, so its set is pinned separately — every test whose ``tests.md`` definition contains
       ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one, and no other test carries one
@@ -9742,6 +9744,7 @@ def _validate_tests_and_predicates(
         PrimaryEvidenceError,
         is_cross_target_predicate,
         quantity_violations,
+        reported_line_read_violations,
         reported_read_violations,
         schema_variables,
         snapshot_schema,
@@ -9853,9 +9856,10 @@ def _validate_tests_and_predicates(
     # The label D13 keys on is the leaf's, so its set is pinned to the seed the leaf cannot edit.
     parsed_reported = _parse_reported_variables_from_tests_md(tests_path)
     if parsed_reported is not None:
-        stated_reported, problems = parsed_reported
+        stated_by_test, problems = parsed_reported
         for problem in problems:
             violations.append(f"{derived_path}:tests.md ({tests_path}): {problem}")
+        stated_reported = set().union(*stated_by_test.values()) if stated_by_test else set()
         marked: set[str] = set()
         if isinstance(schema, dict):
             marked = {name for name, source in variable_sources(schema).items()
@@ -9866,6 +9870,8 @@ def _validate_tests_and_predicates(
                 f"variables {sorted(marked)} must equal the variables the `reported:` lines of "
                 f"tests.md name ({sorted(stated_reported)}): tests.md says which value the kernel "
                 "reports of itself, and no line means none")
+        for msg in reported_line_read_violations(stated_by_test, marked, predicates):
+            violations.append(f"{derived_path}:io_contract.predicates: {msg}")
 
     # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is
     # asked no cross-target agreement (issue #383), so a disagreeing variant would certify. Pin

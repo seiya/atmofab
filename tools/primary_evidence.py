@@ -1913,6 +1913,32 @@ def quantity_violations(tests: Any, predicates: Any,
     return v
 
 
+def reported_line_read_violations(stated_by_test: dict[str, set[str]], marked: set[str],
+                                  predicates: Any) -> list[str]:
+    """Per test, the variables its `tests.md` `reported:` line names (``stated_by_test``) must equal
+    the ones of those and of ``marked`` that its predicates read, cross-target ones aside. A
+    declared report no predicate of the test reads judges nothing, and a report judged under a
+    test whose line does not name it is a read `tests.md` does not state. Reads are the ones that
+    enter the value (`cases_read`). A malformed entry is the schema gate's to report."""
+    names = set(marked).union(*stated_by_test.values()) if stated_by_test else set(marked)
+    read: dict[str, set[str]] = {}
+    for pred in (predicates if isinstance(predicates, list) else []):
+        if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str) \
+                or is_cross_target_predicate(pred):
+            continue
+        for name in names:
+            if cases_read(pred, {name}):
+                read.setdefault(pred["test_id"].strip(), set()).add(name)
+    v: list[str] = []
+    for tid in sorted(set(stated_by_test) | set(read)):
+        stated, reads = stated_by_test.get(tid, set()), read.get(tid, set())
+        if stated != reads:
+            v.append(f"test {tid!r}: its predicates read the reported variables {sorted(reads)} "
+                     f"and the `reported:` line of its tests.md definition names {sorted(stated)}: "
+                     "the two are equal per test")
+    return v
+
+
 def reported_read_violations(predicates: Any, schema: dict[str, Any] | None) -> list[str]:
     """The reported-read gate (issue #582, D13): a predicate that reads a `source: reported`
     variable needs ANOTHER predicate of the same test and `quantity`, not cross-target, that

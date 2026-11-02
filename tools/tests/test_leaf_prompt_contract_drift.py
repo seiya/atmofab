@@ -1123,7 +1123,7 @@ PINNED: dict[str, str] = {
     # fixed text joins the tuple as `dependency_facts_render`. The first version in no key.
     "leaf-86": "c8fcb173cdb1d18a1d32e9991ad6673de285b747d88aaad8d37280a395fbec6e",
     # leaf-87 (issue #582): the judging half of the checks module is retired.
-    "leaf-87": "da8fcd790ffd3a96e0443858bb3263d1d499335e338fbace5ed05973c8ee1b91",
+    "leaf-87": "277fb6d38eb28fa1a38ac36fae62eb39167d25009f941b35202d56f4447fc1c6",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same

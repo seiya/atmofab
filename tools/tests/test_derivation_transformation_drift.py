@@ -767,7 +767,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # COVERAGE block spells the time read in the grammar's form, at('<case>').final.<time variable>.
     "compile-docs-22": "212e5c5233749fd29bccfc3abbce03e03561e18994fb1fee431b9e71a4d63f5a",
     # compile-docs-23 (issue #582): the judging half of the checks module is retired.
-    "compile-docs-23": "3a079709a0b9435503d69feea7d85760c91f2cca4d01dfd103d4e65a661d2800",
+    "compile-docs-23": "36ff19857c87ea9f191e4431b2fe7bcd44de44451c0fbb3b1188846d8d246029",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1786,7 +1786,7 @@ PINNED_VERDICT: dict[str, str] = {
     # Round 3: a docstring sentence that was inexact about `_predicate_scope` is deleted.
     "verdict-11": "7327cb51dfbf36f29441cf6b918275bdb2bf3b3f2be70e86228d30c6a870b96b",
     # verdict-12 (issue #582): the judging half of the checks module is retired.
-    "verdict-12": "15d3af8bbacf62326163b876aa20a518097608d19724a576a4168d3416cab7f7",
+    "verdict-12": "47ba1f01803f7e3936e23d1756a6c43c6091945b06beb3b14120e1a7c7fdd37d",
 }
 
 
