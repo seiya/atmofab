@@ -767,7 +767,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # COVERAGE block spells the time read in the grammar's form, at('<case>').final.<time variable>.
     "compile-docs-22": "212e5c5233749fd29bccfc3abbce03e03561e18994fb1fee431b9e71a4d63f5a",
     # compile-docs-23 (issue #582): the judging half of the checks module is retired.
-    "compile-docs-23": "06cfdc1ec2e8c1b82337c53745b11a975e619f7aa7651f995a24477f0b35530e",
+    "compile-docs-23": "32a280dbebed7c562a23ae4d26ee60bc5311891cf82049e06cfec947ae22e73b",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

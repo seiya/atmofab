@@ -11270,6 +11270,72 @@ end program shallow_water2d_runner
             vps._validate_tests_and_predicates(Path(tmp), ir_dir, violations)
         self.assertEqual(len([v for v in violations if "target case(s) ['b']" in v]), 1, violations)
 
+    def _compile_reported(self, repo: Path, body: str, source: str | None,
+                          expr_pair: bool = True) -> list[str]:
+        """The stage over one test: the `cfl` variable labelled `source` (None: no label), read
+        by one predicate, beside an end-state one when `expr_pair`."""
+        report = self._primary_predicate()
+        report["expr"] = "final.cfl"
+        preds = [report] + ([self._primary_predicate()] if expr_pair else [])
+        io = self._io_contract_with_predicates(preds)
+        variables = io["raw_requirements"]["required_evidence"][0]["schema"]["variables"]
+        variables.append({"name": "cfl", "shape_expr": "scalar",
+                          **({"source": source} if source else {})})
+        tests_md = repo / MOCK_TESTS_REF
+        tests_md.parent.mkdir(parents=True, exist_ok=True)
+        tests_md.write_text(body, encoding="utf-8")
+        return self._compile_with_io_contract(repo, io, plant_tests_md=False)
+
+    _REPORTED_BODY = ("### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
+                      "- `reported`: `cfl`\n")
+    _PLAIN_BODY = "### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
+
+    def test_a_reported_variable_is_pinned_to_the_tests_md_line(self) -> None:
+        """Review round 1 F1: `source` is written by the Compile leaf, so omitting it on a variable
+        tests.md says the kernel reports switched D13 off and one self-reported predicate judged
+        the test. tests.md is a seed the leaf cannot edit; the set of `source: reported`
+        variables equals the set its `reported:` lines name, through the real stage."""
+        fragment = "must equal the variables the `reported:` lines of tests.md name"
+        for label, body, source, pair, refused in (
+                ("unmarked, one predicate", self._REPORTED_BODY, None, False, True),
+                ("unmarked, as a record", self._REPORTED_BODY, "record", False, True),
+                ("unmarked, as a reference", self._REPORTED_BODY, "reference", True, True),
+                ("marked with no line", self._PLAIN_BODY, "reported", True, True),
+                ("both, paired", self._REPORTED_BODY, "reported", True, False),
+                ("neither", self._PLAIN_BODY, None, True, False)):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                v = self._compile_reported(Path(tmp), body, source, pair)
+                self.assertEqual(any(fragment in x for x in v), refused, v)
+                if not refused:
+                    self.assertEqual(v, [])
+        # with both agreeing and no end-state predicate, D13 is what refuses
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_reported(Path(tmp), self._REPORTED_BODY, "reported", False)
+            self.assertFalse([x for x in v if fragment in x], v)
+            self.assertTrue([x for x in v if "reads a source: reported variable" in x], v)
+
+    def test_the_reported_line_reader_takes_only_its_own_form(self) -> None:
+        """Over-refusal probe: prose that speaks of a report, in the definition or outside one,
+        is no line; both spellings and several tests naming one variable are one set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text(
+                "## 5. Judged quantities\n- reported: outside_any_definition\n"
+                "## 6. Test definitions\n"
+                "### 1-1. `t1`\n- `reported`: `cfl`, `h_min_run`\n"
+                "- The reported CFL is judged. It is reported: by the operation.\n"
+                "### 1-2. `t2`\nreported: cfl\n### 1-3. `t3`\n- `judgment`: nothing reported\n",
+                encoding="utf-8")
+            self.assertEqual(vps._parse_reported_variables_from_tests_md(path),
+                             ({"cfl", "h_min_run"}, []))
+            for line, token in (("- `reported`: `cfl`\n- `reported`: `h`\n", "2 `reported:` lines"),
+                                ("- `reported`:\n", "not variable names"),
+                                ("- `reported`: cfl <= 1.0\n", "not variable names")):
+                path.write_text("### 1-1. `t1`\n" + line, encoding="utf-8")
+                names, problems = vps._parse_reported_variables_from_tests_md(path)
+                self.assertTrue(any(token in x for x in problems), (line, problems))
+            self.assertIsNone(vps._parse_reported_variables_from_tests_md(Path(tmp) / "absent"))
+
     def test_compile_omission_gate_through_the_stage(self) -> None:
         """D10 (issue #582), THROUGH the full compile stage (`_validate_tests_and_predicates` ->
         `primary_evidence.quantity_violations`): the set of `quantity` over a test's predicates
@@ -11466,7 +11532,8 @@ end program shallow_water2d_runner
             *variables]
         with tempfile.TemporaryDirectory() as tmp:
             return self._stage_with_tests_md(
-                Path(tmp), "### 1-1. `t1`\n- `quantities`: `cfl_max`\n", io, case_ids=cases)
+                Path(tmp), "### 1-1. `t1`\n- `quantities`: `cfl_max`\n- `reported`: `cfl_run_max`\n",
+                io, case_ids=cases)
 
     def test_a_reported_read_paired_with_state_passes_the_stage(self) -> None:
         for label, pair in (("state beside it", [self._STATE_READ, self._REPORT_READ]),
