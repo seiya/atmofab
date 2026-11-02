@@ -1946,6 +1946,59 @@ class ReportedReadGateTest(unittest.TestCase):
         self.assertEqual(self._v(self._p("final.cfl +")), [])
 
 
+class ReferenceReadGateTest(unittest.TestCase):
+    """`reference_read_violations` (round 2 R2): a leaf-computed reference judges nothing without
+    the operation's state, in the same predicate or another of the same test and quantity."""
+
+    SCHEMA: ClassVar[dict] = ReportedReadGateTest.SCHEMA
+    _p = staticmethod(ReportedReadGateTest._p)
+
+    def _v(self, *preds: dict) -> list[str]:
+        return pe.reference_read_violations(list(preds), self.SCHEMA)
+
+    def test_state_in_the_same_predicate_or_beside_it_passes(self) -> None:
+        self.assertEqual(self._v(self._p("maxabs(final.h - initial.ref)")), [])
+        self.assertEqual(self._v(self._p("maxabs(final.ref - 1.0)"), self._p("maxabs(final.h)")), [])
+        self.assertEqual(self._v(self._p("maxabs(final.ref)"), self._p("final.op2")), [])
+
+    def test_a_reference_judged_alone_is_refused(self) -> None:
+        for expr in ("maxabs(final.ref - inputs.grid.nx)",       # against the inputs
+                     "maxabs(final.ref - initial.ref)",          # against itself
+                     "maxabs(final.ref) + final.flag",           # a record is not state
+                     "maxabs(final.ref) + final.cfl"):           # nor is a report
+            with self.subTest(expr=expr):
+                v = self._v(self._p(expr))
+                self.assertEqual(len(v), 1, v)
+                for token in ("predicates[0]", "'t'", "'cfl_max'", "source: reference"):
+                    self.assertIn(token, v[0])
+
+    def test_a_term_constant_by_form_is_no_state_read(self) -> None:
+        self.assertEqual(len(self._v(self._p("maxabs(final.ref) + 0 * maxabs(final.h)"))), 1)
+        self.assertEqual(len(self._v(self._p("maxabs(final.ref)", bind={"d": "maxabs(final.h)"}))), 1)
+        # and a reference read only there is no reference read
+        self.assertEqual(self._v(self._p("final.flag + 0 * maxabs(final.ref)")), [])
+
+    def test_the_state_is_of_the_same_test_quantity_and_cases(self) -> None:
+        ref = self._p("maxabs(final.ref)")
+        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", q="other"))), 1)
+        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", t="u"))), 1)
+        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", case="a"))), 1)
+        self.assertEqual(self._v(ref, self._p("maxabs(final.h)", case="a"),
+                                 self._p("maxabs(final.h)", case="b")), [])
+        self.assertEqual(self._v(self._p("maxabs(final.ref)", case="a"),
+                                 self._p("maxabs(final.h)", case="a")), [])
+
+    def test_a_cross_target_read_of_state_does_not_count(self) -> None:
+        self.assertEqual(len(self._v(self._p("maxabs(final.ref)"),
+                                     self._p("maxabs(final.h - comparand.final.h)"))), 1)
+
+    def test_a_record_stays_exempt_and_malformed_shapes_go_to_the_schema_gates(self) -> None:
+        self.assertEqual(self._v(self._p("final.flag")), [])
+        self.assertEqual(pe.reference_read_violations(None, self.SCHEMA), [])
+        self.assertEqual(pe.reference_read_violations([self._p("maxabs(final.ref)")], None), [])
+        self.assertEqual(self._v(3, {"test_id": 1}), [])  # type: ignore[arg-type]
+
+
 class SourceGateTest(unittest.TestCase):
     def test_variable_sources_default_to_operation(self) -> None:
         self.assertEqual(

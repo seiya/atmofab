@@ -1939,6 +1939,44 @@ def reported_line_read_violations(stated_by_test: dict[str, set[str]], marked: s
     return v
 
 
+def reference_read_violations(predicates: Any, schema: dict[str, Any] | None) -> list[str]:
+    """A predicate that reads a `source: reference` variable needs `source: operation` state read
+    in those cases, by itself or by other predicates of the same test and `quantity`, not
+    cross-target (round 2 of the issue #582 review). A reference is the checks module's own
+    computation, so a test judged by it alone, or by two of them compared, says nothing of the
+    kernel. The same predicate counts here, unlike `reported_read_violations`, because comparing
+    state against a reference in one expression is the normal form of this judgment. Reads are
+    `sources_read`'s, so a read in a term constant by form counts for nothing. A malformed entry
+    is the schema gate's to report."""
+    v: list[str] = []
+    if schema is None or not isinstance(predicates, list):
+        return v
+    try:
+        sources = variable_sources(schema)
+    except PrimaryEvidenceError:
+        return v
+    state: dict[tuple[str, str], set[str]] = {}
+    reads: list[tuple[int, str, str, set[str]]] = []
+    for idx, pred in enumerate(predicates):
+        if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str) \
+                or not isinstance(pred.get("quantity"), str):
+            continue
+        key = (pred["test_id"].strip(), pred["quantity"])
+        read = sources_read(pred, sources)
+        if not is_cross_target_predicate(pred):
+            state.setdefault(key, set()).update(read.get(SOURCE_OPERATION, ()))
+        if read.get(SOURCE_REFERENCE):
+            reads.append((idx, *key, set(read[SOURCE_REFERENCE])))
+    for idx, tid, quantity, cases in reads:
+        unread = sorted(cases - state.get((tid, quantity), set()))
+        if unread:
+            v.append(f"predicates[{idx}] (test {tid!r}, quantity {quantity!r}) reads a source: "
+                     f"reference variable and no predicate of that test and quantity reads "
+                     f"source: operation state in {unread}: a reference the checks module computed "
+                     "judges the kernel only against the kernel's state")
+    return v
+
+
 def reported_read_violations(predicates: Any, schema: dict[str, Any] | None) -> list[str]:
     """The reported-read gate (issue #582, D13): a predicate that reads a `source: reported`
     variable needs ANOTHER predicate of the same test and `quantity`, not cross-target, that
@@ -1949,8 +1987,9 @@ def reported_read_violations(predicates: Any, schema: dict[str, Any] | None) -> 
     an unreached bind or in a term constant by form counts for neither side. Same-predicate
     pairing is refused because `final.report + 1e-300 * sum(final.h)` reads both and is judged by
     the report alone. Whether the state predicate measures the same thing is V3's judgment. A
-    `record` or `reference` read carries no such requirement: no state counterpart exists. A
-    malformed entry is the schema gate's to report."""
+    `record` read carries no such requirement: no state counterpart exists (a guard's `xfail` test
+    rests on one). A `reference` read has its own rule (`reference_read_violations`). A malformed
+    entry is the schema gate's to report."""
     v: list[str] = []
     if schema is None or not isinstance(predicates, list):
         return v

@@ -11593,6 +11593,19 @@ end program shallow_water2d_runner
         self.assertEqual(self._reported_stage([{**self._STATE_READ, "expr": "final.guard_pass"}]),
                          [])
 
+    def test_a_test_judged_by_a_reference_alone_is_refused_at_the_stage(self) -> None:
+        """Round 2 R2, the two forms the review measured at 0 violations, and the honest form."""
+        refs = ({"name": "s_fd", "shape_expr": "[2,2]", "source": "reference"},
+                {"name": "s_fd2", "shape_expr": "[2,2]", "source": "reference"})
+        for expr, refused in (("maxabs(final.s_fd - 1.0)", True),
+                              ("maxabs(final.s_fd - final.s_fd2)", True),
+                              ("maxabs(final.h - initial.s_fd)", False)):
+            with self.subTest(expr=expr):
+                v = self._reported_stage([{**self._STATE_READ, "expr": expr}], variables=refs)
+                self.assertEqual(any("source: reference" in x for x in v), refused, v)
+                if not refused:
+                    self.assertEqual(v, [])
+
     def test_a_reported_read_with_no_pairing_is_refused_at_the_stage(self) -> None:
         """Each spelling of "no pairing", one refusal each, on the reported read: alone; beside a
         predicate that reads the report too (the same-predicate form `report + eps * state` is

@@ -47,9 +47,10 @@ _KIND_STRUCTURAL = "structural"  # a predicate could not be valued
 #: Since issue #383 it is the only cross-target record a verdict holds — the verdict evaluates
 #: no comparison, and the cross-target agreement does, outside it.
 _KIND_NO_COMPARAND = "no_comparand"
-#: The `sources_read` keys D13 of issue #582 pairs (`tools.primary_evidence.SNAPSHOT_SOURCES`).
+#: The `sources_read` keys the rules of issue #582 pair (`tools.primary_evidence.SNAPSHOT_SOURCES`).
 _SOURCE_OPERATION = "operation"
 _SOURCE_REPORTED = "reported"
+_SOURCE_REFERENCE = "reference"
 
 
 def is_cross_target_record(rec: dict[str, Any]) -> bool:
@@ -144,6 +145,25 @@ def _check_reported_pairing(test_id: str, records: list[dict[str, Any]]) -> None
                 "reads source: operation state alone in those cases")
 
 
+def _check_reference_state(test_id: str, records: list[dict[str, Any]]) -> None:
+    """The Compile gate's rule (`primary_evidence.reference_read_violations`), re-checked on the
+    records: a `reference` read needs `operation` state read in those cases, by records of the same
+    quantity, the same one included, none cross-target."""
+    for rec in records:
+        cases = _sources_read(rec, test_id).get(_SOURCE_REFERENCE)
+        if not cases:
+            continue
+        state: set[str] = set()
+        for other in records:
+            if not is_cross_target_record(other) and other.get("quantity") == rec.get("quantity"):
+                state |= _sources_read(other, test_id).get(_SOURCE_OPERATION, set())
+        if not cases <= state:
+            raise PredicateError(
+                f"primary record for {test_id!r} quantity {rec.get('quantity')!r} reads a "
+                f"source: reference variable and no record of that quantity reads source: "
+                f"operation state in {sorted(cases - state)}")
+
+
 def evaluate_verdict(tests: Any, records: Any, *,
                      run_id: str | None = None,
                      node_key: str | None = None) -> dict[str, Any]:
@@ -227,6 +247,7 @@ def evaluate_verdict(tests: Any, records: Any, *,
             raise PredicateError(f"no record of test {test_id!r} values the captured state of "
                                  f"target case(s) {unread}")
         _check_reported_pairing(test_id, recs)
+        _check_reference_state(test_id, recs)
         satisfied = all(bool(r.get("satisfied")) for r in own)
         structural = any(r.get("kind") == _KIND_STRUCTURAL for r in own)
         if not satisfied:

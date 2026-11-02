@@ -215,7 +215,7 @@ class ReportedPairingTest(unittest.TestCase):
 
     def test_a_record_or_reference_read_does_not_pair(self) -> None:
         for read in ({"record": ["a"]}, {"reference": ["a"]}, {}):
-            with self.subTest(read=read), self.assertRaisesRegex(PredicateError, "reported"):
+            with self.subTest(read=read), self.assertRaisesRegex(PredicateError, "source: reported"):
                 self._verdict(_rec(read=self.REPORTED), _rec(read=read))
 
     def test_a_pair_over_fewer_cases_does_not_pair(self) -> None:
@@ -233,6 +233,37 @@ class ReportedPairingTest(unittest.TestCase):
         del rec["sources_read"]
         with self.assertRaisesRegex(PredicateError, "sources_read"):
             self._verdict(rec)
+
+
+class ReferenceStateTest(unittest.TestCase):
+    """Round 2 R2 re-checked on the records."""
+
+    def _verdict(self, *recs: dict) -> dict:
+        return evaluate_verdict([_test()], list(recs))
+
+    def test_state_in_the_record_or_beside_it_passes(self) -> None:
+        self.assertEqual(self._verdict(_rec(read={"reference": ["a"], "operation": ["a"]}))
+                         ["self_verdict"], "pass")
+        self.assertEqual(self._verdict(_rec(read={"reference": ["a"]}),
+                                       _rec(read={"operation": ["a"]}))["self_verdict"], "pass")
+
+    def test_alone_raises(self) -> None:
+        for recs in ([_rec(read={"reference": ["a"]})],
+                     [_rec(read={"reference": ["a"], "record": ["a"]})],
+                     [_rec(read={"reference": ["a"]}), _rec(q="z", read={"operation": ["a"]})]):
+            with self.subTest(recs=recs), self.assertRaisesRegex(PredicateError, "source: reference"):
+                self._verdict(*recs)
+
+    def test_state_in_fewer_cases_raises(self) -> None:
+        with self.assertRaisesRegex(PredicateError, "source: reference"):
+            evaluate_verdict([_test(cases=("a", "b"))],
+                             [_rec(cases=("a", "b"), read={"reference": ["a", "b"]}),
+                              _rec(cases=("a", "b"), read={"operation": ["a"]})])
+
+    def test_a_cross_target_record_is_no_state(self) -> None:
+        cross = {**CrossTargetTest.PLACEHOLDER, "quantity": "q"}
+        with self.assertRaisesRegex(PredicateError, "source: reference"):
+            self._verdict(_rec(read={"reference": ["a"]}), cross)
 
 
 class ReduceTest(unittest.TestCase):

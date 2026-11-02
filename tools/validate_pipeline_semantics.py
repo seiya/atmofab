@@ -9728,6 +9728,8 @@ def _validate_tests_and_predicates(
       ``reported:`` lines name (``_parse_reported_variables_from_tests_md``; no line means none),
       and per test the line equals what the test's predicates read
       (``primary_evidence.reported_line_read_violations``).
+    - A ``source: reference`` read stands on ``source: operation`` state:
+      ``primary_evidence.reference_read_violations``.
     - Cross-target transcription (issue #324): a cross-target predicate is no judgment of the
       verdict, so its set is pinned separately — every test whose ``tests.md`` definition contains
       ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one, and no other test carries one
@@ -9744,6 +9746,7 @@ def _validate_tests_and_predicates(
         PrimaryEvidenceError,
         is_cross_target_predicate,
         quantity_violations,
+        reference_read_violations,
         reported_line_read_violations,
         reported_read_violations,
         schema_variables,
@@ -9831,6 +9834,8 @@ def _validate_tests_and_predicates(
     for msg in quantity_violations(tests, predicates, state_names):
         violations.append(f"{derived_path}:io_contract.predicates: {msg}")
     for msg in reported_read_violations(predicates, schema):
+        violations.append(f"{derived_path}:io_contract.{msg}")
+    for msg in reference_read_violations(predicates, schema):
         violations.append(f"{derived_path}:io_contract.{msg}")
 
     if not readable:
