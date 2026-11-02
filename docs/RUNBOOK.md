@@ -526,7 +526,7 @@ What moves the key, and therefore re-derives: an edit to a node's `controlled_sp
 
 **One-time cost of the host verdict ([issue #582](https://github.com/seiya/atmofab/issues/582)).** An IR carrying `test_predicates`, `primary_predicates`, `diagnostics_contract` or `test_evidence_requirements` is refused by name by the compile validator, and `_phase_certification` re-runs that validator on a certified IR (`ir_rejected_by_current_validator`), so every certified node re-Compiles. A `tests.md` also needs a `quantities` line per test (`docs/TESTS.md` §Description format). Recorded `verdict.json` / `diagnostics.json` files under `workspace/` stay readable as records.
 
-**Until issue #582's specification pull request lands, `main` cannot run the workflow:** no `spec/` `tests.md` carries a `quantities` line yet, so every node's Compile is refused. That pull request removes this paragraph.
+**Until both of issue #582's specification pull requests land, the harness specs and then the physics specs, `main` cannot run the workflow:** a `spec/` `tests.md` without a `quantities` line has its node's Compile refused, and every node needs its harness. The second of the two removes this paragraph.
 
 **A `tests.md` with no `quantities` line is refused only after a Compile leaf has run.** The refusal is the `--stage compile` gate on the leaf's IR, and no check before the leaf reads that line, so the leaf's cost is spent first, and the repair turns the refusal grants cannot help because a leaf cannot edit `tests.md`. Check a `spec` before starting it with `skills/spec-input-check`.
 
