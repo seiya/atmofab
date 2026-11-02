@@ -656,6 +656,14 @@ nor resets the two-consecutive-clean-security-rounds condition.**
     has not waited
   - **The symptom disguises itself as "the subagent is running and never returns"** — when
     `ListAgents` shows running, suspect that agent's child processes
+  - **A reviewer that stops "waiting on its own job" has no report yet, and the job is yours to
+    read: read that job's output when the reviewer stops, before you wait any longer.** Its
+    stream is reachable from `ls -l /proc/<pid>/fd/1`, so no reviewer has to answer. If the first
+    lines show nothing measured (every mutant at its timeout, a shell error, a count that is not
+    the selection's), kill the job by PID and tell the reviewer to report now with that part
+    listed as not measured. A completion notification does not change this: it fires each time
+    the agent stops with no live child it knows of, and the text it carries may be the promise to
+    wait, not findings. Issue #582 lost about 80 minutes here; `references/round-conduct.md`
   - **Check the checkout itself at the end of a round**, not only processes: `git status
     --porcelain` and `git worktree list`. A reviewer's stray worktree inside the repository
     contaminated another reviewer's suite run on this skill's own review
