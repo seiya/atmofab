@@ -1,34 +1,22 @@
 #!/usr/bin/env python3
 """What an `io_contract` says about raw evidence, and what a `raw/` directory actually holds.
 
-Two things live here, and they are one subject seen from both ends.
-
-**The contract readers** — `contract_test_evidence_requirements`, `test_id_to_case_ids`,
-`expected_metrics_basis_keys`, `normalize_raw_evidence_artifact` — derive the expected
-(test_id, case_id) evidence MATRIX from the IR's `io_contract`. They were
-`validate_pipeline_semantics`'s private helpers and moved here so that the `--stage
-post_execute` gate and the judge's excerpt read one definition of the matrix rather than
-two; the validator imports them back under their old private names.
-
-**The excerpt** — `raw_evidence_excerpt` — is the judge's window onto `raw/`. Issue #169
-puts `validate.judge` on the pure leaf, and a pure leaf gets documents, not a filesystem:
-`raw/` is 13 MB on `shallow_water2d` (a 6.5 MB `metrics_basis.json` and twelve snapshots
-of 100 KB - 1.65 MB, all `[nx, ny]` float arrays), so it cannot be inlined and
-the leaf cannot go and read it. What the host inlines instead is this excerpt: the
-COVERAGE of that matrix, and per-array SUMMARIES — shape, extent, non-finite counts,
-all-zero — from which the judge can ask whether `diagnostics.json`'s metrics are supported
-by the evidence they claim to come from. These are FACTS, not verdicts: an all-zero array is
-ordinary physics on many nodes (see `_summarize`), and what makes one a finding is what the
-tests and the IO contract say that variable should do.
+**The excerpt** — `raw_evidence_excerpt` — is the judge's window onto `raw/`. Issue #169 took the
+filesystem away from `validate.judge`'s context, and `raw/` is megabytes of float arrays
+(`shallow_water2d`: twelve snapshots of 100 KB - 1.65 MB, all `[nx, ny]`), so it is not seeded
+whole. What the host seeds instead is this excerpt: per-array SUMMARIES — shape, extent,
+non-finite counts, all-zero — with each variable's `source` (`tools/primary_evidence.py`), from
+which the judge can ask whether the host's records are supported by the state they read. These
+are FACTS, not verdicts: an all-zero array is ordinary physics on many nodes (see `_summarize`),
+and what makes one a finding is what the tests and the IO contract say that variable should do.
 
 **No numeric array is ever inlined**, at any size. The output is bounded by
-(test x case x variable) plus (snapshot x variable). MEASURED on `shallow_water2d`'s
-recorded run `run_20260802_001`: 13,019,745 B of `raw/` becomes 52,001 B of excerpt — 250x
-— in 0.71 s, as 48 metrics-basis rows and 12 snapshot cases, with no spurious coverage
-finding against that run's own IR. That is the policy, and `RAW_EXCERPT_POLICY_VERSION`
-stamps which version of it a review was made under;
-`docs/workflow/phases/phase_04_validate.md` §4-2 is canonical for what it includes and
-excludes.
+(snapshot x variable). That is the policy, and `RAW_EXCERPT_POLICY_VERSION` stamps which version
+of it a review was made under; `docs/workflow/phases/phase_04_validate.md` §4-2 is canonical for
+what it includes and excludes.
+
+`normalize_raw_evidence_artifact` also lives here: the validator imports it, so the gate and the
+excerpt read one definition of an artifact's spelling.
 
 **Nothing here raises for a defect in the evidence.** An absent `raw/`, an unparseable
 file, a ragged array: each is a FACT about the run, recorded in the excerpt and handed to
@@ -54,12 +42,12 @@ from typing import Any, NamedTuple
 #: canonical for the contents, never listed it, and it echoed the IR's declaration rather than
 #: a fact about `raw/`. The version is in the `validate` transformation tuple, so a bump would
 #: re-derive every certified Validate for a display key no gate reads.
-RAW_EXCERPT_POLICY_VERSION = 2
+#: 3 (issue #582): the `coverage` and `metrics_basis_arrays` sections are gone with
+#: `raw/metrics_basis.json`, and each snapshot variable names its `source`.
+RAW_EXCERPT_POLICY_VERSION = 3
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
 RAW_EVIDENCE_ALIASES = {
-    "metrics_basis.json": "metrics_basis.json",
-    "raw/metrics_basis.json": "metrics_basis.json",
     "state_snapshots": "state_snapshots",
     "raw/state_snapshots": "state_snapshots",
     "raw/state_snapshots/": "state_snapshots",
@@ -86,262 +74,6 @@ def normalize_raw_evidence_artifact(token: str) -> str | None:
 # --------------------------------------------------------------------------------------
 
 
-def contract_test_evidence_requirements(contract: dict[str, Any]) -> dict[str, set[str]]:
-    """Map each test_id to the raw variables it declares, from
-    ``io_contract.test_evidence_requirements``.
-
-    A test declaring an EMPTY `required_raw_variables` is dropped, which is why
-    `_validate_test_evidence_requirements` refuses one outright — see the note in
-    `expected_metrics_basis_keys`.
-    """
-    raw_reqs = contract.get("test_evidence_requirements")
-    if not isinstance(raw_reqs, list):
-        return {}
-
-    result: dict[str, set[str]] = {}
-    for item in raw_reqs:
-        if not isinstance(item, dict):
-            continue
-        raw_test_id = item.get("test_id")
-        raw_variables = item.get("required_raw_variables")
-        if (
-            not isinstance(raw_test_id, str)
-            or not raw_test_id.strip()
-            or not isinstance(raw_variables, list)
-        ):
-            continue
-        variables = {
-            token.strip()
-            for token in raw_variables
-            if isinstance(token, str) and token.strip()
-        }
-        if variables:
-            result[raw_test_id.strip()] = variables
-    return result
-
-
-def test_id_to_case_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
-    """Map each test_id to every case_id its predicate ranges over, from
-    ``io_contract.test_predicates[].target_cases``.
-
-    This is the row set of a test's metrics-basis evidence: the host-rendered runner emits one
-    entry per ``(test_id, case_id)`` over exactly this product (``host_render.render_runner``),
-    so the post_execute completeness matrix mirrors the renderer rather than guessing. Empty
-    dict when the IR declares no predicates.
-    """
-    predicates = contract.get("test_predicates")
-    if not isinstance(predicates, list):
-        # `_io_contract_for_execution` hoists the key out of the nested `io_contract`
-        # section; an un-flattened doc still nests it.
-        nested = contract.get("io_contract")
-        predicates = nested.get("test_predicates") if isinstance(nested, dict) else None
-    if not isinstance(predicates, list):
-        return {}
-    mapping: dict[str, list[str]] = {}
-    for item in predicates:
-        if not isinstance(item, dict):
-            continue
-        test_id = item.get("test_id")
-        if not (isinstance(test_id, str) and test_id.strip()):
-            continue
-        bucket = mapping.setdefault(test_id.strip(), [])
-        for case_id in item.get("target_cases") or []:
-            if isinstance(case_id, str) and case_id.strip() and case_id.strip() not in bucket:
-                bucket.append(case_id.strip())
-    return mapping
-
-
-class ExpectedMetricsBasisKeys(NamedTuple):
-    """The expected evidence matrix, plus the two shapes of contract that cannot express one.
-
-    `expected` is the (test_id, case_id) product. `untargeted_tests` declare raw variables but
-    no `target_cases`, so their rows cannot be derived at all — the gate refuses the run rather
-    than calling the underivable rows "unknown", and they contribute nothing to `expected`.
-    `multi_target_tests` own several rows, which matters only to the deprecated `tests` object
-    form of `metrics_basis.json`, keyed by test_id and unable to hold them.
-    """
-
-    expected: set[tuple[str, str]]
-    untargeted_tests: list[str]
-    multi_target_tests: list[str]
-    test_requirements: dict[str, set[str]]
-
-
-def expected_metrics_basis_keys(contract: dict[str, Any]) -> ExpectedMetricsBasisKeys:
-    """Derive the expected metrics-basis evidence matrix from an `io_contract`.
-
-    The expected evidence is the test x target_case MATRIX: one entry per case each test's
-    predicate ranges over. `test_predicates[].target_cases` is the anchor the host-rendered
-    runner emits from (the language backend runner's `_target_cases`), so both sides read one
-    field.
-
-    The row SET is `test_requirements`, whose source (`contract_test_evidence_requirements`)
-    drops a test declaring an EMPTY `required_raw_variables` while the renderer's
-    `_test_evidence` keeps it — so such a test would render a row this matrix calls "unknown".
-    That IR never reaches the gate: `_validate_test_evidence_requirements` rejects an empty
-    `required_raw_variables` outright. Should that ever be relaxed, the two filters must be
-    reconciled rather than left to disagree.
-    """
-    test_requirements = contract_test_evidence_requirements(contract)
-    test_to_cases = test_id_to_case_ids(contract)
-    expected: set[tuple[str, str]] = set()
-    untargeted: list[str] = []
-    multi_target: list[str] = []
-    for test_id in test_requirements:
-        target_cases = test_to_cases.get(test_id) or []
-        if not target_cases:
-            untargeted.append(test_id)
-            continue
-        if len(target_cases) > 1:
-            multi_target.append(test_id)
-        for case_id in target_cases:
-            expected.add((test_id, case_id))
-    return ExpectedMetricsBasisKeys(
-        expected, sorted(untargeted), sorted(multi_target), test_requirements)
-
-
-#: An entry may nest its variables one level down under one of these; the gate honours the
-#: first one present, so the excerpt must read the same key or the judge and the gate would
-#: disagree about which variables an entry holds.
-METRICS_BASIS_NESTED_VARIABLE_FIELDS = ("raw_variables", "variables", "evidence")
-
-#: Keys of a flat entry that are bookkeeping rather than evidence.
-METRICS_BASIS_BOOKKEEPING_KEYS = frozenset(
-    {
-        "test_id",
-        "case_id",
-        "case_ids",
-        "cases",
-        "status",
-        "summary",
-        "notes",
-        "meta",
-        "artifacts",
-    }
-)
-
-
-def metrics_basis_entries(
-    metrics_basis: dict[str, Any],
-) -> tuple[dict[tuple[str, str], dict[str, Any]], list[str], str | None]:
-    """Index a ``raw/metrics_basis.json`` document by its ``(test_id, case_id)`` entry key.
-
-    Moved here from `validate_pipeline_semantics` in review (issue #169). The excerpt had its
-    OWN reader of this document, and Codex found the two disagreeing on the deprecated `tests`
-    object form: the gate keys an entry by its MAP KEY, the excerpt preferred an inner
-    `test_id` when one was present. Given `{"tests": {"t_key": {"test_id": "t_inner", ...}}}`
-    the gate accepted the evidence as `t_key` while the judge evaluated those same arrays
-    against `t_inner`'s `required_raw_variables` — so the shortage the judge exists to catch
-    became invisible. The commit that introduced the second reader was the one whose premise
-    was "one evidence matrix, two readers"; this is that premise applied to the last helper it
-    missed, which is why the fix is a MOVE and not a patch to the keying.
-
-    R3-core: a test's primary evidence is the evidence of EVERY case its predicate ranges over,
-    so ``test_id`` alone is not a key. Every entry carries a non-empty ``case_id`` as a direct
-    sibling of ``test_id`` (harness controlled_spec §2), and ``(test_id, case_id)`` is unique.
-
-    Returns ``(entries, problems, form)`` where ``form`` names the container actually parsed
-    (``"per_test"`` / ``"tests"``, or ``None`` when neither did). The ``tests`` object form is
-    keyed by test_id and therefore cannot hold two entries for one test — it is deprecated for
-    that reason; ``_validate_metrics_basis_per_test`` turns a multi-target test written that way
-    into an actionable violation rather than an opaque "missing evidence".
-    """
-    raw_entries = metrics_basis.get("per_test")
-    form: str | None = "per_test"
-    if raw_entries is None:
-        raw_entries = metrics_basis.get("tests")
-        form = "tests"
-
-    entries: dict[tuple[str, str], dict[str, Any]] = {}
-    problems: list[str] = []
-
-    def _entry_case_id(item: dict[str, Any], loc: str, test_id: str) -> str | None:
-        raw_case_id = item.get("case_id")
-        if not isinstance(raw_case_id, str) or not raw_case_id.strip():
-            problems.append(
-                f"{loc} (test_id {test_id}) must carry a non-empty `case_id` as a direct "
-                "sibling of `test_id` — metrics-basis evidence is keyed by (test_id, case_id), "
-                "one entry per case the test's predicate targets"
-            )
-            return None
-        return raw_case_id.strip()
-
-    if isinstance(raw_entries, list):
-        for idx, item in enumerate(raw_entries):
-            if not isinstance(item, dict):
-                problems.append(f"per_test[{idx}] must be object")
-                continue
-            raw_test_id = item.get("test_id")
-            if not isinstance(raw_test_id, str) or not raw_test_id.strip():
-                problems.append(f"per_test[{idx}].test_id must be non-empty string")
-                continue
-            test_id = raw_test_id.strip()
-            case_id = _entry_case_id(item, f"per_test[{idx}]", test_id)
-            if case_id is None:
-                continue
-            if (test_id, case_id) in entries:
-                problems.append(
-                    f"per_test has duplicated (test_id, case_id) (({test_id}, {case_id}))"
-                )
-                continue
-            entries[(test_id, case_id)] = item
-        return entries, problems, form
-
-    if isinstance(raw_entries, dict):
-        for raw_test_id, item in raw_entries.items():
-            if not isinstance(raw_test_id, str) or not raw_test_id.strip():
-                problems.append("tests keys must be non-empty strings")
-                continue
-            if not isinstance(item, dict):
-                problems.append(f"tests[{raw_test_id!r}] must be object")
-                continue
-            test_id = raw_test_id.strip()
-            case_id = _entry_case_id(item, f"tests[{raw_test_id!r}]", test_id)
-            if case_id is None:
-                continue
-            # JSON object keys are unique as WRITTEN, but this reader strips them — so
-            # `"test_a"` and `" test_a "` are two distinct keys that name one entry. Without
-            # this check the later one silently overwrites the earlier, and a malformed row
-            # (say, one missing a required variable) simply disappears. Same rule as the
-            # `per_test` list branch: one entry per (test_id, case_id).
-            if (test_id, case_id) in entries:
-                problems.append(
-                    f"tests has duplicated (test_id, case_id) (({test_id}, {case_id})) — two "
-                    "keys normalize to the same test_id"
-                )
-                continue
-            entries[(test_id, case_id)] = item
-        return entries, problems, form
-
-    problems.append("must contain per_test list or tests object")
-    return entries, problems, None
-
-
-def metrics_basis_variable_keys(entry: dict[str, Any]) -> set[str]:
-    """The variable names one metrics-basis entry holds.
-
-    Nesting fields are matched by exact `get()`, so a padded `" variables "` is a wrapper
-    rather than a nesting field — `_metrics_basis_unrecognized_wrapper` mirrors that, and the
-    contract requires each variable as a DIRECT sibling of `test_id` in the first place.
-    """
-    for field_name in METRICS_BASIS_NESTED_VARIABLE_FIELDS:
-        raw_value = entry.get(field_name)
-        if isinstance(raw_value, dict):
-            return {
-                key.strip()
-                for key in raw_value
-                if isinstance(key, str) and key.strip()
-            }
-
-    return {
-        key.strip()
-        for key in entry
-        if isinstance(key, str)
-        and key.strip()
-        and key not in METRICS_BASIS_BOOKKEEPING_KEYS
-    }
-
-
 # --------------------------------------------------------------------------------------
 # The excerpt
 # --------------------------------------------------------------------------------------
@@ -355,18 +87,30 @@ def raw_evidence_excerpt(raw_dir: Path, io_contract: dict[str, Any]) -> dict[str
     every list is ordered — so the same run excerpts to the same bytes.
     """
     problems: list[str] = []
-    present_keys, entry_by_key = _read_metrics_basis(raw_dir, problems)
-    keys = expected_metrics_basis_keys(io_contract if isinstance(io_contract, dict) else {})
-
     return {
         "policy_version": RAW_EXCERPT_POLICY_VERSION,
         "raw_dir_present": raw_dir.is_dir(),
         "required_evidence": _required_evidence_rows(raw_dir, io_contract),
-        "coverage": _coverage(keys, present_keys, entry_by_key),
-        "metrics_basis_arrays": _metrics_basis_arrays(entry_by_key),
-        "state_snapshots": _state_snapshots(raw_dir, problems),
+        "state_snapshots": _state_snapshots(raw_dir, problems, _declared_sources(io_contract)),
         "problems": problems,
     }
+
+
+def _declared_sources(io_contract: Any) -> dict[str, str]:
+    """Each snapshot variable's `source`, from the IR's `state_snapshots` schema (the runner's
+    `snapshot_schema.json` does not carry it): an entry without the key is `operation`."""
+    raw_requirements = io_contract.get("raw_requirements") if isinstance(io_contract, dict) else None
+    entries = raw_requirements.get("required_evidence") if isinstance(raw_requirements, dict) else None
+    out: dict[str, str] = {}
+    for item in (entries if isinstance(entries, list) else []):
+        if not isinstance(item, dict) or item.get("artifact") != "state_snapshots":
+            continue
+        schema = item.get("schema")
+        variables = schema.get("variables") if isinstance(schema, dict) else None
+        for var in (variables if isinstance(variables, list) else []):
+            if isinstance(var, dict) and isinstance(var.get("name"), str):
+                out[var["name"].strip()] = str(var.get("source", "operation"))
+    return out
 
 
 def _read_json(path: Path, problems: list[str], label: str) -> Any:
@@ -382,104 +126,8 @@ def _read_json(path: Path, problems: list[str], label: str) -> Any:
     return None
 
 
-def _read_metrics_basis(
-    raw_dir: Path, problems: list[str]
-) -> tuple[set[tuple[str, str]], dict[tuple[str, str], dict[str, Any]]]:
-    """Index `raw/metrics_basis.json` by its (test_id, case_id) key.
-
-    Accepts both container forms the contract allows — the `per_test` LIST and the deprecated
-    `tests` OBJECT — because the excerpt reports on what the run produced, including the form
-    that cannot hold a multi-target test's rows; naming that form is what lets the judge read
-    a "missing" row as a container defect rather than as absent evidence.
-    """
-    doc = _read_json(raw_dir / "metrics_basis.json", problems, "raw/metrics_basis.json")
-    entries: dict[tuple[str, str], dict[str, Any]] = {}
-    if doc is None:
-        return set(), entries
-    if not isinstance(doc, dict):
-        problems.append("raw/metrics_basis.json: not a JSON object")
-        return set(), entries
-
-    # Keyed by the SHARED reader, so the judge and the `--stage post_execute` gate cannot
-    # disagree about which test an entry belongs to. Its problem strings are the gate's; they
-    # are prefixed with the file so the judge reads them the way it reads the rest.
-    entries, problems_found, form = metrics_basis_entries(doc)
-    for problem in problems_found:
-        problems.append(f"raw/metrics_basis.json: {problem}")
-    if form is None or (not entries and not problems_found):
-        problems.append(
-            "raw/metrics_basis.json: neither a `per_test` list nor a `tests` object")
-        return set(), {}
-    return set(entries), entries
-
-
-def _coverage(
-    keys: ExpectedMetricsBasisKeys,
-    present: set[tuple[str, str]],
-    entry_by_key: dict[tuple[str, str], dict[str, Any]],
-) -> dict[str, Any]:
-    """The expected matrix against the produced one, in both directions.
-
-    ALL THREE are pinned by `post_execute` before a judge is ever launched — `missing` and
-    `unexpected` as the two directions of the matrix, and `missing_required_variables` through
-    the very same `metrics_basis_variable_keys` this module now owns
-    (`_validate_metrics_basis_per_test`). An earlier version of this docstring called the third
-    "the finer question the gate does not ask", which was false and load-bearing: it is the
-    recorded reason for computing the signal, and `phase_04_validate.md` §4-2-1 argues Z3's
-    detection cost from what the judge uniquely catches, so the error inflated that argument by
-    a whole category.
-
-    They are still reported, and the reason is different from the one that was written here: a
-    non-empty set means the run reached the judge in a state the gate should have refused, so
-    it is an INTEGRITY signal about the pipeline rather than the judge's own contribution.
-    """
-    missing_vars: list[dict[str, Any]] = []
-    for key in sorted(present & keys.expected):
-        required = keys.test_requirements.get(key[0]) or set()
-        held = metrics_basis_variable_keys(entry_by_key[key])
-        absent = sorted(v for v in required if v not in held)
-        if absent:
-            missing_vars.append(
-                {"test_id": key[0], "case_id": key[1], "missing_variables": absent})
-    return {
-        "expected": [list(k) for k in sorted(keys.expected)],
-        "present": [list(k) for k in sorted(present)],
-        "missing": [list(k) for k in sorted(keys.expected - present)],
-        "unexpected": [list(k) for k in sorted(present - keys.expected)],
-        "missing_required_variables": missing_vars,
-        "tests_without_target_cases": list(keys.untargeted_tests),
-        "tests_targeting_several_cases": list(keys.multi_target_tests),
-    }
-
-
-def _metrics_basis_arrays(
-    entry_by_key: dict[tuple[str, str], dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """One summary row per (entry, variable). Bounded by the matrix; never an array."""
-    rows: list[dict[str, Any]] = []
-    for (test_id, case_id) in sorted(entry_by_key):
-        variables = _entry_variables(entry_by_key[(test_id, case_id)])
-        for name in sorted(variables):
-            row = {"test_id": test_id, "case_id": case_id, "variable": name}
-            row.update(_summarize(variables[name]))
-            rows.append(row)
-    return rows
-
-
-def _entry_variables(entry: dict[str, Any]) -> dict[str, Any]:
-    """The variables of one entry with their VALUES, read through the same nesting rule as
-    `metrics_basis_variable_keys` — which returns names only, and is what the gate calls."""
-    for field_name in METRICS_BASIS_NESTED_VARIABLE_FIELDS:
-        nested = entry.get(field_name)
-        if isinstance(nested, dict):
-            return {k.strip(): v for k, v in nested.items()
-                    if isinstance(k, str) and k.strip()}
-    return {k.strip(): v for k, v in entry.items()
-            if isinstance(k, str) and k.strip()
-            and k not in METRICS_BASIS_BOOKKEEPING_KEYS}
-
-
-def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
+def _state_snapshots(raw_dir: Path, problems: list[str],
+                     sources: dict[str, str]) -> dict[str, Any]:
     """Each per-case snapshot summarized against `snapshot_schema.json`'s declaration.
 
     The declared shape travels with the summary so the judge can compare them: a snapshot
@@ -515,11 +163,11 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
         files = []
     for path in files:
         case = _snapshot_case(path, f"raw/state_snapshots/{path.name}", declared,
-                              time_variable, problems)
+                              time_variable, problems, sources)
         initial_path = snapshots_dir / "initial" / path.name
         case["initial"] = (
             _snapshot_case(initial_path, f"raw/state_snapshots/initial/{path.name}",
-                           declared, time_variable, problems)
+                           declared, time_variable, problems, sources)
             if initial_path.is_file() else None)
         cases.append(case)
     return {
@@ -527,14 +175,15 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
         "schema": {
             "time_variable": time_variable,
             "declared_variables": [
-                {"name": n, "shape_expr": declared[n]} for n in sorted(declared)],
+                {"name": n, "shape_expr": declared[n], "source": sources.get(n, "operation")}
+                for n in sorted(declared)],
         },
         "cases": cases,
     }
 
 
 def _snapshot_case(path: Path, label: str, declared: dict[str, Any], time_variable: Any,
-                   problems: list[str]) -> dict[str, Any]:
+                   problems: list[str], sources: dict[str, str]) -> dict[str, Any]:
     """One snapshot file summarized against the declaration (the per-case body of
     `_state_snapshots`, shared by the final and the initial capture of a case)."""
     doc = _read_json(path, problems, label)
@@ -551,7 +200,8 @@ def _snapshot_case(path: Path, label: str, declared: dict[str, Any], time_variab
         case["time_value"] = _summarize(doc.get(time_variable)) if (
             time_variable in doc) else None
     for name in sorted(k for k in doc if k != time_variable):
-        variable = {"name": name, "declared_shape_expr": declared.get(name)}
+        variable = {"name": name, "declared_shape_expr": declared.get(name),
+                    "source": sources.get(name, "operation")}
         variable.update(_summarize(doc[name]))
         case["variables"].append(variable)
     case["declared_variables_absent"] = sorted(

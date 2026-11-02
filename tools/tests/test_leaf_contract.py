@@ -389,12 +389,12 @@ class JudgeRepairTextTest(unittest.TestCase):
         review = {"decision": "fail", "findings": [
             self._finding("ir", "high", "  halo width absent from the IR \n",
                           "workspace/ir/spec.ir.yaml#case", "workspace/run/verdict.json"),
-            self._finding("code", "low", "second", "workspace/run/diagnostics.json")]}
+            self._finding("code", "low", "second", "workspace/run/perf.json")]}
         self.assertEqual(
             pl.judge_repair_text(review),
             "[ir/high] halo width absent from the IR (evidence: workspace/ir/spec.ir.yaml#case, "
             "workspace/run/verdict.json)\n"
-            "[code/low] second (evidence: workspace/run/diagnostics.json)")
+            "[code/low] second (evidence: workspace/run/perf.json)")
 
     def test_nothing_is_clipped(self):
         long = "x" * 5000
@@ -453,7 +453,7 @@ def _review(**overrides) -> dict:
 def _finding(**overrides) -> dict:
     base = {
         "attribution": "code",
-        "evidence_refs": ["diagnostics_document#per_case.c0.metrics.cfl.max"],
+        "evidence_refs": ["verdict_document#per_test[0].basis.predicates[0]"],
         "confidence": "high",
         "description": "the reported max CFL is not the one the raw evidence supports",
     }
@@ -463,7 +463,7 @@ def _finding(**overrides) -> dict:
 
 # The keys the judge is actually given at launch; passed wherever the ref check is the
 # subject, and omitted wherever it is not, so each test states which layer it observes.
-_DOC_KEYS = ("diagnostics_document", "verdict_document", "tests_document")
+_DOC_KEYS = ("perf_document", "verdict_document", "tests_document")
 
 
 class SemanticReviewDocumentTest(unittest.TestCase):
@@ -591,7 +591,7 @@ class SemanticReviewDocumentTest(unittest.TestCase):
 
     # --- schema: evidence_refs ---
     def test_evidence_refs_must_be_a_non_empty_array(self):
-        for bad in ([], "diagnostics_document", {}):
+        for bad in ([], "verdict_document", {}):
             violations = pl.semantic_review_document_violations(
                 _review(decision="fail", findings=[_finding(evidence_refs=bad)]))
             self.assertIn("findings[0].evidence_refs must be a non-empty array", violations)

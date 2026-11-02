@@ -6,7 +6,7 @@ Using the `Controlled Spec` and `tests` as the canonical source, generate, at op
 ## Scope
 ### In scope
 - Input: the natural-language-centric `Controlled Spec` (physics / algorithm definition) and `tests` (verification input / judgment profile)
-- Output: execution code (`model` + `runner`) and judgment artifacts (`diagnostics.json` / `perf.json` / `verdict.json` / `aggregate_verdict.json` / `summary.json`)
+- Output: execution code (`model` + `runner`) and judgment artifacts (`perf.json` / `verdict.json` / `aggregate_verdict.json` / `summary.json`)
 - Operation: iterative operation of the core workflow `Spec -> Compile -> Generate -> Build -> Validate`. As optional flows, `Tune` (implementation-discretion variant exploration) and `Promote` (promotion to the official version) are handled via separate paths.
 - Hardware: includes `CPU` / `GPU` (`Phase 0` is `CPU` reference, extending to `GPU` afterward)
 - The canonical source format for the `Controlled Spec` and `tests` is `Markdown`, and items that can be uniquely defined in natural language are described in prose.
@@ -48,7 +48,7 @@ Using the `Controlled Spec` and `tests` as the canonical source, generate, at op
 - `spec.ir.yaml` integrates and holds the following 4 sections (plus `public_api` on a `component` or `infrastructure` node). It names no implementation target: the toolchain, hardware, parallel backend and harness are the target profile's (`docs/IMPL_PLAN_SPEC.md`), and a Compile reply that carries an `impl_defaults` section is refused by the host (until R4-a PR-3, issue #284, the IR carried one):
   - `case`: the determined values of runtime input (with `sweep` already expanded).
   - `algorithm`: the structural representation of the physics algorithm (A). It requires the vocabulary `execution_mode` / `steps[]` / `ordering` / `control_condition` / `iteration_contract` / `update_semantics` / `temporaries` / `derived_field_rules` / `invariants` / `splitting_policy`.
-  - `io_contract`: the verification contract. It holds `inputs` / `outputs` / `semantic_dependency.required_sources` / `raw_requirements.required_evidence` / `test_evidence_requirements`.
+  - `io_contract`: the verification contract. It holds `inputs` / `outputs` / `semantic_dependency.required_sources` / `raw_requirements.required_evidence` / `tests` / `predicates`.
   - `dependency`: the LLM-authored `node_key` + `direct_deps[]` only (the directly-read edge). The derived closure/topo graph (`all_nodes` / `transitive_deps` / `topo_level`) is conductor-authored to the `<ir_ref>/dependency_graph.json` sidecar, not the IR.
 - The physics algorithm (A) is determined by the `algorithm` section, and case dependence is held by the `case` section.
 - **Implementation discretion (B) is held outside the IR**: the target profile (`spec/targets/<target_id>.yaml`) fixes the target, and the CodegenBundle's `target_lowering_plan`, authored by `Generate`, fixes how the computation is lowered onto it (`docs/IMPL_PLAN_SPEC.md`). In the core workflow both are fixed values. Variant exploration of implementation discretion is the responsibility of the optional flow `Tune`; `Tune` treats `spec.ir.yaml` and the target profile as invariant, separately reads `tuning.spec`, and generates lowering-plan variants.
@@ -152,7 +152,7 @@ releases/
 - The placement of a `spec` is canonically `spec/<spec_kind>/<domain>/<family>/<spec_id>/...`.
 
 ### Decision Criteria
-- A `spec` whose input check reports a `blocker` must not be handed to the workflow. A `blocker` is resolved by re-authoring the `spec`; no `phase` can repair it. A `spec` that is structurally complete, registered, and free of ambiguity can still declare a test that cannot reach its `expected_outcome` — a swept case parameter that no rule reads, or a judged metric that no diagnostics field carries — so a clean structural review is not a substitute for running the check.
+- A `spec` whose input check reports a `blocker` must not be handed to the workflow. A `blocker` is resolved by re-authoring the `spec`; no `phase` can repair it. A `spec` that is structurally complete, registered, and free of ambiguity can still declare a test that cannot reach its `expected_outcome` — a swept case parameter that no rule reads, or a judged quantity no captured state enters — so a clean structural review is not a substitute for running the check.
 - `CI` must `pass` the format verification of `spec_kind` / `spec_id` / `component_id` / `operation_id`.
 - `CI` must `pass` the existence verification of each `spec`'s `tests.md` and the `L0`-test existence verification, over every `spec_kind` but `profile` (requirement 5: a `profile` has none, and one present there is the error).
 - `CI` must `pass` the consistency verification between the `spec_ref` of `tests.md` and `controlled_spec.md`.

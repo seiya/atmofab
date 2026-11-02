@@ -214,8 +214,7 @@ def _harness_stub() -> str:
 
 def _checks_stub(sid: str, bound: list[tuple[str, int]], *, allocate: bool = True) -> str:
     """A checks source defining the ABI and `bound` state (name, rank): each array sized 2 per
-    extent and filled with its element index; one check id `c1` passes on every case but an
-    `_xfail` one; metrics `m.one` (a value) and `m.two` (not applicable)."""
+    extent and filled with its element index."""
     lines = [f'#include "{sid}_checks.cuh"', "", f"namespace {sid}_checks {{"]
     setup: list[str] = []
     for name, rank in bound:
@@ -249,32 +248,13 @@ def _checks_stub(sid: str, bound: list[tuple[str, int]], *, allocate: bool = Tru
         "}",
         "",
         "void get_time(double& t) { t = 0.5; }",
-        "",
-        "void checks_compute(const std::string& case_id, const std::string& check_id,",
-        "                    std::string& status) {",
-        "  if (check_id == \"c1\") {",
-        "    status = case_id.find(\"xfail\") == std::string::npos ? \"pass\" : \"fail\";",
-        "  } else {",
-        "    status = \"na  \";",
-        "  }",
-        "}",
-        "",
-        "void metric_compute(const std::string& case_id, const std::string& name, double& val,",
-        "                    bool& is_na, std::string& reason_na, bool& found) {",
-        "  (void)case_id;",
-        "  found = name == \"m.one\" || name == \"m.two\";",
-        "  is_na = name == \"m.two\";",
-        "  val = 0.25;",
-        "  reason_na = is_na ? \"not_computed\" : \"\";",
-        "}",
         f"}}  // namespace {sid}_checks",
     ]
     return "\n".join(lines) + "\n"
 
 
 def _smoke_ir() -> dict:
-    """A problem IR with every rank (0..4), two cases (one xfail), a check id that needs C++
-    escaping, two metrics and a multi-target test."""
+    """A problem IR with every rank (0..4), two cases (one xfail) and a multi-target test."""
     ir = copy.deepcopy(_rank34_metrics_ir())
     schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
     schema["variables"] = [
@@ -283,15 +263,12 @@ def _smoke_ir() -> dict:
         {"name": "a4", "shape_expr": "[2, 2, 2, 2]"}]
     ir["case"]["test_case_set"] = [{"case_id": "c0"}, {"case_id": "c1_xfail"}]
     io = ir["io_contract"]
-    io["test_evidence_requirements"] = [
-        {"test_id": "c0", "required_raw_variables": ["a3", "a4", "s"]},
-        {"test_id": "multi", "required_raw_variables": ["u"]},
-        {"test_id": "guard", "required_raw_variables": ["s"]}]
-    io["test_predicates"] = [
-        {"test_id": "c0", "expected_outcome": "pass", "target_cases": ["c0"]},
-        {"test_id": "multi", "expected_outcome": "pass", "target_cases": ["c1_xfail", "c0"]},
-        {"test_id": "guard", "expected_outcome": "xfail", "target_cases": ["c1_xfail"]}]
-    io["diagnostics_contract"]["checks"] = [{"id": "c1"}, {"id": 'q"?\\x'}]
+    io["tests"] = [
+        {"test_id": "c0", "expected_outcome": "pass", "target_cases": ["c0"], "quantities": ["q"]},
+        {"test_id": "multi", "expected_outcome": "pass", "target_cases": ["c1_xfail", "c0"],
+         "quantities": ["q"]},
+        {"test_id": "guard", "expected_outcome": "xfail", "target_cases": ["c1_xfail"],
+         "quantities": ["q"]}]
     return ir
 
 
@@ -321,20 +298,19 @@ class RenderShapeTest(unittest.TestCase):
             self.assertIn(f"ck::a{rank}.data.size() == ", self.text)
 
     def test_capture_precedes_every_callback_and_every_write_follows_them(self) -> None:
-        """Both captures of a case precede its check and metric callbacks, and EVERY harness
+        """Each capture of a case precedes the `get_time` that follows it, and EVERY harness
         write — the snapshots included — follows the last callback of the whole run (round 5 of
         this change's review: a checks callback that ran after the per-case snapshot write
         replaced it)."""
         order = [self.text.index(needle) for needle in (
             "ck::case_setup(cid, setup_ok);", "initial_cache.push_back(capture_state(cid));",
-            "ck::case_run(cid,", "snap_cache.push_back(capture_state(cid));",
-            "ck::checks_compute(", "ck::metric_compute(")]
+            "ck::get_time(tval);", "ck::case_run(cid,",
+            "snap_cache.push_back(capture_state(cid));")]
         self.assertEqual(sorted(order), order)
-        self.assertLess(self.text.index("initial_cache.push_back(capture_state(cid));"),
-                        self.text.index("ck::get_time(tval);"))
-        last_callback = self.text.rindex("ck::metric_compute(")
-        for write in ("harness_cpp_gpu__write_snapshot(", "harness_cpp_gpu__write_metrics_basis(",
-                      "harness_cpp_gpu__write_diagnostics(", "harness_cpp_gpu__write_perf("):
+        last_callback = self.text.rindex("ck::get_time(tval);")
+        self.assertLess(self.text.index("snap_cache.push_back(capture_state(cid));"),
+                        last_callback)
+        for write in ("harness_cpp_gpu__write_snapshot(", "harness_cpp_gpu__write_perf("):
             self.assertGreater(self.text.index(write), last_callback, write)
 
     def test_the_imposed_block_size_is_set_before_any_callback(self) -> None:
@@ -349,39 +325,10 @@ class RenderShapeTest(unittest.TestCase):
         header = cpp_header.render(HARNESS, _harness_public_api(), spec_kind="infrastructure")
         self.assertIn("inline int launch_block_size = 0;", header)
 
-    def test_every_check_id_and_metric_is_driven_with_an_escaped_literal(self) -> None:
-        self.assertIn('ck::checks_compute(cid, "c1", cstatus);', self.text)
-        self.assertIn('ck::checks_compute(cid, "q\\"\\?\\\\x", cstatus);', self.text)
-        self.assertIn('ck::metric_compute(cid, "m.one", mval, mis_na, mreason, mfound);',
-                      self.text)
-        self.assertIn('result.expected_xfail = cid == "c1_xfail";', self.text)
-
-    def test_each_status_loses_its_trailing_blanks_before_the_harness_sees_it(self) -> None:
-        """Issue #437: between each `checks_compute` call and the record it fills, the rendered
-        runner drops the status's trailing blanks, so a padded "na  " from the checks module
-        never reaches the harness writer. Structural here; the nvcc smoke below observes it."""
-        drop = ("      while (!cstatus.empty() && cstatus.back() == ' ') {\n"
-                "        cstatus.pop_back();\n      }\n")
-        calls = self.text.count("ck::checks_compute(cid, ")
-        self.assertGreaterEqual(calls, 2)
-        self.assertEqual(calls, self.text.count(drop))
-        self.assertEqual(calls, self.text.count(drop + "      Check check{};\n"))
-        for block in self.text.split("ck::checks_compute(cid, ")[1:]:
-            self.assertLess(block.index("cstatus.pop_back();"),
-                            block.index("check.status = cstatus;"))
-
-    def test_a_node_without_metrics_calls_no_metric_compute(self) -> None:
-        text = _render(_boundary_ir(), BOUNDARY_SID)
-        self.assertNotIn("metric_compute", text)
-        self.assertNotIn("ck::metric", text)
-
     def test_the_writers_run_in_the_fortran_runner_s_order_with_the_target_s_parallelism(
             self) -> None:
-        order = [self.text.index(needle) for needle in (
-            "harness_cpp_gpu__write_metrics_basis(mb_entries, 4);",
-            "harness_cpp_gpu__write_diagnostics(results, ncases);",
-            "harness_cpp_gpu__write_perf(")]
-        self.assertEqual(sorted(order), order)
+        self.assertLess(self.text.rindex("harness_cpp_gpu__write_snapshot("),
+                        self.text.index("harness_cpp_gpu__write_perf("))
         self.assertIn('"gpu", steps_total,\n      cells_total, walltime, 1, 3, 1);', self.text)
         cpu = _render(_smoke_ir(), RANK_SID, CPU_TARGET)
         self.assertIn('"cpu", steps_total,\n      cells_total, walltime, 1, 2, 0);', cpu)
@@ -431,13 +378,6 @@ class RenderedRunnerThroughTheModelGatesTest(unittest.TestCase):
         self.assertTrue(any("_runner.cu" in v and "`_Exit`" in v for v in out), out)
 
 
-class MultiTargetMetricsBasisTest(unittest.TestCase):
-    def test_one_entry_per_test_and_target_case(self) -> None:
-        text = _render(_smoke_ir(), RANK_SID)
-        entries = re.findall(r'entry\.test_id = "([^"]+)";\n    entry\.case_id = "([^"]+)";',
-                             text)
-        self.assertEqual([("c0", "c0"), ("multi", "c1_xfail"), ("multi", "c0"),
-                          ("guard", "c1_xfail")], entries)
 
 
 class DeterminismTest(unittest.TestCase):
@@ -458,12 +398,10 @@ class ChecksHeaderTest(unittest.TestCase):
                 "void case_setup(const std::string& case_id, bool& ok);",
                 ("void case_run(const std::string& case_id, int& steps, int& cells_updated, "
                  "bool& ok);"),
-                "void get_time(double& t);",
-                ("void checks_compute(const std::string& case_id, const std::string& check_id, "
-                 "std::string& status);"),
-                ("void metric_compute(const std::string& case_id, const std::string& name, "
-                 "double& val, bool& is_na, std::string& reason_na, bool& found);")):
+                "void get_time(double& t);"):
             self.assertIn(callback, text)
+        for gone in ("checks_compute", "metric_compute"):
+            self.assertNotIn(gone, text)
         for decl in ("extern double s;", "extern std::vector<double> u;",
                      "extern atmofab::Array<double, 2> a2;", "extern atmofab::Array<double, 3> a3;",
                      "extern atmofab::Array<double, 4> a4;"):
@@ -526,14 +464,12 @@ class RenderErrorDifferentialTest(unittest.TestCase):
                 ir = copy.deepcopy(_boundary_ir())
                 ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
                     "variables"][3]["name"] = name
-                ir["io_contract"]["test_evidence_requirements"][2][
-                    "required_raw_variables"] = [name]
                 violations = cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS)
                 self.assertTrue(violations and name in violations[0], violations)
 
     def test_a_non_iterable_field_is_a_violation_not_an_exception(self) -> None:
         ir = copy.deepcopy(_boundary_ir())
-        ir["io_contract"]["diagnostics_contract"]["checks"] = 5
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] = 5
         self.assertTrue(cpp_runner.ir_content_violations(ir, BOUNDARY_SID, HARNESS))
 
     def test_a_control_character_has_no_literal(self) -> None:
@@ -583,9 +519,9 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_ir_drift_in_a_type_s_member_order_is_refused(self) -> None:
         sigs = _harness_signatures()
-        metric = next(s for s in sigs if s["symbol"] == "harness_cpp_gpu__h_metric")
-        metric["signature"]["components"].reverse()
-        with self.assertRaisesRegex(RenderError, "IR signature for 'harness_cpp_gpu__h_metric'"):
+        named = next(s for s in sigs if s["symbol"] == "harness_cpp_gpu__h_named")
+        named["signature"]["components"].reverse()
+        with self.assertRaisesRegex(RenderError, "IR signature for 'harness_cpp_gpu__h_named'"):
             self._pin(signatures=sigs)
 
     def test_an_omitted_symbol_is_refused(self) -> None:
@@ -694,18 +630,9 @@ class NvccSmokeTest(unittest.TestCase):
             self.assertEqual(0.5, final["t"])
             self.assertEqual([[0.0, 1.0], [2.0, 3.0]], final["a2"])
             self.assertEqual(1.5, initial["s"])
-            diagnostics = json.loads((d / "diagnostics.json").read_text())["per_case"]
-            # The checks stub returns "na  " and this harness stub writes the status as given,
-            # so the unpadded "na" here is the RUNNER's doing (issue #437).
-            self.assertEqual({"c1": "pass", 'q"?\\x': "na"}, diagnostics["c0"]["checks"])
-            self.assertTrue(diagnostics["c1_xfail"]["expected_xfail"])
-            self.assertEqual({"m.one": 0.25, "m.two": "na:not_computed"},
-                             diagnostics["c0"]["metrics"])
-            basis = json.loads((d / "raw/metrics_basis.json").read_text())["per_test"]
-            self.assertEqual([("c0", "c0"), ("multi", "c1_xfail"), ("multi", "c0"),
-                              ("guard", "c1_xfail")],
-                             [(e["test_id"], e["case_id"]) for e in basis])
-            self.assertFalse(diagnostics["c0"]["expected_xfail"])
+            # Nothing of the retired judging half is written (issue #582).
+            self.assertFalse((d / "diagnostics.json").exists())
+            self.assertFalse((d / "raw/metrics_basis.json").exists())
             perf = json.loads((d / "perf.json").read_text())
             self.assertEqual({"case_id": "c1_xfail", "target": "gpu", "steps": 4,
                               "cells_updated": 16, "walltime_positive": True, "mpi_ranks": 1,
@@ -748,7 +675,7 @@ class NvccSmokeTest(unittest.TestCase):
                 #include <cstdlib>
                 #include <fstream>
                 namespace {
-                void forge() { std::ofstream("diagnostics.json") << "{\\"forged\\": 1}"; }
+                void forge() { std::ofstream("perf.json") << "{\\"forged\\": 1}"; }
                 struct Forger {
                   Forger() { std::atexit(forge); }
                   ~Forger() { forge(); }
@@ -759,32 +686,36 @@ class NvccSmokeTest(unittest.TestCase):
             r = subprocess.run(["./runner", "--cases", "spec.yaml", "c0", "c1_xfail"], cwd=d,
                                capture_output=True, text=True, check=False)
             self.assertEqual(0, r.returncode, r.stdout + r.stderr)
-            self.assertNotIn("forged", (d / "diagnostics.json").read_text())
-            self.assertIn("per_case", json.loads((d / "diagnostics.json").read_text()))
+            self.assertNotIn("forged", (d / "perf.json").read_text())
+            self.assertIn("steps", json.loads((d / "perf.json").read_text()))
 
     _FORGER = textwrap.dedent("""\
         #include <fstream>
         namespace {
         struct Forger {
-          ~Forger() { std::ofstream("diagnostics.json") << "{\\"forged\\": 1}"; }
+          ~Forger() { std::ofstream("perf.json") << "{\\"forged\\": 1}"; }
         } forger;
         }  // namespace
         """)
 
     def test_a_callback_cannot_replace_a_snapshot(self) -> None:
-        """Round 5 of this change's review: `checks_compute` ran after the case's final snapshot
-        was written and replaced it. Every write now follows the last callback."""
+        """Round 5 of this change's review: a callback that ran after the case's final snapshot
+        was written replaced it. Every write now follows the last callback; `get_time` is the one
+        that runs after a capture."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             self._tree(d, _smoke_ir(), RANK_SID)
             checks = d / f"{RANK_SID}_checks.cu"
-            checks.write_text(checks.read_text().replace(
-                "void checks_compute(const std::string& case_id, const std::string& check_id,\n"
-                "                    std::string& status) {",
-                "void checks_compute(const std::string& case_id, const std::string& check_id,\n"
-                "                    std::string& status) {\n"
-                "  std::ofstream(\"raw/state_snapshots/\" + case_id + \".json\") << \"{}\";") .replace(
-                f'#include "{RANK_SID}_checks.cuh"', f'#include "{RANK_SID}_checks.cuh"\n#include <fstream>'))
+            text = checks.read_text()
+            self.assertIn("void get_time(double& t) { t = 0.5; }", text)
+            checks.write_text(text.replace(
+                "void get_time(double& t) { t = 0.5; }",
+                "void get_time(double& t) {\n"
+                "  t = 0.5;\n"
+                "  std::ofstream(\"raw/state_snapshots/c0.json\") << \"{}\";\n"
+                "}").replace(
+                f'#include "{RANK_SID}_checks.cuh"',
+                f'#include "{RANK_SID}_checks.cuh"\n#include <fstream>'))
             self._build(d, RANK_SID)
             r = subprocess.run(["./runner", "--cases", "spec.yaml", "c0", "c1_xfail"], cwd=d,
                                capture_output=True, text=True, check=False)
@@ -803,7 +734,7 @@ class NvccSmokeTest(unittest.TestCase):
                                capture_output=True, text=True, check=False)
             self.assertEqual(1, r.returncode)
             self.assertIn("bound state u is not allocated at capture for case c0", r.stderr)
-            self.assertFalse((d / "diagnostics.json").exists())
+            self.assertFalse((d / "perf.json").exists())
 
     def test_a_missing_case_list_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -815,7 +746,72 @@ class NvccSmokeTest(unittest.TestCase):
             r = subprocess.run(["./runner"], cwd=d, capture_output=True, text=True, check=False)
             self.assertEqual(1, r.returncode)
             self.assertIn("--cases <spec> <case_id>... required", r.stderr)
-            self.assertFalse((d / "diagnostics.json").exists())
+            self.assertFalse((d / "perf.json").exists())
+
+
+class HostVerdictRunnerSurfaceTest(unittest.TestCase):
+    """Issue #582, the counterpart of `test_fortran_runner.HostVerdictRunnerSurfaceTest`: the
+    rendered runner judges nothing, names only the harness operations it calls, and captures
+    every schema variable right after `case_setup` and right after `case_run`."""
+
+    RETIRED = ft_tests.HostVerdictRunnerSurfaceTest.RETIRED
+
+    def _each(self):
+        for ir, sid in ((_smoke_ir(), RANK_SID), (_boundary_ir(), BOUNDARY_SID)):
+            with self.subTest(sid):
+                yield ir, sid, _render(ir, sid)
+
+    def test_no_retired_callback_writer_or_record_is_named(self) -> None:
+        for _ir, _sid, text in self._each():
+            for gone in self.RETIRED:
+                self.assertNotIn(gone, text)
+
+    def test_the_harness_names_it_spells_are_the_ones_it_uses(self) -> None:
+        for ir, _sid, text in self._each():
+            ops = {f"harness_cpp_gpu__{op}" for op in cpp_runner._used_harness_ops(ir)}
+            spelled = set(re.findall(r"harness_cpp_gpu__\w+", text))
+            self.assertEqual(ops | {"harness_cpp_gpu__h_named"}, spelled)
+            # every declared call has an argument list at its use, not just a mention
+            for op in ops:
+                self.assertIn(f"{op}(", text)
+
+    def test_every_schema_variable_is_captured_at_both_points(self) -> None:
+        for ir, _sid, text in self._each():
+            variables = [v["name"] for v in ir["io_contract"]["raw_requirements"][
+                "required_evidence"][0]["schema"]["variables"]]
+            capture = text[text.index("std::vector<Named> capture_state("):
+                           text.index("int main(")]
+            for name in variables:
+                self.assertIn(f'__box("{name}", ', capture)
+                self.assertIn(f"ck::{name}", capture)
+            loop = text[text.index("for (int ci = 0; ci < ncases; ++ci) {"):
+                        text.index("double walltime")]
+            # right after: the next call that follows the callback is the capture
+            self.assertRegex(loop, r"ck::case_setup\(cid, setup_ok\);\s*(?://[^\n]*\s*)*"
+                                   r"initial_cache\.push_back\(capture_state\(cid\)\);")
+            self.assertRegex(loop, r"ck::case_run\(cid, steps_c, cells_c, run_ok\);\s*"
+                                   r"steps_total \+= steps_c;\s*cells_total \+= cells_c;\s*"
+                                   r"(?://[^\n]*\s*)*"
+                                   r"snap_cache\.push_back\(capture_state\(cid\)\);")
+
+    def test_write_perf_is_called_once_after_the_case_loop(self) -> None:
+        for _ir, _sid, text in self._each():
+            self.assertEqual(1, text.count("harness_cpp_gpu__write_perf("))
+            self.assertLess(text.index("double walltime"),
+                            text.index("harness_cpp_gpu__write_perf("))
+
+    def test_the_runner_reads_neither_the_tests_nor_the_predicates(self) -> None:
+        for ir, sid, text in self._each():
+            changed = copy.deepcopy(ir)
+            del changed["io_contract"]["tests"]
+            del changed["io_contract"]["predicates"]
+            self.assertEqual(text, _render(changed, sid))
+
+    def test_the_checks_abi_is_the_three_callbacks(self) -> None:
+        self.assertEqual(cpp_checks_abi.CHECKS_PUBLIC_NAMES,
+                         ("case_setup", "case_run", "get_time"))
+        self.assertEqual(set(cpp_checks_abi.CHECKS_ABI_PARAMS),
+                         {"case_setup", "case_run", "get_time"})
 
 
 class SignaturesRoundTripTest(unittest.TestCase):

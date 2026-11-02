@@ -766,6 +766,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # counting, so a re-spelling no literal form shows is not read as uncounted. Round 2: the
     # COVERAGE block spells the time read in the grammar's form, at('<case>').final.<time variable>.
     "compile-docs-22": "212e5c5233749fd29bccfc3abbce03e03561e18994fb1fee431b9e71a4d63f5a",
+    # compile-docs-23 (issue #582): the judging half of the checks module is retired.
+    "compile-docs-23": "81d774fe9e21f6b22527cc581cf5a0d0232e467fe81ca3348436e41e2a4fe6c9",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1033,6 +1035,8 @@ PINNED_RENDER: dict[str, str] = {
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
     "render-12": "686b3a94c52a25ab973da285341b8f6b234c8ff800107087baee948e2d39bf6e",
+    # render-13 (issue #582): the judging half of the checks module is retired.
+    "render-13": "f09b4e3e6428b1f3e9282940d3de9396f90d9087cfbefc6c421b21b222989559",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source
@@ -1592,6 +1596,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # `_quality_check_failure_lines`, `Conductor._execute_inproc`, the new row, and
     # `tools/host_execution.py` (the `perf_parallelism` docstring).
     "execute-12": "f83edc25a1fdb1b31c2b275ea41b7ed3ceee3cb6f24e7d11869e70541e35f182",
+    # execute-13 (issue #582): the judging half of the checks module is retired.
+    "execute-13": "bc1e143ed29bd5f116810e5ac2c1b2c6e2072c1cf0c806b9d811cb05c11c954b",
     # Re-pinned, behaviour-preserving: the `tools/remote_execution.py` docstring states the
     # loader's two exit codes as measured, no longer that a launch prefix replaces the 127.
     # (Measured by diffing `execute_tuple()` against fb25d422's: that row and no other.) The digest
@@ -1779,6 +1785,8 @@ PINNED_VERDICT: dict[str, str] = {
     # and is repaired rather than joined by a second one.
     # Round 3: a docstring sentence that was inexact about `_predicate_scope` is deleted.
     "verdict-11": "7327cb51dfbf36f29441cf6b918275bdb2bf3b3f2be70e86228d30c6a870b96b",
+    # verdict-12 (issue #582): the judging half of the checks module is retired.
+    "verdict-12": "48cf3bbbf0da29c071cf56b0825499548fac7a975562968c86fe386e600e8702",
 }
 
 
@@ -1874,7 +1882,6 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "target_profile": "input",                 # the target profile's hash (`target.profile`)
     "runner_document": "derived",              # RENDER_VERSION over the IR + harness outputs
     "io_contract_document": "input",           # inside the IR
-    "diagnostics_document": "same-phase",      # execute output, under the validate stamp
     "verdict_document": "same-phase",
     "perf_document": "same-phase",
     "trial_meta_document": "same-phase",

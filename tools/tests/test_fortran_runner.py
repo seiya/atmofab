@@ -2,7 +2,7 @@
 """Unit tests for the Fortran backend's runner_render capability (R1/M3c-β runner glue).
 
 `render_runner` is a pure function of the IR: these tests pin its rendered shape
-(a boundary-copy IR and a metrics-bearing IR), determinism, the render-error
+(a boundary-copy IR and a higher-rank IR), determinism, the render-error
 matrix, and the harness signature pin. A `gfortran`-gated smoke compiles+runs the
 rendered runner against a v2 harness stub + a fixed-ABI checks stub end-to-end.
 """
@@ -21,20 +21,15 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-from tools.backends.language.fortran import lines as fortran_lines
 from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
-    CHECK_STATUS_WIDTH,
     CHECKS_PUBLIC_NAMES,
     EXPECTED_HARNESS_SPEC_ID,
-    METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY,
-    METRIC_COMPUTE_DUMMIES,
     _HARNESS_PINS,
     _HARNESS_V3_PARAMETERS,
     _HARNESS_V3_INTERFACE,
     _SINGLE_PROCESS_INTERFACE,
     assert_harness_pin,
-    checks_abi_dummy_violation,
     ir_content_violations,
     render_runner,
 )
@@ -74,7 +69,7 @@ def _require_declared_linter() -> None:
 
 def _boundary_ir() -> dict:
     """A boundary_2d_periodic_copy-shaped IR: 3 cases (2 pass + 1 xfail), rank-2 +
-    scalar snapshot variables, 3 checks, no metrics, 1 infra dep."""
+    scalar snapshot variables, 3 tests, 1 infra dep."""
     return {
         "meta": {"spec_id": BOUNDARY_SID, "spec_kind": "component"},
         "case": {"test_case_set": [
@@ -98,28 +93,16 @@ def _boundary_ir() -> dict:
                     ],
                     "time_variable": "t", "time_shape_expr": "scalar",
                 }},
-                {"artifact": "metrics_basis.json", "required": True},
             ]},
-            "test_evidence_requirements": [
-                {"test_id": "l0_periodic_x_wrap_pass",
-                 "required_raw_variables": ["field_ghost", "field_interior", "max_abs_deviation"]},
-                {"test_id": "l0_periodic_y_wrap_pass",
-                 "required_raw_variables": ["field_ghost", "field_interior", "max_abs_deviation"]},
-                {"test_id": "l0_invalid_ny_xfail",
-                 "required_raw_variables": ["guard_fired"]},
-            ],
-            "diagnostics_contract": {
-                "checks": [{"id": "x_wrap"}, {"id": "y_wrap"}, {"id": "input_guard"}],
-                "verdict": {"required": True, "fields": ["overall", "failed_checks"]},
-            },
-            "test_predicates": [
+            "tests": [
                 {"test_id": "l0_periodic_x_wrap_pass", "expected_outcome": "pass",
-                 "target_cases": ["l0_periodic_x_wrap_pass"]},
+                 "target_cases": ["l0_periodic_x_wrap_pass"], "quantities": ["x_wrap_err"]},
                 {"test_id": "l0_periodic_y_wrap_pass", "expected_outcome": "pass",
-                 "target_cases": ["l0_periodic_y_wrap_pass"]},
+                 "target_cases": ["l0_periodic_y_wrap_pass"], "quantities": ["y_wrap_err"]},
                 {"test_id": "l0_invalid_ny_xfail", "expected_outcome": "xfail",
-                 "target_cases": ["l0_invalid_ny_xfail"]},
+                 "target_cases": ["l0_invalid_ny_xfail"], "quantities": ["guard"]},
             ],
+            "predicates": [],
         },
         "dependency": {
             "node_key": f"component/{BOUNDARY_SID}@0.1.0",
@@ -129,8 +112,7 @@ def _boundary_ir() -> dict:
 
 
 def _metrics_ir() -> dict:
-    """A minimal problem-shaped IR with a metric address, to pin the metric_compute
-    rendering path."""
+    """A minimal problem-shaped IR with one rank-1 snapshot variable."""
     return {
         "meta": {"spec_id": "prob_x", "spec_kind": "problem"},
         "case": {"test_case_set": [{"case_id": "c_pass"}]},
@@ -145,17 +127,9 @@ def _metrics_ir() -> dict:
                     "time_variable": "t",
                 }},
             ]},
-            "test_evidence_requirements": [
-                {"test_id": "c_pass", "required_raw_variables": ["u"]},
-            ],
-            "diagnostics_contract": {
-                "checks": [{"id": "conv"}],
-                "metrics": ["error.l2", "error.linf"],
-                "verdict": {"fields": ["overall", "failed_checks"]},
-            },
-            "test_predicates": [
-                {"test_id": "c_pass", "expected_outcome": "pass", "target_cases": ["c_pass"]},
-            ],
+            "tests": [{"test_id": "c_pass", "expected_outcome": "pass",
+                       "target_cases": ["c_pass"], "quantities": ["q"]}],
+            "predicates": [],
         },
         "dependency": {"node_key": "problem/prob_x@0.1.0",
                        "direct_deps": [{"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]},
@@ -166,8 +140,8 @@ RANK_SID = "prob_rank"
 
 
 def _rank34_metrics_ir() -> dict:
-    """A problem IR exercising the rank-3 + rank-4 emitter/getter paths AND the
-    metrics path together — the code families the boundary IR never compiles."""
+    """A problem IR exercising the rank-3 + rank-4 emitter paths — the code families the
+    boundary IR never compiles."""
     return {
         "meta": {"spec_id": RANK_SID, "spec_kind": "problem"},
         "case": {"test_case_set": [{"case_id": "c0"}]},
@@ -186,17 +160,9 @@ def _rank34_metrics_ir() -> dict:
                     "time_variable": "t",
                 }},
             ]},
-            "test_evidence_requirements": [
-                {"test_id": "c0", "required_raw_variables": ["a3", "a4", "s"]},
-            ],
-            "diagnostics_contract": {
-                "checks": [{"id": "c1"}],
-                "metrics": ["m.one", "m.two"],
-                "verdict": {"fields": ["overall", "failed_checks"]},
-            },
-            "test_predicates": [
-                {"test_id": "c0", "expected_outcome": "pass", "target_cases": ["c0"]},
-            ],
+            "tests": [{"test_id": "c0", "expected_outcome": "pass",
+                       "target_cases": ["c0"], "quantities": ["q"]}],
+            "predicates": [],
         },
         "dependency": {"node_key": f"problem/{RANK_SID}@0.1.0",
                        "direct_deps": [{"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]},
@@ -205,7 +171,7 @@ def _rank34_metrics_ir() -> dict:
 
 # A checks stub matching _rank34_metrics_ir: rank-3 + rank-4 + scalar BOUND storage with
 # real data (the module-level variables the runner reads directly, named as the IR snapshot
-# variables), one check, two metrics — enough to compile+link+run against the harness stub.
+# variables) — enough to compile+link+run against the harness stub.
 _RANK_CHECKS_STUB = textwrap.dedent(f"""\
     module {RANK_SID}_checks
       use, intrinsic :: iso_fortran_env, only: real64
@@ -217,7 +183,6 @@ _RANK_CHECKS_STUB = textwrap.dedent(f"""\
       real(dp), allocatable :: a4(:, :, :, :)
       real(dp) :: s = 0.0_dp
       public :: case_setup, case_run, get_time
-      public :: checks_compute, metric_compute
       public :: a3, a4, s
     contains
       subroutine case_setup(case_id, ok)
@@ -242,37 +207,6 @@ _RANK_CHECKS_STUB = textwrap.dedent(f"""\
         real(dp), intent(out) :: t
         t = 0.0_dp
       end subroutine get_time
-      subroutine checks_compute(case_id, check_id, status)
-        character(len=*), intent(in) :: case_id
-        character(len=*), intent(in) :: check_id
-        character(len=4), intent(out) :: status
-        select case (trim(check_id))
-        case default
-          status = 'pass'
-        end select
-        if (len_trim(case_id) < 0) continue
-      end subroutine checks_compute
-      subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
-        character(len=*), intent(in) :: case_id
-        character(len=*), intent(in) :: name
-        real(dp), intent(out) :: val
-        logical, intent(out) :: is_na
-        character(len=:), allocatable, intent(out) :: reason_na
-        logical, intent(out) :: found
-        is_na = .false.
-        reason_na = ''
-        found = .true.
-        select case (trim(name))
-        case ('m.one')
-          val = 1.5_dp
-        case ('m.two')
-          val = 2.5_dp
-        case default
-          val = 0.0_dp
-          found = .false.
-        end select
-        if (len_trim(case_id) < 0) continue
-      end subroutine metric_compute
     end module {RANK_SID}_checks
     """)
 
@@ -534,11 +468,12 @@ _EIGHT_ARG_HARNESS_STUB = _HARNESS_STUB.replace(_STUB_WRITE_PERF_HEAD, _STUB_WRI
 # The boundary checks stub. Its snapshot variables are BOUND module-level storage (named as the
 # IR declares them, `public ::`-listed, arrays allocated by `case_setup`) that the rendered
 # runner reads directly. Two deliberate properties make it the Z6 fixture (d)
-# (`zero_base_architecture.md:253`): `checks_compute` OVERWRITES every bound variable with a
-# sentinel (-99) the moment it is first called for a case, so a runner that captured AFTER a
-# callback — or re-read storage instead of the serialized copy — would emit -99 somewhere;
-# and `case_run` changes `field_ghost` from its `case_setup` value, so the `initial/` and the
-# final snapshot of one case are distinguishable.
+# (`zero_base_architecture.md:253`): `get_time`, the one callback the runner calls after a capture,
+# OVERWRITES every bound variable with a sentinel (-99) and `case_run` restores them, so a runner
+# that called it BEFORE a capture — or re-read storage instead of the serialized copy — would emit
+# -99 somewhere; and `case_run` changes `field_ghost` from its `case_setup` value, so the
+# `initial/` and the final snapshot of one case are distinguishable. The bound values carry a
+# per-case ordinal, so one case's snapshot holding another's state is detectable.
 _CHECKS_STUB = textwrap.dedent("""\
     module dynamics_shallow_water_boundary_2d_periodic_copy_checks
       use, intrinsic :: iso_fortran_env, only: real64
@@ -552,23 +487,16 @@ _CHECKS_STUB = textwrap.dedent("""\
       real(dp) :: guard_fired = 0.0_dp
       integer :: ncase_seen = 0
       public :: case_setup, case_run, get_time
-      public :: checks_compute, metric_compute
       public :: field_ghost, field_interior, max_abs_deviation, guard_fired
     contains
       subroutine case_setup(case_id, ok)
         character(len=*), intent(in) :: case_id
         logical, intent(out) :: ok
-        integer :: i, j
         if (.not. allocated(field_ghost)) allocate(field_ghost(4, 4))
         if (.not. allocated(field_interior)) allocate(field_interior(2, 2))
-        do i = 1, 2
-          do j = 1, 2
-            field_interior(i, j) = real(i * 10 + j, dp)
-          end do
-        end do
+        call set_interior()
         field_ghost = 0.0_dp
-        ! A per-case ordinal, so a metrics-basis row that sourced the WRONG case's
-        ! snapshot carries a detectably wrong value.
+        ! A per-case ordinal, so a snapshot that carried the WRONG case's state is detectable.
         ncase_seen = ncase_seen + 1
         max_abs_deviation = real(ncase_seen, dp)
         guard_fired = 0.0_dp
@@ -580,7 +508,12 @@ _CHECKS_STUB = textwrap.dedent("""\
         logical, intent(out) :: ok
         steps = 1
         cells_updated = 4
+        ! `get_time` left the sentinel in the storage after the initial capture.
+        call set_interior()
+        field_ghost(:, :) = 0.0_dp
         field_ghost(2:3, 2:3) = field_interior
+        max_abs_deviation = real(ncase_seen, dp)
+        guard_fired = 0.0_dp
         if (trim(case_id) == 'l0_invalid_ny_xfail') then
           guard_fired = 1.0_dp
           ok = .false.
@@ -591,38 +524,21 @@ _CHECKS_STUB = textwrap.dedent("""\
       subroutine get_time(t)
         real(dp), intent(out) :: t
         t = 0.0_dp
-      end subroutine get_time
-      subroutine checks_compute(case_id, check_id, status)
-        character(len=*), intent(in) :: case_id
-        character(len=*), intent(in) :: check_id
-        character(len=4), intent(out) :: status
-        ! Fixture (d): a callback that writes to the bound storage AFTER case_run. The
+        ! Fixture (d): a callback that writes to the bound storage AFTER a capture. The
         ! captured snapshot must not see it.
         field_ghost = -99.0_dp
         field_interior = -99.0_dp
         max_abs_deviation = -99.0_dp
         guard_fired = -99.0_dp
-        select case (trim(check_id))
-        case ('input_guard')
-          status = 'fail'
-        case default
-          status = 'pass'
-        end select
-        if (len_trim(case_id) < 0) continue
-      end subroutine checks_compute
-      subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
-        character(len=*), intent(in) :: case_id
-        character(len=*), intent(in) :: name
-        real(dp), intent(out) :: val
-        logical, intent(out) :: is_na
-        character(len=:), allocatable, intent(out) :: reason_na
-        logical, intent(out) :: found
-        val = 0.0_dp
-        is_na = .false.
-        reason_na = ''
-        found = .false.
-        if (len_trim(case_id) < 0 .or. len_trim(name) < 0) continue
-      end subroutine metric_compute
+      end subroutine get_time
+      subroutine set_interior()
+        integer :: i, j
+        do i = 1, 2
+          do j = 1, 2
+            field_interior(i, j) = real(i * 10 + j, dp)
+          end do
+        end do
+      end subroutine set_interior
     end module dynamics_shallow_water_boundary_2d_periodic_copy_checks
     """)
 
@@ -656,7 +572,7 @@ class RenderShapeTest(unittest.TestCase):
             self.assertNotIn(gone, self.txt)
         self.assertEqual(
             CHECKS_PUBLIC_NAMES,
-            ("case_setup", "case_run", "get_time", "checks_compute", "metric_compute"))
+            ("case_setup", "case_run", "get_time"))
         self.assertIn("    sb_field_ghost => field_ghost, &", self.txt)
         self.assertIn("    sb_max_abs_deviation => max_abs_deviation, &", self.txt)
         self.assertIn(
@@ -669,15 +585,14 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("    call require_bound(allocated(sb_field_ghost), &\n"
                       "      'field_ghost', cid)", self.txt)
         self.assertNotIn("require_bound(allocated(sb_max_abs_deviation)", self.txt)  # scalar
-        # EVERY declared variable is captured for EVERY case — the snapshot is the full state,
-        # not the per-case union of `required_raw_variables` (the xfail case requires only
-        # `guard_fired`, and still gets all four): one capture body, no per-case select.
+        # EVERY declared variable is captured for EVERY case — the snapshot is the full state:
+        # one capture body, no per-case select.
         self.assertIn("    allocate(out(4))", self.txt)
         self.assertNotIn("select case (cid)", self.txt)
         self.assertEqual(self.txt.count("harness_fortran_cpu__box('guard_fired', &"), 1)
 
     def test_a_schema_variable_no_test_requires_is_still_captured(self) -> None:
-        # The set the runner reads is the SCHEMA, not the union of `required_raw_variables`:
+        # The set the runner reads is the SCHEMA, not what the tests' predicates read:
         # a declared state no test names is imported, its emitter imported, and captured for
         # every case (the round-3 census's only corpus-dependent decision on the renderer).
         ir = copy.deepcopy(_boundary_ir())
@@ -691,9 +606,8 @@ class RenderShapeTest(unittest.TestCase):
 
     def test_capture_points_bracket_case_run_and_precede_every_callback(self) -> None:
         # Z6 capture contract: initial capture right after case_setup, final capture right
-        # after case_run, both BEFORE the first checks_compute / metric_compute of the case;
-        # `initial/` snapshots go under the sub-directory, and the metrics basis is picked
-        # from the final capture's cache (never re-read from storage).
+        # after case_run, each BEFORE the `get_time` that follows it; `initial/` snapshots go
+        # under the sub-directory.
         body = self.txt[self.txt.index("  do ci = 1, ncases"):
                         self.txt.index("  call system_clock(count=clock1)")]
         order = [
@@ -705,8 +619,6 @@ class RenderShapeTest(unittest.TestCase):
             "call capture_state(trim(case_ids(ci)), vals)",
             "call get_time(tval)",
             "call harness_fortran_cpu__write_snapshot(trim(case_ids(ci)), vals, tval)",
-            "snap_cache(ci)%values = vals",
-            "call checks_compute(trim(case_ids(ci)), &",
         ]
         pos = -1
         for needle in order:
@@ -723,39 +635,8 @@ class RenderShapeTest(unittest.TestCase):
         self.assertLess(body.index("call capture_state(", run_end),
                         body.index("call get_time(", run_end))
 
-    def test_per_id_checks_abi(self) -> None:
-        # Per-id ABI: the runner sizes case_checks to the declared count and calls checks_compute
-        # once per IR-declared id, supplying the id as a literal `intent(in)` actual (id on the
-        # continuation line). The module authors only the status.
-        self.assertIn("    allocate(case_checks(3))", self.txt)
-        self.assertIn(
-            "    call checks_compute(trim(case_ids(ci)), &\n      'x_wrap', cstatus)", self.txt)
-        self.assertIn("    case_checks(1)%id = 'x_wrap'", self.txt)
-        self.assertIn("    case_checks(1)%status = cstatus", self.txt)
-        self.assertIn("      'input_guard', cstatus)", self.txt)
-        self.assertIn("    case_checks(3)%id = 'input_guard'", self.txt)
-        self.assertIn(f"character(len={CHECK_STATUS_WIDTH}) :: cstatus", self.txt)
-        # the old buffered ABI (module-authored ids) is gone in every form
-        for gone in ("ncheck_out", "ncheck_max", "chk_ids", "chk_status"):
-            self.assertNotIn(gone, self.txt)
-
-    def test_xfail_flag(self) -> None:
-        self.assertIn(
-            "results(ci)%expected_xfail = trim(case_ids(ci)) == 'l0_invalid_ny_xfail'",
-            self.txt)
-
-    def test_no_metrics_block_when_absent(self) -> None:
-        # No import and no call; the ABI comment under `use <spec_id>_checks` names it on
-        # every node (issue #261), so the assertion is on the CODE lines, not the whole text.
-        code = "\n".join(ln for ln in self.txt.splitlines() if not ln.lstrip().startswith("!"))
-        self.assertNotIn("metric_compute", code)
-        self.assertIn("metric_compute's", self.txt)
-        self.assertIn("allocate(results(ci)%metrics(0))", self.txt)
-
-    def test_terminal_writers(self) -> None:
-        self.assertIn("call harness_fortran_cpu__write_metrics_basis(mb_entries, 3)", self.txt)
-        self.assertIn("call harness_fortran_cpu__write_diagnostics(results, ncases)", self.txt)
-        self.assertIn("harness_fortran_cpu__write_perf(", self.txt)
+    def test_terminal_writer(self) -> None:
+        self.assertEqual(1, self.txt.count("call harness_fortran_cpu__write_perf("))
         # perf parallelism: mpi=1, gpu=0, and no thread count — the harness's writer obtains
         # the count the run is given itself (`harness_fortran_cpu@0.8.0` §3.2, issue #512:
         # Validate runs the binary at several counts, so the profile's is the wrong one for
@@ -789,59 +670,6 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("implicit none", self.txt)
 
 
-class MultiTargetMetricsBasisTest(unittest.TestCase):
-    """R3-core: the metrics-basis index is the (test_id, target case_id) product."""
-
-    @staticmethod
-    def _multi_target_ir() -> dict:
-        # The x_wrap test now ranges over BOTH wrap cases (a convergence-sweep shape:
-        # one test, several cases). The other two tests stay single-target.
-        ir = copy.deepcopy(_boundary_ir())
-        ir["io_contract"]["test_predicates"][0]["target_cases"] = [
-            "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"]
-        return ir
-
-    def setUp(self) -> None:
-        self.txt = render_runner(self._multi_target_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-
-    def test_entry_count_is_the_product(self) -> None:
-        # 2 (multi-target test) + 1 + 1 = 4 rows, NOT 3 (one per test).
-        self.assertIn("allocate(mb_entries(4))", self.txt)
-        self.assertIn("call harness_fortran_cpu__write_metrics_basis(mb_entries, 4)", self.txt)
-
-    def test_each_row_carries_its_own_case_id(self) -> None:
-        rows = re.findall(
-            r"mb_entries\((\d+)\)%test_id = '([^']+)'\n"
-            r"  mb_entries\(\d+\)%case_id = &\n    '([^']+)'",
-            self.txt)
-        self.assertEqual(
-            [(t, c) for _, t, c in rows],
-            [("l0_periodic_x_wrap_pass", "l0_periodic_x_wrap_pass"),
-             ("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"),
-             ("l0_periodic_y_wrap_pass", "l0_periodic_y_wrap_pass"),
-             ("l0_invalid_ny_xfail", "l0_invalid_ny_xfail")])
-        self.assertEqual([int(i) for i, _, _ in rows], [1, 2, 3, 4])
-
-    def test_each_row_picks_from_its_own_case_snapshot(self) -> None:
-        # The two rows of the multi-target test resolve DIFFERENT source cases, so each
-        # `pick` reads the snap_cache slot that case's `find_case_index` returned.
-        self.assertIn("    'l0_periodic_x_wrap_pass')\n", self.txt)
-        self.assertIn("    'l0_periodic_y_wrap_pass')\n", self.txt)
-        self.assertEqual(self.txt.count("pick(snap_cache(tci)%values, 'max_abs_deviation')"), 3)
-
-    def test_snapshot_cache_is_keyed_by_case_id(self) -> None:
-        self.assertIn("snap_cache(ci)%case_id = trim(case_ids(ci))", self.txt)
-        self.assertNotIn("snap_cache(ci)%test_id", self.txt)
-
-    def test_single_target_rows_still_carry_case_id(self) -> None:
-        # No special case: a 1:1 test is just a 1-row slice of the same product.
-        txt = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertIn("allocate(mb_entries(3))", txt)
-        self.assertEqual(txt.count("%case_id = &"), 3)
-
-    def test_line_width(self) -> None:
-        over = [ln for ln in self.txt.splitlines() if len(ln) > 100]
-        self.assertEqual(over, [], f"lines over 100 cols: {over}")
 
 
 class DeterminismTest(unittest.TestCase):
@@ -851,13 +679,9 @@ class DeterminismTest(unittest.TestCase):
         self.assertEqual(a, b)
 
 
-class MetricsRenderTest(unittest.TestCase):
-    def test_metric_compute_rendered(self) -> None:
+class PerfParallelismRenderTest(unittest.TestCase):
+    def test_the_perf_record_s_counts_and_the_rank_1_capture(self) -> None:
         txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertIn("call metric_compute(trim(case_ids(ci)), 'error.l2',", txt)
-        self.assertIn("call metric_compute(trim(case_ids(ci)), 'error.linf',", txt)
-        self.assertIn("allocate(case_metrics(2))", txt)
-        self.assertIn("results(ci)%metrics = case_metrics(1:mcount)", txt)
         # The runner passes no thread count: the harness's writer records its run-time count
         # (issue #512) — neither the profile's nor the IR's `backend_overrides.openmp.num_threads`,
         # which nothing runs with.
@@ -895,10 +719,6 @@ class RenderErrorMatrixTest(unittest.TestCase):
         self._expect(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
                      ["schema"]["variables"][2].__setitem__("name", "t"))
 
-    def test_verdict_fields_unsupported(self) -> None:
-        self._expect(lambda ir: ir["io_contract"]["diagnostics_contract"]["verdict"]
-                     .__setitem__("fields", ["overall", "failed_checks", "score"]))
-
     def test_two_infra_deps(self) -> None:
         self._expect(lambda ir: ir["dependency"]["direct_deps"].append(
             {"node_key": "infrastructure/other@1.0.0"}))
@@ -907,18 +727,11 @@ class RenderErrorMatrixTest(unittest.TestCase):
         with self.assertRaises(RenderError):
             render_runner(_boundary_ir(), "z" * 56, HARNESS, target=_TARGET_PROFILE.doc)
 
-    def test_required_raw_not_in_schema(self) -> None:
-        self._expect(lambda ir: ir["io_contract"]["test_evidence_requirements"][0]
-                     ["required_raw_variables"].append("ghost_field_typo"))
-
     def _rename_snapshot_var(self, ir: dict, old: str, new: str) -> None:
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         for v in schema["variables"]:
             if v["name"] == old:
                 v["name"] = new
-        for r in ir["io_contract"]["test_evidence_requirements"]:
-            r["required_raw_variables"] = [
-                new if v == old else v for v in r["required_raw_variables"]]
 
     def test_snapshot_variable_must_be_a_bindable_identifier(self) -> None:
         # A snapshot variable IS a module-level variable of the checks module (the binding
@@ -955,15 +768,9 @@ class RenderErrorMatrixTest(unittest.TestCase):
                 self._expect(lambda ir, n=name: self._rename_snapshot_var(ir, "field_ghost", n))
 
     def test_over_long_case_id_fails_closed(self) -> None:
-        # 70 chars: under the 100-column render guard (a `case ('<id>')` label only reaches
-        # column 100 at ~87 chars), but over the harness `case_id_len = 64`. Without this gate
-        # the runner COMPILES and then `error stop 1`s on every run, because `__parse_cases`
-        # truncated the stored id to 64 while the emitted literal carries all 70.
-        def mut(ir: dict) -> None:
-            long_id = "c_" + "x" * 68
-            ir["case"]["test_case_set"][0]["case_id"] = long_id
-            ir["io_contract"]["test_predicates"][0]["target_cases"] = [long_id]
-        self._expect(mut)
+        # 70 chars: over the harness `case_id_len = 64`, which `__parse_cases` truncates a parsed
+        # id to, so the run's snapshot would be written under a name no IR case carries.
+        self._expect(_over_long_case_id_mut)
 
     def test_case_id_at_the_harness_width_still_renders(self) -> None:
         # Exactly `case_id_len` fits: the bound is inclusive, not off-by-one.
@@ -971,24 +778,14 @@ class RenderErrorMatrixTest(unittest.TestCase):
         exact = "c_" + "x" * (CASE_ID_LEN - 2)
         self.assertEqual(len(exact), CASE_ID_LEN)
         ir["case"]["test_case_set"][0]["case_id"] = exact
-        ir["io_contract"]["test_predicates"][0]["target_cases"] = [exact]
         txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        # the id reaches the metrics-basis lookup literal (no per-case `select case` exists
-        # since every case captures the full state)
-        self.assertIn(f"    '{exact}')", txt)
+        # the runner takes the ids from argv: the width it stores them at is the harness's
         self.assertIn(f"  integer, parameter :: case_id_len = {CASE_ID_LEN}", txt)
 
     def test_duplicate_case_id_fails_closed(self) -> None:
-        # Two entries with the same case_id would emit overlapping `case ('id')` labels in
-        # the runner's select-case — a hard gfortran error the leaf cannot repair. Fail closed.
+        # Two entries with the same case_id would write one snapshot path twice. Fail closed.
         self._expect(lambda ir: ir["case"]["test_case_set"].append(
             {"case_id": "l0_periodic_x_wrap_pass"}))
-
-    def test_test_with_no_target_case_fails_closed(self) -> None:
-        # A test declaring metrics-basis evidence but ranging over no case has no
-        # (test_id, case_id) row to record — its evidence source is unresolvable.
-        self._expect(lambda ir: ir["io_contract"]["test_predicates"][0].__setitem__(
-            "target_cases", []))
 
     def test_non_t_time_variable(self) -> None:
         # The harness writes the snapshot time under the fixed key 't'; a different
@@ -1007,9 +804,8 @@ class RenderErrorMatrixTest(unittest.TestCase):
         # node/pwned.json). Reject anything that is not a filesystem-safe token.
         for name in ("../../pwned", "a/b", "..", "foo/../bar", "x\\y"):
             with self.subTest(name=name):
-                self._expect(lambda ir, n=name: (
-                    ir["case"]["test_case_set"][0].__setitem__("case_id", n),
-                    ir["io_contract"]["test_predicates"][0].__setitem__("target_cases", [n])))
+                self._expect(lambda ir, n=name: ir["case"]["test_case_set"][0].__setitem__(
+                    "case_id", n))
 
     def test_leading_dash_case_id_fails_closed(self) -> None:
         # A case id also reaches the runner's argv (`--cases <spec> <case_id>...`), where
@@ -1017,17 +813,16 @@ class RenderErrorMatrixTest(unittest.TestCase):
         # several phases further and fail at the build-runtime argument rule instead.
         for name in ("-c1", "--cases", "-"):
             with self.subTest(name=name):
-                self._expect(lambda ir, n=name: (
-                    ir["case"]["test_case_set"][0].__setitem__("case_id", n),
-                    ir["io_contract"]["test_predicates"][0].__setitem__("target_cases", [n])))
+                self._expect(lambda ir, n=name: ir["case"]["test_case_set"][0].__setitem__(
+                    "case_id", n))
 
     def test_dotted_and_dashed_case_id_still_renders(self) -> None:
         # The safe grammar allows `.` and `-`; a single dot is not `..` and must pass.
         ir = copy.deepcopy(_boundary_ir())
         ok = "l0_v1.2-alpha"  # a dash INSIDE the id stays legal; only a leading one does not
         ir["case"]["test_case_set"][0]["case_id"] = ok
-        ir["io_contract"]["test_predicates"][0]["target_cases"] = [ok]
-        self.assertIn(f"    '{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc))
+        render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertEqual(ir_content_violations(ir, BOUNDARY_SID, HARNESS), [])
 
     def test_non_ascii_in_name_fails_closed(self) -> None:
         # Fortran's default character kind counts BYTES; `CASE_ID_LEN` and the 100-column
@@ -1036,23 +831,18 @@ class RenderErrorMatrixTest(unittest.TestCase):
         # runner that compiles and then `error stop`s. Reject non-ASCII outright.
         for name in ("l0_café_wrap", "c_" + "x" * 58 + "é" * 4):
             with self.subTest(name=name[:20]):
-                self._expect(lambda ir, n=name: (
-                    ir["case"]["test_case_set"][0].__setitem__("case_id", n),
-                    ir["io_contract"]["test_predicates"][0].__setitem__("target_cases", [n])))
+                self._expect(lambda ir, n=name: ir["case"]["test_case_set"][0].__setitem__(
+                    "case_id", n))
 
-    def test_non_ascii_metric_address_fails_closed(self) -> None:
-        # Every IR-sourced name the renderer embeds goes through `_flit`, so one check covers
-        # metric addresses and snapshot variables too, not just case ids.
-        ir = copy.deepcopy(_metrics_ir())
-        ir["io_contract"]["diagnostics_contract"]["metrics"] = ["error.ℓ2"]
+    def test_non_ascii_literal_fails_closed(self) -> None:
+        # Every name the renderer embeds goes through `_flit`, whichever grammar bounded it first.
         with self.assertRaisesRegex(RenderError, "outside printable ASCII"):
-            render_runner(ir, "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
+            _flit_for_test("error.ℓ2")
 
     def test_extreme_name_length_fails_closed(self) -> None:
-        # A pathologically long name pushes a rendered line past the 100-col lint limit; since
-        # the runner is host-rendered (unrepairable by a leaf), fail closed at render time.
-        # The name must be a test_id, not a case_id: a long case_id now trips the earlier
-        # `CASE_ID_LEN` bound instead, so it would never reach the column guard.
+        # A long name pushes a rendered line past the 100-col lint limit; since the runner is
+        # host-rendered (unrepairable by a leaf), fail closed at render time. The name must be a
+        # snapshot variable, not a case_id: the runner embeds no case id any more.
         with self.assertRaisesRegex(RenderError, "reaches the linter's 100-column limit"):
             ir = copy.deepcopy(_boundary_ir())
             _long_name_mut(ir)
@@ -1060,17 +850,14 @@ class RenderErrorMatrixTest(unittest.TestCase):
 
 
 def _over_long_case_id_mut(ir: dict) -> None:
-    long_id = "c_" + "x" * 68  # > CASE_ID_LEN, < the 100-column render guard
-    ir["case"]["test_case_set"][0]["case_id"] = long_id
-    ir["io_contract"]["test_predicates"][0]["target_cases"] = [long_id]
+    ir["case"]["test_case_set"][0]["case_id"] = "c_" + "x" * 68  # > CASE_ID_LEN
 
 
 def _long_name_mut(ir: dict) -> None:
-    # A long TEST_ID (the case_id stays short, so the CASE_ID_LEN bound does not pre-empt this):
-    # `  mb_entries(1)%test_id = '<95 chars>'` renders past the 100-column lint limit.
-    long_id = "t_" + "x" * 95
-    ir["io_contract"]["test_evidence_requirements"][0]["test_id"] = long_id
-    ir["io_contract"]["test_predicates"][0]["test_id"] = long_id
+    # A SNAPSHOT VARIABLE whose `sb_` alias fits the identifier limit and whose
+    # `    out(3) = harness_fortran_cpu__box('<name>', &` line reaches the 100-column lint limit.
+    schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+    schema["variables"][2]["name"] = "m" * (100 - len("    out(3) = harness_fortran_cpu__box('', &"))
 
 
 # (label, mutate, spec_id, is_identity): each mutation of _boundary_ir makes render_runner raise.
@@ -1085,28 +872,15 @@ _RENDER_FAILCLOSE_CASES = [
     ("reserved_key_collision", lambda ir: ir["io_contract"]["raw_requirements"]
      ["required_evidence"][0]["schema"]["variables"][2].__setitem__("name", "t"),
      BOUNDARY_SID, False),
-    ("verdict_fields_unsupported", lambda ir: ir["io_contract"]["diagnostics_contract"]
-     ["verdict"].__setitem__("fields", ["overall", "failed_checks", "score"]),
-     BOUNDARY_SID, False),
-    ("required_raw_not_in_schema", lambda ir: ir["io_contract"]["test_evidence_requirements"]
-     [0]["required_raw_variables"].append("ghost_field_typo"), BOUNDARY_SID, False),
     ("duplicate_case_id", lambda ir: ir["case"]["test_case_set"].append(
         {"case_id": "l0_periodic_x_wrap_pass"}), BOUNDARY_SID, False),
-    ("test_with_no_target_case", lambda ir: ir["io_contract"]["test_predicates"][0].__setitem__(
-        "target_cases", []), BOUNDARY_SID, False),
     ("over_long_case_id", _over_long_case_id_mut, BOUNDARY_SID, False),
-    ("path_traversal_case_id", lambda ir: (
-        ir["case"]["test_case_set"][0].__setitem__("case_id", "../../evil"),
-        ir["io_contract"]["test_predicates"][0].__setitem__("target_cases", ["../../evil"])),
-     BOUNDARY_SID, False),
-    ("non_ascii_case_id", lambda ir: (
-        ir["case"]["test_case_set"][0].__setitem__("case_id", "l0_café"),
-        ir["io_contract"]["test_predicates"][0].__setitem__("target_cases", ["l0_café"])),
-     BOUNDARY_SID, False),
+    ("path_traversal_case_id", lambda ir: ir["case"]["test_case_set"][0].__setitem__(
+        "case_id", "../../evil"), BOUNDARY_SID, False),
+    ("non_ascii_case_id", lambda ir: ir["case"]["test_case_set"][0].__setitem__(
+        "case_id", "l0_café"), BOUNDARY_SID, False),
     ("non_t_time_variable", lambda ir: ir["io_contract"]["raw_requirements"]
      ["required_evidence"][0]["schema"].__setitem__("time_variable", "tau"), BOUNDARY_SID, False),
-    ("no_checks", lambda ir: ir["io_contract"]["diagnostics_contract"].__setitem__(
-        "checks", []), BOUNDARY_SID, False),
     # These two USED to be render-only backstops; the render-based mirror now hoists them
     # (they are Compile-authored names, not node identity) — the R1-F1 gap fix.
     ("control_char_in_name", lambda ir: ir["case"]["test_case_set"][0].__setitem__(
@@ -1125,8 +899,7 @@ class IrContentViolationsTest(unittest.TestCase):
     its ``RenderError`` unless the error is ``identity=True``. So the mirror is exact by
     construction — no hand-maintained precondition list to drift. These tests pin the
     content-vs-identity classification (the routing contract) so the E2E #3 workflow-kill class
-    cannot silently reopen (e.g. a plausible ~50-char metric address or a control char in an IR
-    name — R1-F1 — now surfaces at compile instead of killing the workflow at render)."""
+    cannot silently reopen (e.g. a control char in an IR name — R1-F1 — now surfaces at compile instead of killing the workflow at render)."""
 
     def test_clean_ir_has_no_violations(self) -> None:
         self.assertEqual(ir_content_violations(_boundary_ir(), BOUNDARY_SID, HARNESS), [])
@@ -1156,28 +929,18 @@ class IrContentViolationsTest(unittest.TestCase):
         self.assertTrue(any("time_variable is 'tau'" in x and "'t'" in x for x in v), v)
 
     def test_malformed_non_iterable_field_does_not_crash(self) -> None:
-        # A truthy non-iterable where a list is expected (e.g. `verdict.fields: 5`) makes
+        # A truthy non-iterable where a list is expected (e.g. `schema.variables: 5`) makes
         # render_runner raise a bare TypeError, not a RenderError. Running inside the compile
         # validator, that must NOT escape (it would abort the gate and discard sibling
         # violations); it is converted to a renderable-failure violation instead.
-        for field, value in (
-            ("fields", 5),  # under diagnostics_contract.verdict
-        ):
-            ir = copy.deepcopy(_boundary_ir())
-            ir["io_contract"]["diagnostics_contract"]["verdict"] = {
-                "required": False, field: value}
-            v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
-            self.assertTrue(v and any("not renderable" in x for x in v), v)
-        # a few more non-iterable field shapes, each must be caught (not raised)
-        for path in (
-            lambda ir: ir["io_contract"]["diagnostics_contract"].__setitem__("checks", 5),
-            lambda ir: ir["io_contract"].__setitem__("test_predicates", 5),
-            lambda ir: ir["case"].__setitem__("test_case_set", 5),
-        ):
-            ir = copy.deepcopy(_boundary_ir())
-            path(ir)
-            v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
-            self.assertTrue(v, v)  # non-empty, and no exception escaped
+        ir = copy.deepcopy(_boundary_ir())
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] = 5
+        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
+        self.assertTrue(v and any("not renderable" in x for x in v), v)
+        ir = copy.deepcopy(_boundary_ir())
+        ir["case"]["test_case_set"] = 5
+        v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
+        self.assertTrue(v and any("not renderable" in x for x in v), v)
 
 
 class SpecIdBoundAgreementTest(unittest.TestCase):
@@ -1276,7 +1039,7 @@ class DerivedNameLengthTest(unittest.TestCase):
         from tools.backends.language.fortran import bundle
 
         ir = _boundary_ir()
-        long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__write_metrics_basis") + 1)
+        long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__write_snapshot") + 1)
         with self.assertRaises(RenderError) as ctx:
             render_runner(ir, BOUNDARY_SID, long_harness, target=_TARGET_PROFILE.doc)
         # `identity=True`: a harness id is node identity, so the compile.static mirror excludes
@@ -1292,72 +1055,17 @@ def _flit_for_test(text: str) -> str:
 
 class LineWidthTest(unittest.TestCase):
     """R1/M3c-β (review round 3): every rendered line must stay within the 100-col lint limit,
-    including for long IR-sourced names (metric addresses, case_ids) — the hot lines are wrapped."""
+    including for long IR-sourced names — the hot lines are wrapped."""
 
     def _maxw(self, txt: str) -> int:
         return max(len(ln) for ln in txt.splitlines())
-
-    def test_long_metric_address_wraps(self) -> None:
-        ir = _metrics_ir()
-        ir["io_contract"]["diagnostics_contract"]["metrics"] = ["convergence.observed_order.l2"]
-        txt = render_runner(ir, "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertLessEqual(self._maxw(txt), 100)
-        # the metric_compute call is wrapped (address on the header, out-args on the next line)
-        self.assertIn("'convergence.observed_order.l2', &", txt)
-
-    def test_two_xfail_cases_multiline_expr_not_false_failed(self) -> None:
-        # The `_xfail_expr` for >=2 xfail cases is a multi-line (`&`-continued) entry; the
-        # column guard must measure per physical line, not the joined entry, else it wedges a
-        # valid two-guard-case node into an unrepairable fail_closed.
-        ir = _boundary_ir()
-        ir["io_contract"]["test_predicates"][1]["expected_outcome"] = "xfail"
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertLessEqual(self._maxw(txt), 100)
-        self.assertIn(".or. &", txt)  # the two-term expression rendered as a continuation
-        self.assertIn("== 'l0_periodic_y_wrap_pass'", txt)
 
     def test_long_case_id_target_wraps(self) -> None:
         ir = _boundary_ir()
         long_id = "l0_periodic_x_wrap_with_a_fairly_long_descriptive_name_pass"  # 58 chars
         ir["case"]["test_case_set"][0]["case_id"] = long_id
-        ir["io_contract"]["test_evidence_requirements"][0]["test_id"] = long_id
-        ir["io_contract"]["test_predicates"][0]["test_id"] = long_id
-        ir["io_contract"]["test_predicates"][0]["target_cases"] = [long_id]
         txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLessEqual(self._maxw(txt), 100)
-
-    def test_max_length_check_id_wraps_within_limit(self) -> None:
-        # A 64-char check id (the `_checks()` fail-closed ceiling) still renders within 100 cols:
-        # the id rides the continuation line, so `      '<64>', cstatus)` is 82 columns.
-        ir = _boundary_ir()
-        long_check = "c" * CASE_ID_LEN  # 64
-        ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": long_check}]
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertLessEqual(self._maxw(txt), 100)
-        self.assertIn(f"      '{long_check}', cstatus)", txt)
-
-    def test_overlong_check_id_is_render_error(self) -> None:
-        # With the old buffered ABI's de-facto 32-char id width gone, `_checks()` fail-closes on an
-        # id longer than CASE_ID_LEN rather than emit a per-id call that breaches the column guard.
-        ir = _boundary_ir()
-        ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": "c" * (CASE_ID_LEN + 1)}]
-        with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-
-    def test_apostrophe_check_id_escaping_to_the_lint_bound_is_render_error(self) -> None:
-        # A raw-<=64 id whose Fortran apostrophe-doubling expands the `case_checks(k)%id = '<lit>'`
-        # assignment to EXACTLY 100 cols passes render_runner's `>100` backstop but fails the S001
-        # lint (=100) on a host-authored line the leaf cannot repair. `_checks()` must fail-close on
-        # the ESCAPED width, not just the raw length. (54 'a' + 10 "'" == 64 raw -> 74 escaped ->
-        # 25 + 1 + 74 == 100.)
-        ir = _boundary_ir()
-        ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": "a" * 54 + "'" * 10}]
-        with self.assertRaises(RenderError):
-            render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        # One fewer apostrophe (98 cols) renders cleanly and stays within the limit.
-        ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": "a" * 54 + "'" * 9}]
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertLessEqual(self._maxw(txt), 99)
 
     def test_the_column_limit_is_the_linter_s_declaration(self) -> None:
         """The renderer's column limit is the fortran linter's `LINE_LENGTH_LIMIT`, read through
@@ -1383,35 +1091,27 @@ class LineWidthTest(unittest.TestCase):
 
     def test_every_limit_read_follows_the_linter_s_declaration_upward(self) -> None:
         """The row above lowers the limit, which the global backstop alone would catch; this one
-        RAISES it, so each of the renderer's other two reads must follow the declaration on its
-        own: the check-id width bound in `_checks` accepts an id whose escaped assignment is 100
-        columns, and the state-binding import keeps a 102-column `sb_<v> => <v>, &` line on one
-        line rather than wrapping it. A literal 100 restored at either read turns this row
-        red (the backstop does not see it, because the raised limit is above both lines)."""
+        RAISES it, so the renderer's other read must follow the declaration on its own: the
+        state-binding import keeps a 102-column `sb_<v> => <v>, &` line on one line rather than
+        wrapping it. A literal 100 restored at that read turns this row red (the backstop does
+        not see it, because the raised limit is above the line)."""
         from tools.backends import registry
 
         lint = registry.capability_module(
             "linter", registry.linter_for_language("fortran"), "lint")
         raised = 110
-        check_id = "a" * 54 + "'" * 10  # 25 + 1 + 74 escaped == 100 columns
         name = "v" * 44  # `    sb_<44> => <44>, &` == 14 + 88 == 102 columns
-        self.assertEqual(25 + 1 + len(_flit_for_test(check_id)), 100)
         self.assertEqual(len(f"    sb_{name} => {name}, &"), 102)
         ir = copy.deepcopy(_boundary_ir())
-        ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": check_id}]
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         for v in schema["variables"]:
             if v["name"] == "max_abs_deviation":
                 v["name"] = name
-        for r in ir["io_contract"]["test_evidence_requirements"]:
-            r["required_raw_variables"] = [
-                name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
         with mock.patch.object(lint, "LINE_LENGTH_LIMIT", raised):
             txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLess(self._maxw(txt), raised)
         self.assertIn(f"sb_{name} => {name}", txt)
         self.assertNotIn(f"sb_{name} => &", txt)
-        self.assertIn("case_checks(1)%id = 'aaaa", txt)
 
     def test_a_snapshot_name_rendering_an_exactly_100_column_line_is_refused(self) -> None:
         # The variable-name path had no `_checks`-style strict bound: a scalar name whose
@@ -1424,9 +1124,6 @@ class LineWidthTest(unittest.TestCase):
         for v in schema["variables"]:
             if v["name"] == "max_abs_deviation":
                 v["name"] = name
-        for r in ir["io_contract"]["test_evidence_requirements"]:
-            r["required_raw_variables"] = [
-                name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
         with self.assertRaises(RenderError) as cm:
             render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("reaches the linter's 100-column limit (100 columns", str(cm.exception))
@@ -1435,59 +1132,17 @@ class LineWidthTest(unittest.TestCase):
         for v in ir2["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:
             if v["name"] == name:
                 v["name"] = name[:-1]
-        for r in ir2["io_contract"]["test_evidence_requirements"]:
-            r["required_raw_variables"] = [
-                name[:-1] if x == name else x for x in r["required_raw_variables"]]
         self.assertLessEqual(self._maxw(render_runner(ir2, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)), 99)
 
 
 class FortranLiteralEscapingTest(unittest.TestCase):
-    """R1/M3c-β (Codex review): IR-sourced names are only required non-empty, so a name with a
-    single quote must be doubled (`''`) in the generated Fortran literal, not break it."""
+    """R1/M3c-β (Codex review): a value the renderer embeds in a literal may carry a single quote,
+    which must be doubled (`''`) in the generated Fortran literal, not break it. Observed on the
+    escaper itself: what the runner embeds today (snapshot variables, the target's class) has a
+    grammar of its own that refuses the quote first."""
 
     def test_apostrophe_in_names_is_escaped(self) -> None:
-        # A case_id may not contain `'` (it is filesystem-gated to [A-Za-z0-9._-]), but a
-        # test_id flows into a Fortran literal (`mb_entries(k)%test_id = '...'`) without being
-        # a path, so an apostrophe there must be doubled, not break the literal.
-        ir = _boundary_ir()
-        ir["io_contract"]["test_evidence_requirements"][0]["test_id"] = "l0_x'wrap"
-        ir["io_contract"]["test_predicates"][0]["test_id"] = "l0_x'wrap"
-        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertIn("%test_id = 'l0_x''wrap'", txt)
-        self.assertNotIn("'l0_x'wrap'", txt)  # no broken (unescaped) literal
-
-    def test_escaped_runner_compiles(self) -> None:
-        _require_gfortran()
-        # An apostrophe in a test_id must produce a valid (doubled-quote) Fortran literal that
-        # compiles + links against the harness/checks stubs, not a broken one. (case_ids are
-        # token-gated, so the apostrophe lives on a non-path name that still flows through `_flit`.)
-        ir = _boundary_ir()
-        for r in ir["io_contract"]["test_evidence_requirements"]:
-            r["test_id"] = r["test_id"].replace("l0_", "l0'")
-        for p in ir["io_contract"]["test_predicates"]:
-            p["test_id"] = p["test_id"].replace("l0_", "l0'")
-        runner = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertIn("''", runner)  # the apostrophe was doubled
-        with tempfile.TemporaryDirectory() as td:
-            d = Path(td)
-            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-            (d / f"{BOUNDARY_SID}_checks.f90").write_text(_CHECKS_STUB)
-            (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
-            for srcs in (["harness_fortran_cpu_model.f90"], [f"{BOUNDARY_SID}_checks.f90"],
-                         [f"{BOUNDARY_SID}_runner.f90"]):
-                r = subprocess.run(["gfortran", "-std=f2008", "-c", *srcs],
-                                   cwd=d, capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, r.stderr)
-        with tempfile.TemporaryDirectory() as td:
-            d = Path(td)
-            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-            (d / f"{BOUNDARY_SID}_checks.f90").write_text(_CHECKS_STUB)
-            (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
-            for srcs in (["harness_fortran_cpu_model.f90"], [f"{BOUNDARY_SID}_checks.f90"],
-                         [f"{BOUNDARY_SID}_runner.f90"]):
-                r = subprocess.run(["gfortran", "-std=f2008", "-c", *srcs],
-                                   cwd=d, capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(_flit_for_test("l0_x'wrap"), "l0_x''wrap")
 
 
 class HarnessPinTest(unittest.TestCase):
@@ -1607,17 +1262,16 @@ class HarnessPinTest(unittest.TestCase):
             self) -> None:
         # Issue #430 PR-2: the pin reads a type the way the Generate gate does — its one
         # module-level definition in the harness model module, components compared as declared —
-        # so the O1 spelling of a component (the shape a harness attempt wrote on `checks`, and
-        # was refused for at the gate before issue #430), a `::`-less header and an unnamed `end type` must not stop a dependent's
-        # render, while a second definition of a pinned type name, or a drifted component, must.
-        checks = "type(harness_fortran_cpu__h_check), allocatable :: checks(:)\n"
+        # so a `::`-less header and an unnamed `end type` must not stop a dependent's render, while
+        # a second definition of a pinned type name, or a drifted component, must. (`h_named` is
+        # the one type the runner builds since issue #582.)
+        component = "character(len=:), allocatable :: json\n"
         header = "type :: harness_fortran_cpu__h_named\n"
         end = "end type harness_fortran_cpu__h_named\n"
-        for needle in (checks, header, end):
+        for needle in (component, header, end):
             self.assertIn(needle, self.src)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
-            checks, "type(harness_fortran_cpu__h_check), dimension(:), allocatable :: checks\n",
-            1).replace(header, "type harness_fortran_cpu__h_named\n", 1).replace(
+            header, "type harness_fortran_cpu__h_named\n", 1).replace(
             end, "end type\n", 1))
         helper = ("  subroutine harness_fortran_cpu__decoy()\n"
                   "    type :: harness_fortran_cpu__h_named\n"
@@ -1629,9 +1283,9 @@ class HarnessPinTest(unittest.TestCase):
         for label, cue, source in (
                 ("second definition", "differs from the pinned interface", self.src.replace(tail, helper + tail, 1)),
                 ("drifted component", "differs from the pinned interface", self.src.replace(
-                    checks, "type(harness_fortran_cpu__h_check), pointer :: checks(:)\n", 1)),
-                ("not defined at all", "omits 'harness_fortran_cpu__h_mb_entry'", self.src.replace(
-                    "harness_fortran_cpu__h_mb_entry\n", "harness_fortran_cpu__h_mb_entry_x\n")),
+                    component, "character(len=:), pointer :: json\n", 1)),
+                ("not defined at all", "omits 'harness_fortran_cpu__h_named'", self.src.replace(
+                    "harness_fortran_cpu__h_named\n", "harness_fortran_cpu__h_named_x\n")),
                 # Defined once, but only inside a procedure: count 1, no module-level definition.
                 ("defined only outside module level", "omits 'harness_fortran_cpu__h_named'", self.src.replace(
                     "type :: harness_fortran_cpu__h_named\n", "type :: hx_unused_rename\n", 1
@@ -1669,16 +1323,16 @@ class HarnessPinTest(unittest.TestCase):
         # Issue #430 round 1: a published procedure defining its own type under the name a dummy
         # is pinned to makes that dummy's type the local one. The pin passes the definition's
         # local types to `surface_drift` as the gate does.
-        header = "subroutine harness_fortran_cpu__write_metrics_basis("
+        header = "subroutine harness_fortran_cpu__write_snapshot("
         self.assertIn(header, self.src)
         start = self.src.index(header)
         body = self.src.index("\n", start) + 1
-        shadowed = (self.src[:body] + "    type :: HARNESS_FORTRAN_CPU__H_MB_ENTRY\n"
-                    "      integer :: k\n    end type HARNESS_FORTRAN_CPU__H_MB_ENTRY\n"
+        shadowed = (self.src[:body] + "    type :: HARNESS_FORTRAN_CPU__H_NAMED\n"
+                    "      integer :: k\n    end type HARNESS_FORTRAN_CPU__H_NAMED\n"
                     + self.src[body:])
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, shadowed)
-        self.assertIn("harness_fortran_cpu__write_metrics_basis", str(cm.exception))
+        self.assertIn("harness_fortran_cpu__write_snapshot", str(cm.exception))
 
     def test_an_unresolvable_certified_source_is_a_render_error(self) -> None:
         wedged = self.src.replace(
@@ -1744,7 +1398,6 @@ class HarnessPinTest(unittest.TestCase):
         over = "c" * (CASE_ID_LEN + 1)
         ir = copy.deepcopy(self.ir)
         ir["case"]["test_case_set"][0]["case_id"] = over
-        ir["io_contract"]["test_predicates"][0]["target_cases"] = [over]
         with self.assertRaises(RenderError):
             render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
 
@@ -1786,15 +1439,11 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_type_component_reorder_drift(self) -> None:
         # Derived-type components are compared as an ORDERED list (component layout is ABI);
-        # reordering two components of h_case_result must be caught as drift.
+        # reordering the two components of h_named must be caught as drift.
         bad = copy.deepcopy(self.sigs)
         for e in bad:
-            if e["symbol"].endswith("__h_case_result"):
-                components = e["signature"]["components"]
-                cid = next(i for i, ent in enumerate(components) if ent["name"] == "case_id")
-                xf = next(
-                    i for i, ent in enumerate(components) if ent["name"] == "expected_xfail")
-                components[cid], components[xf] = components[xf], components[cid]
+            if e["symbol"].endswith("__h_named"):
+                e["signature"]["components"].reverse()
         with self.assertRaises(RenderError):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src)
 
@@ -1808,10 +1457,10 @@ class HarnessPinTest(unittest.TestCase):
         # compatibility contract (it is the record layout the rendered runner is compiled
         # against), so the two sides need one observer each.
         reordered = self.src.replace(
-            "    character(len=:), allocatable :: case_id\n"
-            "    logical :: expected_xfail\n",
-            "    logical :: expected_xfail\n"
-            "    character(len=:), allocatable :: case_id\n")
+            "    character(len=:), allocatable :: name\n"
+            "    character(len=:), allocatable :: json\n",
+            "    character(len=:), allocatable :: json\n"
+            "    character(len=:), allocatable :: name\n")
         self.assertNotEqual(reordered, self.src, "the reorder did not apply to the stub")
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, reordered)
@@ -1862,7 +1511,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         self._assert_runner_clean_under_the_declared_lint_rules(
             _boundary_ir(), BOUNDARY_SID)
 
-    def test_rendered_metrics_runner_clean_under_the_declared_lint_rules(self) -> None:
+    def test_rendered_high_rank_runner_clean_under_the_declared_lint_rules(self) -> None:
         self._assert_runner_clean_under_the_declared_lint_rules(
             _rank34_metrics_ir(), RANK_SID)
 
@@ -1938,35 +1587,29 @@ class GfortranSmokeTest(unittest.TestCase):
                  "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail"],
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stderr)
-            # every case emitted its own snapshot; diagnostics + perf + metrics_basis exist
+            # every case emitted its own snapshot, perf exists, and nothing else the retired
+            # judging half wrote does (issue #582)
             for cid in ("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass",
                         "l0_invalid_ny_xfail"):
                 self.assertTrue((d / "raw" / "state_snapshots" / f"{cid}.json").is_file())
                 self.assertTrue(
                     (d / "raw" / "state_snapshots" / "initial" / f"{cid}.json").is_file())
-            self.assertTrue((d / "diagnostics.json").is_file())
             self.assertTrue((d / "perf.json").is_file())
-            self.assertTrue((d / "raw" / "metrics_basis.json").is_file())
-            diag = (d / "diagnostics.json").read_text()
-            self.assertIn("input_guard", diag)
+            self.assertFalse((d / "diagnostics.json").exists())
+            self.assertFalse((d / "raw" / "metrics_basis.json").exists())
             # Z6 fixture (d): the checks stub overwrites every bound variable with -99 inside
-            # `checks_compute`, which runs AFTER the final capture. Neither snapshot nor the
-            # metrics basis may carry the sentinel — the captured value is the serialized copy
-            # taken before any callback, not a later re-read of the storage.
+            # `get_time`, which runs AFTER each capture. Neither snapshot may carry the sentinel
+            # — the captured value is the serialized copy taken before any callback, not a later
+            # re-read of the storage.
             initial_path = d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json"
             final_path = d / "raw" / "state_snapshots" / "l0_periodic_x_wrap_pass.json"
-            mb_path = d / "raw" / "metrics_basis.json"
             # On the RAW text: the harness writes `-9.9000000000000000E+001`, which a parsed
             # document re-serializes as `-99.0` (a round-3 reviewer found the assertion on
-            # `json.dumps(doc)` vacuous for that reason and the metrics basis unpinned).
-            for path in (initial_path, final_path, mb_path):
+            # `json.dumps(doc)` vacuous for that reason).
+            for path in (initial_path, final_path):
                 self.assertNotIn("-9.9", path.read_text(), path)
             initial = json.loads(initial_path.read_text())
             final = json.loads(final_path.read_text())
-            mb = json.loads(mb_path.read_text())
-            for row in mb["per_test"]:
-                for value in row.values():
-                    self.assertNotEqual(value, -99.0, row)
             # initial = the case_setup state (ghost all zero), final = after case_run (the
             # interior copied into the ghost's centre): the two capture points differ.
             self.assertEqual(initial["field_ghost"][1][1], 0.0)
@@ -1974,6 +1617,12 @@ class GfortranSmokeTest(unittest.TestCase):
             self.assertEqual(final["field_interior"], [[11.0, 12.0], [21.0, 22.0]])
             self.assertEqual(final["max_abs_deviation"], 1.0)
             self.assertEqual(initial["max_abs_deviation"], 1.0)
+            # Each case's snapshot carries ITS OWN state: the stub's bound value is the case
+            # ordinal, in the order the cases were asked for.
+            for ordinal, cid in enumerate(("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass",
+                                           "l0_invalid_ny_xfail"), start=1):
+                snap = json.loads((d / "raw" / "state_snapshots" / f"{cid}.json").read_text())
+                self.assertEqual(snap["max_abs_deviation"], float(ordinal), cid)
 
     def test_unallocated_bound_array_stops_the_run(self) -> None:
         # A checks module whose `case_setup` never allocates a bound array is a binding that
@@ -1983,6 +1632,7 @@ class GfortranSmokeTest(unittest.TestCase):
         broken = _CHECKS_STUB
         for line in ("    if (.not. allocated(field_ghost)) allocate(field_ghost(4, 4))\n",
                      "    field_ghost = 0.0_dp\n",
+                     "    field_ghost(:, :) = 0.0_dp\n",
                      "    field_ghost(2:3, 2:3) = field_interior\n",
                      "    field_ghost = -99.0_dp\n"):
             self.assertEqual(broken.count(line), 1, line)
@@ -2012,66 +1662,10 @@ class GfortranSmokeTest(unittest.TestCase):
                 (d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json")
                 .is_file())
 
-    def test_multi_target_runner_compiles_and_emits_one_row_per_case(self) -> None:
-        # The multi-target mb_rows path is otherwise only text-asserted. Compile, link and RUN
-        # it, then parse the emitted metrics_basis.json: the multi-target test must contribute
-        # one entry per target case, each keyed by its own case_id and holding THAT case's
-        # evidence (a wrong `tci` would silently copy one case's values into both rows).
-        ir = copy.deepcopy(_boundary_ir())
-        ir["io_contract"]["test_predicates"][0]["target_cases"] = [
-            "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"]
-        runner = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        with tempfile.TemporaryDirectory() as td:
-            d = Path(td)
-            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-            (d / f"{BOUNDARY_SID}_checks.f90").write_text(_CHECKS_STUB)
-            (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
-
-            def fc(*srcs: str) -> None:
-                r = subprocess.run(
-                    ["gfortran", "-std=f2008", "-c", *srcs],
-                    cwd=d, capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, r.stderr)
-
-            fc("harness_fortran_cpu_model.f90")
-            fc(f"{BOUNDARY_SID}_checks.f90")
-            fc(f"{BOUNDARY_SID}_runner.f90")
-            link = subprocess.run(
-                ["gfortran", "harness_fortran_cpu_model.o",
-                 f"{BOUNDARY_SID}_checks.o", f"{BOUNDARY_SID}_runner.o", "-o", "runner"],
-                cwd=d, capture_output=True, text=True)
-            self.assertEqual(link.returncode, 0, link.stderr)
-
-            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
-            run = subprocess.run(
-                ["./runner", "--cases", "spec.ir.yaml",
-                 "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail"],
-                cwd=d, capture_output=True, text=True)
-            self.assertEqual(run.returncode, 0, run.stderr)
-
-            mb = json.loads((d / "raw" / "metrics_basis.json").read_text())
-            rows = [(e["test_id"], e["case_id"]) for e in mb["per_test"]]
-            self.assertEqual(rows, [
-                ("l0_periodic_x_wrap_pass", "l0_periodic_x_wrap_pass"),
-                ("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"),
-                ("l0_periodic_y_wrap_pass", "l0_periodic_y_wrap_pass"),
-                ("l0_invalid_ny_xfail", "l0_invalid_ny_xfail"),
-            ])
-            # Each row carries ITS OWN case's evidence, not the first case's copied twice.
-            # The checks stub sets `max_abs_deviation` to the case ordinal, so the two rows of
-            # the multi-target test must differ — a wrong `tci` would make them equal.
-            by_row = {r: e for r, e in zip(rows, mb["per_test"])}
-            self.assertEqual(
-                by_row[("l0_periodic_x_wrap_pass", "l0_periodic_x_wrap_pass")]["max_abs_deviation"],
-                1.0)
-            self.assertEqual(
-                by_row[("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass")]["max_abs_deviation"],
-                2.0)
-
-    def test_metrics_and_high_rank_runner_compiles_and_runs(self) -> None:
-        # The boundary smoke only covers the no-metrics, scalar+rank-2 family. This one
-        # compiles+links+runs the metrics path AND the rank-3/rank-4 emitter/getter path,
-        # so a future edit that makes either produce invalid Fortran cannot ship green.
+    def test_high_rank_runner_compiles_and_runs(self) -> None:
+        # The boundary smoke only covers the scalar+rank-2 family. This one compiles+links+runs
+        # the rank-3/rank-4 emitter path, so a future edit that makes it produce invalid Fortran
+        # cannot ship green.
         runner = render_runner(_rank34_metrics_ir(), RANK_SID, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -2101,8 +1695,6 @@ class GfortranSmokeTest(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertTrue((d / "raw" / "state_snapshots" / "c0.json").is_file())
             self.assertTrue((d / "raw" / "state_snapshots" / "initial" / "c0.json").is_file())
-            self.assertTrue((d / "raw" / "metrics_basis.json").is_file())
-            self.assertTrue((d / "diagnostics.json").is_file())
             self.assertTrue((d / "perf.json").is_file())
             # the rank-3/rank-4 snapshot values were emitted as nested JSON arrays
             snap = (d / "raw" / "state_snapshots" / "c0.json").read_text()
@@ -2141,286 +1733,11 @@ class GfortranSmokeTest(unittest.TestCase):
         self._assert_runner_clean_under_promoted_warnings(
             _boundary_ir(), BOUNDARY_SID, _CHECKS_STUB)
 
-    def test_rendered_metrics_runner_clean_under_promoted_unused_warnings(self) -> None:
+    def test_rendered_high_rank_runner_clean_under_promoted_unused_warnings(self) -> None:
         self._assert_runner_clean_under_promoted_warnings(
             _rank34_metrics_ir(), RANK_SID, _RANK_CHECKS_STUB)
 
 
-class ChecksAbiDummyDeclarationTest(unittest.TestCase):
-    """`checks_abi_dummy_violation` (issue #261): the one `metric_compute` dummy-argument fact
-    the compiler cannot check against the rendered call. What is PINNED: the position the
-    constant names is the position at which the rendered runner passes its unallocated
-    deferred-length actual (read off the render, not restated); the attribute is required on
-    the dummy at that position however it is spelled; and the judgment is positive-evidence
-    only. What is SAMPLED: the spellings in the two matrices — each row is one spelling the
-    language allows, and the set is a regression guard, not the definition of the class."""
-
-    _MODULE = textwrap.dedent("""\
-        module bx_checks
-          implicit none
-          private
-          public :: metric_compute
-        contains
-          subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
-            character(len=*), intent(in) :: case_id, name
-            real(8), intent(out) :: val
-            logical, intent(out) :: is_na, found
-            {DECL}
-            associate (u => case_id); end associate
-            val = 0.0d0; is_na = .false.; found = .false.; reason_na = ''
-          end subroutine metric_compute
-        end module bx_checks
-        """)
-
-    def _v(self, decl: str, **over) -> str | None:
-        text = self._MODULE.replace("{DECL}", decl)
-        for old, new in over.items():
-            self.assertIn(old, text)
-            text = text.replace(old, new)
-        return checks_abi_dummy_violation(text, "bx")
-
-    def test_the_position_is_the_one_the_rendered_runner_passes_its_unallocated_actual_at(
-            self) -> None:
-        runner = render_runner(_metrics_ir(), "prob_x", HARNESS, target=_TARGET_PROFILE.doc)
-        stmts = [s.strip().lower() for ln in fortran_lines.fortran_logical_line_texts(runner)
-                 for s in fortran_lines.split_fortran_statements(ln)]
-        calls = [s for s in stmts if s.startswith("call metric_compute(")]
-        self.assertTrue(calls)
-        position = METRIC_COMPUTE_DUMMIES.index(METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY)
-        actuals = {tuple(a.strip() for a in fortran_lines.split_top_level_commas(
-            c[len("call metric_compute("):-1])) for c in calls}
-        self.assertEqual(1, len({a[position] for a in actuals}))
-        actual = next(iter(actuals))[position]
-        self.assertEqual(len(METRIC_COMPUTE_DUMMIES), len(next(iter(actuals))))
-        # that actual is declared deferred-length allocatable in the runner ...
-        decls = [s for s in stmts if re.match(
-            rf"^character\s*\(\s*len\s*=\s*:\s*\)\s*,\s*allocatable\s*::\s*{actual}$", s)]
-        self.assertEqual(1, len(decls), actual)
-        # ... and nothing in the runner allocates or assigns it before the call: the callee is
-        # the first writer, so the callee's declaration decides whether the write is legal.
-        first_call = next(i for i, s in enumerate(stmts) if s in calls)
-        before = stmts[:first_call]
-        self.assertFalse([s for s in before if re.match(rf"^allocate\s*\(.*\b{actual}\b", s)
-                          or re.match(rf"^{actual}\s*=", s)], actual)
-
-    def test_the_pinned_declaration_and_its_spellings_are_accepted(self) -> None:
-        for decl in (
-                "character(len=:), allocatable, intent(out) :: reason_na",
-                "CHARACTER(LEN=:), ALLOCATABLE, INTENT(OUT) :: Reason_NA",
-                "character(len=:), allocatable, &\n      intent(out) :: reason_na",
-                "character(:), allocatable, intent(out) :: reason_na",
-                "character(len=:), intent(out) :: reason_na\n    allocatable :: reason_na",
-                "character(len=:), intent(out) :: reason_na\n    allocatable reason_na",
-                "character(len=:), intent(out) :: reason_na; allocatable :: reason_na",
-                "character(len=:), allocatable, intent(out) :: reason_na, extra",
-                "character(len=:), allocatable, intent(out) :: extra, reason_na",
-                # round 2: a `type(...)` declaration is not a derived-type definition
-                ("type :: tt\n      integer :: n\n    end type tt\n    type(tt) :: t1\n"
-                 "    character(len=:), allocatable, intent(out) :: reason_na"),
-                # a lookalike entity is not the dummy
-                ("character(len=64) :: xreason_na\n"
-                 "    character(len=:), allocatable, intent(out) :: reason_na"),
-                # a literal carrying the dummy's name and a `::` is not a declaration of it
-                ("character(len=20) :: note = 'reason_na :: x'\n"
-                 "    character(len=:), allocatable, intent(out) :: reason_na"),
-        ):
-            with self.subTest(decl=decl):
-                self.assertIsNone(self._v(decl))
-
-    def test_a_non_allocatable_dummy_is_refused_however_spelled(self) -> None:
-        for decl in (
-                "character(len=64), intent(out) :: reason_na",  # the billed run's form
-                "character(len=*), intent(out) :: reason_na",
-                "character(len=64) reason_na",
-                "character*64 reason_na",
-                "character*(64) reason_na",
-                "character(len=64), intent(out) :: reason_na, extra",
-                ("character(len=8) :: junk = 'a::b'\n"
-                 "    character(len=64), intent(out) :: reason_na"),
-        ):
-            with self.subTest(decl=decl):
-                r = self._v(decl)
-                self.assertIsNotNone(r, decl)
-                self.assertIn("without the `allocatable` attribute", r)
-                self.assertIn("'reason_na' (position 5)", r)
-                self.assertIn("character(len=:), allocatable, intent(out) :: reason_na", r)
-
-    def test_the_dummy_is_found_by_position_not_name(self) -> None:
-        r = self._v("character(len=64), intent(out) :: rs",
-                    **{"reason_na, found)": "rs, found)", "reason_na = ''": "rs = ''"})
-        self.assertIsNotNone(r)
-        self.assertIn("'rs' (position 5)", r)
-
-    def test_a_missing_declaration_and_a_short_dummy_list_fail_closed(self) -> None:
-        r = self._v("")
-        self.assertIsNotNone(r)
-        self.assertIn("has no type declaration statement", r)
-        for dummies, n in (("(a, b)", 2), ("(a, b, c, d)", 4)):  # 4 is the boundary (`<=`)
-            r = self._v("", **{"(case_id, name, val, is_na, reason_na, found)": dummies})
-            self.assertIsNotNone(r)
-            self.assertIn(f"declares {n} dummy argument(s)", r)
-            self.assertIn("metric_compute(case_id, name, val, is_na, reason_na, found)", r)
-
-    def test_the_specification_part_is_read_past_nested_blocks(self) -> None:
-        """Round-1 review, both directions. A derived type, an `interface` block or an `enum`
-        inside `metric_compute` neither ends the reading (its `end type` / `end interface` /
-        `end enum` is not the procedure's end — the pinned declaration AFTER it was reported
-        missing) nor supplies the declaration (a component / prototype dummy / enumerator named
-        like the dummy is not the dummy)."""
-        pinned = "character(len=:), allocatable, intent(out) :: reason_na"
-        bad = "character(len=64), intent(out) :: reason_na"
-        blocks = (
-            "type :: t\n      character(len=:), allocatable :: reason_na\n    end type t",
-            ("interface\n      subroutine f(reason_na)\n"
-             "        character(len=:), allocatable :: reason_na\n      end subroutine f\n"
-             "    end interface"),
-            # (an enumerator cannot share the dummy's name; the row pins the skip only)
-            "enum, bind(c)\n      enumerator :: reason_code = 1\n    end enum",
-        )
-        for block in blocks:
-            with self.subTest(block=block.split("\n")[0]):
-                # block BEFORE the real declaration: not an over-refusal
-                self.assertIsNone(self._v(block + "\n    " + pinned))
-                # block AFTER: same
-                self.assertIsNone(self._v(pinned + "\n    " + block))
-                # the block's own declaration does not vouch for a fixed-length dummy
-                r = self._v(block + "\n    " + bad)
-                self.assertIsNotNone(r)
-                self.assertIn("without the `allocatable` attribute", r)
-
-    def test_header_and_end_spellings_the_walk_must_read(self) -> None:
-        """Survivors of a round-1 mechanism sweep, one row each: a prefixed header, a bare
-        `end` closing the previous procedure, `endsubroutine` as one word, a module-level
-        `abstract interface` block before `contains`, a statement label on the target's own
-        header, and two attribute look-alikes (`allocatable :: other`, an identifier
-        containing `allocatable` inside the len spec)."""
-        v = checks_abi_dummy_violation
-        bad = "character(len=64), intent(out) :: reason_na"
-        module = self._MODULE.replace("{DECL}", bad)
-        rows = {
-            "pure prefix": module.replace("  subroutine metric_compute(",
-                                          "  pure subroutine metric_compute("),
-            "bare end before": module.replace(
-                "contains\n", "contains\n  subroutine get_time(t)\n"
-                "    real(8), intent(out) :: t\n    t = 0d0\n  end\n", 1),
-            "endsubroutine before": module.replace(
-                "contains\n", "contains\n  subroutine get_time(t)\n"
-                "    real(8), intent(out) :: t\n    t = 0d0\n  endsubroutine get_time\n", 1),
-            "abstract interface before contains": module.replace(
-                "contains\n", "  abstract interface\n    subroutine cb(x)\n"
-                "      real(8), intent(in) :: x\n    end subroutine cb\n"
-                "  end interface\ncontains\n", 1),
-            "labelled header": module.replace("  subroutine metric_compute(",
-                                              "10 subroutine metric_compute("),
-            # round 2: `interface` is not reserved — an assignment to a variable of that name
-            # in an earlier procedure must not open an interface block that never closes
-            "interface as an identifier": module.replace(
-                "contains\n", "contains\n  subroutine get_time(t)\n"
-                "    real(8), intent(out) :: t\n    integer :: interface\n"
-                "    interface = 1\n    t = real(interface, 8)\n  end subroutine get_time\n", 1),
-            # round 2: a generic interface before `contains` (its `module procedure` line is
-            # not a `module` unit header)
-            "generic interface before contains": module.replace(
-                "contains\n", "  interface gt\n    module procedure get_time\n"
-                "  end interface gt\n  public :: gt\ncontains\n  subroutine get_time(t)\n"
-                "    real(8), intent(out) :: t\n    t = 0d0\n  end subroutine get_time\n", 1),
-            # round 2: a `block` local named like the dummy does not vouch for it
-            "block-local shadow": module.replace(
-                "    associate (u => case_id); end associate\n",
-                "    associate (u => case_id); end associate\n    block\n"
-                "      character(len=:), allocatable :: reason_na\n      reason_na = 'x'\n"
-                "      if (len(reason_na) < 0) val = 1.0d0\n    end block\n"),
-            "named block-local shadow, attribute statement": module.replace(
-                "    associate (u => case_id); end associate\n",
-                "    associate (u => case_id); end associate\n    b: block\n"
-                "      character(len=:) :: reason_na\n      allocatable :: reason_na\n"
-                "      reason_na = 'x'\n      if (len(reason_na) < 0) val = 1.0d0\n"
-                "    end block b\n"),
-            "allocatable :: other": module.replace(
-                bad, "real(8), dimension(:) :: other\n    allocatable :: other\n    " + bad),
-            "allocatable inside len spec": module.replace(
-                bad, "character(len=8), parameter :: allocatable_x = 'abcdefgh'\n"
-                "    character(len=len(allocatable_x)), intent(out) :: reason_na"),
-        }
-        for label, text in rows.items():
-            with self.subTest(row=label):
-                r = v(text, "bx")
-                self.assertIsNotNone(r, label)
-                self.assertIn("without the `allocatable` attribute", r)
-
-    def test_positive_evidence_only(self) -> None:
-        v = checks_abi_dummy_violation
-        bad = "character(len=64), intent(out) :: reason_na"
-        # published but not defined here: not judged (the syntax gate resolves the `use`)
-        self.assertIsNone(v("module bx_checks\n private\n public :: metric_compute\n"
-                            "end module bx_checks\n", "bx"))
-        # defined in another module, or after `end module`: not the runner's callee
-        self.assertIsNone(self._v(bad, bx_checks="other"))
-        self.assertIsNone(v(self._MODULE.replace("{DECL}", bad).replace(
-            "contains\n", "end module bx_checks\nmodule tail\ncontains\n").replace(
-            "end module bx_checks\n", "end module tail\n", 1), "bx"))
-        # a prototype in an interface block is not a definition
-        self.assertIsNone(v("module bx_checks\n interface\n  subroutine metric_compute("
-                            "a, b, c, d, e, f)\n   character(len=64) :: e\n  end subroutine\n"
-                            " end interface\nend module bx_checks\n", "bx"))
-        # an internal procedure of that name is not the module-level definition; the
-        # module-level one that follows is judged
-        nested = self._MODULE.replace("{DECL}", "character(len=:), allocatable, intent(out) :: reason_na").replace(
-            "contains\n",
-            "contains\n  subroutine case_setup(case_id, ok)\n"
-            "    character(len=*), intent(in) :: case_id\n    logical, intent(out) :: ok\n"
-            "    ok = .true.\n  contains\n"
-            "    subroutine metric_compute(a, b, c, d, e, f)\n      character(len=64) :: e\n"
-            "    end subroutine metric_compute\n  end subroutine case_setup\n", 1)
-        self.assertIsNone(v(nested, "bx"))
-        self.assertIsNotNone(v(nested.replace(
-            "character(len=:), allocatable, intent(out) :: reason_na", bad), "bx"))
-        # a bare `end` never closes the module. Since labels are stripped (round 1) this
-        # row's labelled header IS read, so its bare `end` arrives at depth 1 and the depth-0
-        # branch is defensive — no legal module-level header the pattern misses is known
-        # (round-2 review); the row stays as the regression guard for the labelled shape
-        self.assertIsNotNone(v(self._MODULE.replace("{DECL}", bad).replace(
-            "contains\n", "contains\n10 subroutine get_time(t)\n    real(8), intent(out) :: t\n"
-            "    t = 0d0\n  end\n", 1), "bx"))
-        # a string literal spelling a header is not a header: unmasked, the literal would be
-        # read as a six-dummy `metric_compute` with no declarations and refused; the real one
-        # after it is the pinned form and passes
-        self.assertIsNone(v(self._MODULE.replace(
-            "{DECL}", "character(len=:), allocatable, intent(out) :: reason_na").replace(
-            "contains\n", "  character(len=*), parameter :: note = &\n"
-            "    'see subroutine metric_compute(a, b, c, d, e, f)'\n  public :: note\ncontains\n",
-            1), "bx"))
-
-    def test_the_premise_the_compiler_does_not_see_it(self) -> None:
-        """The gate exists because `-fsyntax-only` accepts the refused form against the
-        rendered runner (measured, gfortran 11.4). If this row starts failing, the compiler has
-        started diagnosing it and the gate is a pre-emption of the syntax check rather than the
-        only deterministic reader — update `METRIC_COMPUTE_DUMMIES`' comment, not the gate."""
-        _require_gfortran()
-        v = checks_abi_dummy_violation
-        ir = _rank34_metrics_ir()
-        runner = render_runner(ir, RANK_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        pinned = "character(len=:), allocatable, intent(out) :: reason_na"
-        bad = "character(len=64), intent(out) :: reason_na"
-        self.assertIn(pinned, _RANK_CHECKS_STUB)
-        for decl, refused in ((pinned, False), (bad, True)):
-            checks = _RANK_CHECKS_STUB.replace(pinned, decl)
-            self.assertEqual(refused, v(checks, RANK_SID) is not None, decl)
-            with tempfile.TemporaryDirectory() as td:
-                d = Path(td)
-                (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-                (d / f"{RANK_SID}_checks.f90").write_text(checks)
-                (d / f"{RANK_SID}_runner.f90").write_text(runner)
-                r = subprocess.run(
-                    ["gfortran", "-fsyntax-only", "-std=f2008", "-J", td,
-                     "harness_fortran_cpu_model.f90", f"{RANK_SID}_checks.f90",
-                     f"{RANK_SID}_runner.f90"],
-                    cwd=d, capture_output=True, text=True, check=False)
-                self.assertEqual(0, r.returncode, (decl, r.stderr))
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 # --- the distributed variant (issue #316, R4-c PR-4) -------------------------------------------
@@ -2453,16 +1770,9 @@ def _distributed_ir() -> dict:
                     "time_variable": "t",
                 }},
             ]},
-            "test_evidence_requirements": [
-                {"test_id": "c0", "required_raw_variables": ["u", "w", "q", "c", "s"]},
-            ],
-            "diagnostics_contract": {
-                "checks": [{"id": "sum_u"}],
-                "verdict": {"fields": ["overall", "failed_checks"]},
-            },
-            "test_predicates": [
-                {"test_id": "c0", "expected_outcome": "pass", "target_cases": ["c0"]},
-            ],
+            "tests": [{"test_id": "c0", "expected_outcome": "pass",
+                       "target_cases": ["c0"], "quantities": ["q"]}],
+            "predicates": [],
         },
         "dependency": {"node_key": f"problem/{DIST_SID}@0.1.0", "direct_deps": []},
     }
@@ -2609,7 +1919,7 @@ _DIST_HARNESS_STUB = _EIGHT_ARG_HARNESS_STUB.replace("harness_fortran_cpu", DIST
 # along grid dimension 2, `q` its owned block of a 6 x 8 array along both dimensions, and each
 # owned cell holds its GLOBAL index (plus 100 per row of `w`, plus 100 per column of `q`), so the
 # gathered arrays are known exactly whatever the grid. `c` is replicated. `case_run` reports this
-# rank's own cell count.
+# rank's own cell count, and sets the replicated `s` through the harness's collective sum.
 _DIST_CHECKS_STUB = textwrap.dedent(f"""\
     module {DIST_SID}_checks
       use, intrinsic :: iso_fortran_env, only: real64
@@ -2630,7 +1940,7 @@ _DIST_CHECKS_STUB = textwrap.dedent(f"""\
       integer :: sb_c_axis1, sb_c_lo1, sb_c_hi1, sb_c_glo1
       integer :: sb_c_axis2, sb_c_lo2, sb_c_hi2, sb_c_glo2
       integer :: nloc = 0, c2 = 0
-      public :: case_setup, case_run, get_time, checks_compute, metric_compute
+      public :: case_setup, case_run, get_time
       public :: u, w, q, c, s
       public :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1
       public :: sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2
@@ -2710,38 +2020,19 @@ _DIST_CHECKS_STUB = textwrap.dedent(f"""\
         character(len=*), intent(in) :: case_id
         integer, intent(out) :: steps, cells_updated
         logical, intent(out) :: ok
+        real(dp) :: part
         steps = 1
         cells_updated = nloc
         ok = len_trim(case_id) > 0
+        ! `u` is held whole by every rank of a line along dimension 2; count it once.
+        part = 0.0_dp
+        if (c2 == 0) part = sum(u(2:nloc + 1))
+        s = {DIST_HARNESS}__reduce_sum(part)
       end subroutine case_run
       subroutine get_time(t)
         real(dp), intent(out) :: t
         t = 0.0_dp
       end subroutine get_time
-      subroutine checks_compute(case_id, check_id, status)
-        character(len=*), intent(in) :: case_id
-        character(len=*), intent(in) :: check_id
-        character(len=4), intent(out) :: status
-        real(dp) :: part
-        status = 'fail'
-        ! `u` is held whole by every rank of a line along dimension 2; count it once.
-        part = 0.0_dp
-        if (c2 == 0) part = sum(u(2:nloc + 1))
-        if (len_trim(case_id) > 0 .and. check_id == 'sum_u' .and. &
-            {DIST_HARNESS}__reduce_sum(part) == 55.0_dp) status = 'pass'
-      end subroutine checks_compute
-      subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
-        character(len=*), intent(in) :: case_id
-        character(len=*), intent(in) :: name
-        real(dp), intent(out) :: val
-        logical, intent(out) :: is_na
-        character(len=:), allocatable, intent(out) :: reason_na
-        logical, intent(out) :: found
-        val = 0.0_dp
-        is_na = .false.
-        reason_na = ''
-        found = len_trim(case_id) < 0 .and. len_trim(name) < 0
-      end subroutine metric_compute
     end module {DIST_SID}_checks
     """)
 
@@ -2750,8 +2041,8 @@ class DistributedRunnerSmokeTest(unittest.TestCase):
     """The distributed runner compiled with the wrapper and run under the launcher at one and
     at four processes, on each process grid the host may impose on four (issue #512): the
     gathered arrays are the global ones every time, the replicated and scalar values are rank
-    0's, only one set of outputs is written, and the check that reduces over the ranks
-    passes."""
+    0's, only one set of outputs is written, and the checks source's sum over the ranks reaches
+    the final snapshot."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -2788,9 +2079,10 @@ class DistributedRunnerSmokeTest(unittest.TestCase):
             self.assertEqual(snap["q"], [[float(i + 100 * j) for j in range(1, 9)]
                                          for i in range(1, 7)], name)
             self.assertEqual(snap["c"], [7.0, 8.0], name)
-            self.assertEqual(snap["s"], 5.0, name)
-        # The stub's writer is not a JSON writer; the per-case status line is what it states.
-        self.assertIn('"sum_u": "pass"', (d / "diagnostics.json").read_text())
+            # `case_setup` sets 5; `case_run` replaces it with the sum over the ranks.
+            self.assertEqual(snap["s"], 5.0 if name.startswith("initial/") else 55.0, name)
+        self.assertTrue((d / "perf.json").is_file())
+        self.assertFalse((d / "diagnostics.json").exists())
 
     def test_one_process_and_four_ranks_capture_the_same_global_state(self) -> None:
         # Four ranks over 10 cells (blocks of 3, 3, 2, 2) along one dimension, or 5 + 5 along
@@ -2907,7 +2199,7 @@ class DistributedRenderTest(unittest.TestCase):
                     code.startswith("out(") and "__box(" in code):
                 guarded.append((code, under_guard))
             if any(op in code for op in ("__gather_r", "__reduce_sum_int(", "__finalize(",
-                                         "call checks_compute(", "call case_run(",
+                                         "call case_run(",
                                          "call capture_state(")):
                 collective.append((code, under_guard))
         self.assertGreaterEqual(len(guarded), 5)
@@ -2920,8 +2212,6 @@ class DistributedRenderTest(unittest.TestCase):
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         long_name = "v" * 55   # `sb_<v>` fits, `sb_<v>_axis1` does not
         schema["variables"].append({"name": long_name, "shape_expr": "[10]"})
-        ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"].append(
-            long_name)
         with self.assertRaises(RenderError) as cm:
             self._render(ir=ir)
         self.assertIn(f"its distributed binding 'sb_{long_name}_axis1' exceeds the 63-char "
@@ -2929,30 +2219,31 @@ class DistributedRenderTest(unittest.TestCase):
         self.assertFalse(cm.exception.identity)
         # The longest name whose metadata fits renders (each argument has its own line).
         schema["variables"][-1]["name"] = "v" * 54
-        ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"][-1] = \
-            "v" * 54
         self.assertIn("sb_" + "v" * 54 + "_axis1", self._render(ir=ir))
         # A bound name that IS another's metadata cannot be published beside it.
         ir = _distributed_ir()
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         schema["variables"].append({"name": "sb_u_lo2", "shape_expr": "scalar"})
-        ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"].append(
-            "sb_u_lo2")
         with self.assertRaises(RenderError) as cm:
             self._render(ir=ir)
         self.assertIn("is one identifier with another bound name", str(cm.exception))
         self.assertEqual(ir_content_violations(ir, DIST_SID, "harness_fortran_cpu"), [])
         self.assertEqual(len(ir_content_violations(ir, DIST_SID, DIST_HARNESS)), 1)
 
-    def test_no_distributed_operation_name_is_longer_than_the_bounded_core_ones(self) -> None:
-        """`_check_identifier_lengths` bounds the harness names against the plumbing's alone;
-        that covers the distributed operations only while none is longer than the longest
-        plumbing operation — pinned here, so adding a longer one turns this red."""
+    def test_every_distributed_operation_name_is_bounded(self) -> None:
+        """`_check_identifier_lengths` refuses a harness id whose longest name would not fit, the
+        distributed operations included: one of them is longer than any plumbing name, and
+        while `write_metrics_basis` was published that bound came by accident."""
         from tools.backends.language.fortran import runner as fortran_runner
-        longest = max(len(op) for op in fortran_runner._HARNESS_CORE_OPS)
-        for op in (*fortran_runner._DISTRIBUTED_RUNNER_OPS,
-                   *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
-            self.assertLessEqual(len(op), longest, op)
+        longest = "exchange_halo_r1"
+        self.assertEqual(max((*fortran_runner._HARNESS_CORE_OPS,
+                              *fortran_runner._DISTRIBUTED_RUNNER_OPS,
+                              *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS), key=len), longest)
+        limit = fortran_runner.bundle.IDENTIFIER_MAX
+        fits = "h" * (limit - len(longest) - 2)
+        fortran_runner._check_identifier_lengths("bx", fits)
+        with self.assertRaisesRegex(fortran_runner.RenderError, "exchange_halo_r1"):
+            fortran_runner._check_identifier_lengths("bx", fits + "h")
 
     def test_the_abi_comment_states_the_partition_variables_by_grid_dimension(self) -> None:
         """Issue #512: the comment is the producer's source for the binding, so it names every
@@ -3057,3 +2348,124 @@ class HarnessPinTableTest(unittest.TestCase):
                           "sb_w_axis2", "sb_w_lo2", "sb_w_hi2", "sb_w_glo2"])
         self.assertEqual(fortran_runner.distributed_state_names("harness_fortran_cpu", ["u"]),
                          [])
+
+
+class HostVerdictRunnerSurfaceTest(unittest.TestCase):
+    """Issue #582: a test is decided by host predicates over the captures, so the rendered runner
+    of EVERY variant judges nothing and imports only what it calls. Over the single-process
+    variant (two rank families) and the distributed one; the CUDA renderer's counterpart is in
+    `test_language_cuda_cpp_runner`."""
+
+    #: The judging half of the retired runner, as text: the two callbacks, the two writers, and
+    #: the records and helpers only they used.
+    RETIRED = ("checks_compute", "metric_compute", "write_diagnostics", "write_metrics_basis",
+               "mb_entries", "results", "find_case_index", "pick(", "expected_xfail",
+               "h_check", "h_metric", "h_case_result", "h_mb_entry", "cstatus")
+
+    @staticmethod
+    def _variants() -> list[tuple[str, dict, str, str]]:
+        return [("boundary", _boundary_ir(), BOUNDARY_SID, HARNESS),
+                ("high_rank", _rank34_metrics_ir(), RANK_SID, HARNESS),
+                ("distributed", _distributed_ir(), DIST_SID, DIST_HARNESS)]
+
+    @staticmethod
+    def _use_block(text: str, module: str) -> tuple[list[str], str]:
+        """The names a `use <module>, only:` block imports (a rename reads as its local name),
+        and the text after the block."""
+        lines = text.splitlines()
+        start = next(i for i, ln in enumerate(lines) if ln.startswith(f"  use {module}, only: &"))
+        names, i = [], start + 1
+        logical = ""
+        while True:
+            logical += lines[i].strip()
+            i += 1
+            if logical.endswith("&"):
+                logical = logical[:-1].strip() + " "
+                if "=>" in logical and not logical.rstrip().endswith("=>"):
+                    continue
+                if logical.rstrip().endswith("=>"):
+                    continue
+                names.append(logical.strip().rstrip(","))
+                logical = ""
+                continue
+            names.append(logical.strip())
+            break
+        return ([re.split(r"\s*=>\s*", n)[0].strip().rstrip(",") for n in names],
+                "\n".join(lines[i:]))
+
+    def _each(self):
+        for label, ir, sid, harness in self._variants():
+            with self.subTest(label):
+                yield ir, sid, harness, render_runner(ir, sid, harness,
+                                                      target=_TARGET_PROFILE.doc)
+
+    def test_no_retired_callback_writer_or_record_is_named(self) -> None:
+        for _ir, _sid, _harness, text in self._each():
+            for gone in self.RETIRED:
+                self.assertNotIn(gone, text)
+
+    def test_every_imported_harness_and_checks_name_is_used(self) -> None:
+        for _ir, sid, harness, text in self._each():
+            imported, after = self._use_block(text, f"{harness}_model")
+            self.assertIn(f"{harness}__h_named", imported)
+            for name in imported:
+                self.assertRegex(after, rf"\b{name}\b", name)
+            # the types the runner no longer builds are not imported, though the pinned harness
+            # still publishes them until the harness PR
+            self.assertEqual([n for n in imported if "__h_" in n], [f"{harness}__h_named"])
+            bound, after = self._use_block(text, f"{sid}_checks")
+            self.assertEqual(bound[:3], ["case_setup", "case_run", "get_time"])
+            for name in bound:
+                self.assertRegex(after, rf"\b{name}\b", name)
+
+    def test_every_schema_variable_is_captured_at_both_points(self) -> None:
+        for ir, _sid, harness, text in self._each():
+            variables = [v["name"] for v in ir["io_contract"]["raw_requirements"][
+                "required_evidence"][0]["schema"]["variables"]]
+            capture = text[text.index("  subroutine capture_state("):
+                           text.index("  end subroutine capture_state")]
+            self.assertIn(f"allocate(out({len(variables)}))", capture)
+            for name in variables:
+                self.assertRegex(capture, rf"__box\(\s*&?\s*'{name}'", name)
+                self.assertIn(f"sb_{name}", capture)
+            loop = text[text.index("  do ci = 1, ncases"):text.index("  end do\n\n  call system_clock")]
+            setup = loop.index("call case_setup(")
+            run = loop.index("call case_run(")
+            # right after: nothing is called between the callback and its capture
+            for start, end in ((setup, run), (run, len(loop))):
+                calls = re.findall(r"call (\w+)\(", loop[start:end])
+                self.assertEqual(calls[1], "capture_state", calls)
+            self.assertEqual(2, loop.count("call capture_state("))
+            self.assertEqual(2, loop.count(f"call {harness}__write_snapshot("))
+
+    def test_write_perf_is_called_once_after_the_case_loop(self) -> None:
+        for _ir, _sid, harness, text in self._each():
+            self.assertEqual(1, text.count(f"call {harness}__write_perf("))
+            self.assertLess(text.index("call system_clock(count=clock1)"),
+                            text.index(f"call {harness}__write_perf("))
+
+    def test_the_runner_reads_neither_the_tests_nor_the_predicates(self) -> None:
+        """What a test judges changes nothing in the runner: it captures the schema."""
+        for ir, sid, harness, text in self._each():
+            changed = copy.deepcopy(ir)
+            del changed["io_contract"]["tests"]
+            del changed["io_contract"]["predicates"]
+            self.assertEqual(text, render_runner(changed, sid, harness,
+                                                 target=_TARGET_PROFILE.doc))
+
+    def test_the_pin_asks_only_for_what_the_runner_calls(self) -> None:
+        """A certified harness stays good for this runner whatever it still publishes beside
+        them: the retired writers and record types are not among the symbols the pin requires."""
+        sigs = [s for s in _harness_signatures()
+                if not s["symbol"].endswith(("__write_diagnostics", "__write_metrics_basis",
+                                             "__h_check", "__h_metric", "__h_case_result",
+                                             "__h_mb_entry"))]
+        self.assertLess(len(sigs), len(_harness_signatures()))
+        assert_harness_pin(_boundary_ir(), BOUNDARY_SID, HARNESS, sigs, _HARNESS_STUB)
+
+    def test_the_checks_abi_is_the_three_procedures(self) -> None:
+        self.assertEqual(CHECKS_PUBLIC_NAMES, ("case_setup", "case_run", "get_time"))
+
+
+if __name__ == "__main__":
+    unittest.main()

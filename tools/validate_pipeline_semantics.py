@@ -35,17 +35,10 @@ try:
         required_meta_keys_for_step,
         stage_meta_type_violations,
     )
-    # The expected (test_id, case_id) evidence MATRIX and the artifact-spelling aliases have
-    # one definition, in `raw_evidence_excerpt`, because two readers now derive it: this gate,
-    # and the excerpt the pure `validate.judge` leaf is given in place of `raw/` (issue #169).
+    # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
+    # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
     # The module is stdlib-only and imports nothing back, so this introduces no cycle.
     from tools.raw_evidence_excerpt import (
-        METRICS_BASIS_BOOKKEEPING_KEYS as _METRICS_BASIS_BOOKKEEPING_KEYS,
-        METRICS_BASIS_NESTED_VARIABLE_FIELDS as _METRICS_BASIS_NESTED_VARIABLE_FIELDS,
-        contract_test_evidence_requirements as _contract_test_evidence_requirements,
-        expected_metrics_basis_keys,
-        metrics_basis_entries as _metrics_basis_entries,
-        metrics_basis_variable_keys as _metrics_basis_variable_keys,
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
@@ -87,17 +80,10 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         required_meta_keys_for_step,
         stage_meta_type_violations,
     )
-    # The expected (test_id, case_id) evidence MATRIX and the artifact-spelling aliases have
-    # one definition, in `raw_evidence_excerpt`, because two readers now derive it: this gate,
-    # and the excerpt the pure `validate.judge` leaf is given in place of `raw/` (issue #169).
+    # The artifact-spelling aliases have one definition, in `raw_evidence_excerpt`, because two
+    # readers derive them: this gate, and the excerpt the `validate.judge` leaf is given (issue #169).
     # The module is stdlib-only and imports nothing back, so this introduces no cycle.
     from tools.raw_evidence_excerpt import (
-        METRICS_BASIS_BOOKKEEPING_KEYS as _METRICS_BASIS_BOOKKEEPING_KEYS,
-        METRICS_BASIS_NESTED_VARIABLE_FIELDS as _METRICS_BASIS_NESTED_VARIABLE_FIELDS,
-        contract_test_evidence_requirements as _contract_test_evidence_requirements,
-        expected_metrics_basis_keys,
-        metrics_basis_entries as _metrics_basis_entries,
-        metrics_basis_variable_keys as _metrics_basis_variable_keys,
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
@@ -132,7 +118,6 @@ FORBIDDEN_RUNNER_OUTPUTS = (
 )
 LLM_REVIEW_FILENAME = "semantic_review.json"
 RAW_EVIDENCE_ARTIFACTS = {
-    "metrics_basis.json",
     "state_snapshots",
 }
 # Where a runtime value goes when an IR reaches for a raw-evidence artifact the
@@ -144,24 +129,21 @@ RAW_EVIDENCE_ARTIFACTS = {
 # only the form this validator accepts: a snapshot variable is a float64 module
 # variable of the checks module that the host-rendered runner serializes
 # (docs/workflow/CHECKS_MODULE_CONTRACT.md §1-b; Compile, whose leaf reads this remedy, is
-# target-free, so it names no language's spelling — issue #289), and a metrics_basis.json
-# row is valued from a test's required_raw_variables, which must be snapshot
-# variables (RUNNER_OUTPUT_CONTRACT.md §3) — so neither artifact carries a string,
-# and there is no per-run slot apart from the snapshot variables.
+# target-free, so it names no language's spelling — issue #289) — so the artifact carries no
+# string, and there is no per-run slot apart from the snapshot variables.
 RAW_EVIDENCE_ROUTING_REMEDY = (
     "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
     "valued numerically (a snapshot variable is a float64 module variable the runner "
     "serializes); a case INPUT — an enumerated selector included — is not an evidence "
     "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
-    "not echoed into the snapshot; and metrics_basis.json rows are valued from the snapshot "
-    "variables"
+    "not echoed into the snapshot"
 )
-# The one raw-evidence token an IR used to be able to name that no Generate contract
-# produces (issue #235). `evidence_ref` is an open vocabulary (`raw/diagnostics`,
-# `diagnostics.json`, `perf.json` are all in use), so it is not closed to an enum;
-# only the retired token is refused, by name, so a leaf that reaches for it is
+# The raw-evidence tokens an IR used to be able to name that no Generate contract
+# produces (issue #235; `metrics_basis.json` since issue #582).
+# `evidence_ref` is an open vocabulary (`perf.json` is in use), so it is not closed to an enum;
+# only the retired tokens are refused, by name, so a leaf that reaches for it is
 # redirected at Compile instead of failing closed at Validate.execute.
-RETIRED_RAW_EVIDENCE_ARTIFACTS = {"execution_trace.json"}
+RETIRED_RAW_EVIDENCE_ARTIFACTS = {"execution_trace.json", "metrics_basis.json"}
 ALGORITHM_EXECUTION_MODES = {"sequence", "conditional", "iterative", "columnwise"}
 # The converse of the `iterative => non-empty iteration_contract` coupling, as a CLOSED set of
 # keys rather than "non-empty under a non-repeating mode". A survey of the 184 spec.ir.yaml in the
@@ -255,13 +237,15 @@ TEST_OUTCOME_VALUES = {"pass", "fail", "xfail", "skipped", "blocked"}
 #: (`docs/TESTS.md` §Cross-target judgment, issue #324). "The cross-target judgment is not
 #: applied" does not contain it.
 CROSS_TARGET_JUDGMENT_PHRASE = "The cross-target judgment is applied"
-#: The statement with which a `tests.md` fixes the status of one check id in named cases
-#: (`docs/TESTS.md` §Fixed per-case status, issue #437): "the `io_contract.diagnostics_contract.checks`
-#: entry of `<id>` carries `per_case_status: { <case_id>: <status>, ... }`". The Compile gate
-#: requires the IR to carry exactly the stated mappings, and no other.
-PER_CASE_STATUS_STATEMENT = re.compile(
-    r"entry of `([^`\s]+)` carries `per_case_status: \{([^`{}]*)\}`"
-)
+#: The line of a `tests.md` test definition that lists the judgments the test makes (issue #582,
+#: `docs/TESTS.md` §Description format): one line in the definition, opening with the key.
+TEST_QUANTITIES_LINE = re.compile(r"^[-*]?\s*`?quantities`?\s*:\s*(.*)$")
+#: The line of a `tests.md` test definition that names the snapshot variables the operation reports
+#: as a run-wide reduction (issue #582 review, `docs/TESTS.md` §Description format). The IR's
+#: `source: reported` set is pinned to these lines, since the Compile leaf writes that label and
+#: cannot edit this document.
+TEST_REPORTED_LINE = re.compile(r"^[-*]?\s*`?reported`?\s*:\s*(.*)$")
+_SNAPSHOT_VARIABLE_NAME = re.compile(r"^[A-Za-z_]\w*$")
 # Bundled schema lives next to this validator; used as the canonical fallback
 # when no target repo_root is in scope (tests, ad-hoc invocation) and as the
 # default canonical reference for the validator's pinned rules.
@@ -1131,17 +1115,11 @@ def _read_json(path: Path) -> Any:
     return json.loads(text)
 
 
-def _canonical_json(obj: Any) -> str:
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
 def _has_execution_artifacts(node_dir: Path) -> bool:
     markers = (
-        node_dir / "diagnostics.json",
         node_dir / "perf.json",
         node_dir / "trial_meta.json",
         node_dir / "quality_check.json",
-        node_dir / "raw" / "metrics_basis.json",
     )
     return any(path.exists() for path in markers)
 
@@ -1153,10 +1131,9 @@ def _subtree_has_any_file(root: Path) -> bool:
     ``runs/<run_id>/`` is the pipeline's ``<node_key_safe>`` dir (skipped by the
     caller), so any file-bearing non-canonical child is a forbidden Validate
     output placement — regardless of filename. Detecting content generally
-    (rather than a fixed marker set) covers every documented output: diagnostics
-    / perf / verdict / summary / semantic_review / trial_meta / quality_check /
-    validate_meta, raw evidence (metrics_basis, state_snapshots,
-    snapshot_schema), stdout/stderr logs, and command_log — plus any future
+    (rather than a fixed marker set) covers every documented output: perf /
+    verdict / summary / semantic_review / trial_meta / quality_check /
+    validate_meta, raw evidence (state_snapshots, snapshot_schema), stdout/stderr logs, and command_log — plus any future
     additions. Recursive so legacy nested ``<kind>/<spec>/`` layouts are caught.
     """
     for path in root.rglob("*"):
@@ -1732,12 +1709,9 @@ def _validate_raw_evidence(
     ) = _state_snapshot_requirement_details(repo_root, execution)
 
     required = [
-        execution.node_dir / "diagnostics.json",
         execution.node_dir / "perf.json",
         execution.node_dir / "quality_check.json",
     ]
-    if "metrics_basis.json" in required_raw_evidence:
-        required.append(execution.node_dir / "raw" / "metrics_basis.json")
     if state_snapshot_required or "state_snapshots" in required_raw_evidence:
         required.append(execution.node_dir / "raw" / "state_snapshots")
     for path in required:
@@ -1836,32 +1810,9 @@ def _validate_raw_evidence(
                     elif state_variables and time_variable:
                         missing_state_by_file: dict[str, list[str]] = {}
                         missing_time = set()
-                        # Scope each snapshot's required state variables to the
-                        # raw variables its case's test actually declares
-                        # (io_contract.test_evidence_requirements). An
-                        # input-guard rejection case (e.g. n <= 0) produces no
-                        # output state, so its snapshot legitimately carries
-                        # only the rejected input; requiring the global union of
-                        # declared variables in every snapshot would falsely
-                        # fail it. Falls back to all declared variables when no
-                        # per-test contract / case mapping is available.
-                        contract = _io_contract_for_execution(repo_root, execution)
-                        per_test_required = (
-                            _contract_test_evidence_requirements(contract)
-                            if isinstance(contract, dict)
-                            else {}
-                        )
-                        case_to_test = _case_id_to_test_id(repo_root, execution)
-                        case_to_tests = (
-                            _case_id_to_test_ids(contract)
-                            if isinstance(contract, dict)
-                            else {}
-                        )
-                        # Declared `case.test_case_set[].case_id`, so a case the predicates
-                        # do not range over can be told apart from an unknown snapshot: the
-                        # former has an empty required set (the renderer emits an empty-state
-                        # snapshot for it), the latter cannot be scoped at all.
-                        declared_case_ids = _case_ids_for_execution(repo_root, execution)
+                        # Every declared variable in every snapshot of every node (issue
+                        # #582, D7): a host-rendered runner emits each one for each case, and a
+                        # harness self-test emits a shape-valid placeholder on its guard case.
                         for snapshot in snapshot_data_files:
                             if snapshot.suffix.lower() != ".json":
                                 continue
@@ -1872,90 +1823,7 @@ def _validate_raw_evidence(
                             if not isinstance(data, dict):
                                 continue
                             keys = set(data.keys())
-                            required_state_names = state_variables
-                            if per_test_required:
-                                # Identify what this snapshot's required raw
-                                # variables are. Compile/runner output shape
-                                # varies across runs (C-class IR
-                                # nondeterminism): the snapshot may carry an
-                                # explicit `test_id`, or only a `case_id`
-                                # (mapped via case.test_case_set, which itself
-                                # sometimes omits test_id), and is named
-                                # `<case_or_test>[_NNNN].json`; case_id sometimes
-                                # equals the test_id. Try each anchor in order of
-                                # reliability and use the first that resolves to
-                                # a declared per-test requirement; otherwise fall
-                                # back to requiring every declared variable.
-                                raw_case_id = data.get("case_id")
-                                case_token = (
-                                    raw_case_id.strip()
-                                    if isinstance(raw_case_id, str)
-                                    and raw_case_id.strip()
-                                    else snapshot.stem
-                                )
-                                case_required = None
-                                # (1) A per-TEST snapshot names its test outright.
-                                raw_test_id = data.get("test_id")
-                                if (
-                                    isinstance(raw_test_id, str)
-                                    and raw_test_id.strip() in per_test_required
-                                ):
-                                    case_required = per_test_required[raw_test_id.strip()]
-                                # (2) A per-CASE snapshot (the contract's `<case_id>.json`,
-                                # and everything a host-rendered runner writes) carries no
-                                # test_id. Its required set is the UNION over every test
-                                # ranging over the case — the language backend runner's
-                                # `_per_case_vars` (a host-rendered runner emits every declared
-                                # variable, a superset, since Z6). Without this
-                                # anchor an IR whose `case.test_case_set[]` omits `test_id`
-                                # (never a required field) falls through to "every declared
-                                # variable" and false-rejects a conformant per-case snapshot,
-                                # contradicting the `state_snapshots` bullet of
-                                # phase_04_validate.md ("the post_execute semantic gate scopes
-                                # required variables per the snapshot's case"). A case targeted by
-                                # several tests has no single test_id, so only the union is
-                                # well-defined. Anchor (1) must stay ahead of this one: a per-test
-                                # snapshot names its test and scopes to that test alone.
-                                if case_required is None:
-                                    union_tests = [
-                                        t
-                                        for t in case_to_tests.get(case_token, [])
-                                        if t in per_test_required
-                                    ]
-                                    if union_tests:
-                                        case_required = set().union(
-                                            *(per_test_required[t] for t in union_tests)
-                                        )
-                                # (3) Legacy single-test anchors: an IR that does declare
-                                # `case.test_case_set[].test_id`, or a snapshot whose stem
-                                # is itself the test_id.
-                                if case_required is None:
-                                    for candidate in (
-                                        case_to_test.get(case_token),
-                                        case_token,
-                                    ):
-                                        if candidate and candidate in per_test_required:
-                                            case_required = per_test_required[candidate]
-                                            break
-                                # (4) A DECLARED case that no predicate ranges over: its union is
-                                # EMPTY, and `_per_case_vars` renders it as an empty-state
-                                # snapshot. Demanding every declared variable of it would be the
-                                # same false-reject the union anchor exists to remove. An
-                                # untargeted case is schema-valid — `validate_predicate_schema`
-                                # checks each `target_cases` entry IS a declared case, never that
-                                # every declared case is targeted. Ordered last so a legacy
-                                # per-case mapping still wins; and gated on the case being
-                                # DECLARED, so an unknown snapshot token still gets the strict set.
-                                if (case_required is None and case_to_tests
-                                        and case_token in declared_case_ids):
-                                    case_required = set()
-                                if case_required is not None:
-                                    required_state_names = [
-                                        name
-                                        for name in state_variables
-                                        if name in case_required
-                                    ]
-                            missing_state = sorted(name for name in required_state_names if name not in keys)
+                            missing_state = sorted(name for name in state_variables if name not in keys)
                             if missing_state:
                                 missing_state_by_file[snapshot.name] = missing_state
                             if time_variable not in keys:
@@ -2018,33 +1886,6 @@ def _validate_raw_evidence(
                             f"{schema_path}: time_shape_expr must match io_contract ({expected_time_shape_expr})"
                         )
 
-    diagnostics_path = execution.node_dir / "diagnostics.json"
-    metrics_basis_path = execution.node_dir / "raw" / "metrics_basis.json"
-    if diagnostics_path.exists() and metrics_basis_path.exists():
-        try:
-            diagnostics = _read_json(diagnostics_path)
-        except json.JSONDecodeError:
-            violations.append(f"{diagnostics_path}: invalid json")
-            diagnostics = None
-        try:
-            metrics_basis = _read_json(metrics_basis_path)
-        except json.JSONDecodeError:
-            violations.append(f"{metrics_basis_path}: invalid json")
-            metrics_basis = None
-        if (
-            diagnostics is not None
-            and metrics_basis is not None
-            and _canonical_json(diagnostics) == _canonical_json(metrics_basis)
-        ):
-            violations.append(
-                f"{metrics_basis_path}: must not be identical copy of diagnostics.json"
-            )
-        if isinstance(metrics_basis, dict):
-            _validate_metrics_basis_per_test(repo_root, execution, metrics_basis, violations)
-
-    _validate_diagnostics_contract_output(repo_root, execution, violations)
-    _validate_diagnostics_status_vocabulary(execution, violations)
-
     quality_path = execution.node_dir / "quality_check.json"
     if quality_path.exists():
         try:
@@ -2053,8 +1894,7 @@ def _validate_raw_evidence(
             violations.append(f"{quality_path}: invalid json")
             return
         if not isinstance(quality, dict):
-            # Same guard as `diagnostics.json` / `perf.json` in
-            # `_validate_execution_json_outputs`. Without it a valid-JSON non-object raised
+            # Same guard as `perf.json` in `_validate_execution_json_outputs`. Without it a valid-JSON non-object raised
             # `AttributeError` out of `quality.get` below, and `main()`'s two `except` clauses
             # cover neither — so the leaf received a traceback where every sibling shape gets
             # a violation it can repair.
@@ -2068,10 +1908,6 @@ def _validate_raw_evidence(
                 violations.append(
                     f"{quality_path}:checks.verdict_available must be true"
                 )
-            if checks.get("diagnostics_match") is not True:
-                violations.append(
-                    f"{quality_path}:checks.diagnostics_match must be true"
-                )
             if checks.get("verdict_match") is not True:
                 violations.append(
                     f"{quality_path}:checks.verdict_match must be true"
@@ -2081,16 +1917,6 @@ def _validate_raw_evidence(
 
 
 def _validate_execution_json_outputs(execution: NodeExecution, violations: list[str]) -> None:
-    diagnostics_path = execution.node_dir / "diagnostics.json"
-    if diagnostics_path.exists():
-        try:
-            diagnostics = _read_json(diagnostics_path)
-        except json.JSONDecodeError:
-            violations.append(f"{diagnostics_path}: invalid json")
-        else:
-            if not isinstance(diagnostics, dict):
-                violations.append(f"{diagnostics_path}: must be json object")
-
     perf_path = execution.node_dir / "perf.json"
     if not perf_path.exists():
         return
@@ -2256,7 +2082,7 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
             if row.get(key) != declared[key] or isinstance(row.get(key), bool):
                 violations.append(f"{where}.{key} is {row.get(key)!r}, and the shape's is "
                                   f"{declared[key]!r}")
-        for key in ("run_ok", "verdict_available", "diagnostics_match", "verdict_match"):
+        for key in ("run_ok", "verdict_available", "verdict_match"):
             if row.get(key) is not True:
                 violations.append(f"{where}.{key} must be true (the shape's run compared with "
                                   f"the serial reference), got {row.get(key)!r}")
@@ -3431,7 +3257,7 @@ def _io_contract_for_execution(
         return None
     # Unwrap the io_contract section if the doc uses the new IR nesting:
     # spec.ir.yaml.io_contract holds inputs / outputs / raw_requirements /
-    # test_evidence_requirements / semantic_dependency as siblings.  Tests and
+    # semantic_dependency as siblings.  Tests and
     # callers that expect derived_contract.json's flat layout will see those
     # siblings at the top level after this transform.
     if (
@@ -3440,7 +3266,6 @@ def _io_contract_for_execution(
             "inputs" in data["io_contract"]
             or "outputs" in data["io_contract"]
             or "raw_requirements" in data["io_contract"]
-            or "test_evidence_requirements" in data["io_contract"]
         )
         and "raw_requirements" not in data
     ):
@@ -3454,12 +3279,6 @@ def _io_contract_for_execution(
         for key in (
             "raw_requirements",
             "semantic_dependency",
-            "test_evidence_requirements",
-            # `test_predicates[].target_cases` is the only case -> test mapping every IR
-            # carries; the post_execute snapshot check scopes each per-case snapshot's
-            # required raw variables through it (`_case_id_to_test_ids`).
-            "test_predicates",
-            "diagnostics_contract",
         ):
             if key in section:
                 flattened[key] = section[key]
@@ -3491,7 +3310,7 @@ def _read_yaml(path: Path) -> Any:
 # invisible at the call site: the lookup misses, the helper returns None, and everything below it is
 # dead. Three gates were silently dormant for exactly this reason (`_plan_dependency_node_key`,
 # `_validate_problem_state_array_usage`, and the tests.md path resolution that fed
-# `_validate_test_evidence_requirements` / `_validate_tests_verdict_summary_consistency`). The guard
+# `_validate_tests_verdict_summary_consistency`). The guard
 # below discriminates the two shapes on keys that occur at document level only: `schema_version`, and
 # the section's own name (no section of any of the 116 certified IRs contains either).
 _IR_DOCUMENT_ONLY_KEYS = ("schema_version",)
@@ -3679,12 +3498,10 @@ def _parse_test_ids_from_tests_md(tests_path: Path) -> list[str]:
 
 
 
-def _parse_cross_target_judged_test_ids(tests_path: Path) -> set[str] | None:
-    """The `tests.md` test ids whose definition applies the cross-target judgment
-    (`CROSS_TARGET_JUDGMENT_PHRASE`), or None when the file cannot be read. A test's definition
-    runs from its id declaration (either form `_parse_test_ids_from_tests_md` reads) to the next
-    declaration or `## ` heading; its lines are joined with whitespace collapsed, so a sentence
-    wrapped across lines still counts."""
+def _tests_md_definition_blocks(tests_path: Path) -> dict[str, list[str]] | None:
+    """Each `tests.md` test id's definition lines, or None when the file cannot be read. A test's
+    definition runs from its id declaration (either form `_parse_test_ids_from_tests_md` reads)
+    to the next declaration or `## ` heading."""
     try:
         text = tests_path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
@@ -3704,8 +3521,77 @@ def _parse_cross_target_judged_test_ids(tests_path: Path) -> set[str] | None:
             continue
         if current is not None:
             blocks[current].append(line)
+    return blocks
+
+
+def _parse_cross_target_judged_test_ids(tests_path: Path) -> set[str] | None:
+    """The `tests.md` test ids whose definition applies the cross-target judgment
+    (`CROSS_TARGET_JUDGMENT_PHRASE`), or None when the file cannot be read. A definition's lines
+    are joined with whitespace collapsed, so a sentence wrapped across lines still counts."""
+    blocks = _tests_md_definition_blocks(tests_path)
+    if blocks is None:
+        return None
     return {tid for tid, lines in blocks.items()
             if CROSS_TARGET_JUDGMENT_PHRASE in " ".join(" ".join(lines).split())}
+
+
+def _parse_test_quantities_from_tests_md(
+    tests_path: Path,
+) -> tuple[dict[str, list[str]], list[str]] | None:
+    """Each `tests.md` test's `quantities:` line (`TEST_QUANTITIES_LINE`) as its names, and the
+    problems found: a definition with no such line, with two, or with an entry that is not a
+    quantity name. None when the file cannot be read. An entry may be backticked; the names are
+    the whole of what is read, so a threshold or a sentence on the line is a problem, never a
+    judgment."""
+    from tools.primary_evidence import QUANTITY_RE
+
+    blocks = _tests_md_definition_blocks(tests_path)
+    if blocks is None:
+        return None
+    out: dict[str, list[str]] = {}
+    problems: list[str] = []
+    for tid, lines in blocks.items():
+        found = [m for m in (TEST_QUANTITIES_LINE.match(line) for line in lines) if m]
+        if not found:
+            problems.append(f"test {tid!r} has no `quantities:` line in its definition "
+                            "(docs/TESTS.md §Description format)")
+            continue
+        if len(found) > 1:
+            problems.append(f"test {tid!r} has {len(found)} `quantities:` lines in its definition")
+            continue
+        names = [entry.strip().strip("`") for entry in found[0].group(1).split(",")]
+        bad = [n for n in names if not QUANTITY_RE.match(n)]
+        if bad:
+            problems.append(f"test {tid!r} `quantities:` line holds {bad}, not quantity names")
+            continue
+        out[tid] = names
+    return out, problems
+
+
+def _parse_reported_variables_from_tests_md(
+    tests_path: Path,
+) -> tuple[dict[str, set[str]], list[str]] | None:
+    """Each `tests.md` definition's `reported:` line (`TEST_REPORTED_LINE`) as its names, keyed by
+    test id, and the problems found: a definition with two, or an entry that is not a variable
+    name. No line says the test reads no reported variable. None when the file cannot be read."""
+    blocks = _tests_md_definition_blocks(tests_path)
+    if blocks is None:
+        return None
+    out: dict[str, set[str]] = {}
+    problems: list[str] = []
+    for tid, lines in blocks.items():
+        found = [m for m in (TEST_REPORTED_LINE.match(line) for line in lines) if m]
+        if len(found) > 1:
+            problems.append(f"test {tid!r} has {len(found)} `reported:` lines in its definition")
+            continue
+        for match in found:
+            names = [entry.strip().strip("`") for entry in match.group(1).split(",")]
+            bad = [n for n in names if not _SNAPSHOT_VARIABLE_NAME.match(n)]
+            if bad:
+                problems.append(f"test {tid!r} `reported:` line holds {bad}, not variable names")
+                continue
+            out[tid] = set(names)
+    return out, problems
 
 
 # Matches a top-level numbered controlled_spec heading `## <n>. Title`. The `(?:\s|$)`
@@ -3993,78 +3879,6 @@ def _parse_canonical_interface_from_controlled_spec(
     return (op_stanzas, type_stanzas, iface_stanzas, None)
 
 
-def _case_id_to_test_id(
-    repo_root: Path, execution: NodeExecution
-) -> dict[str, str]:
-    """Map each IR case_id to its tests.md test_id (case.test_case_set).
-
-    Used to scope per-snapshot evidence: a snapshot file named for a case need
-    only carry the raw variables that case's test declares in
-    io_contract.test_evidence_requirements (e.g. an input-guard rejection case
-    that produces no output state), not the global union of declared variables.
-    """
-    data = _ir_document_for_execution(repo_root, execution)
-    if not isinstance(data, dict):
-        return {}
-    case_section = data.get("case")
-    if not isinstance(case_section, dict):
-        return {}
-    test_case_set = case_section.get("test_case_set")
-    if not isinstance(test_case_set, list):
-        return {}
-    mapping: dict[str, str] = {}
-    for item in test_case_set:
-        if not isinstance(item, dict):
-            continue
-        case_id = item.get("case_id")
-        test_id = item.get("test_id")
-        if (
-            isinstance(case_id, str)
-            and case_id.strip()
-            and isinstance(test_id, str)
-            and test_id.strip()
-        ):
-            mapping[case_id.strip()] = test_id.strip()
-    return mapping
-
-
-def _case_id_to_test_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
-    """Map each case_id to every test_id ranging over it, from
-    ``io_contract.test_predicates[].target_cases``.
-
-    This is the anchor a host-rendered runner is built from: the language backend runner's
-    `_per_case_vars` validates, per case, the union of `required_raw_variables` over exactly
-    these tests (and, since Z6, the runner captures every declared variable for every case —
-    a superset of that union). Reading the same field here makes the post_execute snapshot
-    check a mirror of what the renderer validated, rather than an independent guess (the
-    `_validate_harness_render_preconditions` discipline). It is also the only case -> test mapping every IR carries: `case.test_case_set[]`
-    is not required to declare a `test_id` (`phase_01_compile.md`), so `_case_id_to_test_id`
-    returns {} for an IR that omits it, and a case targeted by several tests has no single id
-    at all. Empty dict when the IR declares no predicates.
-    """
-    predicates = contract.get("test_predicates")
-    if not isinstance(predicates, list):
-        # `_io_contract_for_execution` hoists the key out of the nested `io_contract`
-        # section; an un-flattened doc still nests it.
-        nested = contract.get("io_contract")
-        predicates = nested.get("test_predicates") if isinstance(nested, dict) else None
-    if not isinstance(predicates, list):
-        return {}
-    mapping: dict[str, list[str]] = {}
-    for item in predicates:
-        if not isinstance(item, dict):
-            continue
-        test_id = item.get("test_id")
-        if not (isinstance(test_id, str) and test_id.strip()):
-            continue
-        for case_id in item.get("target_cases") or []:
-            if isinstance(case_id, str) and case_id.strip():
-                bucket = mapping.setdefault(case_id.strip(), [])
-                if test_id.strip() not in bucket:
-                    bucket.append(test_id.strip())
-    return mapping
-
-
 def _case_ids_for_execution(repo_root: Path, execution: NodeExecution) -> set[str]:
     """All declared ``case.test_case_set[].case_id`` for the execution's IR.
 
@@ -4089,63 +3903,6 @@ def _case_ids_for_execution(repo_root: Path, execution: NodeExecution) -> set[st
         and isinstance(item.get("case_id"), str)
         and item["case_id"].strip()
     }
-
-
-def _metrics_basis_unrecognized_wrapper(
-    entry: dict[str, Any],
-    missing_variables: list[str],
-    required_variables: set[str],
-) -> tuple[str, list[str]] | None:
-    """Name the wrapper key hiding `missing_variables` one level below `test_id`.
-
-    Returns the wrapper and the missing variables it actually holds, so the
-    caller can scope its claim: with two wrappers hiding one variable each,
-    naming only the winner and asserting it holds *the* missing variables
-    would be false.
-
-    Diagnostic only: the result feeds repair guidance, never a verdict, so the
-    keys accepted by `_metrics_basis_variable_keys` stay exactly as they were.
-    Ties are broken by coverage then lexically so the message is deterministic.
-
-    Key recognition mirrors `_metrics_basis_variable_keys` exactly: bookkeeping
-    and nesting fields are matched against the raw key, because that reader only
-    honours them unpadded. A padded `" raw_variables "` is therefore a wrapper
-    to both, and a contract variable is never named as the thing wrapping it.
-
-    The raw key is what gets reported, so padding stays visible in the message;
-    ordering uses the stripped form, which is the identity the reader compares.
-    """
-    wanted = set(missing_variables)
-    best: tuple[int, str, str, tuple[str, ...]] | None = None
-    for raw_key, value in entry.items():
-        if not isinstance(raw_key, str) or not isinstance(value, dict):
-            continue
-        if raw_key in _METRICS_BASIS_BOOKKEEPING_KEYS:
-            continue
-        if raw_key in _METRICS_BASIS_NESTED_VARIABLE_FIELDS:
-            continue
-        key = raw_key.strip()
-        if not key or key in required_variables:
-            continue
-        covered = tuple(
-            sorted(
-                {
-                    nested.strip()
-                    for nested in value
-                    if isinstance(nested, str) and nested.strip()
-                }
-                & wanted
-            )
-        )
-        if not covered:
-            continue
-        candidate = (len(covered), key, raw_key, covered)
-        if best is None or (
-            candidate[0] > best[0]
-            or (candidate[0] == best[0] and candidate[1:3] < best[1:3])
-        ):
-            best = candidate
-    return None if best is None else (best[2], list(best[3]))
 
 
 @lru_cache(maxsize=1)
@@ -4855,12 +4612,11 @@ def _required_raw_evidence(
 ) -> set[str]:
     # The required set is IR-driven: phase_04_validate.md ("The required
     # composition of the primary evidence uses ... required_evidence as the
-    # canonical source") forbids imposing a fixed minimal set uniformly, so only
-    # metrics_basis.json is the baseline and state_snapshots is added when the
-    # IR declares it. The vocabulary an entry may name is RAW_EVIDENCE_ALIASES
+    # canonical source") forbids imposing a fixed minimal set uniformly, so
+    # state_snapshots is required when the IR declares it. The vocabulary an entry may name is RAW_EVIDENCE_ALIASES
     # (tools/raw_evidence_excerpt.py); a token outside it normalizes to None
     # and is skipped here because Compile.static has already refused it.
-    required: set[str] = {"metrics_basis.json"}
+    required: set[str] = set()
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     if not isinstance(raw_requirements, dict):
         return required
@@ -4970,7 +4726,7 @@ def _validate_io_contract_file(
 
     # New IR: spec.ir.yaml has the io_contract section nested under
     # `io_contract:` and contains inputs / outputs / raw_requirements /
-    # test_evidence_requirements / semantic_dependency as siblings.  The
+    # semantic_dependency as siblings.  The
     # original validator was written against derived_contract.json's flat
     # structure where `io_contract`, `raw_requirements`, etc. were all
     # top-level keys.  When we see the new nested form, lift the io_contract
@@ -4992,8 +4748,6 @@ def _validate_io_contract_file(
         for key in (
             "raw_requirements",
             "semantic_dependency",
-            "test_evidence_requirements",
-            "diagnostics_contract",
         ):
             if key in io_section:
                 new_contract[key] = io_section[key]
@@ -5261,10 +5015,6 @@ def _validate_io_contract_file(
         violations.append(
             f"{contract_path}:state_snapshots schema must declare time_variable when required"
         )
-    snapshot_reference_variables = set(snapshot_variables)
-    if snapshot_time_variable:
-        snapshot_reference_variables.add(snapshot_time_variable)
-
     for idx, item in output_items:
         evidence_ref = item.get("evidence_ref")
         # Read through the one spelling rule the enum gate applies (case, `\\`), so a
@@ -5329,362 +5079,6 @@ def _validate_io_contract_file(
         violations.append(
             f"{contract_path}:numerical_kernel_contract must not appear in spec.ir.yaml; move generation contract to spec.ir.yaml"
         )
-
-    _validate_test_evidence_requirements(
-        tests_path=tests_path,
-        contract_path=contract_path,
-        contract=contract,
-        snapshot_reference_variables=snapshot_reference_variables,
-        snapshot_required=snapshot_required,
-        violations=violations,
-    )
-
-    _validate_diagnostics_contract(contract_path, contract, violations)
-
-
-_DIAGNOSTICS_CONTRACT_ABSENT = object()
-
-
-def _raw_diagnostics_contract_value(contract: dict[str, Any]) -> Any:
-    """Return the raw diagnostics_contract value (any type), or the sentinel
-    ``_DIAGNOSTICS_CONTRACT_ABSENT`` when the key is not present at all.
-
-    Accepts both the lifted form (top-level diagnostics_contract) and the raw
-    nested form (io_contract.diagnostics_contract). Unlike
-    _diagnostics_contract_section, this preserves the distinction between
-    "absent" and "present but malformed (non-object)" so the structural
-    validator can flag the latter instead of silently skipping it.
-    """
-    if "diagnostics_contract" in contract:
-        return contract["diagnostics_contract"]
-    io_contract = contract.get("io_contract")
-    if isinstance(io_contract, dict) and "diagnostics_contract" in io_contract:
-        return io_contract["diagnostics_contract"]
-    return _DIAGNOSTICS_CONTRACT_ABSENT
-
-
-def _diagnostics_contract_section(contract: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the diagnostics_contract dict from a (lifted) io_contract, or None.
-
-    Accepts both the lifted form (where _validate_io_contract_file hoists
-    diagnostics_contract to the top level) and the raw nested form
-    (spec.ir.yaml.io_contract.diagnostics_contract). A present-but-malformed
-    (non-object) value normalizes to None here; the structural validator
-    (_validate_diagnostics_contract) is responsible for flagging that case.
-    """
-    section = _raw_diagnostics_contract_value(contract)
-    return section if isinstance(section, dict) else None
-
-
-def _diagnostics_contract_check_ids(contract: Any) -> list[str]:
-    """Return the declared checks[].id list (empty when absent/malformed).
-
-    Tolerates a non-dict `contract` (returns `[]`) so callers reading an IR that `_read_yaml`
-    may have produced as a non-mapping need not repeat an `isinstance` guard."""
-    if not isinstance(contract, dict):
-        return []
-    section = _diagnostics_contract_section(contract)
-    if section is None:
-        return []
-    checks = section.get("checks")
-    ids: list[str] = []
-    if isinstance(checks, list):
-        for item in checks:
-            if isinstance(item, dict):
-                cid = item.get("id")
-                if isinstance(cid, str) and cid.strip():
-                    ids.append(cid.strip())
-    return ids
-
-
-def _diagnostics_contract_verdict_fields(contract: dict[str, Any]) -> list[str]:
-    """Return verdict.fields when verdict.required is true, else empty list."""
-    section = _diagnostics_contract_section(contract)
-    if section is None:
-        return []
-    verdict = section.get("verdict")
-    if not isinstance(verdict, dict) or verdict.get("required") is not True:
-        return []
-    fields = verdict.get("fields")
-    out: list[str] = []
-    if isinstance(fields, list):
-        for field in fields:
-            if isinstance(field, str) and field.strip():
-                out.append(field.strip())
-    return out
-
-
-def _validate_diagnostics_contract(
-    contract_path: Path, contract: dict[str, Any], violations: list[str]
-) -> None:
-    """Structural validation of io_contract.diagnostics_contract when present.
-
-    Presence is optional (a node whose tests.md has no Diagnostics contract
-    section, §5, omits it); coverage against that section is the LLM Compile.verify
-    responsibility (hybrid verification). Here we only enforce well-formedness:
-    checks must be a non-empty list of {id: <non-empty string>}, and when a
-    verdict block is present it must carry required: bool and (when
-    required=true) a non-empty fields list of strings.
-    """
-    raw = _raw_diagnostics_contract_value(contract)
-    if raw is _DIAGNOSTICS_CONTRACT_ABSENT:
-        return
-    if not isinstance(raw, dict):
-        violations.append(
-            f"{contract_path}:io_contract.diagnostics_contract must be object when present"
-        )
-        return
-    section = raw
-
-    checks = section.get("checks")
-    if not isinstance(checks, list) or not checks:
-        violations.append(
-            f"{contract_path}:io_contract.diagnostics_contract.checks must be non-empty list when diagnostics_contract is present"
-        )
-    else:
-        seen_ids: set[str] = set()
-        for idx, item in enumerate(checks):
-            if not isinstance(item, dict):
-                violations.append(
-                    f"{contract_path}:io_contract.diagnostics_contract.checks[{idx}] must be object"
-                )
-                continue
-            cid = item.get("id")
-            if not isinstance(cid, str) or not cid.strip():
-                violations.append(
-                    f"{contract_path}:io_contract.diagnostics_contract.checks[{idx}].id must be non-empty string"
-                )
-                continue
-            if cid.strip() in seen_ids:
-                violations.append(
-                    f"{contract_path}:io_contract.diagnostics_contract.checks[{idx}].id duplicate ({cid.strip()})"
-                )
-            seen_ids.add(cid.strip())
-
-    verdict = section.get("verdict")
-    if verdict is not None:
-        if not isinstance(verdict, dict):
-            violations.append(
-                f"{contract_path}:io_contract.diagnostics_contract.verdict must be object when present"
-            )
-        else:
-            required_value = verdict.get("required")
-            if not isinstance(required_value, bool):
-                violations.append(
-                    f"{contract_path}:io_contract.diagnostics_contract.verdict.required must be bool"
-                )
-            fields = verdict.get("fields")
-            if required_value is True:
-                if not isinstance(fields, list) or not fields:
-                    violations.append(
-                        f"{contract_path}:io_contract.diagnostics_contract.verdict.fields must be non-empty list when verdict.required is true"
-                    )
-                else:
-                    for f_idx, field in enumerate(fields):
-                        if not isinstance(field, str) or not field.strip():
-                            violations.append(
-                                f"{contract_path}:io_contract.diagnostics_contract.verdict.fields[{f_idx}] must be non-empty string"
-                            )
-
-
-def _validate_diagnostics_contract_output(
-    repo_root: Path, execution: NodeExecution, violations: list[str]
-) -> None:
-    """At post_execute/pre_judge, verify diagnostics.json satisfies the IR's
-    io_contract.diagnostics_contract (the tests.md Diagnostics contract, §5, encoded in the IR).
-
-    When the contract declares checks[].id, diagnostics.json must carry a top-level
-    `checks` object holding each id. When verdict.required is true, diagnostics.json
-    must carry a top-level `verdict` object holding the declared fields. This catches
-    the structural_violation earlier than the LLM judge. A node without a
-    diagnostics_contract is unaffected.
-    """
-    contract = _io_contract_for_execution(repo_root, execution)
-    if not isinstance(contract, dict):
-        return
-    check_ids = _diagnostics_contract_check_ids(contract)
-    verdict_fields = _diagnostics_contract_verdict_fields(contract)
-    if not check_ids and not verdict_fields:
-        return
-
-    diagnostics_path = execution.node_dir / "diagnostics.json"
-    if not diagnostics_path.exists():
-        # presence of diagnostics.json itself is already required by _validate_raw_evidence
-        return
-    try:
-        diagnostics = _read_json(diagnostics_path)
-    except json.JSONDecodeError:
-        # invalid json already reported elsewhere
-        return
-    if not isinstance(diagnostics, dict):
-        violations.append(f"{diagnostics_path}: must be json object")
-        return
-
-    if check_ids:
-        checks = diagnostics.get("checks")
-        if not isinstance(checks, dict):
-            violations.append(
-                f"{diagnostics_path}:checks must be an object holding the io_contract.diagnostics_contract checks ({sorted(check_ids)})"
-            )
-        else:
-            missing = [cid for cid in check_ids if cid not in checks]
-            if missing:
-                violations.append(
-                    f"{diagnostics_path}:checks missing io_contract.diagnostics_contract ids ({sorted(missing)})"
-                )
-        _validate_diagnostics_per_case_status_output(contract, diagnostics, diagnostics_path,
-                                                     violations)
-
-    if verdict_fields:
-        verdict = diagnostics.get("verdict")
-        if not isinstance(verdict, dict):
-            violations.append(
-                f"{diagnostics_path}:verdict must be an object holding io_contract.diagnostics_contract.verdict.fields ({sorted(verdict_fields)})"
-            )
-        else:
-            missing_fields = [f for f in verdict_fields if f not in verdict]
-            if missing_fields:
-                violations.append(
-                    f"{diagnostics_path}:verdict missing io_contract.diagnostics_contract.verdict.fields ({sorted(missing_fields)})"
-                )
-
-
-def _validate_diagnostics_per_case_status_output(
-    contract: dict[str, Any], diagnostics: dict[str, Any], diagnostics_path: Path,
-    violations: list[str],
-) -> None:
-    """Each ``diagnostics_contract.checks[].per_case_status`` entry the IR declares (issue
-    #437): the case's slice, resolved exactly as the verdict evaluator resolves it
-    (``verdict_evaluator._case_slice``), must carry ``checks.<id>.status`` equal to the
-    declared literal. The IR is Compile's output, so the leaf authoring the runner cannot move
-    the expectation; a malformed declaration is the compile gate's and is skipped here."""
-    from tools.verdict_evaluator import _case_slice
-
-    section = _diagnostics_contract_section(contract)
-    checks = section.get("checks") if section is not None else None
-    for item in checks if isinstance(checks, list) else []:
-        if not isinstance(item, dict):
-            continue
-        cid, expected = item.get("id"), item.get("per_case_status")
-        if not isinstance(cid, str) or not cid.strip() or not isinstance(expected, dict):
-            continue
-        cid = cid.strip()
-        for case_id, status in expected.items():
-            present, slc = _case_slice(diagnostics, case_id)
-            entry = (slc.get("checks") if isinstance(slc, dict) else None) if present else None
-            entry = entry.get(cid) if isinstance(entry, dict) else None
-            actual = entry.get("status", _DIAGNOSTICS_CONTRACT_ABSENT) if isinstance(entry, dict) \
-                else _DIAGNOSTICS_CONTRACT_ABSENT
-            if actual is _DIAGNOSTICS_CONTRACT_ABSENT:
-                violations.append(
-                    f"{diagnostics_path}:case {case_id!r} carries no checks.{cid}.status, which "
-                    f"io_contract.diagnostics_contract.checks[].per_case_status fixes to {status!r}"
-                )
-            elif actual != status:
-                violations.append(
-                    f"{diagnostics_path}:case {case_id!r} checks.{cid}.status {actual!r} is not "
-                    f"the {status!r} io_contract.diagnostics_contract.checks[].per_case_status "
-                    "fixes for that case: the case supplies that status, and the diagnostics "
-                    "writer must write it as that literal"
-                )
-
-
-#: The status a check entry inside a per-case slice of diagnostics.json may carry beyond the
-#: top-level ``CHECK_STATUS_VALUES``: a check that does not apply to a case reports ``na`` there.
-#: This is the runner-OUTPUT vocabulary, not the predicate vocabulary — a ``pass_when``
-#: condition still compares a status to ``pass`` / ``fail`` only (``verdict_evaluator``,
-#: issue #269), and the top-level fold writes ``pass`` / ``fail`` only (issue #437).
-PER_CASE_CHECK_STATUS_EXTRA: tuple[str, ...] = ("na",)
-
-
-def _validate_diagnostics_status_vocabulary(
-    execution: NodeExecution, violations: list[str]
-) -> None:
-    """At post_execute/pre_judge, refuse a diagnostics.json status that is not exactly one of
-    its literals (issue #437): a top-level ``checks.<id>.status`` and every
-    ``verdict.overall`` must be ``pass`` or ``fail``; a check status inside a per-case slice
-    (each value of a ``per_case`` / ``cases`` object, or each element of a ``cases`` list) may
-    also be ``na``. A value carrying the blanks that pad a fixed-width status is refused with
-    a message naming the writer, because no later reader trims it.
-
-    It runs for every node, independently of ``_validate_diagnostics_contract_output``, whose
-    early return for a node without a diagnostics_contract would otherwise switch it off.
-    Presence of each declared id / verdict field is that function's; a missing, unparsable
-    or non-object diagnostics.json is reported by other checks and adds nothing here.
-    """
-    from tools.verdict_evaluator import CHECK_STATUS_VALUES
-
-    top = tuple(CHECK_STATUS_VALUES)
-    per_case = (*top, *PER_CASE_CHECK_STATUS_EXTRA)
-    diagnostics_path = execution.node_dir / "diagnostics.json"
-    if not diagnostics_path.is_file():
-        return
-    try:
-        diagnostics = _read_json(diagnostics_path)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return
-    if not isinstance(diagnostics, dict):
-        return
-
-    def value_violation(where: str, value: object, allowed: tuple[str, ...]) -> None:
-        if isinstance(value, str) and value in allowed:
-            return
-        message = f"{diagnostics_path}:{where} {value!r} is not one of {list(allowed)}"
-        if isinstance(value, str) and value.rstrip(" ") in allowed:
-            stripped = value.rstrip(" ")
-            message += (
-                " — it carries the blanks that pad a status to its fixed width; the "
-                f"diagnostics writer must write the literal {stripped!r}. On a node whose "
-                "runner the host renders, that writer is the target harness's "
-                "__write_diagnostics, a certified dependency: re-certify the harness "
-                "(run_workflow.py on its spec with --rederive generate), then re-run this node."
-            )
-        violations.append(message)
-
-    def judge_checks(where: str, checks: object, allowed: tuple[str, ...]) -> None:
-        if not isinstance(checks, dict):
-            violations.append(f"{diagnostics_path}:{where} must be an object")
-            return
-        for cid, entry in checks.items():
-            at = f"{where}.{cid}"
-            if not isinstance(entry, dict):
-                violations.append(f"{diagnostics_path}:{at} must be an object with a status")
-            elif "status" not in entry:
-                violations.append(f"{diagnostics_path}:{at} has no status")
-            else:
-                value_violation(f"{at}.status", entry["status"], allowed)
-
-    def judge_slice(where: str, slc: object) -> None:
-        if not isinstance(slc, dict):
-            violations.append(f"{diagnostics_path}:{where} must be an object")
-            return
-        if "checks" in slc:
-            judge_checks(f"{where}.checks", slc["checks"], per_case)
-        judge_verdict(where, slc)
-
-    def judge_verdict(where: str, holder: dict) -> None:
-        verdict = holder.get("verdict")
-        if isinstance(verdict, dict) and "overall" in verdict:
-            prefix = f"{where}." if where else ""
-            value_violation(f"{prefix}verdict.overall", verdict["overall"], top)
-
-    if "checks" in diagnostics:
-        judge_checks("checks", diagnostics["checks"], top)
-    judge_verdict("", diagnostics)
-    for key in ("per_case", "cases"):
-        if key not in diagnostics:
-            continue
-        container = diagnostics[key]
-        if isinstance(container, dict):
-            for case_id, slc in container.items():
-                judge_slice(f"{key}.{case_id}", slc)
-        elif isinstance(container, list):
-            for idx, slc in enumerate(container):
-                judge_slice(f"{key}[{idx}]", slc)
-        else:
-            violations.append(
-                f"{diagnostics_path}:{key} must be an object keyed by case_id or a list of case objects"
-            )
 
 
 def _validate_io_contract_schema(
@@ -6181,190 +5575,6 @@ def _validate_algorithm_contract_schema(
         violations,
         multidim_node_key=execution.node_key,
     )
-
-
-def _validate_test_evidence_requirements(
-    tests_path: Path | None,
-    contract_path: Path,
-    contract: dict[str, Any],
-    snapshot_reference_variables: set[str],
-    snapshot_required: bool,
-    violations: list[str],
-) -> None:
-    # The ref is LLM-authored: it may name a directory, an over-long path, or an unreadable one.
-    # `_validate_ir_source_refs_tests` reports such a ref as the violation it is; this gate must not
-    # read (or probe) it in a way that raises before the leaf gets that finding.
-    if tests_path is None or not _is_readable_file(tests_path):
-        return
-
-    test_ids = _parse_test_ids_from_tests_md(tests_path)
-    if not test_ids:
-        return
-
-    raw_reqs = contract.get("test_evidence_requirements")
-    if not isinstance(raw_reqs, list) or not raw_reqs:
-        violations.append(f"{contract_path}:test_evidence_requirements must be non-empty list")
-        return
-
-    seen_test_ids: set[str] = set()
-    mapped_test_ids: set[str] = set()
-    for idx, item in enumerate(raw_reqs):
-        if not isinstance(item, dict):
-            violations.append(
-                f"{contract_path}:test_evidence_requirements[{idx}] must be object"
-            )
-            continue
-        raw_test_id = item.get("test_id")
-        if not isinstance(raw_test_id, str) or not raw_test_id.strip():
-            violations.append(
-                f"{contract_path}:test_evidence_requirements[{idx}].test_id must be non-empty string"
-            )
-            continue
-        test_id = raw_test_id.strip()
-        if test_id in seen_test_ids:
-            violations.append(
-                f"{contract_path}:test_evidence_requirements has duplicated test_id ({test_id})"
-            )
-            continue
-        seen_test_ids.add(test_id)
-        mapped_test_ids.add(test_id)
-
-        raw_variables = item.get("required_raw_variables")
-        if not isinstance(raw_variables, list) or not raw_variables:
-            violations.append(
-                f"{contract_path}:test_evidence_requirements[{idx}].required_raw_variables must be non-empty list"
-            )
-            continue
-        for var_idx, token in enumerate(raw_variables):
-            if not isinstance(token, str) or not token.strip():
-                violations.append(
-                    f"{contract_path}:test_evidence_requirements[{idx}].required_raw_variables[{var_idx}] must be non-empty string"
-                )
-                continue
-            name = token.strip()
-            if snapshot_required and name not in snapshot_reference_variables:
-                violations.append(
-                    f"{contract_path}:test_evidence_requirements[{idx}].required_raw_variables[{var_idx}] must reference declared state_snapshots variable/time_variable ({name})"
-                )
-
-    expected = set(test_ids)
-    missing = sorted(expected - mapped_test_ids)
-    extra = sorted(mapped_test_ids - expected)
-    if missing:
-        violations.append(
-            f"{contract_path}:test_evidence_requirements missing tests from tests.md ({missing})"
-        )
-    if extra:
-        violations.append(
-            f"{contract_path}:test_evidence_requirements has unknown test_id ({extra})"
-        )
-
-
-def _validate_metrics_basis_per_test(
-    repo_root: Path,
-    execution: NodeExecution,
-    metrics_basis: dict[str, Any],
-    violations: list[str],
-) -> None:
-    contract = _io_contract_for_execution(repo_root, execution)
-    if not isinstance(contract, dict):
-        return
-
-    raw_requirements = _raw_requirements_for_execution(repo_root, execution)
-    if not isinstance(raw_requirements, dict):
-        return
-
-    required_evidence = raw_requirements.get("required_evidence")
-    metrics_basis_required = False
-    if isinstance(required_evidence, list):
-        for item in required_evidence:
-            if not isinstance(item, dict):
-                continue
-            raw_artifact = item.get("artifact")
-            if not isinstance(raw_artifact, str):
-                continue
-            if _normalize_raw_evidence_artifact(raw_artifact) != "metrics_basis.json":
-                continue
-            metrics_basis_required = item.get("required") is not False
-            break
-    if not metrics_basis_required:
-        return
-
-    # The expected evidence MATRIX is derived by `raw_evidence_excerpt`, which the pure
-    # `validate.judge` leaf's excerpt reads from as well, so this gate and the judge's window
-    # onto `raw/` cannot disagree about which rows a run owes.
-    keys = expected_metrics_basis_keys(contract)
-    test_requirements = keys.test_requirements
-    if not test_requirements:
-        return
-
-    metrics_basis_path = execution.node_dir / "raw" / "metrics_basis.json"
-    entries, problems, form = _metrics_basis_entries(metrics_basis)
-    for problem in problems:
-        violations.append(f"{metrics_basis_path}: {problem}")
-    if problems:
-        return
-
-    expected_keys = keys.expected
-    if keys.untargeted_tests:
-        violations.append(
-            f"{metrics_basis_path}: test_id {keys.untargeted_tests} declare "
-            "required_raw_variables but no io_contract.test_predicates[].target_cases — the "
-            "expected (test_id, case_id) evidence rows cannot be derived"
-        )
-        return
-    if form == "tests" and keys.multi_target_tests:
-        # A `tests` object is keyed by test_id, so it physically cannot hold the several rows a
-        # multi-target test owes. Say so instead of reporting the rows as merely "missing".
-        violations.append(
-            f"{metrics_basis_path}: the deprecated `tests` object form is keyed by test_id and "
-            f"cannot express the multiple (test_id, case_id) rows owed by {keys.multi_target_tests}; "
-            "emit a `per_test` LIST with one entry per (test_id, case_id)"
-        )
-        return
-
-    actual_keys = set(entries)
-    missing = sorted(expected_keys - actual_keys)
-    extra = sorted(actual_keys - expected_keys)
-    if missing:
-        violations.append(
-            f"{metrics_basis_path}: missing per-test evidence for (test_id, case_id) ({missing})"
-        )
-    if extra:
-        violations.append(
-            f"{metrics_basis_path}: has unknown per-test evidence (test_id, case_id) ({extra})"
-        )
-
-    for (test_id, case_id), entry in sorted(entries.items()):
-        required_variables = test_requirements.get(test_id)
-        if required_variables is None or not isinstance(entry, dict):
-            continue
-        variable_keys = _metrics_basis_variable_keys(entry)
-        missing_variables = sorted(required_variables - variable_keys)
-        if missing_variables:
-            message = (
-                f"{metrics_basis_path}: test_id {test_id} case_id {case_id} "
-                f"missing required_raw_variables ({missing_variables})"
-            )
-            found = _metrics_basis_unrecognized_wrapper(
-                entry, missing_variables, required_variables
-            )
-            if found is not None:
-                wrapper, covered = found
-                # Naming the whole missing set would lie when a second wrapper
-                # holds the rest; only claim what this wrapper actually hides.
-                subject = (
-                    "the missing variables"
-                    if covered == missing_variables
-                    else f"the missing variables {covered}"
-                )
-                message += (
-                    f" — {subject} are nested under the unrecognized wrapper key '{wrapper}'; "
-                    "emit each required variable as a direct sibling key of test_id "
-                    f'(e.g. {{"test_id": ..., "{covered[0]}": ...}}); '
-                    f"do not wrap them under '{wrapper}'"
-                )
-            violations.append(message)
 
 
 def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[str]:
@@ -7477,60 +6687,6 @@ def _validate_tests_verdict_summary_consistency(
             violations.append(
                 f"{summary_path}:counts.blocked must equal verdict.per_test aggregate ({computed_counts['blocked']})"
             )
-
-
-def _collect_numeric_leaves(obj: Any, _depth: int = 0) -> list[float | None]:
-    """Recursively collect numeric / null leaves from a JSON object/array (depth limit 8)."""
-    if _depth > 8:
-        return []
-    if isinstance(obj, bool):
-        return []  # bool is a subclass of int, so check it first
-    if isinstance(obj, (int, float)):
-        return [float(obj)]
-    if obj is None:
-        return [None]
-    if isinstance(obj, list):
-        result: list[float | None] = []
-        for item in obj:
-            result.extend(_collect_numeric_leaves(item, _depth + 1))
-        return result
-    if isinstance(obj, dict):
-        result = []
-        for v in obj.values():
-            result.extend(_collect_numeric_leaves(v, _depth + 1))
-        return result
-    return []
-
-
-def _validate_metrics_basis_not_trivial(
-    execution: NodeExecution,
-    violations: list[str],
-) -> None:
-    """Verify that metrics_basis.json is not all-zero / all-null."""
-    metrics_path = execution.node_dir / "raw" / "metrics_basis.json"
-    if not metrics_path.exists():
-        return  # existence check is handled by _validate_raw_evidence
-
-    try:
-        data = _read_json(metrics_path)
-    except json.JSONDecodeError:
-        return  # JSON syntax errors are already handled by another function
-
-    if not isinstance(data, dict):
-        return
-
-    numeric_values = _collect_numeric_leaves(data)
-    if not numeric_values:
-        return  # skip if there is no numeric field at all
-
-    non_trivial_count = sum(
-        1 for v in numeric_values if v is not None and v != 0.0
-    )
-    if non_trivial_count == 0:
-        violations.append(
-            f"{metrics_path}: all numeric fields are zero or null "
-            "(trivial placeholder detected)"
-        )
 
 
 def _validate_llm_semantic_review(
@@ -8946,132 +8102,12 @@ def _validate_compile_ir_dir_impl(repo_root: Path, ir_dir: Path) -> list[str]:
     _validate_component_dep_operations(repo_root, ir_dir, violations)
     _validate_component_dep_operations_membership(repo_root, ir_dir, violations)
     _validate_local_operation_lowering(repo_root, ir_dir, violations)
-    _validate_test_predicates(repo_root, ir_dir, violations)
-    _validate_diagnostics_per_case_status(repo_root, ir_dir, violations)
+    _validate_tests_and_predicates(repo_root, ir_dir, violations)
     _validate_case_ids(ir_dir, violations)
     _validate_published_surface(repo_root, ir_dir, violations)
     _validate_harness_render_preconditions(repo_root, ir_dir, violations)
 
     return violations
-
-
-def _validate_diagnostics_per_case_status(
-    repo_root: Path, ir_dir: Path, violations: list[str]
-) -> None:
-    """Compile gate for the OPTIONAL ``io_contract.diagnostics_contract.checks[].per_case_status``
-    (issue #437): a mapping ``{<case_id>: <status>}`` fixing the exact status the runner's
-    diagnostics.json must carry for that check id in that case's slice, which the
-    ``post_execute`` check (`_validate_diagnostics_contract_output`) then compares literally.
-    When present it must be a non-empty object whose every key is a declared
-    ``case.test_case_set`` case_id and whose every value is a per-case status literal
-    (``CHECK_STATUS_VALUES`` plus ``PER_CASE_CHECK_STATUS_EXTRA``).
-
-    Which ids carry one is ``tests.md``'s: each ``PER_CASE_STATUS_STATEMENT`` in the file
-    ``meta.source_refs.tests`` resolves to states one mapping, and the IR must carry exactly
-    the stated mappings — a stated id whose entry lacks it or differs, and an entry carrying
-    one ``tests.md`` does not state, are both refused (round 2: an omitted, misplaced or
-    inverted declaration otherwise passed Compile, and the post_execute comparison then had
-    nothing, or the wrong thing, to compare). An unresolvable ``tests.md`` skips this half;
-    ``_validate_ir_source_refs_tests`` fails Compile on it.
-    """
-    from tools.verdict_evaluator import CHECK_STATUS_VALUES
-
-    derived_path = ir_dir / "spec.ir.yaml"
-    if not derived_path.exists():
-        return  # missing IR already flagged upstream
-    try:
-        ir = _read_yaml(derived_path)
-    except yaml.YAMLError:
-        return  # malformed IR already flagged upstream
-    if not isinstance(ir, dict):
-        return
-    io_contract = ir.get("io_contract")
-    dc = io_contract.get("diagnostics_contract") if isinstance(io_contract, dict) else None
-    checks = dc.get("checks") if isinstance(dc, dict) else None
-    if not isinstance(checks, list):
-        return  # its shape is _validate_diagnostics_contract's
-    case_block = ir.get("case")
-    tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
-    case_ids = {
-        c["case_id"].strip()
-        for c in (tcs if isinstance(tcs, list) else [])
-        if isinstance(c, dict) and isinstance(c.get("case_id"), str) and c["case_id"].strip()
-    }
-    allowed = (*CHECK_STATUS_VALUES, *PER_CASE_CHECK_STATUS_EXTRA)
-    tests_path = _tests_path_from_ir_document(repo_root, ir)
-    stated: dict[str, dict[str, str]] | None = None
-    if tests_path is not None and _is_readable_file(tests_path):
-        stated = _parse_per_case_status_statements(tests_path, violations)
-    if stated is not None:
-        declared = {
-            item["id"].strip(): item.get("per_case_status")
-            for item in checks
-            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()
-        }
-        for cid, mapping in stated.items():
-            if declared.get(cid) != mapping:
-                violations.append(
-                    f"{derived_path}:io_contract.diagnostics_contract.checks entry {cid!r} must "
-                    f"carry per_case_status {mapping!r}, as {tests_path.name} states "
-                    f"(found {declared.get(cid, '<no such check id>')!r})"
-                )
-        for cid, value in declared.items():
-            if value is not None and cid not in stated:
-                violations.append(
-                    f"{derived_path}:io_contract.diagnostics_contract.checks entry {cid!r} "
-                    f"carries per_case_status, which {tests_path.name} does not state for it "
-                    "(an id carries one only where tests.md states it, docs/TESTS.md)"
-                )
-    for idx, item in enumerate(checks):
-        if not isinstance(item, dict) or "per_case_status" not in item:
-            continue
-        loc = f"{derived_path}:io_contract.diagnostics_contract.checks[{idx}].per_case_status"
-        expected = item["per_case_status"]
-        if not isinstance(expected, dict) or not expected:
-            violations.append(f"{loc} must be a non-empty object {{<case_id>: <status>}} when present")
-            continue
-        for case_id, status in expected.items():
-            if case_id not in case_ids:
-                violations.append(f"{loc} references unknown case_id ({case_id!r})")
-            if not isinstance(status, str) or status not in allowed:
-                violations.append(f"{loc}.{case_id} {status!r} is not one of {list(allowed)}")
-
-
-def _parse_per_case_status_statements(
-    tests_path: Path, violations: list[str]
-) -> dict[str, dict[str, str]]:
-    """Every ``PER_CASE_STATUS_STATEMENT`` in ``tests_path``, as ``{<id>: {<case_id>: <status>}}``.
-    A statement whose braces do not hold ``<case_id>: <status>`` pairs, one stating a status
-    outside the per-case vocabulary (which the IR-side check would refuse, so the two demands
-    could not both be met), or a second statement for one id, is a violation of the
-    ``tests.md`` and contributes nothing."""
-    from tools.verdict_evaluator import CHECK_STATUS_VALUES
-
-    out: dict[str, dict[str, str]] = {}
-    text = tests_path.read_text(encoding="utf-8")
-    for match in PER_CASE_STATUS_STATEMENT.finditer(text):
-        cid, body = match.group(1), match.group(2)
-        mapping: dict[str, str] = {}
-        pairs = [p.strip() for p in body.split(",")]
-        ok = bool(pairs) and all(p.count(":") == 1 for p in pairs)
-        for pair in pairs if ok else []:
-            key, value = (s.strip() for s in pair.split(":"))
-            if not key or not value or key in mapping:
-                ok = False
-                break
-            mapping[key] = value
-        allowed = (*CHECK_STATUS_VALUES, *PER_CASE_CHECK_STATUS_EXTRA)
-        if ok and any(value not in allowed for value in mapping.values()):
-            violations.append(f"{tests_path}:per_case_status statement for {cid!r} states a "
-                              f"status outside {list(allowed)} ({match.group(0)!r})")
-        elif not ok:
-            violations.append(f"{tests_path}:per_case_status statement for {cid!r} is not "
-                              f"`{{ <case_id>: <status>, ... }}` ({match.group(0)!r})")
-        elif cid in out:
-            violations.append(f"{tests_path}:per_case_status is stated twice for {cid!r}")
-        else:
-            out[cid] = mapping
-    return out
 
 
 def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
@@ -9535,9 +8571,7 @@ def _validate_harness_render_preconditions(
     conductor (``host_render.render_runner``) from the IR alone. Any IR *content* the
     renderer cannot faithfully render (a ``time_variable`` other than the harness's fixed key
     ``t``; a snapshot variable colliding with a reserved key ``t``/``case_id``/``step``; an
-    unparseable ``shape_expr`` or rank>4; a ``verdict.fields`` outside the harness fold surface
-    ``{overall, failed_checks}``; a required raw variable absent from the snapshot schema; a test
-    no predicate targets) makes ``render_runner`` raise ``RenderError``. That render
+    unparseable ``shape_expr`` or rank>4) makes ``render_runner`` raise ``RenderError``. That render
     runs *inside the conductor* before the Generate substeps, so its fail_closed kills the whole
     workflow rather than retrying — the E2E #3 failure class (orch ``…dcf0533e``): a
     Compile-authored value caught at an unrecoverable position.
@@ -10661,116 +9695,67 @@ def _validate_generated_signatures(
     )
 
 
-def _xfail_suite_failure_violations(predicates: Any) -> list[str]:
-    """Refuse a SUITE-LEVEL failure assertion inside an ``xfail`` predicate (issue #530).
-
-    The top-level ``verdict`` / ``checks`` of ``diagnostics.json`` is the harness's
-    xfail-excluded fold: a failure of a case whose ``expected_xfail`` is true is left out of it,
-    and the host-rendered runner sets that flag on exactly the target cases of every ``xfail``
-    predicate (``runner_ir.xfail_cases``). So inside an ``xfail`` predicate a condition with
-    neither ``per_case`` nor ``case:`` reads a fold that excludes this test's own cases, and one
-    that asserts a failure there — ``verdict.overall eq fail``, ``verdict.failed_checks
-    includes <id>`` or ``eq`` a non-empty list, ``checks.<id>.status eq fail`` — holds only when
-    some case outside every ``xfail`` test fails — never on a failure of this test's own cases,
-    which is the one thing the test exists to observe.
-
-    A suite-level PASS assertion stays admitted: "only the expected guard failed, so the top
-    level reads pass" is what the fold is specified to report, and a harness self-test asserts
-    exactly that. A condition is suite-level here exactly when ``verdict_evaluator`` reads it
-    so — ``bool(per_case)`` false and no ``case`` key — so a malformed scope the evaluator does
-    not read as suite-level (``per_case: "true"``, ``case: null``) is the schema gate's alone,
-    and a falsy one (``per_case: 0``) is reported by both. So is a failure assertion naming an
-    undeclared check id; the two findings agree (one remedy, a per-case scope over a declared
-    id, clears both), and neither is suppressed for the other:
-    a suppression keyed on the schema's findings would also wait out an unrelated one, such as
-    a missing ``quantity``, for a whole retry."""
-    from tools.verdict_evaluator import CHECK_REF_LEAF, VERDICT_ENUM_FIELD, VERDICT_LIST_FIELD
-
-    out: list[str] = []
-    for idx, pred in enumerate(predicates if isinstance(predicates, list) else []):
-        if not isinstance(pred, dict) \
-                or str(pred.get("expected_outcome") or "").strip().lower() != "xfail":
-            continue
-        pass_when = pred.get("pass_when")
-        conds = pass_when.get("all") if isinstance(pass_when, dict) else None
-        for cidx, cond in enumerate(conds if isinstance(conds, list) else []):
-            if not isinstance(cond, dict) or bool(cond.get("per_case")) or "case" in cond:
-                continue
-            ref, op, value = cond.get("ref"), cond.get("op"), cond.get("value")
-            if not isinstance(ref, str):
-                continue
-            head, _, rest = ref.partition(".")
-            asserts_failure = (
-                (ref == f"verdict.{VERDICT_ENUM_FIELD}" and op == "eq" and value == "fail")
-                or (ref == f"verdict.{VERDICT_LIST_FIELD}"
-                    and (op == "includes"
-                         or (op == "eq" and isinstance(value, list) and bool(value))))
-                or (head == "checks" and rest.endswith(f".{CHECK_REF_LEAF}")
-                    and op == "eq" and value == "fail"))
-            if asserts_failure:
-                out.append(
-                    f"test_predicates[{idx}].pass_when.all[{cidx}] (test "
-                    f"{pred.get('test_id')!r}, expected_outcome xfail) asserts `{ref} {op} "
-                    f"{value!r}` at the SUITE level, which no failure of this test's own cases "
-                    "can satisfy: the top-level verdict and checks are the harness's "
-                    "xfail-excluded fold, which leaves out every target case of an xfail test, "
-                    "this one's included, so the condition holds only when some case outside "
-                    "every xfail test fails. Read it in the case that fails — `per_case: true`, "
-                    "or `case: <one of this predicate's target_cases>`")
-    return out
+#: The IR keys issue #582 retired, each with what replaced it, refused by name so a leaf that
+#: reaches for one is redirected at Compile rather than leaving a test judged by nothing.
+_RETIRED_IO_CONTRACT_KEYS = {
+    "test_predicates": "io_contract.tests and io_contract.predicates",
+    "primary_predicates": "io_contract.predicates",
+    "diagnostics_contract": "a host predicate over the captures",
+    "test_evidence_requirements": "io_contract.tests[].quantities and the snapshot schema",
+}
 
 
-def _validate_test_predicates(
+def _validate_tests_and_predicates(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
-    """R2 deterministic predicate gate: ``io_contract.test_predicates`` formalizes each
-    ``tests.md`` test's pass rule as a machine-evaluable predicate that ``Validate.execute``
-    evaluates against ``diagnostics.json`` to author ``verdict.json`` in-process (moving the
-    per-test judgment off the judge leaf). This gate makes the DSL correct-by-construction at
-    Compile so the judge-time nondeterminism it replaces cannot regress into a compile-time
-    authoring error.
+    """The Compile gate over what judges a test (issue #582): ``io_contract.tests`` and the
+    host-evaluated ``io_contract.predicates`` that ``Validate.execute`` folds into ``verdict.json``
+    in-process, so a judgment is correct by construction at Compile.
 
-    Checks (via ``verdict_evaluator.validate_predicate_schema``): the DSL is present and
-    well-formed (op / expected_outcome enums, non-empty ``pass_when.all``, each condition
-    carries a ``value``); the predicate ``test_id`` set equals the node's canonical test-id set;
-    every ``target_cases`` entry is a declared ``case.test_case_set`` case; and every predicate
-    ``ref`` resolves against the declared diagnostics vocabulary — ``verdict.<field>`` /
-    ``checks.<id>.status`` / a per-case metric address pinned in ``diagnostics_contract.metrics``.
+    - A retired key (``_RETIRED_IO_CONTRACT_KEYS``) is refused by name.
+    - ``tests``: ``verdict_evaluator.validate_tests_schema``, against the canonical test-id set.
+    - ``predicates``: ``primary_evidence.validate_primary_predicate_schema`` (each entry's grammar
+      and names, its ``target_cases`` equal to its test's, the reads-a-capture rule of issue #483).
+    - ``schema.variables[].source``: ``primary_evidence.source_violations``.
+    - D10, the omission gate. Each test's ``quantities`` equals its ``tests.md`` ``quantities:``
+      line, and the set of ``quantity`` over its predicates equals its ``quantities``
+      (``primary_evidence.quantity_violations``, which also requires every target case's state
+      to be valued by some predicate of the test). The leaf copies the line, so the comparison is
+      against the spec rather than against anything the leaf wrote for itself. No gate parses a
+      threshold; whether an expression measures the judgment is ``Compile.verify`` V3's.
+    - D13, the reported-read gate: ``primary_evidence.reported_read_violations``. The label it keys
+      on is the leaf's, so the set of ``source: reported`` variables equals what the ``tests.md``
+      ``reported:`` lines name (``_parse_reported_variables_from_tests_md``; no line means none),
+      and per test the line equals what the test's predicates read
+      (``primary_evidence.reported_line_read_violations``).
+    - A ``source: reference`` read stands on ``source: operation`` state:
+      ``primary_evidence.reference_read_violations``.
+    - Cross-target transcription (issue #324): a cross-target predicate is no judgment of the
+      verdict, so its set is pinned separately — every test whose ``tests.md`` definition contains
+      ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one, and no other test carries one
+      (``_parse_cross_target_judged_test_ids``).
 
-    The canonical test-id set is resolved robustly (this gate is the SOLE enforcer of
-    predicate-set == tests.md, so it must not silently no-op): the ``tests.md`` set via
-    ``meta.source_refs.tests`` (present in every real IR) is preferred, and — as of the R2
-    fail-closed hardening — a ``meta.source_refs.tests`` that resolves to a file yielding ZERO
-    test_ids is itself a violation (never a silent fallback). Only when the ref is
-    absent/unresolvable does it fall back to the same-IR ``io_contract.test_evidence_requirements``
-    id set (note: the separate ``test_evidence_requirements`` gate resolves tests.md through the
-    same ``meta.source_refs.tests`` ref and pins TER == tests.md, so on any IR that reaches this
-    fallback the ref is already a violation — ``_validate_ir_source_refs_tests`` fails Compile on an
-    absent or unresolvable ref — and the fallback is a defence-in-depth path, not a silent one that
-    the TER gate is trusted to backstop). A degenerate IR carrying
-    NEITHER (which fails the io_contract gate anyway) degrades to the predicate ids (a no-op).
+    The canonical test-id set is the ``tests.md`` set via ``meta.source_refs.tests``; a resolvable
+    file yielding ZERO test ids is itself a violation, never a silent fallback. Only when the ref
+    does not resolve (``_validate_ir_source_refs_tests`` fails Compile on that) does the schema
+    check fall back to the ids of ``tests`` itself.
 
-    The host-evaluated corroborants (Z6, issue #255) are gated here too, through
-    ``primary_evidence.validate_primary_predicate_schema`` (each entry's grammar and names)
-    and ``primary_evidence.coverage_violations`` (every condition's ``quantity`` has a primary
-    predicate of the same test and quantity, so no test's verdict rests on the generated checks
-    module alone). The coverage gate replaced the set-level ``degenerate_predicate_violations``
-    gate (Z6 PR-3): the harm that gate refused — a pass set asserting only ``verdict.*``, whose
-    per-test judgment reduced to the runner's own ``verdict.overall`` — cannot arise once every
-    condition, a ``verdict.*`` one included, is conjoined with a host-evaluated predicate.
-
-    Cross-target transcription (issue #324): a cross-target predicate covers no condition, so
-    the set is pinned separately — every test whose ``tests.md`` definition contains
-    ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one cross-target predicate, and no other
-    test carries one (``_parse_cross_target_judged_test_ids``).
-
-    An ``xfail`` predicate asserting a failure at the suite level is refused
-    (``_xfail_suite_failure_violations``, issue #530): the top-level fold excludes that test's
-    own target cases, so no failure of those cases can satisfy the condition.
-
-    A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``
-    to re-author the predicates."""
-    from tools.verdict_evaluator import validate_predicate_schema
+    A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``."""
+    from tools.primary_evidence import (
+        SOURCE_REPORTED,
+        PrimaryEvidenceError,
+        is_cross_target_predicate,
+        quantity_violations,
+        reference_read_violations,
+        reported_line_read_violations,
+        reported_read_violations,
+        schema_variables,
+        snapshot_schema,
+        source_violations,
+        validate_primary_predicate_schema,
+        variable_sources,
+    )
+    from tools.verdict_evaluator import validate_tests_schema
 
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
@@ -10784,170 +9769,138 @@ def _validate_test_predicates(
 
     io_contract = ir.get("io_contract")
     io_contract = io_contract if isinstance(io_contract, dict) else {}
-    predicates = io_contract.get("test_predicates")
+    for key, replacement in _RETIRED_IO_CONTRACT_KEYS.items():
+        if key in io_contract:
+            violations.append(f"{derived_path}:io_contract.{key} is retired (issue #582): a "
+                              f"test is judged by host predicates over the captures — write "
+                              f"{replacement}")
+    tests = io_contract.get("tests")
+    predicates = io_contract.get("predicates")
 
     case_block = ir.get("case")
     tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
     # `.strip()` so this set uses the SAME case_id identity as the runtime argv
-    # (`read_case_ids`), the snapshot path, and `_case_id_to_test_ids` — all of which strip.
-    # A surrounding-whitespace case_id would otherwise desync predicate membership from runtime.
-    case_ids = {
-        c["case_id"].strip()
+    # (`read_case_ids`) and the snapshot path, which strip.
+    cases_by_id = {
+        c["case_id"].strip(): c
         for c in (tcs if isinstance(tcs, list) else [])
         if isinstance(c, dict) and isinstance(c.get("case_id"), str) and c["case_id"].strip()
     }
+    case_ids = set(cases_by_id)
 
-    dc = io_contract.get("diagnostics_contract")
-    dc = dc if isinstance(dc, dict) else {}
-    check_ids = {
-        str(c.get("id"))
-        for c in (dc.get("checks") if isinstance(dc.get("checks"), list) else [])
-        if isinstance(c, dict) and c.get("id")
-    }
-    # verdict.<field> refs resolve ONLY against the fields the diagnostics_contract actually
-    # declares AND requires (no unconditional overall/failed_checks default): per phase_01 V3, a
-    # predicate referencing verdict.* requires diagnostics_contract.verdict.required=true with
-    # the referenced field in verdict.fields. When required is false the runner is NOT contracted
-    # to emit a `verdict` object, so a verdict ref would pass Compile then become a
-    # structural_violation at execute instead of being repaired here — hence the required gate.
-    verdict_fields: set[str] = set()
-    verdict_block = dc.get("verdict") if isinstance(dc.get("verdict"), dict) else {}
-    if verdict_block.get("required") is True and isinstance(verdict_block.get("fields"), list):
-        verdict_fields |= {str(f) for f in verdict_block["fields"]}
-    metric_addrs = {
-        str(m) for m in (dc.get("metrics") if isinstance(dc.get("metrics"), list) else [])
-    }
-
-    # Canonical test-id set. Prefer tests.md (via meta.source_refs.tests — present in every
-    # real IR); fall back to the same-IR test_evidence_requirements set (which the io_contract
-    # gate requires to cover tests.md); only a degenerate IR carrying neither degrades to the
-    # predicate ids (a no-op — but that IR fails the io_contract gate on its own).
     tests_path = _tests_path_from_ir_document(repo_root, ir)
-    test_ids: list[str] | None = None
-    if tests_path is not None and _is_readable_file(tests_path):
+    test_ids: list[str] = []
+    readable = tests_path is not None and _is_readable_file(tests_path)
+    if readable:
         test_ids = _parse_test_ids_from_tests_md(tests_path)
-        # Fail-closed: a RESOLVABLE tests.md that parses to ZERO test_ids means the file's
-        # test-id form isn't recognized (a parser/format drift). Silently degrading to the
-        # same-leaf test_evidence_requirements would let a common-mode drop of a tests.md test
-        # (from both TER and the predicates) certify undetected. Flag it so the equality pin
-        # is never a silent no-op when tests.md is present.
         if not test_ids:
             violations.append(
                 f"{derived_path}:tests.md ({tests_path}) resolved but parsed 0 test_ids "
-                "(unrecognized test-id form — cannot pin test_predicates set == tests.md)")
-    # `not test_ids` (not `is None`): fall through to the same-IR fallback (TER, then predicate
-    # ids) for the rest of the schema check so it does not ALSO spuriously report every predicate
-    # as an unknown test_id; the resolved-but-empty case above already fails the gate.
-    if not test_ids:
-        ter = io_contract.get("test_evidence_requirements")
-        ter_ids = [
-            e["test_id"].strip()
-            for e in (ter if isinstance(ter, list) else [])
-            if isinstance(e, dict) and isinstance(e.get("test_id"), str) and e["test_id"].strip()
-        ]
-        if ter_ids:
-            test_ids = ter_ids
+                "(unrecognized test-id form — cannot pin io_contract.tests set == tests.md)")
     if not test_ids:
         test_ids = [
-            p["test_id"].strip()
-            for p in (predicates if isinstance(predicates, list) else [])
-            if isinstance(p, dict) and isinstance(p.get("test_id"), str) and p["test_id"].strip()
+            t["test_id"].strip()
+            for t in (tests if isinstance(tests, list) else [])
+            if isinstance(t, dict) and isinstance(t.get("test_id"), str) and t["test_id"].strip()
         ]
 
-    for msg in validate_predicate_schema(
-        predicates,
+    for msg in validate_tests_schema(tests, case_ids=case_ids, test_ids=test_ids):
+        violations.append(f"{derived_path}:{msg}")
+
+    schema = snapshot_schema(ir)
+    test_target_cases = {
+        t["test_id"].strip(): [str(c) for c in t["target_cases"]]
+        for t in (tests if isinstance(tests, list) else [])
+        if isinstance(t, dict) and isinstance(t.get("test_id"), str) and t["test_id"].strip()
+        and isinstance(t.get("target_cases"), list)
+    }
+    for msg in validate_primary_predicate_schema(
+        predicates if predicates is not None else [],
         case_ids=case_ids,
         test_ids=test_ids,
-        check_ids=check_ids,
-        verdict_fields=verdict_fields,
-        metric_addrs=metric_addrs,
+        schema=schema,
+        cases=cases_by_id,
+        test_target_cases=test_target_cases,
     ):
         violations.append(f"{derived_path}:{msg}")
-    for msg in _xfail_suite_failure_violations(predicates):
+    for msg in source_violations(schema):
         violations.append(f"{derived_path}:{msg}")
-
-    # The host-evaluated corroborants (Z6, issue #255): every `io_contract.primary_predicates`
-    # entry parses under the closed grammar and every name it uses resolves — a capture
-    # variable against the snapshot schema, an `inputs.<path>` to a number or a numeric list in
-    # every case its scope evaluates (issue #532), an `at('<case>')` to one of its own target
-    # cases and its `inputs.<path>` in that case — so that
-    # Validate.execute never meets an expression it cannot value. The shape errors this
-    # reports are the ones `evaluate_primary_predicates` raises on.
-    from tools.primary_evidence import (
-        coverage_violations,
-        snapshot_schema,
-        validate_primary_predicate_schema,
-    )
-    if "primary_predicates" in io_contract:
-        cases_by_id = {
-            c["case_id"].strip(): c
-            for c in (tcs if isinstance(tcs, list) else [])
-            if isinstance(c, dict) and isinstance(c.get("case_id"), str) and c["case_id"].strip()
-        }
-        test_target_cases = {
-            p["test_id"].strip(): [str(c) for c in p["target_cases"]]
-            for p in (predicates if isinstance(predicates, list) else [])
-            if isinstance(p, dict) and isinstance(p.get("test_id"), str) and p["test_id"].strip()
-            and isinstance(p.get("target_cases"), list)
-        }
-        for msg in validate_primary_predicate_schema(
-            io_contract.get("primary_predicates"),
-            case_ids=case_ids,
-            test_ids=test_ids,
-            schema=snapshot_schema(ir),
-            cases=cases_by_id,
-            test_target_cases=test_target_cases,
-        ):
-            violations.append(f"{derived_path}:{msg}")
-
-    # Coverage: every condition's `quantity` has a primary predicate of the same test and
-    # quantity (an absent `primary_predicates` is the same omission for every test) that
-    # values the state of every case the condition holds in (`cases_read` over the snapshot
-    # schema's variables; with no schema nothing is valued and every condition is uncovered —
-    # fail-closed beside the schema gate's own refusal). Names and cases only; the
-    # same-quantity and can-fail judgments are Compile.verify's (V3).
-    from tools.primary_evidence import PrimaryEvidenceError, schema_variables
-    state_schema = snapshot_schema(ir)
     try:
-        state_names = (set(schema_variables(state_schema))
-                       if isinstance(state_schema, dict) else set())
+        state_names = set(schema_variables(schema)) if isinstance(schema, dict) else set()
     except PrimaryEvidenceError:
-        # An unreadable schema (a `shape_expr` of no recognised form) is the primary schema
-        # gate's finding ("snapshot schema unreadable"), reported above; here it values no
-        # case, so every condition is uncovered, and the stage keeps returning its list
-        # instead of raising (issue #567 review round 2).
+        # An unreadable schema is the predicate schema gate's finding, reported above; here it
+        # values no case, and the stage keeps returning its list instead of raising.
         state_names = set()
-    for msg in coverage_violations(predicates, io_contract.get("primary_predicates"),
-                                   state_names=state_names):
-        violations.append(f"{derived_path}:io_contract.test_predicates: {msg}")
+    for msg in quantity_violations(tests, predicates, state_names):
+        violations.append(f"{derived_path}:io_contract.predicates: {msg}")
+    for msg in reported_read_violations(predicates, schema):
+        violations.append(f"{derived_path}:io_contract.{msg}")
+    for msg in reference_read_violations(predicates, schema):
+        violations.append(f"{derived_path}:io_contract.{msg}")
 
-    # Cross-target transcription (issue #324): a cross-target predicate covers no condition, so
-    # the coverage gate cannot see one omitted — and a node whose IR has none is asked no
-    # cross-target agreement (issue #383), so a disagreeing variant certifies. Pin the SET: every test whose tests.md definition applies
-    # the cross-target judgment carries at least one cross-target predicate, and no other test
-    # carries one. Which variables, normaliser and threshold is V3 (v)'s judgment.
-    if tests_path is not None and _is_readable_file(tests_path):
-        judged = _parse_cross_target_judged_test_ids(tests_path)
-        if judged is not None:
-            from tools.primary_evidence import is_cross_target_predicate
-            primary = io_contract.get("primary_predicates")
-            crossed = {
-                p["test_id"].strip()
-                for p in (primary if isinstance(primary, list) else [])
-                if is_cross_target_predicate(p) and isinstance(p.get("test_id"), str)
-            }
-            for tid in sorted(judged - crossed):
+    if not readable:
+        return
+    parsed_quantities = _parse_test_quantities_from_tests_md(tests_path)
+    if parsed_quantities is not None:
+        stated, problems = parsed_quantities
+        for problem in problems:
+            violations.append(f"{derived_path}:tests.md ({tests_path}): {problem}")
+        for test in (tests if isinstance(tests, list) else []):
+            if not isinstance(test, dict) or not isinstance(test.get("test_id"), str) \
+                    or test["test_id"].strip() not in stated:
+                continue
+            tid = test["test_id"].strip()
+            listed = test.get("quantities")
+            listed = {q for q in listed if isinstance(q, str)} if isinstance(listed, list) else set()
+            if listed != set(stated[tid]):
                 violations.append(
-                    f"{derived_path}:io_contract.primary_predicates: tests.md applies the "
-                    f"cross-target judgment to test '{tid}' ('{CROSS_TARGET_JUDGMENT_PHRASE}') "
-                    "and no cross-target predicate of that test transcribes it: add one entry "
-                    f"with test_id '{tid}' per variable the judgment names, comparing "
-                    "final.<var> with comparand.final.<var> (phase_01_compile.md V3 (v))")
-            for tid in sorted(crossed - judged):
-                violations.append(
-                    f"{derived_path}:io_contract.primary_predicates: a cross-target predicate "
-                    f"(one reading comparand.) has test_id '{tid}', whose tests.md definition "
-                    "does not apply the cross-target judgment: remove it")
+                    f"{derived_path}:io_contract.tests entry '{tid}': quantities "
+                    f"{sorted(listed)} must equal the `quantities:` line of its tests.md "
+                    f"definition ({sorted(stated[tid])})")
+
+    # The label D13 keys on is the leaf's, so its set is pinned to the seed the leaf cannot edit.
+    parsed_reported = _parse_reported_variables_from_tests_md(tests_path)
+    if parsed_reported is not None:
+        stated_by_test, problems = parsed_reported
+        for problem in problems:
+            violations.append(f"{derived_path}:tests.md ({tests_path}): {problem}")
+        stated_reported = set().union(*stated_by_test.values()) if stated_by_test else set()
+        marked: set[str] = set()
+        if isinstance(schema, dict):
+            marked = {name for name, source in variable_sources(schema).items()
+                      if source == SOURCE_REPORTED}
+        if marked != stated_reported:
+            violations.append(
+                f"{derived_path}:io_contract.raw_requirements: the `source: reported` snapshot "
+                f"variables {sorted(marked)} must equal the variables the `reported:` lines of "
+                f"tests.md name ({sorted(stated_reported)}): tests.md says which value the kernel "
+                "reports of itself, and no line means none")
+        for msg in reported_line_read_violations(stated_by_test, marked, predicates):
+            violations.append(f"{derived_path}:io_contract.predicates: {msg}")
+
+    # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is
+    # asked no cross-target agreement (issue #383), so a disagreeing variant would certify. Pin
+    # the SET; which variables, normaliser and threshold is V3 (v)'s judgment.
+    judged = _parse_cross_target_judged_test_ids(tests_path)
+    if judged is not None:
+        crossed = {
+            p["test_id"].strip()
+            for p in (predicates if isinstance(predicates, list) else [])
+            if is_cross_target_predicate(p) and isinstance(p.get("test_id"), str)
+        }
+        for tid in sorted(judged - crossed):
+            violations.append(
+                f"{derived_path}:io_contract.predicates: tests.md applies the "
+                f"cross-target judgment to test '{tid}' ('{CROSS_TARGET_JUDGMENT_PHRASE}') "
+                "and no cross-target predicate of that test transcribes it: add one entry "
+                f"with test_id '{tid}' per variable the judgment names, comparing "
+                "final.<var> with comparand.final.<var> (phase_01_compile.md V3 (v))")
+        for tid in sorted(crossed - judged):
+            violations.append(
+                f"{derived_path}:io_contract.predicates: a cross-target predicate "
+                f"(one reading comparand.) has test_id '{tid}', whose tests.md definition "
+                "does not apply the cross-target judgment: remove it")
+
 
 
 def _validate_ir_source_refs_tests(
@@ -10955,11 +9908,10 @@ def _validate_ir_source_refs_tests(
 ) -> None:
     """`meta.source_refs.tests` must resolve to an existing tests.md.
 
-    Three pins reach tests.md through this ref and every one of them returns SILENTLY when it does
-    not resolve: `_validate_test_evidence_requirements`, `_validate_tests_verdict_summary_consistency`,
-    and the tests.md branch of `_validate_test_predicates`. An IR that mistypes the ref — or that
-    keeps a ref to a spec directory a later rename moved — therefore certifies clean with all three
-    dark. The ref is LLM-authored, so it is pinned here rather than assumed, mirroring the
+    Two pins reach tests.md through this ref and each returns SILENTLY when it does not resolve:
+    `_validate_tests_verdict_summary_consistency`, and the tests.md branch of
+    `_validate_tests_and_predicates`. An IR that mistypes the ref — or that keeps a ref to a spec
+    directory a later rename moved — therefore certifies clean with both dark. The ref is LLM-authored, so it is pinned here rather than assumed, mirroring the
     infrastructure `meta.source_refs.controlled_spec` check.
     """
     derived_path = ir_dir / "spec.ir.yaml"
@@ -11749,7 +10701,6 @@ def _validate_impl(
         _validate_launched_ranks(repo_root, execution, violations)
         _validate_execution_shapes(repo_root, execution, violations)
         _validate_raw_evidence(repo_root, execution, violations)
-        _validate_metrics_basis_not_trivial(execution, violations)
         in_scope_src_dir = _execution_in_scope_src_dir(execution, violations)
         if (
             in_scope_src_dir is not None

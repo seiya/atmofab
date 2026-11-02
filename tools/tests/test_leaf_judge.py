@@ -61,16 +61,12 @@ _RUNNER_OUTPUT_CONTRACT = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 def _io_contract() -> dict:
     return {
         "inputs": [], "outputs": [],
-        "test_evidence_requirements": [
-            {"test_id": "t_basic", "required_raw_variables": ["u", "dx"]},
-        ],
-        "test_predicates": [
+        "tests": [
             {"test_id": "t_basic", "expected_outcome": "pass",
-             "target_cases": ["case_a"]},
+             "target_cases": ["case_a"], "quantities": ["u_bound"]},
         ],
         "raw_requirements": {
             "required_evidence": [
-                {"artifact": "metrics_basis.json", "required": True},
                 {"artifact": "state_snapshots", "required": True},
             ],
         },
@@ -134,16 +130,12 @@ def _write_run_node(repo: Path, *, bundle: bool = False) -> wc.NodeRefs:
     run_dir = repo / refs.run_node_dir()
     (run_dir / "raw" / "state_snapshots").mkdir(parents=True, exist_ok=True)
     for name, doc in (
-        ("diagnostics.json", {"per_case": {"case_a": {"metrics": {"l2": 0.01}}}}),
         ("verdict.json", {"per_test": [{"test_id": "t_basic", "status": "pass"}]}),
         ("perf.json", {"wall_time_s": 1.5}),
         ("trial_meta.json", {"trial": 1}),
         ("quality_check.json", {"status": "pass"}),
     ):
         (run_dir / name).write_text(json.dumps(doc), encoding="utf-8")
-    (run_dir / "raw" / "metrics_basis.json").write_text(json.dumps(
-        {"per_test": [{"test_id": "t_basic", "case_id": "case_a",
-                       "u": [[1.0, 2.0]], "dx": 0.5}]}), encoding="utf-8")
     (run_dir / "raw" / "state_snapshots" / "snapshot_schema.json").write_text(json.dumps(
         {"variables": [{"name": "u", "shape_expr": "[nx]"}], "time_variable": "t",
          "time_shape_expr": "scalar"}), encoding="utf-8")
@@ -157,9 +149,9 @@ def _review(decision: str = "pass", **overrides) -> dict:
     if decision == "fail":
         doc["findings"] = [{
             "attribution": "code",
-            "evidence_refs": ["diagnostics_document#per_case.case_a.metrics.l2"],
+            "evidence_refs": ["verdict_document#per_test[0].basis.predicates[0]"],
             "confidence": "high",
-            "description": "the reported l2 is not supported by the raw evidence",
+            "description": "the recorded value is not supported by the raw evidence",
         }]
     doc.update(overrides)
     return doc
@@ -217,13 +209,13 @@ class PureJudgeContextTests(_Fixture):
         ctx = self.conductor()._build_leaf_judge_context(self.refs)
         headings = [ln for ln in ctx["runner_output_contract_document"].splitlines()
                     if ln.startswith("## ")]
-        self.assertEqual(headings, ["## 1. `diagnostics.json`", "## 3. `raw/` primary evidence"])
+        self.assertEqual(headings, ["## 3. `raw/` primary evidence"])
 
     def test_the_excerpt_is_the_hosts_and_carries_no_array(self) -> None:
         ctx = self.conductor()._build_leaf_judge_context(self.refs)
         excerpt = json.loads(ctx["raw_evidence_excerpt_document"])
-        self.assertEqual(excerpt["coverage"]["present"], [["t_basic", "case_a"]])
-        self.assertEqual(excerpt["coverage"]["missing"], [])
+        self.assertEqual([c["case_id"] for c in excerpt["state_snapshots"]["cases"]], ["case_a"])
+        self.assertEqual(excerpt["state_snapshots"]["cases"][0]["declared_variables_absent"], [])
         self.assertEqual(excerpt["problems"], [])
 
     def test_the_verdict_is_handed_over_byte_for_byte(self) -> None:
@@ -279,7 +271,8 @@ class PureJudgeContextTests(_Fixture):
         ctx = self.conductor()._build_leaf_judge_context(self.refs)
         excerpt = json.loads(ctx["raw_evidence_excerpt_document"])
         self.assertFalse(excerpt["raw_dir_present"])
-        self.assertEqual(excerpt["coverage"]["missing"], [["t_basic", "case_a"]])
+        self.assertEqual(excerpt["state_snapshots"]["present"], False)
+        self.assertEqual([r["present"] for r in excerpt["required_evidence"]], [False])
 
     def test_an_ir_without_an_io_contract_raises(self) -> None:
         ir = _ir()
@@ -308,7 +301,7 @@ class PureJudgeContextTests(_Fixture):
         self.assertIn("unsliceable", str(caught.exception))
 
     def test_assembly_failure_spawns_no_leaf(self) -> None:
-        (self.repo / self.refs.run_node_dir() / "diagnostics.json").unlink()
+        (self.repo / self.refs.run_node_dir() / "verdict.json").unlink()
         c = self.conductor(_envelope(json.dumps(_review())))
         outcome = c.run_substep(self.refs, "validate", "judge")
         self.assertEqual(outcome.status, "fail")
@@ -365,9 +358,9 @@ class SemanticReviewWriterTests(_Fixture):
         doc = json.loads(self.run_node("semantic_review.json").read_text())
         ref = doc["findings"][0]["evidence_refs"][0]
         path, _, fragment = ref.partition("#")
-        self.assertEqual(path, f"{self.refs.run_node_dir()}/diagnostics.json")
+        self.assertEqual(path, f"{self.refs.run_node_dir()}/verdict.json")
         self.assertTrue((self.repo / path).is_file())
-        self.assertEqual(fragment, "per_case.case_a.metrics.l2")
+        self.assertEqual(fragment, "per_test[0].basis.predicates[0]")
 
     def test_a_ref_without_a_fragment_resolves_to_the_bare_path(self) -> None:
         review = _review("fail")
@@ -532,7 +525,7 @@ class PureJudgeLoopTests(_Fixture):
         """The in-loop check that keeps `semantic_review.json` a path list: the leaf may cite
         only what it was handed, and the host resolves that."""
         review = _review("fail")
-        review["findings"][0]["evidence_refs"] = ["workspace/runs/r1/raw/metrics_basis.json"]
+        review["findings"][0]["evidence_refs"] = ["workspace/runs/r1/raw/state_snapshots/case_a.json"]
         c = self.conductor(_envelope(json.dumps(review)),
                            _envelope(json.dumps(_review("pass"))))
         outcome = c.run_substep(self.refs, "validate", "judge")
@@ -638,7 +631,7 @@ class PostJudgeReclassificationTests(_Fixture):
         The classifier's own verdict is asserted first, so this row cannot go green because
         `classify_post_judge_violations` changed its mind about the probe.
         """
-        unknown = "workspace/pipelines/p/runs/r/n/diagnostics.json: missing key"
+        unknown = "workspace/pipelines/p/runs/r/n/perf.json: missing key"
         self.assertEqual(wc.classify_post_judge_violations([unknown]), "unknown")
         self.assertEqual(self._disposition(_cfg("claude"), violation=unknown), "escalate")
 

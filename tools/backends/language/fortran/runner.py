@@ -10,15 +10,14 @@ spec ids and returns the text of ``<spec_id>_runner.f90`` — the deterministic
 and emits the standard runner outputs *through the certified harness's
 plumbing* (``harness_fortran_cpu``, or ``harness_fortran_cpu_mpi``, over which the
 runner is the distributed variant — issue #316: it starts and ends the runtime, gathers
-the partitioned state onto rank 0 and writes on rank 0 only). Because the harness's v3 interface owns the
-JSON envelope assembly and the verdict fold (§3 / §5.1 of the harness
-controlled_spec), this renderer holds **no serialization knowledge**: it builds
-the harness record types and calls the writers — it never formats a JSON token,
-folds a verdict, or excludes an xfail itself.
+the partitioned state onto rank 0 and writes on rank 0 only). Because the harness's interface owns the
+JSON envelope assembly (§3 / §5.1 of the harness controlled_spec), this renderer holds
+**no serialization knowledge**: it calls the writers — it never formats a JSON token, and it
+judges nothing (the host's predicates over the captures do, issue #582).
 
 Split of authorship on an M3c node:
 - ``<spec_id>_model.f90`` — the physics kernel + ``__apply`` op   (LLM leaf)
-- ``<spec_id>_checks.f90`` — the fixed-ABI check/metric callbacks + the
+- ``<spec_id>_checks.f90`` — the fixed-ABI driving callbacks + the
   module-level state storage the snapshot is captured from   (LLM leaf)
 - ``<spec_id>_runner.f90`` — this renderer                        (host)
 - ``src/Makefile``          — ``workflow_conductor._write_makefile`` (host)
@@ -31,7 +30,7 @@ is a module-level ``real(dp)`` variable of ``<spec_id>_checks`` named exactly as
 declares it, imported as ``sb_<var> => <var>`` and serialized by the certified harness
 emitters twice per case — right after ``case_setup`` (``raw/state_snapshots/initial/
 <case_id>.json``) and right after ``case_run`` (``raw/state_snapshots/<case_id>.json``)
-— before any check or metric callback of that case runs. Generated code contributes
+— before any later callback of that case runs. Generated code contributes
 the binding (the declaration and the allocation) and nothing downstream of it: there
 is no getter, so no generated procedure can filter, compute or rewrite a captured
 value (``zero_base_architecture.md`` §A4). It is authored lint-clean
@@ -42,7 +41,7 @@ Generate.gate lint checker — which lints the whole ``src/`` tree — stays gre
 ``render_runner`` raises ``RenderError`` (→ transport fail_closed, NOT a Generate
 retry) for any IR it cannot faithfully render: an unparseable ``shape_expr``, a
 rank>4 snapshot variable, a snapshot variable colliding with a harness-reserved
-key, a ``verdict.fields`` outside ``{overall, failed_checks}``, more than one
+key, more than one
 infrastructure dependency, or an over-long identifier. ``assert_harness_pin``
 (the signature pin) is a separate fail-closed guard the conductor runs against
 the *certified* harness IR signatures + source before rendering.
@@ -64,45 +63,19 @@ from typing import Any
 # language question).
 from tools import runner_ir
 from tools.backends.language.fortran import bundle
-from tools.backends.language.fortran import lines as fortran_lines
 from tools.host_execution import perf_parallelism
 from tools.host_render import RenderError
 
 # The fixed ABI of the leaf-authored `<spec_id>_checks` module (see
 # docs/workflow/CHECKS_MODULE_CONTRACT.md). Non-prefixed public names (module
 # scope makes them collision-free) so the f2008 63-char identifier limit is not
-# exceeded even for a 55-char spec_id. Five procedures: the former snapshot getters
+# exceeded even for a 55-char spec_id. Three procedures (the judging half went in issue #582: a test is decided by host predicates over the captures): the former snapshot getters
 # (`get_scalar` / `get_r1..r4`) are retired — the runner reads the bound module-level
 # state directly (`STATE_BINDING_PREFIX`), so a value-returning getter is
 # unrepresentable rather than policed (Z6, issue #255).
 CHECKS_PUBLIC_NAMES = (
     "case_setup", "case_run", "get_time",
-    "checks_compute", "metric_compute",
 )
-
-# The dummy arguments of `metric_compute`, in the order the rendered call passes its actuals
-# (`_render_metric_calls`), and the one of them whose declaration the compiler cannot check
-# against that call. The runner passes `mreason` — `character(len=:), allocatable`, UNALLOCATED
-# — for `reason_na`. Fortran lets an allocatable actual associate with a non-allocatable dummy,
-# so a `character(len=64)` dummy resolves against the explicit interface with no diagnostic
-# from `gfortran -fsyntax-only` (measured, 11.4: rc=0), passes the lint gate (the declaration
-# earns no finding under the declared rule set, fortitude 0.8.0), and at the shipped build
-# flags (`-std=f2008 -O2`, no `-fcheck`) faults at the first call — the assignment writes
-# through a null descriptor: SIGSEGV; under `-fcheck=all`, "Allocatable actual argument
-# 'mreason' is not allocated". That fixed-length form is what this check exists for. The
-# assumed-length form (`character(len=*), intent(out)`) is refused by the LINT gate before
-# Build (C072, measured with `lint.check_argv`; contract §5 declares it illegal), so it never
-# reaches the compiler in a workflow — at the compiler alone it also passes and records an
-# empty reason, which is a fact about the compiler and not a reason for this check (a round-3
-# review found the earlier text presenting it as one). Only an
-# `allocatable` dummy is conforming, and once the dummy IS allocatable the compiler owns the
-# rest: a fixed-length allocatable dummy is refused ("must have a deferred length type
-# parameter if and only if the dummy has one"), a `pointer` one is refused too. So the one
-# fact the compiler cannot see is the attribute, and `checks_abi_dummy_violation` reads
-# exactly that one (issue #261: the first bundle of a billed run carried the `len=64` form
-# through every deterministic gate and was rejected only by the LLM verify).
-METRIC_COMPUTE_DUMMIES = ("case_id", "name", "val", "is_na", "reason_na", "found")
-METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY = "reason_na"
 
 # The runner-local alias of a bound snapshot variable: `use <spec_id>_checks, only:
 # sb_<var> => <var>`. The prefix keeps the alias clear of every runner local (none starts
@@ -114,12 +87,6 @@ _IDENTIFIER_RE = re.compile(bundle.IDENTIFIER_PATTERN)
 # Harness-owned snapshot keys a physics snapshot variable must not shadow (the neutral IR reader's,
 # `tools/runner_ir.py`, re-exported for the tests and callers that read them here).
 HARNESS_RESERVED_SNAPSHOT_KEYS = runner_ir.HARNESS_RESERVED_SNAPSHOT_KEYS
-
-# Fixed character width the checks ABI pins for a check status: assumed-length
-# intent(out) is disallowed, so both sides declare this exact width. The check
-# *id* is no longer a pinned width — the runner supplies each declared id as a
-# literal `intent(in)` actual (per-id ABI), so the module never buffers ids.
-CHECK_STATUS_WIDTH = 4
 
 # The fixed width of a parsed case id — the harness's `case_id_len`, which the neutral IR reader
 # owns (`runner_ir.CASE_ID_LEN`) because it bounds a declared case id for every renderer. The
@@ -159,11 +126,10 @@ def max_rendered_line() -> int:
 # The harness symbols this template calls (pinned by assert_harness_pin against
 # the certified harness IR). Emitters are added per-rank on demand.
 _HARNESS_TYPES = (
-    "h_named", "h_check", "h_metric", "h_case_result", "h_mb_entry",
+    "h_named",
 )
 _HARNESS_CORE_OPS = (
-    "parse_cases", "box", "write_snapshot",
-    "write_metrics_basis", "write_diagnostics", "write_perf",
+    "parse_cases", "box", "write_snapshot", "write_perf",
 )
 
 # The distributed-state operations the RUNNER calls on a harness that drives the program as
@@ -205,18 +171,11 @@ def distributed_binding_names(variable: str) -> list[str]:
 # The language-neutral readers live in `tools/runner_ir.py` (issue #289, R4-b PR-6), shared with
 # every other backend that renders a runner, so the refusals of a neutral IR fact are one set for
 # every target. What stays here is what Fortran adds: the snapshot-name rules of its binding, and
-# the check-id bound the linter's column limit implies (`max_rendered_line`).
+# the bound the linter's column limit implies (`max_rendered_line`).
 
 _dget = runner_ir.dget
 _rank_of_shape = runner_ir.rank_of_shape
 _case_ids = runner_ir.case_ids
-_test_predicates = runner_ir.test_predicates
-_xfail_cases = runner_ir.xfail_cases
-_target_cases = runner_ir.target_cases
-_per_case_vars = runner_ir.per_case_vars
-_metrics = runner_ir.metrics
-_verify_verdict_fields = runner_ir.verify_verdict_fields
-_test_evidence = runner_ir.test_evidence
 _target_class = runner_ir.target_class
 _infra_dep_count = runner_ir.infra_dep_count
 
@@ -263,36 +222,6 @@ def _snapshot_schema(ir: dict[str, Any]) -> tuple[dict[str, str], str]:
     return runner_ir.snapshot_schema(ir, check_name)
 
 
-def _checks(ir: dict[str, Any]) -> list[str]:
-    ids = runner_ir.check_ids(ir)
-    # The old buffered ABI implied a de-facto 32-char id ceiling (chk_ids width). With that
-    # gone, bound the raw id at CASE_ID_LEN (symmetric with the case-id cap) as a first
-    # gate. This alone is NOT sufficient — see the escaped-width check below.
-    for sid in ids:
-        if len(sid) > CASE_ID_LEN:
-            raise RenderError(
-                f"check id {sid!r} is {len(sid)} chars (>{CASE_ID_LEN}); the per-id "
-                "checks_compute call would breach the runner's lint column guard")
-    # The width-binding rendered line per id is the assignment `    case_checks(<k>)%id = '<lit>'`,
-    # whose columns are 25 + digits(k) + len(_flit(id)) — `_flit` DOUBLES embedded apostrophes, so a
-    # raw-<=64 id can still expand past the limit. A line of EXACTLY `max_rendered_line()` columns
-    # fails the linter's column rule on some supported builds (it fires AT the limit) on a line the
-    # host authors and the Generate leaf cannot repair — an unrepairable fail_closed. Fail closed
-    # HERE instead, keeping the widest such line strictly under the limit. (The `checks_compute`
-    # continuation `      '<lit>', cstatus)` is 18 + len(_flit(id)) — always narrower than the
-    # assignment, so bounding the assignment bounds both.)
-    limit = max_rendered_line()
-    for k, sid in enumerate(ids, start=1):
-        width = 25 + len(str(k)) + len(_flit(sid))
-        if width >= limit:
-            raise RenderError(
-                f"check id {sid!r} renders a {width}-column `case_checks(...)%id` assignment "
-                f"(>= the linter's {limit}-column limit) after Fortran apostrophe "
-                "escaping; the host-authored runner line would fail Generate.gate lint check unrepairably. "
-                "Declare a shorter check id (or one with fewer apostrophes).")
-    return ids
-
-
 def _threads(target: dict[str, Any]) -> int:
     """The threads per rank the run executes with — the target profile's `execution`, which
     is what `run_program` is told. Until R4-a PR-2 this read the IR's
@@ -322,7 +251,7 @@ def _hname(harness_spec_id: str, sym: str) -> str:
 def _flit(value: str) -> str:
     """Escape a string for embedding inside a single-quoted Fortran character literal.
 
-    IR-sourced names (case_ids, snapshot variable names, metric addresses, test_ids)
+    IR-sourced names (case_ids, snapshot variable names, test_ids)
     are only required to be non-empty by the compile gates, not to be Fortran
     identifiers, so a name containing a `'` would otherwise break the generated literal
     (`case ('a'b')`). Fortran escapes an embedded apostrophe by doubling it.
@@ -364,8 +293,7 @@ def _used_harness_ops(ir: dict[str, Any], *, distributed: bool = False) -> list[
     if 0 in ranks:
         ops.append("emit_real")
     ops += [f"emit_array_r{r}" for r in array_ranks]
-    ops += ["box", "write_snapshot", "write_metrics_basis",
-            "write_diagnostics", "write_perf"]
+    ops += ["box", "write_snapshot", "write_perf"]
     if distributed:
         ops += [*_DISTRIBUTED_RUNNER_OPS, *(f"gather_r{r}" for r in array_ranks)]
     return ops
@@ -384,10 +312,10 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
             raise RenderError(
                 f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
-    # The distributed operations need no bound of their own: each name is shorter than
-    # `write_metrics_basis`, so a harness id they would not fit has already been refused here
-    # (`test_fortran_runner.DistributedRenderTest` pins the ordering).
-    for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS):
+    # The distributed operations are bounded with the plumbing: `exchange_halo_r1` is longer than
+    # any plumbing name, and a consumer's model calls it.
+    for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS, *_DISTRIBUTED_RUNNER_OPS,
+                *PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
         name = _hname(harness_spec_id, sym)
         if len(name) > bundle.IDENTIFIER_MAX:
             raise RenderError(
@@ -411,7 +339,7 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     side-effect-free, deterministic ~ms render) with the SAME ``(ir, spec_id, harness_spec_id)``
     the conductor's ``_write_runner`` passes, and reports whatever ``RenderError`` the render
     raises. No hand-maintained list of preconditions to drift out of sync — every current and
-    future content fail-close (reserved-key collision, rank>4, verdict.fields, a control char in
+    future content fail-close (reserved-key collision, rank>4, a control char in
     an IR name, a rendered line over the linter's column limit, …) is caught here the instant the renderer
     rejects it.
 
@@ -426,7 +354,7 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
         return [] if exc.identity else [str(exc)]
     except Exception as exc:  # noqa: BLE001
         # `render_runner`'s contract is "bad IR -> RenderError", but a truthy non-iterable IR
-        # field (e.g. `verdict.fields: 5`, where `_dget(...) or []` yields `5` and `for f in 5`
+        # field (e.g. `test_case_set: 5`, where `_dget(...) or []` yields `5` and `for f in 5`
         # raises TypeError) can still escape as a bare exception. Running INSIDE the compile
         # validator, an uncaught exception would abort `_validate_compile_stage_impl` and discard
         # every violation the sibling gates already collected, replacing the actionable list with
@@ -474,13 +402,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # render. No mirroring to maintain — the gate runs THIS code.
     schema_vars, time_var = _snapshot_schema(ir)
     runner_ir.require_time_variable_t(time_var)
-    _verify_verdict_fields(ir)
-    case_ids = _case_ids(ir)
-    per_case = _per_case_vars(ir, schema_vars)
-    xfail = _xfail_cases(ir)
-    checks = _checks(ir)
-    metrics = _metrics(ir)
-    evidence = _test_evidence(ir)
+    _case_ids(ir)   # the refusals of a case id (the runner takes the ids from argv)
     target_class = _target_class(target)
     threads = _threads(target)
     # The perf record's device count is the target's (`host_execution.perf_parallelism`). Its
@@ -498,8 +420,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
 
     # ranks the schema declares, so we import only the emitters we call (an unused `use only`
     # name would trip lint). Every snapshot variable is captured for EVERY case (Z6): the
-    # snapshot is the full declared state, not the subset a case's tests happen to require —
-    # `per_case` above validates `required_raw_variables` ⊆ schema and nothing else here.
+    # snapshot is the full declared state.
     ranks_used = {_rank_of_shape(shape, v) for v, shape in schema_vars.items()}
     has_scalar = 0 in ranks_used
     array_ranks = sorted(r for r in ranks_used if r >= 1)
@@ -514,20 +435,15 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         *[H(op) for op in emit_ops],
         H("box"),
         H("write_snapshot"),
-        H("write_metrics_basis"),
-        H("write_diagnostics"),
         H("write_perf"),
     ]
     if distributed:
         harness_syms += [H(op) for op in _DISTRIBUTED_RUNNER_OPS]
         harness_syms += [H(f"gather_r{r}") for r in array_ranks]
-    checks_syms = ["case_setup", "case_run", "get_time", "checks_compute"]
-    if metrics:  # metric_compute is only called when the node declares metrics
-        checks_syms.append("metric_compute")
+    checks_syms = ["case_setup", "case_run", "get_time"]
     # The bound state: one `sb_<var> => <var>` rename per snapshot variable (schema declaration
     # order) — the same set the bundle gate requires bound, so a declared state the runner
-    # never read cannot exist (a round-2 reviewer measured that gap when the read set was the
-    # per-case union of `required_raw_variables`).
+    # never read cannot exist.
     bound_vars = list(schema_vars)
     limit = max_rendered_line()
     for v in bound_vars:
@@ -565,8 +481,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("! Deterministic runner glue authored host-side by the conductor (R1/M3c).")
     a("! It drives the physics node's <spec_id>_checks callbacks and emits the standard")
     a(f"! runner outputs THROUGH the certified {harness_spec_id} plumbing, which owns all")
-    a("! JSON assembly and the verdict fold (harness controlled_spec §3/§5.1). This glue")
-    a("! holds no serialization knowledge; it builds harness records and calls the writers.")
+    a("! JSON assembly (harness controlled_spec §3/§5.1). This glue")
+    a("! holds no serialization knowledge; it calls the writers.")
     a(f"program {spec_id}_runner")
     a("  use, intrinsic :: iso_fortran_env, only: real64, int64, error_unit")
     a(f"  use {harness_spec_id}_model, only: &")
@@ -577,16 +493,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     for i, sym in enumerate(checks_syms):
         sep = ", &" if i < len(checks_syms) - 1 else ""
         a(f"    {sym}{sep}")
-    # The one dummy declaration this program's calls cannot make the compiler check, stated
-    # where the producer leaf is told to read the ABI from (`METRIC_COMPUTE_DUMMIES`). Rendered
-    # on every node, metrics or not: the stub a no-metrics node still has to define is where
-    # the fixed-length form has been observed (issue #261).
-    a("  ! The checks ABI is the same five subroutines for every node. metric_compute's")
-    a(f"  ! `{METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY}` dummy MUST be declared")
-    a("  ! `character(len=:), allocatable, intent(out)`: the runner of a node with metrics")
-    a("  ! passes an UNALLOCATED deferred-length allocatable for it, and a fixed-length dummy")
-    a("  ! compiles and faults at the first call. A no-metrics stub included: a deterministic")
-    a("  ! gate refuses any non-allocatable form.")
+    a("  ! The checks ABI is the same three subroutines for every node.")
     if distributed:
         _render_distributed_abi_comment(a, harness_spec_id)
     # No `! allow(C003)` above it, deliberately, and this is the file where getting it wrong
@@ -611,22 +518,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("  real(dp) :: walltime, tval")
     a("  integer :: steps_total, cells_total, steps_c, cells_c")
     a("")
-    a(f"  type({H('h_case_result')}), allocatable :: results(:)")
-    a(f"  type({H('h_mb_entry')}), allocatable :: mb_entries(:)")
-    a(f"  type({H('h_mb_entry')}), allocatable :: snap_cache(:)")
-    a(f"  type({H('h_named')}), allocatable :: vals(:), sel(:)")
-    a(f"  type({H('h_check')}), allocatable :: case_checks(:)")
-    if metrics:  # case_metrics is only referenced under the per-case metric block
-        a(f"  type({H('h_metric')}), allocatable :: case_metrics(:)")
-    a("")
-    a(f"  character(len={CHECK_STATUS_WIDTH}) :: cstatus")
-    if metrics:
-        a("  integer :: mcount, tci")
-        a("  real(dp) :: mval")
-        a("  logical :: mis_na, mfound")
-        a("  character(len=:), allocatable :: mreason")
-    else:
-        a("  integer :: tci")
+    a(f"  type({H('h_named')}), allocatable :: vals(:)")
     a("")
     # ---- argv marshal + parse ----
     if distributed:
@@ -649,8 +541,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("    error stop 1")
     a("  end if")
     a("")
-    a("  allocate(results(ncases))")
-    a("  allocate(snap_cache(ncases))")
     a("  steps_total = 0")
     a("  cells_total = 0")
     a("  call system_clock(count=clock0, count_rate=clock_rate)")
@@ -661,9 +551,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("")
     # Z6 capture contract (zero_base_architecture.md §A4): the harness serializes the BOUND
     # state — read straight from the checks module's storage — right after `case_setup`
-    # (initial) and right after `case_run` (final), and `snap_cache` holds the serialized
-    # STRINGS, so nothing a later `checks_compute` / `metric_compute` / `get_time` callback
-    # writes into that storage can reach a snapshot or the metrics basis. There is no getter in
+    # (initial) and right after `case_run` (final), as serialized STRINGS, so nothing a later
+    # `get_time` callback writes into that storage can reach a snapshot. There is no getter in
     # between: `get_time` — generated code — is called AFTER the capture, for the time value
     # the snapshot is written with, so no generated procedure runs between `case_setup` /
     # `case_run` returning and the state being serialized.
@@ -682,8 +571,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("    steps_total = steps_total + steps_c")
     a("    cells_total = cells_total + cells_c")
     a("")
-    a("    ! --- final state: the same bound storage right after case_run, before any check")
-    a("    ! --- or metric callback of this case runs (raw/state_snapshots/<case_id>.json) ---")
+    a("    ! --- final state: the same bound storage right after case_run, before any later")
+    a("    ! --- callback of this case runs (raw/state_snapshots/<case_id>.json) ---")
     a("    call capture_state(trim(case_ids(ci)), vals)")
     a("    call get_time(tval)")
     if distributed:
@@ -691,56 +580,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a(f"    call {H('write_snapshot')}(trim(case_ids(ci)), vals, tval)")
     if distributed:
         a("    end if")
-    a("    snap_cache(ci)%case_id = trim(case_ids(ci))")
-    a("    snap_cache(ci)%values = vals")
     a("    deallocate(vals)")
-    a("")
-    a("    ! --- honest per-case checks (runner-driven ids; xfail fold is the harness's) ---")
-    a(f"    allocate(case_checks({len(checks)}))")
-    for k, cid in enumerate(checks, start=1):
-        clit = _flit(cid)
-        # Per-id ABI (metric_compute's twin): the runner passes each IR-declared check id as a
-        # literal `intent(in)` actual, so the module authors only the status — a dropped/renamed
-        # id is structurally impossible. The width-binding line is the `case_checks(k)%id = '<id>'`
-        # assignment (~90-91 cols for a 64-char id, 2-digit index); the wrapped `checks_compute`
-        # call keeps its id on the continuation line (~82 cols). `_checks()` bounds the id at
-        # CASE_ID_LEN (64) and the global column backstop fail-closes any pathological escaped id.
-        a("    call checks_compute(trim(case_ids(ci)), &")
-        a(f"      '{clit}', cstatus)")
-        a(f"    case_checks({k})%id = '{clit}'")
-        a(f"    case_checks({k})%status = cstatus")
-    a("")
-    if metrics:
-        a("    ! --- per-case metric leaves (dotted addresses; NA carried honestly) ---")
-        a(f"    allocate(case_metrics({len(metrics)}))")
-        a("    mcount = 0")
-        for m in metrics:
-            mlit = _flit(m)
-            # Wrapped: a dotted metric address makes the single-line form exceed the linter's
-            # column limit (100 today) at ~23 chars, so the address sits on the header and the out-args wrap.
-            a(f"    call metric_compute(trim(case_ids(ci)), '{mlit}', &")
-            a("      mval, mis_na, mreason, mfound)")
-            a("    if (mfound) then")
-            a("      mcount = mcount + 1")
-            a(f"      case_metrics(mcount)%name = '{mlit}'")
-            a("      case_metrics(mcount)%value = mval")
-            a("      case_metrics(mcount)%is_na = mis_na")
-            a("      if (mis_na) then")
-            a("        case_metrics(mcount)%reason_na = trim(mreason)")
-            a("      else")
-            a("        case_metrics(mcount)%reason_na = ''")
-            a("      end if")
-            a("    end if")
-        a("")
-    a("    results(ci)%case_id = trim(case_ids(ci))")
-    a(f"    results(ci)%expected_xfail = {_xfail_expr(case_ids, xfail)}")
-    a("    results(ci)%checks = case_checks")
-    a("    deallocate(case_checks)")
-    if metrics:
-        a("    results(ci)%metrics = case_metrics(1:mcount)")
-        a("    deallocate(case_metrics)")
-    else:
-        a("    allocate(results(ci)%metrics(0))")
     a("  end do")
     a("")
     a("  call system_clock(count=clock1)")
@@ -754,41 +594,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         # Everything below reads the values rank 0 captured and writes the outputs, so it is
         # rank 0's alone; the other ranks go straight to the end of the runtime.
         a("  if (rank == 0) then")
-    # ---- metrics-basis: ONE entry per (test_id, target case_id) pair (R3-core).
-    # A test's primary evidence is the evidence of EVERY case its predicate ranges over: a
-    # single-target test contributes one row, a convergence sweep (nx = 32/64/128) three, a
-    # base/shifted equivariance pair two. `(test_id, case_id)` is the entry's unique key, and
-    # the post_execute completeness matrix (`_validate_metrics_basis_per_test`) pins the entry
-    # set against exactly this product, so partial evidence cannot pass.
-    #
-    # Every target case's snapshot holds its test's `required_raw_variables` BY CONSTRUCTION:
-    # the runner captures EVERY schema variable for every case, and `_per_case_vars` already
-    # fail-closes when a required variable is absent from the schema. So each `pick` below
-    # resolves — there is no additional precondition to check here.
-    mb_rows = runner_ir.metrics_basis_rows(ir, evidence, schema_vars)
-    a("  ! --- metrics-basis entries: one per (test_id, target case_id) --------------")
-    a(f"  allocate(mb_entries({len(mb_rows)}))")
-    for k, (tid, tcase, req_vars) in enumerate(mb_rows, start=1):
-        # Wrap the case-id-bearing lines so a long case_id cannot exceed the linter's column limit.
-        a("  tci = find_case_index(case_ids, ncases, &")
-        a(f"    '{_flit(tcase)}')")
-        a("  if (tci < 1) then")
-        a("    write(error_unit, '(A)') 'error: target case not run: ' // &")
-        a(f"      '{_flit(tcase)}'")
-        a("    error stop 1")
-        a("  end if")
-        a(f"  mb_entries({k})%test_id = '{_flit(tid)}'")
-        a(f"  mb_entries({k})%case_id = &")
-        a(f"    '{_flit(tcase)}'")
-        a(f"  allocate(sel({len(req_vars)}))")
-        for j, rv in enumerate(req_vars, start=1):
-            a(f"  sel({j}) = pick(snap_cache(tci)%values, '{_flit(rv)}')")
-        a(f"  mb_entries({k})%values = sel")
-        a("  deallocate(sel)")
-    a("")
-    a("  ! --- emit the run outputs (harness owns every envelope + the fold) ----------")
-    a(f"  call {H('write_metrics_basis')}(mb_entries, {len(mb_rows)})")
-    a(f"  call {H('write_diagnostics')}(results, ncases)")
+    a("  ! --- emit the perf record (harness owns its envelope) ------------------------")
     a(f"  call {H('write_perf')}(trim(case_ids(ncases)), '{_flit(target_class)}', &")
     if distributed:
         a("    steps_total, cells_total, walltime, &")
@@ -863,45 +669,14 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("    error stop 1")
     a("  end subroutine require_bound")
     a("")
-    a("  ! Index of `target` in the parsed case list, or -1 when absent.")
-    a("  function find_case_index(ids, n, target) result(idx)")
-    a("    character(len=*), intent(in) :: ids(:)")
-    a("    integer, intent(in) :: n")
-    a("    character(len=*), intent(in) :: target")
-    a("    integer :: idx, k")
-    a("    idx = -1")
-    a("    do k = 1, n")
-    a("      if (trim(ids(k)) == target) then")
-    a("        idx = k")
-    a("        return")
-    a("      end if")
-    a("    end do")
-    a("  end function find_case_index")
-    a("")
-    a("  ! The boxed value named `name` from a case's cached snapshot values.")
-    a(f"  function pick(vals_in, name) result(nv)")
-    a(f"    type({H('h_named')}), intent(in) :: vals_in(:)")
-    a("    character(len=*), intent(in) :: name")
-    a(f"    type({H('h_named')}) :: nv")
-    a("    integer :: k")
-    a("    do k = 1, size(vals_in)")
-    a("      if (trim(vals_in(k)%name) == name) then")
-    a("        nv = vals_in(k)")
-    a("        return")
-    a("      end if")
-    a("    end do")
-    a("    write(error_unit, '(A)') 'error: raw variable '//trim(name)//' absent from snapshot'")
-    a("    error stop 1")
-    a("  end function pick")
-    a("")
     a(f"end program {spec_id}_runner")
     # Safety net: the runner is host-rendered (NOT in the leaf's allowed_output_paths), so a
     # line over the deterministic Generate.gate lint-checker column limit (`max_rendered_line()`) would
     # be an UNREPAIRABLE wedge (no leaf can edit a host file). The hot lines above are wrapped,
-    # but an extreme IR-sourced name (a very long metric address / case_id / variable) could
+    # but an extreme IR-sourced name (a very long case_id / variable) could
     # still overflow a line we did not wrap — fail closed HERE (a clean RenderError → transport
     # fail_closed with an actionable message) rather than let it surface as a lint wedge.
-    # A few `lines` entries embed their own `&` continuations (the multi-line `_xfail_expr`),
+    # A few `lines` entries embed their own `&` continuations,
     # so measure per PHYSICAL line (split on embedded newlines) — measuring the joined entry
     # would false-fail a valid render whose wrapped physical lines are each within the limit.
     # `>=`, not `>`: on some supported linter builds the column rule fires AT the limit (the
@@ -914,7 +689,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
                 raise RenderError(
                     f"rendered runner line reaches the linter's {limit}-column limit "
                     f"({len(ln)} columns; {limit - 1} is the widest that lints everywhere): "
-                    f"{ln.strip()[:80]!r}… — an IR-sourced name (case_id / metric address / "
+                    f"{ln.strip()[:80]!r}… — an IR-sourced name (case_id / "
                     "variable) is too long for the lint column limit; shorten it")
     return "\n".join(lines) + "\n"
 
@@ -1003,8 +778,7 @@ def _render_distributed_abi_comment(a: Any, harness_spec_id: str) -> None:
         "  ! axis holds ng halo cells, the owned cells, then ng halo cells, and fills them at",
         "  ! every position of the other axis; exchanging along one dimension and then the other",
         "  ! fills the corner halo cells too. A scalar is replicated. case_run reports the cells",
-        "  ! THIS rank updated (the runner sums them), and checks_compute / metric_compute run",
-        "  ! on every rank, rank 0's results being written. A checks module, and a problem's",
+        "  ! THIS rank updated (the runner sums them). A checks module, and a problem's",
         "  ! model, may use the harness module for these operations and no other (the direct",
         "  ! use of the message-passing library is refused). A component's model names none:",
         "  ! consumers call its operations on their own rank's block, so the component",
@@ -1024,259 +798,6 @@ def render_checks_header(ir: dict[str, Any], spec_id: str) -> None:
     `use` of it is checked against them by the compiler, so the host renders no checks header
     for Fortran (`host_render.render_checks_header`)."""
     del ir, spec_id
-
-
-# --- checks ABI: the dummy declaration the compiler cannot check ----------------
-
-_DECL_TYPE_RE = re.compile(
-    r"^(?:integer|real|logical|complex|character|double\s*precision|type\s*\(|class\s*\()")
-# A statement label may precede any statement (`10 subroutine f(x)`, `20 end`); the walk
-# strips one before matching, so a labelled definition is neither skipped nor read as an
-# executable statement.
-_LABEL_RE = re.compile(r"^\d+\s+")
-_UNIT_HEADER_RE = re.compile(r"^module\s+([a-z]\w*)$")
-# An `interface` block opener. `interface` is not a reserved word: `interface = 1` and
-# `interface(1) = 1` are assignments (round-2 review: read as an opener with no closer, they
-# hid every later definition), so a following `=` or `(` is excluded.
-_INTERFACE_OPEN_RE = re.compile(r"^(?:abstract\s+)?interface\b(?!\s*[=(])")
-# A procedure definition header over a string-masked statement (the type-spec prefix of a
-# function is greedy, exactly as the neutral ABI scan matches it).
-_PROC_HEADER_RE = re.compile(
-    r"^(?:(?:module|pure|impure|elemental|recursive|non_recursive)\s+)*"
-    r"(?:(?:integer|real|double\s+precision|complex|logical|character|type|class)\b[^!]*\s+)?"
-    r"(subroutine|function)\s+([a-z]\w*)\s*(?:\((.*?)\))?")
-
-
-def _statements(text: str) -> list[str]:
-    """Free-form source as one statement per entry: comments stripped, continuations joined,
-    `;`-joined statements split, each stripped and lower-cased (Fortran is case-insensitive)."""
-    return [_LABEL_RE.sub("", stmt.strip().lower())
-            for line in fortran_lines.fortran_logical_line_texts(text)
-            for stmt in fortran_lines.split_fortran_statements(line)
-            if stmt.strip()]
-
-
-def _split_declaration(stmt: str) -> tuple[str, str] | None:
-    """A type declaration statement as `(attribute_list, entity_list)`, or None when `stmt` is
-    not one. With `::` the split is at the first `::` outside parentheses and literals; without
-    it the language allows no attributes, so the entity list is what follows the type-spec
-    (the keyword, then a `*len` / `(...)` selector with balanced parentheses)."""
-    if not _DECL_TYPE_RE.match(stmt):
-        return None
-    depth = 0
-    quote = ""
-    for i, c in enumerate(stmt):
-        if quote:
-            if c == quote:
-                quote = ""
-        elif c in "'\"":
-            quote = c
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-        elif c == ":" and depth == 0 and stmt.startswith("::", i):
-            return stmt[:i], stmt[i + 2:]
-    m = re.match(r"^(?:double\s*precision|integer|real|logical|complex|character|type|class)",
-                 stmt)
-    i = m.end()
-    n = len(stmt)
-    while i < n:
-        c = stmt[i]
-        if c in " \t":
-            i += 1
-        elif c == "*":
-            i += 1
-            while i < n and (stmt[i] in " \t" or stmt[i].isdigit()):
-                i += 1
-        elif c == "(":
-            depth = 0
-            while i < n:
-                if stmt[i] == "(":
-                    depth += 1
-                elif stmt[i] == ")":
-                    depth -= 1
-                    if depth == 0:
-                        i += 1
-                        break
-                i += 1
-        else:
-            break
-    return "", stmt[i:]
-
-
-def _entity_names(entity_list: str) -> set[str]:
-    """The names an entity list declares: the leading identifier of each top-level
-    comma-separated item (`x`, `x(:)`, `x*8`, `x = 0`)."""
-    names: set[str] = set()
-    for item in fortran_lines.split_top_level_commas(entity_list):
-        m = re.match(r"^\s*([a-z]\w*)", item)
-        if m:
-            names.add(m.group(1))
-    return names
-
-
-def _declared_allocatable(spec_part: list[str], name: str) -> bool | None:
-    """Whether `name` carries the `allocatable` attribute over the statements of one
-    specification part — in its type declaration's attribute list or in a separate
-    `allocatable [::] <names>` attribute statement; None when no type declaration statement
-    declares `name` at all."""
-    declared = False
-    allocatable = False
-    for stmt in spec_part:
-        am = re.match(r"^allocatable\b\s*(?:::)?(.*)$", stmt)
-        if am:
-            if name in _entity_names(am.group(1)):
-                allocatable = True
-            continue
-        split = _split_declaration(stmt)
-        if split is None or name not in _entity_names(split[1]):
-            continue
-        declared = True
-        if any(a.strip() == "allocatable"
-               for a in fortran_lines.split_top_level_commas(split[0])):
-            allocatable = True
-    return allocatable if declared else None
-
-
-def _specification_part(stmts: list[str]) -> list[str]:
-    """The statements of one procedure's specification part that can declare a dummy: from
-    the statement after its header up to its own `end`, its `contains`, or a nested procedure
-    header — with the bodies of a derived-type definition, an `interface` block and a
-    `block` construct skipped, since a component, a prototype's dummy or a block-local
-    variable named like the dummy is not the dummy's declaration (round-1 and round-2 reviews
-    built both directions: a `type` component or a `block` local declared allocatable vouching
-    for a fixed-length dummy, and a `type` block whose `end type` cut the reading short of the
-    real declaration). An `enum` block needs no skip: an enumerator
-    cannot share the dummy's name, and only an `end` that names a procedure kind (or a bare
-    one) ends the reading, so `end enum` is passed over."""
-    out: list[str] = []
-    skip_until: str | None = None
-    for s in stmts:
-        if skip_until is not None:
-            if re.match(skip_until, s):
-                skip_until = None
-            continue
-        if re.match(r"^type\b", s) and not re.match(r"^type\s*\(", s) \
-                and not re.match(r"^type\s+is\b", s):
-            skip_until = r"^end\s*type\b"
-            continue
-        if _INTERFACE_OPEN_RE.match(s):
-            skip_until = r"^end\s*interface\b"
-            continue
-        if re.match(r"^(?:[a-z]\w*\s*:\s*)?block\s*$", s):
-            skip_until = r"^end\s*block\b"
-            continue
-        if (re.match(r"^end\s*(?:subroutine|function|procedure)\b", s) or s == "end"
-                or s == "contains"
-                or _PROC_HEADER_RE.match(fortran_lines.mask_code_lookalikes(s))):
-            break
-        out.append(s)
-    return out
-
-
-def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
-    """The one dummy-declaration constraint on `<spec_id>_checks` the compiler cannot state, or
-    None: a `metric_compute` DEFINED at module level inside `module <spec_id>_checks` must
-    declare `METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY` (found by POSITION in its dummy list, so a
-    renamed dummy is still the one the runner's unallocated actual reaches) with the
-    `allocatable` attribute — see `METRIC_COMPUTE_DUMMIES` for why that attribute alone.
-
-    Positive evidence only, like `checks_module_abi_facts`: a module that publishes the name
-    without defining it here is not judged, and a definition inside an `interface` block, an
-    internal procedure, or another module is not the runner's callee. For THIS check that
-    is a designed limit rather than a hand-off: the syntax gate resolves the `use` but not
-    the attribute, so a `metric_compute` reached by use association, a generic interface, a
-    procedure pointer or a separate module procedure (`module subroutine` prototype plus
-    `submodule`) is accepted unjudged. None occurred in the 66 checks modules under the
-    operator's gitignored `workspace/` at review time (rounds 1-2, `os.walk`), and every
-    certified module defines it inline. The required set is the FULL fixed ABI, so this runs whether or not
-    the node's runner imports `metric_compute` (a node with no metrics stubs it and the runner
-    never calls it — the declaration is still the pinned one, and the check is uniform rather
-    than conditioned on the IR).
-
-    Read over statements (`fortran_lines`), never lines, with the same tolerance for spelling as
-    the ABI scan: a declaration with `::` or without, the attribute inline or in a separate
-    `allocatable ::` statement, `end subroutine` / `endsubroutine` / bare `end`. The
-    specification part is read up to the first `contains` or the procedure's own end. A
-    `metric_compute` with fewer dummies than the position is a violation here (fail-closed);
-    the syntax gate would refuse the call too. The two fail-open shapes a walk like this can
-    take are both closed on the safe side: a bare `end` is never read as closing the target
-    module (a later `metric_compute` would otherwise be skipped), and a body whose end is not
-    found is judged over what was read."""
-    target = f"{spec_id}_checks".lower()
-    position = METRIC_COMPUTE_DUMMIES.index(METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY)
-    stmts = _statements(text)
-    in_target = False
-    in_interface = False
-    proc_depth = 0
-    for i, s in enumerate(stmts):
-        um = _UNIT_HEADER_RE.match(s)
-        if um:
-            in_target = um.group(1) == target
-            proc_depth, in_interface = 0, False
-            continue
-        if re.match(r"^end\s*module\b", s):
-            in_target = False
-            proc_depth, in_interface = 0, False
-            continue
-        if not in_interface and _INTERFACE_OPEN_RE.match(s):
-            in_interface = True
-            continue
-        if in_interface:
-            if re.match(r"^end\s*interface\b", s):
-                in_interface = False
-            continue
-        if re.match(r"^end\s*(?:subroutine|function|procedure)\b", s) or s == "end":
-            proc_depth = max(proc_depth - 1, 0)
-            continue
-        hm = _PROC_HEADER_RE.match(fortran_lines.mask_code_lookalikes(s))
-        if hm is None:
-            continue
-        proc_depth += 1
-        if not (in_target and proc_depth == 1
-                and hm.group(1) == "subroutine" and hm.group(2) == "metric_compute"):
-            continue
-        # The header is matched on the masked text; the dummy list is read from the original.
-        dummies = [d.strip() for d in fortran_lines.split_top_level_commas(
-            s[hm.start(3):hm.end(3)] if hm.group(3) is not None else "") if d.strip()]
-        pinned = ", ".join(METRIC_COMPUTE_DUMMIES)
-        if len(dummies) <= position:
-            return (f"metric_compute declares {len(dummies)} dummy argument(s) where the "
-                    f"runner's call passes {len(METRIC_COMPUTE_DUMMIES)}: declare it as "
-                    f"metric_compute({pinned})")
-        name = dummies[position]
-        verdict = _declared_allocatable(_specification_part(stmts[i + 1:]), name)
-        if verdict is None:
-            return (f"metric_compute's dummy argument {name!r} (position {position + 1}, the "
-                    f"one the host-rendered runner passes its unallocated deferred-length "
-                    f"actual for) has no type declaration statement in metric_compute; declare "
-                    f"it as the ABI comment in the rendered runner states: "
-                    f"`character(len=:), allocatable, intent(out) :: {name}`")
-        if not verdict:
-            return (f"metric_compute's dummy argument {name!r} (position {position + 1}) is "
-                    f"declared without the `allocatable` attribute. The host-rendered runner "
-                    f"passes an UNALLOCATED `character(len=:), allocatable` actual for it, "
-                    f"which a fixed-length dummy accepts at compile time (no diagnostic from "
-                    f"the syntax check or the build) and faults on at the first call (the "
-                    f"assignment writes through a null descriptor). Declare it as the ABI "
-                    f"comment in the rendered runner states: "
-                    f"`character(len=:), allocatable, intent(out) :: {name}` — an assignment "
-                    f"`{name} = '<short reason>'` then allocates it")
-        return None
-    return None
-
-
-def _xfail_expr(case_ids: list[str], xfail: set[str]) -> str:
-    """Fortran boolean expression selecting the xfail cases at runtime.
-
-    Kept inline (per-case, in the loop) rather than a table so the runner needs
-    no extra module state; short-circuits to ``.false.`` when there are none."""
-    xf = [c for c in case_ids if c in xfail]
-    if not xf:
-        return ".false."
-    terms = " .or. &\n      ".join(f"trim(case_ids(ci)) == '{_flit(c)}'" for c in xf)
-    return terms
 
 
 # --- harness interface signature pin (fail-closed, run before rendering) ------

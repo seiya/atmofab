@@ -190,16 +190,13 @@ _TEST_ID = "t_basic"
 
 
 def _entries(test_id: str = _TEST_ID) -> dict:
-    """One test's three verification lists, as they sit in a whole IR's `io_contract`."""
+    """One test's two verification lists, as they sit in a whole IR's `io_contract`."""
     return {
-        "test_evidence_requirements": [{"test_id": test_id, "required_raw_variables": ["q"]}],
-        "test_predicates": [{"test_id": test_id, "expected_outcome": "pass",
-                             "target_cases": ["c1"],
-                             "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq",
-                                                    "value": "pass", "quantity": "q"}]}}],
-        "primary_predicates": [{"test_id": test_id, "quantity": "q",
-                                "target_cases": ["c1"], "expr": "max(final.q)",
-                                "op": "le", "value": 1.0}],
+        "tests": [{"test_id": test_id, "expected_outcome": "pass", "target_cases": ["c1"],
+                   "quantities": ["q"]}],
+        "predicates": [{"test_id": test_id, "quantity": "q",
+                        "target_cases": ["c1"], "expr": "max(final.q)",
+                        "op": "le", "value": 1.0}],
     }
 
 
@@ -211,16 +208,14 @@ def _part(test_id: str = _TEST_ID) -> dict:
 
 def _assembled_ir(*test_ids: str) -> dict:
     """`_valid_ir()` as a WHOLE IR: each test's verification entries in the order given, in
-    `io_contract`'s schema order (`inputs`, `outputs`, the evidence list, then the two predicate
-    lists). The document a `compile.generate` leaf writes as `spec.ir.yaml`."""
+    `io_contract`'s schema order (`inputs`, `outputs`, `tests`, then `predicates`). The document a `compile.generate` leaf writes as `spec.ir.yaml`."""
     ir = _valid_ir()
     parts = [_entries(t) for t in (test_ids or (_TEST_ID,))]
     io = ir["io_contract"]
     ir["io_contract"] = {
         "inputs": io["inputs"], "outputs": io["outputs"],
-        "test_evidence_requirements": [e for p in parts for e in p["test_evidence_requirements"]],
-        "test_predicates": [e for p in parts for e in p["test_predicates"]],
-        "primary_predicates": [e for p in parts for e in p["primary_predicates"]],
+        "tests": [e for p in parts for e in p["tests"]],
+        "predicates": [e for p in parts for e in p["predicates"]],
     }
     return ir
 
@@ -536,30 +531,29 @@ class PureCompileContextTests(_Fixture):
         # The reviewer reads the file verbatim, so the prototype the producer is shown reaches it.
         self.assertIn(f'"name": "{_SPEC_ID}_rhs"', ctx["dependency_surface_document"])
 
-    #: The V3 coverage rule as both compile leaves read it (issue #386). A `problem` `tests.md`
-    #: names no `checks.<id>` key in its Diagnostics contract and writes each judgment as test
-    #: prose, so a rule keyed on the keys alone left the check list to the producer's taste —
-    #: and, read with "neither more nor less", refused the `cfl` id every guard test names.
+    #: The V3 judgment-coverage rule as both compile leaves read it (issue #386; issue #582: the
+    #: `quantities` line replaced the `checks[].id` list). A rule keyed on names alone leaves the
+    #: judgment list to the producer's taste, so V3 (i) reads each entry against the §6 prose.
     #: Each phrase must sit on the V3 bullet itself, not anywhere in the document.
-    _V3_PREFIX = "- Every `io_contract.diagnostics_contract.checks[].id` answers to `tests.md`"
+    _V3_PREFIX = "- **`io_contract.tests` and `io_contract.predicates` (Z6,"
     _V3_PHRASES = (
-        "to a check a test's `pass_when` names",
-        "or to a judgment a test (§6) applies; an id that answers to none is a defect",
-        "every judgment a test applies and reports WITHOUT making it a condition of its "
-        "`pass_when`",
-        "nor does one whose threshold is `informational_only`",
-        "A cross-target judgment is no source either way",
+        "each test's `quantities` equals its `tests.md` `quantities:` line",
+        "the set of `quantity` over its predicates that are not cross-target equals its "
+        "`quantities`",
+        "each `quantities` entry names a judgment the test's §6 definition makes, and every "
+        "judgment that definition makes has one",
+        "a judgment with no entry, or an entry no judgment answers to, is a `fail`",
     )
     #: Matches both stale spellings, `tests.md §3` and ``tests.md` §3``.
     _STALE = re.compile(r"tests\.md`?\s*§[34]\b")
 
-    def test_both_compile_leaves_read_the_non_gating_coverage_rule(self) -> None:
+    def test_both_compile_leaves_read_the_judgment_coverage_rule(self) -> None:
         """Read through the two builders, so a document the leaves stop inlining is red too.
         What this does NOT hold is the rule's meaning: a rewording that keeps each phrase and
         negates the sentence is green here, and is held by the `COMPILE_INLINED_DOCUMENTS_VERSION`
         digest (`test_derivation_transformation_drift.py`), a review gate on every byte.
-        The stale `tests.md §3` / `§4` spellings (the Diagnostics contract is §5 and the tests
-        §6 in every `tests.md`) must not come back beside it."""
+        The stale `tests.md §3` / `§4` spellings (the quantities are §5 and the tests §6 in every
+        `tests.md`) must not come back beside it."""
         # The stale-spelling pattern must be able to match, in both spellings.
         for probe in ("tests.md §3", "`tests.md` §4", "tests.md`§3"):
             self.assertRegex(probe, self._STALE)
@@ -573,7 +567,6 @@ class PureCompileContextTests(_Fixture):
                 self.assertEqual(len(bullets), 1, "the V3 coverage bullet is not one line")
                 for phrase in self._V3_PHRASES:
                     self.assertIn(phrase, bullets[0])
-                self.assertIn("one `tests.md` marks non-gating included", doc)
                 self.assertNotRegex(doc, self._STALE)
 
 

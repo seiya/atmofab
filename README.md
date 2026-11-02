@@ -90,7 +90,7 @@ workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/ lineage.json
 workspace/orchestrations/<orchestration_id>/                 orchestration_meta.json, agent_graph.json, agent_runs.jsonl
 ```
 
-`Validate` emits `diagnostics.json`, `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
+`Validate` emits `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_id>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
 
 The driver prints the run's event stream on stdout (`--stdout-format human`, or `jsonl` for a caller that parses it) and mirrors it to `workspace/orchestrations/<orchestration_id>/run_logs/`. A run's terminal state is `orchestration_meta.json#status`; the node's physics judgment, including its dependencies, is `aggregate_verdict.json`.
 

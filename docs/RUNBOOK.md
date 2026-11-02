@@ -37,7 +37,7 @@ pip install -r requirements.txt
 | `PyYAML` | every host-side reader of `spec.ir.yaml` and of the leaf-`LLM` configuration |
 | `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` (measured at 0.26.0) |
 | `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (measured at, and written against, 0.6.0) |
-| `numpy` | the array arithmetic behind `tools/primary_evidence.py`: `Validate.execute` values every `io_contract.primary_predicates` expression over the captured state with it (Z6, [issue #255](https://github.com/seiya/atmofab/issues/255); measured at 1.26.4) |
+| `numpy` | the array arithmetic behind `tools/primary_evidence.py`: `Validate.execute` values every `io_contract.predicates` expression over the captured state with it (Z6, [issue #255](https://github.com/seiya/atmofab/issues/255); measured at 1.26.4) |
 
 **Install from the file, not from the names.** The two `tree-sitter` versions in the table are a
 measured property of this repository, not a free choice: they are `MEASURED_PACKAGE_VERSIONS` in
@@ -52,7 +52,7 @@ They are needed by the HOST that runs the conductor, because `Generate.gate`'s s
 `python3 tools/validate_pipeline_semantics.py` there and `Validate.execute` authors `verdict.json`
 there; no leaf needs them. Without the `tree-sitter` pair that gate cannot read a Fortran source at
 all and fails closed — correctly, but only after lint and syntax have passed, i.e. part-way into a
-billed run — and without `numpy` the first IR that carries `primary_predicates` cannot be gated at
+billed run — and without `numpy` the first IR that carries `predicates` cannot be gated at
 `Compile.static`, nor any verdict authored at `Validate.execute`; so their absence is checked at
 launch instead. The check has two halves: `numpy` is refused for every run (`tools/run_workflow.py`
 `REQUIRED_PYTHON_MODULES`), and the `tree-sitter` pair only for a target whose language reads its
@@ -347,7 +347,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 - Generated (Compile): `spec.ir.yaml` (**a single structural IR**: integrating the case / algorithm / io_contract / dependency sections; it names no implementation target)
 - Generated (Generate): the source of `model` (physics computation) and `runner` (execution / judgment coordination)
 - Generated (Build): the binary (`binary/<binary_id>/bin/`)
-- Output (Validate): `diagnostics.json` / `perf.json` / `verdict.json` / `aggregate_verdict.json` / `summary.json` / `semantic_review.json`
+- Output (Validate): `perf.json` / `verdict.json` / `aggregate_verdict.json` / `summary.json` / `semantic_review.json`
 - Forbidden: `dummy` output, `dummy` data, `dummy` computation, artificial artifact generation for the purpose of advancing the workflow
 
 ## 1-1. artifact layout (operationally required)
@@ -373,7 +373,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 - Every validator gate is run by the CONDUCTOR, directly, inside a deterministic substep (`Compile.static`, `Generate.gate`, `Validate.pre_judge` / `post_judge`). The `run-gate` subcommand existed so a LEAF could invoke one through a capability check; it is deleted with the capability ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2), and no leaf invokes anything. An operator running a gate by hand calls `python3 tools/validate_pipeline_semantics.py --stage <stage> …` directly.
 - A shortage of the requirement definition must not be back-derived from the verification implementation. On shortage, the relevant phase is `fail`.
 - `Validate.judge`, in addition to the fixed-script check, mandatorily executes an `LLM` semantic check, and includes `decision=pass` of `semantic_review.json` as a start condition.
-- Before `Validate.judge` starts, verify that the `run_program` execution record, `diagnostics.json`, `perf.json`, and the `raw` execution evidence are present under the same `run_id` of the target `node_key`. When not met, it is a `Validate.judge fail`.
+- Before `Validate.judge` starts, verify that the `run_program` execution record, `perf.json`, and the `raw` execution evidence are present under the same `run_id` of the target `node_key`. When not met, it is a `Validate.judge fail`.
 - Both `Compile` LLM substeps run as a `workshop leaf` ([issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b; a `pure-function leaf` from [issue #168](https://github.com/seiya/atmofab/issues/168) until then): `Compile.generate` is the producing kind, whose one wrapper operation is `check_ir`, and `Compile.verify` the reading kind (`docs/ORCHESTRATION.md` §workshop leaf). Neither holds repository write authority; the host writes `spec.ir.yaml` / `ir_meta.json` from the lineage's tree. There is no agentic path to put a leaf back on: Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted it, and a `capabilities:` list naming `pure` is REFUSED at load with `llm_config_invalid_field` (a substep entry narrowed away from `workshop` with `llm_config_capability_insufficient_for_substep`, a `defaults` entry with `llm_config_defaults_not_workshop`).
 - `Compile.verify` launches **no** validator gate. The `--stage compile` gate (`--ir-ref workspace/ir/<node_key_safe>/<ir_id>/`) and `validate_workspace_root.py` now run in the conductor's deterministic `Compile.static` substep (`Conductor._compile_static_inproc`) **before** `Compile.verify`; a violation warm-resumes `Compile.generate` so verify is reached only on a deterministically-clean IR. A verify leaf could not issue `--stage compile` itself: `ALLOWED_VALIDATE_PIPELINE_STAGES[("compile","verify")]` was empty and the launch validator refused a prompt that named it. Both are deleted in Z4 (issue #171) — no leaf can reach the validator: a `workshop leaf` cannot reach the checkout — a CLI leaf runs under an empty tmpfs at the checkout path, and an HTTP leaf's file tools resolve paths inside its work tree alone, so there is nothing left to refuse.
 - `Generate.verify` launches **no** validator gate. The `post_generate` gate (`--stage post_generate --pipeline-root workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/ --source-id <source_id>`) and `validate_workspace_root.py` now run in the conductor's deterministic `Generate.gate` static check (`Conductor._gate_static_check`) **before** `Generate.verify`; a violation warm-resumes `Generate.generate` so verify is reached only on a deterministically-clean source. A verify leaf could not issue `--stage post_generate` itself: `ALLOWED_VALIDATE_PIPELINE_STAGES[("generate","verify")]` was empty and the launch validator refused a prompt that named it. Both are deleted in Z4 (issue #171) — no leaf can reach the validator: a `workshop leaf` cannot reach the checkout — a CLI leaf runs under an empty tmpfs at the checkout path, and an HTTP leaf's file tools resolve paths inside its work tree alone, so there is nothing left to refuse.
@@ -425,7 +425,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 7. **Validate**: per target `node`, the deterministic `Validate.pre_judge` substep checks dependency-DAG readiness, the `Validate.execute` substep runs the binary and generates primary evidence, the `Validate.judge` substep reviews the evidence the host seeds into its tree and finalizes the `verdict`, and the deterministic `Validate.post_judge` substep runs the `--stage pre_judge` gate and classifies violation severity.
    - `Validate.execute` runs the `runner` with the build-runtime library's `run_program`, and always includes `spec.ir.yaml.case` in the `run_program` execution command.
    - `Validate.execute` saves the primary evidence for judgment recomputation into `runs/<run_id>/<node_key_safe>/raw/`. The required condition of the `raw` composition uses `spec.ir.yaml.io_contract.raw_requirements.required_evidence` as the canonical source.
-   - `Validate.judge` reconciles `diagnostics` against the `raw` primary evidence — since Z3 (issue #169) through the host-computed excerpt of it, never by reading `raw/` itself — and a mismatch is a `Validate.judge fail`. In addition to the fixed-script check, it performs an `LLM` semantic check, and makes `decision=pass` of `semantic_review.json` a required condition.
+   - `Validate.judge` reconciles the host's `verdict.json` records against the `raw` primary evidence — since Z3 (issue #169) through the host-computed excerpt of it, never by reading `raw/` itself — and a mismatch is a `Validate.judge fail`. In addition to the fixed-script check, it performs an `LLM` semantic check, and makes `decision=pass` of `semantic_review.json` a required condition.
    - The judgment including dependencies is output to `aggregate_verdict.json`. When an immediate dependency `node` is `fail` or `blocked`, the upper `node` ends as `blocked`.
 8. **Forced stop**: when the relevant phase cannot proceed due to an input shortage or a preceding-stage artifact shortage, stop the relevant phase with `fail`. It must not proceed with estimated completion or artificial file generation.
 9. **Recording**: save `spec_version` / `test_profile_version` / `case_hash` / `git_sha`.
@@ -448,7 +448,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 | Generate verification fail (implementation inconsistent with the IR) | `Generate` (and `Compile` if the IR is wrong) |
 | Build failure (compile error) | `Generate` (deterministically go back to Generate) |
 | Physics fail (the execution result is a judgment failure) | one of `Generate` / `Compile` / `Spec` — specify the detail in `judge.findings` |
-| Validate judgment fail (divergence of the primary evidence and diagnostics) | `Generate` (code-quality problem) |
+| Validate judgment fail (a host predicate fails, or the judge finds the evidence does not support the verdict) | `Generate` (code-quality problem) |
 | `semantic_review.decision=fail` (implementation differs from the IR's intent) | `Generate` |
 | `semantic_review.decision=fail` (the IR itself differs from the spec's intent) | `Compile` |
 | Dependency integration fail (missing dependency `operation` call) | `Generate` or `Build` |
@@ -523,6 +523,12 @@ What moves the key, and therefore re-derives: an edit to a node's `controlled_sp
 **One-time cost of the thread-count tie ([issue #512](https://github.com/seiya/atmofab/issues/512)).** The single-process harness the `openmp` CPU target runs over moved to `0.8.0` (its `__write_perf` takes no thread count and writes as `threads_per_rank` the count the run's shared-memory runtime gives the program, so its self-test and the host-rendered runner of every node built on it record the count through the same writer), `RENDER_VERSION` to `render-12` and `EXECUTE_VERSION` to `execute-12` (`quality_check.json#shapes` gains `observed_threads_per_rank` and, on a target some shape of which runs more than one thread per rank, `thread_match`, which the post-execute gate reads). The render version is in every generate key, so the first `--with-deps` run after this change re-derives every Generate, Build and Validate on every target, and on that target certifies the harness first, from Compile, under its new version; no other node's Compile moves.
 
 **One-time cost of the published-surface key ([issue #574](https://github.com/seiya/atmofab/issues/574)).** `DERIVATION_KEY_VERSION` moved to 3: the compile and generate keys no longer hash the closure members' outputs and bind each member's published surface, §5.1 of its spec, instead; the transformation tuples carry the per-phase reader contracts (`compile-verify-1`, `generate-verify-1`, `validate-judge-1`) and no producer contract. Every certified node re-derives from Compile on its next run (`derivation_key_mismatch:transformation`); nothing backfills the old stamps. Measured at the change: the live corpus was the channel closure on one target, 8 nodes, $59.83. After this change a bump of `LEAF_PROMPT_CONTRACT_VERSION` moves no key, and a bump of a reader constant re-derives that phase of every node and what depends on it.
+
+**One-time cost of the host verdict ([issue #582](https://github.com/seiya/atmofab/issues/582)).** `COMPILE_INLINED_DOCUMENTS_VERSION` moved to `compile-docs-23`, `COMPILE_VERIFY_CONTRACT_VERSION` to `compile-verify-2`, `RENDER_VERSION` to `render-13`, `GENERATE_VERIFY_CONTRACT_VERSION` to `generate-verify-2`, `EXECUTE_VERSION` to `execute-13`, `VERDICT_VERSION` to `verdict-12`, `VALIDATE_JUDGE_CONTRACT_VERSION` to `validate-judge-2` and `RAW_EXCERPT_POLICY_VERSION` to `3`, so every certified node re-derives from Compile on its next run. What an operator meets is `derivation_key_mismatch:transformation`, because the key moves first. An IR carrying `test_predicates`, `primary_predicates`, `diagnostics_contract` or `test_evidence_requirements` is also refused by name by the compile validator (`ir_rejected_by_current_validator`, when `_phase_certification` re-runs it on a certified IR), so no old IR can be adopted. A `tests.md` also needs a `quantities` line per test (`docs/TESTS.md` §Description format). Re-certifying what is live, the channel closure and the microphysics pair on the one target certified today, costs **$89.26 by the recorded figures** ($65.83 on issue #574, which includes the channel's failed attempt of $15.81, plus $23.43 on issue #578), about **$73** if the closure runs clean; these are arithmetic over recorded runs of the old contract, not a measurement of the new one. The other targets hold no certification to redo. Recorded `verdict.json` / `diagnostics.json` files under `workspace/` stay readable as records.
+
+**Until both of issue #582's specification pull requests land, the harness specs and then the physics specs, `main` cannot run the workflow:** a `spec/` `tests.md` without a `quantities` line has its node's Compile refused, and every node needs its harness. The second of the two removes this paragraph.
+
+**A `tests.md` with no `quantities` line is refused only after a Compile leaf has run.** The refusal is the `--stage compile` gate on the leaf's IR, and no check before the leaf reads that line, so the leaf's cost is spent first, and the repair turns the refusal grants cannot help because a leaf cannot edit `tests.md`. Check a `spec` before starting it with `skills/spec-input-check`.
 
 **Forcing a phase to run although it is certified** (`--rederive <phase>[,<phase>]`, target node only): the phase runs, its previous output stays eligible, and — once the new attempt passes — the newer output is the selected one (`selection policy` v1), so each later phase re-derives exactly when its key moved and skips when the forced phase reproduced its output byte for byte (a Build on a toolchain whose binary is not byte-reproducible — the checked-in target's compiler is not — therefore always re-runs Validate). A forced attempt that FAILS leaves the standing output selected and the node certified: a failed attempt is a record, not a decision about the output that stands (`docs/ORCHESTRATION.md` §13a), so a dependency whose forced attempt failed stays `ready` for its consumers; `revoke-artifact` it if that is not what you want. A forced attempt whose failure routes to a retry (a gate finding, say) is repaired on the same routes as any attempt, within the per-phase budget. When the failed attempt wrote no meta, its revocation finds nothing to revoke while the standing output certifies the phase, and the run log says so (`revoke_artifact_forced_standing`) rather than stopping the run ([issue #369](https://github.com/seiya/atmofab/issues/369)). Recorded as `orchestration_meta.json#invocation.rederive` and as a `phase_rederive_forced` event; not auto-recovered on `--resume`.
 
@@ -654,15 +660,15 @@ python3 tools/run_workflow.py --resume build
 - The `Controlled Spec` has no undefined items.
 - `spec.ir.yaml` holds the 4 sections `case` / `algorithm` / `io_contract` / `dependency` (plus `public_api` on a `component` or `infrastructure` node), carries no `impl_defaults` section, and satisfies the V1–V4, V8 and V9 invariants of `Compile.verify`.
 - The `evidence_ref` of `spec.ir.yaml.io_contract.outputs` resolves to a `raw` entity.
-- `spec.ir.yaml.io_contract.test_evidence_requirements` holds all `test_id` of `tests.md` neither more nor less.
+- `spec.ir.yaml.io_contract.tests` holds all `test_id` of `tests.md` neither more nor less.
 - When `spec.ir.yaml.io_contract.raw_requirements.required_evidence` declares `artifact=state_snapshots` as required, `schema.variables[].name`, `schema.variables[].shape_expr`, `schema.time_variable`, and `schema.time_shape_expr` are defined.
 - The `__pycache__` output destination at `python` execution time is limited to under `workspace/`.
 - `Generate.verify` performs each of the G1–G7 verification items.
-- `Generate.verify` reconciles the `runner`'s raw-evidence output design with `spec.ir.yaml.io_contract.raw_requirements.required_evidence` / `test_evidence_requirements`, and statically confirms the per-test evidence needed for `Validate.judge` recomputation.
+- `Generate.verify` reconciles the `runner`'s raw-evidence output design with `spec.ir.yaml.io_contract.raw_requirements.required_evidence`, and statically confirms the captures `io_contract.predicates` read.
 - The required composition of `raw` matches `spec.ir.yaml.io_contract.raw_requirements.required_evidence`.
 - In the metadata of the `LLM`-using phase, `verification_status` is `pass`.
 - In a trial with `debug_mode=false`, no failed-attempt artifacts are saved.
-- `diagnostics` / `perf` / `verdict` all come out.
+- `perf` / `verdict` and the state snapshots all come out.
 - `aggregate_verdict` and `summary.dependency_summary` are consistent with `spec.ir.yaml.dependency`.
 - The `node_key` set of the `dependency_graph.json` sidecar's `all_nodes` matches the `node` set of `workspace/ir` / `workspace/pipelines`.
 - `orchestration_meta.json` / `agent_graph.json` / `agent_runs.jsonl` exist in `workspace/orchestrations/<orchestration_id>/`.
@@ -674,7 +680,7 @@ python3 tools/run_workflow.py --resume build
 - From the execution evidence, it can be confirmed that it is an independent `agent` execution of `orchestration -> step` or `orchestration -> substep`, not a batch `script` execution.
 - In a trial without an explicit specification, no reference or viewing of existing workflow output has been performed.
 - `lineage.json` is separated per `node`, and a single `lineage` does not mix multiple `node_key`.
-- The `Validate.judge` input is limited to the `run_program` execution record and `diagnostics` / `perf` of the same `run_id`.
+- The `Validate.judge` input is limited to the `run_program` execution record and `verdict` / `perf` of the same `run_id`, with the excerpt of its `raw` evidence.
 - A `node` that has dependencies calls the dependency `operation` resolved by `spec.ir.yaml.dependency`.
 - A function equivalent to a dependency `operation` is not re-implemented in the depending `node`.
 - The implementation body of a dependency `node` is not copied, relocated, or redefined in the upper `node`'s `source/<source_id>/src/`.
@@ -685,7 +691,6 @@ python3 tools/run_workflow.py --resume build
 - The `runner` does not launch an external interpreter such as `python` / `bash` / `sh` / `node`.
 - The `runner` does not write `verdict.json` / `aggregate_verdict.json` / `summary.json` / `trial_meta.json`.
 - `runs/<run_id>/<node_key_safe>/raw/` exists, and the files the `Validate.judge` excerpt is computed from are present.
-- `raw/metrics_basis.json` is composed from primary evidence, not a copy of `diagnostics.json`.
 - `python3 tools/validate_workspace_root.py` returns `PASS`.
 - The conductor-run `--stage pre_judge` gate passes — recorded in `runs/<run_id>/<node_key_safe>/post_judge_meta.json` as `status=pass` (the judge leaf no longer runs it; the deterministic `post_judge` substep does — see §Validate).
 - `semantic_review.json` exists and `decision=pass`.

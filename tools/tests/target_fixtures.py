@@ -133,7 +133,7 @@ def passing_shape_rows(profile: TargetProfile = FORTRAN_CPU) -> list[dict]:
     rows = []
     for shape in profile.execution_shapes:
         rows.append({**shape.record(), "command_id": f"cmd_{shape.label}", "run_ok": True,
-                     "verdict_available": True, "diagnostics_match": True,
+                     "verdict_available": True,
                      "verdict_match": True, "verdict": "pass",
                      "observed_mpi_ranks": shape.ranks,
                      "observed_process_grid": list(shape.process_grid or (shape.ranks, 1)),

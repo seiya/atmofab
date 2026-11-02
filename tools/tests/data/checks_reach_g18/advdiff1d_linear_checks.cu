@@ -1,4 +1,4 @@
-// advdiff1d_linear checks: case setup, time march, the cfl check and the diagnostic metrics.
+// advdiff1d_linear checks: case setup and time march.
 #include "advdiff1d_linear_checks.cuh"
 #include "advdiff1d_linear_model.cuh"
 
@@ -294,106 +294,6 @@ void case_run(const std::string& case_id, int& steps, int& cells_updated, bool& 
 
 void get_time(double& t) {
   t = g_case.t;
-}
-
-void checks_compute(const std::string& case_id, const std::string& check_id, std::string& status) {
-  if (check_id == "cfl") {
-    if (case_id != g_case.case_id || !g_case.params_ok) {
-      status = "na  ";
-    } else {
-      status = cfl_combined() > 1.0 ? "fail" : "pass";
-    }
-  } else {
-    status = "na  ";
-  }
-}
-
-void metric_compute(const std::string& case_id, const std::string& name, double& val, bool& is_na,
-                    std::string& reason_na, bool& found) {
-  val = 0.0;
-  is_na = false;
-  reason_na = "";
-  found = false;
-  if (case_id != g_case.case_id) {
-    return;
-  }
-  const bool per_case_metric = name == "cfl.combined_max" || name == "conserved.mass.initial" ||
-                               name == "conserved.mass.abs_initial" || name == "conserved.mass.final" ||
-                               name == "metrics.mass_drift_rel" || name == "errors.analytic.l2_rel_tend" ||
-                               name == "errors.mode_scheme_fidelity";
-  if (per_case_metric) {
-    found = true;
-    if (!g_case.params_ok) {
-      is_na = true;
-      reason_na = "case inputs rejected by case_setup";
-      return;
-    }
-    if (name == "cfl.combined_max") {
-      val = cfl_combined();
-      return;
-    }
-    if (name == "conserved.mass.initial") {
-      val = mass(g_case.u0, false);
-      return;
-    }
-    if (name == "conserved.mass.abs_initial") {
-      val = mass(g_case.u0, true);
-      return;
-    }
-    if (!g_case.run_ok) {
-      is_na = true;
-      reason_na = "case_run did not complete the time march";
-      return;
-    }
-    if (name == "conserved.mass.final") {
-      val = mass(u, false);
-      return;
-    }
-    if (name == "metrics.mass_drift_rel") {
-      const double m0 = mass(g_case.u0, false);
-      const double m1 = mass(u, false);
-      const double abs0 = mass(g_case.u0, true);
-      val = std::fabs(m1 - m0) / std::max(abs0, 1.0e-14);
-      return;
-    }
-    if (name == "errors.analytic.l2_rel_tend") {
-      val = l2_rel_error_tend();
-      return;
-    }
-    bool computable = false;
-    const double fidelity = mode_fidelity(computable);
-    if (!computable) {
-      is_na = true;
-      reason_na = "initial mode coefficient is zero";
-      return;
-    }
-    val = fidelity;
-    return;
-  }
-  if (name == "errors.symmetry_l2_rel") {
-    if (case_id.rfind("advdiff1d_sym_", 0) != 0) {
-      return;
-    }
-    found = true;
-    symmetry_residual(case_id, val, is_na, reason_na);
-    return;
-  }
-  if (name == "convergence.nx64_to_nx128.l2_order") {
-    if (case_id != "advdiff1d_ref_nx128_shift000_dts100") {
-      return;
-    }
-    found = true;
-    convergence_order("advdiff1d_ref_nx064_shift000_dts100", case_id, val, is_na, reason_na);
-    return;
-  }
-  if (name == "convergence.nx128_to_nx256.l2_order") {
-    if (case_id != "advdiff1d_ref_nx256_shift000_dts100") {
-      return;
-    }
-    found = true;
-    convergence_order("advdiff1d_ref_nx128_shift000_dts100", case_id, val, is_na, reason_na);
-    return;
-  }
 }
 
 }  // namespace advdiff1d_linear_checks

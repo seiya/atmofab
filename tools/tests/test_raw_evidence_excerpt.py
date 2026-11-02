@@ -1,11 +1,9 @@
-"""Unit tests for `tools/raw_evidence_excerpt.py` (issue #169, Z3).
+"""Unit tests for `tools/raw_evidence_excerpt.py` (issue #169, Z3; issue #582).
 
-Two subjects. The CONTRACT readers are the expected-evidence matrix, which this module now
-defines for two callers — the `--stage post_execute` gate and the judge's excerpt — so the
-tests here pin the derivation and one test pins that the gate really reads THIS function
-rather than a copy. The EXCERPT is the window a pure `validate.judge` leaf gets in place of
-`raw/`; what it must do is summarize, and what it must never do is inline an array, so the
-size relation is asserted on real-shaped input rather than described in a comment.
+The EXCERPT is the window a `validate.judge` leaf gets in place of `raw/`; what it must do is
+summarize, and what it must never do is inline an array, so the size relation is asserted on
+real-shaped input rather than described in a comment. One row pins that the gate reads THIS
+module's artifact spelling rather than a copy.
 
 The excerpt is also total by contract: every defect in the evidence is a recorded fact, not
 an exception, because an exception during context assembly means no judge runs at all on
@@ -27,25 +25,20 @@ from tools import validate_pipeline_semantics as vps
 
 def _contract(**overrides) -> dict:
     base = {
-        "test_evidence_requirements": [
-            {"test_id": "t_a", "required_raw_variables": ["h", "dx"]},
-        ],
-        "test_predicates": [
-            {"test_id": "t_a", "target_cases": ["case_a"]},
+        "tests": [
+            {"test_id": "t_a", "expected_outcome": "pass", "target_cases": ["case_a"],
+             "quantities": ["q"]},
         ],
         "raw_requirements": {
             "required_evidence": [
-                {"artifact": "metrics_basis.json", "required": True},
-                {"artifact": "state_snapshots", "required": True},
+                {"artifact": "state_snapshots", "required": True,
+                 "schema": {"variables": [
+                     {"name": "h", "shape_expr": "[nx, ny]"},
+                     {"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"},
+                 ]}},
             ],
         },
     }
-    base.update(overrides)
-    return base
-
-
-def _entry(case_id: str = "case_a", **overrides) -> dict:
-    base = {"test_id": "t_a", "case_id": case_id, "h": [[1.0, 2.0], [3.0, 4.0]], "dx": 0.5}
     base.update(overrides)
     return base
 
@@ -67,159 +60,28 @@ class _RawDir:
         return target
 
 
-class ExpectedMetricsBasisKeysTest(unittest.TestCase):
-    def test_matrix_is_the_test_by_target_case_product(self):
-        contract = _contract(test_predicates=[
-            {"test_id": "t_a", "target_cases": ["case_a", "case_b"]}])
-        keys = rex.expected_metrics_basis_keys(contract)
-        self.assertEqual(keys.expected, {("t_a", "case_a"), ("t_a", "case_b")})
-        self.assertEqual(keys.multi_target_tests, ["t_a"])
-        self.assertEqual(keys.untargeted_tests, [])
+class GateReadsThisSpellingTest(unittest.TestCase):
+    """The gate and the excerpt read one definition of an artifact's spelling. Pinned by identity
+    of the function object: two copies agree on every input until the day one is edited."""
 
-    def test_a_test_with_no_target_cases_yields_no_rows_and_is_named(self):
-        keys = rex.expected_metrics_basis_keys(_contract(test_predicates=[]))
-        self.assertEqual(keys.expected, set())
-        self.assertEqual(keys.untargeted_tests, ["t_a"])
-
-    def test_a_test_declaring_no_variables_is_dropped(self):
-        # The filter the gate's comment warns about: an empty `required_raw_variables` is not
-        # a row here, and `_validate_test_evidence_requirements` refuses such an IR outright.
-        contract = _contract(test_evidence_requirements=[
-            {"test_id": "t_a", "required_raw_variables": []}])
-        self.assertEqual(rex.expected_metrics_basis_keys(contract).test_requirements, {})
-
-    def test_predicates_are_found_when_the_contract_is_still_nested(self):
-        nested = {"test_evidence_requirements": _contract()["test_evidence_requirements"],
-                  "io_contract": {"test_predicates": _contract()["test_predicates"]}}
-        self.assertEqual(rex.expected_metrics_basis_keys(nested).expected,
-                         {("t_a", "case_a")})
-
-    def test_malformed_contract_yields_an_empty_matrix(self):
-        for contract in ({}, {"test_evidence_requirements": "oops"},
-                         {"test_evidence_requirements": [{"test_id": 7}]}):
-            keys = rex.expected_metrics_basis_keys(contract)
-            self.assertEqual((keys.expected, keys.test_requirements), (set(), {}))
-
-
-class GateReadsThisMatrixTest(unittest.TestCase):
-    """The gate and the excerpt must derive the matrix from ONE definition — that is why it
-    moved here. Pinned by identity of the function object, not by comparing two outputs: two
-    copies agree on every input until the day one of them is edited."""
-
-    def test_post_execute_gate_imports_the_same_functions(self):
-        self.assertIs(vps.expected_metrics_basis_keys, rex.expected_metrics_basis_keys)
-        self.assertIs(vps._metrics_basis_variable_keys, rex.metrics_basis_variable_keys)
-        # The one round 2 moved, and the one its commit message claimed was "pinned as an
-        # identity" while this list did not name it: two independent review axes reinstated
-        # the exact divergence Codex found — the gate preferring the map key, a local copy
-        # preferring an inner `test_id` — and the whole suite stayed green.
-        self.assertIs(vps._metrics_basis_entries, rex.metrics_basis_entries)
-        self.assertIs(vps._METRICS_BASIS_NESTED_VARIABLE_FIELDS,
-                      rex.METRICS_BASIS_NESTED_VARIABLE_FIELDS)
-        self.assertIs(vps._METRICS_BASIS_BOOKKEEPING_KEYS,
-                      rex.METRICS_BASIS_BOOKKEEPING_KEYS)
-        self.assertIs(vps._contract_test_evidence_requirements,
-                      rex.contract_test_evidence_requirements)
+    def test_post_execute_gate_imports_the_same_function(self):
         self.assertIs(vps._normalize_raw_evidence_artifact,
                       rex.normalize_raw_evidence_artifact)
-        # `test_id_to_case_ids` and `RAW_EVIDENCE_ALIASES` are NOT asserted here: the gate
-        # no longer names either directly — it reaches them through the two functions above
-        # — so importing them back would be an unused import, and pinning an import the
-        # gate does not make is pinning nothing.
 
 
-class CoverageTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.raw = _RawDir(self)
+class _SnapshotRow:
+    """Read one variable's summary off a snapshot written for the row."""
 
-    def _coverage(self, metrics_basis, contract=None) -> dict:
-        self.raw.write("metrics_basis.json", metrics_basis)
-        return rex.raw_evidence_excerpt(self.raw.path, contract or _contract())["coverage"]
+    raw: _RawDir
 
-    def test_complete_coverage(self):
-        cov = self._coverage({"per_test": [_entry()]})
-        self.assertEqual(cov["expected"], [["t_a", "case_a"]])
-        self.assertEqual(cov["present"], [["t_a", "case_a"]])
-        self.assertEqual((cov["missing"], cov["unexpected"]), ([], []))
-        self.assertEqual(cov["missing_required_variables"], [])
-
-    def test_missing_row(self):
-        contract = _contract(test_predicates=[
-            {"test_id": "t_a", "target_cases": ["case_a", "case_b"]}])
-        cov = self._coverage({"per_test": [_entry("case_a")]}, contract)
-        self.assertEqual(cov["missing"], [["t_a", "case_b"]])
-        self.assertEqual(cov["unexpected"], [])
-
-    def test_unexpected_row(self):
-        cov = self._coverage({"per_test": [_entry("case_a"), _entry("case_zzz")]})
-        self.assertEqual(cov["unexpected"], [["t_a", "case_zzz"]])
-        self.assertEqual(cov["missing"], [])
-
-    def test_row_present_but_a_declared_variable_is_absent(self):
-        # The finer question the gate does not ask of `metrics_basis.json`: the row exists and
-        # the matrix is complete, and the evidence still cannot support the test.
-        cov = self._coverage({"per_test": [{"test_id": "t_a", "case_id": "case_a",
-                                            "h": [[1.0]]}]})
-        self.assertEqual((cov["missing"], cov["unexpected"]), ([], []))
-        self.assertEqual(cov["missing_required_variables"],
-                         [{"test_id": "t_a", "case_id": "case_a",
-                           "missing_variables": ["dx"]}])
-
-    def test_a_nested_entry_is_read_the_way_the_gate_reads_it(self):
-        # The gate honours the first present nesting field, so an entry that nests its
-        # variables satisfies it — and the excerpt must agree, or the judge reports a
-        # shortage the gate passed. Same definition, asserted through the excerpt.
-        for field in rex.METRICS_BASIS_NESTED_VARIABLE_FIELDS:
-            with self.subTest(field=field):
-                cov = self._coverage({"per_test": [{
-                    "test_id": "t_a", "case_id": "case_a",
-                    field: {"h": [[1.0]], "dx": 0.5}}]})
-                self.assertEqual(cov["missing_required_variables"], [])
-
-    def test_bookkeeping_keys_are_not_counted_as_variables(self):
-        cov = self._coverage({"per_test": [dict(_entry(), status="pass", notes="x")]})
-        self.assertEqual(cov["missing_required_variables"], [])
-        rows = rex.raw_evidence_excerpt(self.raw.path, _contract())["metrics_basis_arrays"]
-        self.assertEqual(sorted(r["variable"] for r in rows), ["dx", "h"])
-
-    def test_a_bookkeeping_key_cannot_satisfy_a_required_variable(self):
-        # Both readers of the BOOKKEEPING half are exercised here:
-        # `metrics_basis_variable_keys` decides the shortage and `_entry_variables` decides the
-        # rows. Their NESTING half (`raw_variables` / `variables` / `evidence`) is covered for
-        # the first by `test_a_nested_entry_is_read_the_way_the_gate_reads_it` and for the
-        # second only incidentally — a review round found no row asserting it directly. A contract naming `status` as evidence is not a real
-        # IR, but it is the only input that tells the two apart.
-        contract = _contract(test_evidence_requirements=[
-            {"test_id": "t_a", "required_raw_variables": ["status"]}])
-        cov = self._coverage({"per_test": [{"test_id": "t_a", "case_id": "case_a",
-                                            "status": "pass"}]}, contract)
-        self.assertEqual(cov["missing_required_variables"],
-                         [{"test_id": "t_a", "case_id": "case_a",
-                           "missing_variables": ["status"]}])
-        rows = rex.raw_evidence_excerpt(self.raw.path, contract)["metrics_basis_arrays"]
-        self.assertEqual(rows, [])
-
-    def test_an_unrecognized_wrapper_still_reads_as_a_shortage(self):
-        # `values` is not a nesting field — the gate refuses it by name, and the excerpt
-        # must show the judge the same shortage rather than silently accepting the wrapper.
-        cov = self._coverage({"per_test": [{"test_id": "t_a", "case_id": "case_a",
-                                            "values": {"h": [[1.0]], "dx": 0.5}}]})
-        self.assertEqual(cov["missing_required_variables"],
-                         [{"test_id": "t_a", "case_id": "case_a",
-                           "missing_variables": ["dx", "h"]}])
-
-    def test_deprecated_tests_object_form_is_read(self):
-        cov = self._coverage({"tests": {"t_a": {"case_id": "case_a", "h": [[1.0]],
-                                                "dx": 0.5}}})
-        self.assertEqual(cov["present"], [["t_a", "case_a"]])
-
-    def test_untargeted_and_multi_target_tests_are_carried_through(self):
-        cov = self._coverage({"per_test": [_entry()]}, _contract(test_predicates=[]))
-        self.assertEqual(cov["tests_without_target_cases"], ["t_a"])
-        self.assertEqual(cov["unexpected"], [["t_a", "case_a"]])
+    def _row(self, value, variable="h", contract=None) -> dict:
+        self.raw.write("state_snapshots/case_a.json", {variable: value})
+        excerpt = rex.raw_evidence_excerpt(self.raw.path, contract or _contract())
+        return next(r for r in excerpt["state_snapshots"]["cases"][0]["variables"]
+                    if r["name"] == variable)
 
 
-class MalformedEvidenceIsAFactNotAnExceptionTest(unittest.TestCase):
+class MalformedEvidenceIsAFactNotAnExceptionTest(_SnapshotRow, unittest.TestCase):
     def setUp(self) -> None:
         self.raw = _RawDir(self)
 
@@ -230,56 +92,27 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(unittest.TestCase):
         missing = self.raw.path.parent / "no_such_raw"
         result = rex.raw_evidence_excerpt(missing, _contract())
         self.assertFalse(result["raw_dir_present"])
-        self.assertIn("raw/metrics_basis.json: absent", result["problems"])
-        self.assertEqual(result["coverage"]["missing"], [["t_a", "case_a"]])
+        self.assertEqual(result["state_snapshots"],
+                         {"present": False, "schema": None, "cases": []})
+        self.assertEqual([r["present"] for r in result["required_evidence"]], [False])
 
-    def test_unparseable_metrics_basis(self):
-        self.raw.write("metrics_basis.json", "{not json")
+    def test_unparseable_snapshot(self):
+        self.raw.write("state_snapshots/case_a.json", "{not json")
         problems = self._excerpt()["problems"]
         self.assertTrue(any("not parseable as JSON" in p for p in problems))
 
-    def test_metrics_basis_that_is_not_an_object(self):
-        self.raw.write("metrics_basis.json", [1, 2])
-        self.assertIn("raw/metrics_basis.json: not a JSON object", self._excerpt()["problems"])
+    def test_snapshot_that_is_not_an_object(self):
+        self.raw.write("state_snapshots/case_a.json", [1, 2])
+        self.assertIn("raw/state_snapshots/case_a.json: not a JSON object",
+                      self._excerpt()["problems"])
 
-    def test_metrics_basis_with_neither_container(self):
-        self.raw.write("metrics_basis.json", {"rows": []})
-        self.assertTrue(any("neither a `per_test` list nor a `tests` object" in p
-                            for p in self._excerpt()["problems"]))
-
-    # The two rows below assert the SHARED reader's wording, not this module's own. Since the
-    # keying moved to `metrics_basis_entries` (one definition for the judge and the
-    # `--stage post_execute` gate), these messages are the GATE's, prefixed with the file — a
-    # judge and an operator now read the same sentence about the same defect.
-    def test_entry_without_a_case_id(self):
-        self.raw.write("metrics_basis.json", {"per_test": [{"test_id": "t_a", "h": []}]})
-        self.assertTrue(any("must carry a non-empty `case_id`" in p
-                            for p in self._excerpt()["problems"]))
-
-    def test_duplicated_entry(self):
-        self.raw.write("metrics_basis.json", {"per_test": [_entry(), _entry()]})
-        self.assertTrue(any("duplicated (test_id, case_id)" in p
-                            for p in self._excerpt()["problems"]))
-
-    def test_the_tests_object_form_is_keyed_the_way_the_gate_keys_it(self):
-        """Codex, round 2: the excerpt had its own reader and preferred an inner `test_id` over
-        the map key, while the gate always uses the key. The gate then accepted evidence as
-        `t_key` while the judge evaluated those arrays against `t_inner`'s required variables,
-        so a real shortage became invisible. Pinned as the AGREEMENT, since the fix was to
-        share one reader rather than to patch the keying."""
-        doc = {"tests": {"t_key": {"test_id": "t_inner", "case_id": "case_a",
-                                   "h": [[1.0]], "dx": 0.5}}}
-        self.raw.write("metrics_basis.json", doc)
-        gate_entries, _problems, _form = rex.metrics_basis_entries(doc)
-        present = {tuple(k) for k in self._excerpt()["coverage"]["present"]}
-        self.assertEqual(present, set(gate_entries))
-        self.assertEqual(present, {("t_key", "case_a")})
-
-    def test_a_malformed_entry_does_not_hide_the_sound_ones(self):
-        self.raw.write("metrics_basis.json",
-                       {"per_test": ["a string", _entry()]})
+    def test_a_malformed_snapshot_does_not_hide_the_sound_ones(self):
+        self.raw.write("state_snapshots/case_a.json", "{not json")
+        self.raw.write("state_snapshots/case_b.json", {"h": [[1.0]]})
         result = self._excerpt()
-        self.assertEqual(result["coverage"]["present"], [["t_a", "case_a"]])
+        cases = {c["case_id"]: c for c in result["state_snapshots"]["cases"]}
+        self.assertFalse(cases["case_a"]["read"])
+        self.assertEqual([v["name"] for v in cases["case_b"]["variables"]], ["h"])
         self.assertTrue(result["problems"])
 
     def test_raggedness_under_a_later_branch_is_detected(self):
@@ -288,35 +121,24 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(unittest.TestCase):
         `[2,2,2]` with `ragged=False`, and its element count matched the rectangular shape too,
         so nothing in the summary betrayed it. Malformed evidence reached the judge looking
         structurally sound, which is the one thing these summaries exist to prevent."""
-        self.raw.write("metrics_basis.json", {"per_test": [
-            _entry(h=[[[1.0, 2.0], [3.0, 4.0]], [[5.0], [6.0, 7.0, 8.0]]])]})
-        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
-                   if r["variable"] == "h")
+        row = self._row([[[1.0, 2.0], [3.0, 4.0]], [[5.0], [6.0, 7.0, 8.0]]])
         self.assertTrue(row["ragged"])
 
     def test_a_rank_change_partway_across_a_level_is_ragged(self):
         """The other direction of the same walk: a level whose members are some lists and some
         scalars changes rank partway, which no length comparison alone would catch."""
-        self.raw.write("metrics_basis.json", {"per_test": [_entry(h=[[1.0, [2.0]]])]})
-        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
-                   if r["variable"] == "h")
+        row = self._row([[1.0, [2.0]]])
         self.assertTrue(row["ragged"])
 
     def test_a_rectangular_array_is_not_called_ragged(self):
         """The over-refusal direction of the fix above: widening raggedness detection must not
         start flagging the ordinary shape, which is every real array in the corpus."""
-        self.raw.write("metrics_basis.json", {"per_test": [
-            _entry(h=[[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])]})
-        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
-                   if r["variable"] == "h")
+        row = self._row([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
         self.assertFalse(row["ragged"])
         self.assertEqual(row["shape"], [2, 2, 2])
 
     def test_ragged_array_is_summarized_not_refused(self):
-        self.raw.write("metrics_basis.json",
-                       {"per_test": [_entry(h=[[1.0, 2.0], [3.0]])]})
-        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
-                   if r["variable"] == "h")
+        row = self._row([[1.0, 2.0], [3.0]])
         self.assertTrue(row["ragged"])
         self.assertEqual(row["count"], 3)
 
@@ -326,25 +148,19 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(unittest.TestCase):
         # CPython 3.10 (measured), so 900 is the deepest input this module can ever be given
         # — and a deeper one arrives as a `problems` entry, never as a crash.
         depth = 900
-        self.raw.write("metrics_basis.json",
-                       '{"per_test": [{"test_id": "t_a", "case_id": "case_a", "h": '
-                       + "[" * depth + "1.0" + "]" * depth + ', "dx": 0.5}]}')
-        row = next(r for r in self._excerpt()["metrics_basis_arrays"]
-                   if r["variable"] == "h")
+        self.raw.write("state_snapshots/case_a.json",
+                       '{"h": ' + "[" * depth + "1.0" + "]" * depth + ', "dx": 0.5}')
+        row = next(r for r in self._excerpt()["state_snapshots"]["cases"][0]["variables"]
+                   if r["name"] == "h")
         self.assertEqual((row["count"], row["numeric_count"]), (1, 1))
         self.assertEqual(len(row["shape"]), depth)
 
 
-class ArraySummaryTest(unittest.TestCase):
+class ArraySummaryTest(_SnapshotRow, unittest.TestCase):
     """What the judge is actually given about an array. Every branch of `_summarize`."""
 
     def setUp(self) -> None:
         self.raw = _RawDir(self)
-
-    def _row(self, value, variable="h") -> dict:
-        self.raw.write("metrics_basis.json", {"per_test": [_entry(**{variable: value})]})
-        excerpt = rex.raw_evidence_excerpt(self.raw.path, _contract())
-        return next(r for r in excerpt["metrics_basis_arrays"] if r["variable"] == variable)
 
     def test_shape_and_extent(self):
         row = self._row([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
@@ -422,7 +238,6 @@ class ArraySummaryTest(unittest.TestCase):
 class StateSnapshotsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.raw = _RawDir(self)
-        self.raw.write("metrics_basis.json", {"per_test": [_entry()]})
 
     def _snapshots(self) -> dict:
         return rex.raw_evidence_excerpt(self.raw.path, _contract())["state_snapshots"]
@@ -499,6 +314,26 @@ class StateSnapshotsTest(unittest.TestCase):
         self.assertTrue(any("initial/case_b.json" in p for p in excerpt["problems"]),
                         excerpt["problems"])
 
+    def test_each_variable_names_the_source_the_ir_declares(self):
+        # Issue #582 D13: the judge tells a kernel report from state by this marker. The runner's
+        # `snapshot_schema.json` does not carry it, so it comes from the IR; no key is `operation`.
+        self.raw.write("state_snapshots/snapshot_schema.json", {
+            "variables": [{"name": "h", "shape_expr": "[nx, ny]"},
+                          {"name": "cfl_run_max", "shape_expr": "scalar"}],
+            "time_variable": "t"})
+        self.raw.write("state_snapshots/case_a.json",
+                       {"h": [[1.0]], "cfl_run_max": 0.5, "extra": 1.0, "t": 1.0})
+        self.raw.write("state_snapshots/initial/case_a.json",
+                       {"h": [[1.0]], "cfl_run_max": 0.0, "t": 0.0})
+        snapshots = self._snapshots()
+        self.assertEqual({v["name"]: v["source"] for v in snapshots["schema"]["declared_variables"]},
+                         {"h": "operation", "cfl_run_max": "reported"})
+        case = snapshots["cases"][0]
+        self.assertEqual({v["name"]: v["source"] for v in case["variables"]},
+                         {"h": "operation", "cfl_run_max": "reported", "extra": "operation"})
+        self.assertEqual({v["name"]: v["source"] for v in case["initial"]["variables"]},
+                         {"h": "operation", "cfl_run_max": "reported"})
+
     def test_cases_are_ordered(self):
         for name in ("case_c", "case_a", "case_b"):
             self.raw.write(f"state_snapshots/{name}.json", {"h": [[1.0]]})
@@ -509,7 +344,6 @@ class StateSnapshotsTest(unittest.TestCase):
 class RequiredEvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.raw = _RawDir(self)
-        self.raw.write("metrics_basis.json", {"per_test": [_entry()]})
 
     def _rows(self, contract=None) -> list[dict]:
         return rex.raw_evidence_excerpt(
@@ -517,7 +351,6 @@ class RequiredEvidenceTest(unittest.TestCase):
 
     def test_presence_of_each_declared_artifact(self):
         rows = {row["artifact"]: row for row in self._rows()}
-        self.assertTrue(rows["metrics_basis.json"]["present"])
         self.assertFalse(rows["state_snapshots"]["present"])
         self.assertTrue(rows["state_snapshots"]["required"])
 
@@ -528,10 +361,10 @@ class RequiredEvidenceTest(unittest.TestCase):
 
     def test_an_alias_spelling_resolves_and_keeps_what_the_ir_wrote(self):
         contract = _contract(raw_requirements={"required_evidence": [
-            {"artifact": "raw/metrics_basis.json", "required": True}]})
+            {"artifact": "raw/state_snapshots/", "required": True}]})
         row = self._rows(contract)[0]
         self.assertEqual((row["declared_as"], row["artifact"]),
-                         ("raw/metrics_basis.json", "metrics_basis.json"))
+                         ("raw/state_snapshots/", "state_snapshots"))
 
     def test_an_unrecognized_artifact_is_reported_rather_than_dropped(self):
         contract = _contract(raw_requirements={"required_evidence": [
@@ -542,7 +375,7 @@ class RequiredEvidenceTest(unittest.TestCase):
 
     def test_required_false_is_carried(self):
         contract = _contract(raw_requirements={"required_evidence": [
-            {"artifact": "metrics_basis.json", "required": False}]})
+            {"artifact": "state_snapshots", "required": False}]})
         self.assertFalse(self._rows(contract)[0]["required"])
 
 
@@ -550,36 +383,40 @@ class ExcerptIsBoundedTest(unittest.TestCase):
     """The whole reason this module exists: `raw/` is 13,023,908 B on `shallow_water2d` and
     cannot be inlined. The relation is asserted on input of the real shape, not described."""
 
+    def test_the_retired_sections_are_gone(self):
+        # Issue #582: `raw/metrics_basis.json` left the contract, so its coverage matrix and its
+        # array rows left the window, also when a recorded run still holds the file.
+        raw = _RawDir(self)
+        raw.write("metrics_basis.json", {"per_test": []})
+        self.assertEqual(set(rex.raw_evidence_excerpt(raw.path, _contract())),
+                         {"policy_version", "raw_dir_present", "required_evidence",
+                          "state_snapshots", "problems"})
+
     def test_no_numeric_array_survives_into_the_excerpt(self):
         raw = _RawDir(self)
-        # 4 variables x 128 x 128 floats, twice — the shape of one real metrics-basis entry.
+        # 3 variables x 128 x 128 floats, twice — the shape of one real pair of snapshots.
         # Every value is DISTINCT and 8 characters wide, so no element's repr is a substring of
         # another's or of a summary statistic. The first version of this fixture used `i * j`,
         # whose reprs nest (`129.0` inside `16129.0`), which made the leak search below report
         # four false positives — a probe that cannot tell a leak from an overlap answers
         # nothing.
         array = [[100000.0 + (i * 128 + j) for j in range(128)] for i in range(128)]
-        entries = [{"test_id": "t_a", "case_id": case, "h": array, "hu": array,
-                    "hv": array, "dx": 0.5}
-                   for case in ("case_a", "case_b")]
-        metrics_basis = raw.write("metrics_basis.json", {"per_test": entries})
         raw.write("state_snapshots/snapshot_schema.json",
                   {"variables": [{"name": "h", "shape_expr": "[nx, ny]"}],
                    "time_variable": "t"})
-        snapshot = raw.write("state_snapshots/case_a.json", {"h": array, "t": 1.0})
+        snapshots = [raw.write(f"state_snapshots/{case}.json",
+                               {"h": array, "hu": array, "hv": array, "dx": 0.5, "t": 1.0})
+                     for case in ("case_a", "case_b")]
 
-        contract = _contract(test_evidence_requirements=[
-            {"test_id": "t_a", "required_raw_variables": ["h", "hu", "hv", "dx"]}],
-            test_predicates=[{"test_id": "t_a",
-                              "target_cases": ["case_a", "case_b"]}])
-        rendered = json.dumps(rex.raw_evidence_excerpt(raw.path, contract), indent=2)
+        rendered = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract()), indent=2)
 
-        source_bytes = metrics_basis.stat().st_size + snapshot.stat().st_size
+        source_bytes = sum(p.stat().st_size for p in snapshots)
         self.assertGreater(source_bytes, 500_000)
         self.assertLess(len(rendered), source_bytes / 100)
-        # The row count is the bound's shape: (entry x variable) + (snapshot x variable).
+        # The row count is the bound's shape: snapshot x variable.
         excerpt = json.loads(rendered)
-        self.assertEqual(len(excerpt["metrics_basis_arrays"]), 8)
+        self.assertEqual([len(c["variables"]) for c in excerpt["state_snapshots"]["cases"]],
+                         [4, 4])
         # And the arrays themselves are gone. NOT by spot-checking one magic value: an earlier
         # version of this row asserted only that `8128.0` (a value from deep inside the array)
         # was absent, and a review round walked straight through it by making `_summarize`
@@ -602,8 +439,8 @@ class ExcerptIsBoundedTest(unittest.TestCase):
 
     def test_output_is_json_serializable_and_deterministic(self):
         raw = _RawDir(self)
-        raw.write("metrics_basis.json", {"per_test": [_entry(h=[[float("nan"), 1.0]])]})
         raw.write("state_snapshots/case_a.json", {"h": [[math.inf]], "t": 0.0})
+        raw.write("state_snapshots/case_b.json", '{"h": [[NaN, 1.0]], "t": 0.0}')
         first = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract()),
                            allow_nan=False, sort_keys=False)
         second = json.dumps(rex.raw_evidence_excerpt(raw.path, _contract()),
@@ -612,14 +449,13 @@ class ExcerptIsBoundedTest(unittest.TestCase):
 
     def test_policy_version_is_stamped(self):
         raw = _RawDir(self)
-        raw.write("metrics_basis.json", {"per_test": [_entry()]})
         self.assertEqual(
             rex.raw_evidence_excerpt(raw.path, _contract())["policy_version"],
             rex.RAW_EXCERPT_POLICY_VERSION)
         self.assertIsInstance(rex.RAW_EXCERPT_POLICY_VERSION, int)
-        # 2 since Z6 (issue #255): the window gained each case's `initial` capture. A recorded
-        # review stamped 1 was made through a window with no initial capture in it.
-        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 2)
+        # 2 since Z6 (issue #255): the window gained each case's `initial` capture. 3 since
+        # issue #582: the metrics-basis sections left it and each variable names its `source`.
+        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 3)
 
 
 if __name__ == "__main__":

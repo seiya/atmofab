@@ -1111,12 +1111,6 @@ void case_run(const std::string& case_id, int& steps, int& cells_updated, bool& 
   (void)case_id; steps = 1; cells_updated = 1; ok = true;
 }
 void get_time(double& t) { t = 0.0; }
-void checks_compute(const std::string& case_id, const std::string& check_id,
-                    std::string& status) { (void)case_id; (void)check_id; status = "na  "; }
-void metric_compute(const std::string& case_id, const std::string& name, double& val,
-                    bool& is_na, std::string& reason_na, bool& found) {
-  (void)case_id; (void)name; val = 0.0; is_na = false; reason_na = ""; found = false;
-}
 }  // namespace p_checks
 """
 
@@ -1367,6 +1361,21 @@ class PhysicsGateTests(unittest.TestCase):
                 cpp_source.checks_harness_isolation_violations(
                     Path(tmp) / path.name, _CHECKS_SOURCE, [],
                     allowed_harness_uses={"harness_cpp_gpu_model": {"x"}})
+
+    def test_the_abi_facts_are_the_three_callbacks(self) -> None:
+        """Issue #582: a checks source without the two retired callbacks is the whole ABI, and one
+        without `get_time` is short of it; one that still defines a retired name adds nothing the
+        gate reads."""
+        abi = {"case_setup", "case_run", "get_time"}
+        self.assertEqual(abi, set(cpp_checks_abi.CHECKS_PUBLIC_NAMES))
+        self.assertNotIn("metric_compute", _CHECKS_SOURCE)
+        _published, _subroutines, defined = cpp_source.checks_module_abi_facts(_CHECKS_SOURCE, "p")
+        self.assertEqual(abi, defined)
+        missing = _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }\n", "")
+        self.assertNotEqual(missing, _CHECKS_SOURCE)
+        published, _subroutines, defined = cpp_source.checks_module_abi_facts(missing, "p")
+        self.assertEqual(abi - {"get_time"}, defined)
+        self.assertEqual(abi - {"get_time"}, published)
 
     def test_the_renderer_admits_no_physics_harness_use_and_no_distributed_state(
             self) -> None:

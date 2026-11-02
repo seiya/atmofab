@@ -2,9 +2,7 @@
 
 A physics node's runner is rendered by the language backend that declares `runner_render`
 (`tools/host_render.py`), and every such renderer asks the IR the same questions: which snapshot
-variables to capture and at what rank, which cases to run and which of them are expected to fail,
-which check ids and metric addresses to drive, and which `(test_id, case_id)` rows the metrics
-basis carries. Those answers — and the refusals of an IR that cannot answer them — are facts about
+variables to capture and at what rank, and which cases to run. Those answers — and the refusals of an IR that cannot answer them — are facts about
 the IR and the harness's published surface, not about a language, so they are stated here once and
 every renderer asks them (issue #289, R4-b PR-6). A renderer adds the refusals its own language
 imposes (an identifier grammar, a line width) in the hooks the readers take.
@@ -33,7 +31,7 @@ from tools.spec_input_gates import CASE_ID_TOKEN_RE
 HARNESS_RESERVED_SNAPSHOT_KEYS = frozenset({"t", "case_id", "step"})
 
 #: The harness's `case_id_len` (§5.1 of every harness this repository certifies): the width a
-#: parsed case id is stored at, and the bound on a declared case id and a check id.
+#: parsed case id is stored at, and the bound on a declared case id.
 CASE_ID_LEN = 64
 
 
@@ -161,168 +159,9 @@ def case_ids(ir: dict[str, Any]) -> list[str]:
         raise RenderError(
             f"case_id(s) {too_long} exceed the harness case_id_len ({CASE_ID_LEN} chars); "
             "`__parse_cases` truncates a parsed case id to that width, so the runner's "
-            "select-case label and metrics-basis lookup could never match it at runtime. "
+            "select-case label could never match it at runtime. "
             f"Shorten the case_id to ≤{CASE_ID_LEN} chars")
     return out
-
-
-def test_predicates(ir: dict[str, Any]) -> list[dict[str, Any]]:
-    io = dget(ir, "io_contract", {})
-    return [p for p in (dget(io, "test_predicates", []) or []) if isinstance(p, dict)]
-
-
-def xfail_cases(ir: dict[str, Any]) -> set[str]:
-    """Case ids whose failure is expected (targeted by an ``xfail`` predicate)."""
-    xfail: set[str] = set()
-    for p in test_predicates(ir):
-        if str(p.get("expected_outcome") or "").strip().lower() == "xfail":
-            for tc in p.get("target_cases") or []:
-                if isinstance(tc, str) and tc.strip():
-                    xfail.add(tc.strip())
-    return xfail
-
-
-def target_cases(ir: dict[str, Any], test_id: str) -> list[str]:
-    """All distinct case ids targeted by the predicate(s) for ``test_id``, in
-    declaration order. This is the metrics-basis row set of that test: the runner
-    records one ``h_mb_entry`` per ``(test_id, case_id)`` pair, and the post_execute
-    completeness matrix (``_validate_metrics_basis_per_test``) is anchored on the
-    same field."""
-    seen: list[str] = []
-    for p in test_predicates(ir):
-        if str(p.get("test_id") or "").strip() == test_id:
-            for tc in p.get("target_cases") or []:
-                if isinstance(tc, str) and tc.strip() and tc.strip() not in seen:
-                    seen.append(tc.strip())
-    return seen
-
-
-def per_case_vars(ir: dict[str, Any], schema_vars: dict[str, str]) -> dict[str, list[str]]:
-    """Map each case_id to the union of ``required_raw_variables`` over the tests targeting
-    that case, ordered by the snapshot schema declaration order. Since Z6 this is a
-    VALIDATION (each entry must be a schema variable) and the metrics-basis pick set — the
-    runner captures every schema variable for every case, not this per-case subset."""
-    io = dget(ir, "io_contract", {})
-    req_by_test: dict[str, list[str]] = {}
-    for r in dget(io, "test_evidence_requirements", []) or []:
-        if not isinstance(r, dict):
-            continue
-        tid = str(r.get("test_id") or "").strip()
-        if tid:
-            req_by_test[tid] = [
-                v.strip() for v in (r.get("required_raw_variables") or [])
-                if isinstance(v, str) and v.strip()
-            ]
-    schema_order = list(schema_vars)
-    per_case: dict[str, set[str]] = {}
-    for p in test_predicates(ir):
-        tid = str(p.get("test_id") or "").strip()
-        needed = set(req_by_test.get(tid, []))
-        for tc in p.get("target_cases") or []:
-            if isinstance(tc, str) and tc.strip():
-                per_case.setdefault(tc.strip(), set()).update(needed)
-    out: dict[str, list[str]] = {}
-    for cid in case_ids(ir):
-        want = per_case.get(cid, set())
-        missing = [v for v in want if v not in schema_vars]
-        if missing:
-            raise RenderError(
-                f"case {cid!r} requires raw variables {sorted(missing)} absent from the "
-                "state_snapshots schema (required_raw_variables must be snapshot variables)")
-        out[cid] = [v for v in schema_order if v in want]
-    return out
-
-
-def check_ids(ir: dict[str, Any]) -> list[str]:
-    """The declared `diagnostics_contract.checks[].id`s, in order; refused when none is declared.
-    A renderer whose language bounds the rendered line bounds the id itself."""
-    io = dget(ir, "io_contract", {})
-    dc = dget(io, "diagnostics_contract", {})
-    ids: list[str] = []
-    for c in dget(dc, "checks", []) or []:
-        cid = dget(c, "id")
-        if isinstance(cid, str) and cid.strip():
-            ids.append(cid.strip())
-    if not ids:
-        raise RenderError("IR diagnostics_contract declares no checks")
-    return ids
-
-
-def metrics(ir: dict[str, Any]) -> list[str]:
-    """Dotted metric addresses from ``diagnostics_contract.metrics`` (may be empty)."""
-    io = dget(ir, "io_contract", {})
-    dc = dget(io, "diagnostics_contract", {})
-    out: list[str] = []
-    for m in dget(dc, "metrics", []) or []:
-        if isinstance(m, str) and m.strip():
-            out.append(m.strip())
-        elif isinstance(m, dict):
-            addr = m.get("address") or m.get("name") or m.get("id")
-            if isinstance(addr, str) and addr.strip():
-                out.append(addr.strip())
-    return out
-
-
-def verify_verdict_fields(ir: dict[str, Any]) -> None:
-    io = dget(ir, "io_contract", {})
-    dc = dget(io, "diagnostics_contract", {})
-    verdict = dget(dc, "verdict", {})
-    fields = dget(verdict, "fields", []) or []
-    allowed = {"overall", "failed_checks"}
-    extra = {str(f).strip() for f in fields} - allowed
-    if extra:
-        raise RenderError(
-            f"diagnostics_contract.verdict.fields {sorted(extra)} outside the harness "
-            f"fold surface {sorted(allowed)} — the rendered glue only builds "
-            "overall/failed_checks records")
-
-
-def test_evidence(ir: dict[str, Any]) -> list[tuple[str, list[str]]]:
-    io = dget(ir, "io_contract", {})
-    out: list[tuple[str, list[str]]] = []
-    for r in dget(io, "test_evidence_requirements", []) or []:
-        if not isinstance(r, dict):
-            continue
-        tid = str(r.get("test_id") or "").strip()
-        if not tid:
-            continue
-        vs = [v.strip() for v in (r.get("required_raw_variables") or [])
-              if isinstance(v, str) and v.strip()]
-        out.append((tid, vs))
-    if not out:
-        raise RenderError("IR io_contract.test_evidence_requirements is empty")
-    return out
-
-
-def metrics_basis_rows(
-    ir: dict[str, Any], evidence: list[tuple[str, list[str]]], schema_vars: dict[str, str],
-) -> list[tuple[str, str, list[str]]]:
-    """ONE metrics-basis entry per (test_id, target case_id) pair (R3-core), as
-    `(test_id, case_id, required_raw_variables)`.
-
-    A test's primary evidence is the evidence of EVERY case its predicate ranges over: a
-    single-target test contributes one row, a convergence sweep (nx = 32/64/128) three, a
-    base/shifted equivariance pair two. `(test_id, case_id)` is the entry's unique key, and
-    the post_execute completeness matrix (`_validate_metrics_basis_per_test`) pins the entry
-    set against exactly this product, so partial evidence cannot pass.
-
-    Every target case's snapshot holds its test's `required_raw_variables` BY CONSTRUCTION:
-    the runner captures EVERY schema variable for every case, and `per_case_vars` already
-    fail-closes when a required variable is absent from the schema."""
-    rows: list[tuple[str, str, list[str]]] = []
-    for tid, req_vars in evidence:
-        tcases = target_cases(ir, tid)
-        if not tcases:
-            raise RenderError(
-                f"test {tid!r} in test_evidence_requirements has no target case in "
-                "any test predicate (cannot resolve its metrics-basis source case)")
-        for rv in req_vars:
-            if rv not in schema_vars:
-                raise RenderError(
-                    f"test {tid!r} required_raw_variable {rv!r} is not a snapshot variable")
-        for tcase in tcases:
-            rows.append((tid, tcase, req_vars))
-    return rows
 
 
 def target_class(target: dict[str, Any]) -> str:

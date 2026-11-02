@@ -16,8 +16,8 @@ What is PINNED here and what is SAMPLED (`atmofab-enforcement-change` §4):
   is the evaluator's own message (`StaticRankTest`). Extents are not inferred.
 * `evaluate_verdict` with `primary=` is pinned in both directions: the two fixtures the plan
   names — (a) a diagnostics that passes every secondary condition while the captured state
-  fails the corroborant, and (c) one decoy case among two — fail the test with
-  `corroboration=disagree`, and an IR with no primary predicate produces the same document
+  fails its predicate, and (c) one decoy case among two — fail the test, and an IR with no
+  predicate cannot certify, which is the document
   with `primary=None` as with `primary=[]` (issue #324 added `own_verdict` to both and issue
   #383 removed it again).
 
@@ -69,19 +69,15 @@ def _ir(primary: list[dict] | None, *, coordinates: list[dict] | None = None,
         "raw_requirements": {"required_evidence": [
             {"artifact": "state_snapshots", "required": True,
              "schema": schema}]},
-        "test_predicates": [
+        "tests": [
             {"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],
-             "pass_when": {"all": [
-                 {"ref": "checks.mass.status", "op": "eq", "value": "pass", "per_case": True,
-                  "quantity": "mass_drift_rel"}]}},
+             "quantities": ["mass_drift_rel", "h_min"]},
             {"test_id": "t_sym", "expected_outcome": "pass", "target_cases": ["a", "b"],
-             "pass_when": {"all": [
-                 {"ref": "errors.sym", "op": "le", "value": 1e-12, "case": "a",
-                  "quantity": "sym"}]}},
+             "quantities": ["sym"]},
         ],
     }
     if primary is not None:
-        io_contract["primary_predicates"] = primary
+        io_contract["predicates"] = primary
     return {"case": {"test_case_set": cases if cases is not None else [_case("a"), _case("b")]},
             "io_contract": io_contract}
 
@@ -100,13 +96,6 @@ def _mixed_ir(primary: list[dict] | None, coordinates: list[dict] | None,
         c["inputs"]["constants"] = {"f0": 1.0e-4, "df": 1.0e-5}
     return _ir(primary, coordinates=coordinates, cases=cases,
                variables=list(MIXED_VARIABLES) if variables is None else variables)
-
-
-def _diag_all_pass() -> dict:
-    return {"per_case": {
-        "a": {"checks": {"mass": {"status": "pass"}}, "metrics": {"errors.sym": 0.0}},
-        "b": {"checks": {"mass": {"status": "pass"}}, "metrics": {"errors.sym": 0.0}},
-    }}
 
 
 class _RunDir:
@@ -396,7 +385,7 @@ class EvaluationTest(unittest.TestCase):
         env = pe.load_case_env(self.run.root, self.cases[1], pe.snapshot_schema(ir))
         self.assertEqual(env.coordinates["x"].shape, (NX, 1))
         # paired with a state array first, it evaluates
-        ir["io_contract"]["primary_predicates"] = [self._one("norm2(x + 0 * final.h)")]
+        ir["io_contract"]["predicates"] = [self._one("norm2(x + 0 * final.h)")]
         [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
         self.assertTrue(rec["satisfied"], rec)
 
@@ -942,8 +931,8 @@ class EvaluationTest(unittest.TestCase):
 # ------------------------------------------------------------------------ verdict fold
 
 class VerdictIntegrationTest(unittest.TestCase):
-    """`evaluate_verdict(primary=...)`: the plan's fixtures (a) and (c), and the no-primary
-    identity."""
+    """`evaluate_verdict` over records this module evaluated from real captures: the plan's
+    fixtures (a) and (c) of issue #255, on the host alone."""
 
     def setUp(self) -> None:
         self.run = _RunDir()
@@ -952,50 +941,40 @@ class VerdictIntegrationTest(unittest.TestCase):
         self.run.write_state("a", self.h, self.h)
         self.run.write_state("b", self.h, self.h)
         self.ir = _ir([MASS, HMIN, SYM])
-        self.predicates = self.ir["io_contract"]["test_predicates"]
+        self.tests = self.ir["io_contract"]["tests"]
+
+    def _records(self) -> list[dict]:
+        return pe.evaluate_primary_predicates(self.ir, self.run.root)
 
     def _verdict(self) -> dict:
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        return evaluate_verdict(self.predicates, _diag_all_pass(), run_id="r", node_key="n",
-                                primary=primary)
+        return evaluate_verdict(self.tests, self._records(), run_id="r", node_key="n")
 
-    def test_agreeing_evidence_passes_with_basis(self) -> None:
+    def test_holding_state_passes_with_basis(self) -> None:
         doc = self._verdict()
-        self.assertEqual(doc["self_verdict"], "pass")
-        self.assertEqual(doc["failure_class"], "pass")
-        for item in doc["per_test"]:
-            self.assertEqual(item["basis"]["corroboration"], "agree")
-            self.assertTrue(item["basis"]["primary"])
-        self.assertEqual([r["quantity"] for r in doc["per_test"][0]["basis"]["primary"]],
+        self.assertEqual((doc["self_verdict"], doc["failure_class"]), ("pass", "pass"))
+        self.assertEqual([r["quantity"] for r in doc["per_test"][0]["basis"]["predicates"]],
                          ["mass_drift_rel", "h_min"])
 
-    def test_fixture_a_tampered_state_fails_a_passing_diagnostics(self) -> None:
-        # (a): every secondary condition passes; the captured final state lost mass in both
-        # cases (the translation pair stays a pair, so t_sym's corroborant still holds).
+    def test_fixture_a_tampered_state_fails(self) -> None:
+        # the captured final state lost mass in both cases (the translation pair stays a pair)
         self.run.write_state("a", self.h, self.h * 0.9)
         self.run.write_state("b", self.h, self.h * 0.9)
         doc = self._verdict()
-        self.assertEqual(doc["self_verdict"], "fail")
-        self.assertEqual(doc["failure_class"], "physics_fail")
+        self.assertEqual((doc["self_verdict"], doc["failure_class"]), ("fail", "physics_fail"))
         mass = doc["per_test"][0]
         self.assertEqual(mass["status"], "fail")
-        self.assertEqual(mass["basis"]["corroboration"], "disagree")
-        self.assertTrue(mass["basis"]["satisfied"])       # the secondary half still held
-        self.assertFalse(mass["basis"]["primary"][0]["satisfied"])
-        self.assertEqual(mass["basis"]["primary"][0]["evaluated"][0]["case"], "a")
+        self.assertFalse(mass["basis"]["predicates"][0]["satisfied"])
+        self.assertEqual(mass["basis"]["predicates"][0]["evaluated"][0]["case"], "a")
         self.assertEqual(doc["per_test"][1]["status"], "pass")
-        self.assertEqual(doc["per_test"][1]["basis"]["corroboration"], "agree")
 
     def test_fixture_c_one_decoy_case_among_two(self) -> None:
-        # (c): case b keeps initial == final (mass drift 0) while its depth breaks positivity.
+        # case b keeps initial == final (mass drift 0) while its depth breaks positivity
         low = self.h.copy()
         low[3, 1] = 0.1
         self.run.write_state("b", low, low)
         doc = self._verdict()
         self.assertEqual(doc["self_verdict"], "fail")
-        mass = doc["per_test"][0]
-        self.assertEqual(mass["basis"]["corroboration"], "disagree")
-        drift, hmin = mass["basis"]["primary"]
+        drift, hmin = doc["per_test"][0]["basis"]["predicates"]
         self.assertTrue(drift["satisfied"])
         self.assertFalse(hmin["satisfied"])
         self.assertEqual([e["case"] for e in hmin["evaluated"]], ["a", "b"])
@@ -1006,141 +985,102 @@ class VerdictIntegrationTest(unittest.TestCase):
         doc = self._verdict()
         self.assertEqual(doc["failure_class"], "structural_violation")
         self.assertEqual(doc["per_test"][0]["status"], "fail")
-        # an evidence gap is neither agreement nor disagreement (round 3): whichever way the
-        # secondary half went, the label is `unevaluated`
-        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "unevaluated")
-        diag = _diag_all_pass()
-        diag["per_case"]["a"]["checks"]["mass"]["status"] = "fail"
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        doc = evaluate_verdict(self.predicates, diag, primary=primary)
-        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "unevaluated")
-        # ... and a SECONDARY gap (a ref the runner never emitted) is `unevaluated` too
-        self.run.write_state("b", self.h, self.h)
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        doc = evaluate_verdict(self.predicates, {}, primary=primary)
-        self.assertEqual(doc["failure_class"], "structural_violation")
-        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "unevaluated")
 
-    def test_both_sides_failing_agree(self) -> None:
+    def test_xfail_test_certifies_on_its_predicates(self) -> None:
+        tests = copy.deepcopy(self.tests)
+        tests[0]["expected_outcome"] = "xfail"
+        self.assertEqual(evaluate_verdict(tests, self._records())["per_test"][0]["status"], "xfail")
         self.run.write_state("a", self.h, self.h * 0.9)
-        diag = _diag_all_pass()
-        diag["per_case"]["a"]["checks"]["mass"]["status"] = "fail"
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        doc = evaluate_verdict(self.predicates, diag, primary=primary)
-        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "agree")
-        self.assertEqual(doc["self_verdict"], "fail")
-
-    def test_xfail_test_needs_both_halves(self) -> None:
-        preds = copy.deepcopy(self.predicates)
-        preds[0]["expected_outcome"] = "xfail"
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        self.assertEqual(evaluate_verdict(preds, _diag_all_pass(), primary=primary)
-                         ["per_test"][0]["status"], "xfail")
-        self.run.write_state("a", self.h, self.h * 0.9)
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        self.assertEqual(evaluate_verdict(preds, _diag_all_pass(), primary=primary)
-                         ["per_test"][0]["status"], "fail")
-
-    def test_no_primary_is_byte_identical(self) -> None:
-        base = evaluate_verdict(self.predicates, _diag_all_pass(), run_id="r", node_key="n")
-        for primary in (None, []):
-            self.assertEqual(
-                json.dumps(evaluate_verdict(self.predicates, _diag_all_pass(), run_id="r",
-                                            node_key="n", primary=primary), sort_keys=True),
-                json.dumps(base, sort_keys=True))
-        self.assertNotIn("primary", base["per_test"][0]["basis"])
-        self.assertNotIn("corroboration", base["per_test"][0]["basis"])
+        self.assertEqual(evaluate_verdict(tests, self._records())["per_test"][0]["status"], "fail")
 
     def test_a_record_over_a_subset_of_the_tests_cases_raises(self) -> None:
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        primary[0]["target_cases"] = ["a"]
+        records = self._records()
+        records[0]["target_cases"] = ["a"]
         with self.assertRaisesRegex(PredicateError, "not the test's target_cases"):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
-        del primary[0]["target_cases"]   # a record without the key is accepted as before
-        evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
+            evaluate_verdict(self.tests, records)
+        del records[0]["target_cases"]   # a record without the key is accepted as before
+        evaluate_verdict(self.tests, records)
 
-    def test_a_corroborant_reading_fewer_cases_than_the_condition_raises(self) -> None:
-        """Rounds 1 and 2 (security axis): a `case: a` corroborant of a `per_case` condition
-        (round 1), then of a suite-level condition over [a, b] (round 2), passed the
-        target_cases pin (set-equal) and the coverage gate (same name), and the test certified
-        on case a alone with `corroboration: agree` while case b's state failed. The gate now
-        refuses both (CoverageGateTest) and the evaluator re-checks the rule here over the
-        cases a record READS."""
+    def test_a_test_whose_records_read_fewer_cases_than_it_targets_raises(self) -> None:
+        """The surviving half of Z6 PR-3 rounds 1 and 2 (security axis): `case: a` predicates over
+        [a, b] pass the target_cases pin (set-equal) and the test would certify on case a alone
+        while case b's state failed. The re-check is over the cases a record READS, per test."""
         self.run.write_state("b", self.h, self.h * 0.5)   # b loses mass; a does not
         narrow = {**MASS, "case": "a"}
         del narrow["per_case"]
-        self.ir["io_contract"]["primary_predicates"] = [narrow, HMIN, SYM]
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        self.assertEqual(primary[0]["scope"], "case")
-        self.assertEqual(primary[0]["cases_read"], ["a"])
-        self.assertEqual(primary[1]["cases_read"], ["a", "b"])
-        self.assertEqual(primary[2]["cases_read"], ["a", "b"])   # `case: a` + at('b')
-        self.assertTrue(primary[0]["satisfied"])   # a alone holds
-        with self.assertRaisesRegex(PredicateError, "reads every case"):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
-        # round 2: the same corroborant against a SUITE-LEVEL condition over [a, b]
-        preds = copy.deepcopy(self.predicates)
-        del preds[0]["pass_when"]["all"][0]["per_case"]
-        with self.assertRaisesRegex(PredicateError, "reads every case"):
-            evaluate_verdict(preds, _diag_all_pass(), primary=primary)
-        # a `case:` condition takes a corroborant that reads that case: t_sym's condition is
-        # `case: a`; SYM reads a and b, and a record reading b alone is refused
-        primary[2]["cases_read"] = ["b"]
-        with self.assertRaisesRegex(PredicateError, "reads every case"):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary[1:])
-        primary[2]["cases_read"] = ["a"]
-        doc = evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary[1:])
-        # accepted; both tests then fail on the state itself (b lost mass, so the depth floor
-        # and the translation pair both break) with a corroboration recorded
-        self.assertEqual([t["basis"]["corroboration"] for t in doc["per_test"]],
-                         ["disagree", "disagree"])
-        # two records of one quantity, one reading a alone and one reading both: enough
-        wide = copy.deepcopy(primary[0])
-        wide["scope"], wide["cases_read"] = "per_case", ["a", "b"]
-        evaluate_verdict(self.predicates, _diag_all_pass(), primary=[primary[0], wide] + primary[1:])
-        # a record with no `cases_read` (a forged or older record) fails closed
-        del primary[2]["cases_read"]
-        with self.assertRaisesRegex(PredicateError, "reads every case"):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary[1:])
+        narrow_h = {**HMIN, "case": "a"}
+        del narrow_h["per_case"]
+        self.ir["io_contract"]["predicates"] = [narrow, narrow_h, SYM]
+        records = self._records()
+        self.assertEqual(records[0]["scope"], "case")
+        self.assertEqual(records[0]["cases_read"], ["a"])
+        self.assertEqual(records[2]["cases_read"], ["a", "b"])   # `case: a` + at('b')
+        self.assertTrue(records[0]["satisfied"])   # a alone holds
+        with self.assertRaisesRegex(PredicateError, r"target case\(s\) \['b'\]"):
+            evaluate_verdict(self.tests, records)
+        # one of a test's records reading b is enough, and that record then judges it
+        self.ir["io_contract"]["predicates"] = [narrow, HMIN, SYM]
+        doc = evaluate_verdict(self.tests, self._records())
+        self.assertEqual(doc["self_verdict"], "fail")
+        # a record with no `cases_read` (a forged or older record) values nothing: fail closed
+        records = self._records()
+        for rec in records[:2]:
+            del rec["cases_read"]
+        with self.assertRaisesRegex(PredicateError, "values the captured state"):
+            evaluate_verdict(self.tests, records)
 
-    def test_a_dead_bind_record_values_one_case_and_the_recheck_raises(self) -> None:
-        """Issue #567: the record's `cases_read` comes from the same function as the gate's,
-        so a `case: a` corroborant whose only at('b') is in a bind `expr` never reaches is
-        recorded as valuing a alone, and the evaluator's coverage re-check raises for the
-        per_case condition it used to "cover" — the record is not forged by hand here."""
+    def test_a_dead_bind_values_no_case_and_the_recheck_raises(self) -> None:
+        """Issue #567: the record's `cases_read` comes from the same function as the gate's, so a
+        `case: a` predicate whose only at('b') is in a bind `expr` never reaches is recorded as
+        valuing a alone. The record is not forged by hand here."""
         dead = {**MASS, "case": "a",
                 "bind": {**MASS["bind"], "dead": "sum(at('b').final.h)"}}
         del dead["per_case"]
-        self.ir["io_contract"]["primary_predicates"] = [dead, HMIN, SYM]
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        self.assertEqual(primary[0]["cases_read"], ["a"])
-        self.assertTrue(primary[0]["satisfied"])
-        with self.assertRaisesRegex(PredicateError, "reads every case"):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
-        # reached, the same bind values b as well and the record covers the condition
+        hmin_a = {**HMIN, "case": "a"}
+        del hmin_a["per_case"]
+        self.ir["io_contract"]["predicates"] = [dead, hmin_a, SYM]
+        records = self._records()
+        self.assertEqual(records[0]["cases_read"], ["a"])
+        self.assertTrue(records[0]["satisfied"])
+        with self.assertRaisesRegex(PredicateError, "values the captured state"):
+            evaluate_verdict(self.tests, records)
+        # reached, the same bind values b as well
         reached = {**dead, "expr": dead["expr"] + " + 1e-300 * dead"}
-        self.ir["io_contract"]["primary_predicates"] = [reached, HMIN, SYM]
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        self.assertEqual(primary[0]["cases_read"], ["a", "b"])
-        # round 2 (blank-slate axis): the record site takes the state names from the
-        # snapshot schema's `variables`, not from every capture name — an at('b').final.t
-        # (the time variable) that enters the value values nothing of b, so the record lists
-        # a alone and the re-check raises as for the dead bind
+        self.ir["io_contract"]["predicates"] = [reached, hmin_a, SYM]
+        self.assertEqual(self._records()[0]["cases_read"], ["a", "b"])
+        # an at('b').final.t (the time variable) that enters the value values nothing of b
         timed = {**dead, "expr": dead["expr"] + " + 1e-300 * at('b').final.t"}
         del timed["bind"]["dead"]
-        self.ir["io_contract"]["primary_predicates"] = [timed, HMIN, SYM]
-        primary = pe.evaluate_primary_predicates(self.ir, self.run.root)
-        self.assertEqual(primary[0]["cases_read"], ["a"])
-        self.assertTrue(primary[0]["satisfied"])
-        with self.assertRaisesRegex(PredicateError, "reads every case"):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
+        self.ir["io_contract"]["predicates"] = [timed, hmin_a, SYM]
+        records = self._records()
+        self.assertEqual(records[0]["cases_read"], ["a"])
+        with self.assertRaisesRegex(PredicateError, "values the captured state"):
+            evaluate_verdict(self.tests, records)
 
     def test_unknown_test_id_raises(self) -> None:
-        primary = [{"test_id": "nope", "satisfied": True, "kind": "pass"}]
-        with self.assertRaisesRegex(PredicateError, "no test_predicates entry"):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=primary)
+        with self.assertRaisesRegex(PredicateError, "no io_contract.tests entry"):
+            evaluate_verdict(self.tests, self._records() + [{"test_id": "nope"}])
         with self.assertRaises(PredicateError):
-            evaluate_verdict(self.predicates, _diag_all_pass(), primary=["x"])
+            evaluate_verdict(self.tests, ["x"])
+
+    def test_a_reported_read_through_real_records(self) -> None:
+        """D13 on records the evaluator produced: the report and the state are both judged."""
+        variables = [{"name": "h", "shape_expr": "[nx, ny]"},
+                     {"name": "s", "shape_expr": "scalar", "source": "reported"}]
+        report = {"test_id": "t_sym", "quantity": "sym", "target_cases": ["a", "b"],
+                  "expr": "final.s", "op": "le", "value": 10.0, "per_case": True}
+        state = {"test_id": "t_sym", "quantity": "sym", "target_cases": ["a", "b"],
+                 "expr": "max(final.h)", "op": "le", "value": 1e9, "per_case": True}
+        for cid in "ab":
+            self.run.write_state(cid, self.h, self.h)
+        self.ir = _ir([MASS, HMIN, report, state], variables=variables)
+        records = self._records()
+        self.assertEqual(records[2]["sources_read"], {"reported": ["a", "b"]})
+        self.assertEqual(records[3]["sources_read"], {"operation": ["a", "b"]})
+        self.assertEqual(evaluate_verdict(self.tests, records)["per_test"][1]["status"], "pass")
+        self.ir = _ir([MASS, HMIN, report], variables=variables)
+        with self.assertRaisesRegex(PredicateError, "source: reported"):
+            evaluate_verdict(self.tests, self._records())
 
 
 # ---------------------------------------------------------------------------- schema gate
@@ -1150,7 +1090,7 @@ class SchemaGateTest(unittest.TestCase):
         ir = ir or _ir(preds)
         cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
         targets = {p["test_id"]: p["target_cases"]
-                   for p in ir["io_contract"]["test_predicates"]} if pin_targets else None
+                   for p in ir["io_contract"]["tests"]} if pin_targets else None
         return pe.validate_primary_predicate_schema(
             preds, case_ids=set(cases), test_ids=["t_mass", "t_sym"],
             schema=pe.snapshot_schema(ir), cases=cases, test_target_cases=targets)
@@ -1178,7 +1118,7 @@ class SchemaGateTest(unittest.TestCase):
             ([{k: v for k, v in HMIN.items() if k != "per_case"}], "exactly one of"),
             ([{**HMIN, "case": "a"}], "exactly one of"),
             ([{**SYM, "case": "b", "target_cases": ["a"]}], "not one of its target_cases"),
-            ([{**HMIN, "na_allowed": True}], "na_allowed is not a primary predicate key"),
+            ([{**HMIN, "na_allowed": True}], "na_allowed is not a predicate key"),
             ([{**HMIN, "value": None}], "non-null"),
             ([{**HMIN, "value": "0.5"}], "value must be a finite number"),
             ([{**HMIN, "value": float("nan")}], "value must be a finite number"),
@@ -1276,7 +1216,7 @@ class SchemaGateTest(unittest.TestCase):
         self.assertIn("in case 'b': inputs.grid.dx is not a key", out[0])
         # a malformed scope is reported, and the path is then resolved in every target case
         out = self._v([{**scoped, "per_case": True}], ir=ir)
-        self.assertEqual(out[0], "primary_predicates[0]: exactly one of `per_case: true` or "
+        self.assertEqual(out[0], "predicates[0]: exactly one of `per_case: true` or "
                                  "`case: <case_id>` names the scope")
         self.assertEqual(len(out), 2, out)
         self.assertIn("in case 'b': inputs.grid.dx is not a key", out[1])
@@ -1322,7 +1262,7 @@ class SchemaGateTest(unittest.TestCase):
         # and the keys the secondary side has are refused here
         for key in ("na_allowed", "expected_outcome"):
             out = self._v([{**HMIN, key: "pass"}])
-            self.assertTrue(any(f"{key} is not a primary predicate key" in m for m in out), out)
+            self.assertTrue(any(f"{key} is not a predicate key" in m for m in out), out)
 
     def test_a_state_read_only_inside_a_term_constant_by_form_is_refused(self) -> None:
         """Issue #483: a read inside `X * 0`, `X ** 0`, `X - X` or `X + -X` (after `-(-X)` is
@@ -1428,17 +1368,17 @@ class SchemaGateTest(unittest.TestCase):
         self.assertEqual(self._v([ok], ir=_mixed_ir([ok], self._YC)), [])
         bad = {**HMIN, "expr": "maxabs(final.hv - yc)"}
         self.assertEqual(self._v([bad], ir=_mixed_ir([bad], self._YC)), [
-            (f"primary_predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"
+            (f"predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"
              f"{self._COORD}")])
         # under at('<case>') a coordinate has the same rank
         bad_at = {**HMIN, "expr": "maxabs(final.hv - at('b').yc)"}
         self.assertEqual(self._v([bad_at], ir=_mixed_ir([bad_at], self._YC)), [
-            (f"primary_predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"
+            (f"predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"
              f"{self._COORD}")])
         # a refusal that names no coordinate carries no coordinate suffix
         plain = {**HMIN, "expr": "maxabs(final.hv - final.U)"}
         self.assertEqual(self._v([plain], ir=_mixed_ir([plain], self._YC)), [
-            f"primary_predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"])
+            f"predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"])
 
     def test_the_issue_440_predicate_is_refused_at_compile(self) -> None:
         """The coriolis 0.1.1 IR's coordinate, bind and expr verbatim: the bind is rank 3 (the
@@ -1451,7 +1391,7 @@ class SchemaGateTest(unittest.TestCase):
             "expr": "max(maxabs(final.S_h), maxabs(final.S_hu - f_rows * initial.hv), "
                     "maxabs(final.S_hv + f_rows * initial.hu))", "value": 1e-12}
         out = self._v([pred], ir=_mixed_ir([pred], coords))
-        self.assertEqual(out, [(f"primary_predicates[0].expr: operator *: operands of rank 3 and 2 "
+        self.assertEqual(out, [(f"predicates[0].expr: operator *: operands of rank 3 and 2 "
                                 f"{self._PAIR}{self._COORD}")])
         rank2 = [e for e in MIXED_VARIABLES if e["name"] not in ("U", "S")]
         self.assertEqual(self._v([pred], ir=_mixed_ir([pred], coords, rank2)), [])
@@ -1462,7 +1402,7 @@ class SchemaGateTest(unittest.TestCase):
                            ("-final.h", 2), ("roll(final.h, 1, 0)", 2)):
             with self.subTest(expr=expr):
                 self.assertEqual(self._v([{**HMIN, "expr": expr}]), [
-                    (f"primary_predicates[0].expr: evaluates to an array of rank {rank}, "
+                    (f"predicates[0].expr: evaluates to an array of rank {rank}, "
                      f"{self._SCALAR}")])
 
     def test_a_bind_of_array_rank_reduced_in_expr_is_accepted(self) -> None:
@@ -1472,21 +1412,21 @@ class SchemaGateTest(unittest.TestCase):
                                    "expr": "sum(q) + final.s"}]), [])
         # a bind's rank flows into what reads it
         out = self._v([{**HMIN, "bind": {"d": "final.h - initial.h"}, "expr": "d"}])
-        self.assertEqual(out, [(f"primary_predicates[0].expr: evaluates to an array of rank 2, "
+        self.assertEqual(out, [(f"predicates[0].expr: evaluates to an array of rank 2, "
                                 f"{self._SCALAR}")])
         # an unused bind is still ranked: every bind is evaluated at run time
         out = self._v([{**HMIN, "bind": {"bad": "final.h + inputs.initial.a1"},
                         "expr": "min(final.h)"}], ir=self._with_inputs())
-        self.assertEqual(out, [(f"primary_predicates[0].bind.bad: operator +: operands of rank 2 "
+        self.assertEqual(out, [(f"predicates[0].bind.bad: operator +: operands of rank 2 "
                                 f"and 1 {self._PAIR}")])
 
     def test_roll_shift_count_is_checked_at_compile(self) -> None:
         self.assertEqual(self._v([{**HMIN, "expr": "maxabs(roll(final.h, 1))"}]), [
-            "primary_predicates[0].expr: roll(): 1 shift(s) for an array of rank 2"])
+            "predicates[0].expr: roll(): 1 shift(s) for an array of rank 2"])
         self.assertEqual(self._v([{**HMIN, "expr": "maxabs(roll(final.h, final.h, 0))"}]), [
-            "primary_predicates[0].expr: roll(): a shift must be a scalar"])
+            "predicates[0].expr: roll(): a shift must be a scalar"])
         self.assertEqual(self._v([{**HMIN, "expr": "roll(final.s, 1)"}]), [
-            "primary_predicates[0].expr: roll(): 1 shift(s) for an array of rank 0"])
+            "predicates[0].expr: roll(): 1 shift(s) for an array of rank 0"])
         self.assertEqual(self._v([SYM]), [])
 
     def test_array_first_ranks_are_checked_at_compile(self) -> None:
@@ -1506,7 +1446,7 @@ class SchemaGateTest(unittest.TestCase):
                            "transpose(): every argument after the first must be a scalar")):
             with self.subTest(expr=expr):
                 self.assertEqual(self._v([{**HMIN, "expr": expr}]),
-                                 [f"primary_predicates[0].expr: {msg}"])
+                                 [f"predicates[0].expr: {msg}"])
         self.assertEqual(self._v([{**HMIN, "expr": "maxabs(flip(final.h, 7))"}]), [])
         self.assertEqual(self._v([{**HMIN, "expr": "maxabs(coarsen(final.h, 3))"}]), [])
 
@@ -1525,11 +1465,11 @@ class SchemaGateTest(unittest.TestCase):
         self.assertEqual(self._v([ok], ir=self._with_inputs()), [])
         bad = {**HMIN, "expr": "maxabs(final.h - inputs.initial.a1)"}
         self.assertEqual(self._v([bad], ir=self._with_inputs()), [
-            f"primary_predicates[0].expr: operator -: operands of rank 2 and 1 {self._PAIR}"])
+            f"predicates[0].expr: operator -: operands of rank 2 and 1 {self._PAIR}"])
         # the rank differs between cases: the refusing case is named
         ir = self._with_inputs(b_a2=[1.0] * NX)
         self.assertEqual(self._v([ok], ir=ir), [
-            (f"primary_predicates[0].expr: in case 'b': operator -: operands of rank 2 and 1 "
+            (f"predicates[0].expr: in case 'b': operator -: operands of rank 2 and 1 "
              f"{self._PAIR}")])
         # under at('<case>') the input is read in THAT case alone, in every case's evaluation
         self.assertEqual(self._v([{**HMIN, "expr": "maxabs(final.h - at('a').inputs.initial.a2)"}],
@@ -1541,7 +1481,7 @@ class SchemaGateTest(unittest.TestCase):
         ir3 = self._with_inputs(b_a2=[1.0] * NX)
         ir3["case"]["test_case_set"][0]["inputs"]["initial"]["a2"] = [[[1.0]] * NY] * NX
         self.assertEqual(self._v([ok], ir=ir3), [
-            (f"primary_predicates[0].expr: in case 'a': operator -: operands of rank 2 and 3 "
+            (f"predicates[0].expr: in case 'a': operator -: operands of rank 2 and 3 "
              f"{self._PAIR}")])
         # a `case:` scope is evaluated in its one case: the other target's rank is not read
         self.assertEqual(self._v([{**SYM, "expr": "maxabs(final.h - inputs.initial.a2)"}],
@@ -1556,7 +1496,7 @@ class SchemaGateTest(unittest.TestCase):
             with self.subTest(name=name):
                 out = self._v([{**HMIN, "expr": f"maxabs({name}(final.h, inputs.initial.a1))"}],
                               ir=ir)
-                self.assertEqual(out, [(f"primary_predicates[0].expr: {name}(): operands of rank "
+                self.assertEqual(out, [(f"predicates[0].expr: {name}(): operands of rank "
                                         f"2 and 1 {self._PAIR}")])
 
     def test_a_malformed_scope_still_ranks_an_own_case_input(self) -> None:
@@ -1566,10 +1506,10 @@ class SchemaGateTest(unittest.TestCase):
         ir = self._with_inputs(b_a2=[1.0] * NX)
         out = self._v([{**HMIN, "case": "a", "expr": "maxabs(final.h - inputs.initial.a2)"}],
                       ir=ir)
-        self.assertEqual(out[0], "primary_predicates[0]: exactly one of `per_case: true` or "
+        self.assertEqual(out[0], "predicates[0]: exactly one of `per_case: true` or "
                                  "`case: <case_id>` names the scope")
         self.assertEqual(out[1:], [
-            (f"primary_predicates[0].expr: in case 'b': operator -: operands of rank 2 and 1 "
+            (f"predicates[0].expr: in case 'b': operator -: operands of rank 2 and 1 "
              f"{self._PAIR}")])
 
     def test_a_time_variable_listed_among_the_variables_has_rank_0(self) -> None:
@@ -1584,7 +1524,7 @@ class SchemaGateTest(unittest.TestCase):
         ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
                                     {"name": "v", "shape_expr": "[nx]"}])
         self.assertEqual(self._v([{**HMIN, "expr": "final.v"}], ir=ir), [
-            f"primary_predicates[0].expr: evaluates to an array of rank 1, {self._SCALAR}"])
+            f"predicates[0].expr: evaluates to an array of rank 1, {self._SCALAR}"])
 
     def test_a_rank_check_does_not_cascade(self) -> None:
         out = self._v([{**HMIN, "expr": "final.h + zz"}])
@@ -1681,36 +1621,9 @@ class StaticRankTest(unittest.TestCase):
 
 # ------------------------------------------------------------------------- doc coupling
 
-class CoverageGateTest(unittest.TestCase):
-    """`coverage_violations` (Z6 PR-3): every condition's `quantity` has a primary predicate
-    of the same test and quantity. Pinned per branch: the absent list, a covered set, an
-    uncovered quantity, a `verdict.*` condition needing one like any other, a corroborant on
-    the wrong test, and the malformed shapes that are the schema gates' to refuse."""
-
-    _T: ClassVar[list[dict]] = [
-        {"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a"],
-         "pass_when": {"all": [
-             {"ref": "checks.mass.status", "op": "eq", "value": "pass", "quantity": "mass"},
-             {"ref": "verdict.overall", "op": "eq", "value": "pass", "quantity": "overall"}]}},
-        {"test_id": "t_sym", "expected_outcome": "xfail", "target_cases": ["a"],
-         "pass_when": {"all": [
-             {"ref": "verdict.overall", "op": "eq", "value": "fail", "quantity": "guard"},
-             {"ref": "verdict.failed_checks", "op": "includes", "value": "g",
-              "quantity": "guard"}]}},
-    ]
-
-    @staticmethod
-    def _p(test_id: str, quantity: str) -> dict:
-        return {"test_id": test_id, "quantity": quantity, "expr": "final.s", "op": "le",
-                "value": 1.0, "target_cases": ["a"], "per_case": True}
-
-    def test_covered(self) -> None:
-        full = [self._p("t_mass", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")]
-        self.assertEqual(pe.coverage_violations(self._T, full, state_names=STATE), [])
-        # two conditions sharing one quantity name share one corroborant; a second corroborant
-        # of the same quantity and a corroborant of an unnamed quantity change nothing
-        self.assertEqual(pe.coverage_violations(
-            self._T, full + [self._p("t_sym", "guard"), self._p("t_mass", "extra")], state_names=STATE), [])
+class CasesReadTest(unittest.TestCase):
+    """`cases_read`, what a record says it valued: the reader the reported-read gate and the
+    per-test reads-every-case rule stand on."""
 
     # Channel IR `problem__shallow_water2d_channel__0.2.5/shallow-water2d-channel_20261029_001`,
     # predicate [300] (`restricted_order_n032_to_n064_hu_l2`, `case: n256`): the Compile leaf
@@ -1787,51 +1700,16 @@ class CoverageGateTest(unittest.TestCase):
         # an unparsable bind, reached or not, still makes the predicate cover nothing
         self.assertIsNone(pe.cases_read(p("final.s", {"bad": "final.s +"}), state_names=STATE))
 
-    def test_a_reference_that_enters_no_value_covers_no_case(self) -> None:
-        """Issue #567, through the gate: a `case: a` corroborant of a per_case condition over
-        {a, b} whose only at('b') is in a dead bind, a `0 *` term, a bind reached only through
-        a pruned term, or inside `X - X` is refused with the "reads every such case" message;
-        a bind reached transitively still covers b."""
-        t = [{"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],
-              "pass_when": {"all": [{"ref": "m.a", "op": "le", "value": 1, "per_case": True,
-                                     "quantity": "pc"}]}}]
-
-        def case_a(expr: str, bind: dict | None = None) -> dict:
-            out = {"test_id": "t_mass", "quantity": "pc", "expr": expr, "op": "le",
-                   "value": 1.0, "target_cases": ["a", "b"], "case": "a"}
-            if bind is not None:
-                out["bind"] = bind
-            return out
-        msg = ("t_mass: condition on 'm.a' (quantity 'pc') holds in every target case, but no "
-               "corroborant of that quantity reads every such case (each reads [['a']])")
-        refused = [
-            case_a("final.s", {"dead": "at('b').final.s"}),
-            case_a("final.s + 0 * sum(at('b').final.s)"),
-            case_a("final.s + 0 * other", {"other": "at('b').final.s"}),
-            case_a("final.s + w", {"w": "at('b').final.s - at('b').final.s"}),
-        ]
-        for pred in refused:
-            with self.subTest(expr=pred["expr"], bind=str(pred.get("bind"))):
-                v = pe.coverage_violations(t, [pred], state_names=STATE)
-                self.assertEqual(len(v), 1, v)
-                self.assertIn(msg, v[0])
-        self.assertEqual(pe.coverage_violations(t, [case_a(
-            "final.s - c", {"other": "at('b').final.s", "c": "other * 2"})],
-            state_names=STATE), [])
-
-
     def test_only_a_state_read_values_a_case(self) -> None:
         """Issue #567 review round 1: a case is valued only by a captured STATE read that
         enters the value. `at('b').inputs.<path>` (a normaliser), `at('b').final.t` (the time
         variable is not state) and `at('b').x` (a coordinate) value none of b's state, so a
-        `case: a` corroborant carrying one of them beside its own state reads a alone; one
+        `case: a` predicate carrying one of them beside its own state reads a alone; one
         reading ONLY `at('b').final.s` values b alone (its own case is never read), under
         `case: a` and under `per_case: true` alike; a `comparand.` read is another target's
         state and values no case of this run. The schema gate passes every one of these
-        (each reads captured state), so this rule is what refuses the coverage."""
-        t = [{"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],
-              "pass_when": {"all": [{"ref": "m.a", "op": "le", "value": 1.0, "per_case": True,
-                                     "quantity": "pc"}]}}]
+        (each reads captured state)."""
+        t = [{"test_id": "t_mass", "target_cases": ["a", "b"], "quantities": ["pc"]}]
 
         def case_p(expr: str, **extra: object) -> dict:
             return {"test_id": "t_mass", "quantity": "pc", "op": "le", "value": 1.0,
@@ -1848,7 +1726,7 @@ class CoverageGateTest(unittest.TestCase):
             with self.subTest(expr=expr):
                 p = case_p(expr)
                 self.assertEqual(pe.cases_read(p, state_names=STATE), read)
-                v = pe.coverage_violations(t, [p], state_names=STATE)
+                v = pe.quantity_violations(t, [p], STATE)
                 self.assertEqual(len(v), 0 if read == {"a", "b"} else 1, v)
         # the same read through a reached bind, and through a bind the frontier would reach
         # only if it matched a capture NAME against a bind name (the walk follows `name`
@@ -1870,134 +1748,307 @@ class CoverageGateTest(unittest.TestCase):
         self.assertEqual(pe.cases_read(p, state_names=STATE), {"a", "b"})
         # with no state names (no snapshot schema) nothing is valued: fail-closed
         self.assertEqual(pe.cases_read(case_p("final.s"), state_names=set()), set())
-        self.assertEqual(len(pe.coverage_violations(t, [case_p("final.s + at('b').final.s")],
-                                                    state_names=set())), 1)
-    def test_a_corroborant_must_read_every_case_the_condition_holds_in(self) -> None:
-        """Rounds 1 and 2 (security axis): per (test, quantity), some corroborant must READ
-        every case the condition holds in — every target case for a per_case or a suite-level
-        condition, the one case for a `case: X` condition; a corroborant reads every target
-        case under per_case, and under `case: X` reads X plus its at('<case>') cases. A
-        primary with a malformed scope or expression covers nothing (the primary schema gate
-        refuses it)."""
-        t = copy.deepcopy(self._T)
-        t[0]["target_cases"] = ["a", "b"]
-        t[0]["pass_when"]["all"] = [
-            {"ref": "m.a", "op": "le", "value": 1, "per_case": True, "quantity": "pc"},
-            {"ref": "m.b", "op": "le", "value": 1, "case": "a", "quantity": "ca"},
-            {"ref": "m.c", "op": "le", "value": 1, "quantity": "suite"}]
-        t[1]["pass_when"]["all"] = [
-            {"ref": "m.d", "op": "le", "value": 1, "per_case": True, "quantity": "pc2"}]
+        self.assertEqual(len(pe.quantity_violations(t, [case_p("final.s + at('b').final.s")],
+                                                    set())), 1)
 
-        def case_p(test_id: str, quantity: str, case: str, expr: str = "final.s") -> dict:
-            p = {**self._p(test_id, quantity), "case": case, "expr": expr,
-                 "target_cases": ["a", "b"] if test_id == "t_mass" else ["a"]}
-            del p["per_case"]
-            return p
-
-        def per_case_p(test_id: str, quantity: str) -> dict:
-            return {**self._p(test_id, quantity),
-                    "target_cases": ["a", "b"] if test_id == "t_mass" else ["a"]}
-
-        # per_case condition, `case: a` corroborant -> refused (round 1); `case:` condition
-        # read in another case -> refused; suite-level with a `case: a` corroborant over a
-        # two-case test -> refused (round 2)
-        v = pe.coverage_violations(t, [case_p("t_mass", "pc", "a"), case_p("t_mass", "ca", "b"),
-                                       case_p("t_mass", "suite", "a"),
-                                       per_case_p("t_sym", "pc2")], state_names=STATE)
-        self.assertEqual(len(v), 3, v)
-        self.assertIn("t_mass: condition on 'm.a' (quantity 'pc') holds in every target case, "
-                      "but no corroborant of that quantity reads every such case (each reads "
-                      "[['a']])", v[0])
-        self.assertIn("condition on 'm.b' (quantity 'ca') is read in case 'a', but no "
-                      "corroborant of that quantity reads every such case (each reads [['b']])",
-                      v[1])
-        self.assertIn("condition on 'm.c' (quantity 'suite') holds in every target case", v[2])
-        self.assertIn("give one primary_predicates entry `per_case: true` reading its own case's "
-                      "state, or a `case:` whose at('<case>').<initial|final>.<state var> reads — "
-                      "in expr or a bind expr reaches, outside a term constant by form — reach "
-                      "the rest — a corroborant reading one case would certify the test on that "
-                      "case alone", v[2])
-        # per_case corroborants, or a `case:` one whose at() reaches the rest, satisfy each;
-        # a `case: a` corroborant of a `case: a` condition reads exactly the case it needs
-        self.assertEqual(pe.coverage_violations(t, [
-            per_case_p("t_mass", "pc"), case_p("t_mass", "ca", "a"),
-            case_p("t_mass", "suite", "b", "final.s - at('a').final.s"),
-            per_case_p("t_sym", "pc2")], state_names=STATE), [])
-        self.assertEqual(pe.coverage_violations(t, [
-            case_p("t_mass", "pc", "a", "min(final.s, at('b').final.s)"),
-            per_case_p("t_mass", "ca"), per_case_p("t_mass", "suite"),
-            per_case_p("t_sym", "pc2")], state_names=STATE), [])
-        # an at() inside a BIND reaches the rest too
-        bound = case_p("t_mass", "suite", "a", "final.s - other")
-        bound["bind"] = {"other": "at('b').final.s"}
-        self.assertEqual(pe.coverage_violations(t, [
-            per_case_p("t_mass", "pc"), per_case_p("t_mass", "ca"), bound,
-            per_case_p("t_sym", "pc2")], state_names=STATE), [])
-        # one of several corroborants of a quantity reading enough is enough
-        self.assertEqual(pe.coverage_violations(t, [
-            case_p("t_mass", "pc", "a"), per_case_p("t_mass", "pc"), per_case_p("t_mass", "ca"),
-            per_case_p("t_mass", "suite"), per_case_p("t_sym", "pc2")], state_names=STATE), [])
-        # a single-case test: a `case: a` corroborant reads every case a per_case condition
-        # holds in (round 2's over-refusal probe)
-        self.assertEqual(pe.coverage_violations(t[1:], [case_p("t_sym", "pc2", "a")], state_names=STATE), [])
-        # a malformed scope (both keys, neither, per_case: false alone, an empty case), a
-        # non-list target_cases, or an unparsable expression is not a corroborant at all
+    def test_a_malformed_scope_or_expression_values_nothing(self) -> None:
         for bad in ({"per_case": True, "case": "a"}, {}, {"per_case": False}, {"case": ""},
                     {"case": 1}, {"per_case": True, "target_cases": "a"},
                     {"case": "a", "expr": "final.s +"}, {"case": "a", "bind": {"x": "("}}):
             with self.subTest(bad=bad):
-                p = {k: v_ for k, v_ in per_case_p("t_sym", "pc2").items() if k != "per_case"}
-                p.update(bad)
-                v = pe.coverage_violations(t[1:], [p], state_names=STATE)
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("has no host-evaluated corroborant", v[0])
-                self.assertIn("is no corroborant: repair it rather than adding one", v[0])
-        self.assertIsNone(pe.cases_read({"case": "a", "target_cases": ["a"], "expr": "("},
-                                        state_names=STATE))
-        # an expr reading other cases' state alone values those cases and not its own (the
-        # case in `case:` is read only when the value reads its state; review round 1)
+                p = {"target_cases": ["a"], "expr": "final.s", **bad}
+                self.assertIsNone(pe.cases_read(p, state_names=STATE))
+        # an expr reading other cases' state alone values those cases and not its own
         self.assertEqual(pe.cases_read({"case": "a", "target_cases": ["a", "b"],
                                         "expr": "at('b').final.s + at('c').final.s"},
                                        state_names=STATE),
                          {"b", "c"})
 
-    def test_absent_list_is_refused(self) -> None:
-        for absent in (None, "x", {}):
-            with self.subTest(absent=absent):
-                v = pe.coverage_violations(self._T, absent, state_names=STATE)
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("primary_predicates missing", v[0])
 
-    def test_each_uncovered_quantity_is_named(self) -> None:
-        v = pe.coverage_violations(self._T, [self._p("t_mass", "mass")], state_names=STATE)
-        self.assertEqual(len(v), 3, v)
-        self.assertIn("t_mass: condition on 'verdict.overall' (quantity 'overall') has no "
-                      "host-evaluated corroborant", v[0])
-        self.assertIn("t_sym: condition on 'verdict.overall' (quantity 'guard')", v[1])
-        self.assertIn("t_sym: condition on 'verdict.failed_checks' (quantity 'guard')", v[2])
-        self.assertIn("quantity 'guard' that values it from the captured state", v[2])
+class QuantityGateTest(unittest.TestCase):
+    """`quantity_violations` (D10): the replacement of the coverage gate's omission property."""
 
-    def test_a_corroborant_counts_for_its_own_test_only(self) -> None:
-        v = pe.coverage_violations(self._T, [
-            self._p("t_sym", "mass"), self._p("t_sym", "overall"), self._p("t_mass", "guard")], state_names=STATE)
+    _T: ClassVar[list[dict]] = [
+        {"test_id": "t_mass", "target_cases": ["a"], "quantities": ["mass", "overall"]},
+        {"test_id": "t_sym", "target_cases": ["a"], "quantities": ["guard"]},
+    ]
+
+    @staticmethod
+    def _p(test_id: str, quantity: str, **kw: object) -> dict:
+        return {"test_id": test_id, "quantity": quantity, "expr": "final.s", "op": "le",
+                "value": 1.0, "target_cases": ["a"], "per_case": True, **kw}
+
+    def test_equal_sets_pass_and_a_second_predicate_of_a_quantity_changes_nothing(self) -> None:
+        full = [self._p("t_mass", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")]
+        self.assertEqual(pe.quantity_violations(self._T, full, STATE), [])
+        self.assertEqual(pe.quantity_violations(self._T, [*full, self._p("t_sym", "guard")], STATE),
+                         [])
+
+    def test_a_listed_quantity_with_no_predicate_is_named(self) -> None:
+        v = pe.quantity_violations(self._T, [self._p("t_mass", "mass"), self._p("t_sym", "guard")],
+                                   STATE)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("t_mass", v[0])
+        self.assertIn("['overall']", v[0])
+        self.assertIn("judges", v[0])
+
+    def test_an_unlisted_quantity_is_named(self) -> None:
+        v = pe.quantity_violations(self._T, [self._p("t_mass", "mass"), self._p("t_mass", "overall"),
+                                             self._p("t_sym", "guard"), self._p("t_sym", "extra")],
+                                   STATE)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("['extra']", v[0])
+
+    def test_a_predicate_counts_for_its_own_test_only(self) -> None:
+        v = pe.quantity_violations(self._T, [self._p("t_sym", "mass"), self._p("t_sym", "overall"),
+                                             self._p("t_mass", "guard")], STATE)
         self.assertEqual(len(v), 4, v)
-        v = pe.coverage_violations(self._T, [
-            self._p(" t_mass ", "mass"), self._p("t_mass", "overall"), self._p("t_sym", "guard")], state_names=STATE)
+        v = pe.quantity_violations(self._T, [self._p(" t_mass ", "mass"), self._p("t_mass", "overall"),
+                                             self._p("t_sym", "guard")], STATE)
         self.assertEqual(v, [], "a test_id is compared stripped, as the schema gates do")
 
-    def test_an_empty_list_leaves_every_test_uncovered(self) -> None:
-        v = pe.coverage_violations(self._T, [], state_names=STATE)
-        self.assertEqual(len(v), 4, v)
+    def test_a_cross_target_predicate_stands_for_no_listed_quantity(self) -> None:
+        cross = self._p("t_sym", "guard", expr="maxabs(final.s - comparand.final.s)")
+        v = pe.quantity_violations(self._T, [self._p("t_mass", "mass"), self._p("t_mass", "overall"),
+                                             cross], STATE)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("['guard']", v[0])
+        # and beside an own predicate, or under a name of its own, it adds nothing to compare
+        for extra in (cross, self._p("t_sym", "agree", expr=cross["expr"])):
+            with self.subTest(quantity=extra["quantity"]):
+                self.assertEqual(pe.quantity_violations(self._T, [
+                    self._p("t_mass", "mass"), self._p("t_mass", "overall"),
+                    self._p("t_sym", "guard"), extra], STATE), [])
+
+    def test_every_target_case_is_read_by_some_predicate_of_the_test(self) -> None:
+        t = [{"test_id": "t", "target_cases": ["a", "b"], "quantities": ["q", "r"]}]
+
+        def one(quantity: str, case: str, expr: str = "final.s") -> dict:
+            p = self._p("t", quantity, case=case, expr=expr, target_cases=["a", "b"])
+            del p["per_case"]
+            return p
+        v = pe.quantity_violations(t, [one("q", "a"), one("r", "a")], STATE)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("target case(s) ['b']", v[0])
+        # by `per_case`, by the other case's own scope, by at(), by a reached bind
+        reach = self._p("t", "r", target_cases=["a", "b"])
+        self.assertEqual(pe.quantity_violations(t, [one("q", "a"), reach], STATE), [])
+        self.assertEqual(pe.quantity_violations(t, [one("q", "a"), one("r", "b")], STATE), [])
+        self.assertEqual(pe.quantity_violations(
+            t, [one("q", "a", "final.s - at('b').final.s"), one("r", "a")], STATE), [])
+        bound = {**one("q", "a", "final.s - other"), "bind": {"other": "at('b').final.s"}}
+        self.assertEqual(pe.quantity_violations(t, [bound, one("r", "a")], STATE), [])
+        # not by a dead bind, a pruned term, an input or the time of the other case
+        for expr, bind in (("final.s", {"dead": "at('b').final.s"}),
+                           ("final.s + 0 * sum(at('b').final.s)", None),
+                           ("final.s / at('b').inputs.grid.nx", None),
+                           ("final.s * at('b').final.t", None)):
+            with self.subTest(expr=expr):
+                p = one("q", "a", expr)
+                if bind:
+                    p["bind"] = bind
+                self.assertEqual(len(pe.quantity_violations(t, [p, one("r", "a")], STATE)), 1)
+        # a cross-target predicate reads no case for this rule
+        self.assertEqual(len(pe.quantity_violations(
+            t, [one("q", "a"), one("r", "a"),
+                self._p("t", "z", expr="final.s - comparand.final.s", target_cases=["a", "b"])],
+            STATE)), 1)
+        # without the state names the rule is not asked (the names-only comparison)
+        self.assertEqual(pe.quantity_violations(t, [one("q", "a"), one("r", "a")]), [])
 
     def test_malformed_shapes_are_left_to_the_schema_gates(self) -> None:
-        self.assertEqual(pe.coverage_violations("x", [], state_names=STATE), [])
-        self.assertEqual(pe.coverage_violations([1, {"test_id": 2}], [], state_names=STATE), [])
-        no_q = [{"test_id": "t", "pass_when": {"all": [{"ref": "verdict.overall"}, 3]}}]
-        self.assertEqual(pe.coverage_violations(no_q, [], state_names=STATE), [])
-        self.assertEqual(pe.coverage_violations(
+        self.assertEqual(pe.quantity_violations("x", []), [])
+        self.assertEqual(pe.quantity_violations([1, {"test_id": 2}, {"test_id": "t"}], []), [])
+        base = pe.quantity_violations(self._T, [])
+        self.assertEqual(pe.quantity_violations(
             self._T, [1, {"quantity": "mass"}, {"test_id": "t_mass"},
-                      {"test_id": "t_mass", "quantity": 1}], state_names=STATE), pe.coverage_violations(self._T, [], state_names=STATE))
+                      {"test_id": "t_mass", "quantity": 1}]), base)
 
+
+class ReportedReadGateTest(unittest.TestCase):
+    """`reported_read_violations` (D13): each way a report could stand alone has its own row."""
+
+    SCHEMA: ClassVar[dict] = {"variables": [
+        {"name": "h", "shape_expr": "[nx, ny]"},
+        {"name": "op2", "shape_expr": "scalar", "source": "operation"},
+        {"name": "flag", "shape_expr": "scalar", "source": "record"},
+        {"name": "ref", "shape_expr": "[nx, ny]", "source": "reference"},
+        {"name": "cfl", "shape_expr": "scalar", "source": "reported"},
+        {"name": "hmin", "shape_expr": "scalar", "source": "reported"}]}
+
+    @staticmethod
+    def _p(expr: str, q: str = "cfl_max", t: str = "t", **kw: object) -> dict:
+        out = {"test_id": t, "quantity": q, "expr": expr, "op": "le", "value": 1.0,
+               "target_cases": ["a", "b"], "per_case": True, **kw}
+        if "case" in kw:
+            del out["per_case"]
+        return out
+
+    def _v(self, *preds: dict) -> list[str]:
+        return pe.reported_read_violations(list(preds), self.SCHEMA)
+
+    def test_paired_passes(self) -> None:
+        self.assertEqual(self._v(self._p("final.cfl"), self._p("max(final.h)")), [])
+        self.assertEqual(self._v(self._p("final.cfl"), self._p("final.op2")), [])
+        self.assertEqual(self._v(self._p("initial.cfl"), self._p("max(initial.h)")), [])
+
+    def test_alone_is_refused(self) -> None:
+        v = self._v(self._p("final.cfl"))
+        self.assertEqual(len(v), 1, v)
+        for token in ("predicates[0]", "'t'", "'cfl_max'", "['a', 'b']", "source: reported"):
+            self.assertIn(token, v[0])
+
+    def test_a_reported_read_in_a_bind_counts(self) -> None:
+        self.assertEqual(len(self._v(self._p("x", bind={"x": "final.cfl"}))), 1)
+        self.assertEqual(self._v(self._p("final.h[0]" if False else "max(final.h)",
+                                         bind={"dead": "final.cfl"})), [])
+
+    def test_a_term_constant_by_form_is_no_read_on_either_side(self) -> None:
+        # the report read only under `* 0` needs no pair ...
+        self.assertEqual(self._v(self._p("max(final.h) + 0 * final.cfl")), [])
+        # ... and a state read only under `* 0` is no pair
+        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("final.flag + 0 * max(final.h)"))),
+                         1)
+
+    def test_a_predicate_reading_both_does_not_pair_with_itself_or_its_twin(self) -> None:
+        both = self._p("final.cfl + 1e-300 * max(final.h)")
+        self.assertEqual(len(self._v(both)), 1)
+        self.assertEqual(len(self._v(both, self._p("final.hmin + max(final.h)"))), 2)
+
+    def test_the_pair_is_same_test_same_quantity(self) -> None:
+        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("max(final.h)", q="other"))), 1)
+        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("max(final.h)", t="u"))), 1)
+
+    def test_the_pair_is_not_cross_target(self) -> None:
+        self.assertEqual(len(self._v(self._p("final.cfl"),
+                                     self._p("maxabs(final.h - comparand.final.h)"))), 1)
+
+    def test_record_and_reference_do_not_pair_and_need_no_pair(self) -> None:
+        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("final.flag"))), 1)
+        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("max(final.ref)"))), 1)
+        self.assertEqual(self._v(self._p("final.flag")), [])
+        self.assertEqual(self._v(self._p("max(final.ref)")), [])
+
+    def test_the_pair_reads_every_case_the_report_is_read_in(self) -> None:
+        one = self._p("max(final.h)", case="a")
+        self.assertEqual(len(self._v(self._p("final.cfl"), one)), 1)
+        self.assertEqual(self._v(self._p("final.cfl", case="a"), one), [])
+        self.assertEqual(len(self._v(self._p("final.cfl", case="b"), one)), 1)
+        self.assertEqual(self._v(self._p("final.cfl - at('b').final.cfl", case="a"),
+                                 self._p("max(final.h)")), [])
+        self.assertEqual(self._v(self._p("final.cfl"),
+                                 self._p("max(final.h) - max(at('b').final.h)", case="a")), [])
+
+    def test_malformed_shapes_are_left_to_the_schema_gates(self) -> None:
+        self.assertEqual(pe.reported_read_violations(None, self.SCHEMA), [])
+        self.assertEqual(pe.reported_read_violations([self._p("final.cfl")], None), [])
+        self.assertEqual(self._v(3, {"test_id": 1}, {"test_id": "t"}), [])  # type: ignore[arg-type]
+        self.assertEqual(self._v(self._p("final.cfl +")), [])
+
+
+class ReferenceReadGateTest(unittest.TestCase):
+    """`reference_read_violations` (round 2 R2): a leaf-computed reference judges nothing without
+    the operation's state, in the same predicate or another of the same test and quantity."""
+
+    SCHEMA: ClassVar[dict] = ReportedReadGateTest.SCHEMA
+    _p = staticmethod(ReportedReadGateTest._p)
+
+    def _v(self, *preds: dict) -> list[str]:
+        return pe.reference_read_violations(list(preds), self.SCHEMA)
+
+    def test_state_in_the_same_predicate_or_beside_it_passes(self) -> None:
+        self.assertEqual(self._v(self._p("maxabs(final.h - initial.ref)")), [])
+        self.assertEqual(self._v(self._p("maxabs(final.ref - 1.0)"), self._p("maxabs(final.h)")), [])
+        self.assertEqual(self._v(self._p("maxabs(final.ref)"), self._p("final.op2")), [])
+
+    def test_a_reference_judged_alone_is_refused(self) -> None:
+        for expr in ("maxabs(final.ref - inputs.grid.nx)",       # against the inputs
+                     "maxabs(final.ref - initial.ref)",          # against itself
+                     "maxabs(final.ref) + final.flag",           # a record is not state
+                     "maxabs(final.ref) + final.cfl"):           # nor is a report
+            with self.subTest(expr=expr):
+                v = self._v(self._p(expr))
+                self.assertEqual(len(v), 1, v)
+                for token in ("predicates[0]", "'t'", "'cfl_max'", "source: reference"):
+                    self.assertIn(token, v[0])
+
+    def test_a_term_constant_by_form_is_no_state_read(self) -> None:
+        self.assertEqual(len(self._v(self._p("maxabs(final.ref) + 0 * maxabs(final.h)"))), 1)
+        self.assertEqual(len(self._v(self._p("maxabs(final.ref)", bind={"d": "maxabs(final.h)"}))), 1)
+        # and a reference read only there is no reference read
+        self.assertEqual(self._v(self._p("final.flag + 0 * maxabs(final.ref)")), [])
+
+    def test_the_state_is_of_the_same_test_quantity_and_cases(self) -> None:
+        ref = self._p("maxabs(final.ref)")
+        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", q="other"))), 1)
+        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", t="u"))), 1)
+        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", case="a"))), 1)
+        self.assertEqual(self._v(ref, self._p("maxabs(final.h)", case="a"),
+                                 self._p("maxabs(final.h)", case="b")), [])
+        self.assertEqual(self._v(self._p("maxabs(final.ref)", case="a"),
+                                 self._p("maxabs(final.h)", case="a")), [])
+
+    def test_a_cross_target_read_of_state_does_not_count(self) -> None:
+        self.assertEqual(len(self._v(self._p("maxabs(final.ref)"),
+                                     self._p("maxabs(final.h - comparand.final.h)"))), 1)
+
+    def test_a_record_stays_exempt_and_malformed_shapes_go_to_the_schema_gates(self) -> None:
+        self.assertEqual(self._v(self._p("final.flag")), [])
+        self.assertEqual(pe.reference_read_violations(None, self.SCHEMA), [])
+        self.assertEqual(pe.reference_read_violations([self._p("maxabs(final.ref)")], None), [])
+        self.assertEqual(self._v(3, {"test_id": 1}), [])  # type: ignore[arg-type]
+
+
+class SourceGateTest(unittest.TestCase):
+    def test_variable_sources_default_to_operation(self) -> None:
+        self.assertEqual(
+            pe.variable_sources({"variables": [
+                {"name": "h"}, {"name": " s ", "source": "record"}, 3, {"source": "x"}]}),
+            {"h": "operation", "s": "record"})
+        self.assertEqual(pe.SNAPSHOT_SOURCES, ("operation", "record", "reported", "reference"))
+
+    def test_each_declared_class_passes(self) -> None:
+        schema = {"variables": [{"name": n, "shape_expr": "scalar", "source": n}
+                                for n in pe.SNAPSHOT_SOURCES] + [{"name": "h", "shape_expr": "[n]"}]}
+        self.assertEqual(pe.source_violations(schema), [])
+        self.assertEqual(pe.source_violations(None), [])
+
+    def test_an_undeclared_class_is_refused(self) -> None:
+        for bad in ("kernel", " reported", "Reported", 3, None, True):
+            with self.subTest(bad=bad):
+                v = pe.source_violations({"variables": [
+                    {"name": "s", "shape_expr": "scalar", "source": bad}]})
+                self.assertEqual(len(v), 1)
+                self.assertIn("variables[0].source must be one of", v[0])
+
+    def test_a_reported_array_is_refused_and_another_class_may_be_one(self) -> None:
+        for shape in ("[nx]", "[nx, ny]", "[ncomp, nx, ny]"):   # rank 1 is an array too (round 2 R5)
+            with self.subTest(shape=shape):
+                self.assertEqual(len(pe.source_violations({"variables": [
+                    {"name": "c", "shape_expr": shape, "source": "reported"}]})), 1)
+        self.assertEqual(pe.source_violations({"variables": [
+            {"name": "c", "shape_expr": "scalar", "source": "reported"}]}), [])
+        v = pe.source_violations({"variables": [
+            {"name": "s", "shape_expr": "scalar"},
+            {"name": "c", "shape_expr": "[nx, ny]", "source": "reported"}]})
+        self.assertEqual(len(v), 1)
+        self.assertIn("variables[1]", v[0])
+        self.assertIn("is a scalar", v[0])
+        for source in ("operation", "record", "reference"):
+            self.assertEqual(pe.source_violations({"variables": [
+                {"name": "c", "shape_expr": "[nx, ny]", "source": source}]}), [])
+        # an unreadable shape is the schema gate's
+        self.assertEqual(pe.source_violations({"variables": [
+            {"name": "c", "shape_expr": "x", "source": "reported"}]}), [])
+
+    def test_sources_read_splits_by_class_and_leaves_empty_classes_out(self) -> None:
+        sources = {"h": "operation", "cfl": "reported", "flag": "record"}
+        p = {"target_cases": ["a", "b"], "per_case": True,
+             "expr": "final.cfl + max(final.h)"}
+        self.assertEqual(pe.sources_read(p, sources),
+                         {"operation": ["a", "b"], "reported": ["a", "b"]})
+        self.assertEqual(pe.sources_read({**p, "expr": "final.t"}, sources), {})
+        self.assertEqual(pe.sources_read({**p, "expr": "final.cfl +"}, sources), {})
 
 class CompileContractCouplingTest(unittest.TestCase):
     """The grammar is stated twice — in `FUNCTIONS` and in the compile contract's grammar block
@@ -2082,7 +2133,7 @@ class CompileContractCouplingTest(unittest.TestCase):
                   .group(1).split(",")]
         self.assertEqual(len(shifts), len(tokens))   # one shift per axis of the stacked state
         self.assertEqual((shifts[0], set(shifts[1:])), ("±1", {"0"}))
-        gate = [ln for ln in lines if ln.startswith("- **`io_contract.primary_predicates`")]
+        gate = [ln for ln in lines if ln.startswith("- **`io_contract.tests` and `io_contract.predicates`")]
         self.assertEqual(len(gate), 1)
         self.assertIn("every operand pair is at equal rank (a coordinate at the state's rank) "
                       "and `expr` is a scalar, inferred statically", gate[0])
@@ -2368,7 +2419,7 @@ class CrossTargetEvaluationTest(unittest.TestCase):
             self._eval([only], ["gpu"])
 
 
-class CrossTargetSchemaAndCoverageTest(unittest.TestCase):
+class CrossTargetSchemaTest(unittest.TestCase):
     def _v(self, preds) -> list[str]:
         ir = _ir(preds)
         cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
@@ -2376,7 +2427,7 @@ class CrossTargetSchemaAndCoverageTest(unittest.TestCase):
             preds, case_ids=set(cases), test_ids=["t_mass", "t_sym"],
             schema=pe.snapshot_schema(ir), cases=cases,
             test_target_cases={p["test_id"]: p["target_cases"]
-                               for p in ir["io_contract"]["test_predicates"]})
+                               for p in ir["io_contract"]["tests"]})
 
     def test_gate(self) -> None:
         self.assertEqual(self._v([MASS, CROSS]), [])
@@ -2397,22 +2448,11 @@ class CrossTargetSchemaAndCoverageTest(unittest.TestCase):
                 v = self._v([pred])
                 self.assertTrue(any(fragment in x for x in v), v)
 
-    def test_a_cross_target_predicate_is_no_corroborant(self) -> None:
-        tp = _ir(None)["io_contract"]["test_predicates"][:1]   # t_mass, quantity mass_drift_rel
-        own = {**MASS}
-        cross = {**CROSS, "quantity": "mass_drift_rel"}
-        self.assertEqual(pe.coverage_violations(tp, [own], state_names=STATE), [])
-        v = pe.coverage_violations(tp, [cross], state_names=STATE)
-        self.assertEqual(len(v), 1)
-        self.assertIn("has no host-evaluated corroborant", v[0])
-        self.assertEqual(pe.coverage_violations(tp, [cross, own], state_names=STATE), [])
-
 
 class CrossTargetVerdictTest(unittest.TestCase):
     """`evaluate_verdict` over cross-target records (issue #383): the verdict evaluates no
-    comparison, so every cross-target record it accepts is the `no_comparand` placeholder, an
-    evaluated one is refused, and a cross-target record is no corroborant. `own_verdict` is
-    gone: the verdict IS the run's own."""
+    comparison, so every cross-target record it accepts is the `no_comparand` placeholder, and an
+    evaluated one is refused. `own_verdict` is gone: the verdict IS the run's own."""
 
     def setUp(self) -> None:
         self.h = _field()
@@ -2430,10 +2470,9 @@ class CrossTargetVerdictTest(unittest.TestCase):
             ir, self.runs["own"].root,
             comparands=[_comparand(self.runs[t], t) for t in comparands], **kw)
 
-    def _verdict(self, preds: list[dict], comparands: list[str], diag: dict | None = None):
+    def _verdict(self, preds: list[dict], comparands: list[str]):
         ir, primary = self._primary(preds, comparands)
-        return evaluate_verdict(ir["io_contract"]["test_predicates"], diag or _diag_all_pass(),
-                                run_id="r", node_key="n", primary=primary)
+        return evaluate_verdict(ir["io_contract"]["tests"], primary, run_id="r", node_key="n")
 
     def test_the_verdict_takes_the_placeholder_and_writes_no_own_verdict(self) -> None:
         doc = self._verdict([MASS, SYM, CROSS], [])
@@ -2441,11 +2480,9 @@ class CrossTargetVerdictTest(unittest.TestCase):
         self.assertEqual(list(doc), ["node_key", "run_id", "self_verdict", "failure_class",
                                      "per_test"])
         t_mass = doc["per_test"][0]
-        self.assertEqual([(r["quantity"], r["kind"]) for r in t_mass["basis"]["primary"]],
+        self.assertEqual([(r["quantity"], r["kind"]) for r in t_mass["basis"]["predicates"]],
                          [("mass_drift_rel", "pass"),
                           ("cross_target_state_agreement", "no_comparand")])
-        # the placeholder is no corroborant: corroboration compares the own record alone
-        self.assertEqual(t_mass["basis"]["corroboration"], "agree")
 
     def test_an_evaluated_cross_target_record_is_refused_by_the_verdict(self) -> None:
         """Every evaluated shape — agreeing, disagreeing, structural — is a comparison the
@@ -2460,8 +2497,7 @@ class CrossTargetVerdictTest(unittest.TestCase):
                 cross = [r for r in primary if r["quantity"] == "cross_target_state_agreement"]
                 self.assertEqual(cross[0]["kind"], kind)
                 with self.assertRaisesRegex(PredicateError, "evaluated cross-target"):
-                    evaluate_verdict(ir["io_contract"]["test_predicates"], _diag_all_pass(),
-                                     primary=primary)
+                    evaluate_verdict(ir["io_contract"]["tests"], primary)
         # a placeholder carrying anything evaluated is refused too, one field at a time
         ir, primary = self._primary([MASS, SYM, CROSS], [])
         placeholder = next(r for r in primary if r["kind"] == "no_comparand")
@@ -2472,17 +2508,15 @@ class CrossTargetVerdictTest(unittest.TestCase):
                 bad = [dict(r) if r is not placeholder else {**r, field: value}
                        for r in primary]
                 with self.assertRaisesRegex(PredicateError, "evaluated cross-target"):
-                    evaluate_verdict(ir["io_contract"]["test_predicates"], _diag_all_pass(),
-                                     primary=bad)
+                    evaluate_verdict(ir["io_contract"]["tests"], bad)
 
     def test_own_failure_fails_the_verdict(self) -> None:
         self.runs["own"].write_state("a", self.h, self.h * 0.5)   # loses mass in case a
         doc = self._verdict([MASS, SYM, CROSS], [])
         self.assertEqual(doc["self_verdict"], "fail")
 
-    def test_the_coverage_recheck_does_not_count_a_cross_record(self) -> None:
-        # t_mass's condition holds per case; its only same-quantity OWN record reads case a,
-        # and a cross placeholder of the same quantity reads both
+    def test_the_reads_every_case_recheck_does_not_count_a_cross_record(self) -> None:
+        # t_mass's only OWN record reads case a, and a cross placeholder reads both
         own_a = {**MASS, "per_case": None, "case": "a"}
         own_a.pop("per_case")
         cross = {**CROSS, "quantity": "mass_drift_rel"}
@@ -2490,14 +2524,13 @@ class CrossTargetVerdictTest(unittest.TestCase):
         self.assertEqual(
             [sorted(r["cases_read"]) for r in primary if r["kind"] == "no_comparand"],
             [["a", "b"]])
-        with self.assertRaisesRegex(PredicateError, "reads every case"):
+        with self.assertRaisesRegex(PredicateError, "values the captured state"):
             self._verdict([own_a, cross, SYM], [])
 
     def test_no_verdict_carries_own_verdict(self) -> None:
-        ir = _ir(None)
-        doc = evaluate_verdict(ir["io_contract"]["test_predicates"], _diag_all_pass())
+        doc = self._verdict([MASS, HMIN, SYM], [])
         self.assertNotIn("own_verdict", doc)
-        self.assertNotIn("own_verdict", evaluate_verdict([], {}))
+        self.assertNotIn("own_verdict", evaluate_verdict([], []))
 
     def test_cross_target_only_evaluates_the_cross_target_predicates_alone(self) -> None:
         """The agreement's evaluation: the cross-target predicates only, each against every

@@ -37,7 +37,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 1. `Compile`: integrate the natural-language specification + dependency resolution into a **single structural IR** (`spec.ir.yaml`).
 2. `Generate`: take the IR as input and generate the source of `model` and `runner`. (On an M3c physics node — a non-`infrastructure` node whose target toolchain the host renders a runner for; the runner is glue over the target's harness — the leaf authors `model` + the `<spec_id>_checks` source (the file names are the language's `bundle_facts`; for `fortran`, [BUNDLE_BINDING.md](../backends/language/fortran/BUNDLE_BINDING.md) §1) and the `runner` is host-rendered by the conductor; see phase_02 §2-1.)
 3. `Build`: deterministically turn the generated source into a binary with a standard build tool.
-4. `Validate`: run the binary, recompute the judgment metrics from the primary evidence, and finalize the `verdict`.
+4. `Validate`: run the binary, evaluate the IR's predicates over the captures, and finalize the `verdict`.
 
 ### primary deliverable
 | phase | primary deliverable | nature |
@@ -50,7 +50,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 
 ## Workflow common invariants
 1. Forbid `dummy` output for the purpose of passing `tests` or advancing the workflow.
-2. Generate `diagnostics.json` and `perf.json` only as the execution result of the target `runner`. Forbid hand-writing, fixed-value embedding, and external post-editing.
+2. Generate `perf.json` and the captures only as the execution result of the target `runner`. Forbid hand-writing, fixed-value embedding, and external post-editing.
 3. `verdict.json` and `aggregate_verdict.json` must be derived from `tests.md` and the execution artifacts of the same `run_id`.
 4. When a phase input is insufficient, stop the relevant phase with `fail`, and forbid guessed completion.
 5. On a phase failure, an artifact file must not be artificially generated for the purpose of satisfying a downstream phase's start condition.
@@ -62,7 +62,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 11. For workflow execution, a script that proxies multiple phases at once must not be newly generated or executed. Phase execution allows only the conductor launching each leaf (`docs/ORCHESTRATION.md`).
 12. The storage root for workflow artifacts allows only `workspace/`. If `workspace/` does not exist, create it directly under the repository root.
 13. During workflow execution, the artifacts under `workspace/ir` and `workspace/pipelines` of the target `DAG` must not be deleted.
-14. `quality check` uses the comparison of `diagnostics.json` and `verdict.json` as the canonical source, and must not finalize pass/fail by `stdout` diff alone.
+14. `quality check` uses the comparison of each execution shape's host verdict over its own captures as the canonical source, and must not finalize pass/fail by `stdout` diff alone.
 15. The artifact reference paths of `lineage.json` and `trial_meta.json` must be recorded relative to `workspace/`.
 16. `trial_meta.json` requires recording `generated_by_stage`, `source_source_id`, `source_binary_id`, `source_command_ref`, and `source_artifact_hash` (`run_id` is canonically encoded by the `runs/<run_id>/` directory path itself where the trial_meta is placed, and a separate `source_run_id` field is not recorded — because it is self-referential / circular). Each entry of `source_command_ref` declares a `tool_name` (`run_program` or `run_quality_checks`), and must match the `tool_name` of the corresponding build-runtime `command_log` record. The trial_meta of the execute part of `Validate` must have at least 1 entry with `tool_name='run_program'`. The `source_meta.json` that `source_source_id` points to must have `verification_status=pass`. The `<pipeline>/binary/<source_binary_id>/bin/` that `source_binary_id` points to must exist, and the executable of the `run_program` log record must resolve under that bin/.
 17. Across different `pipeline_id`, the artifact body must not be reused by changing only the `id`-family metadata. When detected, treat it as `copy_based_artifact_reuse` and mark it `invalid`.
@@ -158,13 +158,11 @@ workspace/
         runs/
           <run_id>/
             <node_key_safe>/
-              diagnostics.json
               perf.json
               quality_check.json
               raw/
                 state_snapshots/
                   initial/          # a host-rendered runner's capture right after case_setup, per case
-                metrics_basis.json
               verdict.json
               aggregate_verdict.json
               summary.json
@@ -214,7 +212,7 @@ workspace/
 #### Re-execution rules
 - `Generate` may be run multiple times with the same `ir_id`. Each trial is a different `source_id`.
 - `Build` may be run multiple times with the same `source_id`. Each trial is a different `binary_id`.
-- `Validate` may be run multiple times with the same `binary_id`. Each trial is a different `run_id`. This applies to both a full Validate retry (`execute` re-run + `judge` re-evaluation) and a judge-only re-evaluation (reusing the `execute` output and re-running only `judge`): in either case, issue a new `run_id`, and do not overwrite the existing `runs/<run_id>/` directory. Because running `judge` more than once under the same `run_id` would overwrite `verdict.json` / `aggregate_verdict.json` / `summary.json` / `semantic_review.json` (the canonical output of judge) and lose the previous judgment basis, reusing the same `run_id` is forbidden. When a judge-only re-evaluation reuses the `execute`'s `raw/` / `diagnostics.json` / `perf.json` / `quality_check.json` / `trial_meta.json` as-is, the orchestration agent copies them under the new `run_id`, and the `source_source_id` / `source_binary_id` of `trial_meta.json` must match the original `run_id` (to maintain the provenance of the source and build that generated the binary). Furthermore, as a survival condition of the judgment basis, the `<pipeline_ref>/source/<source_source_id>/` directory that `trial_meta.json.source_source_id` points to and the `<pipeline_ref>/binary/<source_binary_id>/` directory that `trial_meta.json.source_binary_id` points to must not be deleted as long as all `run_id` that hold the relevant `trial_meta.json` (the original + all runs duplicated in re-evaluation) exist (because judge depends on the `source_meta.json` check and the semantic check of `source/<source_id>/src/`, a dangling provenance chain makes re-evaluation impossible).
+- `Validate` may be run multiple times with the same `binary_id`. Each trial is a different `run_id`. This applies to both a full Validate retry (`execute` re-run + `judge` re-evaluation) and a judge-only re-evaluation (reusing the `execute` output and re-running only `judge`): in either case, issue a new `run_id`, and do not overwrite the existing `runs/<run_id>/` directory. Because running `judge` more than once under the same `run_id` would overwrite `verdict.json` / `aggregate_verdict.json` / `summary.json` / `semantic_review.json` (the canonical output of judge) and lose the previous judgment basis, reusing the same `run_id` is forbidden. When a judge-only re-evaluation reuses the `execute`'s `raw/` / `perf.json` / `quality_check.json` / `trial_meta.json` as-is, the orchestration agent copies them under the new `run_id`, and the `source_source_id` / `source_binary_id` of `trial_meta.json` must match the original `run_id` (to maintain the provenance of the source and build that generated the binary). Furthermore, as a survival condition of the judgment basis, the `<pipeline_ref>/source/<source_source_id>/` directory that `trial_meta.json.source_source_id` points to and the `<pipeline_ref>/binary/<source_binary_id>/` directory that `trial_meta.json.source_binary_id` points to must not be deleted as long as all `run_id` that hold the relevant `trial_meta.json` (the original + all runs duplicated in re-evaluation) exist (because judge depends on the `source_meta.json` check and the semantic check of `source/<source_id>/src/`, a dangling provenance chain makes re-evaluation impossible).
 - The start condition for `Build` is that the target `source_id`'s `source_meta.json` has `verification_status=pass`.
 - A `Generate` with `debug_mode=false` must not generate `attempts/`.
 - The `Validate` input is always the artifacts under the same `run_id`, and mixing with other `run_id` is forbidden.
@@ -266,8 +264,8 @@ In this section, the input of each phase is described separately as `execution i
 
 ### 4. Validate
 - execution input: `binary/<binary_id>/bin/`, `spec.ir.yaml`, `tests.md`
-- verification input: `spec.ir.yaml`, `source/<source_id>/`, the `raw/` / `diagnostics.json` / `perf.json` / `quality_check.json` under the same `run_id`
-- output: `diagnostics.json`, `perf.json`, `quality_check.json`, `raw/`, `stdout.log`, `stderr.log`, `semantic_review.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, `trial_meta.json`, `validate_meta.json`, the `command_id` and `command_log_ref` of `run_program`
+- verification input: `spec.ir.yaml`, `source/<source_id>/`, the `raw/` / `perf.json` / `quality_check.json` under the same `run_id`
+- output: `perf.json`, `quality_check.json`, `raw/`, `stdout.log`, `stderr.log`, `semantic_review.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, `trial_meta.json`, `validate_meta.json`, the `command_id` and `command_log_ref` of `run_program`
 - `Validate` has the `pre_judge`, `execute`, `judge`, and `post_judge` substeps. The deterministic `pre_judge` substep runs the dependency-DAG readiness check; the `execute` substep calls the build-runtime library's `run_program` in-process to generate execution evidence; the `judge` substep finalizes the `verdict` by an LLM semantic check over the evidence the host seeds into its tree (including a bounded excerpt of `raw/` in place of the arrays themselves); the deterministic `post_judge` substep runs the `--stage pre_judge` gate and classifies violation severity.
 
 ## Phase details (reference)
