@@ -406,26 +406,24 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(row["coverage"]["host_verdict.json"]["covered"], 0)
         self.assertNotIn("prompt_matches_record", row)
 
-    def test_replay_reads_no_verdict_basis_so_both_shapes_pass_through(self) -> None:
-        """Issue #582 §3.7: the verdict is an opaque seed to the replay, so a recorded verdict in
-        the retired shape (`conditions` / `primary` / `corroboration`) and one in the current
-        shape (`predicates`) both replay; the tool names no basis at all. A record that still
-        holds the retired `diagnostics_document` SEED is another fact: the context's key set is
-        not the current one, and it is refused rather than replayed on a contract it did not
-        have."""
-        source = Path(jr.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("basis", source)
+    def test_a_judge_record_from_before_issue_582_is_refused_and_a_current_one_replays(self) -> None:
+        """Issue #582: the tool reads no verdict basis, but a recorded `validate.judge` launch from
+        before the retirement holds `diagnostics_document` beside a verdict of the retired basis
+        (`conditions` / `primary` / `corroboration`), always both, so it is refused on the context
+        key set rather than replayed on a contract it did not have. Measured on a real record:
+        `--check` on such a launch answers `judge_replay_context_keys_moved`."""
+        self.assertNotIn("basis", Path(jr.__file__).read_text(encoding="utf-8"))
         launches = self.repo / "workspace/orchestrations" / _SRC / "launches"
         path = launches / f"{_SRC_ARID}.request.json"
         request = json.loads(path.read_text(encoding="utf-8"))
-        for name, basis in (("old", {"conditions": [], "primary": [], "corroboration": "agree"}),
-                            ("new", {"predicates": []})):
-            with self.subTest(name):
-                request["pure_context"]["verdict_document"] = json.dumps(
-                    {"per_test": [{"test_id": "t", "status": "pass", "basis": basis}]})
-                path.write_text(json.dumps(request), encoding="utf-8")
-                rc, out = self._main("--check")
-                self.assertEqual(rc, 0, out)
+        request["pure_context"]["verdict_document"] = json.dumps(
+            {"per_test": [{"test_id": "t", "status": "pass", "basis": {"predicates": []}}]})
+        path.write_text(json.dumps(request), encoding="utf-8")
+        rc, out = self._main("--check")
+        self.assertEqual(rc, 0, out)
+        request["pure_context"]["verdict_document"] = json.dumps(
+            {"per_test": [{"test_id": "t", "status": "pass", "basis": {
+                "conditions": [], "primary": [], "corroboration": "agree"}}]})
         request["pure_context"]["diagnostics_document"] = "{}"
         path.write_text(json.dumps(request), encoding="utf-8")
         rc, out = self._main("--check")
