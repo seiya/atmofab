@@ -30181,47 +30181,81 @@ class DriveGateStageTests(unittest.TestCase):
                              "the zero-step closure of a one-call node)"])
 
     # --- (m), the tests.md `history:` line --------------------------------------------------------
-    _HISTORY = "- history: every = 38 (history.every)\n"
+    # The fixture states a per-case stride (`ceil(n_step / 2)`, CONVERSION.md); the one-number
+    # forms run with every case's `inputs.history.every` set to one value.
+    _ONE = "- history: every = 38 (history.every)\n"
+
+    @staticmethod
+    def _swe_line() -> str:
+        text = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
+        lines = [ln for ln in text.splitlines(keepends=True) if ln.startswith("- history:")]
+        assert len(lines) == 1, lines
+        return lines[0]
 
     def _swe_tests(self, line: str) -> str:
         text = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
-        self.assertEqual(text.count(self._HISTORY), 1)
-        return text.replace(self._HISTORY, line)
+        return text.replace(self._swe_line(), line)
+
+    @staticmethod
+    def _every(value: int):
+        def mutate(ir: dict) -> None:
+            for case in ir["case"]["test_case_set"]:
+                case["inputs"]["history"]["every"] = value
+        return mutate
+
+    @staticmethod
+    def _strides() -> dict[str, int]:
+        return {c["case_id"]: c["inputs"]["history"]["every"]
+                for c in _drive_fixture("swe")["case"]["test_case_set"]}
 
     def test_the_history_line_states_the_stride(self) -> None:   # (m), admitted
-        ids = [c["case_id"] for c in _drive_fixture("swe")["case"]["test_case_set"]]
-        per_case = ", ".join(f"{c} = 38" for c in ids)
+        strides = self._strides()
+        self.assertGreater(len(set(strides.values())), 1)   # the fixture's own per-case form
+        self.assertEqual(_drive_stage("swe"), [])
         for label, line in (
-                ("bullet", self._HISTORY),
+                ("bullet", self._ONE),
                 ("plain", "history: every = 38 (history.every)\n"),
                 ("star, backticks", "* `history`: every = `38` (`history.every`)\n"),
-                ("per case", f"- history: every = (history.every) {per_case}\n")):
+                ("per case, one value", "- history: every = (history.every) "
+                 + ", ".join(f"{c} = 38" for c in strides) + "\n")):
             with self.subTest(admitted=label):
-                self.assertEqual(_drive_stage("swe", tests_md=self._swe_tests(line)), [])
+                self.assertEqual(_drive_stage("swe", self._every(38),
+                                              tests_md=self._swe_tests(line)), [])
 
     def test_a_history_line_that_does_not_state_the_stride_is_refused(self) -> None:   # (m)
-        ids = [c["case_id"] for c in _drive_fixture("swe")["case"]["test_case_set"]]
-        per_case = ", ".join(f"{c} = 38" for c in ids)
-        for label, line, fragment, count in (
-                ("absent", "", "(m) tests.md carries 0 `history:` lines", 1),
-                ("twice", self._HISTORY * 2, "(m) tests.md carries 2 `history:` lines", 1),
-                ("not a number", "- history: every = N (history.every)\n",
+        strides = self._strides()
+        ids = list(strides)
+        per_case = ", ".join(f"{c} = {m}" for c, m in strides.items())
+        first = ids[0]
+        for label, mutate, line, fragment, count in (
+                ("absent", None, "", "(m) tests.md carries 0 `history:` lines", 1),
+                ("twice", None, self._swe_line() * 2, "(m) tests.md carries 2 `history:` lines",
+                 1),
+                ("not a number", None, "- history: every = N (history.every)\n",
                  "is not `every = <number> (<input name>)`", 1),
-                ("another number", self._HISTORY.replace("38", "37"),
+                ("one number against per-case inputs", None, self._ONE,
+                 "and the tests.md `history:` line (line 145) states 38",
+                 sum(1 for m in strides.values() if m != 38)),
+                ("another number", self._every(38), self._ONE.replace("38", "37"),
                  "inputs.history.every is 38, and the tests.md `history:` line (line 145) "
                  "states 37", len(ids)),
-                ("another input", self._HISTORY.replace("history.every", "history.stride"),
+                ("another number for one case", None,
+                 self._swe_line().replace(f"{first} = {strides[first]}",
+                                          f"{first} = {strides[first] + 1}"),
+                 f"inputs.history.every is {strides[first]}", 1),
+                ("another input", None,
+                 self._swe_line().replace("(history.every)", "(history.stride)"),
                  "the `history:` line names the input 'history.stride', and "
                  "drive.history.every is inputs.history.every", 1),
-                ("a case left out",
+                ("a case left out", None,
                  "- history: every = (history.every) " + ", ".join(
-                     f"{c} = 38" for c in ids[1:]) + "\n",
-                 f"cases ['{ids[0]}'] are not listed", 1),
-                ("a case listed twice",
-                 f"- history: every = (history.every) {per_case}, {ids[0]} = 38\n",
-                 f"case '{ids[0]}' is listed twice", 1)):
+                     f"{c} = {strides[c]}" for c in ids[1:]) + "\n",
+                 f"cases ['{first}'] are not listed", 1),
+                ("a case listed twice", None,
+                 f"- history: every = (history.every) {per_case}, {first} = {strides[first]}\n",
+                 f"case '{first}' is listed twice", 1)):
             with self.subTest(refused=label):
-                v = _drive_stage("swe", tests_md=self._swe_tests(line))
+                v = _drive_stage("swe", mutate, tests_md=self._swe_tests(line))
                 self.assertEqual(len(self._hits(v, fragment)), count, v)
 
     def test_a_node_without_a_loop_carries_no_history_line(self) -> None:   # (m)
