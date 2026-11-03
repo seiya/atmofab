@@ -41,6 +41,8 @@ mutants of issue #588 abort.
 What the flag does not bound, so the row cannot see:
 
 - a write through a pointer, or through `transfer`, that the dummy declarations do not bound;
+- a write through an assumed-size dummy (`u(*)`) past the actual argument's extent — the
+  dummy carries no upper bound to check (measured: exit 0, no diagnostic, issue #589 round 2);
 - a local array allocated larger than it needs and indexed inside its allocation;
 - sequence association of an array section to an explicit-shape dummy of another extent inside
   a kernel's internal helper (no diagnostic, measured; the published dummies' extents are pinned
