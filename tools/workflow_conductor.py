@@ -11296,7 +11296,9 @@ class Conductor:
         # A compiler that declares no flags builds none (`checked_build: null`); one that does
         # not declare the capability is refused (`CheckedBuildUnavailable`, a host-side
         # declaration defect: transport fail_closed). `Validate.execute` runs the binary as
-        # the quality check's `checked` row (phase_04 §4-2).
+        # the quality check's `checked` row (phase_04 §4-2). It is a Build-phase build of the
+        # Generate-authored control file under command-line variables, not a control file a
+        # downstream phase adds (`WORKFLOW_CORE.md` rule 34).
         from tools.checked_build import checked_flags_for
 
         checked_flags = checked_flags_for(self.target)

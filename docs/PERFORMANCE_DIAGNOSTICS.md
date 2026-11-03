@@ -14,6 +14,7 @@
 ## 1. Collection unit
 - Output one `perf.json` per run; `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §2 states the one-write rule and what `walltime_sec` covers.
 - A sub-case of a refinement or sweep is a case of that run; its work is counted in the run's one record.
+- The performance evidence is the certified run's `perf.json`, the one promoted to the run node. The quality check's other runs — the serial reference, each sweep shape, and the bounds-checked binary's `checked` row ([issue #589](https://github.com/seiya/atmofab/issues/589); a build under the compiler's checked flags, slower by design) — write a `perf.json` that the quality check reads for what the harness reports about its launch, and that is not performance evidence.
 
 ## 2. Minimal fields (required)
 - `case_id`: string

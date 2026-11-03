@@ -40,3 +40,13 @@ The build derivation key records the compiler as `nvcc`'s `release` line on THIS
 `Generate.gate` runs) and the target's `hardware.architecture`, not the host C++ compiler `nvcc`
 drives, so changing that compiler alone reuses a certified build. The site's own `nvcc` version is
 recorded in `binary_meta.json#environment.compiler_version`, not keyed.
+
+## 4. Checked build
+
+`nvcc` declares `checked_flags` with none (`tools/backends/compiler/nvcc/checked_flags.py`; issue
+#589 PR-0, decision 3): the CUDA compiler driver has no bounds-checked compile, so `Build` makes no
+second binary, `binary_meta.json#checked_build` is `null`, and `Validate.execute` runs no
+`checked` row on `cpp_gpu`. Every out-of-bounds access in a kernel is therefore outside what the
+quality check sees. A device memory check is a launch wrapper the binary runs under (a sanitizer),
+which belongs to the execution half; it lands with item 6 of `docs/design/scale_migration.md`
+§Order.

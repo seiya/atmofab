@@ -1367,7 +1367,7 @@ PINNED_BUILD: dict[str, str] = {
     # `binary_meta.json#checked_build`. New rows: `tools/checked_build.py`, the compiler
     # records' `checked_flags` declarations and modules, `Conductor._control_file_rules`,
     # `Conductor._builds_checked`.
-    "build-3": "695f73ad2a814918f7d54b496d6086654f59b4ef387cc2b49974b10005bfa010",
+    "build-3": "d458722522443b942050d6dfa5097209d0ef036d5f5459d34b156178d86b0b92",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1665,7 +1665,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # under the serial reference's environment, as `quality_check.json#shapes`' `checked` row;
     # it refuses a binary with no checked binary when the compiler declares flags. New rows:
     # the checked-build members (`checked_build_members`).
-    "execute-14": "da1af4974cfba686964c450eb6500990e15da79f0ac46622458d76590febba32",
+    "execute-14": "d2508ce5deb7269e7685556927ed58d760c2e0c70a09f3c8ab55ba29b4bd6be1",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
