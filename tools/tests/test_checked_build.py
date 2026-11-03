@@ -327,6 +327,38 @@ class BuildTests(unittest.TestCase):
                     _allowed_output_paths_for_launch(request_payload=bad)
 
 
+class ExecuteRefusalTests(unittest.TestCase):
+
+    def test_a_binary_with_no_checked_binary_is_a_host_refusal(self) -> None:
+        """A declaring compiler's binary whose `bin_checked/<exe>` is absent is refused before
+        anything runs, as the host's inconsistency (transport), not run as a missing program
+        and routed to Generate (round 1: the refusal had no row)."""
+        from tools.tests.test_workflow_conductor import _record_build_site
+        build_runtime = _build_runtime()
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                                   orchestration_agent_run_id="x", llm_config=_cfg("claude"),
+                                   env={})
+            refs = _refs(run_id="run_1", source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
+            (repo / refs.source_dir() / "src").mkdir(parents=True)
+            (repo / refs.binary_dir() / "bin").mkdir(parents=True)
+            (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
+            _record_build_site(repo, refs)
+            (repo / refs.binary_dir() / "bin_checked" / "spec_x_runner").unlink()
+            ran: list = []
+            with mock.patch.object(build_runtime, "tool_run_program",
+                                   lambda args: ran.append(args) or {"ok": True}):
+                with self.assertRaises(RuntimeError) as caught:
+                    c._execute_inproc(refs, "child-1")
+            self.assertIn("has no checked binary", str(caught.exception))
+            self.assertIn("--rederive build,validate", str(caught.exception))
+            self.assertEqual(ran, [])
+
+
 class GateTests(unittest.TestCase):
     """The post-execute gate binds the `checked` row to the checked binary, REQUIRED."""
 
@@ -430,6 +462,9 @@ class GateTests(unittest.TestCase):
                 "command", ["mpirun", "-n", "1", *r["command"]]), "bare"),
             "relative executable outside": ("log", lambda r: r.update(
                 {"command": ["./x_runner", *r["command"][1:]]}), "bare"),
+            "another file under bin_checked/": ("log", lambda r: r.__setitem__(
+                "command", [r["command"][0].replace("/x_runner", "/other"),
+                            *r["command"][1:]]), "bare"),
             "not run_program": ("log", lambda r: r.__setitem__("tool_name", "compile_project"),
                                 "run_program of the checked binary"),
             "record failed": ("log", lambda r: r.__setitem__("ok", False),
@@ -451,6 +486,12 @@ class GateTests(unittest.TestCase):
                                 "must be non-empty strings"),
             "argv without the flags": (*checked(lambda b: b.__setitem__("argv", b["argv"][:-1])),
                                        "checked_build.argv must end with"),
+            "argv BINDIR on bin/": (*checked(lambda b: b.__setitem__("argv", [
+                a.replace("/bin_checked", "/bin") if a.startswith("BINDIR=") else a
+                for a in b["argv"]])), "checked_build.argv must end with"),
+            "argv OBJDIR elsewhere": (*checked(lambda b: b.__setitem__("argv", [
+                "OBJDIR=/elsewhere" if a.startswith("OBJDIR=") else a for a in b["argv"]])),
+                                      "checked_build.argv must end with"),
             "argv recomposed": (*checked(lambda b: b["argv"].__setitem__(
                 -1, b["argv"][-1].replace("$(OBJDIR)", b["obj_dir"]))),
                                 "checked_build.argv must end with"),

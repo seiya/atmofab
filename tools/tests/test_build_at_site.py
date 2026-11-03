@@ -202,6 +202,12 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
             " ".join([rules["flags"], *checked_flags_for(n.target)]).replace(
                 "$(OBJDIR)", f"{n.job}/build_checked"))
         self.assertEqual((collected / "build" / "flags.txt").read_text().strip(), "")
+        # The checked build's output is localized too: the site's job-directory paths in it
+        # name the local directories they stand for.
+        log = (n.repo / n.refs.binary_dir() / "compile.stdout.log").read_text()
+        checked_out = log.split("[checked build]\n", 1)[1]
+        self.assertIn(f"compiling {n.src}/kernel.f90", checked_out)
+        self.assertNotIn(n.job, checked_out)
 
     def test_the_log_entry_is_the_local_one_and_names_the_site_argv(self) -> None:
         n = self.n
