@@ -2221,13 +2221,13 @@ def _validate_checked_row(repo_root: Path, execution: NodeExecution,
         violations.append(f"{meta_path}: checked_build.obj_dir and bin_dir must be non-empty "
                           f"strings, got {obj_dir!r} and {bin_dir!r}")
         return
-    try:
-        bin_dir_matches = Path(bin_dir).resolve() == bin_checked.resolve()
-    except (OSError, RuntimeError):
-        bin_dir_matches = False
-    if not bin_dir_matches:
+    # Compared by its pipeline-relative tail, not as an absolute path: Build recorded the
+    # checkout's path at the time, and a resume after the checkout moved validates the same
+    # certified Build from another one. What this clause catches is the build's binary
+    # directory being another one of the binary's (its `bin/`), which the tail shows.
+    if Path(bin_dir).parts[-3:] != ("binary", binary_id.strip(), "bin_checked"):
         violations.append(f"{meta_path}: checked_build.bin_dir is {bin_dir!r}, and the checked "
-                          f"binary's directory is {bin_checked}")
+                          f"binary's directory is binary/{binary_id.strip()}/bin_checked")
     build_system = str(target.toolchain.get("build_system") or "")
     try:
         execute = backend_registry.capability_module("build_system", build_system,

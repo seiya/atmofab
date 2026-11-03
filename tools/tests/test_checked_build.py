@@ -444,6 +444,9 @@ class GateTests(unittest.TestCase):
             "flags": (*checked(lambda b: b.__setitem__("flags", [])), "checked_build.flags"),
             "bin_dir": (*checked(lambda b: b.__setitem__("bin_dir", "/elsewhere")),
                         "checked_build.bin_dir"),
+            "bin_dir is bin/": (*checked(lambda b: b.__setitem__(
+                "bin_dir", b["bin_dir"][:-len("bin_checked")] + "bin")),
+                                "checked_build.bin_dir"),
             "obj_dir missing": (*checked(lambda b: b.__setitem__("obj_dir", "")),
                                 "must be non-empty strings"),
             "argv without the flags": (*checked(lambda b: b.__setitem__("argv", b["argv"][:-1])),
@@ -473,6 +476,27 @@ class GateTests(unittest.TestCase):
                     self._edit_json(root.joinpath(*where), fn)
                 violations = self._violations(root, execution)
                 self.assertTrue(any(needle in v for v in violations), (needle, violations))
+
+    def test_a_resume_after_the_checkout_moved_is_admitted(self) -> None:
+        """Round 1 (record axis F1): Build records absolute directories, and a resume from a
+        moved checkout validates the same certified Build — its run records name the new
+        paths, `binary_meta.json` the old. The gate admits it (it refused it, measured)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            old_root = Path(tmp) / "old"
+            old_root.mkdir()
+            _r, _p, _n, _e = self._tree(str(old_root))
+            new_root = Path(tmp) / "new"
+            shutil.move(str(old_root), str(new_root))
+            node = new_root / "pipe" / "runs" / "run_1" / "node"
+            moved = str(new_root / "pipe" / "binary" / "bin_1" / "bin_checked" / "x_runner")
+            self._edit_log(node / "command_log.jsonl", "cmd_checked",
+                           lambda r: r.update({"command": [moved, *r["command"][1:]],
+                                               "cwd": str(node)}))
+            execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node,
+                                          exec_dir=node, pipeline_dir=new_root / "pipe")
+            meta = json.loads((new_root / "pipe/binary/bin_1/binary_meta.json").read_text())
+            self.assertTrue(meta["checked_build"]["bin_dir"].startswith(str(old_root)))
+            self.assertEqual(self._violations(new_root, execution), [])
 
     def test_a_record_written_twice_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
