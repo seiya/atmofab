@@ -50,3 +50,37 @@ A related trap on the SAME kind of change: a gate keyed on `source_meta.verifica
 "pass"` silently stops firing if you move what it certifies to run BEFORE verification succeeds
 (the value is not yet `"pass"` at that point in the pipeline). The fix is an OR — evidence-file
 presence OR the pass status — not reordering the gate.
+
+## Adding a deliverable to an existing deterministic substep
+
+Issue #589 PR-0 (PR #590) made `Build` write a second binary, `binary/<id>/bin_checked/<exe>`,
+when the target's compiler declares checked flags, and listed it in `build_launch_request`'s
+`allowed_output_paths`. Three places decide what a deterministic substep's outputs are, and the
+first commit touched one:
+
+1. `build_launch_request` — the launch's `allowed_output_paths`, which `determine_substep_status`
+   reads for freshness;
+2. `orchestration_runtime._matches_phase_contract` — the matcher `record-launch` runs over that
+   list (through `_allowed_output_paths_for_launch`); its `build` branch admitted `/bin/`,
+   `binary_meta.json` and `<binary_id>/command_log.jsonl` and raised for anything else;
+3. `phase_required_outputs` — the step result's `required_outputs`, the set
+   `_certifiable_artifact_refs` takes `artifact_hashes` over. A launch list that carries a path
+   the step result does not, or the reverse, is refused at `write-step-result`
+   (`required_outputs must be satisfied by substep output_refs`).
+
+What shipped through round 0: (1) only. Round 1 reproduced the refusal on a recorded real build
+request (`tools/tests/data/conductor_launch_requests/`): every `fortran_cpu` /
+`fortran_cpu_mpi` Build would have failed at `record-launch`. The suite was green because the
+row meant to pin the wiring read `inspect.getsource` text, and the at-site and unit rows call
+`_build_inproc` / `_run_deterministic_substep` directly, below `record_launch`. Round 2 then found
+the two Conductor call sites computing the flag (`run_substep`'s launch, `run_phase`'s step
+result) each survived a `False`, because the round-1 rows called the two builders directly.
+
+What closed it: the matcher admits the new path at exactly its depth; `phase_required_outputs`
+takes the same flag; one row drives `_validate_launch_request_payload` and
+`_allowed_output_paths_for_launch` on a recorded real request and `_certifiable_artifact_refs`
+on the required outputs; another drives the real `run_phase("build")` with the runtime's I/O
+stubbed and reads the recorded request and the step result (`tools/tests/test_checked_build.py`
+`BuildTests` and `RunPhaseCallSiteTests`). A stub of `run_phase` that bypasses `__init__` (no
+target) then needs the new target read stubbed too (`test_run_workflow.py`'s build stub).
+

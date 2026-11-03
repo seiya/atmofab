@@ -598,3 +598,21 @@ hunk is pinned") held under all three.
 fixes existing machinery — a blank-slate reviewer returning no functional defect in round 3's
 next-maintainer brief after F1, the branch-wide sweep green, the over-refusal probe empty across
 the real corpus twice — and the superior condition not met, which the PR body says in those words.
+
+## Issue #589 PR-0 (PR #590) — round 0 plus three, budget stop; the disclosure round found a displaced witness
+
+Round 1's blocker was a wiring miss in the author's own change (a new Build deliverable the
+runtime's phase-contract matcher refused; `atmofab-enforcement-change`
+`references/deterministic-substep-wiring.md` §"Adding a deliverable"), round 2 found only
+unpinned mechanisms, and round 3 — both reviewers on the disclosure axis — found that the
+original commit's fixture change had silently re-targeted three existing witnesses. The fixture
+`tools/tests/target_fixtures.py passing_shape_rows` gained the `checked` row as its LAST element;
+the shapes-gate rows in `tools/tests/test_validate_pipeline_semantics.py` built their refusals
+by position (`good[:-1]`, `[good[0], good[2], good[1]]`, and a whole-validator row's `[:-1]`).
+The production gate never changed, every row stayed green, and two mutants of the gate went
+red→green against `origin/main` (reviewer's measurement at `faf8184a`). No sweep or census of
+HEAD could see it: the rows still asserted a refusal, and the refusal still happened — for the
+new row's absence. Fixed in `dcdd5604` by selecting rows by label and keeping the appended row
+last, with cases of its own. The sign is the fourth form in SKILL.md's "what CHECK went with
+what was deleted" paragraph.
+

@@ -732,6 +732,17 @@ auto-discovery side went straight through).
   `references/deterministic-substep-wiring.md` before writing anything** — it lists the sites that
   special-case one, across `tools/workflow_conductor.py` and `tools/orchestration_runtime.py`, and
   every miss recorded there left the unit suite green while the real flow failed closed
+- **Adding a DELIVERABLE to an existing deterministic substep is the same wiring question, and
+  it does not look like one.** A path a host body writes is declared in three places that must
+  agree: the launch's `allowed_output_paths` (`build_launch_request`), the phase-contract
+  matcher `record-launch` runs over them (`orchestration_runtime._matches_phase_contract`), and
+  the step result's `required_outputs` (`phase_required_outputs`, which `artifact_hashes` is
+  taken over). Issue #589 PR-0 added `bin_checked/<exe>` to the first alone: every gfortran
+  Build was refused at `record-launch` before it compiled anything, the stamp did not pin the
+  new binary while a document said it did, and the suite was green — no row crossed
+  `record_launch`. **Rule: name all three when you add a path, and pin it with a row that drives
+  `run_phase` (or the runtime's own validation of a recorded real request), not one that calls
+  the builders directly** (`references/deterministic-substep-wiring.md` §"Adding a deliverable")
 
 **There are two kinds of position. Look only at control flow inside the function and you miss
 one.**

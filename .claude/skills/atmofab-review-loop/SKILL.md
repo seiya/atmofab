@@ -1209,6 +1209,15 @@ subprocess rows at round 2's HEAD). Nothing was narrowed, nothing moved; the row
 simply acquired a second source. **Ask the disclosure axis, of every row a fixture rework
 touched, what makes its assertion true NOW and whether that is still the thing the row is named
 for** (`references/class-descent-log.md` §PR #242).
+**A fourth form: the change APPENDS to a shared fixture, and every row that indexes it moves
+subject.** Issue #589 PR-0 made `passing_shape_rows` end in a new `checked` row, so `good[:-1]`
+("missing shape") and a whole-validator `[:-1]` now dropped the new row instead of a sweep
+shape, and "reordered" `[good[0], good[2], good[1]]` was refused for the missing label instead
+of the order; mutants tolerating a missing sweep shape and ignoring order were red on
+`origin/main` and green at HEAD, the rows' names unchanged. **When a fixture gains an element,
+grep for every slice and subscript of it (`[:-1]`, `[-1]`, `[2]`) and select by key instead**;
+the disclosure axis is what found it, two rounds after the append
+(`references/class-descent-log.md` §Issue #589 PR-0).
 
 **And "what does a LEAF see" means RENDER THE PROMPT, once per leaf that receives it — WHEN the
 branch changed text a leaf is handed.** That condition is the whole scope: a branch that touches
