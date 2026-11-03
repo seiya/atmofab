@@ -55,12 +55,15 @@ _FAKE_COMPILER = textwrap.dedent(f'''\
 ''')
 
 #: The node's build control file: builds `$(BINDIR)/$(BIN)` from the node's source with `$(FC)`,
-#: and copies the staged dependency source into the object directory it was staged to.
+#: copies the staged dependency source into the object directory it was staged to, and writes
+#: the flags variable as make expanded it there (issue #589 PR-0: the checked build's
+#: command-line value carries an unexpanded object-directory reference).
 _MAKEFILE = textwrap.dedent('''\
     FC := {compiler}
     $(BINDIR)/$(BIN): kernel.f90
     \tmkdir -p $(BINDIR) $(OBJDIR)
     \tcat $(OBJDIR)/depy_model.f90 > $(OBJDIR)/linked.txt
+    \tprintf '%s\\n' '$({flags_variable})' > $(OBJDIR)/flags.txt
     \t$(FC) kernel.f90 -o $(BINDIR)/$(BIN)
 ''')
 
@@ -108,8 +111,10 @@ class _Node:
         (self.repo / self.refs.ir_ref).mkdir(parents=True)
         self.src = self.repo / self.refs.source_dir() / "src"
         self.src.mkdir(parents=True)
-        (self.src / "Makefile").write_text(_MAKEFILE.format(compiler=self.compiler),
-                                           encoding="utf-8")
+        from tools.checked_build import control_file_rules
+        (self.src / "Makefile").write_text(_MAKEFILE.format(
+            compiler=self.compiler,
+            flags_variable=control_file_rules(self.target)["flags_variable"]), encoding="utf-8")
         (self.src / "kernel.f90").write_text("! the node's source\n", encoding="utf-8")
         # An audit log an earlier phase appended to: not shipped.
         (self.src / "command_log.jsonl").write_text('{"earlier": true}\n', encoding="utf-8")
@@ -117,6 +122,12 @@ class _Node:
         self.obj = self.repo / "workspace" / "tmp" / "arid-1" / "build"
         self.obj.mkdir(parents=True)
         (self.obj / "depy_model.f90").write_text("! staged dependency\n", encoding="utf-8")
+        # ... and in the bounds-checked build's own object directory (issue #589 PR-0), which
+        # staging fills from the same bindings.
+        self.obj_checked = self.obj.parent / "build_checked"
+        self.obj_checked.mkdir(parents=True)
+        (self.obj_checked / "depy_model.f90").write_text("! staged dependency\n",
+                                                         encoding="utf-8")
         self.bin = self.repo / self.refs.binary_dir() / "bin"
         self.exe = self.bin / "spec_x_runner"
         self.job = f"{self.workdir}/orch_1/arid-1"
@@ -179,11 +190,23 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(meta["compiler_version"],
                          _target_toolchain_identity(n.target)["compiler_version"])
         self.assertNotEqual(meta["compiler_version"], _SITE_VERSION)
+        # The checked binary came home beside it (issue #589 PR-0), and the site's make read
+        # the flags variable from the quoted command line with the object-directory reference
+        # expanded to the job's own checked object directory.
+        self.assertTrue((n.bin.parent / "bin_checked" / "spec_x_runner").is_file())
+        from tools.checked_build import checked_flags_for, control_file_rules
+        collected = n.repo / "workspace" / "tmp" / "arid-1" / "site" / "collected"
+        rules = control_file_rules(n.target)
+        self.assertEqual(
+            (collected / "build_checked" / "flags.txt").read_text().strip(),
+            " ".join([rules["flags"], *checked_flags_for(n.target)]).replace(
+                "$(OBJDIR)", f"{n.job}/build_checked"))
+        self.assertEqual((collected / "build" / "flags.txt").read_text().strip(), "")
 
     def test_the_log_entry_is_the_local_one_and_names_the_site_argv(self) -> None:
         n = self.n
         n.build()
-        earlier, entry = n.log_entries()
+        earlier, entry, checked = n.log_entries()
         self.assertEqual(earlier, {"earlier": True})
         self.assertEqual(entry["tool_name"], "compile_project")
         self.assertEqual(entry["cwd"], str(n.src))
@@ -201,6 +224,26 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(entry["capture_limit"], wc._FULL_CAPTURE_LIMIT)
         self.assertEqual(n.meta()["environment"]["build_site"]["host"], "box")
         self.assertEqual(n.meta()["command_id"], entry["command_id"])
+        # The bounds-checked build (issue #589 PR-0) is the job's second command: its record
+        # names the local directories too, with the site's beside them, and `checked_build`
+        # records its command and argv.
+        from tools.backends.build_system.make import execute
+        from tools.checked_build import checked_flags_for, control_file_rules
+        bin_checked = n.bin.parent / "bin_checked"
+        rules, flags = control_file_rules(n.target), checked_flags_for(n.target)
+        self.assertEqual(checked["tool_name"], "compile_project")
+        self.assertEqual(checked["command"], _build_runtime().build_command(
+            "make", None, jobs, list(execute.checked_build_overrides(
+                str(n.obj_checked), str(bin_checked), "spec_x_runner", rules, flags))))
+        self.assertEqual(checked["site"]["remote_command"], _build_runtime().build_command(
+            "make", None, jobs, list(execute.checked_build_overrides(
+                f"{n.job}/build_checked", f"{n.job}/bin_checked", "spec_x_runner", rules,
+                flags))))
+        record = n.meta()["checked_build"]
+        self.assertEqual((record["command_id"], record["argv"], record["obj_dir"],
+                          record["bin_dir"]),
+                         (checked["command_id"], checked["command"], str(n.obj_checked),
+                          str(bin_checked)))
 
     def test_the_whole_source_and_the_staged_sources_are_shipped_and_not_the_audit_logs(
             self) -> None:
@@ -213,6 +256,12 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         # there (the target's harness) — and of `src/` everything but the audit log.
         staged = sorted(f"build/{p.name}" for p in n.obj.iterdir() if p.is_file())
         self.assertIn("build/depy_model.f90", staged)
+        # ... and the bounds-checked build's object directory (issue #589 PR-0), staged from
+        # the same bindings.
+        staged += sorted(f"build_checked/{p.name}" for p in n.obj_checked.iterdir()
+                         if p.is_file())
+        self.assertEqual({p.split("/", 1)[1] for p in staged if p.startswith("build/")},
+                         {p.split("/", 1)[1] for p in staged if p.startswith("build_checked/")})
         self.assertEqual(shipped, sorted([*staged, "src/Makefile", "src/kernel.f90"]))
         self.assertIn("command_log.jsonl", AUDIT_LOG_BASENAMES)
         # The staged source reached the build where the control file reads it.
@@ -224,8 +273,12 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         n = self.n
         n.bin.mkdir(parents=True)
         (n.bin / "leftover").write_text("old")
+        (n.bin.parent / "bin_checked").mkdir(parents=True)
+        (n.bin.parent / "bin_checked" / "leftover").write_text("old")
         n.build()
         self.assertEqual(sorted(p.name for p in n.bin.iterdir()), ["spec_x_runner"])
+        self.assertEqual(sorted(p.name for p in (n.bin.parent / "bin_checked").iterdir()),
+                         ["spec_x_runner"])
 
     def test_a_site_without_the_build_compiler_is_the_hosts_failure_not_the_sources(
             self) -> None:

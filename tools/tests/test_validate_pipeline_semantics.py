@@ -831,6 +831,11 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
             "findings": [],
         },
     )
+    # The bounds-checked binary's row and its records (issue #589 PR-0): the row
+    # `passing_shape_rows` wrote above is bound to them.
+    from tools.tests.target_fixtures import plant_checked_build
+    plant_checked_build(pipeline_dir, node_dir, binary_id=build_id_for_fixture,
+                        source_id="src_20260415_001", exe="simulate")
 
 
 def _create_minimal_orchestration_tree(
@@ -1799,6 +1804,35 @@ end program shallow_water2d_runner
 
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertEqual([], violations)
+
+    def test_the_whole_validator_binds_the_checked_row(self) -> None:
+        """Issue #589 PR-0: `validate`'s per-execution loop reaches `_validate_checked_row`. The
+        fixture's planted records pass; the checked row's record moved onto the certified
+        binary is refused through the whole validator."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+            node_dir = (repo_root / "workspace" / "pipelines" / "problem__shallow_water2d__0.3.0"
+                        / _TARGET_ID / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                        / "problem__shallow_water2d__0.3.0")
+            with _harness_validated_elsewhere():
+                clean = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertFalse(any("shapes[checked]" in v for v in clean), clean)
+            log = node_dir / "command_log.jsonl"
+            recs = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+            for rec in recs:
+                if rec.get("command_id") == "cmd_checked":
+                    rec["command"][0] = rec["command"][0].replace("/bin_checked/", "/bin/")
+            log.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+            with _harness_validated_elsewhere():
+                refused = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(any("shapes[checked].command_id" in v and "bare" in v
+                                for v in refused), refused)
 
     def test_broken_append_only_sibling_source_does_not_poison_in_scope_run(self) -> None:
         """post_execute structural SOURCE checks are scoped to the source the
@@ -12588,7 +12622,8 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
         recs = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
                 if line.strip()]
         for rec in recs:
-            if rec.get("tool_name") == "run_program":
+            # The certified run's record; the checked row's (`plant_checked_build`) stays.
+            if rec.get("command_id") == "cmd_run_001":
                 self.assertEqual(rec["command"][0], "./simulate")
                 rec["command"] = [*command_prefix, str(binary), *rec["command"][1:]]
                 rec["cwd"] = str(run_cwd)
@@ -13733,10 +13768,12 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             with self.subTest(target=target.parallel_backend, row="clean"):
                 self.assertGreater(len(target.execution_shapes), 1)
                 self.assertEqual(run(target, passing_shape_rows(target)), [])
-        # A target with no sweep has one shape, the certified run's.
+        # A target with no sweep has one shape, the certified run's — and the checked binary's
+        # row after it, its compiler declaring checked flags (issue #589 PR-0).
         plain = profile_with(execution={"threads_per_rank": 1})
         self.assertEqual(run(plain, passing_shape_rows(plain)), [])
-        self.assertEqual(len(passing_shape_rows(plain)), 1)
+        self.assertEqual([r["label"] for r in passing_shape_rows(plain)],
+                         ["certified", "checked"])
 
         def edited(target, index, **changes):
             rows = passing_shape_rows(target)

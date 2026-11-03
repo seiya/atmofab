@@ -16849,13 +16849,21 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
 def _record_build_site(repo: Path, refs: wc.NodeRefs, site: str = "local") -> None:
     """Record, in the node's `binary_meta.json`, that its binary was built at `site` — what a
     Build writes since issue #333 (`environment.build_site`), and what `Validate.execute`
-    requires before it runs the binary there. Merged into a record the test already wrote."""
+    requires before it runs the binary there. Merged into a record the test already wrote.
+
+    It also places the bounds-checked binary Build makes beside the certified one when the
+    target's compiler declares checked flags (`bin_checked/<spec_id>_runner`, issue #589 PR-0),
+    which `Validate.execute` refuses to run without — unless the test placed one already."""
     path = repo / refs.binary_dir(refs.source_binary_id) / "binary_meta.json"
     meta = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     meta["environment"] = {"platform": {"site": site},
                            "build_site": {"site": site}, "compiler_version": None}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(meta), encoding="utf-8")
+    checked = path.parent / "bin_checked" / f"{refs.spec_id}_runner"
+    if not checked.exists():
+        checked.parent.mkdir(parents=True, exist_ok=True)
+        checked.write_text("checked binary\n", encoding="utf-8")
 
 
 #: One test over one case, judged by `final.v`: what a run must hold for its verdict to exist.
@@ -17513,7 +17521,9 @@ class DeterministicBuildTest(unittest.TestCase):
             shapes = c.target.execution_shapes
             self.assertGreater(len(shapes), 1, "the checked-in target declares no sweep; this "
                                                "row would not see a sweep run")
-            self.assertEqual(len(seen), 1 + len(shapes), seen)
+            # ... and the bounds-checked binary last (issue #589 PR-0): bare, under the serial
+            # reference's environment, in the sweep directory's `checked`.
+            self.assertEqual(len(seen), 1 + len(shapes) + 1, seen)
             qc_env = seen[1]["env"]
             self.assertEqual(qc_env["CASES"], "c_alpha c_beta")
             self.assertEqual(qc_env["BIN"], "spec_x_runner")
@@ -17530,6 +17540,12 @@ class DeterministicBuildTest(unittest.TestCase):
                     self.assertEqual(call["command"], seen[0]["command"])
                     self.assertEqual(call["env"], launch_shape(c.target, None, shape).env)
                     self.assertEqual(Path(call["cwd"]).name, shape.label)
+            checked = seen[-1]
+            self.assertEqual(checked["command"],
+                             [str((repo / refs.binary_dir() / "bin_checked"
+                                   / "spec_x_runner").resolve()), *seen[0]["command"][1:]])
+            self.assertEqual(checked["env"], serial_execution_env(c.target.parallel_backend))
+            self.assertEqual(Path(checked["cwd"]).name, "checked")
 
     def test_execute_reads_the_quality_check_off_the_build_system(self) -> None:
         """The quality check's preset and environment are the build system's
@@ -17587,7 +17603,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     c._execute_inproc(refs, "child-1")
                 except Exception:
                     pass  # downstream promotion/gates are irrelevant here
-            self.assertEqual(len(seen), 1 + len(c.target.execution_shapes), seen)
+            self.assertEqual(len(seen), 1 + len(c.target.execution_shapes) + 1, seen)
             self.assertEqual(seen[1]["command"], ["make", "check"])
             self.assertEqual(seen[1]["env"]["ZZ_FROM_BACKEND"], "1")
             self.assertEqual(len(env_calls), 1)
@@ -17633,7 +17649,12 @@ class DeterministicBuildTest(unittest.TestCase):
                 except Exception:
                     pass  # downstream promotion/gates are irrelevant here
 
-            self.assertEqual(len(seen), 3, seen)
+            # The run, its trace summary, the quality check, then the bounds-checked binary
+            # (issue #589 PR-0) bare: not under the trace's prefix.
+            self.assertEqual(len(seen), 4, seen)
+            self.assertEqual(seen[3]["command"][0],
+                             str((repo / refs.binary_dir() / "bin_checked"
+                                  / "spec_x_runner").resolve()))
             self.assertEqual(seen[0]["command"][:len(shape.argv_prefix)], list(shape.argv_prefix))
             self.assertEqual(seen[1]["command"], list(shape.trace.summary_argv))
             self.assertEqual(seen[1]["cwd"], seen[0]["cwd"])
@@ -17764,7 +17785,19 @@ class DeterministicBuildTest(unittest.TestCase):
                 (target.target_id, target.hardware_class, target.parallel_backend, 3))
             # What `run_program` was handed: the composed env, the command through the shape,
             # and none of the arguments the server now refuses.
-            self.assertEqual(len(run_calls), 1)
+            # The certified run, then the bounds-checked binary's (issue #589 PR-0) when the
+            # target's compiler declares checked flags: bare, under the serial reference's
+            # environment.
+            from tools.checked_build import checked_shape
+            if checked_shape(target) is not None:
+                self.assertEqual(len(run_calls), 2)
+                self.assertEqual(run_calls[1]["command"][0],
+                                 str((repo / refs.binary_dir() / "bin_checked"
+                                      / "spec_x_runner").resolve()))
+                self.assertEqual(run_calls[1]["env"],
+                                 serial_execution_env(target.parallel_backend, target.block_size))
+            else:
+                self.assertEqual(len(run_calls), 1)
             call = run_calls[0]
             self.assertEqual(call["env"], shape.env)
             # And not merely whatever the seam returned: the openmp target's thread count must
@@ -17843,7 +17876,10 @@ class DeterministicBuildTest(unittest.TestCase):
             run_tmp = Path(args["project_dir"])
             sweep = run_tmp.parent.name == "sweep"
             if sweep or not calls or calls[-1][0] != "run":
-                calls.append(("sweep" if sweep else "run", dict(args)))
+                # The bounds-checked binary's run (issue #589 PR-0) is the sweep directory's
+                # `checked`.
+                calls.append(("checked" if sweep and run_tmp.name == "checked"
+                              else "sweep" if sweep else "run", dict(args)))
                 _write_c_alpha_captures(run_tmp)
                 # An honest distributed harness reports the grid it was launched on (#512).
                 grid = (args.get("env") or {}).get("ATMOFAB_PROCESS_GRID")
@@ -17897,7 +17933,7 @@ class DeterministicBuildTest(unittest.TestCase):
         result, calls, node_dir, _shape, _repo, _refs = self._drive_traced_execute(
             target, probe_answer={tuple(launcher.RUNTIME_PROBE): "Runtime Z 4.1.2\nmore\n"})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([tag for tag, _ in calls], ["run", "qc"])
+        self.assertEqual([tag for tag, _ in calls], ["run", "qc", "checked"])
         run, qc = calls[0][1], calls[1][1]
         self.assertEqual(run["command"][:3], list(launcher.argv_prefix(4)))
         self.assertEqual(Path(run["command"][3]).name, "spec_x_runner")
@@ -17911,7 +17947,15 @@ class DeterministicBuildTest(unittest.TestCase):
         quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
         self.assertEqual(quality["comparison"]["reference"]["ranks"], 4)
         self.assertEqual(quality["comparison"]["candidate"]["ranks"], 1)
-        self.assertEqual([r["ranks"] for r in quality["shapes"]], [4])
+        # The bounds-checked binary (issue #589 PR-0) runs BARE on a launcher target: one
+        # process, no launcher in its argv, the serial reference's grid `(1, 1)` — and the
+        # harness reporting that is its launch_match.
+        self.assertEqual([r["ranks"] for r in quality["shapes"]], [4, 1])
+        checked = calls[2][1]
+        self.assertNotIn(launcher.EXECUTABLE, json.dumps(checked["command"]))
+        self.assertEqual(Path(checked["command"][0]).parent.name, "bin_checked")
+        self.assertEqual(checked["env"]["ATMOFAB_PROCESS_GRID"], "1,1")
+        self.assertIs(quality["shapes"][1]["launch_match"], True)
 
     def test_execute_inproc_runs_each_grid_of_the_sweep_under_its_launcher(self) -> None:
         """Issue #512: after the run and the quality check, the binary runs once per grid of
@@ -17927,7 +17971,7 @@ class DeterministicBuildTest(unittest.TestCase):
                                          "sweep": {"grids": [[4, 1], [1, 3]]}})
         result, calls, node_dir, _shape, _repo, _refs = self._drive_traced_execute(target)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([tag for tag, _ in calls], ["run", "qc", "sweep", "sweep"])
+        self.assertEqual([tag for tag, _ in calls], ["run", "qc", "sweep", "sweep", "checked"])
         self.assertEqual(calls[1][1]["env"]["ATMOFAB_PROCESS_GRID"], "1,1")
         self.assertNotIn(launcher.EXECUTABLE, json.dumps(calls[1][1]))
         for (_tag, call), ranks, grid, label in zip(calls[2:], (4, 3), ("4,1", "1,3"),
@@ -17943,7 +17987,7 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual([(r["label"], r["ranks"], r["observed_process_grid"])
                           for r in quality["shapes"]],
                          [("certified", 4, [2, 2]), ("grid_4x1", 4, [4, 1]),
-                          ("grid_1x3", 3, [1, 3])])
+                          ("grid_1x3", 3, [1, 3]), ("checked", 1, [1, 1])])
         trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
         self.assertEqual([s["label"] for s in trial["environment"]["sweep"]],
                          ["grid_4x1", "grid_1x3"])
@@ -17962,7 +18006,8 @@ class DeterministicBuildTest(unittest.TestCase):
                                          "sweep": {"block_size": [64, 128]}})
         result, calls, node_dir, _shape, _repo, _refs = self._drive_traced_execute(target)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual([tag for tag, _ in calls], ["run", "trace", "qc", "sweep", "sweep"])
+        self.assertEqual([tag for tag, _ in calls],
+                         ["run", "trace", "qc", "sweep", "sweep", "checked"])
         self.assertEqual(calls[0][1]["env"], {"ATMOFAB_CUDA_BLOCK": "256"})
         self.assertEqual(calls[2][1]["env"]["ATMOFAB_CUDA_BLOCK"], "256")
         for (_tag, call), block in zip(calls[3:], ("64", "128")):
@@ -17974,7 +18019,10 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual([(r["label"], r["block_size"], r["observed_block_size"],
                            r["block_match"]) for r in quality["shapes"]],
                          [("certified", 256, 256, True), ("block_64", 64, 64, True),
-                          ("block_128", 128, 128, True)])
+                          ("block_128", 128, 128, True),
+                          # The fixture's compiler is gfortran, which declares checked flags
+                          # (issue #589 PR-0): the certified block size.
+                          ("checked", 256, 256, True)])
         trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
         self.assertEqual(trial["environment"]["serial_reference_env"],
                          {"ATMOFAB_CUDA_BLOCK": "256"})
@@ -18021,7 +18069,10 @@ class DeterministicBuildTest(unittest.TestCase):
                 self.assertIn("shape grid_2x2", trial["failure_excerpt"])
                 self.assertNotIn("shape certified", trial["failure_excerpt"])
                 quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
-                self.assertEqual([r["status"] for r in quality["shapes"]], ["pass", "fail"])
+                # The checked row (issue #589 PR-0) is last: the crash patch fails every row but
+                # the certified one, the grid patch none but the sweep's.
+                self.assertEqual([r["status"] for r in quality["shapes"]],
+                                 ["pass", "fail", "fail" if name == "crash" else "pass"])
                 self.assertIn("the run failed" if name == "crash" else "launch_match",
                               trial["failure_excerpt"])
 
@@ -18030,7 +18081,7 @@ class DeterministicBuildTest(unittest.TestCase):
         result, calls, node_dir, shape, repo, refs = self._drive_traced_execute(target)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNotNone(shape.trace)
-        self.assertEqual([tag for tag, _ in calls], ["run", "trace", "qc"])
+        self.assertEqual([tag for tag, _ in calls], ["run", "trace", "qc", "checked"])
         run, trace = calls[0][1], calls[1][1]
         # The binary runs under the trace's prefix; the summary runs bare, in the run's cwd.
         self.assertEqual(run["command"][:len(shape.argv_prefix)], list(shape.argv_prefix))
@@ -18063,7 +18114,7 @@ class DeterministicBuildTest(unittest.TestCase):
                     profile_with(parallel={"backend": backend}))
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIsNone(shape.trace)
-                self.assertEqual([tag for tag, _ in calls], ["run", "qc"])
+                self.assertEqual([tag for tag, _ in calls], ["run", "qc", "checked"])
                 self.assertFalse((node_dir / "kernel_trace.csv").exists())
                 trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
                 self.assertNotIn("kernel_trace", trial)
@@ -18078,7 +18129,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ({"ok": False, "command_id": "T", "return_code": 1, "stderr": "boom-tail"},
                  True, "kernel_trace_summary_failed: rc=1", ["run", "trace"]),
                 ({"ok": True, "command_id": "T", "return_code": 0}, False,
-                 "kernel_trace_summary_missing", ["run", "trace", "qc"])):
+                 "kernel_trace_summary_missing", ["run", "trace", "qc", "checked"])):
             with self.subTest(needle=needle):
                 result, calls, node_dir, _, repo, _ = self._drive_traced_execute(
                     self._traced_target(), trace_result=trace_result,
@@ -19278,9 +19329,13 @@ class DeterministicBuildTest(unittest.TestCase):
                                       / "quality_check.json").read_text())
                 self.assertEqual(quality["status"], expected, quality)
                 rows = {r["label"]: r for r in quality["shapes"]}
+                # The checked row (issue #589 PR-0) runs one thread, so a constant reporter
+                # fails it too.
+                from tools.checked_build import checked_shape
                 self.assertEqual({lbl: r["thread_match"] for lbl, r in rows.items()},
                                  {s.label: expected == "pass" or s.threads_per_rank == constant
-                                  for s in FORTRAN_CPU.execution_shapes})
+                                  for s in [*FORTRAN_CPU.execution_shapes,
+                                            checked_shape(FORTRAN_CPU)]})
                 if expected == "fail":
                     self.assertEqual(meta["failure_category"], "quality_check_mismatch")
                     for s in FORTRAN_CPU.sweep_shapes:

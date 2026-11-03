@@ -2251,7 +2251,11 @@ class RegistryConsistencyTests(unittest.TestCase):
                       "syntax_check", "syntax_promotions", "prompt_fragments",
                       "checks_abi", "source_reading", "signatures", "parallel_directives",
                       "interface_header", "job_submit", "device_trace", "launcher",
-                      "compiler_wrapper"}
+                      "compiler_wrapper", "checked_flags"}
+        # `checked_flags` joined them with issue #589 PR-0: `tools/checked_build.py`
+        # (`checked_flags_for`) asks the target compiler's record and `capability_module` for
+        # the flags of the bounds-checked second build, which the conductor's Build and
+        # Validate.execute and the post-execute gate read through it.
         # `launcher` and `compiler_wrapper` joined them with issue #316: `tools/host_execution.py`
         # asks the record and `capability_module` for the launcher when it composes a launch
         # shape and lists the executing machine's programs, and the site gate asks it; the
