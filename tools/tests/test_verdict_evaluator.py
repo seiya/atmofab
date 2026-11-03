@@ -25,11 +25,11 @@ def _test(tid: str = "t", outcome: str = "pass", cases: tuple[str, ...] = ("a",)
 
 
 def _rec(tid: str = "t", q: str = "q", *, ok: bool = True, kind: str | None = None,
-         cases: tuple[str, ...] = ("a",), read: dict | None = None) -> dict:
+         cases: tuple[str, ...] = ("a",), pairing: dict | None = None) -> dict:
     return {"test_id": tid, "quantity": q, "satisfied": ok,
             "kind": kind or ("pass" if ok else "physics"), "target_cases": list(cases),
             "cases_read": list(cases), "comparands": [], "evaluated": [],
-            "sources_read": {"operation": list(cases)} if read is None else read}
+            "grammar_version": 6, "scalar_pairing": {} if pairing is None else pairing}
 
 
 class OpsTest(unittest.TestCase):
@@ -144,7 +144,7 @@ class VerdictTest(unittest.TestCase):
 class CrossTargetTest(unittest.TestCase):
     PLACEHOLDER = {"test_id": "t", "quantity": "agree", "kind": "no_comparand", "satisfied": True,
                    "target_cases": ["a"], "comparands": [], "evaluated": [],
-                   "sources_read": {"operation": ["a"]}}
+                   "scalar_pairing": {}}
 
     def test_classification(self) -> None:
         self.assertTrue(is_cross_target_record(self.PLACEHOLDER))
@@ -173,97 +173,93 @@ class CrossTargetTest(unittest.TestCase):
                 evaluate_verdict([_test()], [_rec(), bad])
 
 
-class ReportedPairingTest(unittest.TestCase):
-    """D13 re-checked on the records: each branch of `_check_reported_pairing` has its own row,
-    so a record the gate would have refused cannot reach a pass through a hand-edited IR."""
+class ScalarPairingTest(unittest.TestCase):
+    """D7 (issue #589) re-checked on the records: each branch of `_check_scalar_pairing` has its
+    own row, so a record the gate would have refused cannot reach a pass through a hand-edited
+    IR. `scalar` is the cases a record reads the one-call scalar in, `paired` those it reads it
+    in together with an array state its operation writes."""
 
-    REPORTED = {"reported": ["a"]}
-    OP = {"operation": ["a"]}
+    ALONE = {"a_x": {"scalar": ["a"], "paired": []}}
+    BOTH = {"a_x": {"scalar": ["a"], "paired": ["a"]}}
 
     def _verdict(self, *recs: dict, cases: tuple[str, ...] = ("a",)) -> dict:
         return evaluate_verdict([_test(cases=cases)], list(recs))
 
-    def test_paired_passes_and_each_half_decides(self) -> None:
-        self.assertEqual(self._verdict(_rec(read=self.REPORTED), _rec(read=self.OP))
-                         ["per_test"][0]["status"], "pass")
-        for reported_ok, state_ok in ((False, True), (True, False)):
-            doc = self._verdict(_rec(read=self.REPORTED, ok=reported_ok),
-                                _rec(read=self.OP, ok=state_ok))
+    def test_paired_in_itself_or_beside_passes_and_each_half_decides(self) -> None:
+        self.assertEqual(self._verdict(_rec(pairing=self.BOTH))["self_verdict"], "pass")
+        self.assertEqual(self._verdict(_rec(pairing=self.ALONE), _rec(pairing=self.BOTH))
+                         ["self_verdict"], "pass")
+        for alone_ok, pair_ok in ((False, True), (True, False)):
+            doc = self._verdict(_rec(pairing=self.ALONE, ok=alone_ok),
+                                _rec(pairing=self.BOTH, ok=pair_ok))
             self.assertEqual(doc["per_test"][0]["status"], "fail")
 
-    def test_alone_raises(self) -> None:
-        with self.assertRaisesRegex(PredicateError, "source: reported"):
-            self._verdict(_rec(read=self.REPORTED))
+    def test_a_scalar_read_alone_raises(self) -> None:
+        with self.assertRaisesRegex(PredicateError, r"one-call scalar final\.a_x in \['a'\]"):
+            self._verdict(_rec(pairing=self.ALONE))
 
-    def test_a_record_does_not_pair_with_itself(self) -> None:
-        with self.assertRaisesRegex(PredicateError, "source: reported"):
-            self._verdict(_rec(read={"reported": ["a"], "operation": ["a"]}))
-
-    def test_two_records_reading_both_do_not_pair(self) -> None:
-        both = {"reported": ["a"], "operation": ["a"]}
-        with self.assertRaisesRegex(PredicateError, "source: reported"):
-            self._verdict(_rec(read=both), _rec(read=both))
+    def test_a_record_reading_only_arrays_does_not_pair(self) -> None:
+        """A record that reads only the arrays carries no entry for the scalar: no pair."""
+        with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
+            self._verdict(_rec(pairing=self.ALONE), _rec(pairing={}))
 
     def test_another_quantity_does_not_pair(self) -> None:
-        with self.assertRaisesRegex(PredicateError, "source: reported"):
-            self._verdict(_rec(read=self.REPORTED), _rec(q="other", read=self.OP))
+        with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
+            self._verdict(_rec(pairing=self.ALONE), _rec(q="other", pairing=self.BOTH))
 
     def test_a_cross_target_record_does_not_pair(self) -> None:
-        cross = {**CrossTargetTest.PLACEHOLDER, "quantity": "q"}
-        with self.assertRaisesRegex(PredicateError, "source: reported"):
-            self._verdict(_rec(read=self.REPORTED), cross, _rec(q="z"))
-
-    def test_a_record_or_reference_read_does_not_pair(self) -> None:
-        for read in ({"record": ["a"]}, {"reference": ["a"]}, {}):
-            with self.subTest(read=read), self.assertRaisesRegex(PredicateError, "source: reported"):
-                self._verdict(_rec(read=self.REPORTED), _rec(read=read))
+        cross = {**CrossTargetTest.PLACEHOLDER, "quantity": "q", "scalar_pairing": self.BOTH}
+        with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
+            self._verdict(_rec(pairing=self.ALONE), cross)
 
     def test_a_pair_over_fewer_cases_does_not_pair(self) -> None:
-        with self.assertRaisesRegex(PredicateError, "source: reported"):
-            self._verdict(_rec(read={"reported": ["a", "b"]}, cases=("a", "b")),
-                          _rec(read={"operation": ["a"]}, cases=("a", "b")), cases=("a", "b"))
+        with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
+            self._verdict(_rec(pairing={"a_x": {"scalar": ["a", "b"], "paired": []}},
+                               cases=("a", "b")),
+                          _rec(pairing={"a_x": {"scalar": ["a", "b"], "paired": ["a"]}},
+                               cases=("a", "b")), cases=("a", "b"))
 
-    def test_record_and_reference_reads_need_no_pair(self) -> None:
-        for read in ({"record": ["a"]}, {"reference": ["a"], "operation": ["a"]}):
-            with self.subTest(read=read):
-                self.assertEqual(self._verdict(_rec(read=read))["self_verdict"], "pass")
+    def test_another_scalar_does_not_pair(self) -> None:
+        with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
+            self._verdict(_rec(pairing=self.ALONE),
+                          _rec(pairing={"a_y": {"scalar": ["a"], "paired": ["a"]}}))
 
     def test_a_record_without_the_map_is_refused(self) -> None:
         rec = _rec()
-        del rec["sources_read"]
-        with self.assertRaisesRegex(PredicateError, "sources_read"):
+        del rec["scalar_pairing"]
+        with self.assertRaisesRegex(PredicateError, "carries no scalar_pairing map"):
             self._verdict(rec)
+        with self.assertRaisesRegex(PredicateError, "is not a mapping"):
+            self._verdict(_rec(pairing={"a_x": ["a"]}))
+
+    def test_a_record_needs_no_sources_read_any_more(self) -> None:
+        """Grammar 6: the record lost `sources_read`; one without it is a current record."""
+        self.assertNotIn("sources_read", _rec())
+        self.assertEqual(self._verdict(_rec())["self_verdict"], "pass")
 
 
-class ReferenceStateTest(unittest.TestCase):
-    """Round 2 R2 re-checked on the records."""
+class VerdictRecordReadersTest(unittest.TestCase):
+    """The audit readers of `verdict.json` `basis.predicates[]` read a record of either shape:
+    one written before issue #589 (with `sources_read`, grammar 5) and one written after
+    (without it, `grammar_version: 6`). The conductor's failure report is the reader here;
+    `tools/judge_replay.py` reads no basis (`test_judge_replay`)."""
 
-    def _verdict(self, *recs: dict) -> dict:
-        return evaluate_verdict([_test()], list(recs))
+    def _doc(self, rec: dict) -> dict:
+        return {"self_verdict": "fail", "failure_class": "physics_fail", "per_test": [
+            {"test_id": "t", "status": "fail", "basis": {"predicates": [rec]}}]}
 
-    def test_state_in_the_record_or_beside_it_passes(self) -> None:
-        self.assertEqual(self._verdict(_rec(read={"reference": ["a"], "operation": ["a"]}))
-                         ["self_verdict"], "pass")
-        self.assertEqual(self._verdict(_rec(read={"reference": ["a"]}),
-                                       _rec(read={"operation": ["a"]}))["self_verdict"], "pass")
-
-    def test_alone_raises(self) -> None:
-        for recs in ([_rec(read={"reference": ["a"]})],
-                     [_rec(read={"reference": ["a"], "record": ["a"]})],
-                     [_rec(read={"reference": ["a"]}), _rec(q="z", read={"operation": ["a"]})]):
-            with self.subTest(recs=recs), self.assertRaisesRegex(PredicateError, "source: reference"):
-                self._verdict(*recs)
-
-    def test_state_in_fewer_cases_raises(self) -> None:
-        with self.assertRaisesRegex(PredicateError, "source: reference"):
-            evaluate_verdict([_test(cases=("a", "b"))],
-                             [_rec(cases=("a", "b"), read={"reference": ["a", "b"]}),
-                              _rec(cases=("a", "b"), read={"operation": ["a"]})])
-
-    def test_a_cross_target_record_is_no_state(self) -> None:
-        cross = {**CrossTargetTest.PLACEHOLDER, "quantity": "q"}
-        with self.assertRaisesRegex(PredicateError, "source: reference"):
-            self._verdict(_rec(read={"reference": ["a"]}), cross)
+    def test_the_failure_report_reads_both_shapes(self) -> None:
+        from tools.workflow_conductor import _verdict_failure_report
+        failing = {"quantity": "q", "expr": "max(final.h)", "op": "le", "satisfied": False,
+                   "evaluated": [{"case": "a", "value": 2.0, "rhs": 1.0, "satisfied": False}]}
+        old = {**failing, "grammar_version": 5, "sources_read": {"operation": ["a"]}}
+        new = {**failing, "grammar_version": 6, "scalar_pairing": {}}
+        for rec in (old, new):
+            with self.subTest(grammar=rec["grammar_version"]):
+                report = _verdict_failure_report(self._doc(rec))
+                self.assertIn("- test t: fail", report)
+                self.assertIn("quantity='q' expr='max(final.h)' op='le' case='a' value=2.0 "
+                              "rhs=1.0", report)
 
 
 class ReduceTest(unittest.TestCase):

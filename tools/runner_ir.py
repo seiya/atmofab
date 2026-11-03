@@ -177,3 +177,187 @@ def infra_dep_count(ir: dict[str, Any]) -> int:
         if isinstance(nk, str) and nk.split("/", 1)[0].strip() == "infrastructure":
             count += 1
     return count
+
+
+# ------------------------------------------------------------------------------------- drive
+#
+# The `drive` block (issue #589, PR-1a): what the host-rendered driver calls per case, on what,
+# and how often. These readers are what the PR-1b renderers will call; no renderer calls them
+# yet. They are stated HERE, not imported from `tools/primary_evidence.py` (which models the
+# same block for the verdict and the case-file writer): this module is digested into the render
+# tuple and that one into the verdict tuple, and an import across would let a render-time
+# behaviour change ride on a digest that does not cover it. The two readings are held equal by
+# `tools/tests/test_runner_ir.py` (`DriveAgreementTest`).
+
+_DRIVE_LOOP_KEYS = ("n_step", "dt", "t_start", "t_end")
+_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+
+
+def _ident(text: str) -> bool:
+    return bool(text) and not text[0].isdigit() and set(text) <= _IDENT_CHARS
+
+
+def drive_binding(value: Any) -> tuple[str, Any]:
+    """One `arguments` value as ``(kind, ref)``: ``("inputs", "<dotted path>")``,
+    ``("derived", name)``, ``("state", var)``, ``("time", None)``, ``("step", None)``,
+    ``("literal", value)`` or ``("procedure", "<expression>")``. RenderError otherwise."""
+    if isinstance(value, bool) or (isinstance(value, (int, float)) and value == value
+                                   and value not in (float("inf"), float("-inf"))):
+        return ("literal", value)
+    if isinstance(value, dict):
+        text = value.get("procedure")
+        if set(value) == {"procedure"} and isinstance(text, str) and text.strip():
+            return ("procedure", text.strip())
+    if isinstance(value, str):
+        text = value.strip()
+        if text in ("time", "step"):
+            return (text, None)
+        root, _, rest = text.partition(".")
+        parts = rest.split(".") if rest else []
+        if root == "inputs" and parts and all(_ident(p) for p in parts):
+            return ("inputs", rest)
+        if root in ("derived", "state") and len(parts) == 1 and _ident(parts[0]):
+            return (root, rest)
+    raise RenderError(f"drive binding {value!r} is not inputs.<path>, derived.<name>, "
+                      "state.<var>, time, step, a number, a bool or {procedure: <expression>}")
+
+
+def drive_block(ir: dict[str, Any]) -> dict[str, Any]:
+    """The IR's `drive` mapping; RenderError when absent or not a mapping."""
+    drive = dget(ir, "drive")
+    if not isinstance(drive, dict):
+        raise RenderError("IR has no drive block (the operation the driver calls per case)")
+    unknown = sorted(set(drive) - {"init", "step", "loop", "history"}, key=str)
+    if unknown:
+        raise RenderError(f"drive carries unknown key(s) {unknown}")
+    return drive
+
+
+def _signature_args(ir: dict[str, Any], op: str) -> list[dict[str, Any]]:
+    for entry in dget(dget(ir, "public_api", {}), "signatures", []) or []:
+        if dget(entry, "symbol") == op:
+            args = dget(dget(entry, "signature", {}), "args")
+            if isinstance(args, list) and all(isinstance(a, dict)
+                                              and isinstance(a.get("name"), str) for a in args):
+                return args
+    raise RenderError(f"drive operation {op!r} has no public_api.signatures entry with its args")
+
+
+def _drive_call(ir: dict[str, Any], raw: Any, where: str, list_form: bool) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise RenderError(f"{where} must be a mapping {{operation, result, arguments}}")
+    allowed = {"operation", "result", "arguments"} | ({"cases"} if list_form else set())
+    unknown = sorted(set(raw) - allowed, key=str)
+    if unknown:
+        raise RenderError(f"{where} carries unknown key(s) {unknown}")
+    op, result, arguments = raw.get("operation"), raw.get("result"), raw.get("arguments")
+    if not isinstance(op, str) or not op.strip():
+        raise RenderError(f"{where}.operation must name a published operation")
+    if not isinstance(result, str) or not result.strip():
+        raise RenderError(f"{where}.result must name the operation's logical out dummy")
+    if not isinstance(arguments, dict):
+        raise RenderError(f"{where}.arguments must be a mapping of dummy -> binding")
+    args = _signature_args(ir, op.strip())
+    names = [a["name"] for a in args]
+    if set(arguments) != set(names):
+        raise RenderError(f"{where}.arguments binds {sorted(map(str, arguments))}; the dummies "
+                          f"of {op.strip()} are {names}")
+    call = {"operation": op.strip(), "result": result.strip(), "dummies": args,
+            "bindings": {n: drive_binding(arguments[n]) for n in names}, "cases": None}
+    if list_form:
+        cases = raw.get("cases")
+        if not isinstance(cases, list) or not cases \
+                or not all(isinstance(c, str) and c.strip() for c in cases):
+            raise RenderError(f"{where}.cases must be a non-empty list of case_ids")
+        call["cases"] = [c.strip() for c in cases]
+    return call
+
+
+def drive_init(ir: dict[str, Any]) -> dict[str, Any] | None:
+    """`drive.init` as ``{operation, result, dummies, bindings, cases: None}``, or None."""
+    raw = drive_block(ir).get("init")
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        raise RenderError("drive.init is one mapping entry, never a list")
+    return _drive_call(ir, raw, "drive.init", False)
+
+
+def drive_steps(ir: dict[str, Any]) -> list[dict[str, Any]]:
+    """The `drive.step` entries, each ``{operation, result, dummies, bindings, cases}``:
+    one entry with ``cases`` None in the mapping form, else the list with each entry's cases."""
+    raw = drive_block(ir).get("step")
+    if isinstance(raw, list):
+        if not raw:
+            raise RenderError("drive.step is an empty list")
+        return [_drive_call(ir, r, f"drive.step[{i}]", True) for i, r in enumerate(raw)]
+    if raw is None:
+        raise RenderError("drive.step is required")
+    return [_drive_call(ir, raw, "drive.step", False)]
+
+
+def drive_loop(ir: dict[str, Any]) -> dict[str, tuple[str, Any]] | None:
+    """`drive.loop` as key -> binding over `n_step`, `dt`, `t_start`, `t_end` (each an
+    inputs / derived / state reference), or None (one call per case)."""
+    raw = drive_block(ir).get("loop")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != set(_DRIVE_LOOP_KEYS):
+        raise RenderError(f"drive.loop must carry exactly {list(_DRIVE_LOOP_KEYS)}")
+    out = {k: drive_binding(raw[k]) for k in _DRIVE_LOOP_KEYS}
+    for key, (kind, _ref) in out.items():
+        if kind not in ("inputs", "derived", "state"):
+            raise RenderError(f"drive.loop.{key} must be inputs.<path>, derived.<name> or "
+                              "state.<var>")
+    return out
+
+
+def drive_history_every(ir: dict[str, Any]) -> str | None:
+    """The `inputs` path `drive.history.every` names, or None when no history is declared."""
+    raw = drive_block(ir).get("history")
+    if raw is None:
+        return None
+    if isinstance(raw, dict) and set(raw) == {"every"}:
+        kind, ref = drive_binding(raw["every"])
+        if kind == "inputs":
+            return ref
+    raise RenderError("drive.history must be {every: inputs.<path>}")
+
+
+def drive_state_classes(ir: dict[str, Any]) -> dict[str, frozenset[str]]:
+    """The classes of the state variables (issue #589 SHAPE §3), from `drive` + signatures:
+    ``init_written`` (an `out` of init), ``written`` (an `out` / `inout` of any entry),
+    ``read`` (an `in` / `inout` of a step entry), ``logical`` (a logical rank-0 `out`),
+    ``result_states`` (an entry's `result:` dummy, or any logical `out`) and
+    ``operation_only`` (written by step, read by no step dummy, not init-written, not
+    logical)."""
+    init, steps = drive_init(ir), drive_steps(ir)
+    calls = ([init] if init is not None else []) + steps
+    roles = ["init"] * (len(calls) - len(steps)) + ["step"] * len(steps)
+    classes: dict[str, set[str]] = {k: set() for k in (
+        "init_written", "written", "read", "logical", "result_states", "step_written")}
+    for role, call in zip(roles, calls):
+        for dummy in call["dummies"]:
+            kind, var = call["bindings"][dummy["name"]]
+            if kind != "state":
+                continue
+            intent = dummy.get("intent")
+            spec = dummy.get("spec") if isinstance(dummy.get("spec"), dict) else {}
+            rank = dummy.get("rank", len(dummy.get("dims") or []))
+            if role == "init" and intent == "out":
+                classes["init_written"].add(var)
+            if intent in ("out", "inout"):
+                classes["written"].add(var)
+                if role == "step":
+                    classes["step_written"].add(var)
+            if role == "step" and intent in ("in", "inout"):
+                classes["read"].add(var)
+            if intent == "out" and spec.get("type") == "logical" and rank == 0:
+                classes["logical"].add(var)
+                classes["result_states"].add(var)
+            if dummy["name"] == call["result"]:
+                classes["result_states"].add(var)
+    step_written = classes.pop("step_written")
+    classes["operation_only"] = (step_written - classes["read"] - classes["init_written"]
+                                 - classes["logical"])
+    return {k: frozenset(v) for k, v in classes.items()}

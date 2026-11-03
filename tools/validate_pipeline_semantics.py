@@ -9965,18 +9965,12 @@ def _validate_tests_and_predicates(
 
     A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``."""
     from tools.primary_evidence import (
-        SOURCE_REPORTED,
         PrimaryEvidenceError,
         is_cross_target_predicate,
         quantity_violations,
-        reference_read_violations,
-        reported_line_read_violations,
-        reported_read_violations,
         schema_variables,
         snapshot_schema,
-        source_violations,
         validate_primary_predicate_schema,
-        variable_sources,
     )
     from tools.verdict_evaluator import validate_tests_schema
 
@@ -10046,8 +10040,6 @@ def _validate_tests_and_predicates(
         test_target_cases=test_target_cases,
     ):
         violations.append(f"{derived_path}:{msg}")
-    for msg in source_violations(schema):
-        violations.append(f"{derived_path}:{msg}")
     try:
         state_names = set(schema_variables(schema)) if isinstance(schema, dict) else set()
     except PrimaryEvidenceError:
@@ -10056,10 +10048,6 @@ def _validate_tests_and_predicates(
         state_names = set()
     for msg in quantity_violations(tests, predicates, state_names):
         violations.append(f"{derived_path}:io_contract.predicates: {msg}")
-    for msg in reported_read_violations(predicates, schema):
-        violations.append(f"{derived_path}:io_contract.{msg}")
-    for msg in reference_read_violations(predicates, schema):
-        violations.append(f"{derived_path}:io_contract.{msg}")
 
     if not readable:
         return
@@ -10087,19 +10075,6 @@ def _validate_tests_and_predicates(
         stated_by_test, problems = parsed_reported
         for problem in problems:
             violations.append(f"{derived_path}:tests.md ({tests_path}): {problem}")
-        stated_reported = set().union(*stated_by_test.values()) if stated_by_test else set()
-        marked: set[str] = set()
-        if isinstance(schema, dict):
-            marked = {name for name, source in variable_sources(schema).items()
-                      if source == SOURCE_REPORTED}
-        if marked != stated_reported:
-            violations.append(
-                f"{derived_path}:io_contract.raw_requirements: the `source: reported` snapshot "
-                f"variables {sorted(marked)} must equal the variables the `reported:` lines of "
-                f"tests.md name ({sorted(stated_reported)}): tests.md says which value the kernel "
-                "reports of itself, and no line means none")
-        for msg in reported_line_read_violations(stated_by_test, marked, predicates):
-            violations.append(f"{derived_path}:io_contract.predicates: {msg}")
 
     # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is
     # asked no cross-target agreement (issue #383), so a disagreeing variant would certify. Pin

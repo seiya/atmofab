@@ -429,6 +429,26 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         rc, out = self._main("--check")
         self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_context_keys_moved"))
 
+    def test_a_judge_record_replays_with_either_shape_of_predicate_record(self) -> None:
+        """Issue #589: a verdict record lost `sources_read` and carries `grammar_version: 6`
+        and `scalar_pairing`; a recorded launch holds a verdict of either shape, and the tool,
+        which reads no basis, replays both."""
+        self.assertNotIn("sources_read", Path(jr.__file__).read_text(encoding="utf-8"))
+        launches = self.repo / "workspace/orchestrations" / _SRC / "launches"
+        path = launches / f"{_SRC_ARID}.request.json"
+        request = json.loads(path.read_text(encoding="utf-8"))
+        rec = {"test_id": "t", "quantity": "q", "satisfied": True, "kind": "pass",
+               "target_cases": ["a"], "cases_read": ["a"], "comparands": [], "evaluated": []}
+        for shaped in ({**rec, "grammar_version": 5, "sources_read": {"operation": ["a"]}},
+                       {**rec, "grammar_version": 6, "scalar_pairing": {}}):
+            with self.subTest(grammar=shaped["grammar_version"]):
+                request["pure_context"]["verdict_document"] = json.dumps(
+                    {"per_test": [{"test_id": "t", "status": "pass",
+                                   "basis": {"predicates": [shaped]}}]})
+                path.write_text(json.dumps(request), encoding="utf-8")
+                rc, out = self._main("--check")
+                self.assertEqual(rc, 0, out)
+
     def test_the_replay_s_own_seed_build_names_the_provider(self) -> None:
         """Issue #534 PR-J3-a: `_workshop_seeds` places the codex reading helper by the
         request's `workshop_provider`, so the replay's own call (the coverage seeds) carries

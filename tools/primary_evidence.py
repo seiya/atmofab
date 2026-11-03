@@ -11,15 +11,22 @@ generated `get_time` reported; an expression that needs the case's end time read
 declared `inputs.time.t_end`). The LLM writes the expression at Compile; no LLM holds the
 number. These predicates alone decide a test (issue #582, `tools/verdict_evaluator.py`).
 
-**Who wrote a captured variable** is its `source` (`SNAPSHOT_SOURCES`; the schema field, default
-`operation`): `operation` — an argument of the published operation; `record` — a value the checks
-module records of the operation's observable behaviour without computing a judgment (its logical
-result as `-1 / 0 / 1`, a count of callback invocations, a state copied at a callback or after an
-intermediate call); `reported` — a run-wide reduction over the integration path the operation
-returns as an output argument, a scalar; `reference` — a field the checks module computes from the
-spec's closed forms as a comparison reference. A record names what it read in `sources_read`, and a
-`reported` read stands only beside a predicate of the same test and quantity that reads `operation`
-state (`reported_read_violations`, re-checked by `verdict_evaluator.evaluate_verdict`).
+**What a predicate may count as a state read** (grammar 6, issue #589) is derived from the IR's
+`drive` block and the published operations' §5.1 signatures (`drive_model`), never from a label the
+leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` dummy of `init` or of a
+`step` entry, every logical result included), `initial.<v>` of a variable `init` writes,
+`history.*` and `series.*`. `initial.<v>` of a variable the host materialised from the case's
+`initial_state`, `final.<v>` of a variable nothing writes, `final.step` / `final.t` (the driver's),
+`derived.*` and `inputs.*` are not (`predicate_reads_state`). An IR with no `drive` (an
+`infrastructure` node) counts every schema variable at both capture points, as grammar 5 did. One
+class of kernel-written scalar remains judged at all — the scalar a rank-0 real / integer `out` of
+a one-call operation writes — and a predicate reading it stands beside one that reads it TOGETHER
+with an array state the same operation writes (`scalar_pairing_violations`, D7; each record carries
+`scalar_pairing`, which `verdict_evaluator.evaluate_verdict` re-checks).
+
+The host also EVALUATES each case's inputs (`evaluate_case_inputs` / `write_case_inputs`, issue
+#589 D2): the state extents from the bound dummies' `dims`, every `initial_state` entry and every
+`derived` entry, with the predicate grammar, into the case file the host-rendered driver reads.
 
 The IR shape (`docs/workflow/phases/phase_01_compile.md` §`spec.ir.yaml` schema)::
 
@@ -28,7 +35,7 @@ The IR shape (`docs/workflow/phases/phase_01_compile.md` §`spec.ir.yaml` schema
         required_evidence:
           - artifact: state_snapshots
             schema:
-              variables: [{name: h, shape_expr: "[nx, ny]"}, ...]  # optional per entry: source
+              variables: [{name: h, shape_expr: "[nx, ny]"}, ...]
               coordinates:                       # optional; each axis the expressions need
                 - {name: x, axis: 0, count: inputs.grid.nx, length: inputs.grid.L_x,
                    placement: cell_center}
@@ -55,7 +62,20 @@ Names, and where each resolves:
 
 - ``initial.<var>`` / ``final.<var>`` — a snapshot schema variable at the two capture points
   (a scalar `shape_expr` gives a float, an array one a float64 array of that rank);
-  ``initial.<time_variable>`` / ``final.<time_variable>`` — the capture's time value.
+  ``initial.<time_variable>`` / ``final.<time_variable>`` — the capture's time value;
+  ``initial.step`` / ``final.step`` (grammar 6) — the driver's committed step count.
+- ``history.<var>`` (grammar 6) — the samples `raw/state_snapshots/history/<case_id>__<k>.json`,
+  `k` ascending, stacked on a LEADING axis (rank of the variable + 1); ``history.t`` /
+  ``history.step`` rank 1. ``series.<name>`` — a rank-1 entry of
+  `raw/state_snapshots/series/<case_id>.json`, a name the `step_series` evidence entry lists. Both
+  are loaded only when a predicate names them; zero samples / zero committed steps is admitted,
+  a non-finite entry is refused, and a reduction over an empty one is an evaluation error of that
+  predicate. ``derived.<name>`` — the case's `derived` value as the host evaluated it
+  (`evaluate_case_inputs`): host data, never a state read. None of the three combines with
+  `at('<case>')` or `comparand`.
+- ``smax(a)`` / ``smin(a)`` / ``ssum(a)`` reduce every axis of ``a`` but the leading one (the
+  identity on rank 1); a coordinate NAMED directly as an operand of a binary operator broadcasts
+  against an operand of one more rank (a `history.*` one) on its trailing axes.
 - ``inputs.<a>.<b>...`` — a NUMERIC value of the case's `case.test_case_set[].inputs`: a
   number, or (grammar 2) a rectangular nested list of numbers of rank 1 to 4, as a float64
   array — a declared sentinel field a capture is compared against. A string, a boolean, a
@@ -133,7 +153,10 @@ import ast
 import copy
 import json
 import math
+import os
+import re
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -148,19 +171,19 @@ from tools.verdict_evaluator import _QUANTITY_RE, _apply_op, _is_number, _resolv
 #: `atan2`: a discrete mode's phase, which a predicate of `G**n_step` needs. Grammar 5 (issue
 #: #513) adds `transpose`, `flip` and `coarsen`: a symmetry pair reads its base case's state
 #: through the axis exchange or a mirror, and a refinement family judged against its finest
-#: level restricts that level to each coarser grid by the block mean.
-GRAMMAR_VERSION = 5
+#: level restricts that level to each coarser grid by the block mean. Grammar 6 (issue #589)
+#: adds the `history.*`, `series.*` and `derived.*` roots, `step` as a capture name, `smax` /
+#: `smin` / `ssum`, and the coordinate broadcast against a `history.*` operand.
+GRAMMAR_VERSION = 6
 
 #: `quantity` names: lowercase identifiers with dots.
 #: ONE definition, in the verdict evaluator's module.
 QUANTITY_RE = _QUANTITY_RE
 
-#: The `source` classes of a snapshot variable (`zero_base_architecture.md` §A4, issue #582).
-SOURCE_OPERATION = "operation"
-SOURCE_RECORD = "record"
-SOURCE_REPORTED = "reported"
-SOURCE_REFERENCE = "reference"
-SNAPSHOT_SOURCES = (SOURCE_OPERATION, SOURCE_RECORD, SOURCE_REPORTED, SOURCE_REFERENCE)
+#: The driver's committed step count, a capture name beside the time variable (grammar 6).
+STEP_CAPTURE = "step"
+#: Names a snapshot schema variable may not take: the driver's and the harness's own keys.
+RESERVED_VARIABLE_NAMES: frozenset[str] = frozenset({"t", STEP_CAPTURE, "case_id"})
 
 #: The comparison operators a predicate admits.
 PRIMARY_OPS: frozenset[str] = frozenset({"eq", "ne", "le", "ge", "lt", "gt"})
@@ -182,6 +205,7 @@ FUNCTIONS: dict[str, tuple[int, int]] = {
     "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
     "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
     "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 3), "flip": (2, 2), "coarsen": (2, 2),
+    "smax": (1, 1), "smin": (1, 1), "ssum": (1, 1),
 }
 CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 #: Name roots an attribute chain may start from. `at` is a call, not a root.
@@ -191,8 +215,13 @@ _AT = "at"
 #: The root of a cross-target reference (grammar 3): `comparand.initial.<var>` /
 #: `comparand.final.<var>`.
 _COMPARAND = "comparand"
+#: The grammar 6 roots: the sampled state, the per-step series, the case's derived values.
+_HISTORY = "history"
+_SERIES = "series"
+_DERIVED = "derived"
+_SAMPLED_ROOTS: tuple[str, ...] = (_HISTORY, _SERIES, _DERIVED)
 #: Every identifier the grammar reserves as a root; a coordinate or a bind may not take one.
-_ROOTS: tuple[str, ...] = CAPTURE_POINTS + (_INPUTS_ROOT, _AT, _COMPARAND)
+_ROOTS: tuple[str, ...] = CAPTURE_POINTS + (_INPUTS_ROOT, _AT, _COMPARAND) + _SAMPLED_ROOTS
 
 _BINOPS: dict[type, str] = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/",
                             ast.Pow: "**"}
@@ -215,7 +244,8 @@ class NameRef(NamedTuple):
 
     ``kind`` is ``capture`` (``initial.<var>`` / ``final.<var>``), ``comparand``
     (``comparand.initial.<var>`` / ``comparand.final.<var>``: the same capture in the
-    comparand run), ``inputs`` (``name`` is the dotted path under ``inputs``), or ``name`` (a
+    comparand run), ``inputs`` (``name`` is the dotted path under ``inputs``), ``history`` /
+    ``series`` / ``derived`` (grammar 6: ``name`` follows the root), or ``name`` (a
     bare identifier: a coordinate, a bind or a constant). ``case`` is None for the predicate's
     own case, else the ``at('<case>')`` case; under ``at()`` a ``name`` is a coordinate only,
     and a ``comparand`` reference never has one."""
@@ -295,6 +325,13 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             refs.append(NameRef("inputs", ".".join(attrs)))
             return
+        if isinstance(root, ast.Name) and root.id in _SAMPLED_ROOTS:
+            if len(attrs) != 1:
+                raise PrimaryEvidenceError(
+                    f"{root.id}.{'.'.join(attrs)}: a {root.id} reference is exactly "
+                    f"{root.id}.<name>")
+            refs.append(NameRef(root.id, attrs[0]))
+            return
         if _is_at_call(root):
             call = root  # type: ignore[assignment]
             assert isinstance(call, ast.Call)
@@ -324,10 +361,12 @@ def _check_node(node: ast.AST, refs: list[NameRef], depth: int = 0) -> None:
             raise PrimaryEvidenceError(
                 f"at({case_id!r}).{'.'.join(attrs)}: a cross-case reference is exactly "
                 "at('<case_id>').initial.<variable>, at('<case_id>').final.<variable>, "
-                "at('<case_id>').inputs.<path> or at('<case_id>').<coordinate>")
+                "at('<case_id>').inputs.<path> or at('<case_id>').<coordinate> (history.*, "
+                "series.* and derived.* are read in the case being evaluated only)")
         raise PrimaryEvidenceError(
             f"attribute chain rooted at {ast.dump(root)} is not admitted (roots: "
-            f"{', '.join(CAPTURE_POINTS)}, {_INPUTS_ROOT}, at('<case_id>'), {_COMPARAND})")
+            f"{', '.join(CAPTURE_POINTS)}, {_INPUTS_ROOT}, {', '.join(_SAMPLED_ROOTS)}, "
+            f"at('<case_id>'), {_COMPARAND})")
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):
             raise PrimaryEvidenceError("only a named function may be called")
@@ -430,17 +469,76 @@ def effective_names(tree: ast.Expression) -> list[NameRef]:
     return expr_names(_ConstantByFormPruner().visit(copy.deepcopy(tree)))
 
 
-def reads_captured_state(refs: list[NameRef], state_names: set[str]) -> bool:
-    """Whether any reference reads a captured STATE variable (the time variable excluded)."""
-    return any(r.kind == "capture" and r.name in state_names for r in refs)
+class StateReads(NamedTuple):
+    """Which capture reads value the kernel's state (grammar 6, issue #589): ``final`` — the
+    variables whose `final.<v>` counts (those an operation writes, every logical result
+    included), ``initial`` — those whose `initial.<v>` counts (those `init` writes). `history.*`
+    and `series.*` always count. ``loop`` — the IR declares `drive.loop`, so gate (l)'s
+    zero-step closure `final.step - <ref>` is exempt from the reads-a-capture rule
+    (`is_zero_step_closure`). Built by `state_reads`; a plain ``set`` of names in its place is
+    the pre-drive rule (both points, every listed variable), which an IR with no `drive` keeps."""
+    final: frozenset[str]
+    initial: frozenset[str]
+    loop: bool = False
+
+
+def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str]) -> bool:
+    """Whether one reference reads kernel state under ``state`` (`StateReads`, or a set of
+    names counted at both capture points). `history.*` / `series.*` always do; a time or step
+    capture, an input, a coordinate, a `derived.*` value and a `comparand.` read never do."""
+    if ref.kind in (_HISTORY, _SERIES):
+        return True
+    if ref.kind != "capture":
+        return False
+    if isinstance(state, StateReads):
+        return ref.name in (state.final if ref.point == "final" else state.initial)
+    return ref.name in state
+
+
+def reads_captured_state(refs: list[NameRef],
+                         state_names: StateReads | set[str] | frozenset[str]) -> bool:
+    """Whether any reference reads kernel state (`is_state_read`; the time variable and the
+    step count excluded)."""
+    return any(is_state_read(r, state_names) for r in refs)
+
+
+#: Gate (l)'s zero-step closure on a `loop` node, matched on the expression TEXT with every
+#: whitespace removed: `final.step - <ref>`.
+_ZERO_STEP_RE = re.compile(
+    r"^final\.step-(?P<ref>(?:derived|initial|final)\.[A-Za-z_][A-Za-z0-9_]*"
+    r"|inputs\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)$")
+
+
+def zero_step_closure_ref(pred: Any) -> str | None:
+    """The `<ref>` of a predicate in gate (l)'s fixed form on a `loop` node — `expr:
+    "final.step - <ref>"` (whitespace aside), `op: eq`, a numeric `value` equal to 0, no
+    `bind` — else None. Whether the `<ref>` names an admitted value is gate (l)'s question."""
+    if not isinstance(pred, dict) or pred.get("op") != "eq" or pred.get("bind"):
+        return None
+    value = pred.get("value")
+    if not _is_number(value) or value != 0:
+        return None
+    expr = pred.get("expr")
+    match = _ZERO_STEP_RE.match(re.sub(r"\s+", "", expr)) if isinstance(expr, str) else None
+    return match.group("ref") if match else None
+
+
+def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str]) -> bool:
+    """Whether ``pred`` is gate (l)'s zero-step closure on a node whose `drive` declares a
+    `loop` — gate-required, and exempt from the reads-a-capture rule (it reads the driver's
+    `final.step`, which no kernel writes)."""
+    return isinstance(state, StateReads) and state.loop \
+        and zero_step_closure_ref(pred) is not None
 
 
 def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]],
-                          state_names: set[str]) -> bool:
-    """Whether a predicate's `expr`, or a `bind` that `expr` reaches (transitively), reads a
-    captured state variable. A predicate that reads none — a constant, an input, the time
-    alone, or a state read only in a bind the expression never uses — values nothing the
-    kernel produced and judges nothing; the gate and the evaluator both refuse it.
+                          state_names: StateReads | set[str] | frozenset[str]) -> bool:
+    """Whether a predicate's `expr`, or a `bind` that `expr` reaches (transitively), reads
+    kernel state (`is_state_read` under ``state_names``). A predicate that reads none — a
+    constant, an input, a `derived.*` value, the time or the step count alone, the host's own
+    `initial_state` read back, or a state read only in a bind the expression never uses —
+    values nothing the kernel produced and judges nothing; the gate and the evaluator both
+    refuse it, gate (l)'s zero-step closure aside (`is_zero_step_closure`).
 
     SYNTACTIC: the rule sees that the state is read, not that the value depends on it. The
     schema gate first prunes the terms constant by form (`effective_names`: a factor of
@@ -603,16 +701,49 @@ def comparand_evidence_sha256(run_dir: Path) -> str:
 
 # ----------------------------------------------------------------------------- environment
 
+class Lazy:
+    """A value computed on first use and kept, error included: a `history/` or `series/`
+    loader, or the case's evaluated `derived` values, which only a predicate naming them pays
+    for — and whose failure is an evaluation error of THAT predicate alone."""
+
+    def __init__(self, thunk: Callable[[], Any]) -> None:
+        self._thunk: Callable[[], Any] | None = thunk
+        self._value: Any = None
+        self._error: str | None = None
+
+    def get(self) -> Any:
+        if self._thunk is not None:
+            thunk, self._thunk = self._thunk, None
+            try:
+                self._value = thunk()
+            except PrimaryEvidenceError as exc:
+                self._error = str(exc)
+        if self._error is not None:
+            raise PrimaryEvidenceError(self._error)
+        return self._value
+
+
+def _table(value: Any) -> Any:
+    return value.get() if isinstance(value, Lazy) else value
+
+
 class CaseEnv(NamedTuple):
     """Everything an expression can name inside one case. A capture table holds the declared
     variables the capture file carries; a variable it omits, and every ``initial.<var>`` of a
     case with no ``initial/`` capture (``initial`` None — a harness self-test's own runner
-    writes none), is an evaluation error of the predicate that names it."""
+    writes none), is an evaluation error of the predicate that names it. ``history`` /
+    ``series`` / ``derived`` (grammar 6) are a mapping or a `Lazy` of one, None when nothing
+    can answer them; ``state_rank`` is the state's rank (the coordinates' rank), None when not
+    known, and lets a reduction tell a sampled field's leading axis from a state axis."""
     case_id: str
     initial: dict[str, Any] | None   # variable -> float | ndarray (the time variable included)
     final: dict[str, Any]
     inputs: dict[str, Any]      # the case's `inputs` mapping, as authored
     coordinates: dict[str, np.ndarray]
+    history: Any = None
+    series: Any = None
+    derived: Any = None
+    state_rank: int | None = None
 
 
 def _shape_dims(shape_expr: Any) -> list[str]:
@@ -645,45 +776,6 @@ def schema_variables(schema: dict[str, Any]) -> dict[str, list[str]]:
         if isinstance(entry, dict) and isinstance(entry.get("name"), str):
             out[entry["name"].strip()] = _shape_dims(entry.get("shape_expr"))
     return out
-
-
-def variable_sources(schema: dict[str, Any]) -> dict[str, str]:
-    """variable name -> its `source` class, over `schema.variables[]`; an entry without the key
-    is `operation`. A value outside `SNAPSHOT_SOURCES` is kept verbatim: `source_violations`
-    refuses it, and no pairing rule treats it as state."""
-    out: dict[str, str] = {}
-    for entry in (schema.get("variables") if isinstance(schema.get("variables"), list) else []):
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str):
-            out[entry["name"].strip()] = (str(entry["source"]) if "source" in entry
-                                          else SOURCE_OPERATION)
-    return out
-
-
-def source_violations(schema: dict[str, Any] | None) -> list[str]:
-    """The Compile gate over `schema.variables[].source` (issue #582, D2): a declared class, and
-    a `reported` variable is a scalar. Which class is the right one, and that a `reference` is
-    one `tests.md` §2 defines, is `Compile.verify` V3 (iv)'s judgment."""
-    v: list[str] = []
-    if schema is None:
-        return v
-    entries = schema.get("variables")
-    for idx, entry in enumerate(entries if isinstance(entries, list) else []):
-        if not isinstance(entry, dict) or "source" not in entry:
-            continue
-        loc = f"state_snapshots.schema.variables[{idx}]"
-        source = entry["source"]
-        if not isinstance(source, str) or source not in SNAPSHOT_SOURCES:
-            v.append(f"{loc}.source must be one of {list(SNAPSHOT_SOURCES)} (got {source!r})")
-            continue
-        if source == SOURCE_REPORTED:
-            try:
-                scalar = _shape_dims(entry.get("shape_expr")) == []
-            except PrimaryEvidenceError:
-                continue   # the schema gate reports an unreadable shape_expr
-            if not scalar:
-                v.append(f"{loc}: a source: reported variable is a scalar, the operation's one "
-                         f"reduction over the run (got shape_expr {entry.get('shape_expr')!r})")
-    return v
 
 
 def state_rank(schema: dict[str, Any]) -> int:
@@ -830,6 +922,7 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
     wanted = dict(variables)
     if time_variable:
         wanted[time_variable] = []
+    wanted.setdefault(STEP_CAPTURE, [])
     for name, dims in wanted.items():
         if name not in doc:
             # A capture carries the variables its writer holds for this case: the
@@ -874,9 +967,91 @@ def _contains_non_number(value: Any) -> bool:
     return not _is_number(value)
 
 
-def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any]) -> CaseEnv:
+def _load_history(sdir: Path, case_id: str, variables: dict[str, list[str]],
+                  time_variable: str | None, final: dict[str, Any]) -> dict[str, Any]:
+    """The `history/` samples of one case, `<case_id>__<k>.json` with `k` the committed step,
+    ascending by `k`, every name stacked on a LEADING axis. Each sample is read like a capture
+    (`_load_capture`: declared rank, finiteness) and must carry `step` equal to its `k`; a name
+    every sample carries is stacked (equal shapes required), one a sample omits is left out (a
+    predicate naming it fails on that predicate). No sample at all is admitted (`every = 0`, or
+    a first step refused): every name is then empty, an array variable shaped like its final
+    capture."""
+    hdir = sdir / _HISTORY
+    pattern = re.compile(re.escape(case_id) + r"__([0-9]+)\.json")
+    found: list[tuple[int, Path]] = []
+    if hdir.is_dir():
+        for path in hdir.iterdir():
+            match = pattern.fullmatch(path.name)
+            if match and path.is_file():
+                found.append((int(match.group(1)), path))
+    found.sort(key=lambda item: item[0])
+    samples: list[dict[str, Any]] = []
+    for k, path in found:
+        sample = _load_capture(path, variables, time_variable)
+        if STEP_CAPTURE not in sample:
+            raise PrimaryEvidenceError(f"history sample {path.name} carries no {STEP_CAPTURE!r}")
+        if sample[STEP_CAPTURE] != float(k):
+            raise PrimaryEvidenceError(
+                f"history sample {path.name} carries step {sample[STEP_CAPTURE]!r}, not the "
+                f"committed step {k} its name says")
+        samples.append(sample)
+    names = list(variables) + [n for n in (time_variable, STEP_CAPTURE)
+                               if n and n not in variables]
+    out: dict[str, Any] = {}
+    for name in names:
+        if not samples:
+            shape = np.shape(final[name]) if name in variables and name in final else ()
+            out[name] = np.empty((0, *shape), dtype=np.float64)
+            continue
+        if not all(name in sample for sample in samples):
+            continue
+        shapes = {np.shape(sample[name]) for sample in samples}
+        if len(shapes) != 1:
+            raise PrimaryEvidenceError(
+                f"history of case {case_id!r}: variable {name!r} changes shape between samples "
+                f"({sorted(map(list, shapes))})")
+        out[name] = np.stack([np.asarray(sample[name], dtype=np.float64) for sample in samples])
+    return out
+
+
+def _load_series(sdir: Path, case_id: str) -> dict[str, np.ndarray]:
+    """`series/<case_id>.json`: one rank-1 numeric list per name, all of one length — zero
+    admitted (no committed step) — and every entry finite (the driver's fold carries a
+    non-finite committed cell into the entry; it is refused here, never laundered)."""
+    path = sdir / _SERIES / f"{case_id}.json"
+    if not path.is_file():
+        raise PrimaryEvidenceError(f"series file {_SERIES}/{path.name} is absent")
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PrimaryEvidenceError(f"series file {path.name} is unreadable: {exc}") from None
+    if not isinstance(doc, dict):
+        raise PrimaryEvidenceError(f"series file {path.name} is not a JSON object")
+    out: dict[str, np.ndarray] = {}
+    for name, raw in doc.items():
+        if not isinstance(raw, list) or _contains_non_number(raw):
+            raise PrimaryEvidenceError(
+                f"series file {path.name}: {name!r} is not a list of numbers")
+        arr = np.asarray(raw, dtype=np.float64)
+        if arr.ndim != 1:
+            raise PrimaryEvidenceError(f"series file {path.name}: {name!r} is not rank 1")
+        if not np.all(np.isfinite(arr)):
+            raise PrimaryEvidenceError(
+                f"series file {path.name}: {name!r} holds a non-finite value")
+        out[str(name)] = arr
+    if len({a.shape[0] for a in out.values()}) > 1:
+        raise PrimaryEvidenceError(
+            f"series file {path.name}: the entries are not of one length "
+            f"({ {n: int(a.shape[0]) for n, a in sorted(out.items())} })")
+    return out
+
+
+def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
+                  derived: Any = None) -> CaseEnv:
     """The environment of one case: both captures under ``run_dir/raw/state_snapshots``, the
-    case's inputs and its coordinate arrays."""
+    case's inputs and its coordinate arrays; `history/` and `series/` as `Lazy` loaders,
+    read only when a predicate names them; ``derived`` (a mapping or a `Lazy` of one) as
+    given."""
     case_id = str(case.get("case_id") or "").strip()
     if not case_id:
         raise PrimaryEvidenceError("case has no case_id")
@@ -899,7 +1074,10 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any]) -
         raise PrimaryEvidenceError(
             f"{case_id}: the initial and final captures disagree on the state shape")
     return CaseEnv(case_id=case_id, initial=initial, final=final, inputs=inputs,
-                   coordinates=coordinate_arrays(schema, inputs, shape))
+                   coordinates=coordinate_arrays(schema, inputs, shape),
+                   history=Lazy(lambda: _load_history(sdir, case_id, variables, tv, final)),
+                   series=Lazy(lambda: _load_series(sdir, case_id)),
+                   derived=derived, state_rank=rank)
 
 
 # ------------------------------------------------------------------------------ evaluation
@@ -929,17 +1107,47 @@ def _shape_compatible(a: Any, b: Any, what: str) -> None:
             "equal, or 1 on one side)")
 
 
-def _reducible(name: str, value: Any) -> Any:
+def _reducible(name: str, value: Any, srank: int | None = None) -> Any:
     """A reduction over an array with an extent-1 axis (a coordinate the host could not
     expand to the state's shape) would count one cell where the state has a whole row; it is
-    refused rather than valued."""
+    refused rather than valued. The leading axis of a field one rank above the state
+    (``srank``: a `history.*` field's samples) is not a state axis and may have extent 1. A
+    reduction over an EMPTY array — an empty history or series — is refused too: `sum` would
+    value it 0 and `max` has no value at all."""
     shape = np.shape(value)
-    if len(shape) >= 2 and 1 in shape:
+    if 0 in shape:
+        raise PrimaryEvidenceError(
+            f"{name}(): reduction over an empty array of shape {list(shape)} (an empty "
+            "history or series: no sample was written, or no step was committed)")
+    state_axes = shape[1:] if srank and len(shape) == srank + 1 else shape
+    if len(shape) >= 2 and 1 in state_axes:
         raise PrimaryEvidenceError(
             f"{name}(): reduction over a field of shape {list(shape)} with an extent-1 axis "
             "(a coordinate the host could not expand to the state's shape, or a state with "
             "an axis of extent 1); pair it with a state array first")
     return value
+
+
+def _sample_reduce(name: str, value: Any) -> Any:
+    """`smax` / `smin` / `ssum`: reduce every axis but the leading one (the identity on rank
+    1). The trailing axes are a state's, so the extent-1 rule of `_reducible` applies to them
+    when there are two or more."""
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.ndim == 0:
+        raise PrimaryEvidenceError(f"{name}(): the argument must be an array")
+    if arr.ndim == 1:
+        return arr
+    if arr.ndim >= 3 and 1 in arr.shape[1:]:
+        raise PrimaryEvidenceError(
+            f"{name}(): reduction over a field of shape {list(arr.shape)} with an extent-1 "
+            "state axis (a coordinate the host could not expand to the state's shape); pair "
+            "it with a state array first")
+    axes = tuple(range(1, arr.ndim))
+    if name == "smax":
+        return np.max(arr, axis=axes)
+    if name == "smin":
+        return np.min(arr, axis=axes)
+    return np.sum(arr, axis=axes)
 
 
 #: The refusal of a `transpose` given one axis: it takes the array alone or with two axes.
@@ -991,15 +1199,17 @@ def _array_first(name: str, args: list[Any]) -> Any:
     return blocked.mean(axis=tuple(range(1, 2 * arr.ndim, 2)))
 
 
-def _call(name: str, args: list[Any]) -> Any:
+def _call(name: str, args: list[Any], srank: int | None = None) -> Any:
     with np.errstate(all="ignore"):
         if name == "sum":
-            return np.sum(_reducible(name, args[0]))
+            return np.sum(_reducible(name, args[0], srank))
         if name == "mean":
-            return np.mean(_reducible(name, args[0]))
+            return np.mean(_reducible(name, args[0], srank))
+        if name in ("smax", "smin", "ssum"):
+            return _sample_reduce(name, args[0])
         if name in ("min", "max"):
             if len(args) == 1:
-                _reducible(name, args[0])
+                _reducible(name, args[0], srank)
                 return np.min(args[0]) if name == "min" else np.max(args[0])
             acc = args[0]
             for other in args[1:]:
@@ -1021,9 +1231,10 @@ def _call(name: str, args: list[Any]) -> Any:
         if name == "cos":
             return np.cos(args[0])
         if name == "norm2":
-            return np.sqrt(np.sum(np.asarray(_reducible(name, args[0]), dtype=np.float64) ** 2))
+            return np.sqrt(np.sum(
+                np.asarray(_reducible(name, args[0], srank), dtype=np.float64) ** 2))
         if name == "maxabs":
-            return np.max(np.abs(_reducible(name, args[0])))
+            return np.max(np.abs(_reducible(name, args[0], srank)))
         if name == "ceil":
             return np.ceil(args[0])
         if name == "floor":
@@ -1059,6 +1270,8 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
         left = _eval_node(node.left, env, at_envs, binds, cenv)
         right = _eval_node(node.right, env, at_envs, binds, cenv)
         sym = _BINOPS[type(node.op)]
+        left, right = _lift_coordinate(node.left, left, right, env, binds)
+        right, left = _lift_coordinate(node.right, right, left, env, binds)
         _shape_compatible(left, right, f"operator {sym}")
         with np.errstate(all="ignore"):
             if sym == "+":
@@ -1088,6 +1301,8 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
             return _capture_value(env, root.id, attrs[0])
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             return resolve_input_value(env.inputs, ".".join(attrs))
+        if isinstance(root, ast.Name) and root.id in _SAMPLED_ROOTS:
+            return _sampled_value(env, root.id, attrs[0])
         if isinstance(root, ast.Name) and root.id == _COMPARAND:
             if cenv is None:
                 raise PrimaryEvidenceError(
@@ -1109,8 +1324,43 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
     if isinstance(node, ast.Call):
         assert isinstance(node.func, ast.Name)
         args = [_eval_node(a, env, at_envs, binds, cenv) for a in node.args]
-        return _finite(_call(node.func.id, args), f"{node.func.id}()")
+        return _finite(_call(node.func.id, args, env.state_rank), f"{node.func.id}()")
     raise PrimaryEvidenceError(f"{type(node).__name__} is not admitted")  # unreachable past parse
+
+
+def _is_coordinate_node(node: ast.AST, coordinates: Any, binds: Any) -> bool:
+    """Whether ``node`` NAMES a coordinate: a bare name that is not a bind, or
+    `at('<case>').<coordinate>`. A field built from a coordinate is not one."""
+    if isinstance(node, ast.Name):
+        return node.id not in binds and node.id in coordinates
+    if isinstance(node, ast.Attribute):
+        root, attrs = _attr_chain(node)
+        return _is_at_call(root) and len(attrs) == 1 and attrs[0] not in _ROOTS
+    return False
+
+
+def _lift_coordinate(node: ast.AST, value: Any, other: Any, env: CaseEnv,
+                     binds: dict[str, Any]) -> tuple[Any, Any]:
+    """A coordinate named directly as one operand of a binary operator, against an operand
+    of one more rank (a `history.*` field: samples on the leading axis), gains that leading
+    axis with extent 1, so it broadcasts over the samples on the trailing axes (grammar 6)."""
+    if _is_coordinate_node(node, env.coordinates, binds) \
+            and np.ndim(other) == np.ndim(value) + 1 and np.ndim(value) >= 1:
+        return np.asarray(value)[np.newaxis, ...], other
+    return value, other
+
+
+def _sampled_value(env: CaseEnv, root: str, name: str) -> Any:
+    """`history.<name>` / `series.<name>` / `derived.<name>` of the case being evaluated."""
+    table = _table(getattr(env, root))
+    if table is None:
+        raise PrimaryEvidenceError(
+            f"{root}.{name}: case {env.case_id!r} has no {root} to read")
+    if name not in table:
+        what = {_HISTORY: "sampled", _SERIES: "in the series",
+                _DERIVED: "a derived entry"}[root]
+        raise PrimaryEvidenceError(f"{root}.{name}: not {what} in case {env.case_id!r}")
+    return table[name]
 
 
 def _shape_disagreement(env: CaseEnv, cenv: CaseEnv) -> str | None:
@@ -1241,13 +1491,14 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     """Evaluate every `io_contract.predicates[]` entry of ``ir`` against the captures
     under ``run_dir``. Returns one record per predicate, in order::
 
-        {test_id, quantity, expr, op, scope, target_cases, cases_read, sources_read,
+        {test_id, quantity, expr, op, scope, target_cases, cases_read, scalar_pairing,
          grammar_version, comparands, satisfied, kind,
          evaluated: [{case, value, rhs, satisfied} | {case, satisfied: false, reason, error}]}
 
-    ``cases_read`` is the cases the predicate VALUES (`cases_read`: reached binds, outside a
-    term constant by form; the key keeps its name), and ``sources_read`` the same per `source`
-    class (`sources_read`). ``kind`` is ``pass`` / ``physics`` (a
+    ``cases_read`` is the cases the predicate VALUES (`cases_read` under the IR's `state_reads`:
+    reached binds, outside a term constant by form; the key keeps its name), and
+    ``scalar_pairing`` what D7 asks of it (`record_scalar_pairing`), which
+    `verdict_evaluator.evaluate_verdict` re-checks. ``kind`` is ``pass`` / ``physics`` (a
     comparison was false) / ``structural`` (the
     expression could not be evaluated: `PrimaryEvidenceError`) / ``no_comparand``. An empty
     list when the IR declares no primary predicate. A predicate whose own shape is malformed
@@ -1277,19 +1528,27 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     if schema is None:
         raise PrimaryEvidenceError(
             "predicates declared but the IR has no state_snapshots evidence entry")
-    sources = variable_sources(schema)
+    reads = state_reads(ir)
+    one_call = drive_model(ir).one_call_scalars if _has_drive(ir) else {}
     cases = _cases_by_id(ir)
     env_cache: dict[tuple[str, str], CaseEnv] = {}
     comparand_list = list(comparands)
+    # The case's `derived` values, evaluated once for the IR on first use: a predicate that
+    # names none never pays for it, and a failure is a structural record of the predicates
+    # that do.
+    all_derived = Lazy(lambda: {cid: dict(values.derived)
+                                for cid, values in _evaluate_cases(ir).items()})
 
     def env_for(cid: str, where: Path = Path(run_dir), key: str = "") -> CaseEnv:
         if (key, cid) not in env_cache:
             if cid not in cases:
                 raise PrimaryEvidenceError(f"case {cid!r} is not in case.test_case_set")
-            env_cache[(key, cid)] = load_case_env(where, cases[cid], schema)
+            derived = Lazy(lambda: all_derived.get().get(cid, {}))
+            env_cache[(key, cid)] = load_case_env(where, cases[cid], schema, derived)
         return env_cache[(key, cid)]
 
     out: list[dict[str, Any]] = []
+    closures: set[str] = set()
     for idx, pred in enumerate(preds):
         loc = f"predicates[{idx}]"
         if not isinstance(pred, dict):
@@ -1310,10 +1569,14 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                 raise PrimaryEvidenceError(f"{loc}: {key} is not a primary predicate key")
         tree = parse_expr(pred.get("expr"))
         expr_refs, bind_refs = _predicate_refs(pred)
-        if not predicate_reads_state(expr_refs, bind_refs, set(schema_variables(schema))):
+        closure = is_zero_step_closure(pred, reads) and test_id.strip() not in closures
+        if closure:
+            closures.add(test_id.strip())   # one exempt closure per test, as the gate admits
+        if not predicate_reads_state(expr_refs, bind_refs, reads) and not closure:
             raise PrimaryEvidenceError(
-                f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
-                "expr or a bind expr reaches")
+                f"{loc}: reads no captured state the kernel produced (final.<written var>, "
+                "initial.<var init writes>, history.*, series.*) in expr or a bind expr "
+                "reaches")
         cross = predicate_reads_comparand(expr_refs, bind_refs)
         if cross_target_only and not cross:
             continue
@@ -1322,11 +1585,11 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),
             "op": op, "scope": scope, "target_cases": list(targets),
-            # the cases this record values the state of (`cases_read`), in all and per `source`
-            # class, so the verdict evaluator can re-check the reported-read rule on the records
-            "cases_read": sorted(cases_read({**pred, "target_cases": targets},
-                                            set(schema_variables(schema))) or []),
-            "sources_read": sources_read({**pred, "target_cases": targets}, sources),
+            # the cases this record values the state of (`cases_read`), and what D7 asks of it
+            # (`record_scalar_pairing`), so the verdict evaluator can re-check both on records
+            "cases_read": sorted(cases_read({**pred, "target_cases": targets}, reads) or []),
+            "scalar_pairing": record_scalar_pairing({**pred, "target_cases": targets},
+                                                    one_call),
             "grammar_version": GRAMMAR_VERSION,
             "comparands": [c.detail() for c in comparand_list] if cross else [],
             "satisfied": True, "kind": "pass", "evaluated": [],
@@ -1395,7 +1658,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
 #: arguments' pairwise rank; ``roll``: the array's rank, with one scalar shift per axis;
 #: ``array_first``: the first argument's rank, which must not be 0, every other argument a
 #: scalar (an axis range, `coarsen`'s divisibility and every integer check stay evaluation
-#: errors: they need values).
+#: errors: they need values); ``sample_reduce``: rank 1, the argument an array.
 _RANK_RULES: dict[str, str] = {
     "sum": "reduce", "mean": "reduce", "norm2": "reduce", "maxabs": "reduce",
     "min": "reduce_or_pairwise", "max": "reduce_or_pairwise",
@@ -1404,6 +1667,7 @@ _RANK_RULES: dict[str, str] = {
     "ceil": "elementwise", "floor": "elementwise",
     "atan2": "pairwise", "roll": "roll",
     "transpose": "array_first", "flip": "array_first", "coarsen": "array_first",
+    "smax": "sample_reduce", "smin": "sample_reduce", "ssum": "sample_reduce",
 }
 
 
@@ -1417,6 +1681,9 @@ class RankEnv(NamedTuple):
     coordinate_rank: int
     input_rank: Callable[[str, str], int]
     case: str | None = None   # the case `inputs.<path>` is read in; None when no ref needs one
+    #: ``derived_rank(case_id, name)``: the rank of the case's evaluated `derived.<name>`
+    #: (grammar 6); None when no case value is known (the gate then refuses the name first).
+    derived_rank: Callable[[str, str], int] | None = None
 
 
 def _pair_rank(ra: int, rb: int, what: str) -> int:
@@ -1443,8 +1710,13 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
     if isinstance(node, ast.Constant):
         return 0
     if isinstance(node, ast.BinOp):
-        return _pair_rank(expr_rank(node.left, env, binds), expr_rank(node.right, env, binds),
-                          f"operator {_BINOPS[type(node.op)]}")
+        left, right = expr_rank(node.left, env, binds), expr_rank(node.right, env, binds)
+        # `_lift_coordinate`: a coordinate named directly beside an operand one rank above it
+        for side, rank, other in ((node.left, left, right), (node.right, right, left)):
+            if _is_coordinate_node(side, env.coordinates, binds) and rank >= 1 \
+                    and other == rank + 1:
+                return other
+        return _pair_rank(left, right, f"operator {_BINOPS[type(node.op)]}")
     if isinstance(node, ast.UnaryOp):
         return expr_rank(node.operand, env, binds)
     if isinstance(node, ast.Name):
@@ -1462,6 +1734,13 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
         if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
             assert env.case is not None
             return env.input_rank(env.case, ".".join(attrs))
+        if isinstance(root, ast.Name) and root.id == _HISTORY:
+            return env.captures[attrs[0]] + 1
+        if isinstance(root, ast.Name) and root.id == _SERIES:
+            return 1
+        if isinstance(root, ast.Name) and root.id == _DERIVED:
+            assert env.case is not None and env.derived_rank is not None
+            return env.derived_rank(env.case, attrs[0])
         assert _is_at_call(root) and isinstance(root, ast.Call)
         case_id = str(root.args[0].value)  # type: ignore[attr-defined]
         if len(attrs) == 2 and attrs[0] in CAPTURE_POINTS:
@@ -1482,6 +1761,10 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
         return acc
     if rule == "elementwise":
         return ranks[0]
+    if rule == "sample_reduce":
+        if ranks[0] == 0:
+            raise PrimaryEvidenceError(f"{name}(): the argument must be an array")
+        return 1
     if rule == "pairwise":
         return _pair_rank(ranks[0], ranks[1], f"{name}()")
     if rule == "array_first":
@@ -1527,7 +1810,9 @@ def _predicate_rank_violation(pred: dict[str, Any], loc: str,
                               parsed: list[tuple[str, str | None, ast.Expression]],
                               targets: list[str], schema: dict[str, Any],
                               variables: dict[str, list[str]], coord_names: set[str],
-                              cases: dict[str, dict[str, Any]]) -> str | None:
+                              cases: dict[str, dict[str, Any]],
+                              case_inputs: dict[str, dict[str, Any]] | None = None,
+                              ) -> str | None:
     """The gate's rank violation for one predicate whose names all resolved, or None. A
     predicate that reads `inputs.<path>` of its own case is ranked once per case it is
     evaluated in (an input's rank may differ between cases); the case is named only when the
@@ -1536,18 +1821,22 @@ def _predicate_rank_violation(pred: dict[str, Any], loc: str,
     captures = {n: len(d) for n, d in variables.items()}
     if isinstance(tv, str) and tv.strip():
         captures[tv.strip()] = 0
+    captures.setdefault(STEP_CAPTURE, 0)
 
     def input_rank(cid: str, dotted: str) -> int:
         case = cases.get(cid)
         return int(np.ndim(resolve_input_value(
             case.get("inputs") if isinstance(case, dict) else None, dotted)))
 
+    def derived_rank(cid: str, name: str) -> int:
+        return int(np.ndim((case_inputs or {})[cid][f"{_DERIVED}.{name}"]))
+
     refs = [r for _, _, tree in parsed for r in expr_names(tree)]
     coord_rank = state_rank(schema)
     base = RankEnv(captures=captures, coordinates=frozenset(coord_names),
-                   coordinate_rank=coord_rank, input_rank=input_rank)
+                   coordinate_rank=coord_rank, input_rank=input_rank, derived_rank=derived_rank)
     contexts: list[str | None] = [None]
-    if any(r.kind == "inputs" and r.case is None for r in refs):
+    if any(r.kind in ("inputs", _DERIVED) and r.case is None for r in refs):
         try:
             contexts = list(_predicate_scope({**pred, "target_cases": targets}, loc)[1])
         except PrimaryEvidenceError:
@@ -1574,10 +1863,23 @@ def validate_primary_predicate_schema(
     schema: dict[str, Any] | None,
     cases: dict[str, dict[str, Any]],
     test_target_cases: dict[str, list[str]] | None = None,
+    reads: StateReads | None = None,
+    case_inputs: dict[str, dict[str, Any]] | None = None,
+    series_names: frozenset[str] | set[str] | None = None,
+    history_declared: bool = False,
 ) -> list[str]:
     """The Compile-stage gate over `io_contract.predicates` (present-or-absent; the per-test
-    rules over quantities and reported reads are `quantity_violations` and
-    `reported_read_violations`). Returns violation strings (empty == valid).
+    rules over quantities and the one-call scalar pairing are `quantity_violations` and
+    `scalar_pairing_violations`). Returns violation strings (empty == valid).
+
+    Grammar 6 (issue #589) context, which `predicate_schema_context(ir)` builds from the IR:
+    ``reads`` — what counts as a state read (`state_reads`; None is the pre-drive rule, every
+    schema variable at both capture points, which an IR with no `drive` keeps); ``case_inputs``
+    — `evaluate_case_inputs(ir)`, the only source of a `derived.<name>`'s value and so its rank
+    (None: every `derived.*` read is refused); ``series_names`` — the `step_series` entry's
+    `names` (None: no `step_series` is declared and every `series.*` read is refused);
+    ``history_declared`` — a `state_history` entry is declared (else every `history.*` read
+    is refused). A schema variable named `t`, `step` or `case_id` is refused.
 
     Checks each entry's shape (`test_id` ∈ tests.md, `quantity`, `op`, a non-null `value` of
     a number or a per-case map, exactly one scope, `target_cases` ⊆
@@ -1620,7 +1922,11 @@ def validate_primary_predicate_schema(
         return [f"io_contract.predicates: snapshot schema unreadable ({exc})"]
     tv = schema.get("time_variable")
     capture_names = set(variables) | ({tv.strip()} if isinstance(tv, str) and tv.strip()
-                                      else set())
+                                      else set()) | {STEP_CAPTURE}
+    for name in sorted(set(variables) & RESERVED_VARIABLE_NAMES):
+        v.append(f"state_snapshots.schema.variables: {name!r} is the driver's or the "
+                 f"harness's own key ({sorted(RESERVED_VARIABLE_NAMES)}), not a variable name")
+    state: StateReads | set[str] = reads if reads is not None else set(variables)
     coord_names: set[str] = set()
     for cid, case in sorted(cases.items()):
         inputs = case.get("inputs") if isinstance(case.get("inputs"), dict) else {}
@@ -1629,6 +1935,7 @@ def validate_primary_predicate_schema(
         except PrimaryEvidenceError as exc:
             v.append(f"state_snapshots.schema.coordinates does not resolve in case {cid!r}: {exc}")
     md_set = set(test_ids)
+    closures: set[str] = set()   # the tests whose zero-step closure has been exempted
 
     for idx, pred in enumerate(predicates):
         loc = f"predicates[{idx}]"
@@ -1753,6 +2060,26 @@ def validate_primary_predicate_schema(
                         prefix = f"{_COMPARAND}." if ref.kind == "comparand" else ""
                         v.append(f"{eloc}: {prefix}{ref.point}.{ref.name} is not a snapshot "
                                  f"schema variable ({sorted(capture_names)})")
+                elif ref.kind == _HISTORY:
+                    if not history_declared:
+                        v.append(f"{eloc}: history.{ref.name}: the IR declares no "
+                                 "state_history required_evidence entry")
+                    elif ref.name not in capture_names:
+                        v.append(f"{eloc}: history.{ref.name} is not a snapshot schema "
+                                 f"variable ({sorted(capture_names)})")
+                elif ref.kind == _SERIES:
+                    if series_names is None:
+                        v.append(f"{eloc}: series.{ref.name}: the IR declares no step_series "
+                                 "required_evidence entry")
+                    elif ref.name not in series_names:
+                        v.append(f"{eloc}: series.{ref.name} is not a name of the step_series "
+                                 f"entry ({sorted(series_names)})")
+                elif ref.kind == _DERIVED:
+                    for cid in scope_cases:
+                        if case_inputs is None or cid not in case_inputs \
+                                or f"{_DERIVED}.{ref.name}" not in case_inputs[cid]:
+                            v.append(f"{eloc}: in case {cid!r}: derived.{ref.name} is not a "
+                                     "derived value the host evaluated for that case")
                 elif ref.kind == "inputs":
                     for cid in ([ref.case] if ref.case is not None else scope_cases):
                         case = cases.get(cid)
@@ -1775,17 +2102,27 @@ def validate_primary_predicate_schema(
                 seen_binds.add(bind_name)
         if parsed_all and len(v) == mark:
             rank_v = _predicate_rank_violation(pred, loc, parsed, targets, schema, variables,
-                                               coord_names, cases)
+                                               coord_names, cases, case_inputs)
             if rank_v is not None:
                 v.append(rank_v)
-        if parsed_all and not predicate_reads_state(expr_refs, bind_refs, set(variables)):
-            v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
-                     "expr or a bind expr reaches: a predicate values the state the kernel "
-                     "produced (a comparand.<point>.<var> is another target's state, not this "
-                     "run's)")
+        if parsed_all and is_zero_step_closure(pred, state) \
+                and str(test_id).strip() not in closures:
+            # gate (l)'s fixed form: gate-required, exempt from the rule below — ONE per test,
+            # so a second one cannot stand for another quantity judged by the step count alone
+            closures.add(str(test_id).strip())
+            continue
+        if parsed_all and not predicate_reads_state(expr_refs, bind_refs, state):
+            v.append(f"{loc}: reads no captured state the kernel produced (final.<v> of a "
+                     "variable an operation writes, initial.<v> of one init writes, history.*, "
+                     "series.*) in expr or a "
+                     "bind expr reaches: a predicate values the state the kernel produced (the "
+                     "host's own initial_state read back, a derived.* value, final.step / "
+                     "final.t, and a comparand.<point>.<var> — another target's state — are not "
+                     "this run's kernel state)")
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
-                                                      set(variables)):
-            v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) "
+                                                      state):
+            v.append(f"{loc}: reads no captured state the kernel produced (final.<var> / "
+                     "initial.<var> / history.* / series.*) "
                      "outside a term multiplied by a literal zero, raised to a literal zero, or "
                      "subtracted from itself or added to its own negation (the same expression "
                      "spelled the same): the expression is constant in the captured values "
@@ -1795,33 +2132,12 @@ def validate_primary_predicate_schema(
     return v
 
 
-def sources_read(pred: dict[str, Any], sources: dict[str, str]) -> dict[str, list[str]]:
-    """Per `source` class, the cases a predicate VALUES variables of that class in (`cases_read`,
-    over that class's names), classes with none left out: what a record carries, and what the
-    reported-read rule compares. A malformed scope or expression gives the empty map."""
-    out: dict[str, list[str]] = {}
-    for source in sorted(set(sources.values())):
-        read = cases_read(pred, {name for name, s in sources.items() if s == source})
-        if read:
-            out[source] = sorted(read)
-    return out
-
-
-def cases_read(pred: dict[str, Any], state_names: set[str]) -> set[str] | None:
-    """The cases a primary predicate VALUES the state of: the cases a captured STATE read
-    (`initial.<var>` / `final.<var>` with `<var>` in ``state_names``; the time variable, an
-    `inputs.<path>`, a coordinate and a `comparand.` read are not state) that ENTERS THE VALUE
-    names — an own-case read values every case the scope evaluates the predicate in (every
-    target case under `per_case: true`, X under `case: X`), an `at('<case>')` read values that
-    case. A read enters the value when it sits in `expr` or in a bind `expr` reaches
-    (`reached_binds`), outside a term constant by form (`effective_names`, the same forms the
-    reads-state rule prunes; issue #567). So a bind `expr` never reaches, an `at('<case>')`
-    only inside a term constant by form, and an `at('<case>').inputs.<path>` normaliser or
-    `at('<case>').final.t` beside own-case state (issue #567 review round 1) add no case; the
-    frontier of the reach walk is built from the PRUNED `expr`, so a bind named only inside
-    such a term is not reached. The record's `cases_read` key keeps its name. None when the
-    scope or an expression is malformed (the primary schema gate refuses those; they cover
-    nothing here)."""
+def _entering_refs(pred: dict[str, Any]) -> tuple[set[str], list[NameRef]] | None:
+    """``(the cases the scope evaluates the predicate in, the references that ENTER its
+    value)``: those in `expr` and in the binds `expr` reaches (`reached_binds`), outside a
+    term constant by form (`effective_names`; the frontier of the reach walk is built from the
+    PRUNED `expr`, so a bind named only inside such a term is not reached). None when the scope
+    or an expression is malformed (the primary schema gate refuses those)."""
     targets = pred.get("target_cases")
     if not isinstance(targets, list) or not all(isinstance(c, str) for c in targets):
         return None
@@ -1843,14 +2159,77 @@ def cases_read(pred: dict[str, Any], state_names: set[str]) -> set[str] | None:
     entering = list(expr_refs)
     for name in reached_binds(expr_refs, bind_refs):
         entering.extend(bind_refs[name])
-    state_reads = [r for r in entering if r.kind == "capture" and r.name in state_names]
-    read = set(contexts) if any(r.case is None for r in state_reads) else set()
-    read |= {r.case for r in state_reads if r.case is not None}
+    return contexts, entering
+
+
+def cases_read(pred: dict[str, Any],
+               state_names: StateReads | set[str] | frozenset[str]) -> set[str] | None:
+    """The cases a primary predicate VALUES the state of: the cases a kernel-state read
+    (`is_state_read` under ``state_names``: `final.<written v>`, `initial.<v init writes>`,
+    `history.*`, `series.*` — or, given a plain set, `initial.<v>` / `final.<v>` with `<v>` in
+    it; the time variable, the step count, an `inputs.<path>`, a `derived.*` value, a
+    coordinate and a `comparand.` read are not state) that ENTERS THE VALUE (`_entering_refs`)
+    names — an own-case read values every case the scope evaluates the predicate in (every
+    target case under `per_case: true`, X under `case: X`), an `at('<case>')` read values that
+    case. So a bind `expr` never reaches, an `at('<case>')` only inside a term constant by form,
+    and an `at('<case>').inputs.<path>` normaliser or `at('<case>').final.t` beside own-case
+    state (issue #567 review round 1) add no case. The record's `cases_read` key keeps its name.
+    None when the scope or an expression is malformed (the primary schema gate refuses those;
+    they cover nothing here)."""
+    found = _entering_refs(pred)
+    if found is None:
+        return None
+    contexts, entering = found
+    state_reads_ = [r for r in entering if is_state_read(r, state_names)]
+    read = set(contexts) if any(r.case is None for r in state_reads_) else set()
+    read |= {r.case for r in state_reads_ if r.case is not None}
     return read
 
 
+def point_reads(pred: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
+    """Per ``(point, name)`` — `initial` / `final` (own-case or `at('<case>')`), `history`,
+    `series` — the cases a predicate's reads of it that ENTER the value (`_entering_refs`)
+    value. Empty for a malformed predicate."""
+    found = _entering_refs(pred)
+    if found is None:
+        return {}
+    contexts, entering = found
+    out: dict[tuple[str, str], set[str]] = {}
+    for ref in entering:
+        if ref.kind == "capture":
+            key = (str(ref.point), ref.name)
+        elif ref.kind in (_HISTORY, _SERIES):
+            key = (ref.kind, ref.name)
+        else:
+            continue
+        out.setdefault(key, set()).update(contexts if ref.case is None else {ref.case})
+    return out
+
+
+def record_scalar_pairing(pred: dict[str, Any],
+                          one_call: dict[str, frozenset[str]]) -> dict[str, dict[str, list[str]]]:
+    """What D7 asks of one predicate, stamped on its record (`evaluate_primary_predicates`) so
+    `verdict_evaluator.evaluate_verdict` re-checks the pairing on the records alone: per one-call
+    scalar ``s`` (`DriveModel.one_call_scalars`: ``s`` -> the array states the same operation
+    writes) whose `final.<s>` this predicate reads, ``scalar`` — the cases it reads `final.<s>`
+    in — and ``paired`` — the cases it reads BOTH `final.<s>` and `final.<a>` of one of those
+    arrays in. A scalar it does not read is left out."""
+    reads = point_reads(pred)
+    out: dict[str, dict[str, list[str]]] = {}
+    for scalar, arrays in sorted(one_call.items()):
+        scalar_cases = reads.get(("final", scalar), set())
+        if not scalar_cases:
+            continue
+        array_cases: set[str] = set()
+        for array in arrays:
+            array_cases |= reads.get(("final", array), set())
+        out[scalar] = {"scalar": sorted(scalar_cases),
+                       "paired": sorted(scalar_cases & array_cases)}
+    return out
+
+
 def quantity_violations(tests: Any, predicates: Any,
-                        state_names: set[str] | None = None) -> list[str]:
+                        state_names: StateReads | set[str] | None = None) -> list[str]:
     """The per-test omission gate (issue #582, D10): over each `io_contract.tests[]` entry, the
     set of `quantity` over the test's predicates that are not cross-target must equal the test's
     `quantities`, which `validate_pipeline_semantics` holds to the `tests.md` line. A judgment the
@@ -1861,7 +2240,8 @@ def quantity_violations(tests: Any, predicates: Any,
     (`CROSS_TARGET_JUDGMENT_PHRASE`). Names only: whether an expression measures that judgment
     is `Compile.verify` V3's. A malformed entry is the schema gates' to report.
 
-    With ``state_names``, every target case of a test must be valued by some predicate of the test
+    With ``state_names`` (a `StateReads`, or a set of names counted at both capture points),
+    every target case of a test must be valued by some predicate of the test
     (`cases_read`): what remains of the coverage gate's reads-every-case rule without a condition
     to compare against. A `case: a` predicate over `[a, b]` as the test's only judgment would
     certify it on case a alone (Z6 PR-3 rounds 1 and 2). Per test and not per quantity: a
@@ -1913,121 +2293,1382 @@ def quantity_violations(tests: Any, predicates: Any,
     return v
 
 
-def reported_line_read_violations(stated_by_test: dict[str, set[str]], marked: set[str],
-                                  predicates: Any) -> list[str]:
-    """Per test, the variables its `tests.md` `reported:` line names (``stated_by_test``) must equal
-    the ones of those and of ``marked`` that its predicates read, cross-target ones aside. A
-    declared report no predicate of the test reads judges nothing, and a report judged under a
-    test whose line does not name it is a read `tests.md` does not state. Reads are the ones that
-    enter the value (`cases_read`). A malformed entry is the schema gate's to report."""
-    names = set(marked).union(*stated_by_test.values()) if stated_by_test else set(marked)
-    read: dict[str, set[str]] = {}
-    for pred in (predicates if isinstance(predicates, list) else []):
-        if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str) \
-                or is_cross_target_predicate(pred):
-            continue
-        for name in names:
-            if cases_read(pred, {name}):
-                read.setdefault(pred["test_id"].strip(), set()).add(name)
+# ----------------------------------------------------------------------------------- drive
+#
+# The model of `drive` (issue #589, D1-D8): which operation the host-rendered driver calls, on
+# what, and how often — and from it the classes of every schema variable (who writes it, who
+# reads it), derived from `drive` and the published operations' §5.1 signatures alone, never
+# from a label the leaf writes. A member of the verdict tuple: the classes decide what a
+# predicate's read counts for, and the case-file writer below is the host's evaluation of the
+# case inputs the driver reads.
+
+#: The roots and words an `arguments` value may take (`parse_binding`).
+_STATE_ROOT = "state"
+_BINDING_WORDS = ("time", STEP_CAPTURE)
+#: The keys of `drive.loop`, every one required with `loop` (gate (e)).
+LOOP_KEYS: tuple[str, ...] = ("n_step", "dt", "t_start", "t_end")
+#: The spec kinds the catalog answers with (`spec/registry/spec_catalog.yaml`).
+DRIVE_REQUIRED_KINDS: frozenset[str] = frozenset({"problem", "component"})
+INFRASTRUCTURE_KIND = "infrastructure"
+#: The dummy types the driver binds; any other (a string, a derived type) is refused.
+_DRIVEN_TYPES: frozenset[str] = frozenset({"real", "integer", "logical", "procedure"})
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+class Binding(NamedTuple):
+    """One `arguments` value: ``kind`` is ``inputs`` (``ref`` the dotted path), ``derived`` /
+    ``state`` (``ref`` the name), ``time`` / ``step`` (``ref`` None), ``literal`` (``ref`` the
+    number or bool) or ``procedure`` (``ref`` the expression text, D11)."""
+    kind: str
+    ref: Any
+
+    def text(self) -> str:
+        if self.kind in ("inputs", _DERIVED, _STATE_ROOT):
+            return f"{self.kind}.{self.ref}"
+        if self.kind == "procedure":
+            return f"{{procedure: {self.ref!r}}}"
+        return self.kind if self.kind in _BINDING_WORDS else repr(self.ref)
+
+
+def parse_binding(value: Any) -> Binding:
+    """Read one `drive` `arguments` value (SHAPE §2): `"inputs.<path>"`, `"derived.<name>"`,
+    `"state.<var>"`, `"time"`, `"step"`, a finite number or a bool, or `{procedure: "<expr>"}`.
+    Raises `PrimaryEvidenceError` on anything else."""
+    if isinstance(value, bool):
+        return Binding("literal", value)
+    if isinstance(value, (int, float)):
+        if not math.isfinite(value):
+            raise PrimaryEvidenceError(f"binding {value!r} is not a finite number")
+        return Binding("literal", value)
+    if isinstance(value, dict):
+        text = value.get("procedure")
+        if set(value) == {"procedure"} and isinstance(text, str) and text.strip():
+            return Binding("procedure", text.strip())
+        raise PrimaryEvidenceError(
+            f"binding {value!r}: the one mapping form is {{procedure: \"<expression>\"}}")
+    if isinstance(value, str):
+        text = value.strip()
+        if text in _BINDING_WORDS:
+            return Binding(text, None)
+        root, _, rest = text.partition(".")
+        segments = rest.split(".") if rest else []
+        if root == _INPUTS_ROOT and segments and all(_IDENT.fullmatch(p) for p in segments):
+            return Binding("inputs", rest)
+        if root in (_DERIVED, _STATE_ROOT) and len(segments) == 1 \
+                and _IDENT.fullmatch(segments[0]):
+            return Binding(root, rest)
+    raise PrimaryEvidenceError(
+        f"binding {value!r} is not one of inputs.<path>, derived.<name>, state.<var>, time, "
+        "step, a number, a bool, or {procedure: \"<expression>\"}")
+
+
+class DriveEntry(NamedTuple):
+    """One operation call of `drive`: ``role`` `init` or `step`, ``loc`` its IR location,
+    ``operation`` the published operation, ``result`` its result dummy, ``arguments`` dummy ->
+    `Binding`, ``dummies`` the signature's arguments in §5.1 order, ``cases`` the list form's
+    `cases` (None in the mapping form and for `init`)."""
+    role: str
+    loc: str
+    operation: str
+    result: str
+    arguments: dict[str, Binding]
+    dummies: tuple[dict[str, Any], ...]
+    cases: tuple[str, ...] | None
+
+    def dummy(self, name: str) -> dict[str, Any] | None:
+        return next((d for d in self.dummies if d.get("name") == name), None)
+
+
+class DriveBlock(NamedTuple):
+    """The parsed `drive` block: ``init`` (None when absent), the ``step`` entries,
+    ``list_form`` (the `step` is a list of entries with `cases`), ``loop`` (key -> `Binding`,
+    None when absent: one call per case) and ``history_every`` (the `inputs` path of
+    `history.every`, None when absent)."""
+    init: DriveEntry | None
+    step: tuple[DriveEntry, ...]
+    list_form: bool
+    loop: dict[str, Binding] | None
+    history_every: str | None
+
+    def entries(self) -> list[DriveEntry]:
+        return ([self.init] if self.init is not None else []) + list(self.step)
+
+    def entries_for(self, case_id: str) -> list[DriveEntry]:
+        """`init`, and the `step` entries that run ``case_id``."""
+        return [e for e in self.entries() if e.cases is None or case_id in e.cases]
+
+
+def _has_drive(ir: Any) -> bool:
+    return isinstance(ir, dict) and ir.get("drive") is not None
+
+
+def _published_operations(ir: dict[str, Any]) -> tuple[set[str], dict[str, dict[str, Any]]]:
+    """``(published operation ids, symbol -> §5.1 procedure)`` of `public_api`."""
+    api = ir.get("public_api") if isinstance(ir.get("public_api"), dict) else {}
+    ops = api.get("published_operations")
+    published = {o["operation_id"].strip() for o in (ops if isinstance(ops, list) else [])
+                 if isinstance(o, dict) and isinstance(o.get("operation_id"), str)
+                 and o["operation_id"].strip()}
+    sigs: dict[str, dict[str, Any]] = {}
+    entries = api.get("signatures")
+    for entry in (entries if isinstance(entries, list) else []):
+        if isinstance(entry, dict) and isinstance(entry.get("symbol"), str) \
+                and isinstance(entry.get("signature"), dict):
+            sigs[entry["symbol"].strip()] = entry["signature"]
+    return published, sigs
+
+
+def _dummy_type(dummy: dict[str, Any]) -> str | None:
+    spec = dummy.get("spec")
+    return spec.get("type") if isinstance(spec, dict) else None
+
+
+def _dummy_rank(dummy: dict[str, Any]) -> int:
+    rank = dummy.get("rank")
+    if isinstance(rank, int) and not isinstance(rank, bool):
+        return rank
+    dims = dummy.get("dims")
+    return len(dims) if isinstance(dims, list) else 0
+
+
+def _is_logical_out(dummy: dict[str, Any]) -> bool:
+    return dummy.get("intent") == "out" and _dummy_type(dummy) == "logical" \
+        and _dummy_rank(dummy) == 0
+
+
+def _parse_entry(raw: Any, role: str, loc: str, published: set[str],
+                 sigs: dict[str, dict[str, Any]], list_form: bool,
+                 v: list[str]) -> DriveEntry | None:
+    """One `init` / `step` entry, its findings appended to ``v``; None when it has any."""
+    mark = len(v)
+    if not isinstance(raw, dict):
+        v.append(f"{loc} must be a mapping {{operation, result, arguments}}")
+        return None
+    allowed = {"operation", "result", "arguments"} | ({"cases"} if list_form else set())
+    for key in sorted(set(raw) - allowed, key=str):
+        v.append(f"{loc}.{key} is not a key of a drive entry ({sorted(allowed)})")
+    op = raw.get("operation")
+    if not isinstance(op, str) or not op.strip():
+        v.append(f"{loc}.operation must name a published operation")
+        return None
+    op = op.strip()
+    if op not in published:
+        v.append(f"{loc}.operation {op!r} is not a published operation "
+                 f"(public_api.published_operations[].operation_id: {sorted(published)})")
+    sig = sigs.get(op)
+    args = sig.get("args") if isinstance(sig, dict) else None
+    if not isinstance(args, list) \
+            or not all(isinstance(a, dict) and isinstance(a.get("name"), str) for a in args):
+        v.append(f"{loc}.operation {op!r} has no public_api.signatures entry with its args")
+        return None
+    dummies = tuple(args)
+    names = [a["name"] for a in dummies]
+    arguments_raw = raw.get("arguments")
+    if not isinstance(arguments_raw, dict):
+        v.append(f"{loc}.arguments must be a mapping of dummy -> binding")
+        return None
+    missing = [n for n in names if n not in arguments_raw]
+    extra = sorted((str(k) for k in arguments_raw if k not in names))
+    if missing:
+        v.append(f"{loc}.arguments binds no value to dummy(ies) {missing} of {op}: every dummy "
+                 "is bound exactly once")
+    if extra:
+        v.append(f"{loc}.arguments names {extra}, which are not dummies of {op} ({names})")
+    arguments: dict[str, Binding] = {}
+    for name in names:
+        if name in arguments_raw:
+            try:
+                arguments[name] = parse_binding(arguments_raw[name])
+            except PrimaryEvidenceError as exc:
+                v.append(f"{loc}.arguments.{name}: {exc}")
+    result = raw.get("result")
+    if not isinstance(result, str) or not result.strip():
+        v.append(f"{loc}.result must name the logical out dummy that reports the call")
+        result = ""
+    cases: tuple[str, ...] | None = None
+    if list_form:
+        raw_cases = raw.get("cases")
+        if not isinstance(raw_cases, list) or not raw_cases \
+                or not all(isinstance(c, str) and c.strip() for c in raw_cases):
+            v.append(f"{loc}.cases must be a non-empty list of case_ids (the list form "
+                     "partitions test_case_set)")
+        else:
+            cases = tuple(c.strip() for c in raw_cases)
+    if len(v) != mark:
+        return None
+    return DriveEntry(role=role, loc=loc, operation=op, result=result.strip(),
+                      arguments=arguments, dummies=dummies, cases=cases)
+
+
+def _parse_drive(ir: dict[str, Any]) -> tuple[DriveBlock | None, list[str]]:
+    """The `drive` block's STRUCTURE: every entry well formed, every operation published
+    with a signature, every dummy bound once by the vocabulary, `loop` / `history` of the
+    admitted keys and forms. ``(block, [])`` when it holds, ``(None, findings)`` otherwise."""
     v: list[str] = []
-    for tid in sorted(set(stated_by_test) | set(read)):
-        stated, reads = stated_by_test.get(tid, set()), read.get(tid, set())
-        if stated != reads:
-            v.append(f"test {tid!r}: its predicates read the reported variables {sorted(reads)} "
-                     f"and the `reported:` line of its tests.md definition names {sorted(stated)}: "
-                     "the two are equal per test")
-    return v
+    drive = ir.get("drive")
+    if not isinstance(drive, dict):
+        return None, ["drive must be a mapping {init?, step, loop?, history?}"]
+    for key in sorted(set(drive) - {"init", "step", "loop", "history"}, key=str):
+        v.append(f"drive.{key} is not a key of drive (init, step, loop, history)")
+    published, sigs = _published_operations(ir)
+    init = None
+    if drive.get("init") is not None:
+        if isinstance(drive["init"], list):
+            v.append("drive.init is one mapping entry, never a list")
+        else:
+            init = _parse_entry(drive["init"], "init", "drive.init", published, sigs, False, v)
+    step_raw = drive.get("step")
+    step: list[DriveEntry] = []
+    list_form = isinstance(step_raw, list)
+    if step_raw is None:
+        v.append("drive.step is required: the operation the driver calls per case")
+    elif list_form:
+        if not step_raw:
+            v.append("drive.step is an empty list")
+        for i, raw in enumerate(step_raw):
+            entry = _parse_entry(raw, "step", f"drive.step[{i}]", published, sigs, True, v)
+            if entry is not None:
+                step.append(entry)
+    else:
+        entry = _parse_entry(step_raw, "step", "drive.step", published, sigs, False, v)
+        if entry is not None:
+            step.append(entry)
+    loop: dict[str, Binding] | None = None
+    if drive.get("loop") is not None:
+        raw_loop = drive["loop"]
+        if not isinstance(raw_loop, dict):
+            v.append(f"drive.loop must be a mapping of {list(LOOP_KEYS)}")
+        else:
+            for key in sorted(set(raw_loop) - set(LOOP_KEYS), key=str):
+                v.append(f"drive.loop.{key} is not a loop key ({list(LOOP_KEYS)})")
+            loop = {}
+            for key in LOOP_KEYS:
+                if raw_loop.get(key) is None:
+                    v.append(f"drive.loop.{key} is required whenever loop is declared"
+                             + (" (gate (e): the t_end consistency check needs it)"
+                                if key == "t_end" else ""))
+                    continue
+                try:
+                    binding = parse_binding(raw_loop[key])
+                except PrimaryEvidenceError as exc:
+                    v.append(f"drive.loop.{key}: {exc}")
+                    continue
+                if binding.kind not in ("inputs", _DERIVED, _STATE_ROOT):
+                    v.append(f"drive.loop.{key} must be inputs.<path>, derived.<name> or "
+                             f"state.<var> (got {binding.text()})")
+                    continue
+                loop[key] = binding
+    every: str | None = None
+    if drive.get("history") is not None:
+        raw_history = drive["history"]
+        binding = None
+        if isinstance(raw_history, dict) and set(raw_history) == {"every"}:
+            try:
+                binding = parse_binding(raw_history["every"])
+            except PrimaryEvidenceError:
+                binding = None
+        if binding is None or binding.kind != "inputs":
+            v.append("drive.history must be {every: inputs.<path>}: the sampling stride is a "
+                     "case input (gate (m) compares tests.md's number with it)")
+        else:
+            every = binding.ref
+    if v:
+        return None, v
+    return DriveBlock(init=init, step=tuple(step), list_form=list_form, loop=loop,
+                      history_every=every), []
 
 
-def reference_read_violations(predicates: Any, schema: dict[str, Any] | None) -> list[str]:
-    """A predicate that reads a `source: reference` variable needs `source: operation` state read
-    in those cases, by itself or by other predicates of the same test and `quantity`, not
-    cross-target (round 2 of the issue #582 review). A reference is the checks module's own
-    computation, so a test judged by it alone, or by two of them compared, says nothing of the
-    kernel. The same predicate counts here, unlike `reported_read_violations`, because comparing
-    state against a reference in one expression is the normal form of this judgment. Reads are
-    `sources_read`'s, so a read in a term constant by form counts for nothing. A malformed entry
-    is the schema gate's to report.
+def drive_block(ir: dict[str, Any]) -> DriveBlock | None:
+    """The parsed `drive` block, None when the IR has none; raises `PrimaryEvidenceError`
+    naming the first structural finding (`drive_violations` reports them all)."""
+    if not _has_drive(ir):
+        return None
+    block, v = _parse_drive(ir)
+    if block is None:
+        raise PrimaryEvidenceError(v[0])
+    return block
 
-    What this does NOT establish. The state term may be inert: `maxabs(final.ref - inputs.e) +
-    1e-300 * sum(final.h)` and `maxabs(final.ref - initial.h)` both pass, and neither compares the
-    reference with what the operation wrote. The label is the leaf's, and no seed pins it: a
-    variable left unlabelled or labelled `record` escapes the rule. `Compile.verify` V3 (i), (ii)
-    and (iv) are the backstop for all of it; this gate is a floor, not the judgment."""
-    v: list[str] = []
-    if schema is None or not isinstance(predicates, list):
-        return v
+
+class DriveModel(NamedTuple):
+    """The classes of every schema variable (SHAPE §3), derived from `drive` + signatures.
+
+    ``init_written`` — bound to an `out` dummy of `init`; ``written`` — bound to an `out` /
+    `inout` dummy of any entry; ``result_states`` — bound to an entry's `result:` dummy, or to
+    any logical `out`; ``logical`` — bound to a logical `out` (starts at 0, no `initial_state`);
+    ``read`` — bound to an `in` / `inout` dummy of a `step` entry; ``operation_only`` — written
+    by `step`, read by no `step` dummy, not init-written, not logical (its `initial_state` is
+    a number, the pre-call content); ``one_call_scalars`` — on a node without `loop`, a scalar
+    bound to a rank-0 real / integer `out` of a `step` entry -> the array states the entries
+    binding it write (D7); ``types`` — the `spec.type` of the dummies bound to each state."""
+    block: DriveBlock
+    variables: dict[str, list[str]]
+    init_written: frozenset[str]
+    written: frozenset[str]
+    result_states: frozenset[str]
+    logical: frozenset[str]
+    read: frozenset[str]
+    operation_only: frozenset[str]
+    one_call_scalars: dict[str, frozenset[str]]
+    types: dict[str, str]
+
+    def needs_initial(self) -> frozenset[str]:
+        """The variables every case gives an `initial_state` entry (gate (f))."""
+        return frozenset(self.variables) - self.init_written - self.logical
+
+
+def _model_from_block(block: DriveBlock, variables: dict[str, list[str]]) -> DriveModel:
+    init_written: set[str] = set()
+    written: set[str] = set()
+    step_written: set[str] = set()
+    result_states: set[str] = set()
+    logical: set[str] = set()
+    read: set[str] = set()
+    one_call: dict[str, set[str]] = {}
+    types: dict[str, str] = {}
+    for entry in block.entries():
+        entry_arrays = {b.ref for name, b in entry.arguments.items()
+                        if b.kind == _STATE_ROOT and (d := entry.dummy(name)) is not None
+                        and d.get("intent") in ("out", "inout") and _dummy_rank(d) >= 1}
+        for dummy in entry.dummies:
+            binding = entry.arguments[dummy["name"]]
+            if binding.kind != _STATE_ROOT:
+                continue
+            var, intent = binding.ref, dummy.get("intent")
+            if isinstance(_dummy_type(dummy), str):
+                types.setdefault(var, _dummy_type(dummy))
+            if entry.role == "init" and intent == "out":
+                init_written.add(var)
+            if intent in ("out", "inout"):
+                written.add(var)
+                if entry.role == "step":
+                    step_written.add(var)
+            if entry.role == "step" and intent in ("in", "inout"):
+                read.add(var)
+            if _is_logical_out(dummy):
+                logical.add(var)
+                result_states.add(var)
+            if dummy["name"] == entry.result:
+                result_states.add(var)
+            if block.loop is None and entry.role == "step" and intent == "out" \
+                    and _dummy_rank(dummy) == 0 and _dummy_type(dummy) in ("real", "integer"):
+                one_call.setdefault(var, set()).update(entry_arrays)
+    operation_only = step_written - read - init_written - logical
+    return DriveModel(block=block, variables=dict(variables),
+                      init_written=frozenset(init_written), written=frozenset(written),
+                      result_states=frozenset(result_states), logical=frozenset(logical),
+                      read=frozenset(read), operation_only=frozenset(operation_only),
+                      one_call_scalars={s: frozenset(a) for s, a in one_call.items()},
+                      types=types)
+
+
+def drive_model(ir: dict[str, Any]) -> DriveModel:
+    """The `DriveModel` of an IR that carries `drive`; raises `PrimaryEvidenceError` when it
+    has none, or when its structure or its snapshot schema is malformed."""
+    block = drive_block(ir)
+    if block is None:
+        raise PrimaryEvidenceError("the IR carries no drive block")
+    schema = snapshot_schema(ir)
+    if schema is None:
+        raise PrimaryEvidenceError("drive needs a state_snapshots required_evidence entry (the "
+                                   "schema variables it binds)")
+    return _model_from_block(block, schema_variables(schema))
+
+
+def state_reads(ir: dict[str, Any]) -> StateReads:
+    """What counts as a kernel-state read in this IR's predicates (`StateReads`): from
+    `drive_model` when the IR carries `drive` (raising on a malformed one); every schema
+    variable at both capture points when it carries none (an `infrastructure` node)."""
+    if _has_drive(ir):
+        model = drive_model(ir)
+        return StateReads(final=model.written, initial=model.init_written,
+                          loop=model.block.loop is not None)
+    schema = snapshot_schema(ir)
+    names = frozenset(schema_variables(schema)) if schema is not None else frozenset()
+    return StateReads(final=names, initial=names, loop=False)
+
+
+# ------------------------------------------------------------------------- case evaluation
+
+def _integral(value: float, what: str) -> int:
+    if not float(value).is_integer():
+        raise PrimaryEvidenceError(f"{what} is {value!r}, not an integer")
+    return int(value)
+
+
+def _extent(token: str, entry: DriveEntry, inputs: Any, derived: dict[str, Any],
+            what: str) -> int:
+    """One dimension token evaluated under ``entry``'s bindings (gate (c)): an integer
+    literal, a rank-0 dummy of the operation bound to `inputs.*`, `derived.*` or a number,
+    and `+ - *` / unary minus between them. The extent is an integer >= 1."""
     try:
-        sources = variable_sources(schema)
-    except PrimaryEvidenceError:
-        return v
-    state: dict[tuple[str, str], set[str]] = {}
-    reads: list[tuple[int, str, str, set[str]]] = []
-    for idx, pred in enumerate(predicates):
-        if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str) \
-                or not isinstance(pred.get("quantity"), str):
+        tree = ast.parse(token.strip(), mode="eval")
+    except SyntaxError:
+        raise PrimaryEvidenceError(f"{what}: dims token {token!r} does not parse") from None
+
+    def ev(node: ast.AST) -> int:
+        if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+                and not isinstance(node.value, bool):
+            return node.value
+        if isinstance(node, ast.Name):
+            dummy = entry.dummy(node.id)
+            if dummy is None or _dummy_rank(dummy) != 0:
+                raise PrimaryEvidenceError(
+                    f"{what}: dims token {token!r} names {node.id!r}, which is not a rank-0 "
+                    f"dummy of {entry.operation}")
+            binding = entry.arguments[node.id]
+            if binding.kind == "inputs":
+                value = resolve_input_number(inputs, binding.ref)
+            elif binding.kind == _DERIVED and binding.ref in derived \
+                    and np.ndim(derived[binding.ref]) == 0:
+                value = float(derived[binding.ref])
+            elif binding.kind == "literal" and _is_number(binding.ref):
+                value = float(binding.ref)
+            else:
+                raise PrimaryEvidenceError(
+                    f"{what}: dims token {token!r} names dummy {node.id!r}, bound to "
+                    f"{binding.text()}: an extent resolves only through a dummy bound to "
+                    "inputs.<path>, a scalar derived.<name> or a number")
+            return _integral(value, f"{what}: {node.id}")
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
+            left, right = ev(node.left), ev(node.right)
+            return left + right if isinstance(node.op, ast.Add) else (
+                left - right if isinstance(node.op, ast.Sub) else left * right)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return -ev(node.operand)
+        raise PrimaryEvidenceError(
+            f"{what}: dims token {token!r} is not an integer, a dummy name, or + - * of them")
+
+    extent = ev(tree.body)
+    if extent < 1:
+        raise PrimaryEvidenceError(f"{what}: dims token {token!r} evaluates to {extent}, "
+                                   "not an extent >= 1")
+    return extent
+
+
+def _dummy_extents(entry: DriveEntry, dummy: dict[str, Any], tokens: list[str] | None,
+                   inputs: Any, derived: dict[str, Any], what: str) -> tuple[int, ...]:
+    """The extents of an array dummy: its `dims` (a `:` token reads none), else ``tokens``
+    (the bound state's `shape_expr`), each evaluated under the entry's bindings."""
+    dims = dummy.get("dims")
+    if not (isinstance(dims, list) and dims and all(isinstance(t, str) and t.strip() != ":"
+                                                    for t in dims)):
+        if tokens is None:
+            raise PrimaryEvidenceError(
+                f"{what}: the array dummy has no dims, and what it is bound to has no "
+                "shape_expr to evaluate instead")
+        dims = tokens
+    return tuple(_extent(str(t), entry, inputs, derived, what) for t in dims)
+
+
+def _fit(value: Any, shape: tuple[int, ...], what: str) -> Any:
+    """An evaluated value made to fill ``shape`` (SHAPE §4.2): a scalar fills any shape; an
+    array has its LEADING axes of extent 1 dropped while its rank exceeds the target's, then
+    must have the target's rank with every extent equal or 1, and broadcasts. Anything else is
+    refused."""
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.ndim == 0:
+        return float(arr) if not shape else np.full(shape, float(arr))
+    while arr.ndim > len(shape) and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim == 0:
+        return float(arr) if not shape else np.full(shape, float(arr))
+    if arr.ndim != len(shape) \
+            or any(a != t and a != 1 for a, t in zip(arr.shape, shape)):
+        raise PrimaryEvidenceError(
+            f"{what}: a value of shape {list(np.shape(value))} does not fill the shape "
+            f"{list(shape)} (leading extent-1 axes drop, then equal extents or 1 broadcast)")
+    return np.ascontiguousarray(np.broadcast_to(arr, shape))
+
+
+def _host_expr_violation(refs: list[NameRef], coords: Any, *, derived_before: Any = None,
+                         initial_vars: Any = None) -> str | None:
+    """Gate (g): what an `initial_state` expression (``derived_before`` None) or a `derived`
+    expression may name. Both: `inputs.*`, a coordinate, a constant. A `derived` expression
+    also: an EARLIER `derived.<name>`, and `initial.<v>` of a variable that has an
+    `initial_state` entry (host-materialised). Everything else — `final.*`, `history.*`,
+    `series.*`, `at(...)`, `comparand.*`, an `initial.<v>` `init` writes — is refused."""
+    for ref in refs:
+        if ref.case is not None:
+            return "at('<case>') is not admitted in a host-evaluated expression"
+        if ref.kind == "inputs":
             continue
-        key = (pred["test_id"].strip(), pred["quantity"])
-        read = sources_read(pred, sources)
-        if not is_cross_target_predicate(pred):
-            state.setdefault(key, set()).update(read.get(SOURCE_OPERATION, ()))
-        if read.get(SOURCE_REFERENCE):
-            reads.append((idx, *key, set(read[SOURCE_REFERENCE])))
-    for idx, tid, quantity, cases in reads:
-        unread = sorted(cases - state.get((tid, quantity), set()))
-        if unread:
-            v.append(f"predicates[{idx}] (test {tid!r}, quantity {quantity!r}) reads a source: "
-                     f"reference variable and no predicate of that test and quantity reads "
-                     f"source: operation state in {unread}: a reference the checks module computed "
-                     "judges the kernel only against the kernel's state")
-    return v
+        if ref.kind == "name":
+            if ref.name in coords or ref.name in CONSTANTS:
+                continue
+            return f"name {ref.name!r} is not a coordinate or a constant"
+        if derived_before is not None and ref.kind == _DERIVED:
+            if ref.name in derived_before:
+                continue
+            return f"derived.{ref.name} is not a derived entry written before this one"
+        if derived_before is not None and ref.kind == "capture" and ref.point == "initial" \
+                and ref.name in initial_vars:
+            continue
+        what = (f"{ref.point}.{ref.name}" if ref.kind in ("capture", "comparand")
+                else f"{ref.kind}.{ref.name}")
+        if ref.kind == "comparand":
+            what = f"{_COMPARAND}.{what}"
+        return (f"{what} is not admitted here: "
+                + ("an initial_state expression reads inputs.*, coordinates and constants only"
+                   if derived_before is None else
+                   "a derived expression reads inputs.*, coordinates, constants, earlier "
+                   "derived.<name> and initial.<v> of a variable with an initial_state entry"))
+    return None
 
 
-def reported_read_violations(predicates: Any, schema: dict[str, Any] | None) -> list[str]:
-    """The reported-read gate (issue #582, D13): a predicate that reads a `source: reported`
-    variable needs ANOTHER predicate of the same test and `quantity`, not cross-target, that
-    reads `source: operation` state and no reported variable, in every case the report is read
-    in. The two are one rule because a reported scalar is one number the kernel writes: a kernel
-    whose report is frozen at its initial state would otherwise pass every comparison whatever
-    its end state does. Reads are the ones that enter the value (`sources_read`), so a read in
-    an unreached bind or in a term constant by form counts for neither side. Same-predicate
-    pairing is refused because `final.report + 1e-300 * sum(final.h)` reads both and is judged by
-    the report alone. Whether the state predicate measures the same thing is V3's judgment. A
-    `record` read carries no such requirement: no state counterpart exists (a guard's `xfail` test
-    rests on one). A `reference` read has its own rule (`reference_read_violations`). A malformed
-    entry is the schema gate's to report."""
-    v: list[str] = []
-    if schema is None or not isinstance(predicates, list):
-        return v
+class CaseValues(NamedTuple):
+    """One case as the host evaluated it: ``shapes`` (state -> extents, `()` for a scalar),
+    ``initial`` (each `initial_state` entry: a float or a float64 array), ``derived`` (each
+    `derived` entry, fitted to the array dummy it is bound to), ``inputs`` (each `inputs.*`
+    path the drive block references -> its authored value)."""
+    shapes: dict[str, tuple[int, ...]]
+    initial: dict[str, Any]
+    derived: dict[str, Any]
+    inputs: dict[str, Any]
+    derived_ints: frozenset[str]
+
+
+def _input_paths(block: DriveBlock, entries: list[DriveEntry]) -> list[str]:
+    paths: list[str] = []
+    for entry in entries:
+        paths.extend(b.ref for b in entry.arguments.values() if b.kind == "inputs")
+    paths.extend(b.ref for b in (block.loop or {}).values() if b.kind == "inputs")
+    if block.history_every is not None:
+        paths.append(block.history_every)
+    return sorted(set(paths))
+
+
+def _evaluate_case(model: DriveModel, schema: dict[str, Any],
+                   case: dict[str, Any]) -> CaseValues:
+    """SHAPE §4 steps 1-4 for one case; raises `PrimaryEvidenceError` naming the entry."""
+    block = model.block
+    cid = str(case.get("case_id")).strip()
+    inputs = case.get("inputs") if isinstance(case.get("inputs"), dict) else {}
+    derived_raw = case.get("derived", {})
+    initial_raw = case.get("initial_state", {})
+    if derived_raw is None:
+        derived_raw = {}
+    if initial_raw is None:
+        initial_raw = {}
+    if not isinstance(derived_raw, dict):
+        raise PrimaryEvidenceError("derived must be a mapping of name -> number | expression")
+    if not isinstance(initial_raw, dict):
+        raise PrimaryEvidenceError("initial_state must be a mapping of variable -> value")
+    coords = coordinate_arrays(schema, inputs, None)
+    entries = block.entries_for(cid)
+
+    # The derived values a dims token may need: every entry that reads no `initial.*`,
+    # evaluated in order (the full pass below re-evaluates each and reports its error).
+    pre: dict[str, Any] = {}
+    pre_env = CaseEnv(case_id=cid, initial=None, final={}, inputs=inputs, coordinates=coords,
+                      derived=pre)
+    for name, text in derived_raw.items():
+        try:
+            pre[str(name)] = (float(text) if _is_number(text)
+                              else evaluate(parse_expr(text), pre_env))
+        except (PrimaryEvidenceError, TypeError, ValueError):
+            continue
+
+    # 1. shapes
+    shapes: dict[str, tuple[int, ...]] = {}
+    for var, dims in model.variables.items():
+        if not dims:
+            shapes[var] = ()
+    for entry in entries:
+        for dummy in entry.dummies:
+            binding = entry.arguments[dummy["name"]]
+            if binding.kind != _STATE_ROOT or _dummy_rank(dummy) == 0:
+                continue
+            var = binding.ref
+            what = f"{entry.loc}.arguments.{dummy['name']} (state.{var})"
+            ext = _dummy_extents(entry, dummy, model.variables.get(var), inputs, pre, what)
+            if var in shapes and shapes[var] != ext:
+                raise PrimaryEvidenceError(
+                    f"{what}: extents {list(ext)}, while another dummy bound to state.{var} "
+                    f"gives {list(shapes[var])}")
+            shapes[var] = ext
+    for var, dims in model.variables.items():
+        if var not in shapes:
+            raise PrimaryEvidenceError(
+                f"state.{var} is an array no operation entry that runs this case binds, so its "
+                "extents are unknown")
+        for axis, token in enumerate(dims):
+            if token.isdigit() and int(token) != shapes[var][axis]:
+                raise PrimaryEvidenceError(
+                    f"state.{var}: shape_expr extent {token} on axis {axis} disagrees with the "
+                    f"bound dummies' {shapes[var][axis]}")
+    rank = state_rank(schema)
+    largest = {shapes[v] for v, d in model.variables.items() if len(d) == rank and rank > 0}
+    for spec in (schema.get("coordinates") or []):
+        if not isinstance(spec, dict) or not isinstance(spec.get("axis"), int):
+            continue
+        n = int(_coordinate_param(spec, "count", inputs))
+        if largest and all(shape[spec["axis"]] != n for shape in largest):
+            raise PrimaryEvidenceError(
+                f"coordinates[{spec.get('name')!r}].count {n} is not the extent of axis "
+                f"{spec['axis']} of the state ({sorted(map(list, largest))})")
+
+    # 2. initial_state
+    for key in initial_raw:
+        if key not in model.variables:
+            raise PrimaryEvidenceError(f"initial_state.{key} is not a snapshot schema variable")
+        if key in model.init_written or key in model.logical:
+            raise PrimaryEvidenceError(
+                f"initial_state.{key}: a variable init writes, or a logical result the driver "
+                "writes, takes no initial_state entry (the driver starts it at 0)")
+    missing = sorted(model.needs_initial() - set(initial_raw))
+    if missing:
+        raise PrimaryEvidenceError(f"initial_state has no entry for {missing}")
+    initial_env = CaseEnv(case_id=cid, initial=None, final={}, inputs=inputs,
+                          coordinates=coords)
+    initial: dict[str, Any] = {}
+    for var, raw in initial_raw.items():
+        what = f"initial_state.{var}"
+        shape = shapes[var]
+        if var in model.operation_only and not _is_number(raw):
+            raise PrimaryEvidenceError(
+                f"{what}: an output the operation only writes takes a number literal, its "
+                "pre-call content broadcast to the shape")
+        if _is_number(raw):
+            value = _fit(_finite(float(raw), what), shape, what)
+        elif isinstance(raw, list):
+            if _contains_non_number(raw):
+                raise PrimaryEvidenceError(f"{what}: a list holding something other than numbers")
+            try:
+                arr = np.asarray(raw, dtype=np.float64)
+            except (TypeError, ValueError):
+                raise PrimaryEvidenceError(f"{what}: not a rectangular numeric list") from None
+            if arr.shape != shape:
+                raise PrimaryEvidenceError(
+                    f"{what}: a literal of shape {list(arr.shape)}, the state's is {list(shape)}")
+            value = _finite(arr, what)
+        elif isinstance(raw, str):
+            tree = parse_expr(raw)
+            bad = _host_expr_violation(expr_names(tree), coords)
+            if bad is not None:
+                raise PrimaryEvidenceError(f"{what}: {bad}")
+            try:
+                value = _fit(evaluate(tree, initial_env), shape, what)
+            except PrimaryEvidenceError as exc:
+                raise PrimaryEvidenceError(
+                    str(exc) if str(exc).startswith(what) else f"{what}: {exc}") from None
+        else:
+            raise PrimaryEvidenceError(f"{what}: a number, a nested list or an expression")
+        _finite(value, what)
+        if model.types.get(var) == "integer":
+            _integral_array(value, what)
+        initial[var] = value
+
+    # 3. derived, in mapping order
+    derived: dict[str, Any] = {}
+    ints: set[str] = set()
+    derived_env = CaseEnv(case_id=cid, initial=initial, final={}, inputs=inputs,
+                          coordinates=coords, derived=derived)
+    for name, raw in derived_raw.items():
+        what = f"derived.{name}"
+        if not isinstance(name, str) or not _IDENT.fullmatch(name):
+            raise PrimaryEvidenceError(f"{what}: a derived name is an identifier")
+        if _is_number(raw):
+            derived[name] = _finite(float(raw), what)
+            if isinstance(raw, int):
+                ints.add(name)
+            continue
+        if not isinstance(raw, str):
+            raise PrimaryEvidenceError(f"{what}: a number or an expression")
+        tree = parse_expr(raw)
+        bad = _host_expr_violation(expr_names(tree), coords, derived_before=set(derived),
+                                   initial_vars=set(initial))
+        if bad is not None:
+            raise PrimaryEvidenceError(f"{what}: {bad}")
+        try:
+            derived[name] = _finite(evaluate(tree, derived_env), what)
+        except PrimaryEvidenceError as exc:
+            raise PrimaryEvidenceError(
+                str(exc) if str(exc).startswith(what) else f"{what}: {exc}") from None
+
+    # bound host data: shapes, types
+    fitted: dict[str, tuple[int, ...]] = {}
+    for entry in entries:
+        for dummy in entry.dummies:
+            binding = entry.arguments[dummy["name"]]
+            what = f"{entry.loc}.arguments.{dummy['name']} ({binding.text()})"
+            if binding.kind == "inputs":
+                value = resolve_input_value(inputs, binding.ref)
+            elif binding.kind == _DERIVED:
+                if binding.ref not in derived:
+                    raise PrimaryEvidenceError(f"{what}: the case has no derived.{binding.ref}")
+                value = derived[binding.ref]
+            elif binding.kind == "literal":
+                value = binding.ref
+            else:
+                continue
+            rank_ = _dummy_rank(dummy)
+            if rank_ == 0:
+                if np.ndim(value) != 0:
+                    raise PrimaryEvidenceError(f"{what}: an array bound to a rank-0 dummy")
+            else:
+                dims = _dummy_extents(entry, dummy, None, inputs, pre, what)
+                if binding.kind == "inputs":
+                    if tuple(np.shape(value)) != dims:
+                        raise PrimaryEvidenceError(
+                            f"{what}: an input of shape {list(np.shape(value))}, the dummy's "
+                            f"dims evaluate to {list(dims)}")
+                else:
+                    value = _fit(value, dims, what)
+                    if binding.ref in fitted and fitted[binding.ref] != dims:
+                        raise PrimaryEvidenceError(
+                            f"{what}: derived.{binding.ref} is bound to dummies of extents "
+                            f"{list(fitted[binding.ref])} and {list(dims)}")
+                    fitted[binding.ref] = dims
+                    derived[binding.ref] = value
+            if _dummy_type(dummy) == "integer" and binding.kind != "literal":
+                _integral_array(value, what)
+                if binding.kind == _DERIVED:
+                    ints.add(binding.ref)
+
+    # 4. the loop and history refusals
+    host: dict[str, float] = {}
+    for key, binding in (block.loop or {}).items():
+        what = f"drive.loop.{key} ({binding.text()})"
+        if binding.kind == _STATE_ROOT:
+            continue
+        value = (resolve_input_value(inputs, binding.ref) if binding.kind == "inputs"
+                 else derived.get(binding.ref))
+        if value is None or np.ndim(value) != 0:
+            raise PrimaryEvidenceError(f"{what}: not a scalar of this case")
+        host[key] = float(value)
+        if key == "n_step":
+            if not (float(value).is_integer() and value >= 1):
+                raise PrimaryEvidenceError(f"{what} is {value!r}, not an integer >= 1")
+            if binding.kind == _DERIVED:
+                ints.add(binding.ref)
+        if key == "dt" and not value > 0:
+            raise PrimaryEvidenceError(f"{what} is {value!r}, not > 0")
+    if len(host) == len(LOOP_KEYS):
+        drift = abs(host["t_start"] + host["n_step"] * host["dt"] - host["t_end"])
+        bound = 4 * float(np.spacing(abs(host["t_end"])))
+        if not drift <= bound:
+            raise PrimaryEvidenceError(
+                f"drive.loop: t_start + n_step * dt = "
+                f"{host['t_start'] + host['n_step'] * host['dt']!r} is not t_end "
+                f"{host['t_end']!r} within 4 ulp ({bound!r}): the loop does not end at t_end")
+    if block.history_every is not None:
+        every = resolve_input_value(inputs, block.history_every)
+        if np.ndim(every) != 0 or not (float(every).is_integer() and every >= 0):
+            raise PrimaryEvidenceError(
+                f"drive.history.every (inputs.{block.history_every}) is {every!r}, not an "
+                "integer >= 0")
+
+    used = {}
+    for path in _input_paths(block, entries):
+        resolve_input_value(inputs, path)   # refuses an absent, non-numeric or non-finite one
+        used[path] = _lookup_input(inputs, path)[1]
+    return CaseValues(shapes=shapes, initial=initial, derived=derived, inputs=used,
+                      derived_ints=frozenset(ints))
+
+
+def _integral_array(value: Any, what: str) -> None:
+    arr = np.asarray(value, dtype=np.float64)
+    if not np.all(arr == np.floor(arr)):
+        raise PrimaryEvidenceError(f"{what}: an integer is bound, and the value is not integral")
+
+
+def _evaluate_cases(ir: dict[str, Any]) -> dict[str, CaseValues]:
+    """`_evaluate_case` over every case of an IR that carries `drive` (each error prefixed
+    with the case); an IR with none has no derived value and evaluates nothing here."""
+    cases = _cases_by_id(ir)
+    if not _has_drive(ir):
+        return {cid: CaseValues({}, {}, {}, {}, frozenset()) for cid in cases}
+    model = drive_model(ir)
+    schema = snapshot_schema(ir) or {}
+    out: dict[str, CaseValues] = {}
+    for cid, case in sorted(cases.items()):
+        try:
+            out[cid] = _evaluate_case(model, schema, case)
+        except PrimaryEvidenceError as exc:
+            raise PrimaryEvidenceError(f"case {cid!r}: {exc}") from None
+    return out
+
+
+def _json_number(value: Any, as_int: bool) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.astype(np.int64).tolist() if as_int else value.astype(np.float64).tolist()
+    return int(value) if as_int else float(value)
+
+
+def _authored_json(value: Any, what: str) -> Any:
+    """An authored input value as the case file carries it: an int stays an int, a float a
+    float, a list keeps ints when every leaf is one and is floats otherwise."""
+    if isinstance(value, bool):
+        raise PrimaryEvidenceError(f"{what} is a bool, not a number")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return _finite(value, what)
+    if isinstance(value, list):
+        arr = np.asarray(value, dtype=np.float64)
+        _finite(arr, what)
+        leaves = arr.size == 0 or _all_ints(value)
+        return np.asarray(value).astype(np.int64).tolist() if leaves else arr.tolist()
+    raise PrimaryEvidenceError(f"{what} is not a number or a numeric list")
+
+
+def _all_ints(value: Any) -> bool:
+    if isinstance(value, list):
+        return all(_all_ints(v) for v in value)
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _infrastructure_payload(inputs: Any) -> dict[str, Any]:
+    """An IR with no `drive` (D10): every NUMERIC `inputs.*` leaf — a number or a bool (as
+    1 / 0), or a rectangular list of them nested at most `MAX_INPUT_RANK` deep, empty admitted
+    — under `inputs.<path>`; strings and every other leaf are skipped, a non-finite number is
+    refused."""
+    out: dict[str, Any] = {}
+
+    def walk(node: Any, prefix: str) -> None:
+        for key, value in node.items():
+            path = f"{prefix}.{key}"
+            if isinstance(value, dict):
+                walk(value, path)
+            elif isinstance(value, bool):
+                out[path] = int(value)
+            elif isinstance(value, (int, float)):
+                out[path] = value if isinstance(value, int) else _finite(float(value), path)
+            elif isinstance(value, list) and not _contains_non_number(value):
+                try:
+                    arr = np.asarray(value, dtype=np.float64)
+                except (TypeError, ValueError):
+                    continue   # ragged: not an array, skipped
+                if arr.ndim > MAX_INPUT_RANK or (arr.size and arr.dtype == object):
+                    continue
+                _finite(arr, path)
+                out[path] = (np.asarray(value).astype(np.int64).tolist()
+                             if arr.size and _all_ints_or_bools(value) else arr.tolist())
+
+    if isinstance(inputs, dict):
+        walk(inputs, _INPUTS_ROOT)
+    return out
+
+
+def _all_ints_or_bools(value: Any) -> bool:
+    if isinstance(value, list):
+        return all(_all_ints_or_bools(v) for v in value)
+    return isinstance(value, int)
+
+
+def evaluate_case_inputs(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The host's evaluation of every case's inputs (issue #589 D2, SHAPE §4): case_id -> the
+    one flat JSON object the driver reads (`write_case_inputs`). For an IR with `drive`: the
+    state extents from the bound dummies' `dims` (gate (c)), every `initial_state` and
+    `derived` entry evaluated with the predicate grammar (gate (g)'s names), the bound host
+    data's shapes, the loop scalars that are host data (`n_step` an integer >= 1, `dt` > 0, the
+    `t_end` check when all four are host data) and `history.every` (an integer >= 0); the
+    object holds `inputs.<path>` for every input the block references, `derived.<name>` for
+    every derived entry and `<var>` for every `initial_state` entry. For an IR with none:
+    every numeric `inputs.*` leaf. Raises `PrimaryEvidenceError` naming the case and the entry.
+    `Compile.static` calls it as a gate (and writes nothing)."""
+    cases = _cases_by_id(ir)
+    if not _has_drive(ir):
+        return {cid: _infrastructure_payload(case.get("inputs")) for cid, case in cases.items()}
+    model = drive_model(ir)
+    out: dict[str, dict[str, Any]] = {}
+    for cid, values in _evaluate_cases(ir).items():
+        payload: dict[str, Any] = {}
+        for path, value in values.inputs.items():
+            payload[f"inputs.{path}"] = _authored_json(value, f"case {cid!r}: inputs.{path}")
+        for name, value in values.derived.items():
+            payload[f"{_DERIVED}.{name}"] = _json_number(value, name in values.derived_ints)
+        for var, value in values.initial.items():
+            payload[var] = _json_number(value, model.types.get(var) == "integer")
+        out[cid] = payload
+    return out
+
+
+#: The directory beside `spec.ir.yaml` the case files are written to.
+CASE_INPUTS_DIRNAME = "case_inputs"
+
+
+def write_case_inputs(ir: dict[str, Any], ir_dir: Path) -> list[Path]:
+    """Write `<ir_dir>/case_inputs/<case_id>.json` for every case (`evaluate_case_inputs`),
+    each through a temporary name of its own beside it (`tempfile.mkstemp`) and `os.replace`,
+    so a reader never sees a truncated file and two writers never share a temporary name. The
+    directory is created when absent and never removed, and no other file in it is touched.
+    Bytes are deterministic: sorted keys, finite numbers only (`allow_nan=False`). Returns the
+    paths written, in case order."""
+    from tools.spec_input_gates import CASE_ID_TOKEN_RE   # function-level: render-free import
+    payloads = evaluate_case_inputs(ir)
+    for cid in payloads:
+        if not CASE_ID_TOKEN_RE.match(cid) or ".." in cid:
+            raise PrimaryEvidenceError(f"case_id {cid!r} is not a safe file name token")
+    out_dir = Path(ir_dir) / CASE_INPUTS_DIRNAME
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for cid in sorted(payloads):
+        data = (json.dumps(payloads[cid], sort_keys=True, allow_nan=False,
+                           separators=(",", ":")) + "\n").encode("utf-8")
+        fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=f".{cid}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            os.replace(tmp, out_dir / f"{cid}.json")
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        written.append(out_dir / f"{cid}.json")
+    return written
+
+
+# ----------------------------------------------------------------------------- drive gates
+
+def _evidence_entries(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    io = ir.get("io_contract") if isinstance(ir.get("io_contract"), dict) else {}
+    rr = io.get("raw_requirements") if isinstance(io.get("raw_requirements"), dict) else {}
+    entries = rr.get("required_evidence")
+    out: dict[str, dict[str, Any]] = {}
+    for entry in (entries if isinstance(entries, list) else []):
+        if isinstance(entry, dict) and isinstance(entry.get("artifact"), str):
+            out.setdefault(entry["artifact"], entry)
+    return out
+
+
+def step_series_names(ir: dict[str, Any]) -> frozenset[str] | None:
+    """The `names` of the `step_series` evidence entry, None when none is declared."""
+    entry = _evidence_entries(ir).get("step_series")
+    if entry is None:
+        return None
+    names = entry.get("names")
+    return frozenset(n for n in (names if isinstance(names, list) else []) if isinstance(n, str))
+
+
+def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
+    """The grammar 6 keyword arguments of `validate_primary_predicate_schema` for ``ir``:
+    `reads` (`state_reads`; the pre-drive rule when the `drive` block is malformed, which
+    `drive_violations` refuses on its own), `case_inputs` (`evaluate_case_inputs`, None when it
+    raises — `Compile.static` reports that itself — so every `derived.*` read is refused),
+    `series_names` and `history_declared`."""
     try:
-        sources = variable_sources(schema)
+        reads: StateReads | None = state_reads(ir)
     except PrimaryEvidenceError:
-        return v
-    reads: list[tuple[int, str, str, dict[str, list[str]], bool]] = []
-    for idx, pred in enumerate(predicates):
-        if not isinstance(pred, dict) or not isinstance(pred.get("test_id"), str) \
-                or not isinstance(pred.get("quantity"), str):
-            continue
-        read = sources_read(pred, sources)
-        reads.append((idx, pred["test_id"].strip(), pred["quantity"], read,
-                      is_cross_target_predicate(pred)))
-    for idx, tid, quantity, read, _cross in reads:
-        cases = set(read.get(SOURCE_REPORTED, ()))
-        if not cases:
-            continue
-        paired = any(
-            j != idx and t == tid and q == quantity and not other_cross
-            and not other.get(SOURCE_REPORTED)
-            and cases <= set(other.get(SOURCE_OPERATION, ()))
-            for j, t, q, other, other_cross in reads)
-        if not paired:
-            v.append(f"predicates[{idx}] (test {tid!r}, quantity {quantity!r}) reads a source: "
-                     f"reported variable in {sorted(cases)} and no other predicate of that test "
-                     "and quantity reads source: operation state, without a reported variable, "
-                     "in those cases: a kernel's report of its own extremum stands beside the "
-                     "host's endpoint predicate, it does not replace it")
+        reads = None
+    try:
+        case_inputs: dict[str, dict[str, Any]] | None = evaluate_case_inputs(ir)
+    except PrimaryEvidenceError:
+        case_inputs = None
+    return {"reads": reads, "case_inputs": case_inputs,
+            "series_names": step_series_names(ir),
+            "history_declared": "state_history" in _evidence_entries(ir)}
+
+
+def _test_entries(ir: dict[str, Any]) -> list[dict[str, Any]]:
+    io = ir.get("io_contract") if isinstance(ir.get("io_contract"), dict) else {}
+    tests = io.get("tests")
+    return [t for t in (tests if isinstance(tests, list) else [])
+            if isinstance(t, dict) and isinstance(t.get("test_id"), str)]
+
+
+def _own_predicates(ir: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
+    """``(index, predicate)`` of every well-shaped predicate that is not cross-target."""
+    return [(i, p) for i, p in enumerate(primary_predicates(ir))
+            if isinstance(p, dict) and isinstance(p.get("test_id"), str)
+            and isinstance(p.get("quantity"), str) and not is_cross_target_predicate(p)]
+
+
+def _norm(text: Any) -> str:
+    return re.sub(r"\s+", "", text) if isinstance(text, str) else ""
+
+
+def _covers_test(pred: dict[str, Any], test: dict[str, Any]) -> bool:
+    targets = pred.get("target_cases")
+    return pred.get("per_case") is True and "case" not in pred and isinstance(targets, list) \
+        and {str(c).strip() for c in targets} \
+        == {str(c).strip() for c in (test.get("target_cases") or [])}
+
+
+def scalar_pairing_violations(ir: dict[str, Any]) -> list[str]:
+    """D7 (gate (i)): a predicate that reads `final.<s>`, `s` a one-call scalar
+    (`DriveModel.one_call_scalars`: the scalar a rank-0 real / integer `out` of a `step` entry
+    writes on a node without `loop`), needs a predicate of the SAME test and quantity, not
+    cross-target — itself included — that reads `final.<s>` AND `final.<a>` of an array state
+    the same operation writes, in every case it reads `s` in (reads that enter the value,
+    `point_reads`). A scalar a kernel reports is judged beside the state its call wrote. An IR
+    with no `drive`, or a malformed one (`drive_violations` reports it), gives none here."""
+    if not _has_drive(ir):
+        return []
+    try:
+        model = drive_model(ir)
+    except PrimaryEvidenceError:
+        return []
+    if not model.one_call_scalars:
+        return []
+    own = [(i, p, record_scalar_pairing(p, model.one_call_scalars))
+           for i, p in _own_predicates(ir)]
+    v: list[str] = []
+    for idx, pred, pairing in own:
+        tid, quantity = pred["test_id"].strip(), pred["quantity"]
+        for scalar, facts in pairing.items():
+            cases = set(facts["scalar"])
+            paired = any(
+                p["test_id"].strip() == tid and p["quantity"] == quantity
+                and cases <= set(other.get(scalar, {}).get("paired", ()))
+                for _j, p, other in own)
+            if not paired:
+                v.append(
+                    f"predicates[{idx}] (test {tid!r}, quantity {quantity!r}) reads final."
+                    f"{scalar} — the scalar a rank-0 out of a one-call operation writes — in "
+                    f"{sorted(cases)}, and no predicate of that test and quantity reads final."
+                    f"{scalar} together with final.<a> of an array state the same operation "
+                    f"writes ({sorted(model.one_call_scalars[scalar])}) in those cases (D7: a "
+                    "kernel-reported scalar is judged beside the state its call wrote)")
     return v
 
+
+def _binding_violations(model: DriveModel, schema_vars: dict[str, list[str]],
+                        v: list[str]) -> None:
+    """Gate (b): each binding admitted for its dummy's intent, rank and type (SHAPE §2)."""
+    block = model.block
+    bound: set[str] = set()
+    for entry in block.entries():
+        reading: dict[str, list[str]] = {}
+        writing: dict[str, list[str]] = {}
+        for dummy in entry.dummies:
+            name = dummy["name"]
+            binding = entry.arguments[name]
+            loc = f"{entry.loc}.arguments.{name}"
+            dtype, rank, intent = _dummy_type(dummy), _dummy_rank(dummy), dummy.get("intent")
+            if dtype not in _DRIVEN_TYPES:
+                v.append(f"{loc}: a dummy of type {dtype!r} cannot be driven (the driver binds "
+                         "real, integer, logical and procedure dummies)")
+                continue
+            if dtype == "procedure" or binding.kind == "procedure":
+                if dtype != "procedure" or binding.kind != "procedure":
+                    v.append(f"{loc}: {{procedure: ...}} binds a procedure-typed dummy, and a "
+                             "procedure-typed dummy takes nothing else (D11)")
+                continue
+            if binding.kind == _STATE_ROOT:
+                var = binding.ref
+                if var not in schema_vars:
+                    v.append(f"{loc}: state.{var} is not a snapshot schema variable")
+                    continue
+                bound.add(var)
+                if len(schema_vars[var]) != rank:
+                    v.append(f"{loc}: a rank-{rank} dummy bound to state.{var}, whose "
+                             f"shape_expr has rank {len(schema_vars[var])}")
+                    continue
+                if model.types.get(var) != dtype:
+                    v.append(f"{loc}: state.{var} is bound to dummies of types "
+                             f"{model.types.get(var)!r} and {dtype!r}")
+                if intent in ("in", "inout"):
+                    reading.setdefault(var, []).append(name)
+                if intent in ("out", "inout"):
+                    writing.setdefault(var, []).append(name)
+            if intent == "inout":
+                if rank == 0:
+                    v.append(f"{loc}: a rank-0 inout dummy is refused (an inout is a state "
+                             "array the call updates)")
+                elif binding.kind != _STATE_ROOT:
+                    v.append(f"{loc}: an inout dummy binds state.<var> only "
+                             f"(got {binding.text()})")
+            elif intent == "out":
+                if binding.kind != _STATE_ROOT:
+                    v.append(f"{loc}: an out dummy binds state.<var> only (got {binding.text()})")
+                elif rank == 0 and dtype in ("real", "integer"):
+                    if entry.role == "step" and block.loop is not None:
+                        v.append(f"{loc}: a rank-0 {dtype} out of the step operation on a loop "
+                                 "node is refused (D3: a kernel scalar is not judged on a loop "
+                                 "node)")
+                    elif binding.ref != name:
+                        v.append(f"{loc}: a rank-0 {dtype} out binds the state named after "
+                                 f"the dummy, state.{name} (got {binding.text()})")
+            elif intent == "in":
+                if rank >= 1 and binding.kind not in ("inputs", _DERIVED, _STATE_ROOT):
+                    v.append(f"{loc}: an array in dummy binds inputs.<path>, derived.<name> or "
+                             f"state.<var> (got {binding.text()})")
+                if binding.kind == "time" and not (rank == 0 and dtype == "real"):
+                    v.append(f"{loc}: time binds a rank-0 real dummy")
+                if binding.kind == STEP_CAPTURE and not (rank == 0 and dtype == "integer"):
+                    v.append(f"{loc}: step binds a rank-0 integer dummy")
+                if binding.kind == "literal":
+                    lit = binding.ref
+                    ok = (isinstance(lit, bool) if dtype == "logical" else
+                          (isinstance(lit, int) and not isinstance(lit, bool))
+                          if dtype == "integer" else _is_number(lit))
+                    if not ok:
+                        v.append(f"{loc}: the literal {lit!r} does not bind a {dtype} dummy")
+            else:
+                v.append(f"{loc}: intent {intent!r} is not in / out / inout")
+        for var, names in sorted(reading.items()):
+            if len(names) > 1 and len(schema_vars.get(var, [])) >= 1:
+                v.append(f"{entry.loc}: state.{var} is read by dummies {names}: a state array "
+                         "has at most one reading dummy per entry")
+        for var, names in sorted(writing.items()):
+            if len(names) > 1 and len(schema_vars.get(var, [])) >= 1:
+                v.append(f"{entry.loc}: state.{var} is written by dummies {names}: a state "
+                         "array has at most one writing dummy per entry")
+        if block.loop is None:
+            for var in sorted(set(reading) & set(writing)):
+                ins = [n for n in reading[var] if (entry.dummy(n) or {}).get("intent") == "in"]
+                outs = [n for n in writing[var] if (entry.dummy(n) or {}).get("intent") == "out"]
+                if ins and outs:
+                    v.append(f"{entry.loc}: the in/out pair {ins + outs} binds one state, "
+                             f"state.{var}: on a node without loop the pair binds two different "
+                             "states (the state itself is the actual)")
+    for var in sorted(set(schema_vars) - bound):
+        v.append(f"state_snapshots.schema.variables: {var!r} is bound by no dummy of drive "
+                 "(a variable no operation touches is host data echoed into a capture)")
+
+
+def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
+    """The Compile gate over `drive` (issue #589, SHAPE §6 gates (a)-(l)); ``kind`` is the
+    node's `spec_kind` as the catalog answers it (never the IR's own `meta.spec_kind`). Gate
+    (m) reads `tests.md` and is the validator's. An `infrastructure` IR carries no `drive`; a
+    `problem` or `component` IR must. Structural findings stop the semantic gates (no
+    cascade). Returns violation strings (empty == valid)."""
+    if kind == INFRASTRUCTURE_KIND:
+        return (["drive: an infrastructure node carries no drive block (its own runner runs "
+                 "its cases)"] if _has_drive(ir) else [])
+    if kind not in DRIVE_REQUIRED_KINDS:
+        return [f"drive: spec kind {kind!r} is not one of "
+                f"{sorted(DRIVE_REQUIRED_KINDS | {INFRASTRUCTURE_KIND})}"]
+    if not _has_drive(ir):
+        return [f"drive is required on a {kind} node: the operation the host-rendered driver "
+                "calls per case, and on what"]
+    block, v = _parse_drive(ir)
+    if block is None:
+        return v
+    schema = snapshot_schema(ir)
+    if schema is None:
+        return ["drive needs a state_snapshots required_evidence entry (the schema variables "
+                "it binds)"]
+    try:
+        schema_vars = schema_variables(schema)
+    except PrimaryEvidenceError as exc:
+        return [f"drive: the snapshot schema is unreadable ({exc})"]
+    model = _model_from_block(block, schema_vars)
+    entries = _evidence_entries(ir)
+    for idx, entry in enumerate(schema.get("variables") or []):
+        if isinstance(entry, dict) and "source" in entry:
+            v.append(f"state_snapshots.schema.variables[{idx}].source: the source vocabulary is "
+                     "retired (D6): what a variable is follows from drive")
+
+    # (a) a problem publishes <spec_id>__step, and every step entry calls it
+    if kind == "problem":
+        meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
+        spec_id = str(meta.get("spec_id") or "").strip()
+        published, _ = _published_operations(ir)
+        step_op = f"{spec_id}__step"
+        if not spec_id:
+            v.append("(a) meta.spec_id is required to name the problem's step operation")
+        else:
+            if step_op not in published:
+                v.append(f"(a) a problem publishes {step_op} in public_api.published_operations "
+                         "(D3)")
+            for entry in block.step:
+                if entry.operation != step_op:
+                    v.append(f"(a) {entry.loc}.operation is {entry.operation!r}; a problem's "
+                             f"drive.step calls {step_op}")
+            if block.init is not None and block.init.operation != f"{spec_id}__init":
+                v.append(f"(a) drive.init.operation is {block.init.operation!r}; a problem's "
+                         f"init is {spec_id}__init")
+
+    # (b) the bindings
+    _binding_violations(model, schema_vars, v)
+
+    # (d) the result names a logical out of the operation
+    for entry in block.entries():
+        dummy = entry.dummy(entry.result)
+        if dummy is None or not _is_logical_out(dummy):
+            v.append(f"(d) {entry.loc}.result {entry.result!r} is not a logical rank-0 out "
+                     f"dummy of {entry.operation}")
+
+    cases = _cases_by_id(ir)
+    # (e) the loop references; history with loop
+    if block.loop is not None:
+        for key, binding in block.loop.items():
+            loc = f"(e) drive.loop.{key} ({binding.text()})"
+            if binding.kind == _STATE_ROOT:
+                if binding.ref not in model.init_written or schema_vars.get(binding.ref) != []:
+                    v.append(f"{loc}: a state.<var> loop reference names a scalar init writes")
+            for cid, case in sorted(cases.items()):
+                if binding.kind == "inputs":
+                    try:
+                        resolve_input_number(case.get("inputs"), binding.ref)
+                    except PrimaryEvidenceError as exc:
+                        v.append(f"{loc}: in case {cid!r}: {exc}")
+                elif binding.kind == _DERIVED:
+                    derived = case.get("derived")
+                    if not isinstance(derived, dict) or binding.ref not in derived:
+                        v.append(f"{loc}: case {cid!r} has no derived.{binding.ref}")
+        if block.history_every is None:
+            v.append("(e) drive.history is required with loop: {every: inputs.<path>}")
+    elif block.history_every is not None:
+        v.append("(e) drive.history is refused without loop (a one-call node has no samples)")
+
+    # (f) initial_state per case
+    needs = model.needs_initial()
+    for cid, case in sorted(cases.items()):
+        initial = case.get("initial_state")
+        initial = initial if isinstance(initial, dict) else {}
+        if case.get("initial_state") is not None and not isinstance(case["initial_state"], dict):
+            v.append(f"(f) case {cid!r}: initial_state must be a mapping")
+        for key in sorted(map(str, initial)):
+            if key not in schema_vars:
+                v.append(f"(f) case {cid!r}: initial_state.{key} is not a snapshot schema "
+                         "variable")
+            elif key in model.init_written or key in model.logical:
+                v.append(f"(f) case {cid!r}: initial_state.{key} — a variable init writes, or a "
+                         "logical result the driver writes, takes no initial_state entry")
+            elif key in model.operation_only and not _is_number(initial[key]):
+                v.append(f"(f) case {cid!r}: initial_state.{key} — an output the operation only "
+                         "writes takes a number literal (its pre-call content)")
+        missing = sorted(needs - set(initial))
+        if missing:
+            v.append(f"(f) case {cid!r}: initial_state has no entry for {missing}")
+
+    # (f') the list form partitions the cases; a loop node has one mapping entry
+    if block.list_form:
+        if block.loop is not None:
+            v.append("(f') a loop node's drive.step is one mapping entry, not a list")
+        seen: dict[str, int] = {}
+        for entry in block.step:
+            for cid in entry.cases or ():
+                seen[cid] = seen.get(cid, 0) + 1
+        unknown = sorted(set(seen) - set(cases))
+        twice = sorted(c for c, n in seen.items() if n > 1)
+        absent = sorted(set(cases) - set(seen))
+        if unknown:
+            v.append(f"(f') drive.step[].cases names unknown case_id(s) {unknown}")
+        if twice:
+            v.append(f"(f') drive.step[].cases lists {twice} more than once")
+        if absent:
+            v.append(f"(f') drive.step[].cases leaves {absent} to no entry")
+
+    # (g) what a host-evaluated expression may name, statically, in every case
+    for cid, case in sorted(cases.items()):
+        inputs = case.get("inputs") if isinstance(case.get("inputs"), dict) else {}
+        try:
+            coords = set(coordinate_arrays(schema, inputs, None))
+        except PrimaryEvidenceError:
+            coords = set()
+        initial = case.get("initial_state") if isinstance(case.get("initial_state"), dict) else {}
+        for var, raw in initial.items():
+            if isinstance(raw, str):
+                try:
+                    bad = _host_expr_violation(expr_names(parse_expr(raw)), coords)
+                except PrimaryEvidenceError as exc:
+                    bad = str(exc)
+                if bad is not None:
+                    v.append(f"(g) case {cid!r}: initial_state.{var}: {bad}")
+        derived = case.get("derived") if isinstance(case.get("derived"), dict) else {}
+        before: set[str] = set()
+        for name, raw in derived.items():
+            if isinstance(raw, str):
+                try:
+                    bad = _host_expr_violation(expr_names(parse_expr(raw)), coords,
+                                               derived_before=before,
+                                               initial_vars=set(map(str, initial)))
+                except PrimaryEvidenceError as exc:
+                    bad = str(exc)
+                if bad is not None:
+                    v.append(f"(g) case {cid!r}: derived.{name}: {bad}")
+            elif not _is_number(raw):
+                v.append(f"(g) case {cid!r}: derived.{name} is a number or an expression")
+            before.add(str(name))
+
+    # (c) the per-case shapes (only once the bindings and names hold: no cascade)
+    if not v:
+        for cid, case in sorted(cases.items()):
+            try:
+                _evaluate_case(model, schema, case)
+            except PrimaryEvidenceError as exc:
+                v.append(f"(c) case {cid!r}: {exc}")
+
+    # (h) the history artifacts
+    arrays = sorted(n for n, d in schema_vars.items() if d)
+    expected = {"t", STEP_CAPTURE} | {f"{a}_{m}" for a in arrays for m in ("min", "max")}
+    series = entries.get("step_series")
+    if (series is not None) != (block.loop is not None):
+        v.append("(h) the step_series evidence entry is declared iff drive.loop is")
+    if series is not None:
+        names = series.get("names")
+        listed = [n for n in (names if isinstance(names, list) else []) if isinstance(n, str)]
+        if not isinstance(names, list) or len(listed) != len(names) \
+                or len(set(listed)) != len(listed) or set(listed) != expected:
+            v.append(f"(h) step_series.names must be exactly {sorted(expected)} (t, step and the "
+                     f"min / max of every array state); got {names!r}")
+    if ("state_history" in entries) != (block.history_every is not None):
+        v.append("(h) the state_history evidence entry is declared iff drive.history is")
+
+    # (i) D7
+    v.extend(f"(i) {msg}" for msg in scalar_pairing_violations(ir))
+
+    own = _own_predicates(ir)
+    # (k) every init-written variable read over initial.*; a loop scalar with an array
+    loop_scalars = {b.ref for k, b in (block.loop or {}).items()
+                    if k in ("n_step", "dt") and b.kind == _STATE_ROOT}
+    init_arrays = {a for a in model.init_written if schema_vars.get(a)}
+    reads = [point_reads(p) for _i, p in own]
+    for var in sorted(model.init_written):
+        readers = [r for r in reads if r.get(("initial", var))]
+        if not readers:
+            v.append(f"(k) {var!r}, which init writes, is read by no predicate over "
+                     f"initial.{var}")
+        elif var in loop_scalars and not any(
+                any(r.get(("initial", a)) for a in init_arrays) for r in readers):
+            v.append(f"(k) {var!r} sets the loop (drive.loop) and init writes it: a predicate "
+                     f"over initial.{var} also reads initial.<a> of an array init writes "
+                     f"({sorted(init_arrays)})")
+
+    # (l) the zero-step closure, in its fixed form
+    for test in _test_entries(ir):
+        if str(test.get("expected_outcome") or "").strip().lower() != "pass":
+            continue
+        tid = test["test_id"].strip()
+        mine = [p for _i, p in own if p["test_id"].strip() == tid and _covers_test(p, test)]
+        targets = [str(c).strip() for c in (test.get("target_cases") or [])]
+        if block.loop is not None:
+            ok = False
+            for pred in mine:
+                ref = zero_step_closure_ref(pred)
+                if ref is None:
+                    continue
+                root, _, rest = ref.partition(".")
+                if root == _DERIVED:
+                    ok = all(isinstance(cases.get(c, {}).get("derived"), dict)
+                             and rest in cases[c]["derived"] for c in targets)
+                elif root == _INPUTS_ROOT:
+                    try:
+                        for c in targets:
+                            resolve_input_number(cases.get(c, {}).get("inputs"), rest)
+                        ok = True
+                    except PrimaryEvidenceError:
+                        ok = False
+                else:
+                    ok = rest in model.init_written and schema_vars.get(rest) == []
+                if ok:
+                    break
+            if not ok:
+                v.append(f"(l) test {tid!r} (pass) carries no predicate `expr: \"final.step - "
+                         "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target "
+                         "cases, <ref> a derived.<n>, an inputs.<path> or initial.<n> / final.<n> "
+                         "of a scalar init writes (the zero-step closure)")
+        else:
+            covering = [e for e in block.step
+                        if e.cases is None or set(e.cases) & set(targets)]
+            results = sorted({e.arguments[e.result].ref for e in covering
+                              if e.result in e.arguments
+                              and e.arguments[e.result].kind == _STATE_ROOT})
+            for state in results:
+                if not any(_norm(p.get("expr")) == f"final.{state}" and p.get("op") == "eq"
+                           and _is_number(p.get("value")) and p.get("value") == 1
+                           and not p.get("bind") for p in mine):
+                    v.append(f"(l) test {tid!r} (pass) carries no predicate `expr: "
+                             f"\"final.{state}\"`, `op: eq`, `value: 1`, `per_case: true` over "
+                             "all its target cases (the call's result, the zero-step closure of "
+                             "a one-call node)")
+    return v
 
 def _read_ir(path: Path) -> dict[str, Any]:
     import yaml  # the host reader; PyYAML is a runtime dependency of the conductor
