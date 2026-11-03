@@ -18493,12 +18493,18 @@ class DeterministicBuildTest(unittest.TestCase):
             basis = doc["per_test"][0]["basis"]
             self.assertEqual(set(basis), {"predicates"})
             self.assertEqual(basis["predicates"][0]["evaluated"][0]["value"], 0.0)
-            self.assertEqual(basis["predicates"][0]["sources_read"],
-                             {"operation": ["l0_scale_identity_pass"]})
+            # The record shape of issue #589: no `sources_read` (the vocabulary is retired), the
+            # grammar version, and what D7 asks of the predicate (`scalar_pairing`; this IR
+            # declares no one-call scalar, so none).
+            record = basis["predicates"][0]
+            self.assertNotIn("sources_read", record)
+            self.assertEqual(record["grammar_version"], 6)
+            self.assertEqual(record["scalar_pairing"], {})
             on_disk = json.loads((node / "verdict.json").read_text())
             self.assertEqual(on_disk["per_test"][0]["basis"]["predicates"][0]["quantity"], "scale")
-            self.assertEqual(on_disk["per_test"][1]["basis"]["predicates"][0]["sources_read"],
-                             {"record": ["l0_invalid_length_xfail"]})
+            self.assertNotIn("sources_read", on_disk["per_test"][1]["basis"]["predicates"][0])
+            self.assertEqual(
+                on_disk["per_test"][1]["basis"]["predicates"][0]["grammar_version"], 6)
 
             # the captured state says the kernel did not scale
             self._write_predicate_captures(node, [2.0, 4.0, 6.0, 9.0])

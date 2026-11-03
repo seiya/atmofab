@@ -145,18 +145,17 @@ from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 MOCK_SPEC_DIR = "spec/problem/mock_domain/mock_family/mock_spec"
 MOCK_TESTS_REF = f"{MOCK_SPEC_DIR}/tests.md"
 
-# A tracked, byte-for-byte copy of a real full-fidelity IR: `node_key`
-# `problem/shallow_water2d@0.4.0`, captured 2026-08-13 from the run directory
-# `workspace_20260719/ir/problem__shallow_water2d__0.4.0/shallow-water2d_20260718_003/`, whose
-# sibling `ir_meta.json` — not part of this fixture — records `verification_status=pass` and
-# `debug_mode=false`. Only `node_key` can be checked against the file here. Committed under test
-# data because `workspace*` is the operator's execution workspace — gitignored, freely pruned, and
-# absent from any fresh clone — so a test that reads it there cannot run. Same precedent as
-# `tools/tests/data/conductor_launch_requests/` (see tools/tests/test_workflow_conductor.py).
-# Not hand-trimmed: the point of a real-shape calibration is the shape the real writer produced.
+# A real full-fidelity IR in the issue #589 shape: the certified IR of
+# `problem/shallow_water2d@0.4.7` hand-converted (`drive`, `initial_state`, `derived`, gate (l)'s
+# closure, `state_history` / `step_series`; every decision in `CONVERSION.md` beside it). Until
+# PR-1a this pointed at `tools/tests/data/real_ir/shallow_water2d_20260718_003.spec.ir.yaml`, a
+# byte-for-byte copy of a certified 0.4.0 IR; the compile gate now refuses every IR without
+# `drive`, so the calibration reads the converted one (the 0.4.0 copy stays for the run-path rows
+# of `test_workshop_tree.py`, which read its case ids). Committed under test data because
+# `workspace*` is the operator's execution workspace — gitignored, freely pruned, and absent from
+# any fresh clone.
 _REAL_IR_FIXTURE = (Path(__file__).resolve().parents[2]
-                    / "tools/tests/data/real_ir"
-                    / "shallow_water2d_20260718_003.spec.ir.yaml")
+                    / "tools/tests/data/drive_ir/shallow_water2d_0.4.7" / "spec.ir.yaml")
 
 
 def _structured_section51_from_fortran(fortran_block: str) -> str:
@@ -213,11 +212,44 @@ _SURFACE_IR_SUBDIR = "workspace/ir/infrastructure__hx__0.2.0/hx_20260101_001"
 _SURFACE_CS_REF = f"{_SURFACE_SPEC_SUBDIR}/controlled_spec.md"
 
 
-def _seed_surface_tree(tmp: Path, cs_text: str) -> Path:
-    """Write the controlled_spec under the spec tree and return the IR directory to fill."""
+def _seed_catalog(repo_root: Path, spec_kind: str, spec_id: str,
+                  controlled_spec_path: str | None = None) -> None:
+    """Record ``spec_id`` under ``spec_kind`` in the temp repo's `spec/registry/spec_catalog.yaml`
+    (issue #589): the gates read a node's kind from the registry by `spec_id` alone and REFUSE an
+    IR it cannot answer for, so every fixture whose IR reaches a gate the kind switches seeds its
+    entry here — the one place a fixture says what the operator's registry would. An existing
+    entry of the same `spec_id` is replaced; the others are kept."""
+    catalog = Path(repo_root) / "spec" / "registry" / "spec_catalog.yaml"
+    doc: dict = {}
+    if catalog.is_file():
+        doc = yaml.safe_load(catalog.read_text(encoding="utf-8")) or {}
+    specs = [e for e in (doc.get("specs") or []) if e.get("spec_id") != spec_id]
+    entry: dict = {"spec_kind": spec_kind, "spec_id": spec_id}
+    if controlled_spec_path is not None:
+        entry["controlled_spec_path"] = controlled_spec_path
+    specs.append(entry)
+    doc["specs"] = specs
+    catalog.parent.mkdir(parents=True, exist_ok=True)
+    catalog.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+
+
+def _seed_catalog_for_ir(repo_root: Path, ir: dict) -> None:
+    """`_seed_catalog` from the IR's own `meta` (kind, spec_id, controlled_spec ref): for a fixture
+    whose IR states what the registry would."""
+    meta = ir.get("meta") or {}
+    refs = meta.get("source_refs") if isinstance(meta.get("source_refs"), dict) else {}
+    _seed_catalog(repo_root, str(meta.get("spec_kind") or "").strip(),
+                  str(meta.get("spec_id") or "").strip(), refs.get("controlled_spec"))
+
+
+def _seed_surface_tree(tmp: Path, cs_text: str, *, spec_kind: str = "infrastructure",
+                       spec_id: str = "hx") -> Path:
+    """Write the controlled_spec under the spec tree, record the node in the catalog, and return
+    the IR directory to fill."""
     cs = tmp / _SURFACE_SPEC_SUBDIR / "controlled_spec.md"
     cs.parent.mkdir(parents=True, exist_ok=True)
     cs.write_text(cs_text, encoding="utf-8")
+    _seed_catalog(tmp, spec_kind, spec_id, _SURFACE_CS_REF)
     ir_dir = tmp / _SURFACE_IR_SUBDIR
     ir_dir.mkdir(parents=True, exist_ok=True)
     return ir_dir
@@ -415,7 +447,7 @@ def _harness_validated_elsewhere():
 
 
 def _m3c_checks_source(stem: str = "shallow_water2d",
-                       state: tuple[str, ...] = ("h", "hu", "hv")) -> str:
+                       state: tuple[str, ...] = ("h", "hu", "hv", "ok")) -> str:
     """A fixed-ABI checks module for `stem` publishing the bound `state`: since R4-a PR-3 (issue
     #284) every physics node of a runner-rendering target is M3c, so a post_generate row about
     something else carries one. Its `case_run` calls `<stem>__step`, which the model must
@@ -431,6 +463,81 @@ def _m3c_checks_source(stem: str = "shallow_water2d",
             + f"end module {stem}_checks\n")
 
 
+#: The mock problem's published operation (issue #589): a `problem` publishes `<spec_id>__step`, and
+#: the shared fixture's IR drives it — one call per case (no `loop`), the three state arrays
+#: `inout` (assumed shape: their extents are the schema's `[2,2]`), the logical result `ok`.
+_MOCK_STEP_SIGNATURE: dict = {
+    "kind": "subroutine",
+    "name": "shallow_water2d__step",
+    "args": [
+        *({"name": v, "rank": 2, "intent": "inout", "spec": {"type": "real", "kind": "dp"}}
+          for v in ("h", "hu", "hv")),
+        {"name": "ok", "rank": 0, "intent": "out", "spec": {"type": "logical"}},
+    ],
+}
+_MOCK_MODULE_PARAMETERS: list = [{"name": "dp", "value": "float64"}]
+#: A model source publishing exactly `_MOCK_STEP_SIGNATURE` (the Generate.static signature pin).
+_MOCK_STEP_FORTRAN = """subroutine shallow_water2d__step(h, hu, hv, ok)
+  real(dp), intent(inout) :: h(:, :)
+  real(dp), intent(inout) :: hu(:, :)
+  real(dp), intent(inout) :: hv(:, :)
+  logical, intent(out) :: ok
+  ok = size(h) > 0
+end subroutine shallow_water2d__step
+"""
+
+
+def _mock_step_signature(extra_args: tuple = ()) -> dict:
+    """`_MOCK_STEP_SIGNATURE` with ``extra_args`` inserted before the result `ok`."""
+    sig = copy.deepcopy(_MOCK_STEP_SIGNATURE)
+    sig["args"][-1:-1] = copy.deepcopy(list(extra_args))
+    return sig
+
+
+def _mock_controlled_spec(extra_args: tuple = ()) -> str:
+    """The mock spec's controlled_spec: §5 names the step operation, §5.1 fences
+    `_mock_step_signature(extra_args)`. The catalog entry `_seed_mock_spec` writes points here."""
+    return ("# Controlled Spec\n## 5. Public API and compatibility\n"
+            "The only published `operation_id` is `shallow_water2d__step`.\n\n"
+            "### 5.1 Canonical interface block\n\n```yaml\n"
+            + yaml.safe_dump({"module_parameters": _MOCK_MODULE_PARAMETERS, "types": [],
+                              "procedures": [_mock_step_signature(extra_args)]}, sort_keys=False)
+            + "```\n\n## 6. Prohibitions\n- none.\n")
+
+
+def _mock_drive(extra_args: tuple = ()) -> dict:
+    """The shared fixture's `drive` block (issue #589): `shallow_water2d__step` once per case,
+    every dummy bound to the state of its name."""
+    return {"step": {"operation": "shallow_water2d__step", "result": "ok",
+                     "arguments": {a["name"]: f"state.{a['name']}"
+                                   for a in _mock_step_signature(extra_args)["args"]}}}
+
+
+def _mock_public_api(extra_args: tuple = ()) -> dict:
+    return {"published_operations": [{"operation_id": "shallow_water2d__step"}],
+            "published_types": [],
+            "module_parameters": copy.deepcopy(_MOCK_MODULE_PARAMETERS),
+            "signatures": [{"symbol": "shallow_water2d__step",
+                            "signature": _mock_step_signature(extra_args)}]}
+
+
+#: The zero-step closure of the one-call mock node (gate (l)): its pass test reads the result,
+#: under the quantity the test already judges (the D10 sets stay the fixture's).
+_MOCK_RESULT_PREDICATE: dict = {"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
+                                "expr": "final.ok", "op": "eq", "value": 1, "per_case": True}
+
+
+def _seed_mock_spec(repo_root: Path) -> None:
+    """The mock spec's catalog entry (a `problem`, issue #589: the gates read the kind from the
+    registry and refuse an IR it cannot answer for) and its controlled_spec, unless a test wrote
+    its own."""
+    _seed_catalog(repo_root, "problem", "shallow_water2d", f"{MOCK_SPEC_DIR}/controlled_spec.md")
+    cs = repo_root / MOCK_SPEC_DIR / "controlled_spec.md"
+    if not cs.exists():
+        cs.parent.mkdir(parents=True, exist_ok=True)
+        cs.write_text(_mock_controlled_spec(), encoding="utf-8")
+
+
 def _create_minimal_execution_tree(
     repo_root: Path,
     *,
@@ -444,9 +551,14 @@ def _create_minimal_execution_tree(
     io_contract: dict[str, object] | None = None,
     dependency_resolved: dict[str, object] | None = None,
     impl_resolved: dict[str, object] | None = None,
+    drive: object = None,
+    initial_state: object = None,
 ) -> None:
+    """``drive`` / ``initial_state``: None is the mock node's (`_mock_drive`, every state array
+    from a literal); `_OMIT` leaves the key out of the IR (a row about a node without one)."""
     workspace = repo_root / "workspace"
     node_safe = "problem__shallow_water2d__0.3.0"
+    _seed_mock_spec(repo_root)
     pipeline_id = "shallow-water2d_20260415_001"
     run_id = "run_test_001"
 
@@ -573,6 +685,7 @@ def _create_minimal_execution_tree(
                                 {"name": "h", "shape_expr": "[2,2]"},
                                 {"name": "hu", "shape_expr": "[2,2]"},
                                 {"name": "hv", "shape_expr": "[2,2]"},
+                                {"name": "ok", "shape_expr": "scalar"},
                             ],
                             "time_variable": "t",
                             "time_shape_expr": "scalar",
@@ -584,7 +697,8 @@ def _create_minimal_execution_tree(
                        "quantities": ["mass_drift_rel"]}],
             "predicates": [{"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
                             "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le", "value": 0.5,
-                            "per_case": True}],
+                            "per_case": True},
+                           copy.deepcopy(_MOCK_RESULT_PREDICATE)],
         }
     # A real spec.ir.yaml always carries schema_version / meta / case as well as the four
     # sections below. Fixtures that omitted them silently disabled every gate that reaches the
@@ -611,7 +725,16 @@ def _create_minimal_execution_tree(
         "algorithm": algorithm_contract,
         "io_contract": io_contract,
         "dependency": dependency_resolved,
+        "public_api": _mock_public_api(),
     }
+    if drive is None:
+        drive = _mock_drive()
+    if drive is not _OMIT:
+        spec_ir_doc["drive"] = drive
+    if initial_state is None:
+        initial_state = {"h": 1.0, "hu": 0.0, "hv": 0.0}
+    if initial_state is not _OMIT:
+        spec_ir_doc["case"]["test_case_set"][0]["initial_state"] = initial_state
     # Target-free since R4-a PR-3 (issue #284): an `impl_defaults` section is written only
     # when a caller asks for one (a stale, pre-PR-3 IR).
     if impl_resolved is not None:
@@ -645,6 +768,7 @@ def _create_minimal_execution_tree(
                 {"name": "h", "shape_expr": "[2,2]"},
                 {"name": "hu", "shape_expr": "[2,2]"},
                 {"name": "hv", "shape_expr": "[2,2]"},
+                {"name": "ok", "shape_expr": "scalar"},
             ],
             "time_variable": "t",
             "time_shape_expr": "scalar",
@@ -656,6 +780,7 @@ def _create_minimal_execution_tree(
             "h": [[1.0, 1.0], [1.0, 1.0]],
             "hu": [[0.0, 0.0], [0.0, 0.0]],
             "hv": [[0.0, 0.0], [0.0, 0.0]],
+            "ok": 1.0,
             "t": 0.0,
         },
     )
@@ -9170,15 +9295,17 @@ end program shallow_water2d_runner
         violations = _violations(required=True)
         enum_hits = [v for v in violations if "required_evidence[0].artifact 'execution_trace.json' must be one of" in v]
         self.assertEqual(1, len(enum_hits), violations)
-        self.assertIn("['state_snapshots']", enum_hits[0])
+        # Issue #589 admitted the driver's two loop artifacts beside the snapshots.
+        self.assertIn("['state_history', 'state_snapshots', 'step_series']", enum_hits[0])
         # The enum message says the members and then the remedy; split on the separator.
         enum_remedy = enum_hits[0].split("]; ", 1)[1]
         self.assertEqual(
-            "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
-            "valued numerically (a snapshot variable is a float64 module variable the runner "
-            "serializes); a case INPUT — an enumerated selector included — is not an evidence "
-            "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
-            "not echoed into the snapshot",
+            "a per-case value the operation receives is a drive binding — inputs.<path> for a "
+            "case input, derived.<name> for a value the host computes from the inputs, "
+            "state.<var> for a state; a value the operation writes is a state_snapshots variable "
+            "bound to an out or inout dummy, which the driver captures; a case INPUT — an "
+            "enumerated selector included — is not an evidence artifact at all: it lives in "
+            "case.test_case_set[].inputs, which the host holds, and is never a snapshot variable",
             enum_remedy,
         )
         input_hits = [v for v in violations if "io_contract.inputs[1].evidence_ref 'raw/execution_trace.json' names no raw-evidence artifact the workflow produces; " in v]
@@ -10478,10 +10605,46 @@ end program shallow_water2d_runner
             encoding="utf-8",
         )
 
+    @staticmethod
+    def _with_result_closure(io_contract: dict) -> dict:
+        """Gate (l) (issue #589): every `pass` test of the one-call mock node carries the
+        zero-step closure `final.ok eq 1` over all its target cases. A fixture about another gate
+        gets it here, as a real IR transcribes it, under a quantity the test's own predicates
+        already judge — so the D10 sets (`quantities`, the tests.md line, the judged set) are the
+        row's, unchanged. A test with no predicate of its own (a row about omission) and a test
+        that already carries the closure are left alone; `closure=False`
+        (`_compile_with_io_contract`) leaves the whole io_contract as given."""
+        tests = io_contract.get("tests")
+        preds = io_contract.get("predicates")
+        if not isinstance(tests, list) or not isinstance(preds, list):
+            return io_contract
+        for test in tests:
+            if not isinstance(test, dict) or test.get("expected_outcome") != "pass":
+                continue
+            tid = test.get("test_id")
+            own = [p for p in preds if isinstance(p, dict) and p.get("test_id") == tid
+                   and "comparand." not in str(p.get("expr", ""))]
+            if not own or any(str(p.get("expr", "")).replace(" ", "") == "final.ok"
+                              for p in own):
+                continue
+            preds.append({**copy.deepcopy(_MOCK_RESULT_PREDICATE), "test_id": tid,
+                          "quantity": own[0].get("quantity"),
+                          "target_cases": copy.deepcopy(test.get("target_cases"))})
+        return io_contract
+
     def _compile_with_io_contract(
         self, repo_root: Path, io_contract: dict, *, plant_tests_md: bool = True,
         case_ids: tuple[str, ...] = ("c1",), case_inputs: dict | None = None,
+        closure: bool = True, step_args: tuple = (), extra_initial: dict | None = None,
     ):
+        """``step_args``: dummies added to the mock `__step` (its §5.1, `public_api` and `drive`,
+        each bound to the state of its name); ``extra_initial``: their `initial_state` entries."""
+        if closure:
+            io_contract = self._with_result_closure(io_contract)
+        if step_args:
+            cs = repo_root / MOCK_SPEC_DIR / "controlled_spec.md"
+            cs.parent.mkdir(parents=True, exist_ok=True)
+            cs.write_text(_mock_controlled_spec(step_args), encoding="utf-8")
         _seed_shape_expr_schema_into(repo_root)
         if plant_tests_md:
             self._plant_tests_md(repo_root)
@@ -10508,8 +10671,13 @@ end program shallow_water2d_runner
         ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
                    "/shallow-water2d_20260415_001/spec.ir.yaml")
         doc = json.loads(ir_path.read_text())
-        doc["case"] = {"test_case_set": [{"case_id": cid, "inputs": copy.deepcopy(case_inputs or {})}
+        doc["case"] = {"test_case_set": [{"case_id": cid, "inputs": copy.deepcopy(case_inputs or {}),
+                                          "initial_state": {"h": 1.0, "hu": 0.0, "hv": 0.0,
+                                                            **(extra_initial or {})}}
                                          for cid in case_ids]}
+        if step_args:
+            doc["public_api"] = _mock_public_api(step_args)
+            doc["drive"] = _mock_drive(step_args)
         ir_path.write_text(json.dumps(doc))
         return validate_compile_stage(
             repo_root, "workspace",
@@ -10534,10 +10702,14 @@ end program shallow_water2d_runner
                 {"artifact": "state_snapshots", "required": True, "min_samples": 0,
                  "schema": {"variables": [{"name": "h", "shape_expr": "[2,2]"},
                                           {"name": "hu", "shape_expr": "[2,2]"},
-                                          {"name": "hv", "shape_expr": "[2,2]"}],
+                                          {"name": "hv", "shape_expr": "[2,2]"},
+                                          {"name": "ok", "shape_expr": "scalar"}],
                             "time_variable": "t", "time_shape_expr": "scalar"}}]},
             "tests": ([self._test_entry()] if tests is _ABSENT else tests),
-            "predicates": ([self._primary_predicate()] if predicates is _ABSENT else predicates),
+            # The default carries gate (l)'s closure (issue #589); a given list gets it from
+            # `_compile_with_io_contract` (`_with_result_closure`).
+            "predicates": ([self._primary_predicate(), copy.deepcopy(_MOCK_RESULT_PREDICATE)]
+                           if predicates is _ABSENT else predicates),
         }
         return io
 
@@ -10585,7 +10757,8 @@ end program shallow_water2d_runner
         ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
                    "/shallow-water2d_20260415_001/spec.ir.yaml")
         doc = json.loads(ir_path.read_text())
-        doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}}]}
+        doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {},
+                                          "initial_state": {"h": 1.0, "hu": 0.0, "hv": 0.0}}]}
         ir_path.write_text(json.dumps(doc))
         return validate_compile_stage(
             repo_root, "workspace",
@@ -11308,101 +11481,41 @@ end program shallow_water2d_runner
             vps._validate_tests_and_predicates(Path(tmp), ir_dir, violations)
         self.assertEqual(len([v for v in violations if "target case(s) ['b']" in v]), 1, violations)
 
-    def _compile_reported(self, repo: Path, body: str, source: str | None,
-                          expr_pair: bool = True) -> list[str]:
-        """The stage over one test: the `cfl` variable labelled `source` (None: no label), read
-        by one predicate, beside an end-state one when `expr_pair`."""
-        report = self._primary_predicate()
-        report["expr"] = "final.cfl"
-        preds = [report] + ([self._primary_predicate()] if expr_pair else [])
-        io = self._io_contract_with_predicates(preds)
-        variables = io["raw_requirements"]["required_evidence"][0]["schema"]["variables"]
-        variables.append({"name": "cfl", "shape_expr": "scalar",
-                          **({"source": source} if source else {})})
-        tests_md = repo / MOCK_TESTS_REF
-        tests_md.parent.mkdir(parents=True, exist_ok=True)
-        tests_md.write_text(body, encoding="utf-8")
-        return self._compile_with_io_contract(repo, io, plant_tests_md=False)
+    # --- the retired `reported` line (issue #589) ---------------------------------------------
+    # Deleted with the class (their subject went with `source: reported` and the D13 pins):
+    # `test_a_reported_variable_is_pinned_to_the_tests_md_line` (the IR's `source: reported` set
+    # == the lines), `test_a_reported_line_is_read_by_a_predicate_of_its_own_test` (the per-test
+    # line == the reads) and `test_a_malformed_reported_line_is_refused_at_the_stage` (the line
+    # reader's problems). What survives is the line's DETECTOR, which now refuses it.
 
-    _REPORTED_BODY = ("### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
-                      "- `reported`: `cfl`\n")
-    _PLAIN_BODY = "### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
-
-    def test_a_reported_variable_is_pinned_to_the_tests_md_line(self) -> None:
-        """Review round 1 F1: `source` is written by the Compile leaf, so omitting it on a variable
-        tests.md says the kernel reports switched D13 off and one self-reported predicate judged
-        the test. tests.md is a seed the leaf cannot edit; the set of `source: reported`
-        variables equals the set its `reported:` lines name, through the real stage."""
-        fragment = "must equal the variables the `reported:` lines of tests.md name"
-        for label, body, source, pair, refused in (
-                ("unmarked, one predicate", self._REPORTED_BODY, None, False, True),
-                ("unmarked, as a record", self._REPORTED_BODY, "record", False, True),
-                ("unmarked, as a reference", self._REPORTED_BODY, "reference", True, True),
-                ("marked with no line", self._PLAIN_BODY, "reported", True, True),
-                ("both, paired", self._REPORTED_BODY, "reported", True, False),
-                ("neither", self._PLAIN_BODY, None, True, False)):
+    def test_a_reported_line_is_refused_at_the_stage(self) -> None:
+        """Issue #589: the `reported` class is retired, so a `reported:` line in tests.md is
+        refused wherever it stands — in a definition, in either spelling, or outside one — once
+        per line, naming the line; the same tests.md without it is clean."""
+        plain = "### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
+        for label, extra, lines in (
+                ("bullet", "- `reported`: `cfl`\n", [3]),
+                ("plain", "reported: cfl, h_min_run\n", [3]),
+                ("star bullet, empty", "* reported:\n", [3]),
+                ("outside a definition", "## 7. Notes\nreported: cfl\n", [4]),
+                ("two", "- `reported`: `cfl`\nreported: h\n", [3, 4])):
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
-                v = self._compile_reported(Path(tmp), body, source, pair)
-                self.assertEqual(any(fragment in x for x in v), refused, v)
-                if not refused:
-                    self.assertEqual(v, [])
-        # with both agreeing and no end-state predicate, D13 is what refuses
+                v = self._stage_with_tests_md(Path(tmp), plain + extra,
+                                              self._io_contract_with_predicates())
+                hits = [x for x in v if "a `reported:` line is refused" in x]
+                self.assertEqual(len(hits), len(lines), v)
+                for hit, n in zip(hits, lines):
+                    self.assertIn(f" line {n}: a `reported:` line is refused", hit)
+                    self.assertIn("the class is retired (issue #589)", hit)
+                self.assertEqual(len(v), len(lines), v)
         with tempfile.TemporaryDirectory() as tmp:
-            v = self._compile_reported(Path(tmp), self._REPORTED_BODY, "reported", False)
-            self.assertFalse([x for x in v if fragment in x], v)
-            self.assertTrue([x for x in v if "reads a source: reported variable" in x], v)
-
-    def _two_tests_reported(self, repo: Path, body: str, reads: dict[str, list[str]]) -> list[str]:
-        """The stage over tests t1 and t2, each judging `q`, `reads` giving each test's exprs;
-        `cfl` is `source: reported`."""
-        preds = [{**self._primary_predicate(), "test_id": tid, "quantity": "q", "expr": expr}
-                 for tid, exprs in reads.items() for expr in exprs]
-        io = self._io_contract_with_predicates(preds, [
-            self._test_entry(test_id=tid, quantities=["q"]) for tid in reads])
-        io["raw_requirements"]["required_evidence"][0]["schema"]["variables"].append(
-            {"name": "cfl", "shape_expr": "scalar", "source": "reported"})
-        tests_md = repo / MOCK_TESTS_REF
-        tests_md.parent.mkdir(parents=True, exist_ok=True)
-        tests_md.write_text(body, encoding="utf-8")
-        return self._compile_with_io_contract(repo, io, plant_tests_md=False)
-
-    def test_a_reported_line_is_read_by_a_predicate_of_its_own_test(self) -> None:
-        """Round 2 R1: a variable on a test's `reported:` line must be read by a predicate of THAT
-        test, and a test reading a report names it. The union over the file let a declared report
-        go unread, and let a report named under t1 judge t2."""
-        state, report = "maxabs(final.h)", "final.cfl"
-        line = "- `quantities`: `q`\n- `reported`: `cfl`\n"
-        plain = "- `quantities`: `q`\n"
-        fragment = "`reported:` line of its tests.md definition"
-        one = "### 1-1. `t1`\n"
-        two = "### 1-2. `t2`\n"
-        for label, body, reads, refused in (
-                ("named, unread", one + line, {"t1": [state]}, True),
-                ("named under t1, read under t2", one + line + two + plain,
-                 {"t1": [state], "t2": [state, report]}, True),
-                ("read under both, named under one", one + line + two + plain,
-                 {"t1": [state, report], "t2": [state, report]}, True),
-                ("named and read per test", one + line + two + line,
-                 {"t1": [state, report], "t2": [state, report]}, False),
-                ("one test of two", one + line + two + plain,
-                 {"t1": [state, report], "t2": [state]}, False)):
-            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
-                v = self._two_tests_reported(Path(tmp), body, reads)
-                self.assertEqual(any(fragment in x for x in v), refused, v)
-                if not refused:
-                    self.assertEqual(v, [])
-
-    def test_a_malformed_reported_line_is_refused_at_the_stage(self) -> None:
-        """Round 2 R4: the reader's problem reaches the stage. With an unmarked IR and a line that
-        names nothing, both sets are empty, so the problem is the only refusal."""
-        body = self._PLAIN_BODY + "- `reported`: cfl <= 1.0\n"
-        with tempfile.TemporaryDirectory() as tmp:
-            v = self._compile_reported(Path(tmp), body, None, True)
-        self.assertEqual(len([x for x in v if "not variable names" in x]), 1, v)
+            self.assertEqual(self._stage_with_tests_md(
+                Path(tmp), plain, self._io_contract_with_predicates()), [])
 
     def test_the_reported_line_reader_takes_only_its_own_form(self) -> None:
-        """Over-refusal probe: prose that speaks of a report, in the definition or outside one,
-        is no line; both spellings and several tests naming one variable are one set."""
+        """Over-refusal probe of the detector (`TEST_REPORTED_LINE`, kept by issue #589 to refuse
+        the line): prose that speaks of a report, in a definition or outside one, is no line;
+        both spellings are lines wherever they stand."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "tests.md"
             path.write_text(
@@ -11412,15 +11525,8 @@ end program shallow_water2d_runner
                 "- The reported CFL is judged. It is reported: by the operation.\n"
                 "### 1-2. `t2`\nreported: cfl\n### 1-3. `t3`\n- `judgment`: nothing reported\n",
                 encoding="utf-8")
-            self.assertEqual(vps._parse_reported_variables_from_tests_md(path),
-                             ({"t1": {"cfl", "h_min_run"}, "t2": {"cfl"}}, []))
-            for line, token in (("- `reported`: `cfl`\n- `reported`: `h`\n", "2 `reported:` lines"),
-                                ("- `reported`:\n", "not variable names"),
-                                ("- `reported`: cfl <= 1.0\n", "not variable names")):
-                path.write_text("### 1-1. `t1`\n" + line, encoding="utf-8")
-                names, problems = vps._parse_reported_variables_from_tests_md(path)
-                self.assertTrue(any(token in x for x in problems), (line, problems))
-            self.assertIsNone(vps._parse_reported_variables_from_tests_md(Path(tmp) / "absent"))
+            self.assertEqual([n for n, _line in vps._tests_md_reported_lines(path)], [2, 5, 8])
+            self.assertIsNone(vps._tests_md_reported_lines(Path(tmp) / "absent"))
 
     def test_compile_omission_gate_through_the_stage(self) -> None:
         """D10 (issue #582), THROUGH the full compile stage (`_validate_tests_and_predicates` ->
@@ -11598,173 +11704,166 @@ end program shallow_water2d_runner
             self.assertIn("test 't3' has no `quantities:` line", problems[0])
             self.assertIsNone(vps._parse_test_quantities_from_tests_md(Path(tmp) / "absent.md"))
 
-    # --- the reported-read gate (issue #582, D13) -----------------------------------------------
+    # --- D7, the one-call scalar pairing (issue #589, gate (i)) -----------------------------------
+    # These rows were D13's (issue #582): a `source: reported` read paired with a state read of the
+    # same test and quantity. Issue #589 retired the label; the class is now DERIVED from `drive`
+    # and the signatures (a scalar a rank-0 real `out` of a one-call `step` writes), and the pair
+    # is ONE predicate that reads the scalar and an array the same operation writes. Every
+    # spelling of "no pairing" D13 was pinned against is kept, on D7, through the stage.
+    # `test_a_test_judged_by_a_reference_alone_is_refused_at_the_stage` is deleted: `source:
+    # reference` is gone, and a reference-like value is host data (`derived`), never a read state.
 
+    #: The one-call scalar: a rank-0 real `out` of the mock `__step` (no `loop`), bound to the
+    #: scalar state of its name; an operation-only output, so its `initial_state` is a literal.
+    _SCALAR_OUT = {"name": "cfl_run_max", "rank": 0, "intent": "out",
+                   "spec": {"type": "real", "kind": "dp"}}
     _STATE_READ = {"test_id": "t1", "quantity": "cfl_max", "target_cases": ["c1"],
                    "expr": "maxabs(final.h)", "op": "le", "value": 1.0, "per_case": True}
     _REPORT_READ = {**_STATE_READ, "expr": "final.cfl_run_max"}
-    _REPORT_FRAGMENT = "reads a source: reported variable in"
+    _PAIR = {**_STATE_READ, "expr": "final.cfl_run_max - maxabs(final.h)"}
+    _D7_FRAGMENT = ("reads final.cfl_run_max — the scalar a rank-0 out of a one-call operation "
+                    "writes —")
 
-    def _reported_stage(self, predicates: list[dict], *, cases: tuple[str, ...] = ("c1",),
-                        variables: tuple[dict, ...] = ()) -> list[str]:
-        """The compile stage over an IR that declares `cfl_run_max` as `source: reported` (and
-        `guard_pass` as `source: record`) and whose one test judges `cfl_max`."""
+    def _scalar_stage(self, predicates: list[dict], *, cases: tuple[str, ...] = ("c1",),
+                      step_args: tuple = (), variables: tuple[dict, ...] = ()) -> list[str]:
+        """The compile stage over the mock node whose `__step` also writes the one-call scalar
+        `cfl_run_max` (plus ``step_args``), one test judging `cfl_max` over ``cases``."""
         io = self._io_contract_with_predicates(
             predicates, [self._test_entry(quantities=["cfl_max"], target_cases=list(cases))])
-        schema = io["raw_requirements"]["required_evidence"][0]["schema"]
-        # A declared report is read by its test (round 2 R1), so a row reading none declares none.
-        reads_report = any("cfl_run_max" in str(p) for p in predicates)
-        schema["variables"] += [
-            *([{"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"}]
-              if reads_report else []),
-            {"name": "guard_pass", "shape_expr": "scalar", "source": "record"},
-            *variables]
+        io["raw_requirements"]["required_evidence"][0]["schema"]["variables"] += [
+            {"name": "cfl_run_max", "shape_expr": "scalar"}, *variables]
         with tempfile.TemporaryDirectory() as tmp:
-            return self._stage_with_tests_md(
-                Path(tmp), "### 1-1. `t1`\n- `quantities`: `cfl_max`\n"
-                + ("- `reported`: `cfl_run_max`\n" if reads_report else ""),
-                io, case_ids=cases)
+            body = "### 1-1. `t1`\n- `quantities`: `cfl_max`\n"
+            tests_md = Path(tmp) / MOCK_TESTS_REF
+            tests_md.parent.mkdir(parents=True, exist_ok=True)
+            tests_md.write_text(body, encoding="utf-8")
+            return self._compile_with_io_contract(
+                Path(tmp), io, plant_tests_md=False, case_ids=cases,
+                step_args=(self._SCALAR_OUT, *step_args),
+                extra_initial={"cfl_run_max": -999.0,
+                               **{a["name"]: 0.0 for a in step_args}})
 
-    def test_a_reported_read_paired_with_state_passes_the_stage(self) -> None:
-        for label, pair in (("state beside it", [self._STATE_READ, self._REPORT_READ]),
-                            ("declared order is no part of it",
-                             [self._REPORT_READ, self._STATE_READ])):
+    def test_a_scalar_read_paired_with_state_passes_the_stage(self) -> None:
+        for label, preds in (("the pair alone", [self._PAIR]),
+                             ("the pair beside the scalar read", [self._REPORT_READ, self._PAIR]),
+                             ("declared order is no part of it", [self._PAIR, self._REPORT_READ])):
             with self.subTest(label):
-                self.assertEqual(self._reported_stage(pair), [])
-        # A `source: operation` variable is the default, and may be spelled.
-        self.assertEqual(self._reported_stage(
-            [{**self._STATE_READ, "expr": "maxabs(final.w)"}, self._REPORT_READ],
-            variables=({"name": "w", "shape_expr": "[2,2]", "source": "operation"},)), [])
-        # A `record` read carries no such requirement: no state counterpart exists.
-        self.assertEqual(self._reported_stage([{**self._STATE_READ, "expr": "final.guard_pass"}]),
-                         [])
+                self.assertEqual(self._scalar_stage(preds), [])
+        # The logical result is no one-call scalar (D8: the driver writes it): read alone it
+        # needs no pairing.
+        self.assertEqual(self._scalar_stage(
+            [{**self._STATE_READ, "expr": "final.ok", "op": "eq", "value": 1}]), [])
 
-    def test_a_test_judged_by_a_reference_alone_is_refused_at_the_stage(self) -> None:
-        """Round 2 R2, the two forms the review measured at 0 violations, and the honest form."""
-        refs = ({"name": "s_fd", "shape_expr": "[2,2]", "source": "reference"},
-                {"name": "s_fd2", "shape_expr": "[2,2]", "source": "reference"})
-        for expr, refused in (("maxabs(final.s_fd - 1.0)", True),
-                              ("maxabs(final.s_fd - final.s_fd2)", True),
-                              ("maxabs(final.h - initial.s_fd)", False)):
-            with self.subTest(expr=expr):
-                v = self._reported_stage([{**self._STATE_READ, "expr": expr}], variables=refs)
-                self.assertEqual(any("source: reference" in x for x in v), refused, v)
-                if not refused:
-                    self.assertEqual(v, [])
-
-    def test_a_reported_read_with_no_pairing_is_refused_at_the_stage(self) -> None:
-        """Each spelling of "no pairing", one refusal each, on the reported read: alone; beside a
-        predicate that reads the report too (the same-predicate form `report + eps * state` is
-        judged by the report alone); beside state of another quantity; beside state of another
-        test; beside a cross-target predicate; beside a `record` read; and beside a pairing whose
-        state read sits only in a term constant by form or only in a bind nothing reaches."""
+    def test_a_scalar_read_with_no_pairing_is_refused_at_the_stage(self) -> None:
+        """Each spelling of "no pairing", one refusal each, on the scalar read: alone; beside a
+        state read that does not read the scalar (D13's old pair, which D7 does not admit);
+        beside a pair of another quantity; a cross-target pair; a pair whose array read sits only
+        in a term constant by form, or only in a bind nothing reaches; the time variable or the
+        logical result beside it; a pair of another test."""
         rows = [
-            ("alone", [self._REPORT_READ], 0),
-            ("the pair reads the report too",
-             [self._REPORT_READ,
-              {**self._STATE_READ, "expr": "final.cfl_run_max + 1.0e-3 * maxabs(final.h)"}], None),
-            ("the state read of another quantity",
-             [self._REPORT_READ, {**self._STATE_READ, "quantity": "other"}], 0),
+            ("alone", [self._REPORT_READ], [0]),
+            ("a state read beside it", [self._REPORT_READ, self._STATE_READ], [0]),
+            ("the pair of another quantity",
+             [self._REPORT_READ, {**self._PAIR, "quantity": "other"}], [0]),
             ("a cross-target pair",
              [self._REPORT_READ,
-              {**self._STATE_READ, "expr": "maxabs(final.h - comparand.final.h)"}], 0),
-            ("a record read beside it",
-             [self._REPORT_READ, {**self._STATE_READ, "expr": "final.guard_pass"}], 0),
-            ("state only in a term constant by form",
-             [self._REPORT_READ,
-              {**self._STATE_READ, "expr": "final.guard_pass + 0 * maxabs(final.h)"}], 0),
-            ("state only in a bind nothing reaches",
-             [self._REPORT_READ,
-              {**self._STATE_READ, "bind": {"dead": "maxabs(final.h)"},
-               "expr": "final.guard_pass"}], 0),
+              {**self._PAIR, "expr": "final.cfl_run_max - maxabs(final.h - comparand.final.h)"}],
+             [0]),
+            ("array only in a term constant by form",
+             [{**self._PAIR, "expr": "final.cfl_run_max + 0 * maxabs(final.h)"}], [0]),
+            ("array only in a bind nothing reaches",
+             [{**self._PAIR, "bind": {"dead": "maxabs(final.h)"},
+               "expr": "final.cfl_run_max"}], [0]),
             ("the time variable beside it",
-             [self._REPORT_READ, {**self._STATE_READ, "expr": "final.guard_pass + final.t"}], 0),
+             [{**self._PAIR, "expr": "final.cfl_run_max + final.t"}], [0]),
+            ("the logical result beside it",
+             [{**self._PAIR, "expr": "final.cfl_run_max + final.ok"}], [0]),
         ]
-        for label, preds, index in rows:
+        for label, preds, indices in rows:
             with self.subTest(label):
-                v = self._reported_stage(preds)
-                hits = [x for x in v if self._REPORT_FRAGMENT in x]
-                if index is None:   # each of the two reads the report and neither is a pair
-                    self.assertEqual(len(hits), 2, v)
-                else:
-                    self.assertEqual(len(hits), 1, v)
-                    self.assertIn(f"io_contract.predicates[{index}] (test 't1', quantity "
-                                  "'cfl_max') reads a source: reported", hits[0])
-                self.assertTrue(all("spec.ir.yaml:" in x for x in hits), hits)
-        # another test's state read does not pair it either
+                v = self._scalar_stage(preds)
+                hits = [x for x in v if self._D7_FRAGMENT in x]
+                self.assertEqual(len(hits), len(indices), v)
+                for hit, index in zip(hits, indices):
+                    self.assertIn(f"(i) predicates[{index}] (test 't1', quantity ", hit)
+                    self.assertIn("spec.ir.yaml:", hit)
+        # another test's pair does not pair it either
         io = self._io_contract_with_predicates(
-            [self._REPORT_READ, {**self._STATE_READ, "test_id": "t2"}],
+            [self._REPORT_READ, {**self._PAIR, "test_id": "t2"}],
             [self._test_entry(quantities=["cfl_max"]),
              self._test_entry(test_id="t2", quantities=["cfl_max"])])
         io["raw_requirements"]["required_evidence"][0]["schema"]["variables"].append(
-            {"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"})
+            {"name": "cfl_run_max", "shape_expr": "scalar"})
         with tempfile.TemporaryDirectory() as tmp:
-            v = self._stage_with_tests_md(
-                Path(tmp), "### 1-1. `t1`\n- quantities: cfl_max\n### 1-2. `t2`\n"
-                           "- quantities: cfl_max\n", io)
-        hits = [x for x in v if self._REPORT_FRAGMENT in x]
+            tests_md = Path(tmp) / MOCK_TESTS_REF
+            tests_md.parent.mkdir(parents=True, exist_ok=True)
+            tests_md.write_text("### 1-1. `t1`\n- quantities: cfl_max\n### 1-2. `t2`\n"
+                                "- quantities: cfl_max\n", encoding="utf-8")
+            v = self._compile_with_io_contract(
+                Path(tmp), io, plant_tests_md=False, step_args=(self._SCALAR_OUT,),
+                extra_initial={"cfl_run_max": -999.0})
+        hits = [x for x in v if self._D7_FRAGMENT in x]
         self.assertEqual(len(hits), 1, v)
         self.assertIn("(test 't1', quantity 'cfl_max')", hits[0])
 
     def test_a_pairing_over_fewer_cases_is_refused_at_the_stage(self) -> None:
-        """The pairing reads state in EVERY case the report is read in. `cases_read` values a
-        `case:` scope at that case and an `at()` at its own, so the at() reach counts only when it
-        enters the value: in a bind nothing reaches, on the time variable, or on a name the IR's
-        own schema does not declare as state, it adds no case (issue #567's rows, on this gate)."""
+        """The pair reads the scalar AND an array in EVERY case the scalar is read in. A `case:`
+        scope values one case and an `at()` its own, so an at() reach counts only when it enters
+        the value: in a bind nothing reaches, on the time variable, or in a term constant by form,
+        it adds no case (issue #567's rows, on this gate)."""
         cases = ("c1", "c2")
         report = {**self._REPORT_READ, "target_cases": ["c1", "c2"]}
-        narrow = {**self._STATE_READ, "target_cases": ["c1", "c2"], "case": "c1"}
+        narrow = {**self._PAIR, "target_cases": ["c1", "c2"], "case": "c1"}
         del narrow["per_case"]
+        other = "(at('c2').final.cfl_run_max - maxabs(at('c2').final.h))"
         refused = {
             "one case of two": narrow,
             "at() only in an unreached bind": {
-                **narrow, "bind": {"dead": "maxabs(at('c2').final.h)"}},
+                **narrow, "bind": {"dead": other}},
             "at() only on the time variable": {
-                **narrow, "expr": "maxabs(final.h) * at('c2').final.t"},
+                **narrow, "expr": f"{narrow['expr']} * at('c2').final.t"},
             "at() only in a term constant by form": {
-                **narrow, "expr": "maxabs(final.h) + 0 * maxabs(at('c2').final.h)"},
+                **narrow, "expr": f"{narrow['expr']} + 0 * {other}"},
         }
         for label, pair in refused.items():
             with self.subTest(label):
-                v = self._reported_stage([report, pair], cases=cases)
-                hits = [x for x in v if self._REPORT_FRAGMENT in x]
+                v = self._scalar_stage([report, pair], cases=cases)
+                hits = [x for x in v if self._D7_FRAGMENT in x]
                 self.assertEqual(len(hits), 1, v)
-                self.assertIn("['c1', 'c2']", hits[0])
+                self.assertIn("in ['c1', 'c2']", hits[0])
         admitted = {
-            "every case": ({**self._STATE_READ, "target_cases": ["c1", "c2"]}, ()),
+            "every case": ({**self._PAIR, "target_cases": ["c1", "c2"]}, (), ()),
             "at() reaches the other case": (
-                {**narrow, "expr": "maxabs(final.h) + maxabs(at('c2').final.h)"}, ()),
-            # the state-name set is the IR's OWN schema: a name no other fixture declares
-            "at() on a schema variable": (
-                {**narrow, "expr": "maxabs(final.h) + maxabs(at('c2').final.zeta_q)"},
+                {**narrow, "expr": f"{narrow['expr']} + {other}"}, (), ()),
+            # the array set is the IR's OWN (`drive`): a name no other fixture declares, which
+            # the same operation writes
+            "at() on an array the operation writes": (
+                {**narrow, "expr": f"{narrow['expr']} + at('c2').final.cfl_run_max"
+                                   " - maxabs(at('c2').final.zeta_q)"},
+                ({"name": "zeta_q", "rank": 2, "intent": "inout",
+                  "spec": {"type": "real", "kind": "dp"}},),
                 ({"name": "zeta_q", "shape_expr": "[2,2]"},)),
         }
-        for label, (pair, variables) in admitted.items():
+        for label, (pair, step_args, variables) in admitted.items():
             with self.subTest(label):
-                self.assertEqual(
-                    self._reported_stage([report, pair], cases=cases, variables=variables), [])
+                self.assertEqual(self._scalar_stage([report, pair], cases=cases,
+                                                    step_args=step_args,
+                                                    variables=variables), [])
 
-    def test_the_stage_refuses_a_malformed_source(self) -> None:
-        """`schema.variables[].source`, each refusal once, through the stage."""
-        rows = [
-            ("non-scalar reported", {"name": "w", "shape_expr": "[2,2]", "source": "reported"},
-             "a source: reported variable is a scalar"),
-            ("unknown class", {"name": "w", "shape_expr": "[2,2]", "source": "kernel"},
-             "source must be one of"),
-            ("non-string class", {"name": "w", "shape_expr": "[2,2]", "source": 1},
-             "source must be one of"),
-        ]
-        for label, variable, fragment in rows:
-            with self.subTest(label):
-                v = self._reported_stage([self._STATE_READ], variables=(variable,))
-                hits = [x for x in v if fragment in x]
+    def test_a_source_key_is_refused_at_the_stage(self) -> None:
+        """Issue #589 (D6): the `source` vocabulary is retired — what a variable is follows from
+        `drive` — so a `schema.variables[]` entry carrying the key is refused through the stage,
+        whatever its value (the four classes the gate once admitted included), once each."""
+        for value in ("operation", "reported", "record", "reference", "kernel", 1, None):
+            with self.subTest(source=value):
+                v = self._scalar_stage([self._PAIR], variables=(
+                    {"name": "w", "shape_expr": "[2,2]", "source": value},),
+                    step_args=({"name": "w", "rank": 2, "intent": "inout",
+                                "spec": {"type": "real", "kind": "dp"}},))
+                hits = [x for x in v if "source: the source vocabulary is retired (D6)" in x]
                 self.assertEqual(len(hits), 1, v)
-                self.assertIn("state_snapshots.schema.variables[4]", hits[0])
-        for source in ("operation", "record", "reference"):
-            with self.subTest(source=source):
-                self.assertEqual(self._reported_stage(
-                    [self._STATE_READ],
-                    variables=({"name": "w", "shape_expr": "[2,2]", "source": source},)), [])
+                self.assertIn("state_snapshots.schema.variables[5].source", hits[0])
+        self.assertEqual(self._scalar_stage([self._PAIR]), [])
 
     def test_metrics_basis_is_refused_as_an_artifact_and_as_a_reference(self) -> None:
         """`metrics_basis.json` is no artifact since issue #582, refused by name in each place an
@@ -11781,7 +11880,8 @@ end program shallow_water2d_runner
                 v = stage(lambda io: io["raw_requirements"]["required_evidence"].append(
                     {"artifact": "metrics_basis.json", "required": required}))
                 self.assertTrue(any("required_evidence[1].artifact 'metrics_basis.json' must be "
-                                    "one of ['state_snapshots']" in x for x in v), v)
+                                    "one of ['state_history', 'state_snapshots', 'step_series']"
+                                    in x for x in v), v)
         for token in ("raw/metrics_basis.json", "metrics_basis.json", "RAW\\Metrics_Basis.JSON"):
             with self.subTest(token=token):
                 v = stage(lambda io: io["outputs"][0].update(evidence_ref=token))
@@ -11792,34 +11892,34 @@ end program shallow_water2d_runner
                                     "raw-evidence artifact" in x for x in v), v)
 
     def test_real_predicate_set_is_reached_by_the_omission_gate(self) -> None:
-        # The omission gate (issue #582, D10) reaches a REAL full-fidelity IR's tests and schema.
-        # The tracked fixture is a certified IR hand-converted to the #582 shape: its pass_when
-        # conditions were not host predicates, so the conversion leaves every test with empty
-        # `quantities` and no predicates. The current validator refuses that, naming each test;
-        # the same fixture with one predicate per test is clean of both complaints. Driving it in
-        # both directions is what shows the gate reached real tests rather than falling out early
-        # on a document it could not read (an unparseable or empty IR returns nothing at all, and
-        # `{}` a different complaint entirely).
+        # The omission gate (issue #582, D10) reaches a REAL full-fidelity IR's tests and schema,
+        # and since issue #589 the drive gates reach it too. The tracked fixture is the certified
+        # `shallow_water2d@0.4.7` IR hand-converted to the drive shape (`_REAL_IR_FIXTURE`): as
+        # converted it is clean; with every test's `quantities` and every predicate stripped the
+        # gate names each test; with one predicate removed it names exactly that test. Driving it
+        # in every direction is what shows the gate reached real tests rather than falling out
+        # early on a document it could not read (an unparseable or empty IR returns nothing at
+        # all, and `{}` a different complaint entirely).
         #
-        # The input is a TRACKED fixture, not a live run directory. This test used to read
-        # `workspace/ir/.../spec.ir.yaml` and skipTest when it was absent; `workspace*` is the
-        # operator's execution workspace and is gitignored, so that made the calibration a
-        # permanent silent skip on every fresh clone. A missing fixture is now repository
-        # corruption, not an environment difference — so it fails. The report check,
-        # `tools/tests/skip_probes.py`, refuses that skip; it cannot stop a future edit from simply
-        # returning early instead, which is the same defect without a skip in it.
+        # The input is a TRACKED fixture, not a live run directory: a missing fixture is
+        # repository corruption, not an environment difference — so it fails, never skips.
         #
-        # `repo_root` is the temp dir, not the real one, deliberately: it leaves
-        # `meta.source_refs.tests` unresolvable so the canonical test-id set falls back to the IR's
-        # own `tests`, whose ids this row reads. Passing the real root would also drive the tests.md
-        # `quantities:` comparison, which a spec reaches once its tests.md carries the line.
-        def drive(document: str) -> list[str]:
+        # `repo_root` is a temp dir holding only the catalog entry the gate keys the node's kind
+        # on (issue #589: an IR the catalog cannot answer for is refused): it leaves
+        # `meta.source_refs.tests` unresolvable so the canonical test-id set falls back to the
+        # IR's own `tests`, whose ids this row reads.
+        def drive(document: str, *, catalog: bool = True) -> list[str]:
             with tempfile.TemporaryDirectory() as tmp:
                 ir_dir = Path(tmp) / "ir"
                 ir_dir.mkdir()
                 (ir_dir / "spec.ir.yaml").write_text(document, encoding="utf-8")
+                if catalog:
+                    _seed_catalog(Path(tmp), "problem", "shallow_water2d")
                 violations: list[str] = []
-                vps._validate_tests_and_predicates(Path(tmp), ir_dir, violations)
+                # libyaml for speed; the validator's own reader over this fixture is
+                # `DriveGateStageTests.test_the_converted_fixtures_pass_the_stage_...`'s
+                with unittest.mock.patch.object(vps, "_read_yaml", _fast_read_yaml()):
+                    vps._validate_tests_and_predicates(Path(tmp), ir_dir, violations)
                 return violations
 
         captured = _REAL_IR_FIXTURE.read_text(encoding="utf-8")
@@ -11835,26 +11935,33 @@ end program shallow_water2d_runner
         self.assertGreater(len(tests or []), 1,
                            "calibration fixture carries no io_contract.tests, so the gate has "
                            "nothing to read and a clean run is vacuous")
-        legacy = drive(captured)
+        self.assertEqual(drive(captured), [])
+        # The catalog is what the gate keys on: without it the same IR is refused.
+        self.assertTrue(any("the spec catalog cannot answer for this node" in v
+                            for v in drive(captured, catalog=False)))
+
+        stripped = copy.deepcopy(document)
+        for test in stripped["io_contract"]["tests"]:
+            test["quantities"] = []
+        stripped["io_contract"]["predicates"] = []
+        legacy = drive(yaml.safe_dump(stripped, sort_keys=False))
         for idx in range(len(tests)):
             self.assertTrue(any(f"tests[{idx}].quantities must be a non-empty list" in v
                                 for v in legacy), (idx, legacy))
 
-        predicates = []
-        for test in tests:
-            test["quantities"] = ["state_mass"]
-            # `inputs.grid.nx` is resolved against the real cases each test ranges over.
-            predicates.append({"test_id": test["test_id"], "quantity": "state_mass",
-                               "target_cases": list(test["target_cases"]),
-                               "expr": "sum(final.h) / inputs.grid.nx", "op": "le",
-                               "value": 1.0e9, "per_case": True})
-        document["io_contract"]["predicates"] = predicates
-        self.assertEqual(drive(yaml.safe_dump(document, sort_keys=False)), [])
-        # one predicate removed -> exactly its test is named
-        dropped = document["io_contract"]["predicates"].pop()
+        # one predicate removed — the only one of its (test, quantity) — names exactly its test
+        preds = document["io_contract"]["predicates"]
+        counts: dict = {}
+        for p in preds:
+            counts[(p["test_id"], p["quantity"])] = counts.get((p["test_id"], p["quantity"]), 0) + 1
+        index = next(i for i, p in enumerate(preds)
+                     if counts[(p["test_id"], p["quantity"])] == 1
+                     and not p["expr"].replace(" ", "").startswith("final.step-"))
+        dropped = preds.pop(index)
         partial = drive(yaml.safe_dump(document, sort_keys=False))
         self.assertEqual(len(partial), 1, partial)
         self.assertIn(f"test {dropped['test_id']!r}: no predicate", partial[0])
+        self.assertIn(repr([dropped["quantity"]]), partial[0])
 
     def test_validate_compile_stage_rejects_non_plans_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -11938,20 +12045,19 @@ subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
 end subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
 end module dynamics_shallow_water_flux_2d_rusanov_p0_model
 """
+            # The mock problem publishes `_MOCK_STEP_SIGNATURE` (issue #589), which the
+            # Generate.static signature pin holds the model to.
             model_text = """module shallow_water2d_model
+use iso_fortran_env, only: real64
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
+integer, parameter :: dp = real64
 contains
 subroutine solve(flag)
   logical, intent(out) :: flag
   call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
 end subroutine solve
-subroutine shallow_water2d__step(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine shallow_water2d__step
-end module shallow_water2d_model
-"""
+""" + _MOCK_STEP_FORTRAN + "end module shallow_water2d_model\n"
             runner_text = """program shallow_water2d_runner
 implicit none
 write(*,*) 'ok'
@@ -12073,20 +12179,19 @@ subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
 end subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
 end module dynamics_shallow_water_flux_2d_rusanov_p0_model
 """
+            # The mock problem publishes `_MOCK_STEP_SIGNATURE` (issue #589), which the
+            # Generate.static signature pin holds the model to.
             model_text = """module shallow_water2d_model
+use iso_fortran_env, only: real64
 use dynamics_shallow_water_flux_2d_rusanov_p0_model
 implicit none
+integer, parameter :: dp = real64
 contains
 subroutine solve(flag)
   logical, intent(out) :: flag
   call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
 end subroutine solve
-subroutine shallow_water2d__step(flag)
-  logical, intent(out) :: flag
-  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
-end subroutine shallow_water2d__step
-end module shallow_water2d_model
-"""
+""" + _MOCK_STEP_FORTRAN + "end module shallow_water2d_model\n"
             runner_text = """program shallow_water2d_runner
 implicit none
 write(*,*) 'ok'
@@ -17747,6 +17852,9 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
         if public_api is not _OMIT:
             ir["public_api"] = public_api
         _write_json(ir_dir / "spec.ir.yaml", ir)
+        # The registry's answer is the operator's document, so it names the canonical
+        # controlled_spec whatever the IR's own ref says (a decoy ref is the IR's).
+        _seed_catalog(tmp, spec_kind.strip(), self._SPEC_ID, _SURFACE_CS_REF)
         return ir_dir
 
     def test_parser_extracts_ops_and_types(self) -> None:
@@ -17902,6 +18010,10 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "public_api": self._full_api()})
             violations: list[str] = []
             _validate_published_surface(Path(tmp), _ir, violations)
+            # Issue #589: the kind is the catalog's, by spec_id, so an IR with none has no kind
+            # the surface gate can pin under; the refusal is the catalog gate's, in the stage.
+            self.assertEqual(violations, [])
+            vps._validate_catalog_spec_kind(Path(tmp), _ir, violations)
             self.assertTrue(any("meta.spec_id missing" in v for v in violations), violations)
 
     def test_section5_parsing_zero_ops_fails_closed(self) -> None:
@@ -17922,25 +18034,26 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                             violations)
 
     def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
-        # A `problem` node's interface is legitimately derived post-hoc, so the gate must
-        # not fire even with no public_api present. `component` used to be this test's subject and is
-        # NOT one any more: issue #153 PR-2 put it in `_EXACT_PUBLISHED_SURFACE_KINDS`, so asserting a
-        # no-op on it would now assert the absence of the pin the branch exists to add. `profile`
-        # left this row for the opposite reason: issue #175 removed it from
-        # `_CANONICAL_SPEC_KINDS`, so an IR declaring it is now REFUSED as unrecognised (the
-        # row below), not carved out.
-        for kind in ("problem",):
-            with tempfile.TemporaryDirectory() as tmp:
-                ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind=kind)
-                violations: list[str] = []
-                _validate_published_surface(Path(tmp), ir_dir, violations)
-                self.assertEqual(violations, [], kind)
-        # ...and the set really is the decider: the same tree under a pinned kind DOES fire.
+        # Since issue #589 no canonical kind is outside the set: `problem` joined it (the host's
+        # driver calls its `__step`), after `component` (issue #153 PR-2). What remains outside
+        # is a kind the CATALOG answers that no phase runs on (`profile`, issue #175): the
+        # surface gate is a no-op for it, and the catalog gate refuses the IR in the same stage.
+        self.assertEqual(set(vps._EXACT_PUBLISHED_SURFACE_KINDS), set(vps._CANONICAL_SPEC_KINDS))
         with tempfile.TemporaryDirectory() as tmp:
-            ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind="component")
-            violations = []
+            ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind="profile")
+            violations: list[str] = []
             _validate_published_surface(Path(tmp), ir_dir, violations)
-            self.assertTrue(violations)
+            self.assertEqual(violations, [])
+            vps._validate_catalog_spec_kind(Path(tmp), ir_dir, violations)
+            self.assertTrue(any("records spec_kind 'profile', which no phase runs on" in v
+                                for v in violations), violations)
+        # ...and the set really is the decider: the same tree under each pinned kind DOES fire.
+        for kind in vps._CANONICAL_SPEC_KINDS:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                ir_dir = self._seed(Path(tmp), public_api=_OMIT, spec_kind=kind)
+                violations = []
+                _validate_published_surface(Path(tmp), ir_dir, violations)
+                self.assertTrue(any("public_api missing" in v for v in violations), violations)
 
     def test_signatures_missing_flagged(self) -> None:
         # public_api present but without a `signatures` block: the leaf would have no source of
@@ -18663,6 +18776,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         # stale / pre-contract path strip one explicitly). `signatures` joined this fixture in issue
         # #153 PR-2, which extended the guard to it — the shape a `component` IR certified BEFORE
         # PR-2 has, since the key was forbidden then.
+        _seed_catalog(tmp, spec_kind.strip(), "hx", "cs.md")
         ir_doc: dict = {
             "meta": {"spec_kind": spec_kind, "spec_id": "hx",
                      "source_refs": {"controlled_spec": "cs.md"}},
@@ -18876,12 +18990,15 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         `meta.spec_kind` has drifted, ships a drifted ABI uncompared — Compile certified the §5.1 and
         Generate then compares nothing."""
         import tempfile
+        # Since issue #589 the no-op side reads the CATALOG's kind (by the node_key's spec_id),
+        # so the drift that row once wrote into the IR's `meta.spec_kind` is now a catalog that
+        # answers another kind, or none.
+        catalog = lambda tmp: tmp / "spec" / "registry" / "spec_catalog.yaml"  # noqa: E731
         for label, break_it in (
             ("IR missing", lambda ir: ir.unlink()),
-            ("IR spec_kind drifted", lambda ir: ir.write_text(
-                json.dumps({"meta": {"spec_kind": "problem", "spec_id": "hx",
-                                     "source_refs": {"controlled_spec": "cs.md"}}}),
-                encoding="utf-8")),
+            ("catalog kind drifted",
+             lambda ir: _seed_catalog(ir.parents[3], "problem", "hx", "cs.md")),
+            ("catalog has no entry", lambda ir: catalog(ir.parents[3]).unlink()),
         ):
             with self.subTest(case=label):
                 with tempfile.TemporaryDirectory() as t:
@@ -18897,11 +19014,13 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     any("component node's published signatures cannot be pinned" in v
                         for v in violations),
                     (label, violations))
-        # The no-op side still no-ops: a node_key OUTSIDE the set with the same broken IR is silent.
+        # The no-op side still no-ops: a node_key OUTSIDE the set with the same broken IR is
+        # silent (every canonical kind is in the set since issue #589, so the witness is a kind
+        # no phase runs on).
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             ex = self._seed(tmp, source=self._GOOD_SOURCE, spec_kind="component")
-            ex = vps.NodeExecution(node_key="problem/hx@0.1.0", node_dir=ex.node_dir,
+            ex = vps.NodeExecution(node_key="profile/hx@0.1.0", node_dir=ex.node_dir,
                                    exec_dir=ex.exec_dir, pipeline_dir=ex.pipeline_dir)
             (tmp / "workspace" / "ir" / "x" / "spec.ir.yaml").unlink()
             self.assertEqual(self._run(ex, tmp), [])
@@ -19525,20 +19644,20 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     (kind, violations))
 
     def test_a_kind_outside_the_pinned_set_is_a_noop(self) -> None:
-        # A `problem` node's interface is derived post-hoc, so a garbage source must not fire the
-        # signature pin. `component` was this test's subject until issue #153 PR-2 moved it into
-        # `_EXACT_PUBLISHED_SURFACE_KINDS`; the second half asserts the set is what decides, because
-        # a no-op reached for the wrong reason (an unresolvable IR, say) looks identical here.
-        # The witness was `profile` until issue #175, which is why it is not one now: no `profile`
-        # IR is ever authored, so it could only guard a real rule with an unreal input.
+        # Every canonical kind publishes an exact surface since issue #589 (`problem` joined it:
+        # the host's driver calls its `__step`), so a garbage source fires the signature pin under
+        # each. The no-op witness is a kind the CATALOG answers that no phase runs on (`profile`,
+        # issue #175) under a node_key of that kind; the second half asserts the set is what
+        # decides, because a no-op reached for the wrong reason looks identical here.
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="problem")
+            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="profile")
             self.assertEqual(self._run(ex, tmp), [])
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            ex = self._seed(tmp, source="module m\nend module m\n", spec_kind="component")
-            self.assertTrue(self._run(ex, tmp))
+        for kind in vps._CANONICAL_SPEC_KINDS:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as t:
+                tmp = Path(t)
+                ex = self._seed(tmp, source="module m\nend module m\n", spec_kind=kind)
+                self.assertTrue(self._run(ex, tmp))
 
     def test_stale_pre_contract_ir_fails_closed(self) -> None:
         # A certified IR that predates the public_api.module_parameters contract (public_api present
@@ -22300,8 +22419,16 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
         # stopped seeing — `_m3c_language` and `_validate_harness_render_preconditions`, each
         # `not in M3C_SPEC_KINDS`, an IMPORTED vocabulary — are seen again because
         # `_module_kind_vocabularies` now resolves a repository import (the guard first reported 4).
+        #
+        # 6 -> 2 in issue #589, and again the readers DISAPPEARED rather than leaving the scan's
+        # sight: the three surface gates (`_validate_published_surface`'s two comparisons,
+        # `_validate_generated_signatures`, `_validate_component_generated_surface`) now read
+        # the node's kind from `spec/registry/spec_catalog.yaml` (`_catalog_spec_kind`) and no
+        # longer compare `meta.spec_kind` at all; the one remaining reader of the IR's label for
+        # that question, `_validate_catalog_spec_kind`, compares it with the catalog's answer (a
+        # value, not a fixed vocabulary), strip-normalized like the rest.
         lines = {lineno for lineno, _seg in self._spec_kind_sites()}
-        self.assertGreaterEqual(len(lines), 6, sorted(lines))
+        self.assertGreaterEqual(len(lines), 2, sorted(lines))
 
     @classmethod
     def _parity_problems(cls, sites) -> list[str]:
@@ -22592,6 +22719,13 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     _REPO = Path(__file__).resolve().parents[2]
     _CATALOG = _REPO / "spec" / "registry" / "spec_catalog.yaml"
 
+    #: The `problem` specs whose §5 / §5.1 publish no `__step` yet (issue #589): `problem` joined
+    #: `_EXACT_PUBLISHED_SURFACE_KINDS` in PR-1a, and the three corpus problems are rewritten into
+    #: that shape in PR-3. Asserted EXACTLY (no skip): a problem converted before then, or a new
+    #: one added without §5.1, reddens `_pinned_entries`, and PR-3 empties this set.
+    _TRANSITIONAL_PROBLEMS = frozenset({"shallow_water2d_channel", "shallow_water2d",
+                                        "advdiff1d_linear"})
+
     def _pinned_entries(self) -> list[dict]:
         doc = yaml.safe_load(self._CATALOG.read_text(encoding="utf-8"))
         rows = [e for e in doc["specs"]
@@ -22599,7 +22733,12 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
         # Derived from the same constant the gate uses, so adding a kind to the set puts its specs
         # under this check automatically rather than silently leaving them out.
         self.assertTrue(rows, "no spec of a surface-publishing kind in the catalog")
-        return rows
+        unmigrated = {
+            e["spec_id"] for e in rows
+            if e["spec_kind"] == "problem" and vps._section51_fence_body(
+                self._REPO / Path(e["deps_path"]).parent / "controlled_spec.md")[1] is not None}
+        self.assertEqual(unmigrated, set(self._TRANSITIONAL_PROBLEMS))
+        return [e for e in rows if e["spec_id"] not in self._TRANSITIONAL_PROBLEMS]
 
     def test_every_pinned_spec_declares_a_section51_matching_its_section5(self) -> None:
         for entry in self._pinned_entries():
@@ -22748,6 +22887,8 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         ir_dir = tmp / self._IR_SUBDIR
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+        if meta["spec_id"]:
+            _seed_catalog(tmp, spec_kind.strip(), meta["spec_id"], self._CS_REF)
         return ir_dir
 
     def _run(self, **kw) -> list[str]:
@@ -22893,20 +23034,31 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         refused side: issue #175 made a profile a host-resolved selection policy that no phase
         runs, so no IR of that kind is authored and one claiming it is an unrecognised spelling
         rather than a carve-out."""
+        # Issue #589 closed this at the root: the gate's kind is the CATALOG's (by spec_id), so the
+        # leaf's spelling no longer decides whether it runs. Each spelling below — an unrecognised
+        # one, another canonical kind, `profile` — against a registry that says `component`: the
+        # pin still fires on the broken surface, and the catalog gate refuses the label. Every
+        # canonical kind now pins (`problem` joined the set), so the old post-hoc control is gone.
         broken = {"published_operations": [{"operation_id": f"{self._SPEC_ID}__wrong"}],
                   "published_types": []}
-        for kind in ("Component", "COMPONENT", "Infrastructure", "compnent", "profile"):
-            with self.subTest(unrecognised=kind):
-                v = self._run(public_api=broken, spec_kind=kind)
-                self.assertTrue(any("is not a known spec_kind" in x for x in v), (kind, v))
-        for kind in ("problem",):
-            with self.subTest(derived_post_hoc=kind):
-                self.assertEqual(self._run(public_api=broken, spec_kind=kind), [], kind)
-        for kind in ("component", "infrastructure"):
+        for kind in ("Component", "COMPONENT", "Infrastructure", "compnent", "profile",
+                     "problem", "infrastructure"):
+            with self.subTest(leaf_label=kind), tempfile.TemporaryDirectory() as t:
+                tmp = Path(t)
+                ir_dir = self._seed(tmp, public_api=broken, spec_kind=kind)
+                _seed_catalog(tmp, "component", self._SPEC_ID, self._CS_REF)
+                v: list[str] = []
+                vps._validate_published_surface(tmp, ir_dir, v)
+                self.assertTrue(any(f"'{self._SPEC_ID}__wrong'" in x for x in v), (kind, v))
+                k: list[str] = []
+                vps._validate_catalog_spec_kind(tmp, ir_dir, k)
+                self.assertTrue(any(f"meta.spec_kind '{kind}' disagrees with the spec catalog, "
+                                    "which records spec_kind 'component'" in x for x in k),
+                                (kind, k))
+        for kind in vps._CANONICAL_SPEC_KINDS:
             with self.subTest(pinned=kind):
                 v = self._run(public_api=broken, spec_kind=kind)
                 self.assertTrue(v, kind)
-                self.assertFalse([x for x in v if "is not a known spec_kind" in x], (kind, v))
 
     def test_the_controlled_spec_ref_may_not_name_a_document_the_leaf_can_author(self) -> None:
         """The ABI pin must not become a self-comparison. Round 5, and the worst defect of the five.
@@ -23082,8 +23234,11 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         del no_sigs["signatures"]
         no_params = self._full_api()
         del no_params["module_parameters"]
+        # "missing spec_id" left this family with issue #589: the kind is the catalog's, read by
+        # spec_id, so an IR naming none has no kind this gate could word a refusal with — the
+        # refusal is `_validate_catalog_spec_kind`'s, which names no kind
+        # (`InfrastructurePublicApiGateTests::test_missing_spec_id_fails_closed`).
         return {
-            "missing spec_id": dict(public_api=self._full_api(), spec_id=""),
             "missing controlled_spec ref": dict(public_api=self._full_api(), cs_ref=None),
             "unresolvable controlled_spec": dict(public_api=self._full_api(), write_cs=False),
             "missing public_api": dict(public_api=_OMIT),
@@ -23119,6 +23274,7 @@ class ComponentPublicApiGateTests(unittest.TestCase):
                 component = self._run(spec_kind="component", **fresh(kwargs))
                 self.assertTrue(component, f"{label}: expected a violation to compare")
                 self.assertEqual(normalized("component"), normalized("infrastructure"))
+                self.assertEqual(normalized("component"), normalized("problem"))
                 # Self-test per shape: the kind word really IS in this message, so the normalization
                 # is doing work. Without it, a message naming NO kind would pass this row silently.
                 self.assertTrue(
@@ -23131,7 +23287,7 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         author to rewrite §5 into a shape their kind does not use. Round 0 found it unpinned."""
         spec = self._controlled_spec().replace(
             "The only published `operation_id` is `dep_base__scale`.", "No operations here.")
-        for kind in ("component", "infrastructure"):
+        for kind in ("component", "infrastructure", "problem"):
             with self.subTest(kind=kind):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     tmp = Path(tmpdir)
@@ -23151,33 +23307,31 @@ class ComponentPublicApiGateTests(unittest.TestCase):
                 # the hint the wrong kind receives was invisible. That is this loop's "generating the
                 # probes FROM a constant gives set identity, not a family that can distinguish
                 # anything". The literals live here; the constant is the code's.
-                expected = {
+                hints = {
                     "component": "unrecognized published-operation form",
                     "infrastructure": "unrecognized 'published operation_ids are exactly' form",
-                }[kind]
-                self.assertIn(expected, v[0])
-                self.assertNotIn(
-                    {"component": "unrecognized 'published operation_ids are exactly' form",
-                     "infrastructure": "unrecognized published-operation form"}[kind],
-                    v[0])
-        # And the code's own table must carry exactly those two associations, so a rename of a
+                    "problem": "no `<spec_id>__step` backtick span — a problem's §5 names its "
+                               "published `<spec_id>__step` (and `<spec_id>__init` where "
+                               "needed), docs/CONTROLLED_SPEC.md",
+                }
+                self.assertIn(hints[kind], v[0])
+                for other in set(hints) - {kind}:
+                    self.assertNotIn(hints[other], v[0])
+        # And the code's own table must carry exactly those associations, so a rename of a
         # literal here cannot drift away from the subject silently.
-        self.assertEqual(
-            dict(vps._SECTION5_FORM_HINT),
-            {"component": "unrecognized published-operation form",
-             "infrastructure": "unrecognized 'published operation_ids are exactly' form"})
+        self.assertEqual(dict(vps._SECTION5_FORM_HINT), hints)
         # Every pinned kind has a hint: a bare dict index would otherwise KeyError inside
         # `Compile.static` the moment a third kind joins the set.
         self.assertEqual(set(vps._SECTION5_FORM_HINT),
                          set(vps._EXACT_PUBLISHED_SURFACE_KINDS))
 
     def test_non_component_is_noop(self) -> None:
-        # A problem node has no component-name pin — the gate no-ops (its public_api,
-        # if any, is not compared to §5 here). `profile` is no longer a usable subject: since
-        # issue #175 it is not a `_CANONICAL_SPEC_KINDS` member, so an IR declaring it is
-        # refused rather than no-op'd.
-        self.assertEqual(
-            self._run(spec_kind="problem", public_api=_OMIT), [])
+        # Issue #589 reversed this row's subject: a `problem` node publishes its `__step`, so the
+        # gate PINS it (it no-op'd here before). The remaining no-op is a kind the catalog answers
+        # that no phase runs on (`profile`, issue #175), which the catalog gate refuses.
+        self.assertTrue(any("public_api missing — a problem node" in x
+                            for x in self._run(spec_kind="problem", public_api=_OMIT)))
+        self.assertEqual(self._run(spec_kind="profile", public_api=_OMIT), [])
 
     def test_unresolvable_controlled_spec_fail_closed(self) -> None:
         v = self._run(public_api={"published_operations": [
@@ -23327,6 +23481,7 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             if public_api is not _OMIT:
                 ir["public_api"] = public_api
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            _seed_catalog(repo_root, spec_kind.strip(), "dep_base")
             install_target_profile(repo_root)
             pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
                             / _TARGET_ID / "p1")
@@ -23755,17 +23910,29 @@ class RegistryClauseReadersTests(unittest.TestCase):
         one is read as the kind. (The half of this row that pinned the compile-stage language
         refusal went with R4-a PR-3: the IR names no language, and the signature-backend
         question is asked at `Generate.static` over the pipeline's target.)"""
+        # Issue #589: the gate's kind is the CATALOG's, so the leaf's spelling no longer decides
+        # whether it runs at all; a spelling that is not the catalog's is refused by the catalog
+        # gate, and the surface gate still pins under the registry's kind. A padded canonical
+        # spelling is read as the kind (no refusal).
         import tempfile as _tf
-        with _tf.TemporaryDirectory() as td:
-            tmp = Path(td)
-            ir_dir = tmp / "ir"
-            ir_dir.mkdir()
-            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
-                "meta": {"spec_kind": "Infrastructure", "spec_id": "harness_c_cpu"}}))
-            v: list[str] = []
-            vps._validate_published_surface(tmp, ir_dir, v)
-            self.assertTrue(any("is not a known spec_kind" in x for x in v), v)
-            self.assertFalse(any("signature pinning needs a language backend" in x for x in v), v)
+        for spelling, refused in (("Infrastructure", True), ("  infrastructure  ", False)):
+            with self.subTest(spelling=spelling), _tf.TemporaryDirectory() as td:
+                tmp = Path(td)
+                ir_dir = tmp / "ir"
+                ir_dir.mkdir()
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                    "meta": {"spec_kind": spelling, "spec_id": "harness_c_cpu"}}))
+                _seed_catalog(tmp, "infrastructure", "harness_c_cpu")
+                v: list[str] = []
+                vps._validate_published_surface(tmp, ir_dir, v)
+                self.assertTrue(any("source_refs.controlled_spec missing (cannot pin "
+                                    "infrastructure public_api" in x for x in v), v)
+                self.assertFalse(any("signature pinning needs a language backend" in x
+                                     for x in v), v)
+                k: list[str] = []
+                vps._validate_catalog_spec_kind(tmp, ir_dir, k)
+                self.assertEqual(any(f"meta.spec_kind '{spelling.strip()}' disagrees with the "
+                                     "spec catalog" in x for x in k), refused, k)
 
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
     """`_validate_parallel_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
@@ -25738,7 +25905,12 @@ _REAL_IR_TOP_LEVEL_KEYS = frozenset(
         "algorithm",
         "io_contract",
         "dependency",
-    }  # + `public_api`, on infrastructure and component nodes
+        # Issue #589: a `problem` (the shared fixture's kind) publishes its `__step` and carries
+        # the `drive` block the host's driver renders from (`public_api` also sits on every
+        # infrastructure and component node; `drive` on a component too).
+        "public_api",
+        "drive",
+    }
 )
 # (The 2026-07-14 measurement carried `impl_defaults` too; R4-a PR-3, issue #284, removed that
 # section from the IR contract and `Conductor._leaf_ir_document_violations` refuses it, so no IR
@@ -26248,6 +26420,9 @@ class IrFixtureShapeTests(unittest.TestCase):
                 f"{MOCK_SPEC_DIR}/{'a' * 300}.md"
             )
             (ir_dir / "spec.ir.yaml").write_text(json.dumps(doc), encoding="utf-8")
+            # The registry answers the kind (issue #589), so the surface gate reaches the ref.
+            _seed_catalog(repo_root, "infrastructure", "harness_x",
+                          f"{MOCK_SPEC_DIR}/controlled_spec.md")
 
             for gate in (
                 _validate_published_surface,
@@ -27683,6 +27858,7 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                      "source_refs": {"controlled_spec": "cs.md"}},
             "public_api": public_api,
             "io_contract": copy.deepcopy(self._HEALTHY_IO_CONTRACT)})
+        _seed_catalog(tmp, "infrastructure", "hx", "cs.md")
         install_target_profile(tmp)
         pipeline_dir = (
             tmp / "workspace" / "pipelines" / "infrastructure__hx__0.2.0" / _TARGET_ID
@@ -28209,7 +28385,8 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
     def _compile(self, public_api: dict, section_51: str | None = None) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
-            ir_dir = _seed_surface_tree(tmp, self._controlled_spec(section_51))
+            ir_dir = _seed_surface_tree(tmp, self._controlled_spec(section_51),
+                                        spec_kind="component")
             _write_json(ir_dir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "component", "spec_id": "hx",
                          "source_refs": {"controlled_spec": _SURFACE_CS_REF}},
@@ -28301,6 +28478,7 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
             ir_dir = tmp / ir_ref
             ir_dir.mkdir(parents=True)
             (tmp / "cs.md").write_text(self._controlled_spec(), encoding="utf-8")
+            _seed_catalog(tmp, "component", "hx", "cs.md")
             _write_json(ir_dir / "spec.ir.yaml", {
                 "meta": {"spec_kind": "component", "spec_id": "hx",
                          "source_refs": {"controlled_spec": "cs.md"}},
@@ -29567,6 +29745,514 @@ end module chan_model
     def test_the_message_names_the_rename_spelling(self) -> None:
         self.assertEqual(self._use(self._BASE.replace("call adv(x, t)", "t = x")),
                          [self._MESSAGE])
+
+
+# --- the drive gates through the validator (issue #589 PR-1a) ------------------------------------
+
+_DRIVE_IR_DIR = Path(__file__).resolve().parent / "data" / "drive_ir"
+#: The two hand-converted IRs: a `loop` problem (its spec documents beside it) and a one-call
+#: component (its spec documents are the real ones under `spec/`).
+_DRIVE_FIXTURES = {
+    "swe": (_DRIVE_IR_DIR / "shallow_water2d_0.4.7" / "spec.ir.yaml",
+            _DRIVE_IR_DIR / "shallow_water2d_0.4.7"),
+    "coriolis": (_DRIVE_IR_DIR / "coriolis_0.2.0.spec.ir.yaml", None),
+}
+
+
+_DRIVE_FIXTURE_CACHE: dict[str, dict] = {}
+
+
+def _drive_fixture(which: str) -> dict:
+    """A fresh copy of the converted fixture ``which`` (parsed once per process)."""
+    if which not in _DRIVE_FIXTURE_CACHE:
+        _DRIVE_FIXTURE_CACHE[which] = yaml.load(
+            _DRIVE_FIXTURES[which][0].read_text(encoding="utf-8"), Loader=_YAML_LOADER)
+    return copy.deepcopy(_DRIVE_FIXTURE_CACHE[which])
+
+
+#: libyaml's loader where the build has it. The converted swe IR is ~6,500 lines and the stage
+#: parses it once per gate (~16 times, about 9 s with the pure-Python loader).
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+def _fast_read_yaml():
+    """A `_read_yaml` for the mutation rows of `DriveGateStageTests`: the same document through
+    libyaml, parsed once per text and handed out as a copy. The GREEN row of the converted
+    fixtures runs the validator's own reader (`fast=False`)."""
+    cache: dict[str, object] = {}
+
+    def read(path: Path):
+        text = Path(path).read_text(encoding="utf-8")
+        if text not in cache:
+            cache[text] = yaml.load(text, Loader=_YAML_LOADER)
+        return copy.deepcopy(cache[text])
+    return read
+
+
+def _seed_drive_repo(repo: Path, ir: dict, which: str, *, tests_md: str | None = None,
+                     controlled_spec: str | None = None, catalog: object = None) -> Path:
+    """A temp repository the `Compile.static` body accepts the converted fixture ``which`` in:
+    its spec documents at its `meta.source_refs` (the fixture directory's copies, else the real
+    ones), ``tests_md`` / ``controlled_spec`` replacing them when given, the catalog entry
+    (``catalog``: None — the IR's own kind / spec_id / controlled_spec ref; a list — those
+    entries; `_OMIT` — no catalog file), the conductor-authored dependency sidecar and
+    `ir_meta.json`. Returns the IR directory, holding ``ir``."""
+    repo_real = Path(__file__).resolve().parents[2]
+    _seed_shape_expr_schema_into(repo)
+    local = _DRIVE_FIXTURES[which][1]
+    refs = ir["meta"]["source_refs"]
+    for key in ("controlled_spec", "tests", "deps"):
+        dst = repo / refs[key]
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        own = local / Path(refs[key]).name if local is not None else None
+        src = own if own is not None and own.is_file() else repo_real / refs[key]
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    if tests_md is not None:
+        (repo / refs["tests"]).write_text(tests_md, encoding="utf-8")
+    if controlled_spec is not None:
+        (repo / refs["controlled_spec"]).write_text(controlled_spec, encoding="utf-8")
+    if catalog is None:
+        _seed_catalog_for_ir(repo, ir)
+    elif catalog is not _OMIT:
+        for entry in catalog:
+            _seed_catalog(repo, **entry)
+    node_key = ir["meta"]["node_key"]
+    ir_dir = repo / "workspace" / "ir" / node_key.replace("/", "__").replace("@", "__") / "x_001"
+    ir_dir.mkdir(parents=True)
+    (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir, sort_keys=False), encoding="utf-8")
+    deps = [d["node_key"] for d in (ir.get("dependency") or {}).get("direct_deps") or []]
+    _write_dep_graph_sidecar(
+        ir_dir, node_key=node_key,
+        all_nodes=[{"node_key": d, "topo_level": 0} for d in deps]
+        + [{"node_key": node_key, "topo_level": 1 if deps else 0}],
+        transitive_deps=[])
+    _write_json(ir_dir / "ir_meta.json", {"attempt_count": 1, "verification_status": "pass",
+                                          "last_fail_reason": None, "debug_mode": False,
+                                          "context_isolated": True})
+    return ir_dir
+
+
+def _drive_stage(which: str, mutate=None, *, fast: bool = True, **seed) -> list[str]:
+    """`validate_compile_ir_dir` over the converted fixture ``which`` after ``mutate(ir)``, in a
+    temp repo (`_seed_drive_repo`); the IR directory prefix is cut from each finding. ``fast``
+    reads the IR through `_fast_read_yaml`."""
+    ir = _drive_fixture(which)
+    if mutate is not None:
+        mutate(ir)
+    with tempfile.TemporaryDirectory() as tmp:
+        ir_dir = _seed_drive_repo(Path(tmp), ir, which, **seed)
+        if fast:
+            with unittest.mock.patch.object(vps, "_read_yaml", _fast_read_yaml()):
+                found = vps.validate_compile_ir_dir(Path(tmp), ir_dir)
+        else:
+            found = vps.validate_compile_ir_dir(Path(tmp), ir_dir)
+        assert not (ir_dir / "case_inputs").exists(), "Compile.static wrote case files"
+        return [str(v).replace(str(ir_dir / "spec.ir.yaml"), "<ir>") for v in found]
+
+
+
+_CORIOLIS_ID = "dynamics_shallow_water_source_2d_coriolis"
+#: An `init` for the coriolis fixture (gate (k)'s subject): it writes `U` and its own result.
+_CORIOLIS_INIT = {
+    "kind": "subroutine", "name": f"{_CORIOLIS_ID}__init",
+    "args": [{"name": n, "rank": 0, "intent": "in", "spec": {"type": "integer"}}
+             for n in ("ncomp", "nx", "ny")]
+    + [{"name": "U", "rank": 3, "intent": "out", "spec": {"type": "real", "kind": "dp"},
+        "dims": ["ncomp", "nx", "ny"]},
+       {"name": "init_ok", "rank": 0, "intent": "out", "spec": {"type": "logical"}}]}
+
+
+def _coriolis_spec_with_init() -> str:
+    """The real coriolis controlled_spec with `_CORIOLIS_INIT` published in §5 and §5.1."""
+    repo_real = Path(__file__).resolve().parents[2]
+    text = (repo_real / _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
+            ).read_text(encoding="utf-8")
+    text = text.replace(f"The only published `operation_id` is `{_CORIOLIS_ID}__apply`.",
+                        f"The published `operation_id`s are `{_CORIOLIS_ID}__apply` and "
+                        f"`{_CORIOLIS_ID}__init`.")
+    match = re.search(r"```yaml\n(.*?)```", text, re.S)
+    block = yaml.safe_load(match.group(1))
+    block["procedures"].append(copy.deepcopy(_CORIOLIS_INIT))
+    return (text[:match.start(1)] + yaml.safe_dump(block, sort_keys=False)
+            + text[match.end(1):])
+
+
+def _coriolis_with_init(ir: dict) -> None:
+    """`drive.init` on the coriolis fixture: `init` writes `U` (no `initial_state` entry any more)
+    and `init_ok`, which one predicate reads over `initial.*` (gate (k))."""
+    api = ir["public_api"]
+    api["published_operations"].append({"operation_id": f"{_CORIOLIS_ID}__init"})
+    api["signatures"].append({"symbol": f"{_CORIOLIS_ID}__init",
+                              "signature": copy.deepcopy(_CORIOLIS_INIT)})
+    ir["drive"]["init"] = {"operation": f"{_CORIOLIS_ID}__init", "result": "init_ok",
+                           "arguments": {"ncomp": "inputs.grid.ncomp", "nx": "inputs.grid.nx",
+                                         "ny": "inputs.grid.ny", "U": "state.U",
+                                         "init_ok": "state.init_ok"}}
+    ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"].append(
+        {"name": "init_ok", "shape_expr": "scalar"})
+    for case in ir["case"]["test_case_set"]:
+        case["initial_state"].pop("U")
+    closure = next(p for p in ir["io_contract"]["predicates"] if p["expr"] == "final.guard_pass")
+    ir["io_contract"]["predicates"].append({**closure, "expr": "initial.init_ok"})
+
+
+class DriveGateStageTests(unittest.TestCase):
+    """Issue #589 PR-1a: the drive gates (SHAPE §6 (a)-(m)) through `validate_compile_ir_dir`,
+    the `Compile.static` body, over the two hand-converted fixtures in a temp repository holding
+    their spec documents and a catalog (`_drive_stage`). Each clause in both polarities: the
+    converted IR is clean, and one mutation draws that clause's own finding. `_drive_stage`
+    also asserts, on every row, that the stage wrote no `case_inputs/` (the case inputs are
+    evaluated as a gate and nothing is written). Gate (i) (D7) is driven through the stage by
+    `ValidatePipelineSemanticsTests.test_a_scalar_read_*` and
+    `test_a_pairing_over_fewer_cases_is_refused_at_the_stage` on the mock node, whose `__step`
+    writes a one-call scalar; neither converted fixture has one."""
+
+    def _hits(self, findings: list[str], fragment: str) -> list[str]:
+        return [f for f in findings if fragment in f]
+
+    def test_the_converted_fixtures_pass_the_stage_and_write_no_case_file(self) -> None:
+        for which in _DRIVE_FIXTURES:
+            with self.subTest(which):
+                ir = _drive_fixture(which)
+                with tempfile.TemporaryDirectory() as tmp:
+                    ir_dir = _seed_drive_repo(Path(tmp), ir, which)
+                    self.assertEqual(vps.validate_compile_ir_dir(Path(tmp), ir_dir), [])
+                    self.assertFalse((ir_dir / "case_inputs").exists())
+                    self.assertEqual(sorted(p.name for p in ir_dir.iterdir()),
+                                     ["dependency_graph.json", "ir_meta.json", "spec.ir.yaml"])
+
+    # --- the kind is the catalog's ---------------------------------------------------------------
+    def test_the_kind_is_read_from_the_catalog_by_spec_id(self) -> None:
+        cs_ref = _drive_fixture("swe")["meta"]["source_refs"]["controlled_spec"]
+        refused = "the spec catalog cannot answer for this node"
+        for label, catalog, reason in (
+                ("no catalog", _OMIT, "spec_catalog.yaml is absent or unreadable"),
+                ("no entry", [dict(spec_kind="problem", spec_id="other")],
+                 "has no entry for spec_id 'shallow_water2d'")):
+            with self.subTest(label):
+                v = _drive_stage("swe", catalog=catalog)
+                self.assertEqual(len(self._hits(v, refused)), 1, v)
+                self.assertIn(reason, self._hits(v, refused)[0])
+        # two kinds under one spec_id: nothing picks one
+        with tempfile.TemporaryDirectory() as tmp:
+            ir = _drive_fixture("swe")
+            catalog = Path(tmp) / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.parent.mkdir(parents=True)
+            catalog.write_text(yaml.safe_dump({"specs": [
+                {"spec_kind": "problem", "spec_id": "shallow_water2d",
+                 "controlled_spec_path": cs_ref},
+                {"spec_kind": "component", "spec_id": "shallow_water2d"}]}))
+            ir_dir = _seed_drive_repo(Path(tmp), ir, "swe", catalog=[])
+            with unittest.mock.patch.object(vps, "_read_yaml", _fast_read_yaml()):
+                v = vps.validate_compile_ir_dir(Path(tmp), ir_dir)
+            self.assertTrue(any("under more than one spec_kind (['component', 'problem'])" in x
+                                for x in v), v)
+        # the IR's label disagreeing with the registry is refused, and the drive gates run under
+        # the REGISTRY's kind: a component-labelled coriolis the catalog calls a problem is asked
+        # for the problem's `__step` (gate (a)), which a component's label would not be
+        def relabel(ir):
+            ir["meta"]["spec_kind"] = "component"
+        cor_cs = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
+        v = _drive_stage("coriolis", catalog=[dict(spec_kind="problem", spec_id=_CORIOLIS_ID,
+                                                   controlled_spec_path=cor_cs)])
+        self.assertTrue(self._hits(v, "meta.spec_kind 'component' disagrees with the spec "
+                                      "catalog, which records spec_kind 'problem'"), v)
+        self.assertTrue(self._hits(v, f"(a) a problem publishes {_CORIOLIS_ID}__step"), v)
+        v = _drive_stage("swe", relabel, catalog=[dict(spec_kind="problem",
+                                                       spec_id="shallow_water2d",
+                                                       controlled_spec_path=_drive_fixture(
+                                                           "swe")["meta"]["source_refs"][
+                                                           "controlled_spec"])])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("meta.spec_kind 'component' disagrees", v[0])
+
+    def test_an_infrastructure_node_carries_no_drive(self) -> None:
+        """The catalog says `infrastructure`: `drive` is refused (its own runner runs its cases);
+        the same IR without `drive` draws no drive finding, and declares no loop artifact."""
+        cs_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
+        catalog = [dict(spec_kind="infrastructure", spec_id=_CORIOLIS_ID,
+                        controlled_spec_path=cs_ref)]
+
+        def infra(ir):
+            ir["meta"]["spec_kind"] = "infrastructure"
+        v = _drive_stage("coriolis", infra, catalog=catalog)
+        self.assertEqual(v, ["<ir>:drive: an infrastructure node carries no drive block (its "
+                             "own runner runs its cases)"])
+        # an EMPTY block is a block: the same refusal, and the loop artifacts are no driver's
+        def empty(ir):
+            infra(ir)
+            ir["drive"] = {}
+            ir["io_contract"]["raw_requirements"]["required_evidence"].append(
+                {"artifact": "state_history"})
+        v = _drive_stage("coriolis", empty, catalog=catalog)
+        self.assertTrue(self._hits(v, "an infrastructure node carries no drive block"), v)
+
+        def bare(ir):
+            infra(ir)
+            del ir["drive"]
+        self.assertFalse([x for x in _drive_stage("coriolis", bare, catalog=catalog)
+                          if "drive" in x.split(":", 1)[1][:8]])
+        # the driver's loop artifacts are refused on an IR with no drive block at all
+        for artifact in ("state_history", "step_series"):
+            def loop_artifact(ir, artifact=artifact):
+                bare(ir)
+                ir["io_contract"]["raw_requirements"]["required_evidence"].append(
+                    {"artifact": artifact, "required": True})
+            with self.subTest(artifact):
+                v = _drive_stage("coriolis", loop_artifact, catalog=catalog)
+                self.assertEqual(len(self._hits(
+                    v, f"artifact '{artifact}' is produced only by the host-rendered driver of "
+                       "a node whose drive block declares a loop, and this IR carries no drive "
+                       "block")), 1, v)
+
+    # --- (a)-(h) ------------------------------------------------------------------------------
+    def test_a_problem_publishes_and_drives_its_step(self) -> None:   # (a)
+        repo_real = Path(__file__).resolve().parents[2]
+        spec = (_DRIVE_FIXTURES["swe"][1] / "controlled_spec.md").read_text(encoding="utf-8")
+
+        def rename(ir):
+            text = json.dumps(ir).replace("shallow_water2d__step", "shallow_water2d__advance")
+            ir.clear()
+            ir.update(json.loads(text))
+        v = _drive_stage("swe", rename, controlled_spec=spec.replace("shallow_water2d__step",
+                                                                     "shallow_water2d__advance"))
+        self.assertEqual(sorted(v), [
+            "<ir>:(a) a problem publishes shallow_water2d__step in "
+            "public_api.published_operations (D3)",
+            "<ir>:(a) drive.step.operation is 'shallow_water2d__advance'; a problem's drive.step "
+            "calls shallow_water2d__step"])
+        del repo_real
+
+    def test_every_dummy_is_bound_once_by_the_vocabulary(self) -> None:   # (b)
+        rows = [
+            ("a key that is no dummy",
+             lambda d: d["step"]["arguments"].update(bogus="state.U"),
+             "drive.step.arguments names ['bogus'], which are not dummies of "
+             f"{_CORIOLIS_ID}__apply"),
+            ("a dummy unbound", lambda d: d["step"]["arguments"].pop("ncomp"),
+             "drive.step.arguments binds no value to dummy(ies) ['ncomp']"),
+        ]
+        for label, edit, fragment in rows:
+            with self.subTest(label):
+                v = _drive_stage("coriolis", lambda ir, edit=edit: edit(ir["drive"]))
+                self.assertEqual(len(self._hits(v, fragment)), 1, v)
+
+    def test_the_case_shapes_are_evaluated(self) -> None:   # (c)
+        def wrong_shape(ir):
+            ir["case"]["test_case_set"][0]["initial_state"]["h"] = [[1.0, 2.0], [3.0, 4.0]]
+        v = _drive_stage("swe", wrong_shape)
+        self.assertEqual(len(self._hits(
+            v, "(c) case 'swe2d_ref_n032_sx000_sy000_dts100': initial_state.h: a literal of "
+               "shape [2, 2], the state's is [32, 32]")), 1, v)
+
+    def test_the_result_is_a_logical_out(self) -> None:   # (d)
+        v = _drive_stage("coriolis", lambda ir: ir["drive"]["step"].update(result="S"))
+        self.assertEqual(len(self._hits(
+            v, f"(d) drive.step.result 'S' is not a logical rank-0 out dummy of "
+               f"{_CORIOLIS_ID}__apply")), 1, v)
+
+    def test_the_loop_references_resolve(self) -> None:   # (e)
+        v = _drive_stage("swe", lambda ir: ir["drive"]["loop"].update(n_step="state.h"))
+        self.assertEqual(v, ["<ir>:(e) drive.loop.n_step (state.h): a state.<var> loop "
+                             "reference names a scalar init writes"])
+        v = _drive_stage("swe", lambda ir: ir["drive"]["loop"].pop("t_end"))
+        self.assertTrue(self._hits(v, "drive.loop.t_end is required whenever loop is declared"),
+                        v)
+        v = _drive_stage("swe", lambda ir: ir["drive"].pop("history"))
+        self.assertTrue(self._hits(v, "(e) drive.history is required with loop"), v)
+
+    def test_every_variable_init_does_not_write_has_one_initial_state(self) -> None:   # (f)
+        first = "l0_zero_f"
+        rows = [
+            ("absent", lambda c: c["initial_state"].pop("S"),
+             f"(f) case '{first}': initial_state has no entry for ['S']"),
+            ("an output's content is a literal",
+             lambda c: c["initial_state"].update(S="0.0 * xc"),
+             f"(f) case '{first}': initial_state.S — an output the operation only writes takes "
+             "a number literal"),
+            ("the logical result takes none",
+             lambda c: c["initial_state"].update(guard_pass=0),
+             f"(f) case '{first}': initial_state.guard_pass — a variable init writes, or a "
+             "logical result the driver writes, takes no initial_state entry"),
+        ]
+        for label, edit, fragment in rows:
+            with self.subTest(label):
+                v = _drive_stage("coriolis", lambda ir, edit=edit:
+                                 edit(ir["case"]["test_case_set"][0]))
+                self.assertEqual(len(self._hits(v, fragment)), 1, v)
+
+    def test_a_step_list_partitions_the_cases(self) -> None:   # (f')
+        def listed(parts):
+            def edit(ir):
+                ids = [c["case_id"] for c in ir["case"]["test_case_set"]]
+                step = ir["drive"]["step"]
+                ir["drive"]["step"] = [{**step, "cases": part(ids)} for part in parts]
+            return edit
+        self.assertEqual(_drive_stage("coriolis", listed(
+            [lambda ids: ids[:2], lambda ids: ids[2:]])), [])
+        v = _drive_stage("coriolis", listed([lambda ids: ids[:-1]]))
+        self.assertEqual(v, ["<ir>:(f') drive.step[].cases leaves ['l0_ncomp4'] to no entry"])
+        v = _drive_stage("coriolis", listed([lambda ids: ids, lambda ids: ids[:1]]))
+        self.assertEqual(v, ["<ir>:(f') drive.step[].cases lists ['l0_zero_f'] more than once"])
+        # a loop node takes one mapping entry
+        v = _drive_stage("swe", listed([lambda ids: ids]))
+        self.assertTrue(self._hits(v, "(f') a loop node's drive.step is one mapping entry"), v)
+
+    def test_a_host_expression_reads_no_capture(self) -> None:   # (g)
+        v = _drive_stage("coriolis", lambda ir: ir["case"]["test_case_set"][0][
+            "initial_state"].update(U="final.S"))
+        self.assertEqual(v, ["<ir>:(g) case 'l0_zero_f': initial_state.U: final.S is not "
+                             "admitted here: an initial_state expression reads inputs.*, "
+                             "coordinates and constants only"])
+
+    def test_the_loop_artifacts_follow_the_loop(self) -> None:   # (h)
+        def series(edit):
+            def mutate(ir):
+                for ev in ir["io_contract"]["raw_requirements"]["required_evidence"]:
+                    if ev["artifact"] == "step_series":
+                        edit(ev)
+            return mutate
+        v = _drive_stage("swe", series(lambda ev: ev["names"].pop()))
+        self.assertEqual(len(self._hits(v, "(h) step_series.names must be exactly")), 1, v)
+
+        def no_history(ir):
+            ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
+            ev[:] = [e for e in ev if e["artifact"] != "state_history"]
+        v = _drive_stage("swe", no_history)
+        self.assertEqual(len(self._hits(v, "(h) the state_history evidence entry is declared "
+                                           "iff drive.history is")), 1, v)
+        v = _drive_stage("coriolis", lambda ir: ir["io_contract"]["raw_requirements"][
+            "required_evidence"].append({"artifact": "step_series", "names": ["t", "step"]}))
+        self.assertEqual(len(self._hits(v, "(h) the step_series evidence entry is declared "
+                                           "iff drive.loop is")), 1, v)
+
+    def test_the_existing_checks_hold_under_the_drive_reads(self) -> None:   # (j)
+        """#582's checks, unchanged, read with grammar 6's state set. A predicate over the
+        host's own `initial.h` alone reads no state the kernel produced (`h` is
+        host-materialized on this node): refused. Under the pre-drive rule (`reads=None`, every
+        schema variable a state read) it would pass — the row that reddens if the stage stops
+        handing `predicate_schema_context` to the predicate gate. The same read beside
+        `final.h` is admitted, and a dropped predicate is the omission gate's."""
+        def read(expr):
+            def mutate(ir):
+                preds = ir["io_contract"]["predicates"]
+                closure = next(p for p in preds
+                               if p["expr"].replace(" ", "").startswith("final.step-"))
+                preds.append({**closure, "expr": expr, "op": "le", "value": 1.0e9})
+            return mutate
+        v = _drive_stage("swe", read("max(initial.h)"))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("reads no captured state the kernel produced", v[0])
+        self.assertEqual(_drive_stage("swe", read("max(initial.h) + max(final.h)")), [])
+        v = _drive_stage("coriolis", lambda ir: ir["io_contract"]["predicates"].pop(1))
+        self.assertEqual(len(self._hits(v, "no predicate (one that is not cross-target) judges "
+                                           "['max_abs_s']")), 1, v)
+
+    def test_every_variable_init_writes_is_read_over_initial(self) -> None:   # (k)
+        spec = _coriolis_spec_with_init()
+        self.assertEqual(_drive_stage("coriolis", _coriolis_with_init, controlled_spec=spec), [])
+
+        def unread(ir):
+            _coriolis_with_init(ir)
+            ir["io_contract"]["predicates"].pop()
+        v = _drive_stage("coriolis", unread, controlled_spec=spec)
+        self.assertEqual(v, ["<ir>:(k) 'init_ok', which init writes, is read by no predicate "
+                             "over initial.init_ok"])
+
+    def test_the_zero_step_closure_has_its_fixed_form(self) -> None:   # (l)
+        def loop_closure(ir):
+            for p in ir["io_contract"]["predicates"]:
+                if p["expr"].replace(" ", "").startswith("final.step-"):
+                    p["value"] = 1
+        v = _drive_stage("swe", loop_closure)
+        passing = [t["test_id"] for t in _drive_fixture("swe")["io_contract"]["tests"]
+                   if t["expected_outcome"] == "pass"]
+        hits = self._hits(v, "carries no predicate `expr: \"final.step - <ref>\"`")
+        self.assertEqual(len(hits), len(passing), v)
+
+        def one_call(ir):
+            for p in ir["io_contract"]["predicates"]:
+                if p["expr"] == "final.guard_pass" and p["test_id"] == "l0_pointwise_formula_pass":
+                    p["value"] = 0.0
+        v = _drive_stage("coriolis", one_call)
+        self.assertEqual(v, ["<ir>:(l) test 'l0_pointwise_formula_pass' (pass) carries no "
+                             "predicate `expr: \"final.guard_pass\"`, `op: eq`, `value: 1`, "
+                             "`per_case: true` over all its target cases (the call's result, "
+                             "the zero-step closure of a one-call node)"])
+
+    # --- (m), the tests.md `history:` line --------------------------------------------------------
+    _HISTORY = "- history: every = 38 (history.every)\n"
+
+    def _swe_tests(self, line: str) -> str:
+        text = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
+        self.assertEqual(text.count(self._HISTORY), 1)
+        return text.replace(self._HISTORY, line)
+
+    def test_the_history_line_states_the_stride(self) -> None:   # (m), admitted
+        ids = [c["case_id"] for c in _drive_fixture("swe")["case"]["test_case_set"]]
+        per_case = ", ".join(f"{c} = 38" for c in ids)
+        for label, line in (
+                ("bullet", self._HISTORY),
+                ("plain", "history: every = 38 (history.every)\n"),
+                ("star, backticks", "* `history`: every = `38` (`history.every`)\n"),
+                ("per case", f"- history: every = (history.every) {per_case}\n")):
+            with self.subTest(admitted=label):
+                self.assertEqual(_drive_stage("swe", tests_md=self._swe_tests(line)), [])
+
+    def test_a_history_line_that_does_not_state_the_stride_is_refused(self) -> None:   # (m)
+        ids = [c["case_id"] for c in _drive_fixture("swe")["case"]["test_case_set"]]
+        per_case = ", ".join(f"{c} = 38" for c in ids)
+        for label, line, fragment, count in (
+                ("absent", "", "(m) tests.md carries 0 `history:` lines", 1),
+                ("twice", self._HISTORY * 2, "(m) tests.md carries 2 `history:` lines", 1),
+                ("not a number", "- history: every = N (history.every)\n",
+                 "is not `every = <number> (<input name>)`", 1),
+                ("another number", self._HISTORY.replace("38", "37"),
+                 "inputs.history.every is 38, and the tests.md `history:` line (line 145) "
+                 "states 37", len(ids)),
+                ("another input", self._HISTORY.replace("history.every", "history.stride"),
+                 "the `history:` line names the input 'history.stride', and "
+                 "drive.history.every is inputs.history.every", 1),
+                ("a case left out",
+                 "- history: every = (history.every) " + ", ".join(
+                     f"{c} = 38" for c in ids[1:]) + "\n",
+                 f"cases ['{ids[0]}'] are not listed", 1),
+                ("a case listed twice",
+                 f"- history: every = (history.every) {per_case}, {ids[0]} = 38\n",
+                 f"case '{ids[0]}' is listed twice", 1)):
+            with self.subTest(refused=label):
+                v = _drive_stage("swe", tests_md=self._swe_tests(line))
+                self.assertEqual(len(self._hits(v, fragment)), count, v)
+
+    def test_a_node_without_a_loop_carries_no_history_line(self) -> None:   # (m)
+        repo_real = Path(__file__).resolve().parents[2]
+        cor_tests = (repo_real / _drive_fixture("coriolis")["meta"]["source_refs"]["tests"]
+                     ).read_text(encoding="utf-8")
+        v = _drive_stage("coriolis", tests_md=cor_tests + "\n- history: every = 1 (history.every)\n")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("a `history:` line is refused on a node whose drive declares no loop", v[0])
+
+    def test_the_stage_hands_the_predicate_gate_its_drive_context(self) -> None:
+        """The wiring itself: `_validate_tests_and_predicates` calls
+        `validate_primary_predicate_schema` with every key `predicate_schema_context` returns,
+        so a new grammar-6 key cannot be left at its pre-drive default by the stage."""
+        from tools import primary_evidence as pe
+        seen: list[dict] = []
+        real = pe.validate_primary_predicate_schema
+
+        def spy(*args, **kwargs):
+            seen.append(kwargs)
+            return real(*args, **kwargs)
+        with unittest.mock.patch.object(pe, "validate_primary_predicate_schema", spy):
+            self.assertEqual(_drive_stage("swe"), [])
+        self.assertEqual(len(seen), 1)
+        context = pe.predicate_schema_context(_drive_fixture("swe"))
+        self.assertTrue(set(context) <= set(seen[0]), seen[0])
+        self.assertIsNotNone(seen[0]["reads"])
+        self.assertEqual(seen[0]["reads"], context["reads"])
+        self.assertIsNotNone(seen[0]["case_inputs"])
+        self.assertTrue(seen[0]["history_declared"])
+        self.assertEqual(seen[0]["series_names"], context["series_names"])
 
 
 if __name__ == "__main__":

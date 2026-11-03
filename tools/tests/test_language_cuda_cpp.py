@@ -752,6 +752,12 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                     "meta": {"spec_kind": "component", "spec_id": "c",
                              "source_refs": {"controlled_spec": "cs.md"}},
                     "public_api": _public_api(_POINTWISE)}))
+                # The gate reads the node's kind from the catalog (issue #589).
+                catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+                catalog.parent.mkdir(parents=True)
+                catalog.write_text(yaml.safe_dump({"specs": [
+                    {"spec_kind": "component", "spec_id": "c",
+                     "controlled_spec_path": "cs.md"}]}))
                 install_target_profile(repo, profile_with(
                     hardware={"class": "gpu"},
                     toolchain={"language": "cuda_cpp", "compiler": "nvcc"},

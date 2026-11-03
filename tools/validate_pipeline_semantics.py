@@ -125,24 +125,33 @@ FORBIDDEN_RUNNER_OUTPUTS = (
 LLM_REVIEW_FILENAME = "semantic_review.json"
 RAW_EVIDENCE_ARTIFACTS = {
     "state_snapshots",
+    # Issue #589: the driver's samples of the whole state every `drive.history.every` committed
+    # steps, and its per-step series (`names`). Each is declared iff `drive.loop` / `drive.history`
+    # is (`primary_evidence.drive_violations` (h)); neither carries a `schema`. Admission is
+    # `raw_evidence_excerpt.RAW_EVIDENCE_ALIASES`, which carries the same two names.
+    "state_history",
+    "step_series",
 }
+#: The artifacts only the host-rendered driver of a node with `drive.loop` produces.
+DRIVE_LOOP_EVIDENCE_ARTIFACTS = frozenset({"state_history", "step_series"})
 # Where a runtime value goes when an IR reaches for a raw-evidence artifact the
 # workflow does not produce. Defined here and RESTATED verbatim by
 # phase_01_compile.md (`evidence_ref` bullet) so a warm retry converges on the
 # same routing the contract states; the document does not cite this constant, so
 # `test_execution_trace_is_refused_at_compile_and_contract_states_the_remedy` is
 # what holds the two spellings together. Stated in the form the PRODUCER supports, not
-# only the form this validator accepts: a snapshot variable is a float64 module
-# variable of the checks module that the host-rendered runner serializes
-# (docs/workflow/CHECKS_MODULE_CONTRACT.md §1-b; Compile, whose leaf reads this remedy, is
-# target-free, so it names no language's spelling — issue #289) — so the artifact carries no
-# string, and there is no per-run slot apart from the snapshot variables.
+# only the form this validator accepts: since issue #589 the host-rendered driver passes
+# each operation its `drive` bindings and captures the states bound to the operation's
+# `out` / `inout` dummies (Compile, whose leaf reads this remedy, is target-free, so it names
+# no language's spelling — issue #289), so the artifact carries no string, and there is no
+# per-run slot apart from the snapshot variables.
 RAW_EVIDENCE_ROUTING_REMEDY = (
-    "a per-case runtime value is a state_snapshots variable with the value's shape_expr, "
-    "valued numerically (a snapshot variable is a float64 module variable the runner "
-    "serializes); a case INPUT — an enumerated selector included — is not an evidence "
-    "artifact at all: it lives in case.test_case_set[].inputs, which the host holds, and is "
-    "not echoed into the snapshot"
+    'a per-case value the operation receives is a drive binding — inputs.<path> for a case '
+    'input, derived.<name> for a value the host computes from the inputs, state.<var> for a '
+    'state; a value the operation writes is a state_snapshots variable bound to an out or '
+    'inout dummy, which the driver captures; a case INPUT — an enumerated selector included '
+    '— is not an evidence artifact at all: it lives in case.test_case_set[].inputs, which '
+    'the host holds, and is never a snapshot variable'
 )
 # The raw-evidence tokens an IR used to be able to name that no Generate contract
 # produces (issue #235; `metrics_basis.json` since issue #582).
@@ -246,12 +255,10 @@ CROSS_TARGET_JUDGMENT_PHRASE = "The cross-target judgment is applied"
 #: The line of a `tests.md` test definition that lists the judgments the test makes (issue #582,
 #: `docs/TESTS.md` §Description format): one line in the definition, opening with the key.
 TEST_QUANTITIES_LINE = re.compile(r"^[-*]?\s*`?quantities`?\s*:\s*(.*)$")
-#: The line of a `tests.md` test definition that names the snapshot variables the operation reports
-#: as a run-wide reduction (issue #582 review, `docs/TESTS.md` §Description format). The IR's
-#: `source: reported` set is pinned to these lines, since the Compile leaf writes that label and
-#: cannot edit this document.
+#: The `reported` line of a `tests.md` (issue #582 review): it named the snapshot variables the
+#: operation reported as a run-wide reduction. Issue #589 retired the class, and this pattern is
+#: kept as the DETECTOR that refuses the line at Compile (`_tests_md_reported_lines`).
 TEST_REPORTED_LINE = re.compile(r"^[-*]?\s*`?reported`?\s*:\s*(.*)$")
-_SNAPSHOT_VARIABLE_NAME = re.compile(r"^[A-Za-z_]\w*$")
 # Bundled schema lives next to this validator; used as the canonical fallback
 # when no target repo_root is in scope (tests, ad-hoc invocation) and as the
 # default canonical reference for the validator's pinned rules.
@@ -2966,8 +2973,8 @@ def _validate_generate_outputs_for_generation(
 
     # §5.1 signature pin: a node whose `spec_kind` publishes an EXACT surface
     # (`_EXACT_PUBLISHED_SURFACE_KINDS` — `infrastructure` since R1/M3c-α, `component` since issue
-    # #153 PR-2) must publish every §5.1 canonical signature verbatim in its generated model. A
-    # no-op for `problem`, whose interface is legitimately derived post-hoc.
+    # #153 PR-2, `problem` since issue #589) must publish every §5.1 canonical signature verbatim
+    # in its generated model. The kind is the catalog's.
     _validate_generated_signatures(
         repo_root, execution, model_files, violations
     )
@@ -3023,12 +3030,23 @@ def _validate_component_generated_surface(
         return
     if not isinstance(ir, dict):
         return
-    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
-    # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
-    # the two public-API gates each had before issue #153 PR-2 merged them into
-    # `_validate_published_surface`, which is why the merged gate normalizes once for both kinds.
-    if str(meta.get("spec_kind") or "").strip() != "component":
+    # The kind is the CATALOG's (issue #589), by the spec_id the conductor's node_key carries;
+    # the IR's `meta.spec_kind` is the leaf's label (an exact match on it once let
+    # `"  component  "` skip this pin). A node_key naming a component the registry cannot
+    # answer for is refused rather than skipped. Component-only: the L1b subject is the name
+    # set a CONSUMER calls; a `problem`'s operations are called by the host-rendered driver,
+    # whose surface `_validate_generated_signatures` pins.
+    key_spec_id = _spec_id_from_node_key(str(execution.node_key))
+    kind_by_key = str(execution.node_key).split("/", 1)[0].strip()
+    catalog_kind, catalog_reason = (_catalog_spec_kind(repo_root, key_spec_id) if key_spec_id
+                                    else (None, "the node_key names no spec_id"))
+    if catalog_kind is None:
+        if kind_by_key == "component" and model_files:
+            violations.append(
+                f"{model_files[0]}: the component node's published operation names cannot be "
+                f"pinned at Generate.static ({catalog_reason}) — fail-closed")
+        return
+    if catalog_kind != "component":
         return
     public_api = ir.get("public_api")
     if not isinstance(public_api, dict) or "published_operations" not in public_api:
@@ -3762,30 +3780,115 @@ def _parse_test_quantities_from_tests_md(
     return out, problems
 
 
-def _parse_reported_variables_from_tests_md(
-    tests_path: Path,
-) -> tuple[dict[str, set[str]], list[str]] | None:
-    """Each `tests.md` definition's `reported:` line (`TEST_REPORTED_LINE`) as its names, keyed by
-    test id, and the problems found: a definition with two, or an entry that is not a variable
-    name. No line says the test reads no reported variable. None when the file cannot be read."""
-    blocks = _tests_md_definition_blocks(tests_path)
-    if blocks is None:
+def _tests_md_reported_lines(tests_path: Path) -> list[tuple[int, str]] | None:
+    """Every line of ``tests_path`` that `TEST_REPORTED_LINE` matches, as ``(line number,
+    text)``, over the WHOLE file (inside a test definition or not), or None when the file
+    cannot be read. Issue #589 retired the `reported` class: the line is refused wherever it
+    stands, and this is its detector."""
+    try:
+        text = tests_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
         return None
-    out: dict[str, set[str]] = {}
-    problems: list[str] = []
-    for tid, lines in blocks.items():
-        found = [m for m in (TEST_REPORTED_LINE.match(line) for line in lines) if m]
-        if len(found) > 1:
-            problems.append(f"test {tid!r} has {len(found)} `reported:` lines in its definition")
-            continue
-        for match in found:
-            names = [entry.strip().strip("`") for entry in match.group(1).split(",")]
-            bad = [n for n in names if not _SNAPSHOT_VARIABLE_NAME.match(n)]
-            if bad:
-                problems.append(f"test {tid!r} `reported:` line holds {bad}, not variable names")
+    return [(n, line.strip()) for n, line in enumerate(text.splitlines(), start=1)
+            if TEST_REPORTED_LINE.match(line.strip())]
+
+
+#: The `history` line of a `tests.md` whose node runs a time loop (issue #589,
+#: `docs/TESTS.md` §Description format): `history: every = <N> (<input name>)`, or the per-case
+#: form `history: every = (<input name>) <case_id> = <M>, ...`. A leading `- ` / `* ` bullet and
+#: backticks are admitted like the other definition lines (`TEST_QUANTITIES_LINE`).
+TEST_HISTORY_LINE = re.compile(r"^[-*]?\s*`?history`?\s*:\s*(.*)$")
+_HISTORY_NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
+_HISTORY_INPUT = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"
+_HISTORY_ONE_FORM = re.compile(
+    rf"^every\s*=\s*({_HISTORY_NUMBER})\s*\(\s*({_HISTORY_INPUT})\s*\)\s*\.?$")
+_HISTORY_PER_CASE_FORM = re.compile(
+    rf"^every\s*=\s*\(\s*({_HISTORY_INPUT})\s*\)\s*(.+?)\s*\.?$")
+_HISTORY_CASE_PAIR = re.compile(rf"^([A-Za-z0-9._][A-Za-z0-9._-]*)\s*=\s*({_HISTORY_NUMBER})$")
+
+
+def _history_line_violations(tests_path: Path, ir: dict) -> list[str]:
+    """Gate (m) (issue #589): the `tests.md` `history:` line against `drive`. A node whose
+    `drive` declares `loop` carries exactly ONE line (`TEST_HISTORY_LINE`) in one of its two
+    forms, with a NUMBER — the input name equals `drive.history.every` without `inputs.`, and
+    every case's `inputs.<name>` equals the line's number (the per-case form lists every case
+    once). A node without `loop` (an IR with no `drive` included) carries no such line. A
+    malformed `drive` is `drive_violations`' to report, and this gate then reads nothing.
+    Whether the number is an integer >= 0 is the case evaluator's (`drive_violations` (c))."""
+    from tools.primary_evidence import PrimaryEvidenceError, drive_block
+
+    try:
+        text = tests_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    try:
+        block = drive_block(ir)
+    except PrimaryEvidenceError:
+        return []
+    lines = [(n, m.group(1).replace("`", "").strip())
+             for n, raw in enumerate(text.splitlines(), start=1)
+             if (m := TEST_HISTORY_LINE.match(raw.strip()))]
+    loop = block is not None and block.loop is not None
+    if not loop:
+        return [f"(m) tests.md line {n}: a `history:` line is refused on a node whose drive "
+                "declares no loop (it takes no state_history samples)" for n, _ in lines]
+    if len(lines) != 1:
+        return [f"(m) tests.md carries {len(lines)} `history:` lines; a node whose drive declares "
+                "a loop carries exactly one (`history: every = <N> (<input name>)`, or `history: "
+                "every = (<input name>) <case_id> = <M>, ...`), docs/TESTS.md"]
+    lineno, body = lines[0]
+    case_block = ir.get("case")
+    tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
+    cases = {c["case_id"].strip(): c for c in (tcs if isinstance(tcs, list) else [])
+             if isinstance(c, dict) and isinstance(c.get("case_id"), str)
+             and c["case_id"].strip()}
+    stated: dict[str, float] = {}
+    one = _HISTORY_ONE_FORM.match(body)
+    per_case = None if one else _HISTORY_PER_CASE_FORM.match(body)
+    if one:
+        name = one.group(2)
+        stated = {cid: float(one.group(1)) for cid in cases}
+    elif per_case:
+        name = per_case.group(1)
+        problems: list[str] = []
+        for item in per_case.group(2).split(","):
+            pair = _HISTORY_CASE_PAIR.match(item.strip())
+            if pair is None:
+                problems.append(f"{item.strip()!r} is not `<case_id> = <number>`")
                 continue
-            out[tid] = set(names)
-    return out, problems
+            cid = pair.group(1)
+            if cid in stated:
+                problems.append(f"case {cid!r} is listed twice")
+            elif cid not in cases:
+                problems.append(f"case {cid!r} is not a case of case.test_case_set")
+            stated[cid] = float(pair.group(2))
+        absent = sorted(set(cases) - set(stated))
+        if absent:
+            problems.append(f"cases {absent} are not listed")
+        if problems:
+            return [f"(m) tests.md line {lineno}: the per-case `history:` line {body!r}: "
+                    + "; ".join(problems)]
+    else:
+        return [f"(m) tests.md line {lineno}: `history:` {body!r} is not `every = <number> "
+                "(<input name>)` or `every = (<input name>) <case_id> = <number>, ...` — the "
+                "stride is a NUMBER the gate compares with every case's input"]
+    v: list[str] = []
+    every = block.history_every
+    if every is not None and name != every:
+        v.append(f"(m) tests.md line {lineno}: the `history:` line names the input {name!r}, and "
+                 f"drive.history.every is inputs.{every}")
+    for cid in sorted(cases):
+        if cid not in stated:
+            continue
+        inputs = cases[cid].get("inputs")
+        cur: Any = inputs
+        for seg in name.split("."):
+            cur = cur.get(seg) if isinstance(cur, dict) else None
+        if isinstance(cur, bool) or not isinstance(cur, (int, float)) \
+                or float(cur) != stated[cid]:
+            v.append(f"(m) case {cid!r}: inputs.{name} is {cur!r}, and the tests.md `history:` "
+                     f"line (line {lineno}) states {stated[cid]:g}")
+    return v
 
 
 # Matches a top-level numbered controlled_spec heading `## <n>. Title`. The `(?:\s|$)`
@@ -4917,6 +5020,11 @@ def _validate_io_contract_file(
     # `algorithm.state_variables` is not carried by the flattening either; keep the declared
     # names for the snapshot-coverage rule below (Z6, issue #255).
     declared_state_variables = _algorithm_state_variable_names(contract)
+    # Whether the IR carries `drive` at all (issue #589): `drive_violations` (h) pins the two loop
+    # artifacts to `drive.loop` / `drive.history` on a node that has one, and an IR with none
+    # (an `infrastructure` node, whose own runner runs its cases) has no driver to produce them.
+    from tools.primary_evidence import _has_drive  # the one spelling of "carries drive"
+    carries_drive = _has_drive(contract)
 
     # New IR: spec.ir.yaml has the io_contract section nested under
     # `io_contract:` and contains inputs / outputs / raw_requirements /
@@ -5076,6 +5184,12 @@ def _validate_io_contract_file(
             violations.append(
                 f"{contract_path}:raw_requirements.required_evidence[{idx}].required must be bool when present"
             )
+
+        if artifact in DRIVE_LOOP_EVIDENCE_ARTIFACTS and not carries_drive:
+            violations.append(
+                f"{contract_path}:raw_requirements.required_evidence[{idx}].artifact "
+                f"{raw_artifact!r} is produced only by the host-rendered driver of a node whose "
+                "drive block declares a loop, and this IR carries no drive block")
 
         if artifact != "state_snapshots":
             continue
@@ -5380,6 +5494,15 @@ def _extract_spec_var_names(derived_path: Path) -> set[str] | None:
                     n = var.get("name")
                     if isinstance(n, str) and n.strip():
                         names.add(n.strip())
+    # A case's `derived` names (issue #589): values the HOST computes per case from the inputs
+    # (a dt rule, a step count) and passes through `drive` bindings — traceable to the spec's
+    # own `tests.md` rule, as an input is.
+    case_block = data.get("case")
+    tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
+    for case in tcs if isinstance(tcs, list) else []:
+        derived = case.get("derived") if isinstance(case, dict) else None
+        if isinstance(derived, dict):
+            names.update(str(k).strip() for k in derived if str(k).strip())
     return names
 
 
@@ -8959,13 +9082,20 @@ _CANONICAL_SPEC_KINDS = ("component", "infrastructure", "problem")
 #: component's six certified sources carried six different argument lists — two of them from the
 #: SAME IR — which is how a certified consumer came to be linked against an interface that had
 #: moved (issue #153 cause A).
-_EXACT_PUBLISHED_SURFACE_KINDS: tuple[str, ...] = ("infrastructure", "component")
+#:
+#: `problem` joined in issue #589: the host-rendered driver calls a problem's `<spec_id>__step`
+#: (and `__init`) from the IR's `drive` block, so its ABI is a contract the host renders against,
+#: not a property of the last generation. Membership is asked of the CATALOG's kind
+#: (`_catalog_spec_kind`), never of the IR's `meta.spec_kind`.
+_EXACT_PUBLISHED_SURFACE_KINDS: tuple[str, ...] = ("infrastructure", "component", "problem")
 
-#: Per-kind hint for the "§5 parsed zero operations" refusal. The two kinds state their published
+#: Per-kind hint for the "§5 parsed zero operations" refusal. The kinds state their published
 #: surface in different prose, so the remedy has to name the form the author actually has to write.
 _SECTION5_FORM_HINT: dict[str, str] = {
     "infrastructure": "unrecognized 'published operation_ids are exactly' form",
     "component": "unrecognized published-operation form",
+    "problem": "no `<spec_id>__step` backtick span — a problem's §5 names its published "
+               "`<spec_id>__step` (and `<spec_id>__init` where needed), docs/CONTROLLED_SPEC.md",
 }
 
 
@@ -9008,6 +9138,97 @@ def _catalog_controlled_spec_path(repo_root: Path, kind: str, spec_id: str) -> s
     return None
 
 
+#: Where a node's `spec_kind` is read from (issue #589): the operator-authored registry, by
+#: `spec_id` alone — its own key, as `run_workflow.py` reads the kind at launch. Never the IR's
+#: `meta.spec_kind`, which the `compile.generate` leaf writes and which decides whether a
+#: node is held to `drive` and to the exact published surface.
+SPEC_CATALOG_REF = "spec/registry/spec_catalog.yaml"
+
+
+def _catalog_spec_kind(repo_root: Path, spec_id: str) -> tuple[str | None, str]:
+    """``(kind, "")`` — the registry's `spec_kind` for ``spec_id`` — or ``(None, reason)`` when
+    the registry cannot answer: absent, unreadable, unparseable, carrying no entry for the id,
+    or entries of two kinds under it (ambiguous; nothing picks one). The caller REFUSES a
+    `None` (`_validate_catalog_spec_kind`) or fails closed on it: a gate this kind switches is
+    never skipped because the registry was silent."""
+    catalog = repo_root / SPEC_CATALOG_REF
+    if not _is_readable_file(catalog):
+        return None, f"{SPEC_CATALOG_REF} is absent or unreadable"
+    try:
+        doc = yaml.safe_load(catalog.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None, f"{SPEC_CATALOG_REF} does not parse"
+    entries = doc.get("specs") if isinstance(doc, dict) else None
+    if not isinstance(entries, list):
+        return None, f"{SPEC_CATALOG_REF} carries no `specs` list"
+    kinds = {
+        str(entry.get("spec_kind") or "").strip()
+        for entry in entries
+        if isinstance(entry, dict) and str(entry.get("spec_id") or "").strip() == spec_id
+    }
+    if not kinds:
+        return None, f"{SPEC_CATALOG_REF} has no entry for spec_id '{spec_id}'"
+    if len(kinds) > 1:
+        return None, (f"{SPEC_CATALOG_REF} lists spec_id '{spec_id}' under more than one "
+                      f"spec_kind ({sorted(kinds)})")
+    return next(iter(kinds)), ""
+
+
+def _ir_catalog_spec_kind(repo_root: Path, ir: dict) -> str | None:
+    """The catalog's `spec_kind` for the IR's `meta.spec_id`, or None when the registry cannot
+    answer (or the IR names no spec_id) — refused by `_validate_catalog_spec_kind`."""
+    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
+    spec_id = str(meta.get("spec_id") or "").strip()
+    if not spec_id:
+        return None
+    return _catalog_spec_kind(repo_root, spec_id)[0]
+
+
+def _validate_catalog_spec_kind(
+    repo_root: Path, ir_dir: Path, violations: list[str]
+) -> None:
+    """`Compile.static` (issue #589): the node's kind is the catalog's, so an IR the registry
+    cannot answer for is REFUSED — the gates the kind switches (`drive`, the exact published
+    surface) would otherwise have nothing to key on — and an IR whose `meta.spec_kind`
+    disagrees with the registry is refused too (the leaf's label never decides a gate, and a
+    disagreeing one would mislead every reader that still prints it). No-op on a missing /
+    unparseable IR (flagged upstream)."""
+    derived_path = ir_dir / "spec.ir.yaml"
+    if not derived_path.exists():
+        return
+    try:
+        ir = _read_yaml(derived_path)
+    except yaml.YAMLError:
+        return
+    if not isinstance(ir, dict):
+        return
+    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
+    spec_id = str(meta.get("spec_id") or "").strip()
+    if not spec_id:
+        violations.append(
+            f"{derived_path}:meta.spec_id missing — the node's spec_kind is read from "
+            f"{SPEC_CATALOG_REF} by spec_id, and the gates that kind decides cannot run")
+        return
+    kind, reason = _catalog_spec_kind(repo_root, spec_id)
+    if kind is None:
+        violations.append(
+            f"{derived_path}:meta.spec_id '{spec_id}': the spec catalog cannot answer for this "
+            f"node ({reason}) — its spec_kind decides whether drive and the exact published "
+            "surface are required, so an IR the registry does not know is refused")
+        return
+    if kind not in _CANONICAL_SPEC_KINDS:
+        violations.append(
+            f"{derived_path}:meta.spec_id '{spec_id}': the spec catalog records spec_kind "
+            f"'{kind}', which no phase runs on ({', '.join(_CANONICAL_SPEC_KINDS)} do)")
+        return
+    ir_kind = str(meta.get("spec_kind") or "").strip()
+    if ir_kind != kind:
+        violations.append(
+            f"{derived_path}:meta.spec_kind '{ir_kind}' disagrees with the spec catalog, which "
+            f"records spec_kind '{kind}' for '{spec_id}' — the catalog's kind is the node's; "
+            f"write meta.spec_kind: {kind}")
+
+
 def _validate_published_surface(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
@@ -9029,10 +9250,10 @@ def _validate_published_surface(
 
     What is checked, in order, all fail-closed rather than silently no-op:
 
-    - `meta.spec_kind` (`.strip()`-normalized, the spelling rule every `meta.spec_kind` reader uses;
-      an exact match here was once the outlier and let `"  infrastructure  "` skip the gate whose
-      language check is the ONLY enforcement of the language backend) — a kind outside the set is a
-      no-op, because its interface is legitimately derived post-hoc.
+    - the node's kind, read from `spec/registry/spec_catalog.yaml` by `meta.spec_id`
+      (`_ir_catalog_spec_kind`, issue #589; never `meta.spec_kind`, which
+      `_validate_catalog_spec_kind` holds equal to it) — a kind outside the set is a no-op,
+      because its interface is legitimately derived post-hoc; no answer is that gate's refusal.
     - (no language question: the IR is target-free since R4-a PR-3, issue #284. The §5.1-vs-IR
       comparison below is between two language-NEUTRAL documents, rendered through the §5.1
       helpers' backend only as a canonical form for both sides. Whether the TARGET's language has
@@ -9061,26 +9282,16 @@ def _validate_published_surface(
         return
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    kind = str(meta.get("spec_kind") or "").strip()
-    # A SPELLING THIS GATE DOES NOT RECOGNISE IS A VIOLATION, NOT A SKIP. `spec_kind` is authored by
-    # the `compile.generate` leaf, and the line below decides whether this gate runs at all, so an
-    # unrecognised spelling used to be a total no-op: MEASURED, `Component` (or `COMPONENT`) took an
-    # IR with a wrong operation name and no `signatures`/`module_parameters` from 4 violations to 0.
-    # Case-sensitivity itself is a deliberate repo-wide convention and is pinned elsewhere, so the
-    # repair is not to fold case here — it is to refuse what the convention does not admit.
-    #
-    # The asymmetry that makes this expensive rather than merely wrong: `_validate_generated_
-    # signatures` resolves the same decision from `execution.node_key`, which the CONDUCTOR authors,
-    # and its docstring says that asymmetry is deliberate. So a leaf writing `Component` passes
-    # Compile.static and then meets a fail-closed `Generate.static` that routes as a WARM RESUME to
-    # `generate.generate` — a substep that cannot edit the certified IR. Every retry fails
-    # identically until the budget is spent, and the operator pays a Generate loop for a defect
-    # authored at Compile.
-    if kind and kind not in _CANONICAL_SPEC_KINDS:
-        violations.append(
-            f"{derived_path}:meta.spec_kind '{kind}' is not a known spec_kind "
-            f"({', '.join(sorted(_CANONICAL_SPEC_KINDS))}) — spelling is exact, and an unrecognised "
-            "one would silently skip the published-surface gate that this node's kind may require")
+    # THE KIND IS THE CATALOG'S (issue #589), read by `meta.spec_id` alone. `meta.spec_kind` is
+    # authored by the `compile.generate` leaf, and the kind decides whether this gate runs at
+    # all: an unrecognised spelling of it used to be a total no-op (MEASURED: `Component` took
+    # an IR with a wrong operation name and no `signatures` from 4 violations to 0), and the
+    # spelling check that closed that left a leaf free to write another CANONICAL kind. When
+    # the registry cannot answer, or the IR's label disagrees with it,
+    # `_validate_catalog_spec_kind` refuses the IR in the same stage; this gate has no kind to
+    # pin against and stops here, never falling back to the leaf's label.
+    kind = _ir_catalog_spec_kind(repo_root, ir)
+    if kind is None:
         return
     if kind not in _EXACT_PUBLISHED_SURFACE_KINDS:
         return  # every other kind's interface is derived post-hoc, by design
@@ -9147,6 +9358,14 @@ def _validate_published_surface(
             "Point it at the operator-authored controlled_spec under the spec tree")
         return
     expected = _catalog_controlled_spec_path(repo_root, kind, spec_id)
+    if expected is None:
+        # The registry answered the kind (above), so a miss here is an entry with no
+        # `controlled_spec_path`: the identity half cannot be asked, and is not skipped.
+        violations.append(
+            f"{derived_path}:the spec catalog's entry for {kind} `{spec_id}` records no "
+            "controlled_spec_path — the public_api pin reads the registry's document, and "
+            "cannot be asked which one that is")
+        return
     if expected is not None:
         try:
             expected_resolved = (repo_root / expected).resolve()
@@ -9777,8 +9996,9 @@ def _validate_generated_signatures(
     plus a Build link error was the only backstop, and it caught this one at a downstream node's
     syntax probe rather than at the producer.
 
-    Kind resolution is BY NODE_KEY for the fail-closed decision and BY IR for the no-op decision, and
-    the asymmetry is deliberate: when the node_key says the kind publishes an exact surface but the
+    Kind resolution is BY NODE_KEY for the fail-closed decision and BY THE CATALOG (`spec/registry/
+    spec_catalog.yaml`, by the node_key's spec_id; issue #589 — it read the IR's `meta.spec_kind`
+    before) for the no-op decision, and the asymmetry is deliberate: when the node_key says the kind publishes an exact surface but the
     IR / §5.1 cannot be resolved, that is fail-closed rather than a silent skip — Compile has already
     certified the IR + §5.1 exist, so their absence at Generate is a regression that must not let a
     drifted model pass unchecked."""
@@ -9809,14 +10029,28 @@ def _validate_generated_signatures(
         _fail_closed_if_pinned("IR spec.ir.yaml is not a mapping")
         return
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    # `.strip()`-normalized like every other `meta.spec_kind` reader. Matching exactly here
-    # while the compile gates strip made them disagree: a padded value passed compile as an
-    # infrastructure node and then fail-closed HERE with "meta.spec_kind is not
-    # 'infrastructure'" — an accurate-sounding message about an IR compile had accepted.
-    ir_kind = str(meta.get("spec_kind") or "").strip()
+    # The no-op decision reads the CATALOG's kind (issue #589), by the spec_id the conductor's
+    # node_key carries — never the IR's leaf-authored `meta.spec_kind`, which `Compile.static`
+    # now holds equal to it. A registry that cannot answer, or answers a kind the node_key
+    # contradicts, is fail-closed for a pinned node_key rather than a silent skip.
+    # The spec_id is the node_key's; a node_key naming none (no `/` — the one shape in which
+    # `_model_files_in_src_dir` returns several files) asks with the IR's `meta.spec_id`, so that
+    # shape still reaches the comparison below rather than dropping it.
+    key_spec_id = (_spec_id_from_node_key(str(execution.node_key))
+                   or str(meta.get("spec_id") or "").strip() or None)
+    ir_kind, catalog_reason = (_catalog_spec_kind(repo_root, key_spec_id) if key_spec_id
+                               else (None, "neither the node_key nor the IR names a spec_id"))
+    if ir_kind is None:
+        _fail_closed_if_pinned(f"the spec catalog cannot answer for this node ({catalog_reason})")
+        return
+    if pinned_by_key and ir_kind != kind_by_key:
+        _fail_closed_if_pinned(
+            f"the spec catalog records spec_kind {ir_kind!r} for {key_spec_id!r}, not the "
+            f"node_key's {kind_by_key!r}")
+        return
     if ir_kind not in _EXACT_PUBLISHED_SURFACE_KINDS:
         _fail_closed_if_pinned(
-            f"IR meta.spec_kind {ir_kind!r} does not publish an exact surface "
+            f"the catalog's spec_kind {ir_kind!r} does not publish an exact surface "
             f"(expected one of {list(_EXACT_PUBLISHED_SURFACE_KINDS)})")
         return
     # Past this point the IR confirms a surface-publishing node, so a missing/unresolvable
@@ -9937,22 +10171,27 @@ def _validate_tests_and_predicates(
 
     - A retired key (``_RETIRED_IO_CONTRACT_KEYS``) is refused by name.
     - ``tests``: ``verdict_evaluator.validate_tests_schema``, against the canonical test-id set.
+    - ``drive`` (issue #589): ``primary_evidence.drive_violations`` — SHAPE gates (a)-(l), the
+      case inputs evaluated as a gate (nothing written), a ``schema.variables[].source`` key
+      refused — under the node's kind as the CATALOG answers it (``_ir_catalog_spec_kind``;
+      no answer is ``_validate_catalog_spec_kind``'s refusal, and this gate then has no kind to
+      ask with). An IR with no ``drive`` (``infrastructure``) has its case inputs evaluated here
+      (``evaluate_case_inputs``), since ``drive_violations`` evaluates none for it.
     - ``predicates``: ``primary_evidence.validate_primary_predicate_schema`` (each entry's grammar
-      and names, its ``target_cases`` equal to its test's, the reads-a-capture rule of issue #483).
-    - ``schema.variables[].source``: ``primary_evidence.source_violations``.
+      and names, its ``target_cases`` equal to its test's, the reads-a-capture rule of issue #483),
+      ALWAYS with ``primary_evidence.predicate_schema_context(ir)`` — grammar 6's ``reads``,
+      ``case_inputs``, ``series_names``, ``history_declared``; without it the pre-drive rule
+      (every schema variable a state read at both points) would apply to a ``drive`` IR.
     - D10, the omission gate. Each test's ``quantities`` equals its ``tests.md`` ``quantities:``
       line, and the set of ``quantity`` over its predicates equals its ``quantities``
       (``primary_evidence.quantity_violations``, which also requires every target case's state
       to be valued by some predicate of the test). The leaf copies the line, so the comparison is
       against the spec rather than against anything the leaf wrote for itself. No gate parses a
       threshold; whether an expression measures the judgment is ``Compile.verify`` V3's.
-    - D13, the reported-read gate: ``primary_evidence.reported_read_violations``. The label it keys
-      on is the leaf's, so the set of ``source: reported`` variables equals what the ``tests.md``
-      ``reported:`` lines name (``_parse_reported_variables_from_tests_md``; no line means none),
-      and per test the line equals what the test's predicates read
-      (``primary_evidence.reported_line_read_violations``).
-    - A ``source: reference`` read stands on ``source: operation`` state:
-      ``primary_evidence.reference_read_violations``.
+    - A ``tests.md`` ``reported:`` line (``TEST_REPORTED_LINE``) is refused (issue #589: the
+      class is retired, and a run-wide quantity is the host's reduction over ``series`` /
+      ``history``), and gate (m): the ``history:`` line against ``drive``
+      (``_history_line_violations``).
     - Cross-target transcription (issue #324): a cross-target predicate is no judgment of the
       verdict, so its set is pinned separately — every test whose ``tests.md`` definition contains
       ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one, and no other test carries one
@@ -9966,9 +10205,12 @@ def _validate_tests_and_predicates(
     A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``."""
     from tools.primary_evidence import (
         PrimaryEvidenceError,
+        _has_drive,
+        drive_violations,
+        evaluate_case_inputs,
         is_cross_target_predicate,
+        predicate_schema_context,
         quantity_violations,
-        schema_variables,
         snapshot_schema,
         validate_primary_predicate_schema,
     )
@@ -9983,6 +10225,11 @@ def _validate_tests_and_predicates(
         return  # malformed IR already flagged upstream
     if not isinstance(ir, dict):
         return
+
+    # The kind the drive gates ask with is the catalog's; an IR it cannot answer for (or whose
+    # label disagrees) is refused HERE, by the gate that needs the kind, so no caller of this
+    # gate reaches the drive half without that refusal.
+    _validate_catalog_spec_kind(repo_root, ir_dir, violations)
 
     io_contract = ir.get("io_contract")
     io_contract = io_contract if isinstance(io_contract, dict) else {}
@@ -10024,6 +10271,23 @@ def _validate_tests_and_predicates(
     for msg in validate_tests_schema(tests, case_ids=case_ids, test_ids=test_ids):
         violations.append(f"{derived_path}:{msg}")
 
+    # The drive gates, under the CATALOG's kind. No answer is refused by
+    # `_validate_catalog_spec_kind` in the same stage, so nothing here falls back to the leaf's
+    # `meta.spec_kind`.
+    kind = _ir_catalog_spec_kind(repo_root, ir)
+    if kind is not None:
+        for msg in drive_violations(ir, kind=kind):
+            violations.append(f"{derived_path}:{msg}")
+    if not _has_drive(ir):
+        # `drive_violations` evaluates the cases of a `drive` IR ((c)); one with none (an
+        # infrastructure node) is evaluated here, so every IR's case inputs are checked as the
+        # Validate.execute writer will read them. Nothing is written at Compile.
+        try:
+            evaluate_case_inputs(ir)
+        except PrimaryEvidenceError as exc:
+            violations.append(f"{derived_path}:case.test_case_set: the case inputs do not "
+                              f"evaluate ({exc})")
+
     schema = snapshot_schema(ir)
     test_target_cases = {
         t["test_id"].strip(): [str(c) for c in t["target_cases"]]
@@ -10031,6 +10295,10 @@ def _validate_tests_and_predicates(
         if isinstance(t, dict) and isinstance(t.get("test_id"), str) and t["test_id"].strip()
         and isinstance(t.get("target_cases"), list)
     }
+    # Grammar 6's context, ALWAYS passed: `reads=None` is the pre-drive rule (every schema
+    # variable a state read at both points), which would let a predicate over host-materialized
+    # `initial.*` alone pass the reads-a-capture rule on a `drive` IR.
+    context = predicate_schema_context(ir)
     for msg in validate_primary_predicate_schema(
         predicates if predicates is not None else [],
         case_ids=case_ids,
@@ -10038,15 +10306,18 @@ def _validate_tests_and_predicates(
         schema=schema,
         cases=cases_by_id,
         test_target_cases=test_target_cases,
+        **context,
     ):
         violations.append(f"{derived_path}:{msg}")
-    try:
-        state_names = set(schema_variables(schema)) if isinstance(schema, dict) else set()
-    except PrimaryEvidenceError:
-        # An unreadable schema is the predicate schema gate's finding, reported above; here it
-        # values no case, and the stage keeps returning its list instead of raising.
-        state_names = set()
-    for msg in quantity_violations(tests, predicates, state_names):
+    # `reads` is None only when the schema or the `drive` block is unreadable. With no `drive`, an
+    # unreadable schema values no case, as it always has (the schema gate reports it above). With
+    # a malformed `drive` the IR is already refused by `drive_violations`, and the cases-read rule
+    # has no state set to ask with: it is not asked, rather than flooding the finding the leaf
+    # must act on with one "values no case" per test.
+    reads = context["reads"]
+    if reads is None and not _has_drive(ir):
+        reads = set()
+    for msg in quantity_violations(tests, predicates, reads):
         violations.append(f"{derived_path}:io_contract.predicates: {msg}")
 
     if not readable:
@@ -10069,12 +10340,16 @@ def _validate_tests_and_predicates(
                     f"{sorted(listed)} must equal the `quantities:` line of its tests.md "
                     f"definition ({sorted(stated[tid])})")
 
-    # The label D13 keys on is the leaf's, so its set is pinned to the seed the leaf cannot edit.
-    parsed_reported = _parse_reported_variables_from_tests_md(tests_path)
-    if parsed_reported is not None:
-        stated_by_test, problems = parsed_reported
-        for problem in problems:
-            violations.append(f"{derived_path}:tests.md ({tests_path}): {problem}")
+    # Issue #589: the `reported` class is retired, so its line is refused wherever it stands.
+    for lineno, line in _tests_md_reported_lines(tests_path) or []:
+        violations.append(
+            f"{derived_path}:tests.md ({tests_path}) line {lineno}: a `reported:` line is refused "
+            f"({line!r}) — the class is retired (issue #589): a run-wide quantity is the host's "
+            "reduction over the series / history captures, never a value the operation returns "
+            "(docs/TESTS.md)")
+    # Gate (m): the `history:` line against `drive`.
+    for msg in _history_line_violations(tests_path, ir):
+        violations.append(f"{derived_path}:{msg}")
 
     # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is
     # asked no cross-target agreement (issue #383), so a disagreeing variant would certify. Pin
