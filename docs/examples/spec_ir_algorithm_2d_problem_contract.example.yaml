@@ -15,9 +15,28 @@
 # `docs/examples/spec_ir_algorithm_section.example.yaml` is the companion sample for a component
 # node. It is the canonical reference for the rules common to every node kind (the string-list form
 # of steps[].inputs/outputs, the token binding convention, the shape_expr notation). This file adds
-# ONLY the extra contract a multi-dimensional problem node carries, and shows the `iterative` form:
-# a problem node marches the state in time, so it carries a populated iteration_contract. The
-# companion shows the run-once `sequence` form of a component node.
+# ONLY the extra contract a multi-dimensional problem node carries, and shows how a time-marching
+# problem is split (issue #589): the problem publishes `<spec_id>__step`, which advances the state by
+# ONE committed step, and the host-rendered driver runs the time loop from the IR's `drive.loop`. So
+# `algorithm` lowers one call of `__step` and is the run-once `sequence` form, like the companion.
+#
+# The sibling top-level keys this algorithm goes with, in the phase contract's schema form (shown
+# here as comments; this file holds the `algorithm:` value alone):
+#   drive:
+#     step:
+#       operation: example_shallow_water2d__step
+#       result: ok
+#       arguments: {nx: inputs.grid.nx, ny: inputs.grid.ny, dx: derived.dx, dy: derived.dy,
+#                   g: inputs.constants.g, dt: derived.dt, t: time,
+#                   h: state.h, hu: state.hu, hv: state.hv, ok: state.ok}
+#     loop: {n_step: derived.n_step, dt: derived.dt, t_start: inputs.time.t_start,
+#            t_end: inputs.time.t_end}
+#     history: {every: inputs.history.every}
+#   case.test_case_set[].initial_state: {h: "<expression over x, y and inputs>", hu: ..., hv: ...}
+#   case.test_case_set[].derived: {dx: "inputs.grid.L_x / inputs.grid.nx", dy: ...,
+#                                  dt: "<the tests.md dt rule>", n_step: "<the step count>"}
+#   public_api: the §5.1 surface, `example_shallow_water2d__step` among it.
+# n_step, dt and the stop rule are the driver's and live there, never in `iteration_contract`.
 #
 # The 4 extra contract keys are direct children of `algorithm:`:
 #   state_variables (each entry with `name` + `shape_expr`) / required_update_paths /
@@ -51,10 +70,11 @@
 
 algorithm_id: example_shallow_water_problem
 
-# execution_mode: the three steps below are the BODY of a time-marching loop, and a loop advancing
-# a counter to a stop condition is `iterative` — not `sequence`, however few steps the body has.
+# execution_mode: the three steps below are ONE committed step — the body the driver repeats — and
+# one call runs them once, so the mode is `sequence`. A loop advancing a counter to a stop condition
+# INSIDE one call would be `iterative`; the driver's `drive.loop` is not one.
 # Selection rule: docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`.
-execution_mode: iterative
+execution_mode: sequence
 
 steps:
   - step_id: step_01_boundary_apply
@@ -81,29 +101,17 @@ ordering:
   - step_02_flux_compute
   - step_03_time_integrate
 
-# control_condition: describes the top-level control structure in prose. Under `iterative` that is
-# the loop the iteration_contract below formalizes — the two must describe the SAME loop, with the
-# same bounds. Generate lowers this pair into the model's time loop, so a prose bound that
-# disagrees with stop_condition is an off-by-one nobody can resolve from the IR.
-control_condition: "advance the state by one step per iteration, for n = 1 .. n_step"
+# control_condition: describes the top-level control structure of one call in prose. A
+# `__step` that refuses its input says so here: the refusal is the operation's `false` result,
+# never a stop.
+control_condition: "one call advances h, hu, hv by one step of length dt and sets ok true; ok is false when dt <= 0 or h <= 0 anywhere, and the driver commits no step then"
 
-# iteration_contract: the loop itself, and the TOP-LEVEL loop only. Under `execution_mode:
-# iterative` this must be non-empty; conversely a contract carrying a loop counter (loop_variable /
-# counter / index_variable) TOGETHER WITH stop_condition is a `Compile fail` under execution_mode
-# sequence or conditional, which deny a repeated body. body_steps names the steps[].step_id the
-# loop repeats.
-iteration_contract:
-  loop_variable: n
-  start: 1
-  # stop_condition is the condition under which the loop STOPS, tested before the body. With
-  # start: 1 that runs the body for n = 1 .. n_step, matching control_condition above. Writing
-  # "n == n_step" here would instead run n_step-1 steps; state the bound so the two agree.
-  stop_condition: "n > n_step"
-  step_count_rule: "n_step is the step count determined by case.inputs.time"
-  body_steps:
-    - step_01_boundary_apply
-    - step_02_flux_compute
-    - step_03_time_integrate
+# iteration_contract: the TOP-LEVEL loop of one call, and this call has none, so the object is
+# empty. A loop-shaped contract — a loop counter (loop_variable / counter / index_variable)
+# together with stop_condition — is a `Compile fail` under execution_mode sequence or
+# conditional, and a time loop restated here would be lowered INTO `__step`, which then marches
+# n_step times per driver step.
+iteration_contract: {}
 
 update_semantics:
   target_variables: ["h", "hu", "hv"]

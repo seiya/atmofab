@@ -194,6 +194,13 @@ _CAPTURED_WORKSHOP_VERSION_FORM = re.compile(r"^(pure|leaf|workshop)-\d+$")
 #: before step 2 added them) does not carry. Exempt on such a capture only: a later capture
 #: carries them and is held to them like any other field.
 _WORKSHOP_1_ABSENT_KEYS = {"workshop_provider"}
+#: `pure_context` keys a capture recorded that the host no longer inlines, per pair. Issue #589
+#: PR-1a took `checks_module_contract_document` out of the `compile.generate` producer's context;
+#: the tracked capture (`orch_20261023T233910Z_159fd6eb`) predates that, and `main` runs no
+#: workflow end to end until issue #589 PR-3, so no re-capture can replace it before then. Exempt
+#: on the capture only, and only while the contract table does not require the key: the first
+#: re-capture after PR-3 drops the key and this entry with it.
+_RETIRED_CAPTURED_CONTEXT_KEYS = {("compile", "generate"): {"checks_module_contract_document"}}
 
 
 def _load_real_requests() -> dict[tuple[str, str | None, str], dict]:
@@ -523,7 +530,10 @@ class BuildLaunchRequestTest(unittest.TestCase):
                 # fixtures by test_orchestration_runtime) checks the required keys are PRESENT
                 # and admits extras, so it alone would not notice a capture carrying a key the
                 # host no longer inlines, or the table growing past what a real run rendered.
-                self.assertEqual(set(req["pure_context"]),
+                retired = _RETIRED_CAPTURED_CONTEXT_KEYS.get((step, substep), set())
+                self.assertFalse(retired & set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]),
+                                 "a key the table requires again is not retired")
+                self.assertEqual(set(req["pure_context"]) - retired,
                                  set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]))
                 for key, value in req["pure_context"].items():
                     self.assertRegex(value, placeholder, f"pure_context[{key}]")

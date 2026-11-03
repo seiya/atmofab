@@ -25188,40 +25188,31 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
             [],
         )
 
-    def test_2d_problem_example_declares_the_iterative_mode(self) -> None:
-        """Gate-passing alone does not pin this: reverting to `sequence` + `iteration_contract: {}`
-        is silent to every check, and that revert IS the defect this example taught."""
+    def test_2d_problem_example_lowers_one_step_and_leaves_the_loop_to_drive(self) -> None:
+        """Issue #589: a problem publishes `__step`, ONE committed step, and the host-rendered
+        driver runs the time loop from `drive.loop`. The example's `algorithm` therefore lowers
+        one call: `sequence` with an empty `iteration_contract`. Gate-passing alone does not pin
+        this: re-lowering the time loop here (`iterative` + a loop counter + `stop_condition`)
+        passes every check and would put a time loop INSIDE `__step`, which then marches n_step
+        times per driver step. Until issue #589 this row pinned the opposite (`iterative`),
+        because the model owned the loop."""
         contract = yaml.safe_load(
             (self._REPO_ROOT
              / "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml"
              ).read_text(encoding="utf-8"))
-        self.assertEqual(contract["execution_mode"], "iterative")
-        loop = contract["iteration_contract"]
-        self.assertEqual(loop["loop_variable"], "n")
-        # The VALUES, not just the keys. The file's own comment says `n == n_step` here would
-        # run n_step-1 steps and disagree with `control_condition`; asserting only that some
-        # `stop_condition` exists leaves the example free to teach the bound it forbids.
-        self.assertEqual(loop["start"], 1)
-        self.assertEqual(loop["stop_condition"], "n > n_step")
-        self.assertEqual(
-            loop["step_count_rule"],
-            "n_step is the step count determined by case.inputs.time",
-            "step_count_rule must say where n_step comes from; an empty one teaches nothing",
-        )
+        self.assertEqual(contract["execution_mode"], "sequence")
+        self.assertEqual(contract["iteration_contract"], {})
+        # The refusal is a `false` result the driver does not commit, never a stop: the
+        # example's control_condition is the one place a leaf sees that stated per call.
         self.assertEqual(
             contract["control_condition"],
-            "advance the state by one step per iteration, for n = 1 .. n_step",
-            "control_condition and stop_condition must describe the same loop bounds",
-        )
-        self.assertEqual(
-            sorted(loop["body_steps"]),
-            sorted(step["step_id"] for step in contract["steps"]),
-            "body_steps must name this file's real step ids",
+            "one call advances h, hu, hv by one step of length dt and sets ok true; ok is false "
+            "when dt <= 0 or h <= 0 anywhere, and the driver commits no step then",
         )
 
     def test_component_example_stays_the_run_once_counterpart(self) -> None:
-        """The pair is only instructive if the two files differ in mode: one `iterative` problem
-        node, one run-once `sequence` component."""
+        """Both files are run-once `sequence` forms since issue #589 (the driver owns every time
+        loop); the component file must stay one."""
         contract = yaml.safe_load(
             (self._REPO_ROOT / "docs/examples/spec_ir_algorithm_section.example.yaml"
              ).read_text(encoding="utf-8"))
@@ -25236,50 +25227,38 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
         advdiff1d IRs copied it."""
         for rel, needles in (
             ("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-             ("execution_mode: the three steps below are the BODY of a time-marching loop",
-              # The rule, not just the label. Deleting this line left the heading comment
-              # standing over a value it no longer explained.
-              "a loop advancing a counter to a stop condition is `iterative` — not"
-              " `sequence`",
-              "iteration_contract: the loop itself, and the TOP-LEVEL loop only.",
+             ("execution_mode: the three steps below are ONE committed step — the body the"
+              " driver repeats",
+              # The rule, not just the label: where `iterative` would still apply, and why the
+              # driver's loop does not count.
+              "A loop advancing a counter to a stop condition INSIDE one call would be"
+              " `iterative`; the driver's `drive.loop` is not one.",
+              "iteration_contract: the TOP-LEVEL loop of one call, and this call has none",
               "is a `Compile fail` under execution_mode sequence or conditional",
-              # control_condition and stop_condition must describe the SAME loop. The two
-              # disagreed by one step when this file was first written.
-              "control_condition: describes the top-level control structure in prose.",
-              "the two must describe the SAME loop, with the",
-              # The reason the two must agree, and the off-by-one the file's own pinned
-              # stop_condition value exists to avoid. Deleting this left the value pinned and
-              # its justification gone.
-              "Generate lowers this pair into the model's time loop, so a prose bound that",
-              "disagrees with stop_condition is an off-by-one nobody can resolve from the IR.",
-              "stop_condition is the condition under which the loop STOPS, tested before the"
-              " body",
-              # The only statement of what `body_steps` holds anywhere in the leaf-readable
-              # doc set — phase_01 and both SKILLs never name the field. The test above pins
-              # the INSTANCE (body_steps == the file's step ids); without this the value stands
-              # as an example with nothing saying what it means, which is the failure this
-              # whole test exists to prevent.
-              "body_steps names the steps[].step_id the loop repeats.",
-              "\"n == n_step\" here would instead run n_step-1 steps; state the bound so the two"
-              " agree.",
-              # The header sentences that make the pair instructive: this file is the
-              # `iterative` form, the companion the run-once `sequence` form.
-              "shows the `iterative` form:",
-              "a problem node marches the state in time, so it carries a populated"
-              " iteration_contract. The",
-              "companion shows the run-once `sequence` form of a component node.",
+              # The consequence a leaf copying a certified iterative IR has to be told.
+              "a time loop restated here would be lowered INTO `__step`, which then marches"
+              " n_step times per driver step.",
+              "the refusal is the operation's `false` result, never a stop.",
+              # The header sentences that make the pair instructive, and the sibling `drive`
+              # block the algorithm goes with.
+              "the problem publishes `<spec_id>__step`, which advances the state by ONE"
+              " committed step, and the host-rendered driver runs the time loop from the IR's"
+              " `drive.loop`.",
+              "n_step, dt and the stop rule are the driver's and live there, never in"
+              " `iteration_contract`.",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),
             ("docs/examples/spec_ir_algorithm_section.example.yaml",
              ("execution_mode: `sequence` because these two steps are a fixed composition"
               " that runs ONCE per",
               "call — no loop counter, no stop condition.",
-              # The sentence that stops a component author from copying `iterative` off the
-              # 2d file: the loop belongs to the caller.
+              # The sentence that stops a component author from re-lowering its caller's loop:
+              # the loop belongs to the driver or the caller.
               "A component whose caller marches it in time still",
-              "declares `sequence`: the loop belongs to the calling problem node",
+              "declares `sequence`: the loop belongs to the driver (`drive.loop`, issue #589) or"
+              " the calling node",
               # The cross-reference that shows the reader the other half of the pair.
-              "(docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml) is"
-              " `iterative`.",
+              "(docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml) is `sequence`"
+              " too, its `__step` being one committed step.",
               "iteration_contract: an empty object states \"this algorithm does not iterate\".",
               "is a `Compile fail` under execution_mode sequence or conditional",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),

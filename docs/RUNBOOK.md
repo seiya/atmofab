@@ -2,6 +2,8 @@
 
 This document defines the "minimal operational procedure for running trials". The core workflow is a 5-phase structure `Spec → Compile → Generate → Build → Validate`. Update it as operational knowledge accrues.
 
+**`main` does not run the workflow end to end until [issue #589](https://github.com/seiya/atmofab/issues/589) PR-3 merges.** From PR-1a on, `Compile.static` refuses every IR of a `problem` or `component` without a `drive` block, every `tests.md` carrying a `reported:` line, and every `problem` whose `controlled_spec.md` publishes no `<spec_id>__step` under §5 / §5.1; the specs of this repository migrate to that shape in PR-3, and the driver that runs it lands in PR-1b. Until then a run of any physics `spec` stops at `Compile` (`compile_static_violation`), and a certified node is not re-derivable.
+
 ## 0. Purpose
 - From a `spec`'s `Controlled Spec` (physics definition) and `tests` (verification profile), perform execution and judgment, and evaluate physical validity and performance.
 - Isolate where a failure's cause lies among **Spec / Compile / Generate / Build / Validate**. The optional flows `Tune` / `Promote` are handled outside the core workflow.

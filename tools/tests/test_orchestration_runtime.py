@@ -428,7 +428,7 @@ _PURE_COMPILE_CONTEXT = {
         "controlled_spec_document", "deps_document", "profile_spec_document",
         "dependency_graph_document", "phase_contract_document",
         "ir_algorithm_example_document", "ir_algorithm_2d_example_document",
-        "checks_module_contract_document", "tests_document",
+        "tests_document",
     )
 }
 
@@ -21540,7 +21540,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
     #   - RUNNER_OUTPUT_CONTRACT.md  (`runner_output_contract_document`: the `harness` shape's
     #                                 producer and reviewer, whole; the pure judge, sliced)
     #   - CHECKS_MODULE_CONTRACT.md  (§1-4 as `checks_module_contract_document` to the `m3c`
-    #                                 reviewer and the compile producer's ABI slice)
+    #                                 reviewer; the compile producer's ABI slice went with
+    #                                 issue #589 PR-1a)
     #   - backends/language/fortran/CHECKS_ABI.md (issue #289: its §1-4 after the contract's in
     #                                 the `m3c` reviewer's document; its §5 as
     #                                 `gate_guards_document` to the `harness` producer)
@@ -22078,7 +22079,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # counts only captured STATE reads): bumped 100800->101400; measured 101116 the same way
         # at the commit that takes this bump; the same round's two comment rewordings (the bind
         # comment, the V3 (ii) parenthetical): 101400->102000, measured 101485 at that commit.
-        "docs/workflow/phases/phase_01_compile.md": 102000,
+        # Issue #589 PR-1a (the IR's `drive` block — bindings, per-intent rules, gates (a)-(m) —
+        # per-case `initial_state` / `derived`, `state_history` / `step_series`, grammar 6's
+        # `history.*` / `series.*` / `derived.*` / `smax`, and `public_api` on a `problem`; the
+        # `source` classes, the reported-read gate and the checks-module seed deleted): bumped
+        # 102000->103400; measured 102790 with `wc -c` in /home/seiya/atmofab at the commit that
+        # takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 103400,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -28635,7 +28642,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/workshop_compile_generate.txt:0a9437848916bc7c":
+        "tools/prompt_templates/workshop_compile_generate.txt:5cf3a4a349aaddf5":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28645,7 +28652,8 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "target's and is not in it; a `profile` entry in deps.yaml is not a node, so "
             "direct_deps from deps.yaml alone is rejected (read 2026-10-28; re-keyed 2026-10-29 when "
             "the line's opening clause said \"seeded in your tree\" for \"inlined below\", issue "
-            "#534 leaf-85 — rule 3 unchanged)",
+            "#534 leaf-85 — rule 3 unchanged; re-keyed 2026-11-04 when rules 5, 8 and 9 took "
+            "the `drive` block of issue #589 PR-1a — rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",

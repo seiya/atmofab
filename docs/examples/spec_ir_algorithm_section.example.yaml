@@ -40,8 +40,10 @@ algorithm_id: example_flux_compute
 
 # execution_mode: `sequence` because these two steps are a fixed composition that runs ONCE per
 # call — no loop counter, no stop condition. A component whose caller marches it in time still
-# declares `sequence`: the loop belongs to the calling problem node, whose reference form
-# (docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml) is `iterative`.
+# declares `sequence`: the loop belongs to the driver (`drive.loop`, issue #589) or the calling
+# node, and the problem reference form
+# (docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml) is `sequence` too, its
+# `__step` being one committed step.
 # Selection rule: docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`.
 execution_mode: sequence
 
