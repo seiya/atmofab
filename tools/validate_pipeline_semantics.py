@@ -2048,7 +2048,10 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
     whose backend declares a launcher, the harness reported the shape's rank count and grid —
     for one whose backend imposes a thread-block size, the block size of a shape that imposes
     one — and, for one some shape of which runs more than one thread per rank
-    (`TargetProfile.thread_count_observable`), the shape's thread count.
+    (`TargetProfile.thread_count_observable`), the shape's thread count. When the target's
+    compiler declares checked flags, the bounds-checked binary's `checked` row follows them,
+    last (`checked_build.checked_shape`, issue #589 PR-0), held to the same comparisons; what
+    binds it to that binary is `_validate_checked_row`.
 
     The conductor writes the record and fails the run on a comparison that does not hold, so
     the gate reads the same facts twice: a record missing a declared shape — a sweep the

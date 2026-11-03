@@ -224,7 +224,7 @@ class BuildTests(unittest.TestCase):
             self.assertEqual(len(calls), 2)
             self.assertEqual(meta["verification_status"], "fail")
             self.assertIn("checked: Error: boom", meta["failure_excerpt"])
-            self.assertIn("[checked build]", meta["failure_excerpt"])
+            self.assertIn("[checked build: the build above succeeded", meta["failure_excerpt"])
 
     def test_a_checked_build_that_left_no_binary_fails_the_build(self) -> None:
         with tempfile.TemporaryDirectory() as td:

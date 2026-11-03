@@ -11415,8 +11415,9 @@ class Conductor:
                         ship[f"{prefix}/{path.relative_to(root).as_posix()}"] = path
             remote_args = build_args(f"{jdir}/build", f"{jdir}/bin")
             jobs = default_build_jobs()
-            # The checked build is the job's second command: the job runs it only after the
-            # build exited 0, as the local path does.
+            # The checked build is the job's second command: the job runs it once the build
+            # exited 0. The local path also waits for the binary; here a build that exited 0
+            # and left none still fails the attempt below.
             checked_commands = (CommandSpec(
                 tag="build_checked", tool_name="compile_project",
                 argv=tuple(build_command(build_system, None, jobs, checked_args(
@@ -11499,8 +11500,12 @@ class Conductor:
         # appended to the build's logs, so the failure excerpt quotes it.
         checked_missing = False
         if ok and checked_flags:
-            stdout += "\n[checked build]\n" + ((checked_result or {}).get("stdout", "") or "")
-            stderr += "\n[checked build]\n" + ((checked_result or {}).get("stderr", "") or "")
+            # The header tells a Generate repair that the certified build succeeded and this is
+            # the second compile of the same sources under the compiler's checked flags.
+            header = ("\n[checked build: the build above succeeded; this is the second build "
+                      "of the same sources under the compiler's checked flags]\n")
+            stdout += header + ((checked_result or {}).get("stdout", "") or "")
+            stderr += header + ((checked_result or {}).get("stderr", "") or "")
             if checked_result is None or not checked_result.get("ok"):
                 ok = False
                 rc = (checked_result or {}).get("return_code") or 1

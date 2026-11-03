@@ -1367,7 +1367,7 @@ PINNED_BUILD: dict[str, str] = {
     # `binary_meta.json#checked_build`. New rows: `tools/checked_build.py`, the compiler
     # records' `checked_flags` declarations and modules, `Conductor._control_file_rules`,
     # `Conductor._builds_checked`.
-    "build-3": "d458722522443b942050d6dfa5097209d0ef036d5f5459d34b156178d86b0b92",
+    "build-3": "95b062f0a5d7b9978a194bf614b97b9513b066e16907f59e86d975d9dccdce43",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

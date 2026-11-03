@@ -140,7 +140,8 @@ AXES: dict[str, Axis] = {
         ),
         description=(
             "The compiler front end the syntax-only gate drives: its argv, its diagnostic "
-            "format, and which of its warnings the gate promotes to errors."
+            "format, and which of its warnings the gate promotes to errors; and the flags a "
+            "second, bounds-checked build of the certified sources adds (`checked_flags`)."
         ),
     ),
     "linter": Axis(

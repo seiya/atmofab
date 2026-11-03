@@ -48,5 +48,6 @@ recorded in `binary_meta.json#environment.compiler_version`, not keyed.
 second binary, `binary_meta.json#checked_build` is `null`, and `Validate.execute` runs no
 `checked` row on `cpp_gpu`. Every out-of-bounds access in a kernel is therefore outside what the
 quality check sees. A device memory check is a launch wrapper the binary runs under (a sanitizer),
-which belongs to the execution half; it lands with item 6 of `docs/design/scale_migration.md`
-§Order.
+which belongs to the execution half. No plan carries one yet; issue #589 PR-0 decision 3 places it
+with item 6 of `docs/design/scale_migration.md` §Order (the execution model), whose text does not
+name it.

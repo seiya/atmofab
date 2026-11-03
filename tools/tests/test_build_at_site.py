@@ -205,7 +205,7 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         # The checked build's output is localized too: the site's job-directory paths in it
         # name the local directories they stand for.
         log = (n.repo / n.refs.binary_dir() / "compile.stdout.log").read_text()
-        checked_out = log.split("[checked build]\n", 1)[1]
+        checked_out = log.split("checked flags]\n", 1)[1]
         self.assertIn(f"compiling {n.src}/kernel.f90", checked_out)
         self.assertNotIn(n.job, checked_out)
 

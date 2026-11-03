@@ -34,9 +34,13 @@ the `mpi` backend's wrapper, which runs this compiler, so the same flag applies 
 An index outside an array's declared bounds then aborts the run with the runtime's diagnostic,
 for example `Fortran runtime error: Index '0' of dimension 1 of array 'u_out' below lower bound
 of 1`. Measured at `dfce11ce` (issue #589 Plan A §12 B-C): the 17 certified `fortran_cpu` physics
-nodes and the certified harness self-test pass under it with byte-identical captures, the channel's
-suite in 572.4 s against 441 s (+30%), every other node within 1.5 s; the four out-of-bounds
-mutants of issue #588 abort.
+nodes and the certified harness self-test pass under it (captures byte-identical on the case
+compared), the channel's suite in 572.4 s against 441 s (+30%), `shallow_water2d` 20.9 s against
+15 s, every other node at most 1.5 s; the four out-of-bounds mutants of issue #588 abort. Re-run
+at `314352d4` with this repository's own composition of the variables: the 17 nodes pass, the
+four mutants abort with the runtime's bounds diagnostic, and the `fortran_cpu_mpi` harness
+self-test builds through the `mpi` wrapper (Open MPI) and runs bare with captures identical to an
+unchecked build's.
 
 What the flag does not bound, so the row cannot see:
 
