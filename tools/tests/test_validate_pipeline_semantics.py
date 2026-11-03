@@ -8558,8 +8558,10 @@ end program shallow_water2d_runner
 
     def test_the_whole_validator_requires_every_execution_shape(self) -> None:
         """Issue #512, at the validator's entry point rather than the check function: the
-        passing fixture's `quality_check.json` loses one execution shape of the fixture target
-        (whose checked-in profile sweeps its thread count), and the whole run names it."""
+        passing fixture's `quality_check.json` loses one SWEEP shape of the fixture target
+        (whose checked-in profile sweeps its thread count), selected by label — the last row is
+        the checked binary's since issue #589 PR-0, and dropping it would exercise that row's
+        absence instead — and the whole run names it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -8580,8 +8582,10 @@ end program shallow_water2d_runner
             self.assertEqual(len(paths), 1, paths)
             self.assertEqual(validate(repo_root=repo_root, workspace_root="workspace"), [])
             quality = json.loads(paths[0].read_text(encoding="utf-8"))
-            self.assertGreater(len(quality["shapes"]), 1)
-            quality["shapes"] = quality["shapes"][:-1]
+            sweep = [r["label"] for r in quality["shapes"]
+                     if r["label"] not in ("certified", "checked")]
+            self.assertTrue(sweep, quality["shapes"])
+            quality["shapes"] = [r for r in quality["shapes"] if r["label"] != sweep[-1]]
             paths[0].write_text(json.dumps(quality), encoding="utf-8")
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(any("execution shapes are" in v for v in violations), violations)
@@ -13785,13 +13789,22 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             return rows
 
         good = passing_shape_rows(mpi)
+        # The checked binary's row is last (issue #589 PR-0): the sweep cases below drop and
+        # swap SWEEP rows by label and keep it last, so each still exercises what it is named
+        # for (round 3: `good[:-1]` had become "the checked row dropped").
+        self.assertEqual([r["label"] for r in good],
+                         ["certified", "grid_4x1", "grid_1x3", "checked"])
         refused = {
             "absent": (mpi, _ABSENT, "shapes must be a list"),
             "not a list": (mpi, {"certified": {}}, "shapes must be a list"),
-            "missing shape": (mpi, good[:-1], "execution shapes are"),
-            "extra shape": (mpi, good + [dict(good[-1], label="grid_2x1")],
+            "missing shape": (mpi, [r for r in good if r["label"] != "grid_1x3"],
+                              "execution shapes are"),
+            "checked dropped": (mpi, good[:-1], "execution shapes are"),
+            "extra shape": (mpi, good + [dict(good[1], label="grid_2x1")],
                             "execution shapes are"),
-            "reordered": (mpi, [good[0], good[2], good[1]], "execution shapes are"),
+            "reordered": (mpi, [good[0], good[2], good[1], good[3]], "execution shapes are"),
+            "checked before a sweep": (mpi, [good[0], good[3], good[1], good[2]],
+                                       "execution shapes are"),
             "certified dropped": (mpi, good[1:], "execution shapes are"),
             "ranks": (mpi, edited(mpi, 1, ranks=3), "shapes[grid_4x1].ranks"),
             "grid": (mpi, edited(mpi, 2, process_grid=[3, 1]), "shapes[grid_1x3].process_grid"),
