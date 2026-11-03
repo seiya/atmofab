@@ -129,9 +129,14 @@ def passing_shape_rows(profile: TargetProfile = FORTRAN_CPU) -> list[dict]:
     the serial reference (issue #512): one passing row per `profile.execution_shapes`, in order,
     with the rank count and grid a harness of a launcher target reports, the block size a
     harness of a backend that imposes one reports, and the thread count every harness reports
-    (the shape's own: the count it observes at run time)."""
+    (the shape's own: the count it observes at run time). The bounds-checked binary's row comes
+    last when the profile's compiler declares checked flags (`checked_build.checked_shape`,
+    issue #589 PR-0); `plant_checked_build` writes the records it is bound to."""
+    from tools.checked_build import checked_shape
+
     rows = []
-    for shape in profile.execution_shapes:
+    checked = checked_shape(profile)
+    for shape in [*profile.execution_shapes, *([checked] if checked is not None else [])]:
         rows.append({**shape.record(), "command_id": f"cmd_{shape.label}", "run_ok": True,
                      "verdict_available": True,
                      "verdict_match": True, "verdict": "pass",
@@ -141,3 +146,53 @@ def passing_shape_rows(profile: TargetProfile = FORTRAN_CPU) -> list[dict]:
                      "observed_threads_per_rank": shape.threads_per_rank,
                      "state_agreement": {"status": "agree"}, "status": "pass"})
     return rows
+
+
+def plant_checked_build(pipeline_dir: Path, node_dir: Path, *, binary_id: str, source_id: str,
+                        exe: str, profile: TargetProfile = FORTRAN_CPU,
+                        command_id: str = "cmd_checked") -> Path:
+    """The records the post-execute gate binds a `checked` row to (issue #589 PR-0), as Build and
+    Validate.execute write them for `profile`: the checked binary at
+    `<pipeline>/binary/<binary_id>/bin_checked/<exe>`, `binary_meta.json#checked_build` (merged
+    into a record already there) with the overrides `checked_build_overrides` composes, its
+    `compile_project` record in the source's command log, and the row's bare `run_program`
+    record (`command_id`) in the run's command log beside `node_dir`'s trial. Returns the
+    checked binary's path."""
+    import json
+
+    from tools.backends import registry
+    from tools.checked_build import checked_flags_for, control_file_rules
+
+    binary_dir = pipeline_dir / "binary" / binary_id
+    bin_checked = binary_dir / "bin_checked"
+    bin_checked.mkdir(parents=True, exist_ok=True)
+    checked_binary = bin_checked / exe
+    checked_binary.write_text("checked binary\n", encoding="utf-8")
+    obj_dir = str(pipeline_dir / "tmp" / "build_checked")
+    flags = list(checked_flags_for(profile))
+    # The package's module, not `capability_module`: a row may have patched the record's
+    # declaration away to observe the gate refusing it.
+    execute = registry.load("build_system", str(profile.toolchain["build_system"])).execute
+    overrides = list(execute.checked_build_overrides(
+        obj_dir, str(bin_checked), exe, control_file_rules(profile), flags))
+    argv = ["make", "-j4", *overrides]
+    meta_path = binary_dir / "binary_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    meta.update({"source_source_id": source_id,
+                 "binary_artifact_ref": f"binary/{binary_id}/bin/{exe}",
+                 "checked_build": {"binary_ref": f"binary/{binary_id}/bin_checked/{exe}",
+                                   "obj_dir": obj_dir, "bin_dir": str(bin_checked),
+                                   "flags": flags, "command_id": "cmd_checked_build",
+                                   "argv": argv}})
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    build_log = pipeline_dir / "source" / source_id / "src" / "command_log.jsonl"
+    build_log.parent.mkdir(parents=True, exist_ok=True)
+    with build_log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"command_id": "cmd_checked_build", "tool_name": "compile_project",
+                             "command": argv, "ok": True}) + "\n")
+    run_log = node_dir / "command_log.jsonl"
+    with run_log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"command_id": command_id, "tool_name": "run_program",
+                             "command": [str(checked_binary), "--cases", "spec.ir.yaml", "c1"],
+                             "cwd": str(node_dir), "ok": True}) + "\n")
+    return checked_binary

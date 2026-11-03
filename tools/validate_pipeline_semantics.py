@@ -29,6 +29,9 @@ try:
     from tools import host_render
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
+    # The bounds-checked build's seam (issue #589 PR-0): the `checked` row's expected shape and
+    # the variables its build had to be handed.
+    from tools import checked_build
     from tools import leaf_netns
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
@@ -74,6 +77,9 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools import host_render
     # The launch seam, for the launch prefix a target's binary runs under (issue #307).
     from tools import host_execution
+    # The bounds-checked build's seam (issue #589 PR-0): the `checked` row's expected shape and
+    # the variables its build had to be handed.
+    from tools import checked_build
     from tools import leaf_netns
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
@@ -2042,7 +2048,10 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
     whose backend declares a launcher, the harness reported the shape's rank count and grid —
     for one whose backend imposes a thread-block size, the block size of a shape that imposes
     one — and, for one some shape of which runs more than one thread per rank
-    (`TargetProfile.thread_count_observable`), the shape's thread count.
+    (`TargetProfile.thread_count_observable`), the shape's thread count. When the target's
+    compiler declares checked flags, the bounds-checked binary's `checked` row follows them,
+    last (`checked_build.checked_shape`, issue #589 PR-0), held to the same comparisons; what
+    binds it to that binary is `_validate_checked_row`.
 
     The conductor writes the record and fails the run on a comparison that does not hold, so
     the gate reads the same facts twice: a record missing a declared shape — a sweep the
@@ -2059,7 +2068,14 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
     if not isinstance(quality, dict):
         return
     rows = quality.get("shapes")
-    expected = target.execution_shapes
+    # The bounds-checked binary's row (issue #589 PR-0), expected from the target COMPILER'S
+    # declaration — never from the record — after every shape of the profile.
+    try:
+        checked = checked_build.checked_shape(target)
+    except checked_build.CheckedBuildUnavailable as exc:
+        violations.append(f"{quality_path}: {exc}")
+        return
+    expected = [*target.execution_shapes, *([checked] if checked is not None else [])]
     if not (isinstance(rows, list) and all(isinstance(r, dict) for r in rows)):
         violations.append(
             f"{quality_path}: shapes must be a list of objects, one per execution shape of "
@@ -2070,7 +2086,8 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
         violations.append(
             f"{quality_path}: shapes are {labels!r}, and target {target.target_id}'s execution "
             f"shapes are {[s.label for s in expected]!r} (the certified shape, then "
-            f"execution.sweep's); every shape runs and is compared with the serial reference")
+            f"execution.sweep's, then the checked binary's when the target's compiler declares "
+            f"checked flags); every shape runs and is compared with the serial reference")
         return
     launcher = host_execution.declares_launcher(target.parallel_backend)
     block_imposed = host_execution.imposes_block_size(target.parallel_backend)
@@ -2114,6 +2131,183 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
                     f"the shape ran {shape.threads_per_rank} thread(s) per rank")
     if block_imposed and target.block_size is not None:
         _validate_harness_reported_block(repo_root, execution, target, violations)
+
+
+def _validate_checked_row(repo_root: Path, execution: NodeExecution,
+                          violations: list[str]) -> None:
+    """The `checked` row ran the bounds-checked binary Build made (issue #589 PR-0).
+
+    Asked only when the target's compiler declares checked flags and the quality check carries
+    a row labelled `checked`: whether the row is there, and last, is
+    `_validate_execution_shapes`'s question, and a missing one is refused there.
+
+    Build records the second build in `binary_meta.json#checked_build`; this recomposes what
+    that build had to be handed from the target and the recorded directories, and binds the
+    row's run to its binary:
+
+    (i) `checked_build.bin_dir` is `binary/<id>/bin_checked`, `binary_ref` is the certified
+    binary's name there, `flags` are the compiler's `checked_flags`, and `argv` ends with
+    exactly `build_execute.checked_build_overrides(obj_dir, bin_dir, exe, rules, flags)` — the
+    control file's own flag string (`checked_build.control_file_rules`) followed by the flags,
+    compared as text, the object-directory reference left unexpanded;
+    (ii) the record `checked_build.command_id` names in the source's canonical command log is
+    one `compile_project` record that succeeded, whose `command` ends with the same tuple (at
+    a remote site the record's `command` is the conductor's local-path argv,
+    `CommandSpec.record_argv`, so there this pins the record to (i) and adds no independent
+    witness);
+    and the BINDING, in REQUIRED polarity — every condition the walked `source_command_ref`
+    form skips on is a refusal here, because nothing else requires this record to exist: the
+    row's `command_id` names exactly one record in the run's canonical command log (the
+    trial's sibling), a `run_program` record whose `command` is a list of strings, and the
+    executable after NO launch prefix (the row runs bare on every target) resolves under
+    `bin_checked/` to `checked_build.binary_ref` (`_bound_executable`); the record must have
+    succeeded, as the walked form requires of its record."""
+    target = _pipeline_target(repo_root, execution.pipeline_dir)
+    if target is None:
+        return
+    try:
+        checked = checked_build.checked_shape(target)
+    except checked_build.CheckedBuildUnavailable:
+        return  # refused by `_validate_execution_shapes`
+    if checked is None:
+        return
+    quality_path = execution.node_dir / "quality_check.json"
+    try:
+        quality = _read_json(quality_path)
+    except (OSError, json.JSONDecodeError):
+        return
+    rows = quality.get("shapes") if isinstance(quality, dict) else None
+    row = next((r for r in rows if isinstance(r, dict) and r.get("label") == checked.label),
+               None) if isinstance(rows, list) else None
+    if row is None:
+        return  # `_validate_execution_shapes` refuses the label list
+    where = f"{quality_path}: shapes[{checked.label}]"
+    trial_path = execution.node_dir / "trial_meta.json"
+    try:
+        trial = _read_json(trial_path)
+    except (OSError, json.JSONDecodeError):
+        trial = None
+    binary_id = trial.get("source_binary_id") if isinstance(trial, dict) else None
+    if not (isinstance(binary_id, str) and binary_id.strip()):
+        violations.append(f"{where}: {trial_path} names no source_binary_id, so the checked "
+                          f"binary cannot be bound")
+        return
+    binary_dir = execution.pipeline_dir / "binary" / binary_id.strip()
+    meta_path = binary_dir / "binary_meta.json"
+    try:
+        meta = _read_json(meta_path)
+    except (OSError, json.JSONDecodeError):
+        meta = None
+    recorded = meta.get("checked_build") if isinstance(meta, dict) else None
+    if not isinstance(recorded, dict):
+        violations.append(
+            f"{meta_path}: checked_build is {recorded!r}, and target "
+            f"{target.target_id}'s compiler declares checked flags; Build makes the checked "
+            f"binary beside the certified one")
+        return
+    certified_ref = meta.get("binary_artifact_ref")
+    exe = certified_ref.rsplit("/", 1)[-1] if isinstance(certified_ref, str) else ""
+    bin_checked = binary_dir / "bin_checked"
+    expected_ref = f"binary/{binary_id.strip()}/bin_checked/{exe}"
+    if not exe or recorded.get("binary_ref") != expected_ref:
+        violations.append(
+            f"{meta_path}: checked_build.binary_ref is {recorded.get('binary_ref')!r}, "
+            f"expected {expected_ref!r} (the certified binary's name in bin_checked/)")
+        return
+    flags = list(checked_build.checked_flags_for(target))
+    if recorded.get("flags") != flags:
+        violations.append(f"{meta_path}: checked_build.flags is {recorded.get('flags')!r}, "
+                          f"and the target's compiler declares {flags!r}")
+    obj_dir, bin_dir, argv = (recorded.get("obj_dir"), recorded.get("bin_dir"),
+                              recorded.get("argv"))
+    if not (isinstance(obj_dir, str) and obj_dir and isinstance(bin_dir, str) and bin_dir):
+        violations.append(f"{meta_path}: checked_build.obj_dir and bin_dir must be non-empty "
+                          f"strings, got {obj_dir!r} and {bin_dir!r}")
+        return
+    # Compared by its pipeline-relative tail, not as an absolute path: Build recorded the
+    # checkout's path at the time, and a resume after the checkout moved validates the same
+    # certified Build from another one. What this clause catches is the build's binary
+    # directory being another one of the binary's (its `bin/`), which the tail shows.
+    if Path(bin_dir).parts[-3:] != ("binary", binary_id.strip(), "bin_checked"):
+        violations.append(f"{meta_path}: checked_build.bin_dir is {bin_dir!r}, and the checked "
+                          f"binary's directory is binary/{binary_id.strip()}/bin_checked")
+    build_system = str(target.toolchain.get("build_system") or "")
+    try:
+        execute = backend_registry.capability_module("build_system", build_system,
+                                                     "build_execute")
+        overrides = list(execute.checked_build_overrides(
+            obj_dir, bin_dir, exe, checked_build.control_file_rules(target), flags))
+    except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
+            ValueError) as exc:
+        violations.append(f"{meta_path}: the checked build's variables cannot be composed for "
+                          f"target {target.target_id}: {exc}")
+        return
+    if not (isinstance(argv, list) and argv[-len(overrides):] == overrides):
+        violations.append(
+            f"{meta_path}: checked_build.argv must end with {overrides!r} (the control file's "
+            f"flag string followed by the compiler's checked flags, over the recorded "
+            f"directories), got {argv!r}")
+    # (ii) the build's own command-log record.
+    source_id = meta.get("source_source_id")
+    build_log = (execution.pipeline_dir / "source" / str(source_id or "").strip() / "src"
+                 / _COMMAND_LOG_BASENAME)
+    build_records = [r for r in _command_log_records(build_log)
+                     if r.get("command_id") == recorded.get("command_id")]
+    if not (isinstance(recorded.get("command_id"), str) and len(build_records) == 1
+            and build_records[0].get("tool_name") == "compile_project"
+            and build_records[0].get("ok") is True
+            and isinstance(build_records[0].get("command"), list)
+            and build_records[0]["command"][-len(overrides):] == overrides):
+        violations.append(
+            f"{meta_path}: checked_build.command_id {recorded.get('command_id')!r} must "
+            f"name one compile_project record that succeeded in {build_log}, whose command ends "
+            f"with {overrides!r}")
+    # The binding, required polarity.
+    command_id = row.get("command_id")
+    run_log = execution.node_dir / _COMMAND_LOG_BASENAME
+    run_records = ([r for r in _command_log_records(run_log)
+                    if r.get("command_id") == command_id]
+                   if isinstance(command_id, str) and command_id else [])
+    if len(run_records) != 1:
+        violations.append(
+            f"{where}.command_id {command_id!r} must name exactly one record in the run's "
+            f"command log {run_log} (found {len(run_records)})")
+        return
+    record = run_records[0]
+    command = record.get("command")
+    if record.get("tool_name") != "run_program" or record.get("ok") is not True or not (
+            isinstance(command, list) and command and all(isinstance(a, str) for a in command)):
+        violations.append(
+            f"{where}.command_id {command_id!r} names a {record.get('tool_name')!r} record "
+            f"(ok={record.get('ok')!r}) whose command is {command!r}; the checked row is a "
+            f"run_program of the checked binary that succeeded")
+        return
+    bound = _bound_executable(record, [], bin_checked.resolve())
+    try:
+        expected_binary = (execution.pipeline_dir / expected_ref).resolve()
+    except (OSError, RuntimeError):
+        expected_binary = None
+    if not bound.prefix_ok or bound.resolved is None or bound.resolved != expected_binary:
+        violations.append(
+            f"{where}.command_id {command_id!r} ran {bound.executable!r} "
+            f"(cwd={bound.cwd!r}); the checked row runs {expected_ref} bare, with no launch "
+            f"prefix")
+
+
+def _command_log_records(log_path: Path) -> list[dict[str, Any]]:
+    """Every JSON object line of a command log, in order; none when it does not exist. Decoded
+    leniently, as `_find_command_log_record` decodes."""
+    if not log_path.is_file():
+        return []
+    out: list[dict[str, Any]] = []
+    for raw_line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            obj = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
 
 
 #: The scalar snapshot variables the distributed harness's own self-test captures the grid
@@ -5998,6 +6192,60 @@ def _canonical_log_ref_for_run_quality_checks(
         return None
 
 
+@dataclass(frozen=True)
+class _BoundExecutable:
+    """What `_bound_executable` read off a `run_program` record: whether its `command` begins
+    with the expected launch prefix (and what it began with), the argument after the prefix
+    and the record's `cwd`, and that argument resolved — `None` unless it resolves, absolute or
+    against `cwd`, UNDER the bin directory (component-wise, `Path.relative_to`)."""
+
+    prefix_ok: bool
+    got_prefix: list[Any]
+    executable: Any
+    cwd: Any
+    resolved: Path | None
+
+
+def _bound_executable(record: Mapping[str, Any], expected_prefix: list[str],
+                      bin_dir_abs: Path) -> _BoundExecutable:
+    """The executable a `run_program` record ran, bound to a build's bin directory: the
+    argument after `expected_prefix` in the record's `command` (a list of strings is the
+    caller's to require), resolved absolute or against the record's `cwd`, and required to lie
+    under `bin_dir_abs`. Two callers: the walked `source_command_ref` form
+    (`_validate_run_program_inputs`, the certified prefix and `bin/`) and the quality check's
+    `checked` row (`_validate_checked_row`, no prefix and `bin_checked/`; issue #589 PR-0). The
+    two directories are siblings, so neither resolves under the other."""
+    command = list(record.get("command") or [])
+    got_prefix = command[:len(expected_prefix)]
+    cwd_val = record.get("cwd")
+    if got_prefix != list(expected_prefix):
+        return _BoundExecutable(False, got_prefix, None, cwd_val, None)
+    executable = (command[len(expected_prefix)]
+                  if len(command) > len(expected_prefix) else None)
+    cwd_path: Path | None = None
+    if isinstance(cwd_val, str) and cwd_val.strip():
+        cwd_path = Path(cwd_val.strip())
+    executable_resolved: Path | None = None
+    if isinstance(executable, str) and executable.strip():
+        exe_path = Path(executable.strip())
+        if exe_path.is_absolute():
+            try:
+                executable_resolved = exe_path.resolve()
+            except (OSError, RuntimeError):
+                executable_resolved = None
+        elif cwd_path is not None:
+            try:
+                executable_resolved = (cwd_path / exe_path).resolve()
+            except (OSError, RuntimeError):
+                executable_resolved = None
+    if executable_resolved is not None:
+        try:
+            executable_resolved.relative_to(bin_dir_abs)
+        except ValueError:
+            executable_resolved = None
+    return _BoundExecutable(True, got_prefix, executable, cwd_val, executable_resolved)
+
+
 def _validate_run_program_inputs(
     repo_root: Path, execution: NodeExecution, violations: list[str]
 ) -> None:
@@ -6142,43 +6390,18 @@ def _validate_run_program_inputs(
         if _build_bin_abs is not None and command:
             if _argv_prefix is None:
                 continue
-            if command[:len(_argv_prefix)] != _argv_prefix:
+            bound = _bound_executable(matched, _argv_prefix, _build_bin_abs)
+            if not bound.prefix_ok:
                 violations.append(
                     f"{trial_meta_path}:run_program command_id={command_id} command must "
                     f"begin with the recorded launch prefix {_argv_prefix!r} "
-                    f"(environment.launch.argv_prefix); got {command[:len(_argv_prefix)]!r}"
+                    f"(environment.launch.argv_prefix); got {bound.got_prefix!r}"
                 )
                 continue
-            executable = (command[len(_argv_prefix)]
-                          if len(command) > len(_argv_prefix) else None)
-            cwd_val = matched.get("cwd")
-            cwd_path: Path | None = None
-            if isinstance(cwd_val, str) and cwd_val.strip():
-                cwd_path = Path(cwd_val.strip())
-            executable_resolved: Path | None = None
-            if isinstance(executable, str) and executable.strip():
-                exe_path = Path(executable.strip())
-                if exe_path.is_absolute():
-                    try:
-                        executable_resolved = exe_path.resolve()
-                    except (OSError, RuntimeError):
-                        executable_resolved = None
-                elif cwd_path is not None:
-                    try:
-                        executable_resolved = (cwd_path / exe_path).resolve()
-                    except (OSError, RuntimeError):
-                        executable_resolved = None
-            ok_under_build_bin = False
-            if executable_resolved is not None:
-                try:
-                    executable_resolved.relative_to(_build_bin_abs)
-                    ok_under_build_bin = True
-                except ValueError:
-                    ok_under_build_bin = False
-            if not ok_under_build_bin:
+            if bound.resolved is None:
                 violations.append(
                     f"{trial_meta_path}:run_program command_id={command_id} "
-                    f"executable {executable!r} (cwd={cwd_val!r}) must "
+                    f"executable {bound.executable!r} (cwd={bound.cwd!r}) must "
                     f"resolve under source_binary_id={_trial_source_build_id!r}"
                     f"'s bin directory ({_build_bin_abs!s}). Mixed-build "
                     f"attribution is not permitted."
@@ -10700,6 +10923,7 @@ def _validate_impl(
         _validate_execution_json_outputs(execution, violations)
         _validate_launched_ranks(repo_root, execution, violations)
         _validate_execution_shapes(repo_root, execution, violations)
+        _validate_checked_row(repo_root, execution, violations)
         _validate_raw_evidence(repo_root, execution, violations)
         in_scope_src_dir = _execution_in_scope_src_dir(execution, violations)
         if (

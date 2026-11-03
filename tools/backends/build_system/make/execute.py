@@ -19,8 +19,9 @@ Stdlib only; imports nothing from the neutral core.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import Any
 
 #: The `run_quality_checks` preset Validate.execute re-runs the built binary through (the
 #: `make test` re-run the quality check compares against `run_program`, phase_04 §4-1). One of
@@ -56,6 +57,29 @@ def build_overrides(obj_dir: str, bin_dir: str, exe: str) -> tuple[str, ...]:
     job directory's — so the two sites cannot build differently. Validate.execute imposes the
     same `BIN` through `quality_check_env`."""
     return (f"OBJDIR={obj_dir}", f"BINDIR={bin_dir}", f"BIN={exe}")
+
+
+def checked_build_overrides(obj_dir: str, bin_dir: str, exe: str, rules: Mapping[str, Any],
+                            flags_suffix: Iterable[str]) -> tuple[str, ...]:
+    """The command-line variables of the bounds-checked second build (issue #589 PR-0):
+    `build_overrides` over the checked build's own object and binary directories, then the
+    language's flags variable set to the control file's own flag string followed by the
+    compiler's checked flags.
+
+    `rules` is the language backend's `control_file.rules(...)` mapping — the one the conductor
+    hands the renderer, whose `flags_variable` and `flags` the control file's `<var> ?= <flags>`
+    line is rendered from — so the string is the control file's VERBATIM, never recomposed: a
+    command-line assignment replaces the `?=` value whole, and the language's flags already
+    carry the module-directory pair (`$(OBJDIR)`, left unexpanded for make to expand at use; a
+    second module-directory flag is fatal to the Fortran compiler). The post-execute gate calls
+    this function with `binary_meta.json#checked_build`'s recorded directories and compares
+    the tuple with the recorded argv's tail."""
+    suffix = " ".join(str(f) for f in flags_suffix)
+    if not suffix.strip():
+        # A checked build with nothing added is the certified build under another name.
+        raise ValueError("checked_build_overrides: no checked flags to add")
+    return (*build_overrides(obj_dir, bin_dir, exe),
+            f"{rules['flags_variable']}={rules['flags']} {suffix}")
 
 
 def build_argv(target: str | None, jobs: int, extra_args: Iterable[str]) -> list[str]:

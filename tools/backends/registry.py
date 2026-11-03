@@ -140,7 +140,8 @@ AXES: dict[str, Axis] = {
         ),
         description=(
             "The compiler front end the syntax-only gate drives: its argv, its diagnostic "
-            "format, and which of its warnings the gate promotes to errors."
+            "format, and which of its warnings the gate promotes to errors; and the flags a "
+            "second, bounds-checked build of the certified sources adds (`checked_flags`)."
         ),
     ),
     "linter": Axis(
@@ -270,6 +271,16 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "probe and a canary source (a failing stage is attributed by re-running the adapter, "
         "never by reading its diagnostics).",
     ),
+    "checked_flags": (
+        ("compiler",),
+        ("The flags this compiler adds to a target's own flag string for a second, "
+         "bounds-checked build of the certified sources (`CHECKED_FLAGS`; issue #589 PR-0): "
+         "`Build` makes that binary beside the certified one and `Validate.execute` runs it as "
+         "the quality check's `checked` row. An empty tuple is an answer — no checked build, "
+         "and `binary_meta.json#checked_build` is null — and a compiler that does not declare "
+         "the capability is refused (`tools/checked_build.py`, `checked_flags_for`), so a new "
+         "compiler cannot skip the row by omission."),
+    ),
     "lint": (
         ("linter",),
         "The static-lint step can run this linter and read its findings.",
@@ -394,6 +405,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     # line, the language's says what it is run over.
     "syntax_check": "syntax",
     "syntax_promotions": "syntax",
+    "checked_flags": "checked_flags",
     "prompt_fragments": "prompts",
     "checks_abi": "checks_abi",
     "source_reading": "source",
@@ -483,15 +495,17 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
             backend_provides=frozenset({"control_file", "build_execute"}),
         ),
         # Extracted for its syntax-only adapter (issue #289, R4-b PR-2): the argv, the canary and
-        # the version probe `run_syntax_check` used to hold inline.
+        # the version probe `run_syntax_check` used to hold inline. `checked_flags` since issue
+        # #589 PR-0: the flags of the bounds-checked second build.
         Backend(
             "compiler", "gfortran", "tools.backends.compiler.gfortran",
-            backend_provides=frozenset({"syntax_check"}),
+            backend_provides=frozenset({"syntax_check", "checked_flags"}),
         ),
-        # The CUDA compiler driver's syntax-only adapter (issue #289, R4-b PR-4).
+        # The CUDA compiler driver's syntax-only adapter (issue #289, R4-b PR-4), and its
+        # `checked_flags`, which are none (issue #589 PR-0 decision 3).
         Backend(
             "compiler", "nvcc", "tools.backends.compiler.nvcc",
-            backend_provides=frozenset({"syntax_check"}),
+            backend_provides=frozenset({"syntax_check", "checked_flags"}),
         ),
         # The linter members ARE the presets the `Generate` lint evidence gate accepts: that gate
         # asks `unimplemented_reason("linter", ...)` and holds no set of its own, so this is the

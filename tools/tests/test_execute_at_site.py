@@ -150,6 +150,11 @@ class _Node:
         self.binary = bin_dir / "spec_x_runner"
         self.binary.write_text(_RUNNER, encoding="utf-8")
         self.binary.chmod(0o755)
+        # The bounds-checked binary Build makes beside it (issue #589 PR-0): the same runner.
+        self.checked_binary = bin_dir.parent / "bin_checked" / "spec_x_runner"
+        self.checked_binary.parent.mkdir(parents=True)
+        self.checked_binary.write_text(_RUNNER, encoding="utf-8")
+        self.checked_binary.chmod(0o755)
         self.built_at(self.site.site_id)
         self.node_dir = self.repo / self.refs.run_node_dir()
 
@@ -260,7 +265,9 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                                      / "stage")) for p in
                    (n.repo / "workspace" / "tmp" / "arid-1" / "site" / "stage").rglob("*")
                    if p.is_file()}
-        self.assertEqual(shipped, {"bin/spec_x_runner", "ir/spec.ir.yaml", "src/Makefile"})
+        # ... and the bounds-checked binary beside the certified one (issue #589 PR-0).
+        self.assertEqual(shipped, {"bin/spec_x_runner", "bin_checked/spec_x_runner",
+                                   "ir/spec.ir.yaml", "src/Makefile"})
         # And the job directory is gone from the site.
         self.assertFalse(Path(job).exists())
 
@@ -272,9 +279,22 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         shapes = n.target.execution_shapes
         self.assertGreater(len(shapes), 1, "the fixture target declares no sweep; this row "
                                            "would not see a sweep run at a site")
-        self.assertEqual([e["tool_name"] for e in run_log], ["run_program"] * len(shapes))
+        # ... then the bounds-checked binary, last (issue #589 PR-0).
+        self.assertEqual([e["tool_name"] for e in run_log],
+                         ["run_program"] * (len(shapes) + 1))
         self.assertEqual([e["tool_name"] for e in qc_log], ["run_quality_checks"])
         sweep_tmp = n.repo / "workspace" / "tmp" / "arid-1" / "sweep"
+        checked = run_log[-1]
+        self.assertEqual(checked["command"],
+                         [str(n.checked_binary.resolve()), *run_log[0]["command"][1:]])
+        self.assertEqual(checked["site"]["remote_command"][0],
+                         f"{job}/bin_checked/spec_x_runner")
+        self.assertEqual((checked["cwd"], checked["site"]["remote_cwd"]),
+                         (str(sweep_tmp / "checked"), f"{job}/sweep/checked"))
+        self.assertEqual(checked["env_override_keys"],
+                         sorted(serial_execution_env(n.target.parallel_backend)))
+        self.assertTrue((sweep_tmp / "checked" / "argv.json").is_file())
+        run_log = run_log[:-1]
         for shape, entry in zip(shapes[1:], run_log[1:]):
             with self.subTest(shape=shape.label):
                 self.assertEqual(entry["cwd"], str(sweep_tmp / shape.label))
@@ -284,7 +304,8 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                                  sorted(launch_shape(n.target, n.site, shape).env))
                 self.assertTrue((sweep_tmp / shape.label / "argv.json").is_file())
         quality = json.loads((n.node_dir / "quality_check.json").read_text())
-        self.assertEqual([r["label"] for r in quality["shapes"]], [s.label for s in shapes])
+        self.assertEqual([r["label"] for r in quality["shapes"]],
+                         [*(s.label for s in shapes), "checked"])
         self.assertTrue(all(r["status"] == "pass" for r in quality["shapes"]))
         self.assertEqual(run_log[0]["command"][0], str(n.binary.resolve()))
         self.assertEqual(run_log[0]["cwd"], str(run_tmp))
@@ -569,8 +590,10 @@ class ExecuteTracedAtARemoteSiteTests(unittest.TestCase):
         # The runner ran, under the prefix, in the job's run directory.
         self.assertEqual(json.loads((run_tmp / "argv.json").read_text())["cwd"], f"{job}/run")
         run_log = n.log_entries(n.node_dir / "command_log.jsonl")
-        self.assertEqual([e["tool_name"] for e in run_log], ["run_program", "run_program"])
-        binary_run, summary = run_log
+        # The run, its trace summary, then the bounds-checked binary bare (issue #589 PR-0).
+        self.assertEqual([e["tool_name"] for e in run_log], ["run_program"] * 3)
+        binary_run, summary, checked = run_log
+        self.assertEqual(checked["command"][0], str(n.checked_binary.resolve()))
         prefix = list(self.shape.argv_prefix)
         self.assertEqual(binary_run["command"][:len(prefix)], prefix)
         self.assertEqual(binary_run["command"][len(prefix)], str(n.binary.resolve()))

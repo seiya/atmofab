@@ -236,6 +236,31 @@ def _build_runtime():
     return build_runtime
 
 
+def checked_build_members() -> dict[str, str]:
+    """The bounds-checked second build (issue #589 PR-0): the neutral seam that resolves the
+    target compiler, its checked flags, the control file's flag rules and the `checked` row's
+    shape, and — per compiler record — whether it declares `checked_flags`, the attribute row
+    the dispatch resolves by, and the package and module files `capability_module` returns.
+    Build composes the second build from these and Validate.execute runs the row they shape, so
+    they are members of both tuples."""
+    from tools.backends import registry
+
+    members: dict[str, str] = {"tools/checked_build.py": _file_digest("tools/checked_build.py"),
+                               "registry checked_flags attr": registry_attr("checked_flags")}
+    for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
+        if axis != "compiler":
+            continue
+        declared = "checked_flags" in record.backend_provides
+        members[f"compiler/{backend_id} checked_flags declared"] = json.dumps(declared)
+        if declared:
+            package = registry.load(axis, backend_id)
+            module = registry.capability_module(axis, backend_id, "checked_flags")
+            for label, loaded in (("package", package), ("module", module)):
+                rel = Path(loaded.__file__).resolve().relative_to(_REPO).as_posix()
+                members[f"compiler/{backend_id} checked_flags {label} {rel}"] = _file_digest(rel)
+    return members
+
+
 def build_tuple() -> dict[str, str]:
     """The in-process build: the library's `compile_project` and its command runner, the
     conductor's build body and its dependency staging, the bundle build-graph derivation."""
@@ -298,6 +323,12 @@ def build_tuple() -> dict[str, str]:
             _source_digest(wc.Conductor._require_build_execute),
         "build_runtime._build_execute_module":
             _source_digest(server._build_execute_module),
+        # The bounds-checked second build (issue #589 PR-0): its flags, the control file's flag
+        # rules it composes them after (the same `_control_file_rules` the control file is
+        # rendered from), and whether Build delivers its binary.
+        **{f"checked build: {k}": v for k, v in checked_build_members().items()},
+        "Conductor._control_file_rules": _source_digest(wc.Conductor._control_file_rules),
+        "Conductor._builds_checked": _source_digest(wc.Conductor._builds_checked),
     }
 
 
@@ -400,6 +431,8 @@ def execute_tuple() -> dict[str, str]:
                         wc._EXCERPT_STDERR_HEAD, wc._EXCERPT_STDERR_TAIL,
                         wc._EXCERPT_LINE_CHARS]),
         "workflow_conductor._stderr_head_and_tail": _source_digest(wc._stderr_head_and_tail),
+        # The bounds-checked binary's row (issue #589 PR-0): which targets run it and its shape.
+        **{f"checked build: {k}": v for k, v in checked_build_members().items()},
         "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
         "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
         **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
@@ -1328,6 +1361,13 @@ PINNED_BUILD: dict[str, str] = {
     # origin/main c38a3d8b's: that row and no other.) The digest `build-2` shipped with at
     # c38a3d8b:
     "build-2@c38a3d8b": "64c97d62cdd775f0e98d12bf19964a514264c9534bc8b03ff2d4f3ce0e102b65",
+    # build-3 (issue #589 PR-0): Build makes a second, bounds-checked binary at
+    # `binary/<id>/bin_checked/<exe>` from the same control file under the target compiler's
+    # `checked_flags` (a new deliverable, hashed and required fresh), and records it in
+    # `binary_meta.json#checked_build`. New rows: `tools/checked_build.py`, the compiler
+    # records' `checked_flags` declarations and modules, `Conductor._control_file_rules`,
+    # `Conductor._builds_checked`.
+    "build-3": "95b062f0a5d7b9978a194bf614b97b9513b066e16907f59e86d975d9dccdce43",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1621,6 +1661,11 @@ PINNED_EXECUTE: dict[str, str] = {
     # was added, no other.) The
     # digest `execute-12` shipped with at ad0393fd:
     "execute-12@ad0393fd": "7d0bf312f0768f31579cf210435a16f781c9d38531db52f9d782225123a0da42",
+    # execute-14 (issue #589 PR-0): Validate.execute runs the bounds-checked binary last, bare,
+    # under the serial reference's environment, as `quality_check.json#shapes`' `checked` row;
+    # it refuses a binary with no checked binary when the compiler declares flags. New rows:
+    # the checked-build members (`checked_build_members`).
+    "execute-14": "65e04c39018bc3db7314446fbb65d3cef614ef95afb5e8268b8d4f2adec1ca5b",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

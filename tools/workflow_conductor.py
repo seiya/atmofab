@@ -1604,6 +1604,7 @@ def build_launch_request(
     exe_name: str | None = None,
     runner_host_authored: bool = False,
     device_trace: bool = False,
+    checked_build: bool = False,
     repair: dict[str, str] | None = None,
     resolved_dependencies: tuple[dict[str, str], ...] = (),
     dependency_surface: tuple[dict[str, Any], ...] = (),
@@ -1631,6 +1632,8 @@ def build_launch_request(
     never gate (pure module function, no FS access).
     device_trace says the target's binary runs under a device trace (validate.execute only),
     whose per-kernel summary execute promotes to `kernel_trace.csv` (issue #307).
+    checked_build says the target's compiler declares checked flags (build only), so Build
+    delivers the bounds-checked binary at `bin_checked/<exe>` too (issue #589 PR-0).
     """
     spec = refs.spec_path
     role = child_agent_role(step)
@@ -1785,8 +1788,13 @@ def build_launch_request(
             bdir = refs.binary_dir()
             # The binary basename is the Makefile's BIN (resolved by the conductor and passed
             # in); fall back to the <spec_id>_runner name when unknown (e.g. unit fixtures).
+            exe = exe_name or (refs.spec_id + '_runner')
+            # `bin_checked/<exe>` is a deliverable when the target's compiler declares checked
+            # flags (`checked_build`, issue #589 PR-0): hashed into the stamp and required
+            # fresh, as the certified binary is.
             req["allowed_output_paths"] = [
-                f"{bdir}/bin/{exe_name or (refs.spec_id + '_runner')}",
+                f"{bdir}/bin/{exe}",
+                *([f"{bdir}/bin_checked/{exe}"] if checked_build else []),
                 f"{bdir}/binary_meta.json",
                 f"{bdir}/command_log.jsonl",
             ]
@@ -11281,6 +11289,23 @@ class Conductor:
         bin_dir = self.repo_root / refs.binary_dir() / "bin"
         obj_dir = self.repo_root / "workspace" / "tmp" / child_arid / "build"
         exe = self._resolve_exe_name(refs)
+        # The bounds-checked second build (issue #589 PR-0): the same control file and sources
+        # under the compiler's `checked_flags`, into directories of its own — `bin_checked/` a
+        # SIBLING of `bin/` (never inside it, so neither resolves under the other), and an
+        # object directory beside `obj_dir`, into which the closure is staged a second time.
+        # A compiler that declares no flags builds none (`checked_build: null`); one that does
+        # not declare the capability is refused (`CheckedBuildUnavailable`, a host-side
+        # declaration defect: transport fail_closed). `Validate.execute` runs the binary as
+        # the quality check's `checked` row (phase_04 §4-2). It is a Build-phase build of the
+        # Generate-authored control file under command-line variables, not a control file a
+        # downstream phase adds (`WORKFLOW_CORE.md` rule 34).
+        from tools.checked_build import checked_flags_for
+
+        checked_flags = checked_flags_for(self.target)
+        bin_checked = self.repo_root / refs.binary_dir() / "bin_checked"
+        obj_checked = obj_dir.parent / "build_checked"
+        flag_rules = (self._control_file_rules(tc, self._target_architecture())
+                      if checked_flags else None)
         site = self.site
         if site is not None and not site.is_local:
             from tools.host_execution import launch_shape
@@ -11304,6 +11329,14 @@ class Conductor:
         # the copy is re-hashed against them; a failing build records them too: the binding
         # describes what was linked, not whether linking succeeded.
         closure_bindings = self._stage_dependency_sources(refs, obj_dir, phase="build")
+        if checked_flags:
+            # The same bound sources, staged again: make compiles the closure FROM the object
+            # directory it is handed, and the checked build has its own.
+            checked_bindings = self._stage_dependency_sources(refs, obj_checked, phase="build")
+            if checked_bindings != closure_bindings:
+                raise RuntimeError(
+                    f"checked build staging bound {checked_bindings!r}, and the build bound "
+                    f"{closure_bindings!r}; both stage the attempt's one binding")
         from tools.host_execution import LOCAL_SITE, local_platform_record
         from tools.orchestration_runtime import (
             AUDIT_LOG_BASENAMES,
@@ -11318,7 +11351,15 @@ class Conductor:
             build differently; see phase_03_build.md."""
             return list(execute.build_overrides(obj_path, bin_path, exe))
 
+        def checked_args(obj_path: str, bin_path: str) -> list[str]:
+            """The checked build's overrides (`execute.checked_build_overrides`): the same, over
+            its own directories, plus the control file's flag string verbatim followed by the
+            compiler's checked flags."""
+            return list(execute.checked_build_overrides(obj_path, bin_path, exe, flag_rules,
+                                                        checked_flags))
+
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
+        checked_result: dict[str, Any] | None = None
         if site is None or site.is_local:
             result = tool_compile_project({
                 "project_dir": str(src_dir),
@@ -11328,6 +11369,17 @@ class Conductor:
                 "capture_limit": _FULL_CAPTURE_LIMIT,
                 **attribution,
             })
+            # The checked build only after a build that left its binary: a failed build fails
+            # the attempt whatever the second would do.
+            if checked_flags and result.get("ok") and (bin_dir / exe).is_file():
+                checked_result = tool_compile_project({
+                    "project_dir": str(src_dir),
+                    "language": language,
+                    "build_system": build_system,
+                    "extra_args": checked_args(str(obj_checked), str(bin_checked)),
+                    "capture_limit": _FULL_CAPTURE_LIMIT,
+                    **attribution,
+                })
             site_id = LOCAL_SITE
             # A build probes no device: the machine that builds a class's binary need not run
             # one (`gpu` is null here and at a remote site alike).
@@ -11355,13 +11407,27 @@ class Conductor:
             site_id = site.site_id
             jdir = job_dir(site, self.orchestration_id, child_arid)
             ship: dict[str, Path] = {}
-            for root, prefix in ((src_dir, "src"), (obj_dir, "build")):
+            for root, prefix in ((src_dir, "src"), (obj_dir, "build"),
+                                 *(((obj_checked, "build_checked"),) if checked_flags else ())):
                 for path in sorted(root.rglob("*")):
                     if path.is_file() and not (prefix == "src"
                                                and path.name in AUDIT_LOG_BASENAMES):
                         ship[f"{prefix}/{path.relative_to(root).as_posix()}"] = path
             remote_args = build_args(f"{jdir}/build", f"{jdir}/bin")
             jobs = default_build_jobs()
+            # The checked build is the job's second command: the job runs it once the build
+            # exited 0. The local path also waits for the binary; here a build that exited 0
+            # and left none still fails the attempt below.
+            checked_commands = (CommandSpec(
+                tag="build_checked", tool_name="compile_project",
+                argv=tuple(build_command(build_system, None, jobs, checked_args(
+                    f"{jdir}/build_checked", f"{jdir}/bin_checked"))),
+                record_argv=tuple(build_command(build_system, None, jobs, checked_args(
+                    str(obj_checked), str(bin_checked)))),
+                cwd=f"{jdir}/src", record_cwd=str(src_dir), env={},
+                timeout_sec=COMPILE_PROJECT_TIMEOUT_SEC,
+                command_log_path=src_dir / "command_log.jsonl",
+                capture_limit=_FULL_CAPTURE_LIMIT),) if checked_flags else ()
             job = execute_job(JobRequest(
                 site=site, job_dir=jdir, ship=ship,
                 commands=(CommandSpec(
@@ -11372,18 +11438,22 @@ class Conductor:
                     cwd=f"{jdir}/src", record_cwd=str(src_dir), env={},
                     timeout_sec=COMPILE_PROJECT_TIMEOUT_SEC,
                     command_log_path=src_dir / "command_log.jsonl",
-                    capture_limit=_FULL_CAPTURE_LIMIT),),
-                dirs=("bin", "build"),
+                    capture_limit=_FULL_CAPTURE_LIMIT), *checked_commands),
+                dirs=("bin", "build", *(("bin_checked", "build_checked") if checked_flags
+                                        else ())),
                 attribution=attribution,
                 required_programs=(build_compiler(tc),),
                 toolchain_probe=toolchain_version_argv(self.target),
             ), local_tmp=obj_dir.parent / "site")
-            (result,) = job.results
+            result = job.results[0]
+            checked_result = job.results[1] if checked_flags else None
             # What the job's output names by its job-directory path is written back to the
             # local path it stands for — the compiler's diagnostics, which the failure's
             # `failure_excerpt` quotes to the Generate repair, among it.
             local_of = sorted(((f"{jdir}/src", str(src_dir)), (f"{jdir}/bin", str(bin_dir)),
-                               (f"{jdir}/build", str(obj_dir))),
+                               (f"{jdir}/build", str(obj_dir)),
+                               (f"{jdir}/bin_checked", str(bin_checked)),
+                               (f"{jdir}/build_checked", str(obj_checked))),
                               key=lambda pair: len(pair[0]), reverse=True)
 
             def localized(text: str) -> str:
@@ -11393,14 +11463,21 @@ class Conductor:
 
             result = {**result, "stdout": localized(result.get("stdout") or ""),
                       "stderr": localized(result.get("stderr") or "")}
-            # This node's `bin/` holds only what this build collected: a file an earlier
-            # attempt left there must not stand in for a binary the site did not produce.
-            if bin_dir.exists():
-                shutil.rmtree(bin_dir)
-            bin_dir.mkdir(parents=True)
-            built = job.collected / "bin" / exe
-            if built.is_file():
-                shutil.copy2(built, bin_dir / exe)
+            if checked_result is not None:
+                checked_result = {**checked_result,
+                                  "stdout": localized(checked_result.get("stdout") or ""),
+                                  "stderr": localized(checked_result.get("stderr") or "")}
+            # This node's `bin/` (and `bin_checked/`) holds only what this build collected: a
+            # file an earlier attempt left there must not stand in for a binary the site did
+            # not produce.
+            for local_bin, remote_name in ((bin_dir, "bin"), *(((bin_checked, "bin_checked"),)
+                                                               if checked_flags else ())):
+                if local_bin.exists():
+                    shutil.rmtree(local_bin)
+                local_bin.mkdir(parents=True)
+                built = job.collected / remote_name / exe
+                if built.is_file():
+                    shutil.copy2(built, local_bin / exe)
             platform_record = job.platform
             site_record = job.site_record
             built_compiler_version = job.toolchain_version
@@ -11417,6 +11494,24 @@ class Conductor:
         binary_missing = ok and not (bin_dir / exe).is_file()
         if binary_missing:
             ok = False
+        # The checked build is a Build deliverable when the compiler declares flags: a build
+        # whose checked half failed, or reported success and left no binary at the imposed
+        # `bin_checked/<exe>`, fails the attempt as the certified half would. Its output is
+        # appended to the build's logs, so the failure excerpt quotes it.
+        checked_missing = False
+        if ok and checked_flags:
+            # The header tells a Generate repair that the certified build succeeded and this is
+            # the second compile of the same sources under the compiler's checked flags.
+            header = ("\n[checked build: the build above succeeded; this is the second build "
+                      "of the same sources under the compiler's checked flags]\n")
+            stdout += header + ((checked_result or {}).get("stdout", "") or "")
+            stderr += header + ((checked_result or {}).get("stderr", "") or "")
+            if checked_result is None or not checked_result.get("ok"):
+                ok = False
+                rc = (checked_result or {}).get("return_code") or 1
+            elif not (bin_checked / exe).is_file():
+                binary_missing = checked_missing = True
+                ok = False
         # `command_log_ref` from the handler is cwd-relative (`_path_to_ref` uses
         # Path.cwd()), which is unreliable for the in-process caller — derive it from
         # our repo_root + the known canonical placement instead (`BUILDS_IN_SOURCE`, checked
@@ -11479,6 +11574,20 @@ class Conductor:
                             "build_site": site_record,
                             "compiler_version": built_compiler_version},
             "binary_artifact_ref": f"binary/{refs.binary_id}/bin/{exe}",
+            # The bounds-checked second build (issue #589 PR-0): where its binary is, the LOCAL
+            # directories its overrides were composed from (at a remote site too: the record's
+            # argv is the local-path argv, `CommandSpec.record_argv`), the flags the compiler
+            # added, its command-log record and the argv that record holds. The post-execute
+            # gate recomposes the overrides from these fields and compares (`_validate_
+            # checked_row`). Null when the target's compiler declares no checked flags.
+            "checked_build": ({
+                "binary_ref": f"binary/{refs.binary_id}/bin_checked/{exe}",
+                "obj_dir": str(obj_checked),
+                "bin_dir": str(bin_checked),
+                "flags": list(checked_flags),
+                "command_id": (checked_result or {}).get("command_id"),
+                "argv": list((checked_result or {}).get("command") or []),
+            } if checked_flags else None),
             "command_id": result.get("command_id"),
             "command_log_ref": command_log_ref,
             "command_log_path": command_log_ref,
@@ -11502,8 +11611,10 @@ class Conductor:
             category, rule = execute.BINARY_MISSING
             binary_meta["failure_category"] = category
             binary_meta["last_fail_reason"] = "binary_not_built_at_bindir"
+            missing_at = "bin_checked" if checked_missing else "bin"
             binary_meta["failure_excerpt"] = (
-                f"compile reported success but no binary at bin/{exe} (imposed BIN); {rule}")
+                f"compile reported success but no binary at {missing_at}/{exe} (imposed BIN); "
+                f"{rule}")
         elif not ok:
             binary_meta["failure_category"] = self._classify_build_failure_category(
                 build_system, rc, stderr)
@@ -12672,6 +12783,14 @@ class Conductor:
         return "device_trace" in backend_registry.get(
             "parallel", self.target.parallel_backend).backend_provides
 
+    def _builds_checked(self) -> bool:
+        """True when the target's compiler declares checked flags (`checked_build.
+        checked_flags_for`, issue #589 PR-0), so Build delivers `bin_checked/<exe>` and
+        Validate.execute runs the `checked` row."""
+        from tools.checked_build import checked_flags_for
+
+        return bool(checked_flags_for(self.target))
+
     def _promote_run_evidence(self, run_tmp: Path, node_dir: Path,
                               artifacts: list[str]) -> list[str]:
         """Promote the runner's `run/` output to the canonical run node dir.
@@ -12987,10 +13106,18 @@ class Conductor:
             return line if len(line) <= _EXCERPT_LINE_CHARS else \
                 line[:_EXCERPT_LINE_CHARS - 3] + "..."
 
+        from tools.checked_build import CHECKED_SHAPE_LABEL
+
         for row in doc.get("shapes") or []:
             if not isinstance(row, dict) or row.get("status") == "pass":
                 continue
-            where = (f"shape {row.get('label')} (ranks={row.get('ranks')}, "
+            # The bounds-checked binary's row (issue #589 PR-0) is not a shape of the profile
+            # and did not run the certified binary: it is named for what it is, so a repair
+            # reads its abort as an out-of-bounds access rather than a shape difference.
+            checked_row = row.get("label") == CHECKED_SHAPE_LABEL
+            where = ("the checked row (the bounds-checked build of the same sources, one "
+                     "process, one thread, no launcher)" if checked_row else
+                     f"shape {row.get('label')} (ranks={row.get('ranks')}, "
                      f"process_grid={row.get('process_grid')}, "
                      f"threads_per_rank={row.get('threads_per_rank')}"
                      + (f", block_size={row['block_size']}"
@@ -13008,7 +13135,12 @@ class Conductor:
                     f"[execute fail: quality_check] {where}: the run failed (rc="
                     f"{failure.get('return_code')!r}"
                     + (f", {failure['error']}" if failure.get("error") else "")
-                    + "); the same binary and cases ran under the certified shape"
+                    + ("); the same cases ran under the certified shape, and an access "
+                       "outside an array's declared bounds aborts the bounds-checked build"
+                       if checked_row and not failure.get("error") else
+                       "); the same cases ran under the certified shape"
+                       if checked_row else
+                       "); the same binary and cases ran under the certified shape")
                     + ("; its stderr:" if head or tail else ""))
                 if not quoted:
                     quoted = True
@@ -13103,6 +13235,7 @@ class Conductor:
         # shape `execution.sweep` names, every one compared with the quality check's serial
         # reference — the `make test` re-run, one process with one thread
         # (`host_execution.serial_execution_env`).
+        from tools.checked_build import checked_shape
         from tools.host_execution import (
             declares_launcher,
             imposes_block_size,
@@ -13126,6 +13259,14 @@ class Conductor:
         bin_dir = self.repo_root / refs.binary_dir(refs.source_binary_id) / "bin"
         exe = self._resolve_exe_name(refs)
         binary = (bin_dir / exe).resolve()
+        # The bounds-checked binary Build made beside it (issue #589 PR-0), run last as the
+        # `checked` row: bare — no launcher prefix, one process, one thread — under the serial
+        # reference's environment (`serial_execution_env`), in the sweep form so the record's
+        # `command[0]` is the binary the post-execute gate binds to `bin_checked/`. None when
+        # the target's compiler declares no checked flags.
+        checked = checked_shape(target)
+        checked_binary = (bin_dir.parent / "bin_checked" / exe).resolve()
+        checked_env = serial_execution_env(target.parallel_backend, target.block_size)
         ir_spec = (self.repo_root / refs.ir_ref / "spec.ir.yaml").resolve()
         run_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "run"
         qc_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "qc_run"
@@ -13202,6 +13343,18 @@ class Conductor:
                 f"nothing at Build) — make it answer there, then rebuild: run this node as the "
                 f"target with --rederive build,validate")
 
+        # A binary whose Build made no checked binary while the target's compiler declares
+        # checked flags (a Build certified before issue #589 PR-0 cannot reach here: the build
+        # key moved with it) is the host's inconsistency, not the kernel's: refused before
+        # anything runs, rather than run as a missing program and routed to Generate.
+        if checked is not None and not checked_binary.is_file():
+            raise RuntimeError(
+                f"binary {refs.source_binary_id} has no checked binary at "
+                f"{self._rel(bin_dir.parent / 'bin_checked' / exe)}, and target "
+                f"{target.target_id}'s compiler declares checked flags; rebuild it: run "
+                f"this node as the target with "
+                f"--rederive build,validate")
+
         # Attribution only: the library records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
@@ -13218,10 +13371,11 @@ class Conductor:
         run_raw_dirs = self._run_raw_dirs(refs)
 
         def commands(binary_path: str, spec_path: str, bin_path: str, qc_path: str,
-                     obj_path: str) -> tuple[list[str], dict[str, str], list[list[str]]]:
-            """The run's argv, the quality check's environment and each sweep shape's argv,
-            from one set of paths — the local ones or the site's — so the two sites cannot run
-            different commands.
+                     obj_path: str, checked_path: str
+                     ) -> tuple[list[str], dict[str, str], list[list[str]], list[str]]:
+            """The run's argv, the quality check's environment, each sweep shape's argv and the
+            checked binary's (bare: no launch prefix), from one set of paths — the local ones or
+            the site's — so the two sites cannot run different commands.
 
             The quality check's variables are the build system's
             (`execute.quality_check_env`, whose docstring says why each is imposed) over the
@@ -13234,14 +13388,16 @@ class Conductor:
             qc_env = {**serial_execution_env(target.parallel_backend, target.block_size),
                       **execute.quality_check_env(obj_path, bin_path, qc_path, str(exe),
                                                   spec_path, case_ids)}
-            return run_argv, qc_env, [shape_launch.command(argv) for _s, shape_launch in sweep]
+            return (run_argv, qc_env, [shape_launch.command(argv) for _s, shape_launch in sweep],
+                    [checked_path, "--cases", spec_path, *case_ids])
 
         res_qc: dict[str, Any] | None
         if site is None or site.is_local:
             run_tmp.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
             qc_tmp.mkdir(parents=True, exist_ok=True)
-            run_argv, qc_env, sweep_argvs = commands(str(binary), str(ir_spec), str(bin_dir),
-                                                     str(qc_tmp), str(obj_tmp))
+            run_argv, qc_env, sweep_argvs, checked_argv = commands(
+                str(binary), str(ir_spec), str(bin_dir), str(qc_tmp), str(obj_tmp),
+                str(checked_binary))
             # 1. run_program (primary evidence) — include spec.ir.yaml.case per phase_04 §4-1.
             res_run = tool_run_program({
                 "project_dir": str(run_tmp),
@@ -13291,6 +13447,21 @@ class Conductor:
                     "capture_limit": _FULL_CAPTURE_LIMIT,
                     **attribution,
                 }) if res_qc is not None and res_qc.get("ok") else None)
+            # 4. The checked binary (issue #589 PR-0), last — so an abort cannot suppress a
+            #    sweep shape — and only while every earlier command succeeded.
+            res_checked: dict[str, Any] | None = None
+            if checked is not None and res_qc is not None and res_qc.get("ok") and all(
+                    r is not None and r.get("ok") for r in res_sweep):
+                checked_dir = sweep_tmp / checked.label
+                checked_dir.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
+                res_checked = tool_run_program({
+                    "project_dir": str(checked_dir),
+                    "command": checked_argv,
+                    "env": dict(checked_env),
+                    "command_log_path": str(cmd_log),
+                    "capture_limit": _FULL_CAPTURE_LIMIT,
+                    **attribution,
+                })
             platform_record = local_platform_record(launch.platform_probe,
                                                     runtime_probe=launch.runtime_probe)
             site_record: dict[str, Any] = _local_site_record()
@@ -13310,9 +13481,17 @@ class Conductor:
 
             jdir = job_dir(site, self.orchestration_id, child_arid)
             control_file = str(self._control_file_module(build_system).CONTROL_FILE_BASENAME)
-            run_argv, qc_env, sweep_argvs = commands(
+            run_argv, qc_env, sweep_argvs, checked_argv = commands(
                 f"{jdir}/bin/{exe}", f"{jdir}/ir/spec.ir.yaml", f"{jdir}/bin", f"{jdir}/qc_run",
-                f"{jdir}/build")
+                f"{jdir}/build", f"{jdir}/bin_checked/{exe}")
+            # The checked binary runs as the job's last command (issue #589 PR-0), shipped beside
+            # the certified one.
+            checked_commands = () if checked is None else (
+                CommandSpec(tag="checked", tool_name="run_program", argv=tuple(checked_argv),
+                            cwd=f"{jdir}/sweep/{checked.label}",
+                            record_cwd=str(sweep_tmp / checked.label), env=dict(checked_env),
+                            timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
+                            capture_limit=_FULL_CAPTURE_LIMIT),)
             # The device trace's summary runs between the two, in the run's directory (issue
             # #307); the job runs a command only after every earlier one exited 0.
             trace_commands = () if launch.trace is None else (
@@ -13324,7 +13503,8 @@ class Conductor:
             result = execute_job(JobRequest(
                 site=site, job_dir=jdir,
                 ship={f"bin/{exe}": binary, "ir/spec.ir.yaml": ir_spec,
-                      f"src/{control_file}": src_dir / control_file},
+                      f"src/{control_file}": src_dir / control_file,
+                      **({f"bin_checked/{exe}": checked_binary} if checked is not None else {})},
                 commands=(
                     CommandSpec(tag="run", tool_name="run_program", argv=tuple(run_argv),
                                 cwd=f"{jdir}/run", record_cwd=str(run_tmp),
@@ -13346,9 +13526,12 @@ class Conductor:
                                   env=dict(shape_launch.env), timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
                                   command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT)
                       for (shape, shape_launch), argv in zip(sweep, sweep_argvs)),
+                    *checked_commands,
                 ),
                 dirs=("/".join(("run", *run_raw_dirs)), "qc_run", "build",
-                      *("/".join(("sweep", shape.label, *run_raw_dirs)) for shape, _l in sweep)),
+                      *("/".join(("sweep", shape.label, *run_raw_dirs)) for shape, _l in sweep),
+                      *(("/".join(("sweep", checked.label, *run_raw_dirs)),)
+                        if checked is not None else ())),
                 platform_probe=launch.platform_probe,
                 attribution=attribution,
                 machine=built_machine,
@@ -13357,7 +13540,8 @@ class Conductor:
             # the local run and quality-check directories every later step reads.
             for name, dest in (("run", run_tmp), ("qc_run", qc_tmp),
                                *((f"sweep/{shape.label}", sweep_tmp / shape.label)
-                                 for shape, _l in sweep)):
+                                 for shape in [*(s for s, _l in sweep),
+                                               *([checked] if checked is not None else [])])):
                 if dest.exists():
                     shutil.rmtree(dest)
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -13368,7 +13552,9 @@ class Conductor:
                 res_trace = None
             else:
                 res_run, res_trace, res_qc = result.results[:leading]
-            res_sweep = list(result.results[leading:])
+            res_sweep = list(result.results[leading:leading + len(sweep)])
+            res_checked = (result.results[leading + len(sweep)] if checked is not None
+                           else None)
             platform_record = result.platform
             site_record = result.site_record
 
@@ -13449,6 +13635,23 @@ class Conductor:
                                     "error": res.get("error"),
                                     **_stderr_head_and_tail(res.get("stderr") or "")}
             earlier.append((f"shape {shape.label}", res))
+            shape_runs.append(entry)
+        if checked is not None:
+            # The checked row (issue #589 PR-0): a non-zero exit — a bounds abort among them —
+            # is `run_ok: false` and fails the quality check, with the runtime's diagnostic in
+            # `run_failure.stderr_head`.
+            entry = {"shape": checked, "dir": sweep_tmp / checked.label,
+                     "ok": bool(res_checked and res_checked.get("ok")),
+                     "command_id": res_checked.get("command_id") if res_checked else None}
+            if res_checked is None:
+                stopped_by = next((name for name, r in earlier
+                                   if r is not None and not r.get("ok")), None)
+                entry["failure"] = {"not_run": f"{stopped_by} failed first"
+                                    if stopped_by else "not run"}
+            elif not res_checked.get("ok"):
+                entry["failure"] = {"return_code": res_checked.get("return_code"),
+                                    "error": res_checked.get("error"),
+                                    **_stderr_head_and_tail(res_checked.get("stderr") or "")}
             shape_runs.append(entry)
         qc_status = self._author_quality_check(
             node_dir, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
@@ -13803,6 +14006,7 @@ class Conductor:
             runner_host_authored=(
                 phase in ("generate", "validate") and self._conductor_authors_runner(refs)),
             device_trace=(phase == "validate" and self._traces_execution()),
+            checked_build=(phase == "build" and self._builds_checked()),
             repair=repair,
             resolved_dependencies=resolved_dependencies,
             dependency_surface=dependency_surface,
@@ -15153,6 +15357,7 @@ class Conductor:
                 refs, phase,
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
                 runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs)),
+                checked_build=(phase == "build" and self._builds_checked()),
                 bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ()),
                 bundle_facts=(self._language_facts() if phase == "generate" else None),
                 control_file_basename=(self._control_file_basename(refs)
@@ -16423,6 +16628,7 @@ PHASE_VALIDATION_STAGE: dict[str, str] = {
 
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
                            *, runner_host_authored: bool = False,
+                           checked_build: bool = False,
                            bundle_sources: Sequence[str] = (),
                            bundle_facts: Any = None,
                            control_file_basename: str | None = None) -> list[str]:
@@ -16441,7 +16647,11 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
     checks module or the runner, plus any `helper` / `internal_module` file the producer
     added — the bundle contract permits those, the host writes and compiles them, and a
     review measured that the fixed list below omitted them, so two generate outputs differing
-    only in a helper hashed equal. Order-preserving, de-duplicated against the fixed names."""
+    only in a helper hashed equal. Order-preserving, de-duplicated against the fixed names.
+
+    `checked_build` (build only): the target's compiler declares checked flags, so the
+    bounds-checked binary `bin_checked/<exe>` is a deliverable too (issue #589 PR-0) — the same
+    flag `build_launch_request` lists it under, so the stamp hashes what the launch allowed."""
     if phase == "compile":
         return [f"{refs.ir_ref}/spec.ir.yaml", f"{refs.ir_ref}/ir_meta.json"]
     if phase == "generate":
@@ -16483,8 +16693,10 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
         # The binary basename = the imposed canonical exe name (mirrors
         # build_launch_request's exe_name); the <spec_id>_runner fallback applies only
         # when no exe_name is threaded (non-build callers).
+        exe = exe_name or (refs.spec_id + '_runner')
         return [
-            f"{bdir}/bin/{exe_name or (refs.spec_id + '_runner')}",
+            f"{bdir}/bin/{exe}",
+            *([f"{bdir}/bin_checked/{exe}"] if checked_build else []),
             f"{bdir}/binary_meta.json",
             f"{refs.source_dir()}/src/command_log.jsonl",
         ]
