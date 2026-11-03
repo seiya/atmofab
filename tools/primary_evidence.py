@@ -2076,8 +2076,18 @@ def validate_primary_predicate_schema(
                                  f"entry ({sorted(series_names)})")
                 elif ref.kind == _DERIVED:
                     for cid in scope_cases:
-                        if case_inputs is None or cid not in case_inputs \
-                                or f"{_DERIVED}.{ref.name}" not in case_inputs[cid]:
+                        if case_inputs is None:
+                            # The case evaluation failed, and `drive_violations` (c) refuses
+                            # the IR for that already; judge the NAME against what the case
+                            # declares, so one evaluation defect is not repeated as a refusal
+                            # of every `derived.*` read.
+                            case = cases.get(cid)
+                            declared = case.get(_DERIVED) if isinstance(case, dict) else None
+                            known = isinstance(declared, dict) and ref.name in declared
+                        else:
+                            known = cid in case_inputs \
+                                and f"{_DERIVED}.{ref.name}" in case_inputs[cid]
+                        if not known:
                             v.append(f"{eloc}: in case {cid!r}: derived.{ref.name} is not a "
                                      "derived value the host evaluated for that case")
                 elif ref.kind == "inputs":
@@ -2100,7 +2110,11 @@ def validate_primary_predicate_schema(
                              "constant")
             if bind_name is not None:
                 seen_binds.add(bind_name)
-        if parsed_all and len(v) == mark:
+        reads_derived = any(r.kind == _DERIVED for _, _, tree in parsed
+                            for r in expr_names(tree))
+        # Without the evaluated case inputs a `derived.*` read has no rank to infer; the IR is
+        # refused by `drive_violations` (c) for the evaluation that failed.
+        if parsed_all and len(v) == mark and not (reads_derived and case_inputs is None):
             rank_v = _predicate_rank_violation(pred, loc, parsed, targets, schema, variables,
                                                coord_names, cases, case_inputs)
             if rank_v is not None:
@@ -3247,7 +3261,8 @@ def predicate_schema_context(ir: dict[str, Any]) -> dict[str, Any]:
     """The grammar 6 keyword arguments of `validate_primary_predicate_schema` for ``ir``:
     `reads` (`state_reads`; the pre-drive rule when the `drive` block is malformed, which
     `drive_violations` refuses on its own), `case_inputs` (`evaluate_case_inputs`, None when it
-    raises — `Compile.static` reports that itself — so every `derived.*` read is refused),
+    raises — `Compile.static` reports that itself through `drive_violations` (c) — and a
+    `derived.*` read is then judged against the names the case declares),
     `series_names` and `history_declared`."""
     try:
         reads: StateReads | None = state_reads(ir)

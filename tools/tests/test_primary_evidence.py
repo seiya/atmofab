@@ -3372,6 +3372,35 @@ class ShippedFixturesTest(unittest.TestCase):
                 self.assertEqual(pe.quantity_violations(io["tests"], io["predicates"],
                                                         ctx["reads"]), [])
 
+    def test_a_failed_case_evaluation_is_reported_once(self) -> None:
+        """One case whose evaluation fails is (c)'s finding; the predicate gate judges each
+        `derived.*` read against the names the case declares instead of refusing every read
+        of every case (the cascade found while wiring PR-1a), and an undeclared name is still
+        refused."""
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        first = ir["case"]["test_case_set"][0]
+        first["derived"]["dx"] = "inputs.grid.L_x / 0"
+        drive_v = pe.drive_violations(ir, kind="problem")
+        self.assertTrue(drive_v)
+        self.assertTrue(all(m.startswith("(c)") for m in drive_v), drive_v)
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        ctx = pe.predicate_schema_context(ir)
+        self.assertIsNone(ctx["case_inputs"])
+
+        def schema_v(predicates: list) -> list[str]:
+            return pe.validate_primary_predicate_schema(
+                predicates, case_ids=set(cases),
+                test_ids=[t["test_id"] for t in io["tests"]],
+                schema=pe.snapshot_schema(ir), cases=cases,
+                test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+                **ctx)
+
+        self.assertEqual(schema_v(io["predicates"]), [])
+        reader = next(p for p in io["predicates"] if "derived." in str(p.get("expr")))
+        bad = dict(reader, expr=str(reader["expr"]).replace("derived.", "derived.no_such_", 1))
+        self.assertTrue(any("derived.no_such_" in m for m in schema_v([bad])))
+
 
 if __name__ == "__main__":
     unittest.main()
