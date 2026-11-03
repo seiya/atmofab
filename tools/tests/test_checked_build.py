@@ -327,6 +327,85 @@ class BuildTests(unittest.TestCase):
                     _allowed_output_paths_for_launch(request_payload=bad)
 
 
+class RunPhaseCallSiteTests(unittest.TestCase):
+    """Round 2: the two places the Conductor computes `checked_build` — the deterministic
+    launch `run_substep` records and the step result `run_phase` writes — each carry the
+    checked binary for a declaring compiler and leave it out for one that declares none.
+    Driven through the real `run_phase` / `run_substep`, with the runtime's I/O stubbed (the
+    rows above call `build_launch_request` and `phase_required_outputs` directly, which a
+    `checked_build=False` at either call site survived)."""
+
+    def _run(self, target):
+        recorded: list[dict] = []
+        results: list[dict] = []
+
+        class _Stub(_TargetedConductor):
+            def emit(self, *_a, **_k):
+                return None
+
+            def check_phase_certified(self, *_a, **_k):
+                return {"certified": False}
+
+            def workflow_launch_check(self, *_a, **_k):
+                return None
+
+            def _ensure_fresh_producer_id(self, *_a, **_k):
+                return None
+
+            def _write_lineage(self, *_a, **_k):
+                return ()
+
+            def _phase_derivation(self, refs, phase):
+                return {"derivation_key": "sha256:" + "0" * 64,
+                        "derivation_inputs": {}, "transformation": ["stub-1"]}
+
+            def new_agent_run_id(self):
+                return "ar_build"
+
+            def record_launch(self, child_arid, request, entry):
+                recorded.append(request)
+
+            def _launch_instant(self, *_a, **_k):
+                return 0.0
+
+            def _run_deterministic_substep(self, *_a, **_k):
+                return wc.ProcResult(returncode=0, stdout="", stderr="")
+
+            def _persist_leaf_output(self, *_a, **_k):
+                return None
+
+            def determine_substep_status(self, refs, phase, substep, paths, **_k):
+                return "pass", list(paths)
+
+            def finalize_child(self, *_a, **_k):
+                return None
+
+            def _agent_run_json(self, *_a, **_k):
+                return {}
+
+            def write_step_result(self, node_key, step, executor, result):
+                results.append(result)
+
+        with tempfile.TemporaryDirectory() as td:
+            stub = _Stub(repo_root=Path(td), orchestration_id="t",
+                         orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={},
+                         target_profile=target)
+            refs = _refs(run_id="r1", source_binary_id="bin_1")
+            outcome = stub.run_phase(refs, "build")
+        self.assertEqual(outcome.status, "pass")
+        (request,), (result,) = recorded, results
+        checked = f"{refs.binary_dir()}/bin_checked/spec_x_runner"
+        return (checked in request["allowed_output_paths"],
+                checked in result["required_outputs"])
+
+    def test_a_declaring_compiler_s_build_carries_the_checked_binary_at_both(self) -> None:
+        self.assertEqual(self._run(FORTRAN_CPU), (True, True))
+
+    def test_a_compiler_that_declares_no_flag_carries_it_at_neither(self) -> None:
+        pinned = profile_with(toolchain={**FORTRAN_CPU.toolchain, "compiler": "nvcc"})
+        self.assertEqual(self._run(pinned), (False, False))
+
+
 class ExecuteRefusalTests(unittest.TestCase):
 
     def test_a_binary_with_no_checked_binary_is_a_host_refusal(self) -> None:
