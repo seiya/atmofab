@@ -2640,13 +2640,17 @@ class Grammar6Test(unittest.TestCase):
                    "max(history.t) + sum(final.h)"):
             with self.subTest(ok=ok):
                 self.assertEqual(gate(ok), [])
+        # ...and a declared one is not refused a second time (the cascade 9c275119 removed)
+        self.assertEqual(gate("sum(final.h) * derived.dt", case_inputs=None), [])
         refused = [
             ("max(history.q)", {}, "history.q is not a snapshot schema variable"),
             ("max(history.h)", {"history_declared": False}, "declares no state_history"),
             ("min(series.q_min)", {}, "series.q_min is not a name of the step_series entry"),
             ("min(series.h_min)", {"series_names": None}, "declares no step_series"),
             ("sum(final.h) * derived.nope", {}, "derived.nope is not a derived value"),
-            ("sum(final.h) * derived.dt", {"case_inputs": None}, "derived.dt is not a derived"),
+            # with the case evaluation failed (`case_inputs` None, refused by (c)), a read is
+            # judged against the names the case declares: an undeclared one is still refused
+            ("sum(final.h) * derived.nope", {"case_inputs": None}, "derived.nope is not a derived"),
             ("smax(history.h)", {}, "evaluates to an array of rank 1"),
         ]
         for expr, over, msg in refused:

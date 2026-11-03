@@ -1853,7 +1853,7 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-13 (issue #589, PR-1a): grammar 6 (history / series / derived, smax / smin / ssum,
     # the step capture), the drive model and the case-input evaluator, D7 re-checked on the
     # records; the source / reported / reference classes deleted.
-    "verdict-13": "b49de3f6d666d6dc66c00cfcae10a7907e04df4bc81d285c145bb4f33fa60e3f",
+    "verdict-13": "8e0b9963697986fad9895a54925aaa29f77b43133500088b667c3a7b7f20f647",
 }
 
 
