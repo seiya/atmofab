@@ -804,6 +804,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-24 (the issue's PR-3): a harness self-test's variables no longer hold a
     # round-trip deviation; the schema block names the perf fields it re-parses.
     "compile-docs-24": "33c85442a90a6b0b6c2d905bec8f7e8d198b0188f14a76f2554fa7c46b346e8c",
+    # compile-docs-25 (issue #589, PR-1a): the phase contract and both IR examples describe the
+    # `drive` block, per-case `initial_state` / `derived`, history and series, and grammar 6.
+    "compile-docs-25": "12cd1dbdffb69f4b3efa5fdfd5eeba592df7e9cb43791ed8962ba693c63bc53f",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1076,7 +1079,11 @@ PINNED_RENDER: dict[str, str] = {
     # writers and four types `0.9.0` / `0.3.0` no longer publish, and the runner they render, which
     # stopped calling them in PR-H, is byte-identical. The digest `render-13` shipped with at
     # bb06b9ef:
-    "render-13": "8d8f0e6f30346dfb6ff134014e9e533a5d3b3af961edfbb9635a5b2543338295",
+    # Re-pinned again (issue #589, PR-1a), behaviour-preserving: `tools/runner_ir.py` gains the
+    # `drive` readers PR-1b's renderers will call, and no renderer calls them yet, so every
+    # rendered runner is byte-identical. The digest `render-13` carried at 41026a47:
+    "render-13": "475440522ccb133915439cddd932871e2c39319864ea1b92e046474dd4e9f7ff",
+    "render-13@41026a47": "8d8f0e6f30346dfb6ff134014e9e533a5d3b3af961edfbb9635a5b2543338295",
     "render-13@bb06b9ef": "f09b4e3e6428b1f3e9282940d3de9396f90d9087cfbefc6c421b21b222989559",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
@@ -1843,6 +1850,10 @@ PINNED_VERDICT: dict[str, str] = {
     # a harness self-test writes every declared variable. The digest shipped at bb06b9ef:
     "verdict-12": "0123aff7d06f8acd4092bfc65f6c1e5af794bb1685150b9525e8b9539cb4bfbd",
     "verdict-12@bb06b9ef": "48cf3bbbf0da29c071cf56b0825499548fac7a975562968c86fe386e600e8702",
+    # verdict-13 (issue #589, PR-1a): grammar 6 (history / series / derived, smax / smin / ssum,
+    # the step capture), the drive model and the case-input evaluator, D7 re-checked on the
+    # records; the source / reported / reference classes deleted.
+    "verdict-13": "b49de3f6d666d6dc66c00cfcae10a7907e04df4bc81d285c145bb4f33fa60e3f",
 }
 
 
