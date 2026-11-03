@@ -406,6 +406,29 @@ class RunPhaseCallSiteTests(unittest.TestCase):
         self.assertEqual(self._run(pinned), (False, False))
 
 
+class RepairExcerptTests(unittest.TestCase):
+
+    def test_a_checked_row_that_timed_out_is_not_blamed_on_a_bounds_abort(self) -> None:
+        """The excerpt names an out-of-bounds abort only for a run that exited on its own; a
+        timeout (`error` set, no return code) is not attributed to one (round 2)."""
+        def lines(failure):
+            row = {"label": "checked", "status": "fail", "run_ok": False,
+                   "run_failure": failure}
+            with tempfile.TemporaryDirectory() as td:
+                (Path(td) / "quality_check.json").write_text(json.dumps({"shapes": [row]}))
+                return "\n".join(wc.Conductor._quality_check_failure_lines(Path(td)))
+
+        aborted = lines({"return_code": 2, "error": None, "stderr_head": "Fortran runtime error"})
+        timed_out = lines({"return_code": None, "error": "timeout: exceeded 3600 sec",
+                           "stderr_head": ""})
+        for text in (aborted, timed_out):
+            self.assertIn("the checked row (the bounds-checked build", text)
+            self.assertNotIn("the same binary", text)
+        self.assertIn("declared bounds aborts", aborted)
+        self.assertNotIn("declared bounds aborts", timed_out)
+        self.assertIn("timeout: exceeded 3600 sec", timed_out)
+
+
 class ExecuteRefusalTests(unittest.TestCase):
 
     def test_a_binary_with_no_checked_binary_is_a_host_refusal(self) -> None:
@@ -684,13 +707,16 @@ class GateTests(unittest.TestCase):
                             violations)
 
 
-@unittest.skipUnless(shutil.which("make"), "make is not installed")
 class RealMakeTests(unittest.TestCase):
     """The composed variables as `make` reads them: the command-line flag string replaces the
     control file's `?=` value whole, and its unexpanded object-directory reference is expanded
     by make at use, to the checked build's own directory."""
 
     def test_the_flag_string_reaches_make_with_its_reference_expanded(self) -> None:
+        # Fails rather than skips without the program: this suite skips only for what
+        # GitHub-hosted CI cannot install (docs/DEVELOPMENT.md, round 2's Codex pass).
+        self.assertIsNotNone(shutil.which("make"), "make is not installed: install it as "
+                             "docs/backends/build_system/make/CONTROL_FILE.md §3 says")
         build_runtime = _build_runtime()
         rules = checked_build.control_file_rules(FORTRAN_CPU)
         var = rules["flags_variable"]

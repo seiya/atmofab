@@ -13132,6 +13132,8 @@ class Conductor:
                     + (f", {failure['error']}" if failure.get("error") else "")
                     + ("); the same cases ran under the certified shape, and an access "
                        "outside an array's declared bounds aborts the bounds-checked build"
+                       if checked_row and not failure.get("error") else
+                       "); the same cases ran under the certified shape"
                        if checked_row else
                        "); the same binary and cases ran under the certified shape")
                     + ("; its stderr:" if head or tail else ""))
