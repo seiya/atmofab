@@ -430,9 +430,9 @@ class ExecuteRefusalTests(unittest.TestCase):
             (repo / refs.binary_dir() / "bin_checked" / "spec_x_runner").unlink()
             ran: list = []
             with mock.patch.object(build_runtime, "tool_run_program",
-                                   lambda args: ran.append(args) or {"ok": True}):
-                with self.assertRaises(RuntimeError) as caught:
-                    c._execute_inproc(refs, "child-1")
+                                   lambda args: ran.append(args) or {"ok": True}), \
+                    self.assertRaises(RuntimeError) as caught:
+                c._execute_inproc(refs, "child-1")
             self.assertIn("has no checked binary", str(caught.exception))
             self.assertIn("--rederive build,validate", str(caught.exception))
             self.assertEqual(ran, [])
@@ -558,6 +558,9 @@ class GateTests(unittest.TestCase):
             "flags": (*checked(lambda b: b.__setitem__("flags", [])), "checked_build.flags"),
             "bin_dir": (*checked(lambda b: b.__setitem__("bin_dir", "/elsewhere")),
                         "checked_build.bin_dir"),
+            "bin_dir under another binary id": (*checked(lambda b: b.__setitem__(
+                "bin_dir", b["bin_dir"].replace("/bin_1/", "/bin_2/"))),
+                                                "checked_build.bin_dir"),
             "bin_dir is bin/": (*checked(lambda b: b.__setitem__(
                 "bin_dir", b["bin_dir"][:-len("bin_checked")] + "bin")),
                                 "checked_build.bin_dir"),
@@ -617,6 +620,45 @@ class GateTests(unittest.TestCase):
             meta = json.loads((new_root / "pipe/binary/bin_1/binary_meta.json").read_text())
             self.assertTrue(meta["checked_build"]["bin_dir"].startswith(str(old_root)))
             self.assertEqual(self._violations(new_root, execution), [])
+
+    def test_a_build_record_written_twice_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root, pipeline, _n, execution = self._tree(tmp)
+            log = pipeline / "source" / "src_1" / "src" / "command_log.jsonl"
+            log.write_text(log.read_text() * 2)
+            violations = self._violations(root, execution)
+            self.assertTrue(any("must name one compile_project record" in v
+                                for v in violations), violations)
+
+    def test_the_walked_binding_refuses_a_certified_record_that_ran_the_checked_binary(
+            self) -> None:
+        """`_bound_executable` binds by path components: `bin_checked/` is a string-prefix
+        sibling of `bin/`, and a certified `run_program` record whose executable is the
+        checked binary is refused by the walked `source_command_ref` form (round 2: a
+        `startswith` containment survived)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root, pipeline, node, execution = self._tree(tmp)
+            binary = pipeline / "binary" / "bin_1"
+            for checked, needle in ((False, None), (True, "must resolve under")):
+                exe = binary / ("bin_checked" if checked else "bin") / "x_runner"
+                (node / "command_log.jsonl").write_text(json.dumps({
+                    "command_id": "cmd_run", "tool_name": "run_program", "ok": True,
+                    "cwd": str(node), "command": [str(exe), "--cases", "spec.ir.yaml"]}) + "\n")
+                (node / "trial_meta.json").write_text(json.dumps({
+                    "source_binary_id": "bin_1",
+                    "source_command_ref": {"run_program": {
+                        "tool_name": "run_program", "command_id": "cmd_run",
+                        "command_log_ref": str(node / "command_log.jsonl")}}}))
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=FORTRAN_CPU), \
+                        mock.patch.object(vps, "_canonical_log_ref_for_run_program",
+                                          return_value=None):
+                    vps._validate_run_program_inputs(root, execution, violations)
+                with self.subTest(checked=checked):
+                    if needle is None:
+                        self.assertEqual(violations, [])
+                    else:
+                        self.assertTrue(any(needle in v for v in violations), violations)
 
     def test_a_record_written_twice_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
