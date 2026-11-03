@@ -71,6 +71,17 @@ class SeamTests(unittest.TestCase):
         self.assertNotEqual(wc.build_compiler(_conductor_tc(MPI)),
                             checked_build.target_compiler(MPI))
 
+    def test_a_pin_that_is_not_the_language_s_default_decides(self) -> None:
+        """The profile's `toolchain.compiler` pin, not the language's default, names the
+        compiler whose flags apply: every checked-in profile pins its language's default, so
+        none of them can tell the two apart (round 0: ignoring the pin survived)."""
+        pinned = profile_with(toolchain={**FORTRAN_CPU.toolchain, "compiler": "nvcc"})
+        self.assertNotEqual(pinned.toolchain["compiler"],
+                            checked_build.target_compiler(FORTRAN_CPU))
+        self.assertEqual(checked_build.target_compiler(pinned), "nvcc")
+        self.assertEqual(checked_build.checked_flags_for(pinned), ())
+        self.assertIsNone(checked_build.checked_shape(pinned))
+
     def test_the_flag_rules_are_the_control_file_s(self) -> None:
         """`control_file_rules` hands the language's `rules` what the conductor's control-file
         writer hands it, so the gate's expected flag string is the rendered one."""
