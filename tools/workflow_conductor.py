@@ -13101,10 +13101,18 @@ class Conductor:
             return line if len(line) <= _EXCERPT_LINE_CHARS else \
                 line[:_EXCERPT_LINE_CHARS - 3] + "..."
 
+        from tools.checked_build import CHECKED_SHAPE_LABEL
+
         for row in doc.get("shapes") or []:
             if not isinstance(row, dict) or row.get("status") == "pass":
                 continue
-            where = (f"shape {row.get('label')} (ranks={row.get('ranks')}, "
+            # The bounds-checked binary's row (issue #589 PR-0) is not a shape of the profile
+            # and did not run the certified binary: it is named for what it is, so a repair
+            # reads its abort as an out-of-bounds access rather than a shape difference.
+            checked_row = row.get("label") == CHECKED_SHAPE_LABEL
+            where = ("the checked row (the bounds-checked build of the same sources, one "
+                     "process, one thread, no launcher)" if checked_row else
+                     f"shape {row.get('label')} (ranks={row.get('ranks')}, "
                      f"process_grid={row.get('process_grid')}, "
                      f"threads_per_rank={row.get('threads_per_rank')}"
                      + (f", block_size={row['block_size']}"
@@ -13122,7 +13130,10 @@ class Conductor:
                     f"[execute fail: quality_check] {where}: the run failed (rc="
                     f"{failure.get('return_code')!r}"
                     + (f", {failure['error']}" if failure.get("error") else "")
-                    + "); the same binary and cases ran under the certified shape"
+                    + ("); the same cases ran under the certified shape, and an access "
+                       "outside an array's declared bounds aborts the bounds-checked build"
+                       if checked_row else
+                       "); the same binary and cases ran under the certified shape")
                     + ("; its stderr:" if head or tail else ""))
                 if not quoted:
                     quoted = True

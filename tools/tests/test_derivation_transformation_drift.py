@@ -1665,7 +1665,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # under the serial reference's environment, as `quality_check.json#shapes`' `checked` row;
     # it refuses a binary with no checked binary when the compiler declares flags. New rows:
     # the checked-build members (`checked_build_members`).
-    "execute-14": "d2508ce5deb7269e7685556927ed58d760c2e0c70a09f3c8ab55ba29b4bd6be1",
+    "execute-14": "647bb857d0e59fa26192b34eadf0cf3fbbfa87a593c267d57d8c9e7f8ba92124",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

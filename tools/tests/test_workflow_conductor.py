@@ -17841,7 +17841,8 @@ class DeterministicBuildTest(unittest.TestCase):
         return profile_with(parallel={"backend": "cuda"})
 
     def _drive_traced_execute(self, target, *, trace_result=None, write_summary=True,
-                              run_ok=True, stale=None, probe_answer=None):
+                              run_ok=True, stale=None, probe_answer=None,
+                              checked_stderr: str | None = None):
         """Run `_execute_inproc` for `target` with the server's two tools faked, through
         `_run_deterministic_substep` (so a raise arrives as the substep's transport failure).
         The fake `run_program` answers the binary's run, then — when the target is traced — the
@@ -17891,6 +17892,10 @@ class DeterministicBuildTest(unittest.TestCase):
                 if block is not None:
                     perf = {"parallelism": {"block_size": int(block)}}
                 (run_tmp / "perf.json").write_text(json.dumps(perf), encoding="utf-8")
+                if checked_stderr is not None and calls[-1][0] == "checked":
+                    # The bounds-checked binary aborting (issue #589 PR-0).
+                    return {"ok": False, "command_id": "C", "return_code": 2,
+                            "stderr": checked_stderr}
                 return {"ok": run_ok, "command_id": "S" if sweep else "R",
                         "return_code": 0 if run_ok else 1}
             calls.append(("trace", dict(args)))
@@ -18075,6 +18080,30 @@ class DeterministicBuildTest(unittest.TestCase):
                                  ["pass", "fail", "fail" if name == "crash" else "pass"])
                 self.assertIn("the run failed" if name == "crash" else "launch_match",
                               trial["failure_excerpt"])
+
+    def test_a_checked_row_that_aborts_fails_the_quality_check_and_says_why(self) -> None:
+        """Issue #589 PR-0 (round 1): the bounds-checked binary's abort is the row's
+        `run_ok: false`, the quality check's failure, a content failure routed to Generate
+        (not transport), and the repair excerpt names the bounds-checked build and quotes the
+        runtime's diagnostic — not "the same binary"."""
+        from tools.tests.target_fixtures import profile_with
+        diagnostic = ("At line 7 of file x_model.f90\nFortran runtime error: Index '0' of "
+                      "dimension 1 of array 'u_out' below lower bound of 1")
+        result, calls, node_dir, *_ = self._drive_traced_execute(
+            profile_with(execution={"threads_per_rank": 1}), checked_stderr=diagnostic)
+        self.assertEqual(result.returncode, 0, result.stderr)  # content, not transport
+        self.assertEqual([tag for tag, _ in calls], ["run", "qc", "checked"])
+        quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
+        row = quality["shapes"][-1]
+        self.assertEqual((row["label"], row["run_ok"], row["status"], quality["status"]),
+                         ("checked", False, "fail", "fail"))
+        self.assertIn("below lower bound", row["run_failure"]["stderr_head"])
+        trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+        self.assertEqual(trial["status"], "fail")
+        excerpt = trial["failure_excerpt"]
+        self.assertIn("bounds-checked build", excerpt)
+        self.assertIn("below lower bound of 1", excerpt)
+        self.assertNotIn("the same binary", excerpt)
 
     def test_execute_inproc_runs_the_trace_summary_after_the_run_and_promotes_it(self) -> None:
         target = self._traced_target()
