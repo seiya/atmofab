@@ -15339,6 +15339,7 @@ class Conductor:
                 refs, phase,
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
                 runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs)),
+                checked_build=(phase == "build" and self._builds_checked()),
                 bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ()),
                 bundle_facts=(self._language_facts() if phase == "generate" else None),
                 control_file_basename=(self._control_file_basename(refs)
@@ -16609,6 +16610,7 @@ PHASE_VALIDATION_STAGE: dict[str, str] = {
 
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
                            *, runner_host_authored: bool = False,
+                           checked_build: bool = False,
                            bundle_sources: Sequence[str] = (),
                            bundle_facts: Any = None,
                            control_file_basename: str | None = None) -> list[str]:
@@ -16627,7 +16629,11 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
     checks module or the runner, plus any `helper` / `internal_module` file the producer
     added — the bundle contract permits those, the host writes and compiles them, and a
     review measured that the fixed list below omitted them, so two generate outputs differing
-    only in a helper hashed equal. Order-preserving, de-duplicated against the fixed names."""
+    only in a helper hashed equal. Order-preserving, de-duplicated against the fixed names.
+
+    `checked_build` (build only): the target's compiler declares checked flags, so the
+    bounds-checked binary `bin_checked/<exe>` is a deliverable too (issue #589 PR-0) — the same
+    flag `build_launch_request` lists it under, so the stamp hashes what the launch allowed."""
     if phase == "compile":
         return [f"{refs.ir_ref}/spec.ir.yaml", f"{refs.ir_ref}/ir_meta.json"]
     if phase == "generate":
@@ -16669,8 +16675,10 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
         # The binary basename = the imposed canonical exe name (mirrors
         # build_launch_request's exe_name); the <spec_id>_runner fallback applies only
         # when no exe_name is threaded (non-build callers).
+        exe = exe_name or (refs.spec_id + '_runner')
         return [
-            f"{bdir}/bin/{exe_name or (refs.spec_id + '_runner')}",
+            f"{bdir}/bin/{exe}",
+            *([f"{bdir}/bin_checked/{exe}"] if checked_build else []),
             f"{bdir}/binary_meta.json",
             f"{refs.source_dir()}/src/command_log.jsonl",
         ]

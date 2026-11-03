@@ -6913,6 +6913,11 @@ def _allowed_output_paths_for_launch(
                     return False
                 if "/bin/" in path or path.endswith("/binary_meta.json"):
                     return True
+                # The bounds-checked binary Build makes beside the certified one when the
+                # target's compiler declares checked flags (issue #589 PR-0):
+                # `<binary_id>/bin_checked/<exe>`, exactly that depth.
+                if len(tail_parts) == 3 and tail_parts[1] == "bin_checked":
+                    return True
                 # `compile_project` writes a side-effect command log to
                 # `<project_dir>/command_log.jsonl`. Per
                 # `docs/workflow/phases/phase_03_build.md`, the in-phase

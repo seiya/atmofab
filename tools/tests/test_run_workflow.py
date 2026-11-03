@@ -8849,6 +8849,11 @@ class SubstepEventTests(unittest.TestCase):
             def _resolve_exe_name(self, *_a, **_k):
                 return None
 
+            # The step result asks the target's compiler whether Build delivers the checked
+            # binary (issue #589 PR-0); the stub has no target.
+            def _builds_checked(self):
+                return False
+
         stub = _Stub()
         refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/x@0.1.0", spec_path="spec/x",
