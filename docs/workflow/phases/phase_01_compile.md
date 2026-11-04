@@ -63,7 +63,8 @@ case:
         # The classes are THE CASE'S: on a list-form `drive.step` they follow from the entries that run
         # this case, so a logical state, an operation-only output or a written state of ANOTHER entry,
         # and a state this case's entries only read or do not bind, is host data here and takes its
-        # entry (an array no entry of this case binds is captured unchanged).
+        # entry (an array no entry of this case binds is one the driver is rendered to capture
+        # unchanged, `drive` below).
         # A state an operation reads: its initial value — a number (filled to the shape), a nested
         # list of exactly the shape, or a predicate-grammar expression over `inputs.*`, the
         # coordinates and the constants (no capture, `derived`, `history`, `series`, `at`, `comparand`),
@@ -334,13 +335,14 @@ public_api:
 drive:
   # REQUIRED on a `problem` / `component` node, REFUSED on an `infrastructure` one (issue #589). The kind
   # is the one spec/registry/spec_catalog.yaml records for `meta.spec_id`: an IR the catalog cannot answer
-  # for, or whose `meta.spec_kind` disagrees with it, is refused. `drive` says how the host-rendered DRIVER
-  # runs one case: every schema variable is a state it allocates to the extents its bound dummies' §5.1
+  # for, or whose `meta.spec_kind` disagrees with it, is refused. `drive` is the contract the host-rendered
+  # DRIVER of one case is rendered to, whose renderer lands with issue #589 PR-1b: every schema variable is a
+  # state the driver is to allocate to the extents its bound dummies' §5.1
   # `dims` give (an array no entry running the case binds: its `shape_expr`, each token resolved through
   # ANY entry's rank-0 dummy of that name against this case's inputs — none, or two that disagree, is
-  # refused) and fills from `initial_state` (a logical state and every variable `init` writes start at
-  # 0); it calls `init` once, captures `initial/`, calls `step` once (no `loop`) or up to `loop.n_step`
-  # times, and captures the final state. A refusal is a `false` result, never a stop: a false `init`
+  # refused) and to fill from `initial_state` (a logical state and every variable `init` writes start at
+  # 0); it is to call `init` once, capture `initial/`, call `step` once (no `loop`) or up to `loop.n_step`
+  # times, and capture the final state. Under that contract a refusal is a `false` result, never a stop: a false `init`
   # refuses the case (both captures still written); on a `loop` node a step is COMMITTED only on a true
   # result (the state copied back, `step` advanced, `t = t_start + step * dt`, the series entry appended,
   # a sample written every `every` steps), an `out` array starts each call unassigned (a cell the call
