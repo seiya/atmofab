@@ -1588,26 +1588,25 @@ class PureRenderTests(unittest.TestCase):
          "verdict): return one JSON object wit #44453a0a4418"),
     )
 
-    #: The conductor helpers that inline a language binding, and the capability they read it
-    #: through. A builder calling one inlines that capability's document for its target.
+    #: The conductor helpers that inline a language binding, and the `prompt_fragments` constant
+    #: naming the document each reads. A builder calling one inlines that document for its target.
+    #: (`_generate_rules_text` took the place of `_checks_abi_binding_text` with issue #589.)
     _LANGUAGE_BINDING_READERS: ClassVar[dict[str, str]] = {
-        "_checks_abi_binding_text": "checks_abi",
-        "_runner_output_contract_with_binding": "prompt_fragments",
+        "_generate_rules_text": "GENERATE_RULES_DOCUMENT",
+        "_runner_output_contract_with_binding": "RUNNER_OUTPUT_DOCUMENT",
     }
 
     @staticmethod
-    def _language_binding_documents(capability: str) -> set[str]:
+    def _language_binding_documents(document: str) -> set[str]:
         from tools.backends import registry
         repo_root = Path(ort.__file__).resolve().parents[1]
         out: set[str] = set()
         for language in registry.backend_ids("language"):
-            if not registry.provides("language", language, capability):
+            if not registry.provides("language", language, "prompt_fragments"):
                 continue
-            module = registry.capability_module("language", language, capability)
-            path = (module.DOCUMENT_PATH if capability == "checks_abi"
-                    else module.RUNNER_OUTPUT_DOCUMENT)
-            out.add(str(Path(path).relative_to(repo_root)))
-        assert out, f"no language declares {capability}; this reads nothing"
+            module = registry.capability_module("language", language, "prompt_fragments")
+            out.add(str(Path(getattr(module, document)).relative_to(repo_root)))
+        assert out, "no language declares prompt_fragments; this reads nothing"
         return out
 
     @classmethod
