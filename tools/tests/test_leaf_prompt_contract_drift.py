@@ -1129,7 +1129,7 @@ PINNED: dict[str, str] = {
     "leaf-88": "9f5c0041fe0b3e74229d0c267744fb2c780083440b9e89d79fd6206fa11811b6",
     # leaf-89 (issue #589, PR-1a): the compile templates author `drive`, `initial_state` and
     # `derived`, and the compile producer no longer receives the checks-module contract.
-    "leaf-89": "c811489471fc13777d08afedcea4c80d4249e2a27ea3047e4a8316ef2205bda8",
+    "leaf-89": "23398f10da0c4c8590499e58a977cdefe48ef8ad46a4e7e73806c7de6059d63d",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
