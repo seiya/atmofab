@@ -57,7 +57,7 @@ The host-rendered driver calls the `operation` once per case at the case's own a
   `F_fd = (U(t+dt) - U(t-dt))/(2*dt) + (Fx(x+d) - Fx(x-d))/(2*d) + (Fy(y+d) - Fy(y-d))/(2*d) - S_cor`, with `U = [h, h*u, h*v]`, the Coriolis source `S_cor = [0, f*h*v, -f*h*u]` at the cell, `d=50.0` m and `dt=1.0` s. The differences are evaluated at the shifted positions from the closed forms, not from an array, so no grid boundary enters. The truncation error of that reference over the cells of these cases is `2.2e-10` in the `h` component, `4.8e-8` in the `hu` component and `4.4e-8` in the `hv` component at `t=0` (`2.3e-10`, `4.9e-8`, `5.5e-8` at `t=3.0e4`), and the same with the `hu` and `hv` values exchanged on the `_axis` copies, which is what the threshold of §6 is set above.
 
 ## 3. Execution-control rules
-`N/A`: this `component` evaluates a forcing at a supplied time and defines no time-stepping or iteration. The driver calls the `operation` once per case; the two times of the translation judgment are two cases of §2. Execution control is the responsibility of the `problem` runner.
+`N/A`: this `component` evaluates a forcing at a supplied time and defines no time-stepping or iteration. The driver calls the `operation` once per case; the two times of the translation judgment are two cases of §2. Execution control belongs to the `problem` that composes this `operation`.
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.

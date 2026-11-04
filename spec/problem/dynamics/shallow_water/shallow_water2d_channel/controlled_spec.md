@@ -109,7 +109,7 @@ The published `operation_id`s are exactly `shallow_water2d_channel__init` and `s
 
 `shallow_water2d_channel__step` advances `h`, `hu`, `hv` by the one time step above, at the time `t` with the time step `dt`. Its result `ok` is `false` on the wet-domain error above or on a `false` result of a `component` it calls, and the driver commits the state only on a `true` result.
 
-The model keeps private module state between `shallow_water2d_channel__init` and `shallow_water2d_channel__step`: the run-fixed data `rhs` is bound to (§5), such as `dx`, `dy`, `g` and the setup-time arrays of §6. It is no state variable and is in no capture, and the driver does not reset it between cases, so `shallow_water2d_channel__init` establishes every field of it that `shallow_water2d_channel__step` reads, in every case.
+The model holds data between `shallow_water2d_channel__init` and `shallow_water2d_channel__step`: the run-fixed data `rhs` is bound to (§5), such as `dx`, `dy`, `g` and the setup-time arrays of §6. It is no state variable and is in no capture, and the driver does not reset it between cases, so `shallow_water2d_channel__init` establishes every field of it that `shallow_water2d_channel__step` reads, in every case.
 
 A change breaking compatibility of a published signature — the argument names, their order, their types, their ranks, or their `intent`s — is a breaking change released under a new `spec_version`.
 

@@ -824,7 +824,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-27 (issue #589, PR-3): `phase_01_compile.md` states the zero extent of a guard
     # case, a dims token naming a scalar `derived` value and the one-cell reduction, and
     # `docs/TESTS.md` the extent guards and the host-rendered tendency.
-    "compile-docs-27": "409e8f82bb644edc973a63862e31ec57abff1ea334cc8335142a339b20a6b4a9",
+    "compile-docs-27": "a831fda646695bad43b3a214d365bbdfdf423b7aa79d5bafbc717fde08cbeba7",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

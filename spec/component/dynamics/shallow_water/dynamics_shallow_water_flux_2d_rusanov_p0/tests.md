@@ -27,7 +27,7 @@ The symmetry pairs (`docs/TESTS.md` §Symmetry pairs) are carried on the distinc
 - Before the call `U_L`, `U_R`, `U_B` and `U_T` hold the states above. `F_star`, `G_star`, `a_x` and `a_y` hold the literal `-999` at every element, their pre-call content: each is an operation-only output, so an element the `operation` does not write is captured as `-999` and fails every judgment of §6 over it.
 
 ## 3. Execution-control rules
-`N/A`: this `component` exposes a single pointwise `operation` and defines no time-stepping or iteration. Execution control is the responsibility of the time-update `component` and the `problem` runner.
+`N/A`: this `component` exposes a single pointwise `operation` and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed single-interface states and defines no `case` sweep. Case expansion is defined at the `problem` level.

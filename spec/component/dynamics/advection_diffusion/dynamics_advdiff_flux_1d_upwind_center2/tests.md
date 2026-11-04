@@ -35,7 +35,7 @@ The operation admits three transformations (`docs/TESTS.md` §Symmetry pairs): t
 - Before the call the state holds `u` as above, and `flux_adv` and `flux_dif` hold the literal `-999` at every element, their pre-call content: both are operation-only outputs, so an element the `operation` does not write is captured as `-999` and fails every judgment of §6 over that output.
 
 ## 3. Execution-control rules
-`N/A`: this `component` exposes a single pointwise `operation` and defines no time-stepping or iteration. Execution control is the responsibility of the time-update `component` and the `problem` runner.
+`N/A`: this `component` exposes a single pointwise `operation` and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed single-stencil inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.

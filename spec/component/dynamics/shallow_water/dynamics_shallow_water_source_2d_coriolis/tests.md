@@ -26,7 +26,7 @@ The symmetry pairs (`docs/TESTS.md` §Symmetry pairs) are the **axis exchange** 
 - Before the call the state holds `U` as above and `S` holds the literal `-999` at every element, its pre-call content: `S` is an operation-only output, so an element the `operation` does not write is captured as `-999` and fails every judgment of §6 over `S`.
 
 ## 3. Execution-control rules
-`N/A`: this `component` evaluates a pointwise source at a supplied state and defines no time-stepping or iteration. Execution control is the responsibility of the `problem` runner.
+`N/A`: this `component` evaluates a pointwise source at a supplied state and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.

@@ -30,7 +30,7 @@ The symmetry pairs (`docs/TESTS.md` §Symmetry pairs) are carried on the cubic c
 - Before the call the state holds `U_in` as above, and each of `U_L`, `U_R`, `U_B` and `U_T` holds the literal `-999` at every element, its pre-call content: the four are operation-only outputs, and `-999` is not a value the `operation` produces on any case of this suite, so a captured `0` in an interface array is a zero the `operation` wrote, which is what the abnormal cases judge, and an element the `operation` left unwritten is captured as `-999` and fails.
 
 ## 3. Execution-control rules
-`N/A`: this `component` reconstructs interface states from a provided field and defines no time-stepping or iteration. Execution control is the responsibility of the `problem` runner.
+`N/A`: this `component` reconstructs interface states from a provided field and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.

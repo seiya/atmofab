@@ -23,7 +23,7 @@ The suite carries no symmetry pair (`docs/TESTS.md` §Symmetry pairs). The updat
 - Before the call the state holds `u_n` and `L_flux` as above, and `u_np1` holds the literal `-999` at every cell, its pre-call content: `u_np1` is an operation-only output, so a cell the `operation` does not write is captured as `-999` and fails every judgment of §6 over `u_np1`.
 
 ## 3. Execution-control rules
-`N/A`: this `component` advances a single step for a given `dt` and does not control the time loop or its cadence. Execution control is the responsibility of the `problem` runner.
+`N/A`: this `component` advances a single step for a given `dt` and does not control the time loop or its cadence. Execution control belongs to the `problem` that composes this `operation`.
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
