@@ -88,8 +88,6 @@ def _pure_compile_context() -> dict[str, str]:
         "phase_contract_document": "## Compile\nauthor every section.\n",
         "ir_algorithm_example_document": "algorithm:\n  steps: []\n",
         "ir_algorithm_2d_example_document": "algorithm:\n  state_variables: []\n",
-        "checks_module_contract_document": (
-            "## 1. The fixed ABI\ncase_setup ok=.false. still proceeds\n"),
     }
 
 
@@ -170,8 +168,6 @@ def _pure_verify_context() -> dict[str, str]:
         "controlled_spec_document": "the model conserves mass",
         "tests_document": "- test: conserves mass",
         "ir_document": "algorithm:\n  state_variables: [h]\n",
-        "checks_module_contract_document": (
-            "## 1. The fixed ABI\ncase_setup ok=.false. still proceeds\n"),
         "severity_rubric_document": (
             "#### Severity of a finding (`issue_severity`)\n"
             "`issue_severity` names the repair a finding calls for.\n"
@@ -505,19 +501,21 @@ class PurePayloadValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ort._validate_leaf_launch_request_payload(bad)
 
-    def test_validate_payload_rejects_four_key_verify_context(self) -> None:
-        # issue #142: `checks_module_contract_document` is the fifth REQUIRED verify key. Several
-        # tests in this file drive the real `_validate_launch_request_payload`; what is unique here
-        # is the COMBINATION — a missing required `pure_context` key pushed through the production
-        # entry point (`prepare_launch_request_payload` then the real handler) rather than through
-        # the pure-specific helper, which is the layer a launch actually traverses.
-        req = _workshop_request("verify")
-        ctx = dict(req["pure_context"])  # type: ignore[arg-type]
-        del ctx["checks_module_contract_document"]
-        req["pure_context"] = ctx
-        with self.assertRaises(ValueError) as cm:
-            ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
-        self.assertIn("checks_module_contract_document", str(cm.exception))
+    def test_validate_payload_rejects_a_missing_required_verify_key(self) -> None:
+        # What is unique here is the COMBINATION — a missing required `pure_context` key pushed
+        # through the production entry point (`prepare_launch_request_payload` then the real
+        # handler) rather than through the pure-specific helper, which is the layer a launch
+        # actually traverses. (Issue #142's fifth key, the checks contract, went with issue #589;
+        # its row's subject is every required key.)
+        for key in ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]:
+            with self.subTest(key=key):
+                req = _workshop_request("verify")
+                ctx = dict(req["pure_context"])  # type: ignore[arg-type]
+                del ctx[key]
+                req["pure_context"] = ctx
+                with self.assertRaises(ValueError) as cm:
+                    ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
+                self.assertIn(key, str(cm.exception))
 
     def test_validate_payload_rejects_a_blank_required_verify_context_value(self) -> None:
         # The PRESENCE check has two halves and only the key-absence half was pinned: mutating
@@ -529,11 +527,11 @@ class PurePayloadValidationTests(unittest.TestCase):
         for blank in ("", "   ", "\n"):
             req = _workshop_request("verify")
             ctx = dict(req["pure_context"])  # type: ignore[arg-type]
-            ctx["checks_module_contract_document"] = blank
+            ctx["severity_rubric_document"] = blank
             req["pure_context"] = ctx
             with self.assertRaises(ValueError, msg=repr(blank)) as cm:
                 ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))
-            self.assertIn("checks_module_contract_document", str(cm.exception))
+            self.assertIn("severity_rubric_document", str(cm.exception))
 
     def test_validate_payload_pure_verify_skips_skill_requirements(self) -> None:
         # A pure verify carries empty skill fields; the agentic verify skill-requirement block
@@ -663,12 +661,15 @@ class PureRenderTests(unittest.TestCase):
                 self.assertNotIn("controlled_spec", composed_pure_template(key))
 
     def test_prompt_states_the_static_prohibitions_the_leaf_cannot_otherwise_know(self) -> None:
-        # `_validate_checks_source_files` rejects three things the acceptance gate does NOT
+        # `_validate_model_source_isolation` rejects three things the acceptance gate does NOT
         # pre-empt, so each is a phase reopen — the failure mode this whole change exists to
         # remove. The harness ban is the sharpest: the seeded runner IS a `use
-        # harness_fortran_cpu_model` block the leaf must not copy.
+        # harness_fortran_cpu_model` block the leaf must not copy. Each is named with the gate's
+        # own refusal, so a leaf that meets the refusal can find the rule.
         tpl = composed_pure_template("workshop generate.generate")
-        for token in ("use harness_", "open(", "verdict.json", "aggregate_verdict.json",
+        for token in ("use harness_", "OPEN statement", "a physics source must not do file I/O",
+                      "forbidden judge-artifact filename detected",
+                      "verdict.json", "aggregate_verdict.json",
                       "summary.json", "trial_meta.json"):
             self.assertIn(token, tpl, f"prompt must name the {token!r} prohibition")
 
@@ -681,7 +682,7 @@ class PureRenderTests(unittest.TestCase):
             self.assertIn(name, tpl, f"the prompt must name {name!r}, which the gate rejects")
 
     def test_cold_repair_verify_restates_the_text_that_governs_the_contract(self) -> None:
-        # issue #142, round 1: a cold verify repair carried the checks-module contract and
+        # issue #142, round 1: a cold verify repair carried a seeded contract and
         # NOTHING carried the paragraphs that govern it. Since issue #510 the cold repair
         # re-states the whole launch body, so the governing paragraphs arrive with it; the
         # documents themselves are seed files of the fresh tree since issue #534 (the pure
@@ -690,10 +691,7 @@ class PureRenderTests(unittest.TestCase):
         req = ort.prepare_launch_request_payload(_workshop_request(
             "verify", repair_findings="verdict is missing findings", repair_strategy="reuse"))
         text = ort._render_leaf_repair_prompt(req)
-        self.assertIn("**Checks-module contract (", text)                # its label
-        self.assertIn("can only OVERRULE one kind of claim", text)       # its scope bound
-        self.assertIn("Its SILENCE overrules nothing", text)             # ... and its polarity
-        self.assertIn("G1 — case coverage", text)                        # what it does NOT narrow
+        self.assertIn("G1 — case coverage", text)                        # the checklist
         self.assertIn("do NOT re-check style", text)                     # the gate already ran
         # The rubric had the same shape of hole (#143): the text must arrive with what says
         # the reviewer chooses `issue_severity` BY it. No key-named block, the label instead.
@@ -701,8 +699,7 @@ class PureRenderTests(unittest.TestCase):
         self.assertIn("**Severity rubric (", text)                       # its label
         self.assertIn("never the weight of its consequence", text)       # what the label governs
         # No document slot ships as a literal token, and no document is inlined.
-        for slot in ("<checks_module_contract_document>", "<severity_rubric_document>",
-                     "<bundle_document>", "<ir_document>"):
+        for slot in ("<severity_rubric_document>", "<bundle_document>", "<ir_document>"):
             self.assertNotIn(slot, text)
         self.assertNotIn("names the repair a finding calls for", text)   # the fixture rubric
 
@@ -838,52 +835,23 @@ class PureRenderTests(unittest.TestCase):
         prompt = prepared["launch_prompt_full"]
         self.assertTrue(prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
         for placeholder in ("<controlled_spec_document>", "<tests_document>", "<ir_document>",
-                            "<checks_module_contract_document>", "<severity_rubric_document>",
+                            "<severity_rubric_document>",
                             "<bundle_document>", "<target_profile>"):
             self.assertNotIn(placeholder, prompt)
         self.assertEqual(prompt.count(PURE_DOC_FENCE_BEGIN), 0)
         self.assertEqual(prompt.count(PURE_DOC_FENCE_END), 0)
         self.assertGreater(prompt.index("Target node_key:"), prompt.index("under review"))
 
-    def test_pure_verify_prompt_carries_the_checks_contract_and_its_scope_rule(self) -> None:
-        # issue #142: the reviewer failed a contract-conforming `case_setup(case_id, ok)` on a
-        # claim about the runner it had no document to check. Pin the label and the scope
-        # sentence that makes the document the authority, plus the order (authority before the
-        # artifact it judges). The document itself is a seed file since issue #534 PR-J4-b.
+    def test_the_verify_prompt_names_no_checks_contract(self) -> None:
+        # Issue #589: the module and its contract are gone, so neither is a seed or a document
+        # the reviewer is told to hold anything to. (Issue #142's row over the contract's scope
+        # rule went with it; the rule's subject, what a callback's result does, has no holder.)
         prompt = ort.prepare_launch_request_payload(
             _workshop_request("verify"))["launch_prompt_full"]
-        self.assertIn(
-            "**Checks-module contract (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-4, followed "
-            "by §1-4 of the target language's binding of it, seeded:",
-            prompt)
-        # Both statements of the rule are BOUNDED, and the bound is the load-bearing half: a
-        # round-1 reviewer showed that "do not fail the bundle for a consequence it does not
-        # state" reads as "only fail for what the contract states", which hands the reviewer leaf
-        # a template-authorized route to a zero-findings `pass` on G1-G7. Pin the narrowing
-        # clauses, not merely the fact that the rule is stated.
-        # The load-bearing half is the POLARITY: the contract may overrule a runner-behaviour
-        # claim and its SILENCE may not. Round 2 showed the earlier "contradicts or does not
-        # state" turned §1-4's silence about a wrong result into an instruction to drop the only
-        # finding that catches a stub — so pin the overrule/silence pair in both
-        # statements, not merely that a scope rule is present.
-        self.assertIn(
-            "The seeded checks-module contract can only OVERRULE one kind of claim — a claim "
-            "about what the host-rendered runner does with the RESULT a procedure of the checks "
-            "module returns",
-            prompt)
-        self.assertIn(
-            "so drop a finding whose justification the contract CONTRADICTS. Its SILENCE "
-            "overrules nothing: where the contract says nothing, judge the model/checks "
-            "obligation itself as the rule above directs, and G1-G7 below each stay fully in "
-            "scope.",
-            prompt)
-        self.assertIn(
-            "It can OVERRULE a claim about what the runner does with the RESULT a callback "
-            "returns; its silence overrules nothing and it narrows no checklist item:**",
-            prompt)
-        self.assertNotIn("does not state", prompt)  # the fail-open half must not come back
-        self.assertLess(prompt.index("IR (authoritative"), prompt.index("Checks-module contract"))
-        self.assertLess(prompt.index("Checks-module contract"),
+        for refused in ("Checks-module contract", "checks-module contract",
+                        "CHECKS_MODULE_CONTRACT", "OVERRULE"):
+            self.assertNotIn(refused, prompt)
+        self.assertLess(prompt.index("IR (authoritative"),
                         prompt.index("Generated CodegenBundle under review"))
 
     def test_pure_verify_prompt_carries_the_severity_rubric(self) -> None:
@@ -918,29 +886,10 @@ class PureRenderTests(unittest.TestCase):
         # The refused wording, in the exact spelling this issue removed: it told the reviewer to
         # decide the value from the defect, which is the whole defect.
         self.assertNotIn("the severity the defect warrants", prompt)
-        # Authority before the artifact it judges, and after the contract that can overrule a
-        # finding — a rubric read before the reviewer knows which findings survive grades nothing.
-        self.assertLess(prompt.index("Checks-module contract"), prompt.index("Severity rubric"))
+        # Authority before the artifact it judges.
+        self.assertLess(prompt.index("IR (authoritative"), prompt.index("Severity rubric"))
         self.assertLess(prompt.index("Severity rubric"),
                         prompt.index("Generated CodegenBundle under review"))
-
-    def test_phase_02_states_the_scope_rule_with_its_bound(self) -> None:
-        # THIRD statement site of one rule (the two in the verify template are the others), and
-        # the one with the widest audience: `skills/workflow-generate-verify/SKILL.md` names
-        # phase_02_generate.md in the closed list of canonical judgment-rule sources for the
-        # AGENTIC verify leaf, so an unbounded wording there is a leaf shortcut on the transport
-        # the template does not reach. Round 2 found exactly that. Couple the doc to the rule.
-        doc = (Path(ort.__file__).resolve().parents[1] / "docs" / "workflow" / "phases"
-               / "phase_02_generate.md").read_text(encoding="utf-8")
-        # Anchor on text that PRECEDES the rule and is byte-identical in the wording being
-        # refused — so a failure names the missing bound, not a moved anchor. Self-tested: the
-        # anchor must be present, or this check is asserting about a document it did not find.
-        self.assertIn("checks_module_contract_document", doc)
-        self.assertIn("The document OVERRULES; it does not narrow.", doc)
-        self.assertIn("Its SILENCE settles nothing", doc)
-        self.assertIn("every G1-G7 item stays fully in scope", doc)
-        # The refused wording, in the exact spelling round 2 removed.
-        self.assertNotIn("the contract does not state is out of scope", doc)
 
     # Every document that states the ROUTING consequence of `issue_severity`, paired with a
     # sentence that PRECEDES the pointer on the same line and is byte-identical in the wording
@@ -1059,7 +1008,11 @@ class PureRenderTests(unittest.TestCase):
         #     its counters where it named a callback and a metric. READ: the axis, the tie-breaks
         #     and the pointer are byte-identical, and no severity value moved.
         "compile": "ba4b635dfd9e25aa14976c8fdafd0c1c96bdfc7a2d87ad890d8cd45c077239d7",
-        "generate": "751c8c9738110aad7fcbf4a1fa71962ad810b7b91254b23df06f122d77313360",
+        #   - issue #589 PR-1b, generate only: the `major` case "`spec.ir.yaml` contradicts the
+        #     checks-module contract" and the bullet about a claim the contract overrules go with
+        #     the module. READ: the axis, the tie-breaks and the pointer are byte-identical, the
+        #     other `major` cases stand, and no severity value moved.
+        "generate": "e9474e688bb11c43f894d5cd3f8eaa52856af08860a537447d6c9e9cb4fd502e",
     }
 
     def test_each_rubric_section_number_is_a_heading_of_its_phase_doc(self) -> None:
@@ -1195,8 +1148,9 @@ class PureRenderTests(unittest.TestCase):
     )
 
     def test_every_provenance_statement_names_the_injected_context_keys(self) -> None:
-        """PINNED: each surface names both host-sliced `(generate, verify)` context keys, inside
-        the section that states what the reviewer receives.
+        """PINNED: each surface names the host-sliced `(generate, verify)` context key, inside
+        the section that states what the reviewer receives. (The second, the checks contract, went
+        with issue #589; a table entry here would state a document nobody is handed.)
 
         The literals are DERIVED from `PURE_CONTEXT_REQUIRED_KEYS` — the code that decides what
         the host must supply — never spelled independently, so a rename breaks the code and the
@@ -1204,11 +1158,11 @@ class PureRenderTests(unittest.TestCase):
         self-tested. SAMPLED: nothing about what the sentences SAY about those documents.
         """
         keys = ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]
-        named = tuple(k for k in ("checks_module_contract_document", "severity_rubric_document")
-                      if k in keys)
-        self.assertEqual(len(named), 2,
-                         "both host-sliced documents must still be declared context keys, or "
+        named = tuple(k for k in ("severity_rubric_document",) if k in keys)
+        self.assertEqual(len(named), 1,
+                         "the host-sliced document must still be a declared context key, or "
                          "this check is asserting about a document nobody is handed")
+        self.assertNotIn("checks_module_contract_document", keys)
         repo_root = Path(ort.__file__).resolve().parents[1]
         for rel, begin_marker, end_marker in self._PROVENANCE_SURFACES:
             with self.subTest(surface=rel):
@@ -1398,9 +1352,6 @@ class PureRenderTests(unittest.TestCase):
     # `phase_02` was bounded to §2-2 while its §Generate-executor prose named `Compile.verify`'s
     # V2 `major` while recounting the `pure-5` carve-out; issue #148 removed that value, so the
     # bound is gone and the whole document is read. `AGENT_CONTRACT.md` and
-    # `CHECKS_MODULE_CONTRACT.md` is here because a leaf is handed it (inlined into the pure
-    # prompt until issue #534 PR-J4-b, a seed file of the workshop tree since) — a severity
-    # written there reaches every `m3c` reviewer and the `harness` producer;
     # `phase_01_compile.md` because both compile leaves receive it whole. `AGENT_CONTRACT.md`
     # was a member until Z4 (issue #171), force-read by every leaf; it is deleted with the
     # transport, and its one allowlisted routing line went with it.
@@ -1433,16 +1384,16 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/backends/language/fortran/generate_verify.txt", None, None),
         ("tools/prompt_templates/backends/language/fortran/generate_generate_harness.txt",
          None, None),
-        ("docs/workflow/CHECKS_MODULE_CONTRACT.md", None, None),
-        # Issue #289 (R4-b PR-2): the Fortran spelling of the checks ABI and the gate guards,
-        # and the runner JSON writer rules, moved out of the two contracts above into language
-        # bindings the host inlines after them — surfaces of their own (round 3 found them
-        # unscanned: a hand-assigned severity planted in either was green).
-        ("docs/backends/language/fortran/CHECKS_ABI.md", None, None),
+        # Issue #289 (R4-b PR-2): the gate guards (the `harness` producer's seed, in the language's
+        # generate rules since issue #589, which deleted the checks ABI bindings that held them)
+        # and the runner JSON writer rules are language bindings the host hands over — surfaces
+        # of their own (round 3 found them unscanned: a hand-assigned severity planted in either
+        # was green).
+        ("docs/backends/language/fortran/GENERATE_RULES.md", None, None),
         ("docs/backends/language/fortran/RUNNER_OUTPUT.md", None, None),
         # Issue #289 (R4-b PR-4): the second language's bindings and its fragment file, each a
         # surface a `cuda_cpp` harness leaf is handed.
-        ("docs/backends/language/cuda_cpp/CHECKS_ABI.md", None, None),
+        ("docs/backends/language/cuda_cpp/GENERATE_RULES.md", None, None),
         ("docs/backends/language/cuda_cpp/RUNNER_OUTPUT.md", None, None),
         ("tools/prompt_templates/backends/language/cuda_cpp/generate_generate_harness.txt",
          None, None),
@@ -1623,9 +1574,10 @@ class PureRenderTests(unittest.TestCase):
         # verify input-side clause name "the seeded severity rubric" (and the former "the seeded
         # checks-module contract") where they said "inlined" (the documents are seed files since
         # issue #534 PR-J4-b). READ: no severity word moved, the same pointer to the rubric,
-        # nothing assigned.
+        # nothing assigned. Re-taken for issue #589 PR-1b: the contract's clause goes with the
+        # module; READ: the rubric's clause is the same, and nothing is assigned.
         "tools/prompt_templates/workshop_generate_verify.txt: Review checklist (the semantic "
-        "items to judge the bundle aga #a950ba287f1c",
+        "items to judge the bundle aga #f9dcb2d216e3",
         "tools/prompt_templates/workshop_generate_verify_harness.txt: One kind of finding is NOT "
         "code-vs-IR and is still yours to  #a06371e39fb9",
         ("tools/prompt_templates/workshop_compile_verify.txt: Output contract (verify verdict): "
@@ -1680,8 +1632,7 @@ class PureRenderTests(unittest.TestCase):
         repo_root = Path(ort.__file__).resolve().parents[1]
         tree = ast.parse((repo_root / "tools" / "workflow_conductor.py").read_text(
             encoding="utf-8"))
-        consts = {"CHECKS_MODULE_CONTRACT_REF": ort.CHECKS_MODULE_CONTRACT_REF,
-                  "RUNNER_OUTPUT_CONTRACT_REF": ort.RUNNER_OUTPUT_CONTRACT_REF}
+        consts = {"RUNNER_OUTPUT_CONTRACT_REF": ort.RUNNER_OUTPUT_CONTRACT_REF}
         doc_re = re.compile(r"docs/[\w./-]+\.md")
         found: set[str] = set()
         builders = 0
@@ -3104,17 +3055,14 @@ class PureRenderTests(unittest.TestCase):
         return [s for s in re.split(r"(?<=[.;])\s+|\n\s*\n", text)
                 if cls._OK_NAME_RE.search(s) and cls._OK_VALUE_RE.search(s)]
 
-    def test_checks_module_loops_and_ok_are_not_findings_on_every_target(self) -> None:
-        """Issues #399 / #400, both halves on every (language, parallel) pair a target composes.
-        #400: the reviewer's G6 exempts a checks-module loop's lowering and bounds the exemption
-        to speed, the CUDA G6 and producer fragments scope their host-loop sentences to the model
-        source, and the producer's rule (7) says the plan is about the model source. #399: the
-        reviewer's inlined checks contract says the runner reads no `ok` and no value of it is a
-        finding, the producer's clause (C) says the same and still requires `ok` assigned, and
-        no sentence of the contract, either binding, or either composed prompt names `ok`
-        beside a logical value. Each new sentence is pinned WHOLE, so a reversal or a deleted
-        clause is red (round 1 reversed and deleted clauses of each with this row green)."""
-        from tools.backends import registry
+    def test_the_plan_is_about_the_model_and_ok_is_given_no_value_on_every_target(self) -> None:
+        """Issues #399 / #400, on every (language, parallel) pair a target composes. #400: the CUDA
+        G6 and producer fragments scope their host-loop sentences to the model source, and the
+        producer's rule (7) says the plan is about the model source. #399: no sentence of either
+        composed prompt names `ok` beside a logical value but the one row below reads, which says
+        a value written beside a computed state is no answer. Each sentence is pinned WHOLE, so a
+        reversal or a deleted clause is red. (The checks module's half — G6's exemption of its
+        loops, its contract and bindings saying the runner reads no `ok` — went with issue #589.)"""
         # The sentence reader must refuse the wording #399 removed and the rewordings round 1
         # planted, and pass the sentences that remain — or it observes nothing.
         # One refused sample per alternative of each pattern, per Fortran literal and per kind
@@ -3136,14 +3084,6 @@ class PureRenderTests(unittest.TestCase):
                      "Assign `ok` on every path.\n`found` false when the metric is absent.",
                      "Assign `ok` on every path. The lookup returns true when the id is known."):
             self.assertEqual(self._sentences_giving_ok_a_value(kept), [], kept)
-        contract = wc._checks_contract_abi_sections(
-            (Path(wc.__file__).resolve().parents[1]
-             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8"))
-        self.assertIn(
-            "The runner does not read `ok`, here or from `case_run`: every case proceeds, so its "
-            "snapshot is produced, and what the captures hold (a `record` of the operation's "
-            "logical result, §1-b, or the state it left) is the guard's evidence — the value of "
-            "`ok` is never a finding.", contract)
         templates = ort._load_launch_prompt_templates()
 
         def composed(key: str, language: str, parallel: str) -> str:
@@ -3156,27 +3096,12 @@ class PureRenderTests(unittest.TestCase):
             with self.subTest(language=language, parallel=parallel):
                 verify = composed("workshop generate.verify", language, parallel)
                 generate = composed("workshop generate.generate", language, parallel)
-                for sentence in (
+                self.assertIn(
                     "a plan that leaves a `cpu`+`openmp` target's parallelizable loops of the "
-                    "model source serial without saying why is a fail",
-                    "The checks module is measurement code, so G6 does not judge how its loops "
-                    "are lowered: whether a checks-module loop is serial, parallel or on the "
-                    "host is never a finding, and the plan need not name it or give a reason "
-                    "for it.",
-                    "That exemption is about speed only — whatever a target fragment below "
-                    "requires of the checks module, G5, and that the checks module computes no "
-                    "state update of its own all still hold.",
-                ):
-                    self.assertIn(sentence, verify)
-                for sentence in (
-                    "The plan is about the model source: the checks module is measurement code, "
-                    "its loops need no lowering, and the plan names them only where a target "
-                    "fragment below requires it.",
-                    "Assign `ok` on every path like every other `out` argument; the runner does "
-                    "not read it, and what a rejected input leaves in the captures (the `record` "
-                    "the IR declares for it, or the state) is the evidence, not `ok`.",
-                ):
-                    self.assertIn(sentence, generate)
+                    "model source serial without saying why is a fail", verify)
+                self.assertIn("The plan is about the model source", generate)
+                for text in (verify, generate):
+                    self.assertNotIn("checks module", text)
                 if language == "cuda_cpp":
                     self.assertIn("A loop of the model source the plan keeps on the host is "
                                   "the plan's own claim", verify)
@@ -3188,10 +3113,12 @@ class PureRenderTests(unittest.TestCase):
                     self.assertNotIn("a checks callback receives", text)
                     self.assertNotIn("A loop the plan keeps on the host", text)
                     self.assertNotIn("A loop you do keep on the host", text)
-                binding = wc._checks_contract_abi_sections(
-                    registry.capability_module("language", language, "checks_abi").document())
-                for doc in (contract, binding, generate, verify):
-                    self.assertEqual(self._sentences_giving_ok_a_value(doc), [])
+                # A result is no answer written beside a computed state: the one sentence that
+                # names `ok` with a value, about the Fortran gate that refuses a literal-only one.
+                self.assertEqual(self._sentences_giving_ok_a_value(verify), [])
+                self.assertEqual(self._sentences_giving_ok_a_value(generate), (
+                    ["a result written `ok = false` / `ok = true` beside a state the operation "
+                     "computes is not that."] if language == "fortran" else []))
 
     def test_pure_doc_placeholder_token_not_corrupted(self) -> None:
         # Fix C: a literal `<step>` / `<ir_document>` token INSIDE a substituted data value must
