@@ -3053,7 +3053,7 @@ class ClosureExemptionTest(unittest.TestCase):
     )
     #: (surface, opens, closes, the clauses that must stand inside) — review round 5, R5-2: each
     #: statement says a logical `out` is no state read, a flag predicate is exempt only under the
-    #: flag's own name, it values its cases only on an xfail test, and what that asks of an
+    #: flag's own name, it values its cases only on an xfail test with value 0, and what that asks of an
     #: author.
     _FLAG_SITES = (
         ("docs/workflow/phases/phase_01_compile.md", "Every entry READS STATE",
@@ -3061,7 +3061,7 @@ class ClosureExemptionTest(unittest.TestCase):
          ("a logical `out` state `<f>` of `step` or `init`\n    # (a flag, `result:` or not)",
           "a FLAG PREDICATE, one per point and `<f>` per test: `expr` exactly `final.<f>`",
           "`op: eq`, `value` 0 or 1, no `bind`, `quantity: <f>`. It values its cases only on an "
-          "`xfail` test.")),
+          "`xfail` test with `value: 0`.")),
         ("docs/workflow/phases/phase_01_compile.md", "Four things are NOT such a quantity",
          "An xfail test that judges such a",
          ("Nor is a flag: its predicate is exempt above.",)),
@@ -3073,7 +3073,7 @@ class ClosureExemptionTest(unittest.TestCase):
          ("nor does a logical `out` state", "except in its flag predicate, which that rule exempts "
           "under the flag's own name only", "So a `pass` test of a node without a time loop lists "
           "the result's name in its `quantities` line", "a flag values a test's cases only on an "
-          "`xfail` test", "a flag under any other quantity reads nothing",
+          "`xfail` test and with `value: 0`", "a flag under any other quantity reads nothing",
           "Nor does a flag's name: its entry is that flag predicate.")),
         ("docs/TESTS.md", "A `tests.md` whose node runs a time loop", "\n",
          ("every `pass` test also lists the init result's name",)),
@@ -3082,7 +3082,8 @@ class ClosureExemptionTest(unittest.TestCase):
          ("the result's own name for a result flag predicate",
           "(a logical `out` is no state read: it is judged only by a flag predicate, `expr: "
           "final.<f>` or `initial.<f>`, `op: eq`, `value` 0 or 1, `per_case: true` over all "
-          "target cases, under `quantity: <f>`, which values its cases only on an `xfail` test; "
+          "target cases, under `quantity: <f>`, which values its cases only on an `xfail` test "
+          "with `value: 0`; "
           "a flag under any other quantity reads nothing)")),
         ("skills/spec-input-check/SKILL.md", "**The names a gate requires on that line**", "\n",
          ("lists the name of its operation's result flag", "lists `run.n_step`",
@@ -3270,7 +3271,7 @@ class ResultFlagFormTest(unittest.TestCase):
                 "alone, `expr: final.<f>` (or `initial.<f>` for one init writes), `op: eq`, "
                 "`value: 0|1`, no bind, `per_case: true` over all the test's target cases, under "
                 "`quantity: <f>`, once per point and flag in a test; it values its cases only on "
-                "an xfail test")
+                "an xfail test, and only with `value: 0`")
         self.assertEqual(pe.FLAG_FORM_STATEMENT, form)
         rus = self._rus_xfail(quantity="guard")
         v = [m for m in self._schema(rus) if self._NO_STATE in m]
@@ -3337,6 +3338,98 @@ class ResultFlagFormTest(unittest.TestCase):
                          pe.FORM_FLAG)
         bad = self._toyi_xfail(quantity="plan_refused")
         self._refused_at(bad, len(bad["io_contract"]["predicates"]) - 1)
+
+    # --- what a flag values (review round 6, R6-1) --------------------------------------------------
+    _NCOMP = "l0_invalid_ncomp_xfail"
+
+    def _ncomp_ir(self, value: float) -> dict:
+        """The coriolis guard test alone (its predicate's `value` set), its case's captures next."""
+        ir = _coriolis()
+        io = ir["io_contract"]
+        io["predicates"] = [p for p in io["predicates"] if p["test_id"] == self._NCOMP]
+        self.assertEqual(len(io["predicates"]), 1)
+        io["predicates"][0]["value"] = value
+        io["tests"] = [t for t in io["tests"] if t["test_id"] == self._NCOMP]
+        return ir
+
+    def _ncomp_run(self, guard_pass: float) -> "_RunDir":
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        u = np.zeros((2, 4, 3)).tolist()
+        run.write("l0_ncomp2", initial={"U": u, "S": u, "guard_pass": 0.0, "t": 0.0, "step": 0},
+                  final={"U": u, "S": u, "guard_pass": guard_pass, "t": 0.0, "step": 1})
+        return run
+
+    def test_a_value_1_flag_on_an_xfail_test_values_no_case(self) -> None:
+        """The reviewer's repro: `final.guard_pass eq 1` on a refusal test cleared every gate and
+        certified `xfail` on the kernel that ACCEPTED the invalid input, failing the one that
+        refused it. It stays a flag predicate, and values nothing."""
+        ir = _coriolis()
+        pred = next(p for p in ir["io_contract"]["predicates"] if p["test_id"] == self._NCOMP)
+        pred["value"] = 1
+        self.assertEqual(_all_gates(ir), [
+            f"test {self._NCOMP!r}: no predicate values the captured state of target case(s) "
+            "['l0_ncomp2']: a test certified without reading a case says nothing about it. Read "
+            "it with `per_case: true`, or through at('<case>').<initial|final>.<var> in the "
+            "value; a flag predicate values a case only on an xfail test with `value: 0`"])
+        self.assertEqual(pe.fixed_form(pred, pe.state_reads(ir)), pe.FORM_FLAG)
+        self.assertEqual(pe.cases_read(pred, pe.state_reads(ir)), set())
+        # the evaluator stamps no case, and the verdict re-check refuses the records
+        ir = self._ncomp_ir(1)
+        records = pe.evaluate_primary_predicates(ir, self._ncomp_run(1.0).root)
+        self.assertEqual(records[0]["cases_read"], [])
+        with self.assertRaisesRegex(PredicateError, re.escape(
+                f"no record of test {self._NCOMP!r} values the captured state of target case(s) "
+                "['l0_ncomp2']")):
+            evaluate_verdict(ir["io_contract"]["tests"], records)
+
+    def test_a_value_0_flag_on_an_xfail_test_certifies_the_refusal_alone(self) -> None:
+        for value in (0, 0.0):
+            with self.subTest(value=value):
+                ir = self._ncomp_ir(value)
+                reads = pe.state_reads(ir)
+                self.assertEqual(pe.cases_read(ir["io_contract"]["predicates"][0], reads),
+                                 {"l0_ncomp2"})
+                for guard_pass, status in ((0.0, "xfail"), (1.0, "fail")):
+                    records = pe.evaluate_primary_predicates(
+                        ir, self._ncomp_run(guard_pass).root)
+                    self.assertEqual(records[0]["cases_read"], ["l0_ncomp2"])
+                    self.assertEqual(evaluate_verdict(ir["io_contract"]["tests"],
+                                                      records)["per_test"][0]["status"], status)
+
+    def test_a_guard_1_flag_beside_a_converged_0_flag_is_admitted(self) -> None:
+        """`microphysics_saturation`'s xfail shape: the iteration did not converge, the input was
+        valid. `converged eq 0` values the case and `guard_pass eq 1` does not, and both hold in
+        the verdict; with the `value: 0` flag dropped the coverage refusal names the case."""
+        ir = self._sat_nonconverged()
+        self.assertEqual(_all_gates(ir), [])
+        reads = pe.state_reads(ir)
+        guard, converged = ir["io_contract"]["predicates"][-2:]
+        self.assertEqual(pe.cases_read(guard, reads), set())
+        self.assertEqual(pe.cases_read(converged, reads), {"s_a"})
+        # through the evaluator: the records of the shape, over captures of that kernel
+        ir["io_contract"]["predicates"] = [guard, converged]
+        ir["io_contract"]["tests"] = [t for t in ir["io_contract"]["tests"]
+                                      if t["test_id"] == "t_nc"]
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        grid = next(c for c in ir["case"]["test_case_set"]
+                    if c["case_id"] == "s_a")["inputs"]["grid"]
+        state = {n: np.ones([grid[tok] for tok in toks]).tolist() if toks else 0.0
+                 for n, toks in pe.schema_variables(pe.snapshot_schema(ir)).items()}
+        run.write("s_a", initial={**state, "t": 0.0, "step": 0},
+                  final={**state, "guard_pass": 1.0, "converged": 0.0, "t": 0.0, "step": 0})
+        records = pe.evaluate_primary_predicates(ir, run.root)
+        self.assertEqual({r["quantity"]: r["cases_read"] for r in records},
+                         {"guard_pass": [], "converged": ["s_a"]})
+        self.assertEqual(evaluate_verdict(ir["io_contract"]["tests"], records)["per_test"][0]
+                         ["status"], "xfail")
+        # the converged read gone, the guard flag alone stands for nothing
+        v = [m for m in _all_gates(self._sat_nonconverged(quantities=("guard_pass",)))
+             if "no predicate values" in m]
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith("test 't_nc': no predicate values the captured state of "
+                                        "target case(s) ['s_a']"), v)
 
     # --- what is not a fixed form ----------------------------------------------------------------
     def test_a_second_copy_of_a_form_in_one_test_is_not_exempt(self) -> None:
@@ -3492,7 +3585,7 @@ class ResultFlagFormTest(unittest.TestCase):
 
         rows: list[tuple] = []
         nc = self._sat_nonconverged()
-        rows.append(("xfail guard_pass eq 1 values", nc, last(nc) - 1, ["s_a"]))
+        rows.append(("xfail guard_pass eq 1 values nothing (R6-1)", nc, last(nc) - 1, []))
         rows.append(("xfail converged eq 0 values", nc, last(nc), ["s_a"]))
         ir, i = sat()
         rows.append(("pass converged under its name values nothing", ir, i, []))

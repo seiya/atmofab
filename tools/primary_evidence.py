@@ -627,7 +627,7 @@ FLAG_FORM_STATEMENT = (
     "A logical `out` state is no kernel-state read: a flag is judged in one form alone, `expr: "
     "final.<f>` (or `initial.<f>` for one init writes), `op: eq`, `value: 0|1`, no bind, "
     "`per_case: true` over all the test's target cases, under `quantity: <f>`, once per point "
-    "and flag in a test; it values its cases only on an xfail test")
+    "and flag in a test; it values its cases only on an xfail test, and only with `value: 0`")
 
 _FLAG_RE = re.compile(r"^(?P<point>final|initial)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)$")
 
@@ -2381,15 +2381,17 @@ def cases_read(pred: dict[str, Any],
     and an `at('<case>').inputs.<path>` normaliser or `at('<case>').final.t` beside own-case
     state (issue #567 review round 1) add no case. The record's `cases_read` key keeps its name.
     A flag predicate (`fixed_form`) values every case of its scope only on an `xfail` test,
-    whose judgment the flag is (review round 5, R5-2); a `pass` test's flag — it would stand in
-    for an unread case — and gate (l)'s closure value none.
+    whose judgment the flag is (review round 5, R5-2), and only with `value: 0`, the refusal
+    (review round 6, R6-1: `value: 1` there would certify the kernel that accepted the input and
+    fail the one that refused it); any other flag — it would stand in for an unread case — and
+    gate (l)'s closure value none.
     None when the scope or an expression is malformed (the primary schema gate refuses those;
     they cover nothing here)."""
     found = _entering_refs(pred)
     if found is None:
         return None
     contexts, entering = found
-    if fixed_form(pred, state_names) == FORM_FLAG \
+    if fixed_form(pred, state_names) == FORM_FLAG and pred["value"] == 0 \
             and (state_names.outcomes or {}).get(str(pred.get("test_id")).strip()) == "xfail":
         return set(contexts)
     read = {c for c in contexts
@@ -2498,7 +2500,8 @@ def quantity_violations(tests: Any, predicates: Any,
                 v.append(f"test {tid!r}: no predicate values the captured state of target "
                          f"case(s) {unread}: a test certified without reading a case says "
                          "nothing about it. Read it with `per_case: true`, or through "
-                         "at('<case>').<initial|final>.<var> in the value")
+                         "at('<case>').<initial|final>.<var> in the value; a flag predicate values a "
+                         "case only on an xfail test with `value: 0`")
     for tid, listed in sorted(declared.items()):
         missing = sorted(listed - carried[tid])
         extra = sorted(carried[tid] - listed)
