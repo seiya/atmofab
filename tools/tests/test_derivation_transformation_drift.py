@@ -806,7 +806,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-24": "33c85442a90a6b0b6c2d905bec8f7e8d198b0188f14a76f2554fa7c46b346e8c",
     # compile-docs-25 (issue #589, PR-1a): the phase contract and both IR examples describe the
     # `drive` block, per-case `initial_state` / `derived`, history and series, and grammar 6.
-    "compile-docs-25": "281bb7967e85569685c2abeac9f7215d5f6eea2775dd6cd750cc9882c932fd82",
+    "compile-docs-25": "43c76b75723023455e306cf03b4452decc1e977d93f7598fe8570464312411e0",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
