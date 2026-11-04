@@ -494,6 +494,34 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
         self.assertEqual((perf["steps"], perf["cells_updated"]), (9546, 89930752))
 
 
+class ProblemModelGateTest(unittest.TestCase):
+    """The canonical `__step` shape passes the `problem` dataflow gates: `intent(inout)` state and
+    one logical `intent(out)` result set from literals (issue #589 D3)."""
+
+    DEPS = ["dynamics_shallow_water_boundary_2d_periodic_copy",
+            "dynamics_shallow_water_flux_2d_rusanov_p0",
+            "dynamics_shallow_water_time_update_2d_ssprk2"]
+
+    def _violations(self, text: str) -> list[str]:
+        from tools.backends.language.fortran import source
+        found: list[str] = []
+        source.model_source_gates(
+            node_key="problem/shallow_water2d@0.4.7", model_file=Path("m.f90"), text=text,
+            dep_spec_ids=self.DEPS, violations=found, multidim_spec_id="shallow_water2d")
+        return found
+
+    def test_the_step_fixture_passes(self) -> None:
+        self.assertEqual(self._violations((DATA / "shallow_water2d_model.f90").read_text()), [])
+
+    def test_a_step_that_discards_every_dependency_result_is_refused(self) -> None:
+        text = (DATA / "shallow_water2d_model.f90").read_text()
+        cut = text.replace("h(i, j) = 0.5_dp * u_n(1, i, j) + 0.5_dp * u_2(1, i, j)", "h(i, j) = g")
+        cut = cut.replace("hu(i, j) = 0.5_dp * u_n(2, i, j) + 0.5_dp * u_2(2, i, j)", "hu(i, j) = g")
+        cut = cut.replace("hv(i, j) = 0.5_dp * u_n(3, i, j) + 0.5_dp * u_2(3, i, j)", "hv(i, j) = g")
+        self.assertNotEqual(cut, text)
+        self.assertTrue(any("does not propagate" in v for v in self._violations(cut)))
+
+
 class RenderRefusalTest(unittest.TestCase):
     def test_a_distributed_harness_has_no_driver_yet(self) -> None:
         with self.assertRaises(RenderError) as caught:

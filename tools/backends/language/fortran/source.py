@@ -520,6 +520,7 @@ def _is_literal_like_expr(expr: str) -> bool:
 # each carried their own copy of this pattern, and each recomputed the same set from the same
 # text. The set is computed once, in the envelope, and every gate reads `envelope.out_vars`.
 _FORTRAN_INTENT_OUT_PATTERN = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
+_FORTRAN_INTENT_INOUT_PATTERN = re.compile(r"intent\s*\(\s*inout\s*\)\s*::\s*([^\n!]+)")
 
 
 
@@ -611,6 +612,9 @@ class ProcedureEnvelope:
     result_name: str | None
     intent_out_vars: frozenset[str]
     out_vars: frozenset[str]
+    #: The `intent(inout)` dummies: a `__step` updates its state through them (issue #589 D3), so
+    #: the two `problem` dataflow gates read them as outputs beside the `intent(out)` ones.
+    inout_vars: frozenset[str] = frozenset()
 
 
 def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
@@ -937,6 +941,9 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
         out_vars: set[str] = set()
         for match in _FORTRAN_INTENT_OUT_PATTERN.finditer(out_scope):
             out_vars.update(split_names(match.group(1)))
+        inout_vars: set[str] = set()
+        for match in _FORTRAN_INTENT_INOUT_PATTERN.finditer(out_scope):
+            inout_vars.update(split_names(match.group(1)))
         # The result variable is definable and is the whole point of a function, so it joins the
         # out-set — see the envelope's docstring for the compiler check that says WHICH name it is.
         intent_out_vars = frozenset(out_vars)
@@ -952,6 +959,7 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
                 result_name=procedure.result_name,
                 intent_out_vars=intent_out_vars,
                 out_vars=frozenset(out_vars),
+                inout_vars=frozenset(inout_vars),
             )
         )
     return envelopes
@@ -1008,7 +1016,10 @@ def _validate_problem_model_literal_outputs(
         # `r = u(1)` to the function form silenced it (both accepted by `gfortran -fsyntax-only
         # -std=f2008`, both executed). A subroutine has to DECLARE an extra `intent(out)` to buy
         # that exemption; a function was getting it by existing.
-        out_vars = set(envelope.intent_out_vars)
+        # An `intent(inout)` dummy is an output too (issue #589 D3): a `__step` whose one
+        # `intent(out)` is its result logical sets that logical from a literal and is judged by
+        # what it does to its state.
+        out_vars = set(envelope.intent_out_vars) | set(envelope.inout_vars)
         if not out_vars:
             continue
 
@@ -1252,7 +1263,7 @@ def _validate_problem_model_dependency_dataflow(
 
         # The closure below is SEEDED with this set, so a function's result seeds it too — which
         # is what makes "the dependency result reaches the output" answerable for a function.
-        out_vars = set(envelope.out_vars)
+        out_vars = set(envelope.out_vars) | set(envelope.inout_vars)
         if not out_vars:
             continue
 
