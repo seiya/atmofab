@@ -820,7 +820,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-26 (issue #589, PR-1b): `phase_01_compile.md` follows the rendered driver and the
     # checks module's deletion.
     # Measured against origin/main a55f7390: that row and no other.
-    "compile-docs-26": "0a222df5e899e051f32b8076202d1fa6b0977b678ce30476d436042fe171fed8",
+    "compile-docs-26": "19fc3f07e69cae8a1ed132d89e55738431954f73e38515f8aab0b1371c1a8a2c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

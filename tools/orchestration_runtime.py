@@ -4057,8 +4057,8 @@ def _resolve_exemplar_source(
     cross-node-identical plumbing, raising first-attempt pass rate; the corpus is
     self-bootstrapping (every certified node becomes an exemplar for its siblings). Pre-R1 the
     injected sources are the certified ``<spec_id>_model.f90`` + ``<spec_id>_runner.f90``; once
-    R1 lands the harness node, the runner leaves the physics node and the exemplar becomes
-    model + checks.
+    R1 lands the harness node, the runner leaves the physics node; since issue #589 the exemplar
+    is the model alone.
 
     Discovery mirrors the certified-source selection used for dependencies (``_verify_dep_stage``
     / ``_certified_model_source``): for each sibling catalog spec, its SELECTED certified
@@ -4093,7 +4093,7 @@ def _resolve_exemplar_source(
         # target's harness) authors model + checks, so its exemplar is a sibling's model +
         # checks — NOT the pre-M3c model + runner (injecting a 600-line self-authored runner
         # would be misleading prior art). Both files must be present (a pre-M3c sibling without
-        # a checks.f90 is skipped, not partially injected). Mirror the conductor's
+        # a sibling without its model is skipped, not partially injected). Mirror the conductor's
         # `_conductor_authors_runner` predicate (a control file and a runner the host authors ∧
         # non-infra) so the exemplar shape matches what the leaf actually authors. Both halves
         # are the TARGET's, the question the conductor asks of the same profile

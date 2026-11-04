@@ -128,7 +128,7 @@
     "tools/orchestration_runtime.py": {
       "fortran": 8,
       "fortran-subroutine": 4,
-      "fortran-suffix": 6,
+      "fortran-suffix": 5,
       "make-control-file": 6
     },
     "tools/structured_signatures.py": {

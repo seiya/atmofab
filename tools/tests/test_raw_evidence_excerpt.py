@@ -410,6 +410,14 @@ class RequiredEvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.raw = _RawDir(self)
 
+    def test_a_stride_of_zero_is_no_missing_history(self) -> None:
+        contract = {"raw_requirements": {"required_evidence": [
+            {"artifact": "state_history"}, {"artifact": "step_series"}]}}
+        rows = {r["artifact"]: r for r in self._rows(contract)}
+        self.assertFalse(rows["state_history"]["required"])
+        self.assertFalse(rows["state_history"]["present"])
+        self.assertTrue(rows["step_series"]["required"])
+
     def _rows(self, contract=None) -> list[dict]:
         return rex.raw_evidence_excerpt(
             self.raw.path, contract or _contract())["required_evidence"]

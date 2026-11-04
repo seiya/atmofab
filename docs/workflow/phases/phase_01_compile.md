@@ -387,7 +387,9 @@ drive:
   #   per-step fact; a run-wide extremum is the host's fold over series.* / history.*). Every dummy of each
   #   bound operation is bound exactly once, by no key that is not a dummy; a state array has at most one
   #   reading (`in` / `inout`) and one writing (`out` / `inout`) dummy per entry, and on a node without
-  #   `loop` an `in` / `out` pair binds two DIFFERENT states; every schema variable is bound by a dummy of
+  #   `loop` an `in` / `out` pair binds two DIFFERENT states; on a `loop` node a pair binds ONE state, or
+  #   each step starts again from the initial state, with no gate to say so (the host cannot tell
+  #   a pair from two unrelated arrays): the reviewer judges it. Every schema variable is bound by a dummy of
   #   `drive`.
   # CLASSES ARE PER CASE: for case `c` they follow from `init` and the `step` entries that run `c` (one
   #   entry on the mapping form; the entry whose `cases` lists `c` on the list form). A predicate reads

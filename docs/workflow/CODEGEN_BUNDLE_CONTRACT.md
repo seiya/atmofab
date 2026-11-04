@@ -221,8 +221,9 @@ is shared by the whole unit, and only `helper` / `internal_module` may be shared
 of any entrypoint. This *is* the definition of "private" in this contract: privacy is
 declared by role, not inferred from a language's own accessibility statement. A `runner` file cannot be
 one either, for the opposite reason: it is the executable entry, which nothing may `use`.
-A `helper` / `internal_module` file is reachable from the `runner` file only, so on the `m3c`
-shape, whose runner is host-rendered and calls the model alone, nothing reaches one. A
+On the `m3c` shape the host-rendered runner calls the model alone, so no `use` reaches a
+`helper` / `internal_module` file; a link-time reference out of the model can, which is why the
+leaf-source gates read it too, and no consumer could resolve it. A
 consumer is staged exactly a member's `model` file, so the `model` compiles alone against the
 dependency closure; the producing node's `Generate.gate` syntax check compiles it that way
 (issue #389). A private file may `use` the model in turn, and builds after it (see

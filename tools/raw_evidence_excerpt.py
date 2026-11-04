@@ -251,7 +251,9 @@ def _required_evidence_rows(raw_dir: Path, io_contract: Any) -> list[dict[str, A
         rows.append({
             "declared_as": spelling,
             "artifact": artifact,
-            "required": item.get("required") is not False,
+            # `every: 0` is a legal stride, so an absent `history/` is no missing evidence: a
+            # predicate over `history.*` is what needs samples, and it answers `structural`.
+            "required": item.get("required") is not False and artifact != "state_history",
             "present": bool(target and (target.is_file() or target.is_dir())),
         })
     return rows

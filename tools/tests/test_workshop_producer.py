@@ -942,9 +942,11 @@ class DriverPromptTests(unittest.TestCase):
                 with self.subTest(target=target_id, template=key):
                     self.assertEqual(self._stale_words(composed_pure_template(key, profile)), [])
 
-    def test_no_seeded_document_carries_one_either(self) -> None:
+    def test_no_host_held_seed_document_carries_one(self) -> None:
         """A seed is read as the prompt is. The real documents the context builders hand over,
-        through the language's own `prompt_fragments`, and the tool list the leaf is served."""
+        through the language's own `prompt_fragments`, and the tool list the leaf is served. Not
+        the spec documents: `tests.md` of 14 unconverted nodes still names the retired module until
+        PR-3 converts them."""
         from tools.backends import registry as backend_registry
         from tools.workshop_mcp import TOOL_DEFINITIONS
         root = Path(wc.__file__).resolve().parents[1]

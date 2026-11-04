@@ -281,7 +281,7 @@ compared across every other block size the profile names (its certified one and 
 `accelerator_mapping` is how the work maps onto blocks and grid, not the threads per block.
 
 The `Generate.gate` static check holds a necessary condition of B.1
-(`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every model source of a
+(`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every leaf source but the runner of a
 `component` / `problem` node, whatever the plan and the loop count): a
 source whose code launches a kernel (`<<<`) and never names `atmofab::launch_block_size` is
 refused, and so is a source that writes it through its qualified name (an assignment, compound or
