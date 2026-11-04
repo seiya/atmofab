@@ -3621,6 +3621,10 @@ class ResultFlagFormTest(unittest.TestCase):
         ir = self._toyi_xfail()
         self.assertEqual(pe.cases_read(ir["io_contract"]["predicates"][-1], pe.state_reads(ir)),
                          {"a", "b"})
+        # the value does not decide it on a pass test: `value: 0` values none there either
+        zero = dict(_rus()["io_contract"]["predicates"][0], value=0)
+        self.assertEqual(pe.fixed_form(zero, pe.state_reads(_rus())), pe.FORM_FLAG)
+        self.assertEqual(pe.cases_read(zero, pe.state_reads(_rus())), set())
         # the coriolis guard tests are judged by the flag alone, and certify on it
         cor = _coriolis()
         self.assertEqual(_all_gates(cor), [])
