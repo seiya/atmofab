@@ -3472,12 +3472,29 @@ def _or_list(refs: list[str]) -> str:
     return " or ".join(repr(r) for r in refs) if refs else "none (drive.loop.n_step is absent)"
 
 
+def _source_key_violations(ir: dict[str, Any]) -> list[str]:
+    """A `state_snapshots` schema variable carrying `source` (the vocabulary retired by D6),
+    refused on EVERY kind — an `infrastructure` node's schema included (review R1-5)."""
+    schema = snapshot_schema(ir)
+    variables = schema.get("variables") if isinstance(schema, dict) else None
+    return [f"state_snapshots.schema.variables[{idx}].source: the source vocabulary is "
+            "retired (D6): what a variable is follows from drive"
+            for idx, entry in enumerate(variables if isinstance(variables, list) else [])
+            if isinstance(entry, dict) and "source" in entry]
+
+
 def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     """The Compile gate over `drive` (issue #589, SHAPE §6 gates (a)-(l)); ``kind`` is the
     node's `spec_kind` as the catalog answers it (never the IR's own `meta.spec_kind`). Gate
     (m) reads `tests.md` and is the validator's. An `infrastructure` IR carries no `drive`; a
-    `problem` or `component` IR must. Structural findings stop the semantic gates (no
-    cascade). Returns violation strings (empty == valid)."""
+    `problem` or `component` IR must. A schema variable's `source` key is refused on every
+    kind, before the kind decides anything (`_source_key_violations`). Structural findings stop
+    the semantic gates (no cascade). Returns violation strings (empty == valid)."""
+    return _source_key_violations(ir) + _drive_kind_violations(ir, kind=kind)
+
+
+def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
+    """`drive_violations` past the `source` key: the gates (a)-(l) under ``kind``."""
     if kind == INFRASTRUCTURE_KIND:
         return (["drive: an infrastructure node carries no drive block (its own runner runs "
                  "its cases)"] if _has_drive(ir) else [])
@@ -3500,10 +3517,6 @@ def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
         return [f"drive: the snapshot schema is unreadable ({exc})"]
     model = _model_from_block(block, schema_vars)
     entries = _evidence_entries(ir)
-    for idx, entry in enumerate(schema.get("variables") or []):
-        if isinstance(entry, dict) and "source" in entry:
-            v.append(f"state_snapshots.schema.variables[{idx}].source: the source vocabulary is "
-                     "retired (D6): what a variable is follows from drive")
 
     # (a) a problem publishes <spec_id>__step, and every step entry calls it
     if kind == "problem":

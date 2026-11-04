@@ -30070,6 +30070,29 @@ class DriveGateStageTests(unittest.TestCase):
                        "a node whose drive block declares a loop, and this IR carries no drive "
                        "block")), 1, v)
 
+    def test_a_source_key_is_refused_on_an_infrastructure_node(self) -> None:
+        """R1-5: the `source` vocabulary is retired on every kind, so the refusal runs before
+        the kind decides anything — an infrastructure node (no `drive`) carrying `source` on a
+        schema variable draws it through the stage, with and without a `drive` block."""
+        cs_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
+        catalog = [dict(spec_kind="infrastructure", spec_id=_CORIOLIS_ID,
+                        controlled_spec_path=cs_ref)]
+
+        def infra_source(ir, keep_drive=False):
+            ir["meta"]["spec_kind"] = "infrastructure"
+            if not keep_drive:
+                del ir["drive"]
+            ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+                "variables"][0]["source"] = "operation"
+        msg = ("<ir>:state_snapshots.schema.variables[0].source: the source vocabulary is "
+               "retired (D6): what a variable is follows from drive")
+        v = _drive_stage("coriolis", infra_source, catalog=catalog)
+        self.assertEqual(self._hits(v, "source vocabulary is retired"), [msg])
+        v = _drive_stage("coriolis", lambda ir: infra_source(ir, keep_drive=True),
+                         catalog=catalog)
+        self.assertEqual(self._hits(v, "source vocabulary is retired"), [msg])
+        self.assertTrue(self._hits(v, "an infrastructure node carries no drive block"), v)
+
     # --- (a)-(h) ------------------------------------------------------------------------------
     def test_a_problem_publishes_and_drives_its_step(self) -> None:   # (a)
         repo_real = Path(__file__).resolve().parents[2]
