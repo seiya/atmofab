@@ -3435,6 +3435,24 @@ def _binding_violations(model: DriveModel, schema_vars: dict[str, list[str]],
                  "(a variable no operation touches is host data echoed into a capture)")
 
 
+def _zero_step_refs(n_step: Binding | None) -> list[str]:
+    """The `<ref>` gate (l)'s zero-step closure `final.step - <ref>` accepts on a `loop` node:
+    the closure counterpart of `drive.loop.n_step`'s binding — `derived.<n>` / `inputs.<path>`
+    verbatim, and for `state.<n>` (a scalar `init` writes, gate (e)) `initial.<n>` or
+    `final.<n>`. Any other ref names a count the loop does not run by, so the closure would
+    compare the committed steps with an unrelated number. Empty when `n_step` is undeclared
+    (`_parse_drive` reports that)."""
+    if n_step is None:
+        return []
+    if n_step.kind == _STATE_ROOT:
+        return [f"initial.{n_step.ref}", f"final.{n_step.ref}"]
+    return [n_step.text()]
+
+
+def _or_list(refs: list[str]) -> str:
+    return " or ".join(repr(r) for r in refs) if refs else "none (drive.loop.n_step is absent)"
+
+
 def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     """The Compile gate over `drive` (issue #589, SHAPE §6 gates (a)-(l)); ``kind`` is the
     node's `spec_kind` as the catalog answers it (never the IR's own `meta.spec_kind`). Gate
@@ -3644,31 +3662,12 @@ def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
         mine = [p for _i, p in own if p["test_id"].strip() == tid and _covers_test(p, test)]
         targets = [str(c).strip() for c in (test.get("target_cases") or [])]
         if block.loop is not None:
-            ok = False
-            for pred in mine:
-                ref = zero_step_closure_ref(pred)
-                if ref is None:
-                    continue
-                root, _, rest = ref.partition(".")
-                if root == _DERIVED:
-                    ok = all(isinstance(cases.get(c, {}).get("derived"), dict)
-                             and rest in cases[c]["derived"] for c in targets)
-                elif root == _INPUTS_ROOT:
-                    try:
-                        for c in targets:
-                            resolve_input_number(cases.get(c, {}).get("inputs"), rest)
-                        ok = True
-                    except PrimaryEvidenceError:
-                        ok = False
-                else:
-                    ok = rest in model.init_written and schema_vars.get(rest) == []
-                if ok:
-                    break
-            if not ok:
+            accepted = _zero_step_refs(block.loop.get("n_step"))
+            if not any(zero_step_closure_ref(pred) in accepted for pred in mine):
                 v.append(f"(l) test {tid!r} (pass) carries no predicate `expr: \"final.step - "
                          "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target "
-                         "cases, <ref> a derived.<n>, an inputs.<path> or initial.<n> / final.<n> "
-                         "of a scalar init writes (the zero-step closure)")
+                         "cases whose <ref> is the closure counterpart of drive.loop.n_step: "
+                         f"for this IR {_or_list(accepted)} (the zero-step closure)")
         else:
             covering = [e for e in block.step
                         if e.cases is None or set(e.cases) & set(targets)]

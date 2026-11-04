@@ -3278,12 +3278,13 @@ class DriveViolationsTest(unittest.TestCase):
                     {"per_case": None, "case": "a"},
                     {"expr": "final.step - derived.nope"},
                     {"expr": "final.step - inputs.grid.zz"},
-                    {"expr": "final.step - final.h"}):
+                    {"expr": "final.step - final.h"},
+                    {"expr": "final.step - inputs.grid.nx"}):
             with self.subTest(bad=bad):
                 ir["io_contract"]["predicates"][1] = {**closure, **bad}
                 self._refused(ir, "(l) test 't_run' (pass) carries no predicate `expr: "
                                   "\"final.step - <ref>\"`")
-        for good in ("final.step - inputs.grid.nx", "final.step-derived.n_step"):
+        for good in ("final.step - derived.n_step", "final.step-derived.n_step"):
             with self.subTest(good=good):
                 ir["io_contract"]["predicates"][1] = {**closure, "expr": good}
                 self.assertFalse(any(m.startswith("(l)") for m in self._v(ir)), self._v(ir))
@@ -3294,6 +3295,66 @@ class DriveViolationsTest(unittest.TestCase):
         cor = _coriolis()   # an xfail test needs none: its predicate reads guard_pass == 0
         self.assertEqual(cor["io_contract"]["tests"][-1]["expected_outcome"], "xfail")
         self.assertEqual(self._v(cor), [])
+
+
+    def test_the_closure_ref_is_the_counterpart_of_loop_n_step(self) -> None:   # (l)
+        """R1-1: the `<ref>` of `final.step - <ref>` is the one value the loop runs by —
+        `drive.loop.n_step`'s binding verbatim for `derived.*` / `inputs.*`, `initial.<n>` /
+        `final.<n>` for an init-written `state.<n>` — and the refusal names it for this IR.
+        Another derived value, another input (one that resolves in every case), or another
+        init-written scalar is refused."""
+        def closure_expr(ir: dict, expr: str) -> dict:
+            for pred in ir["io_contract"]["predicates"]:
+                if pred["quantity"] == "step_count":
+                    pred["expr"] = expr
+            return ir
+
+        def l_findings(ir: dict) -> list[str]:
+            return [m for m in self._v(ir) if m.startswith("(l)")]
+
+        toy = _toy()
+        for case in toy["case"]["test_case_set"]:
+            case["derived"]["z"] = 10
+        for bad in ("final.step - derived.z", "final.step - inputs.history.every"):
+            with self.subTest(bad=bad):
+                self.assertEqual(l_findings(closure_expr(copy.deepcopy(toy), bad)), [
+                    "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - "
+                    "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target cases "
+                    "whose <ref> is the closure counterpart of drive.loop.n_step: for this IR "
+                    "'derived.n_step' (the zero-step closure)"])
+        self.assertEqual(l_findings(closure_expr(copy.deepcopy(toy),
+                                                 "final.step - derived.n_step")), [])
+        for bad in ("final.step - final.init_ok", "final.step - initial.init_ok",
+                    "final.step - initial.dt", "final.step - inputs.grid.nx"):
+            with self.subTest(bad=bad):
+                self.assertEqual(l_findings(closure_expr(_toyi(), bad)), [
+                    "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - "
+                    "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target cases "
+                    "whose <ref> is the closure counterpart of drive.loop.n_step: for this IR "
+                    "'initial.n_plan' or 'final.n_plan' (the zero-step closure)"])
+        for good in ("final.step - initial.n_plan", "final.step - final.n_plan"):
+            with self.subTest(good=good):
+                self.assertEqual(l_findings(closure_expr(_toyi(), good)), [])
+        # An rk4-like loop whose count is a case input.
+        rk = _toy()
+        rk["drive"]["loop"]["n_step"] = "inputs.time.n_step"
+        for case in rk["case"]["test_case_set"]:
+            case["inputs"]["time"]["n_step"] = 10
+            case["derived"] = {"dt": "(inputs.time.t_end - inputs.time.t_start) "
+                                     "/ inputs.time.n_step"}
+        self.assertEqual(self._v(closure_expr(copy.deepcopy(rk), "final.step - inputs.time.n_step")),
+                         [])
+        self.assertTrue(l_findings(closure_expr(rk, "final.step - inputs.grid.nx")))
+
+    def test_the_swe_fixture_closure_is_its_loop_count(self) -> None:   # (l)
+        import yaml
+        swe = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7" / "spec.ir.yaml").read_text())
+        self.assertEqual(swe["drive"]["loop"]["n_step"], "derived.n_step")
+        self.assertFalse([m for m in self._v(swe, "problem") if m.startswith("(l)")])
+        for pred in swe["io_contract"]["predicates"]:
+            if pred.get("expr") == "final.step - derived.n_step":
+                pred["expr"] = "final.step - inputs.history.every"
+        self.assertTrue([m for m in self._v(swe, "problem") if m.startswith("(l)")])
 
 
 class ScalarPairingTest(unittest.TestCase):
