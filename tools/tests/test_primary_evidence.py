@@ -2610,9 +2610,16 @@ class Grammar6Test(unittest.TestCase):
         """A history of one sample has a leading extent 1, which is no state axis."""
         env = pe.CaseEnv("c", None, {}, {}, {}, history={"h": np.ones((1, 3, 4))}, state_rank=2)
         self.assertEqual(pe.evaluate(pe.parse_expr("sum(history.h)"), env), 12.0)
+        # Every whole-array reduction takes the sample axis as no state axis, not `sum` alone.
+        self.assertEqual(pe.evaluate(pe.parse_expr("mean(history.h)"), env), 1.0)
+        self.assertAlmostEqual(pe.evaluate(pe.parse_expr("norm2(history.h)"), env),
+                               np.sqrt(12.0))
+        self.assertEqual(pe.evaluate(pe.parse_expr("maxabs(history.h)"), env), 1.0)
         env2 = env._replace(history={"h": np.ones((2, 3, 1))})
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "extent-1 axis"):
-            pe.evaluate(pe.parse_expr("sum(history.h)"), env2)
+        for fn in ("sum", "mean", "norm2", "maxabs"):
+            with self.subTest(fn=fn), \
+                    self.assertRaisesRegex(pe.PrimaryEvidenceError, "extent-1 axis"):
+                pe.evaluate(pe.parse_expr(f"{fn}(history.h)"), env2)
 
     def test_a_coordinate_broadcasts_against_history_and_a_field_of_it_does_not(self) -> None:
         x = np.array([[0.5], [1.5]]) * np.ones((2, 3))
