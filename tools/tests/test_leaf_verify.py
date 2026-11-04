@@ -300,7 +300,7 @@ class PureVerifyContextTests(unittest.TestCase):
                           "with the finding and the same `spec.ir.yaml` and `tests.md`, can "
                           "resolve the finding", doc)
             # Every literal here must occur in the REAL document, or the assertion is true of any
-            # slice and pins nothing (the checks-contract test above records why). Note what is
+            # slice and pins nothing. Note what is
             # NOT usable as an absent literal: `ir_inconsistency` occurs inside the rubric itself.
             real = _REAL_PHASE_02.read_text(encoding="utf-8")
             for absent in ("#### G7. dependency consistency",

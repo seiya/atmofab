@@ -91,8 +91,8 @@ def _valid_bundle() -> dict:
 
 def _node_ir(state_vars=("h", "u", "v")) -> dict:
     """A minimal M3c problem IR that `render_runner` accepts — so the fixture's runner can be
-    produced by the real renderer instead of hand-typed (a hand-typed runner would let the ABI
-    layer pass against a shape the renderer never emits)."""
+    produced by the real renderer instead of hand-typed (a hand-typed runner would let a gate
+    pass against a shape the renderer never emits)."""
     return {
         "meta": {"spec_id": _SPEC_ID, "spec_kind": "problem"},
         # Canonical shape: state_variables is a list of OBJECTS ({name, shape_expr}), NOT bare
@@ -2939,7 +2939,7 @@ class PureHarnessShapeTests(unittest.TestCase):
     against, and what the assembly declares as host glue."""
 
     #: The repository documents the harness contexts inline. Copied into the fixture repo the
-    #: way `test_leaf_verify` seeds the checks contract: the builders read them off
+    #: way `test_leaf_verify` seeds the phase contract: the builders read them off
     #: `repo_root`, so the fixture's throwaway root has to carry them.
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
                   "docs/workflow/phases/phase_02_generate.md")

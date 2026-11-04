@@ -1600,6 +1600,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
             reach("REPO_TOOLS", {str(self.repo_root / "tools" / "workflow_conductor.py")!r})
             reach("CONFIG_HOME", {str(self.paths.config / ".credentials.json")!r})
             reach("RECORD", {str(self.paths.record_json)!r})
+            reach("CASE_FILE", "case_inputs/c1.json")
             try:
                 socket.create_connection(("127.0.0.1", {port}), timeout=3).close()
                 print("HOST_TCP:CONNECTED", flush=True)
@@ -1615,6 +1616,8 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         for tag in ("DEP_SOURCE", "STAGED_OBJ", "REPO_TOOLS", "CONFIG_HOME", "RECORD"):
             self.assertIn(f"{tag}:ABSENT", out, out)
         self.assertIn("HOST_TCP:REFUSED", out, out)
+        # The host wrote the case file before the program started, and it reaches it in the tree.
+        self.assertIn("CASE_FILE:REACHABLE", out, out)
         # The run's cwd is the tree, read-write.
         self.assertEqual((self.paths.tree / "captured.txt").read_text(), "written by the run")
         # Every build-runtime call is in the lineage's command log, under its sandbox.
@@ -1627,6 +1630,36 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
                              ["bwrap", "--die-with-parent", "--new-session", "--unshare-net"])
             self.assertEqual(entry["agent_run_id"], "arid-sim")
         self.assertEqual(self.wt.read_lineage_record(self.paths)["wrapper_calls_used"], 5)
+
+    def test_a_rendered_driver_runs_its_seeded_cases_through_the_operation(self) -> None:
+        """The whole composition under the real sandbox: a driver the host renders, reading the
+        case files the operation writes from the seed, capturing into the directories the
+        operation makes. The binary is built by the driver tests' helper, whose own run is not
+        the subject; the operation starts it again in a tree holding nothing else."""
+        import dataclasses
+
+        from tools.tests.test_driver_render import call_ir, run_fortran
+
+        ir = call_ir(1, 2)
+        build = Path(self._tmp.name) / "build"
+        build.mkdir()
+        self.assertEqual(run_fortran(build, ir).proc.returncode, 0)
+        shutil.copy(build / "bin", self.paths.staged_bin / "x_runner")
+        ctx = dataclasses.replace(
+            self.ctx, seed_texts=(("spec.ir.yaml", yaml.safe_dump(ir)),),
+            run_raw_dirs=tuple(("raw", "state_snapshots", sub)
+                               for sub in ("initial", "history", "series")))
+        ran = self.ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})
+        self.assertTrue(ran["ok"], ran)
+        snapshots = self.paths.tree / "raw" / "state_snapshots"
+        captured = {cid: json.loads((snapshots / f"{cid}.json").read_text())
+                    for cid in ("m1", "m2")}
+        self.assertEqual(set(captured), {"m1", "m2"})
+        self.assertTrue((snapshots / "initial" / "m1.json").is_file())
+        # The driver's own run in the helper's directory wrote what this one must.
+        for cid, doc in captured.items():
+            self.assertEqual(doc, json.loads(
+                (build / "run" / "raw" / "state_snapshots" / f"{cid}.json").read_text()))
 
     def test_syntax_check_runs_the_host_gates_model_alone_probe(self) -> None:
         """A model that `use`s another file of its own bundle passes over the whole tree and
