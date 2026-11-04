@@ -45,7 +45,7 @@ from typing import Any, NamedTuple
 #: 3 (issue #582): the `coverage` and `metrics_basis_arrays` sections are gone with
 #: `raw/metrics_basis.json`, and each snapshot variable names its `source`.
 #: 4 (issue #589 PR-1b): `source` is gone with its vocabulary, `step` is the driver's own column
-#: (`driver_counters`), each case carries `history_samples` and `series`, and `required_evidence`
+#: (an ordinary row with no declared shape), each case carries `history_samples` and `series`, and `required_evidence`
 #: looks for `state_history` / `step_series` where the driver writes them.
 RAW_EXCERPT_POLICY_VERSION = 4
 
