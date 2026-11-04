@@ -2578,6 +2578,20 @@ class Grammar6Test(unittest.TestCase):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
                 pe.parse_expr(src)
 
+    def test_the_refusals_name_the_grammar_6_roots(self) -> None:
+        """The refusal text a repairing leaf reads names the grammar 6 roots: a cross-case
+        `history` read says the sampled roots are read in the case being evaluated only, and an
+        unadmitted root lists them among the admitted ones."""
+        with self.assertRaisesRegex(
+                pe.PrimaryEvidenceError,
+                r"history\.\*, series\.\* and derived\.\* are read in the case being evaluated "
+                r"only"):
+            pe.parse_expr("at('a').history.h")
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"roots: initial, final, inputs, history, series, derived, "
+                                    r"at\('<case_id>'\), comparand\)"):
+            pe.parse_expr("foo.bar")
+
     def test_the_sample_reductions(self) -> None:
         a = np.arange(24.0).reshape(2, 3, 4)
         env = pe.CaseEnv("c", None, {}, {}, {}, history={"h": a, "t": np.array([1.0, 2.0])},
