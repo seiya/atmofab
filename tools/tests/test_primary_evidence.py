@@ -4150,6 +4150,33 @@ class ListFormCasesTest(unittest.TestCase):
         self.assertEqual(pe.record_scalar_pairing(pred, model.one_call_scalars),
                          {"a_x": {"scalar": ["a", "b"], "paired": ["a", "b"]}})
 
+    def test_d7_pairs_a_case_only_with_an_array_its_own_entry_writes(self) -> None:
+        """Review round 3, R3-2: when BOTH entries write the one-call scalar `a_x` (case a's
+        beside its array `F`, case b's beside `G`), `final.a_x + maxabs(final.F)` is paired in
+        case a only — in case b `F` is host data, and b's entry writes `G`. Red when the per-case
+        array filter of `record_scalar_pairing` admits every array of the scalar."""
+        ir = _rus()
+        other = [_arg("nx", "in", "integer"), _arg("q", "in", "real", 1, ["nx"]),
+                 _arg("G", "out", "real", 1, ["nx"]), _arg("a_x", "out", "real"),
+                 _arg("ok", "out", "logical")]
+        ir["public_api"] = _api({"rus__flux": ir["public_api"]["signatures"][0]["signature"][
+            "args"], "rus__other": other})
+        ir["drive"]["step"] = [
+            {**ir["drive"]["step"], "cases": ["a"]},
+            {"operation": "rus__other", "result": "ok", "cases": ["b"],
+             "arguments": {"nx": "inputs.grid.nx", "q": "state.q", "G": "state.G",
+                           "a_x": "state.a_x", "ok": "state.ok"}}]
+        ir["case"]["test_case_set"].append({**copy.deepcopy(ir["case"]["test_case_set"][0]),
+                                            "case_id": "b"})
+        model = pe.drive_model(ir)
+        by_case = pe.one_call_by_case(ir, model)
+        self.assertEqual(by_case, {"a": {"a_x": frozenset({"F"})},
+                                   "b": {"a_x": frozenset({"G"})}})
+        pred = {"target_cases": ["a", "b"], "per_case": True,
+                "expr": "final.a_x + maxabs(final.F)"}
+        self.assertEqual(pe.record_scalar_pairing(pred, model.one_call_scalars, by_case),
+                         {"a_x": {"scalar": ["a", "b"], "paired": ["a"]}})
+
 
 class ShippedFixturesTest(unittest.TestCase):
     """The two hand-converted fixtures pass every IR-side gate and evaluate."""
