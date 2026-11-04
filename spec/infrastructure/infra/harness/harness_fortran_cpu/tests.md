@@ -32,7 +32,7 @@ The suite defines ten `case`s and ten `test_id`s (no sweep). The self-test's own
 **Every snapshot holds every variable `controlled_spec.md` §2 declares**, plus the scalar time variable `t` (value `0.0`; a single `steps=1` step). A variable §2 lists under the case holds what the case computed; any other variable holds a shape-valid placeholder, `0.0` or an array of zeros of its declared shape, which no predicate of that case reads; a test's own predicates fail on a placeholder, so a case that does not fill its variables fails its test.
 
 ## 5. Judged quantities
-Each test of §6 judges one quantity, named by its `quantities` line and defined by its `predicate` lines: an expression over the case's `final` capture and the inputs the case declares. The host evaluates them, and they alone decide the test (`docs/TESTS.md` requirement 9); the self-test writes no verdict of its own. Every snapshot variable is written by this node's self-test, which is the trust root for it (A6), and is `source: operation` by default. This suite has no `reported` and no `reference` variable, so no test carries a `reported` line.
+Each test of §6 judges one quantity, named by its `quantities` line and defined by its `predicate` lines: an expression over the case's `final` capture and the inputs the case declares. The host evaluates them, and they alone decide the test (`docs/TESTS.md` requirement 9); the self-test writes no verdict of its own. Every snapshot variable is written by this node's self-test, which is the trust root for it (A6).
 
 ## 6. Test definitions
 - `test_id`: `l0_numeric_roundtrip_pass`
