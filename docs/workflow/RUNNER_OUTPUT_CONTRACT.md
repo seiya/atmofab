@@ -157,5 +157,23 @@ to this document wherever this document is seeded whole.
   (the leading array index outermost, as the emitters write it), an empty array admitted. This
   grammar is not §4's: a number is spelled as the host's serializer spells it (`3`, `0.1`,
   `1e-30`), and no non-finite token occurs, because the host refuses a non-finite input.
-- The harness's reading operations are the only reader. `controlled_spec.md` §3.2 of the harness
-  states what `__read_case` refuses and when a getter stops the program.
+- The certified harness's reading operations are the only reader:
+  - `__parse_cases` keeps the spec path when it returns `ok = true`, and a call that returns
+    `ok = false` leaves the kept path as it is.
+  - `__read_case(case_id, ok)` reads the file of `case_id` from `case_inputs/` in the directory of
+    the kept path (no directory part: the current directory), the whole line whatever its length.
+    `ok = true` replaces the loaded case. `ok = false` loads none, so no value of an earlier case
+    remains readable: the file is absent, or it holds anything but the grammar above (a nested
+    object, a string, `true` / `false` / `null`, a non-finite token, a ragged array, an array deeper
+    than 4, a `\` in a key, a number that does not convert to a finite binary64 value), or no
+    `__parse_cases` has succeeded. It never stops the program.
+  - `__get_real(name)` reads any number token; `__get_int(name)` an integer token (no fraction, no
+    exponent) that fits the default integer; `__get_bool(name)` exactly the token `1` or `0`;
+    `__get_array_r1..r4(name, a)` allocates `a` to the array's extents, the leading array index the
+    outermost level. An empty array gives extent 0 at its level and every level below, so `[]`
+    reads at every rank and `[[],[]]` at rank 2 and above.
+  - A getter holds no default and takes no `ok`. With no case loaded, a name the case does not hold,
+    a scalar asked as an array or an array as a scalar, an array of another nesting depth, or a
+    token its type does not admit, it stops the program with a non-zero exit status. Do not call a
+    getter inside an output statement: a runtime can hold that unit's lock while the stop runs,
+    and the program then hangs instead of stopping.

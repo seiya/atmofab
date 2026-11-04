@@ -18,7 +18,8 @@ This suite verifies the published runner-plumbing operations of `harness_fortran
   - `l0_array_emit_pass`: `inputs.initial.a1 = [1, 2]`, `a2 = [[1, 2], [3, 4]]`, `a3 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]`, `a4` the same pattern over `1..16`, each written in the JSON nesting order the emitters produce (the leading array index outermost), and emitted as declared.
   - `l0_boolean_literal_pass`: `inputs.initial.bool_in_true = true`, `bool_in_false = false`.
 - The non-finite case (`l0_nonfinite_token_pass`) declares no sentinel input: the IR carries no non-finite number, so the four values it emits — a quiet NaN with the sign bit clear, a quiet NaN with the sign bit set, `+inf` and `-inf` — are produced at run time from the language's IEEE facility, never from a literal division a compiler may refuse to fold. It carries the same `grid` / `time` / `boundary` inputs as every other case; the plumbing aspect it verifies, `harness_fortran_cpu__emit_real` on a non-finite value, is selected by its `case_id`.
-- `l0_read_case_roundtrip_pass` declares the sentinels the host writes into its case file and the self-test reads back through `harness_fortran_cpu__read_case` and the getters: `inputs.initial.rc_real = 0.1`, `rc_whole = 2` (an integer token read as a real), `rc_int = -12`, `rc_true = true`, `rc_false = false` (written `1` and `0`), `rc_empty = []`, `rc_r1 = [-1.5, 1.0e-30, 1.0e+30]`, `rc_r2 = [[1, 2, 3], [4, 5, 6]]`, `rc_r3` of extents `[2,2,3]` holding `1..12` and `rc_r4` of extents `[2,2,2,3]` holding `1..24`, each in the JSON nesting order the emitters produce (the leading array index outermost). The extents differ so that a transposed or flattened read is a shape-pairing error.
+- `l0_read_case_roundtrip_pass` declares the sentinels the host writes into its case file and the self-test reads back through `harness_fortran_cpu__read_case` and the getters: `inputs.initial.rc_real = 0.30000000000000004` (a token of full length), `rc_whole = 2` (an integer token read as a real), `rc_int = -12`, `rc_true = true`, `rc_false = false` (written `1` and `0`), `rc_empty = []`, `rc_r1 = [-1.5, 1.0e-30, 1.0e+30]`, `rc_r2 = [[1, 2, 3], [4, 5, 6]]`, `rc_r3` of extents `[2,2,3]` holding `1..12` and `rc_r4` of extents `[2,2,2,3]` holding `1..24`, each in the JSON nesting order the emitters produce (the leading array index outermost). The extents differ so that a flattened read is a shape-pairing error; a getter and an emitter that share one wrong element order agree with each other, so `rc_e2`, `rc_e3` and `rc_e4` observe one element by its indices, which in the declared nesting holds `2`.
+- `l0_read_case_second_pass` declares other values under two of those names, so that a reader that kept an earlier case fails: `inputs.initial.rc_real = -0.7`, `rc_r1 = [2.5, -3.25, 0.125]`.
 - `l0_missing_case_file_xfail` declares no sentinel input: it calls `harness_fortran_cpu__read_case` with the id `l0_no_such_case_file`, which names no case, so no case file exists for it.
 - The abnormal case (`l0_missing_cases_xfail`) synthesizes an empty argv-token list (no `--cases`) and drives `harness_fortran_cpu__parse_cases` to exercise the guard.
 
@@ -26,7 +27,7 @@ This suite verifies the published runner-plumbing operations of `harness_fortran
 `N/A`: the harness self-test defines no time-stepping. Each case runs its named plumbing check once (`steps = 1`).
 
 ## 4. Case-expansion rules
-The suite defines nine `case`s and nine `test_id`s (no sweep). The self-test's own runner writes each case's snapshot once, after the case ran; it writes no `raw/state_snapshots/initial/<case_id>.json` (that capture is the host-rendered runner's), so every host-evaluated `predicate` of §6 reads `final.<var>` and the case's declared `inputs` only. Every test is **single-target**: it names exactly one case, and that case's `case_id` equals the `test_id` — the nine `case.test_case_set[].case_id` are exactly those nine `test_id`s. Each `case_id` selects the plumbing aspect that case verifies. The multi-case run itself is the fan-out evidence: each case writes exactly one `raw/state_snapshots/<case_id>.json`.
+The suite defines ten `case`s and ten `test_id`s (no sweep). The self-test's own runner writes each case's snapshot once, after the case ran; it writes no `raw/state_snapshots/initial/<case_id>.json` (that capture is the host-rendered runner's), so every host-evaluated `predicate` of §6 reads `final.<var>` and the case's declared `inputs` only. Every test is **single-target**: it names exactly one case, and that case's `case_id` equals the `test_id` — the ten `case.test_case_set[].case_id` are exactly those ten `test_id`s. Each `case_id` selects the plumbing aspect that case verifies. The multi-case run itself is the fan-out evidence: each case writes exactly one `raw/state_snapshots/<case_id>.json`.
 
 **Every snapshot holds every variable `controlled_spec.md` §2 declares**, plus the scalar time variable `t` (value `0.0`; a single `steps=1` step). A variable §2 lists under the case holds what the case computed; any other variable holds a shape-valid placeholder, `0.0` or an array of zeros of its declared shape, which no predicate of that case reads; a test's own predicates fail on a placeholder, so a case that does not fill its variables fails its test.
 
@@ -59,9 +60,9 @@ Each test of §6 judges one quantity, named by its `quantities` line and defined
   - `level`: `L0`
   - `operation_id`: `harness_fortran_cpu__write_snapshot`
   - `expected_outcome`: `pass`
-  - `judgment`: the case loop writes exactly one `raw/state_snapshots/<case_id>.json` per case (runtime-built name), each carrying every declared variable; `case_index` is this case's 1-based position in the case loop, so `1 <= case_index <= 9`.
+  - `judgment`: the case loop writes exactly one `raw/state_snapshots/<case_id>.json` per case (runtime-built name), each carrying every declared variable; `case_index` is this case's 1-based position in the case loop, so `1 <= case_index <= 10`.
   - `quantities`: `case_fanout`
-  - `predicate` (quantity `case_fanout`, `per_case: true`, two entries): `final.case_index >= 1.0` and `final.case_index <= 9.0`.
+  - `predicate` (quantity `case_fanout`, `per_case: true`, two entries): `final.case_index >= 1.0` and `final.case_index <= 10.0`.
 - `test_id`: `l0_perf_derived_pass`
   - `level`: `L0`
   - `operation_id`: `harness_fortran_cpu__write_perf`
@@ -88,9 +89,16 @@ Each test of §6 judges one quantity, named by its `quantities` line and defined
   - `level`: `L0`
   - `operation_id`: `harness_fortran_cpu__read_case`
   - `expected_outcome`: `pass`
-  - `judgment`: the sentinels of §2, read from the case file the host wrote through `harness_fortran_cpu__read_case` and the getters and emitted back, equal the declared inputs exactly (the emitters are lossless, so the comparison has no tolerance), in value and in shape; the two booleans read as true and false; the empty array reads with size 0.
+  - `judgment`: the sentinels of §2, read from the case file the host wrote through `harness_fortran_cpu__read_case` and the getters and emitted back, equal the declared inputs exactly (the emitters are lossless, so the comparison has no tolerance), in value and in shape; each indexed element is the one the nesting declares; the two booleans read as true and false; the empty array reads with size 0.
   - `quantities`: `read_case_roundtrip`
-  - `predicate` (quantity `read_case_roundtrip`, `per_case: true`, four entries): `max(abs(final.rc_real - inputs.initial.rc_real), abs(final.rc_whole - inputs.initial.rc_whole), abs(final.rc_int - inputs.initial.rc_int), maxabs(final.rc_r1 - inputs.initial.rc_r1), maxabs(final.rc_r2 - inputs.initial.rc_r2), maxabs(final.rc_r3 - inputs.initial.rc_r3), maxabs(final.rc_r4 - inputs.initial.rc_r4)) == 0.0`, `final.rc_true == 1.0`, `final.rc_false == 1.0` and `final.rc_empty_len == 0.0` (op `eq`).
+  - `predicate` (quantity `read_case_roundtrip`, `per_case: true`, five entries): `max(abs(final.rc_real - inputs.initial.rc_real), abs(final.rc_whole - inputs.initial.rc_whole), abs(final.rc_int - inputs.initial.rc_int), maxabs(final.rc_r1 - inputs.initial.rc_r1), maxabs(final.rc_r2 - inputs.initial.rc_r2), maxabs(final.rc_r3 - inputs.initial.rc_r3), maxabs(final.rc_r4 - inputs.initial.rc_r4)) == 0.0`, `max(abs(final.rc_e2 - 2.0), abs(final.rc_e3 - 2.0), abs(final.rc_e4 - 2.0)) == 0.0`, `final.rc_true == 1.0`, `final.rc_false == 1.0` and `final.rc_empty_read == 1.0` (op `eq`).
+- `test_id`: `l0_read_case_second_pass`
+  - `level`: `L0`
+  - `operation_id`: `harness_fortran_cpu__read_case`
+  - `expected_outcome`: `pass`
+  - `judgment`: a second case read after another one holds its own values: the sentinels of §2 equal the declared inputs exactly.
+  - `quantities`: `read_case_second`
+  - `predicate` (quantity `read_case_second`, `per_case: true`): `max(abs(final.rc_real - inputs.initial.rc_real), maxabs(final.rc_r1 - inputs.initial.rc_r1)) == 0.0` (op `eq`).
 - `test_id`: `l0_missing_case_file_xfail`
   - `level`: `L0`
   - `operation_id`: `harness_fortran_cpu__read_case`

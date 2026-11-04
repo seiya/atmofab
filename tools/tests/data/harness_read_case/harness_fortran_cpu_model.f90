@@ -1,8 +1,8 @@
 ! A hand-written realization of `harness_fortran_cpu@0.10.0` §2 / §3.2's reading operations
 ! (issue #589, PR-2): `__parse_cases` keeping the spec path, `__read_case` and the typed getters,
 ! with the module parameters they reference. It is a test fixture, not a certified source: it
-! shows the contract is implementable against what the host's case-file writer really produces,
-! and the driver rows of a later PR build against it. The certified harness model is generated.
+! shows the contract is implementable against what the host's case-file writer really produces.
+! The certified harness model is generated.
 module harness_fortran_cpu_model
   use, intrinsic :: iso_fortran_env, only: real64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -27,6 +27,7 @@ module harness_fortran_cpu_model
     logical :: integer_token = .false.
     integer :: integer_value = 0
     logical :: integer_fits = .false.
+    logical :: bool_token = .false.     ! exactly `1` or `0`
     real(dp), allocatable :: flat(:)    ! document order: the leading index outermost
   end type case_entry
 
@@ -111,11 +112,7 @@ contains
 
     k = found(name)
     if (entries(k)%depth /= 0) call refuse(name, 'an array asked as a scalar')
-    if (.not. entries(k)%integer_token) call refuse(name, 'neither of the tokens 1 and 0')
-    if (.not. entries(k)%integer_fits) call refuse(name, 'neither of the tokens 1 and 0')
-    if (entries(k)%integer_value /= 0 .and. entries(k)%integer_value /= 1) then
-      call refuse(name, 'neither of the tokens 1 and 0')
-    end if
+    if (.not. entries(k)%bool_token) call refuse(name, 'neither of the tokens 1 and 0')
     b = entries(k)%integer_value == 1
   end function harness_fortran_cpu__get_bool
 
@@ -315,8 +312,11 @@ contains
     integer, intent(inout) :: leaf_depth
     logical, intent(out) :: ok
     integer :: count
+    logical :: saw_array, saw_number
 
     ok = .false.
+    saw_array = .false.
+    saw_number = .false.
     if (level > max_depth) return
     if (.not. take(doc, at, '[')) return
     one%depth = max(one%depth, level)
@@ -327,12 +327,13 @@ contains
         call skip_blank(doc, at)
         if (at > len(doc)) return
         if (doc(at:at) == '[') then
+          if (saw_number) return
+          saw_array = .true.
           call parse_array(doc, at, level + 1, one, leaf_depth, ok)
         else
-          if (leaf_depth /= 0 .and. leaf_depth /= level) then
-            ok = .false.
-            return
-          end if
+          if (saw_array) return
+          saw_number = .true.
+          if (leaf_depth /= 0 .and. leaf_depth /= level) return
           leaf_depth = level
           call parse_number(doc, at, one, ok)
         end if
@@ -387,6 +388,7 @@ contains
     one%flat = [one%flat, value]
     if (one%depth == 0) then
       one%integer_token = integer_token
+      one%bool_token = doc(start:at - 1) == '1' .or. doc(start:at - 1) == '0'
       if (integer_token) then
         read (doc(start:at - 1), *, iostat=stat) one%integer_value
         one%integer_fits = stat == 0

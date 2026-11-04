@@ -4,12 +4,12 @@
 not a certified source. These rows pin that the contract the three specs state is implementable
 against the bytes `primary_evidence.write_case_inputs` really writes (`1e-30`, an integer token, a
 bool as `1`, `[]`), and the fail-closed half of that contract. They do not certify a harness: a
-generated reader is judged by its own self-test.
+generated reader is judged by its own self-test and by `generate.verify`.
 
-What is pinned on the specs themselves: the eight operations are on each §5 list, in each §5.1 and
-in each renderer's pin; the two tests are in each `tests.md`; the sentinels and the predicates of
-`tests.md` evaluate true on what the realization returns, with the predicates read from the
-document, so an edit to them moves this row.
+What is pinned on the specs themselves: the operations on each §5 list, in each §5.1 and in each
+renderer's pin; the reading text one across the three harnesses; the sentinels and predicates read
+from each `tests.md` and evaluated on what the realization returns; every sentinel judged by a term
+of the predicate, and none of the array sentinels holding an extent-1 axis.
 """
 from __future__ import annotations
 
@@ -35,13 +35,29 @@ NEW_OPERATIONS = ("read_case", "get_real", "get_int", "get_bool",
                   "get_array_r1", "get_array_r2", "get_array_r3", "get_array_r4")
 _HARNESS_DIR = ROOT / "spec" / "infrastructure" / "infra" / "harness"
 
-#: `tests.md` §2's sentinels of `l0_read_case_roundtrip_pass`, as a Compile leaf transcribes them.
-SENTINELS = {
-    "rc_real": 0.1, "rc_whole": 2, "rc_int": -12, "rc_true": True, "rc_false": False,
-    "rc_empty": [], "rc_r1": [-1.5, 1.0e-30, 1.0e+30], "rc_r2": [[1, 2, 3], [4, 5, 6]],
-    "rc_r3": np.arange(1, 13).reshape(2, 2, 3).tolist(),
-    "rc_r4": np.arange(1, 25).reshape(2, 2, 2, 3).tolist(),
-}
+
+def _tests_md(spec_id: str) -> str:
+    return (_HARNESS_DIR / spec_id / "tests.md").read_text(encoding="utf-8")
+
+
+def _sentinels(spec_id: str, case_id: str) -> dict:
+    """`tests.md` §2's sentinels of `case_id`, as a Compile leaf transcribes them."""
+    bullet = re.search(rf"^- `{case_id}` declares [^\n]*$", _tests_md(spec_id), re.M).group(0)
+    out = {name: yaml.safe_load(value) for name, value
+           in re.findall(r"`(?:inputs\.initial\.)?(rc_\w+) = ([^`]+)`", bullet)}
+    for name, extents, last in re.findall(
+            r"`(rc_\w+)` of extents `\[([0-9,]+)\]` holding `1\.\.(\d+)`", bullet):
+        shape = tuple(int(e) for e in extents.split(","))
+        out[name] = np.arange(1, int(last) + 1).reshape(shape).tolist()
+    return out
+
+
+def _predicates(spec_id: str, test_id: str) -> list[str]:
+    """The predicate expressions of `test_id` in `tests.md`, each `<expr> == <value>`."""
+    text = _tests_md(spec_id)
+    row = text[text.index(f"- `test_id`: `{test_id}`") + 1:]
+    row = row[:row.index("- `test_id`:")] if "- `test_id`:" in row else row
+    return re.findall(r"`((?:max\(|final\.)[^`]+ == [^`]+)`", re.search(r"`predicate`[^\n]*", row).group(0))
 
 
 def _section51(spec_id: str) -> dict:
@@ -67,50 +83,109 @@ class SpecSurfaceTests(unittest.TestCase):
                     self.assertEqual((out["intent"], out["rank"], out["spec"].get("alloc")),
                                      ("out", r, True))
 
-    def test_every_tests_document_has_both_tests_and_counts_them(self) -> None:
-        words = {"harness_fortran_cpu": ("nine", 9), "harness_cpp_gpu": ("ten", 10),
-                 "harness_fortran_cpu_mpi": ("fifteen", 15)}
+    def test_every_tests_document_has_the_tests_and_counts_them(self) -> None:
+        words = {"harness_fortran_cpu": ("ten", 10), "harness_cpp_gpu": ("eleven", 11),
+                 "harness_fortran_cpu_mpi": ("sixteen", 16)}
         for spec_id, (word, count) in words.items():
             with self.subTest(spec_id=spec_id):
-                text = (_HARNESS_DIR / spec_id / "tests.md").read_text(encoding="utf-8")
+                text = _tests_md(spec_id)
                 ids = re.findall(r"^- `test_id`: `([^`]+)`", text, re.M)
                 self.assertEqual(len(ids), count)
                 self.assertIn(f"The suite defines {word} `case`s and {word} `test_id`s", text)
                 self.assertIn(f"`final.case_index <= {count}.0`", text)
-                self.assertIn("l0_read_case_roundtrip_pass", ids)
-                self.assertIn("l0_missing_case_file_xfail", ids)
+                for test_id in ("l0_read_case_roundtrip_pass", "l0_read_case_second_pass",
+                                "l0_missing_case_file_xfail"):
+                    self.assertIn(test_id, ids)
 
     def test_the_reading_contract_is_one_text_across_the_three_harnesses(self) -> None:
-        """The case-file paragraph of §2 and the operation bullets of §3.2 are stated once per
-        harness and must not drift apart; only the harness's name, its stop spelling and the
-        distributed harness's one sentence on who reads differ."""
-        texts: dict[str, tuple[str, str]] = {}
-        for spec_id in HARNESSES:
+        """What each harness states of the reading operations and their tests must not drift
+        apart; only the harness's name, its stop spelling and the distributed harness's one
+        sentence on who reads differ."""
+        def spec_slices(spec_id: str) -> list[str]:
             text = (_HARNESS_DIR / spec_id / "controlled_spec.md").read_text(encoding="utf-8")
             paragraph = re.search(r"^Input \(to `__read_case`\):[^\n]*$", text, re.M).group(0)
-            bullets = re.search(rf"^- `{spec_id}__read_case\(.*?^- Each getter[^\n]*$", text,
-                                re.M | re.S).group(0)
             paragraph = paragraph.replace(
                 " Every rank reads the file itself: the reading is no collective operation and"
                 " it communicates nothing.", "")
-            bullets = bullets.replace(spec_id, "H")
-            bullets = re.sub(r"\(`(error stop|std::exit\(2\))`\)", "(STOP)", bullets)
-            texts[spec_id] = (paragraph, bullets)
-            self.assertIn("`__parse_cases` keeps it", text)
-            self.assertIn("keep the following token as the spec path", text)
-        self.assertEqual(len(set(texts.values())), 1, sorted(texts))
+            return [
+                paragraph,
+                re.search(r"^  - `l0_read_case_roundtrip_pass`: .*?^  - `l0_missing_case_file_xfail`[^\n]*$",
+                          text, re.M | re.S).group(0),
+                re.search(r"keep the following token as the spec path \([^)]*\)", text).group(0),
+                re.search(rf"^- `{spec_id}__read_case\(.*?^- Each getter[^\n]*$", text,
+                          re.M | re.S).group(0),
+                re.search(r"^The `l0_read_case_roundtrip_pass` case calls[^\n]*$", text, re.M).group(0),
+                re.search(r"^A case file that is absent or unreadable[^\n]*$", text, re.M).group(0),
+                re.search(r"^- A getter returns the value[^\n]*$", text, re.M).group(0),
+            ]
+
+        def tests_slices(spec_id: str) -> list[str]:
+            text = _tests_md(spec_id)
+            start = text.index("- `l0_read_case_roundtrip_pass` declares")
+            tests = text[text.index("- `test_id`: `l0_read_case_roundtrip_pass`"):]
+            return [text[start:text.index("- The abnormal case", start)],
+                    tests[:tests.index("## 7.")]]
+
+        def normal(spec_id: str) -> tuple[str, ...]:
+            out = []
+            for piece in spec_slices(spec_id) + tests_slices(spec_id):
+                piece = piece.replace(spec_id, "H")
+                out.append(re.sub(r"\(`(error stop|std::exit\(2\))`\)", "(STOP)", piece))
+            return tuple(out)
+
+        reference = normal(HARNESSES[0])
+        for spec_id in HARNESSES[1:]:
+            for mine, theirs in zip(normal(spec_id), reference):
+                with self.subTest(spec_id=spec_id, slice=theirs[:40]):
+                    self.assertEqual(mine, theirs)
 
     def test_section_2_declares_each_sentinel_array_at_its_tests_md_shape(self) -> None:
         for spec_id in HARNESSES:
             text = (_HARNESS_DIR / spec_id / "controlled_spec.md").read_text(encoding="utf-8")
+            sentinels = _sentinels(spec_id, "l0_read_case_roundtrip_pass")
             for name in ("rc_r1", "rc_r2", "rc_r3", "rc_r4"):
                 with self.subTest(spec_id=spec_id, name=name):
                     declared = re.search(rf"`{name}` \(`\[([0-9,]+)\]`\)", text).group(1)
-                    self.assertEqual(tuple(int(e) for e in declared.split(",")),
-                                     np.array(SENTINELS[name]).shape)
+                    shape = np.array(sentinels[name]).shape
+                    self.assertEqual(tuple(int(e) for e in declared.split(",")), shape)
                     # `maxabs` refuses an extent-1 axis, so a sentinel with one fails a correct
                     # harness (measured on `[2,1,2,3]`).
-                    self.assertNotIn(1, np.array(SENTINELS[name]).shape)
+                    self.assertNotIn(1, shape)
+                    if len(shape) > 1:
+                        self.assertGreater(len(set(shape)), 1, "extents that differ")
+
+    def test_every_sentinel_is_judged_by_a_term_of_the_predicate(self) -> None:
+        for spec_id in HARNESSES:
+            with self.subTest(spec_id=spec_id):
+                sentinels = _sentinels(spec_id, "l0_read_case_roundtrip_pass")
+                self.assertEqual(set(sentinels), {
+                    "rc_real", "rc_whole", "rc_int", "rc_true", "rc_false", "rc_empty",
+                    "rc_r1", "rc_r2", "rc_r3", "rc_r4"})
+                predicates = " ; ".join(_predicates(spec_id, "l0_read_case_roundtrip_pass"))
+                for name in sentinels:
+                    if name == "rc_empty":
+                        self.assertIn("final.rc_empty_read == 1.0", predicates)
+                    elif name in ("rc_true", "rc_false"):
+                        self.assertIn(f"final.{name} == 1.0", predicates)
+                    elif name in ("rc_real", "rc_whole", "rc_int"):
+                        self.assertIn(f"abs(final.{name} - inputs.initial.{name})", predicates)
+                    else:
+                        self.assertIn(f"maxabs(final.{name} - inputs.initial.{name})", predicates)
+                for name in ("rc_e2", "rc_e3", "rc_e4"):
+                    self.assertIn(f"abs(final.{name} - 2.0)", predicates)
+                second = " ; ".join(_predicates(spec_id, "l0_read_case_second_pass"))
+                declared = _sentinels(spec_id, "l0_read_case_second_pass")
+                self.assertEqual(set(declared), {"rc_real", "rc_r1"})
+                self.assertIn("abs(final.rc_real - inputs.initial.rc_real)", second)
+                self.assertIn("maxabs(final.rc_r1 - inputs.initial.rc_r1)", second)
+                # the second case differs from the first in every value it declares
+                self.assertNotEqual(declared["rc_real"], sentinels["rc_real"])
+                self.assertTrue(all(a != b for a, b in zip(declared["rc_r1"], sentinels["rc_r1"])))
+
+    def test_the_number_sentinel_holds_a_token_of_full_length(self) -> None:
+        for spec_id in HARNESSES:
+            token = repr(_sentinels(spec_id, "l0_read_case_roundtrip_pass")["rc_real"])
+            self.assertGreaterEqual(len(token), 17, "a token short enough for a narrow buffer")
 
     def test_the_fortran_pins_carry_the_operations_under_each_harness_name(self) -> None:
         for spec_id, pin in fortran_runner._HARNESS_PINS.items():
@@ -131,6 +206,10 @@ class SpecSurfaceTests(unittest.TestCase):
             self.assertIn(f"atmofab::Array<dp, {r}>& a", rendered)
 
 
+SENTINELS = _sentinels("harness_fortran_cpu", "l0_read_case_roundtrip_pass")
+SECOND = _sentinels("harness_fortran_cpu", "l0_read_case_second_pass")
+
+
 class ReaderAgainstTheHostWriterTests(unittest.TestCase):
     """The realization, built with the compiler the serial target uses, over `write_case_inputs`."""
 
@@ -149,6 +228,7 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
         cls.spec.write_text("# the reader does not open this file\n", encoding="utf-8")
         ir = {"case": {"test_case_set": [
             {"case_id": "c1", "inputs": {"initial": SENTINELS, "note": "skipped string"}},
+            {"case_id": "second", "inputs": {"initial": SECOND}},
             {"case_id": "c2", "inputs": {"initial": {"only_here": 5.0}}},
             {"case_id": "c3", "inputs": {}},
         ]}}
@@ -190,19 +270,58 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
             flat = np.array([float(t) for t in lines[at + 1].split()])
             arrays[name] = flat.reshape(extents, order="F")   # printed in array element order
             at += 2
-        final = {**scalar, **arrays, "rc_empty_len": 0.0}
-        tests = (_HARNESS_DIR / "harness_fortran_cpu" / "tests.md").read_text(encoding="utf-8")
-        row = tests[tests.index("- `test_id`: `l0_read_case_roundtrip_pass`"):]
-        row = row[:row.index("- `test_id`: `l0_missing_case_file_xfail`")]
-        predicate = re.search(r"`predicate`[^\n]*", row).group(0)
-        expressions = re.findall(r"`((?:max\(|final\.)[^`]+)`", predicate)
-        self.assertEqual(len(expressions), 4)
+        final = {**scalar, **arrays, "rc_empty_read": 1.0, "rc_e2": float(arrays["rc_r2"][0, 1]),
+                 "rc_e3": float(arrays["rc_r3"][0, 0, 1]),
+                 "rc_e4": float(arrays["rc_r4"][0, 0, 0, 1])}
+        expressions = _predicates("harness_fortran_cpu", "l0_read_case_roundtrip_pass")
+        self.assertEqual(len(expressions), 5)
         env = pe.CaseEnv(case_id="c1", initial=None, final=final,
                          inputs={"initial": SENTINELS}, coordinates={})
         for expression in expressions:
             with self.subTest(expression=expression[:40]):
                 left, right = expression.rsplit(" == ", 1)
                 self.assertEqual(float(pe.evaluate(pe.parse_expr(left), env)), float(right))
+
+    def test_a_second_case_read_after_the_first_holds_its_own_values(self) -> None:
+        K = "inputs.initial."
+        res = self._run("read:c1", f"real:{K}rc_real", "read:second", f"real:{K}rc_real",
+                        f"r1:{K}rc_r1")
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        lines = res.stdout.splitlines()
+        env = pe.CaseEnv(case_id="second", initial=None, inputs={"initial": SECOND}, coordinates={},
+                         final={"rc_real": float(lines[3].split()[-1]),
+                                "rc_r1": np.array([float(v) for v in lines[5].split()])})
+        expressions = _predicates("harness_fortran_cpu", "l0_read_case_second_pass")
+        self.assertEqual(len(expressions), 1)
+        left, right = expressions[0].rsplit(" == ", 1)
+        self.assertEqual(float(pe.evaluate(pe.parse_expr(left), env)), float(right))
+        self.assertNotEqual(float(lines[1].split()[-1]), float(lines[3].split()[-1]))
+
+    def test_a_placeholder_does_not_satisfy_the_tests(self) -> None:
+        """`tests.md` §4: a case that does not fill its variables fails its test."""
+        for test_id in ("l0_read_case_roundtrip_pass", "l0_read_case_second_pass",
+                        "l0_missing_case_file_xfail"):
+            sentinels = {"l0_read_case_roundtrip_pass": SENTINELS,
+                         "l0_read_case_second_pass": SECOND}.get(test_id, {})
+            final = {name: np.zeros(np.array(value).shape) for name, value in SENTINELS.items()
+                     if isinstance(value, list) and value}
+            final.update({name: 0.0 for name in (
+                "rc_real", "rc_whole", "rc_int", "rc_true", "rc_false", "rc_empty_read",
+                "rc_e2", "rc_e3", "rc_e4", "read_refused")})
+            env = pe.CaseEnv(case_id="x", initial=None, final=final,
+                             inputs={"initial": sentinels}, coordinates={})
+            text = _tests_md("harness_fortran_cpu")
+            row = text[text.index(f"- `test_id`: `{test_id}`") + 1:]
+            found = re.search(r"`final\.read_refused == 1\.0`", row[:row.index("## 7.")])
+            expressions = (["final.read_refused == 1.0"] if test_id.endswith("xfail") and found
+                           else _predicates("harness_fortran_cpu", test_id))
+            self.assertTrue(expressions)
+            verdicts = []
+            for expression in expressions:
+                left, right = expression.rsplit(" == ", 1)
+                verdicts.append(float(pe.evaluate(pe.parse_expr(left), env)) == float(right))
+            with self.subTest(test_id=test_id):
+                self.assertFalse(all(verdicts))
 
     def test_the_arrays_keep_the_leading_index_outermost(self) -> None:
         K = "inputs.initial."
@@ -249,7 +368,8 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
                 ("depth above the rank", f"read:c1|r1:{K}rc_r2", "nesting depth"),
                 ("fraction as an int", f"read:c1|int:{K}rc_real", "integer token"),
                 ("a real as a bool", f"read:c1|bool:{K}rc_real", "tokens 1 and 0"),
-                ("two as a bool", f"read:c1|bool:{K}rc_whole", "tokens 1 and 0")):
+                ("two as a bool", f"read:c1|bool:{K}rc_whole", "tokens 1 and 0"),
+                ("a negative as a bool", f"read:c1|bool:{K}rc_int", "tokens 1 and 0")):
             with self.subTest(label):
                 res = self._run(*command.split("|"))
                 self.assertNotEqual(res.returncode, 0, res.stdout)
@@ -261,6 +381,14 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("integer token", res.stdout)
 
+    def test_only_the_exact_tokens_read_as_a_bool(self) -> None:
+        self._write_case("bools", '{"neg":-0,"whole":1.0,"exp":1e0,"big":99999999999}\n')
+        for name in ("neg", "whole", "exp", "big"):
+            with self.subTest(name):
+                res = self._run("read:bools", f"bool:{name}")
+                self.assertNotEqual(res.returncode, 0, res.stdout)
+                self.assertIn("tokens 1 and 0", res.stdout)
+
     def test_a_document_outside_the_grammar_is_refused_by_read_case(self) -> None:
         for label, text in (
                 ("not an object", "[1]"), ("truncated", '{"a":1'), ("empty file", ""),
@@ -270,6 +398,7 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
                 ("ragged", '{"a":[[1,2],[3]]}'), ("ragged empty", '{"a":[[1],[]]}'),
                 ("mixed depth", '{"a":[1,[2]]}'), ("mixed depth reversed", '{"a":[[1],2]}'),
                 ("depth five", '{"a":[[[[[1]]]]]}'), ("escape", '{"a\\"b":1}'),
+                ("escape that closes no string", '{"a\\nb":1}'), ("number beside empty", '{"a":[[],2]}'),
                 ("overflow", '{"a":1e999}'), ("leading zero", '{"a":01}'), ("bare dot", '{"a":.5}'),
                 ("trailing dot", '{"a":1.}'), ("plus sign", '{"a":+1}'), ("trailing text", '{"a":1} x'),
                 ("trailing comma", '{"a":1,}')):
