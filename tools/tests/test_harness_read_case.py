@@ -8,8 +8,9 @@ generated reader is judged by its own self-test and by `generate.verify`.
 
 What is pinned on the specs themselves: the operations on each §5 list, in each §5.1 and in each
 renderer's pin; the reading text one across the three harnesses; the sentinels and predicates read
-from each `tests.md` and evaluated on what the realization returns; every sentinel judged by a term
-of the predicate, and none of the array sentinels holding an extent-1 axis.
+from each `tests.md`, those of `harness_fortran_cpu` evaluated on what the realization returns (the
+other two documents are held equal to it); every sentinel judged by a term of the predicate, and
+none of the array sentinels holding an extent-1 axis.
 """
 from __future__ import annotations
 

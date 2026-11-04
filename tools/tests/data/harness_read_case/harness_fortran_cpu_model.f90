@@ -2,7 +2,8 @@
 ! (issue #589, PR-2): `__parse_cases` keeping the spec path, `__read_case` and the typed getters,
 ! with the module parameters they reference. It is a test fixture, not a certified source: it
 ! shows the contract is implementable against what the host's case-file writer really produces.
-! The certified harness model is generated.
+! The certified harness model is generated. It holds no writer and no emitter, and its reader is
+! superlinear in the file's size, so a timing measured over it says nothing of a generated one.
 module harness_fortran_cpu_model
   use, intrinsic :: iso_fortran_env, only: real64
   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
