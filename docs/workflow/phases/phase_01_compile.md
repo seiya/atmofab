@@ -147,8 +147,9 @@ io_contract:
     # nothing writes, `derived.*` and `inputs.*` value nothing the kernel produced, and an entry that reads only
     # them is refused — a SYNTACTIC rule, under which a read that sits only inside a term multiplied by a literal
     # zero, raised to a literal zero or subtracted from itself or added to its own negation (spelled the same) is
-    # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483); gate (l)'s fixed form
-    # (§`drive` below) is exempt from it.
+    # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483); gate (l)'s closure
+    # (§`drive` below) is exempt from it — only on a `loop` node, on a `pass` test, with the accepted ref, one
+    # per test: the same text on an `xfail` test or with another ref reads no kernel fact and is refused.
     # whether the value depends on the state in any other way, and is the test's own quantity, is V3's judgment. On an `expected_outcome: xfail`
     # test the entries state, in the failure direction, what the guard leaves behind (the state did not advance,
     # the depth is the initial depth, `final.guard_pass == 0`), and must hold for the test to certify `xfail`; the

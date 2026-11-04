@@ -474,13 +474,19 @@ class StateReads(NamedTuple):
     """Which capture reads value the kernel's state (grammar 6, issue #589): ``final`` — the
     variables whose `final.<v>` counts (those an operation writes, every logical result
     included), ``initial`` — those whose `initial.<v>` counts (those `init` writes). `history.*`
-    and `series.*` always count. ``loop`` — the IR declares `drive.loop`, so gate (l)'s
-    zero-step closure `final.step - <ref>` is exempt from the reads-a-capture rule
-    (`is_zero_step_closure`). Built by `state_reads`; a plain ``set`` of names in its place is
-    the pre-drive rule (both points, every listed variable), which an IR with no `drive` keeps."""
+    and `series.*` always count. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
+    `<ref>`s gate (l) accepts in `final.step - <ref>` (`_zero_step_refs`: the counterpart of
+    `loop.n_step`; None while gate (e) refuses `loop.n_step` itself — the IR is refused there,
+    and any ref is then exempt so the refusal is not restated per predicate); ``closure_tests`` — the `test_id`s of the `expected_outcome: pass` tests gate
+    (l) asks the closure of. Together they say which predicate IS gate (l)'s closure, the one
+    exempt from the reads-a-capture rule (`is_zero_step_closure`). Built by `state_reads`; a
+    plain ``set`` of names in its place is the pre-drive rule (both points, every listed
+    variable), which an IR with no `drive` keeps."""
     final: frozenset[str]
     initial: frozenset[str]
     loop: bool = False
+    closure_refs: frozenset[str] | None = frozenset()
+    closure_tests: frozenset[str] = frozenset()
 
 
 def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str]) -> bool:
@@ -525,11 +531,18 @@ def zero_step_closure_ref(pred: Any) -> str | None:
 
 
 def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str]) -> bool:
-    """Whether ``pred`` is gate (l)'s zero-step closure on a node whose `drive` declares a
-    `loop` — gate-required, and exempt from the reads-a-capture rule (it reads the driver's
-    `final.step`, which no kernel writes)."""
-    return isinstance(state, StateReads) and state.loop \
-        and zero_step_closure_ref(pred) is not None
+    """Whether ``pred`` IS gate (l)'s zero-step closure — gate-required, and exempt from the
+    reads-a-capture rule (it reads the driver's `final.step`, which no kernel writes): the node
+    declares `loop`, the predicate's test is a `pass` test (``state.closure_tests``), and its
+    `<ref>` is the accepted counterpart of `loop.n_step` (``state.closure_refs``). The same
+    text on an `xfail` test, or with another ref, reads no kernel fact and is refused like any
+    other predicate (review round 1, R1-9). The schema gate and the evaluator both ask this."""
+    if not isinstance(state, StateReads) or not state.loop or not isinstance(pred, dict):
+        return False
+    test_id = pred.get("test_id")
+    ref = zero_step_closure_ref(pred)
+    return isinstance(test_id, str) and test_id.strip() in state.closure_tests \
+        and ref is not None and (state.closure_refs is None or ref in state.closure_refs)
 
 
 def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]],
@@ -2695,8 +2708,18 @@ def state_reads(ir: dict[str, Any]) -> StateReads:
     variable at both capture points when it carries none (an `infrastructure` node)."""
     if _has_drive(ir):
         model = drive_model(ir)
-        return StateReads(final=model.written, initial=model.init_written,
-                          loop=model.block.loop is not None)
+        loop = model.block.loop
+        if loop is None:
+            return StateReads(final=model.written, initial=model.init_written)
+        passing = frozenset(
+            t["test_id"].strip() for t in _test_entries(ir)
+            if str(t.get("expected_outcome") or "").strip().lower() == "pass")
+        n_step = loop.get("n_step")
+        refused = n_step is not None and n_step.kind == _STATE_ROOT and (
+            n_step.ref not in model.init_written or model.variables.get(n_step.ref) != [])
+        return StateReads(final=model.written, initial=model.init_written, loop=True,
+                          closure_refs=None if refused else frozenset(_zero_step_refs(n_step)),
+                          closure_tests=passing)
     schema = snapshot_schema(ir)
     names = frozenset(schema_variables(schema)) if schema is not None else frozenset()
     return StateReads(final=names, initial=names, loop=False)

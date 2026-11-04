@@ -2692,7 +2692,9 @@ class StateReadsTest(unittest.TestCase):
     def test_the_classes_decide_both_capture_points(self) -> None:
         toy, toyi = _toy(), _toyi()
         self.assertEqual(pe.state_reads(toy),
-                         pe.StateReads(frozenset({"h", "ok"}), frozenset(), True))
+                         pe.StateReads(frozenset({"h", "ok"}), frozenset(), True,
+                                       frozenset({"derived.n_step"}), frozenset({"t_run"})))
+        self.assertEqual(pe.state_reads(toyi)[3], frozenset({"initial.n_plan", "final.n_plan"}))
         # initial.<host var> is the host's own initial_state read back: no read
         self.assertFalse(self._reads("sum(initial.h)", toy))
         self.assertTrue(self._reads("sum(final.h)", toy))
@@ -2749,9 +2751,14 @@ class StateReadsTest(unittest.TestCase):
         v = pe.validate_primary_predicate_schema([closure, second], **kw)
         self.assertEqual(len(v), 1)
         self.assertTrue(v[0].startswith("predicates[1]: reads no captured state"), v)
+        # R1-9: the closure of a test that is not one of the IR's `pass` tests is not exempt
         other_test = {**closure, "test_id": "t_other"}
-        self.assertEqual(pe.validate_primary_predicate_schema(
-            [closure, other_test], **{**kw, "test_ids": ["t_run", "t_other"]}), [])
+        v = pe.validate_primary_predicate_schema(
+            [closure, other_test], **{**kw, "test_ids": ["t_run", "t_other"]})
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith("predicates[1]: reads no captured state"), v)
+        reads2 = reads._replace(closure_tests=reads.closure_tests | {"t_other"})
+        self.assertTrue(pe.is_zero_step_closure(other_test, reads2))
 
     def test_the_evaluator_exempts_one_closure_per_test_too(self) -> None:
         run = _RunDir()
@@ -2770,6 +2777,67 @@ class StateReadsTest(unittest.TestCase):
                 pe.evaluate_primary_predicates(ir, run.root)
         finally:
             run.cleanup()
+
+
+class ClosureExemptionTest(unittest.TestCase):
+    """R1-9: the reads-a-capture exemption belongs to the predicate that IS gate (l)'s
+    accepted closure — a loop node, a `pass` test, the ref the counterpart of `loop.n_step` —
+    and both exemption sites (the schema gate, the evaluator) ask the same `state_reads`."""
+
+    _MSG = "predicates[1]: reads no captured state"
+
+    def _ir(self, *, outcome: str, ref: str) -> dict:
+        ir = _toy()
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["z"] = 10
+        ir["io_contract"]["tests"][0]["expected_outcome"] = outcome
+        ir["io_contract"]["predicates"][1]["expr"] = f"final.step - {ref}"
+        return ir
+
+    def _schema(self, ir: dict) -> list[str]:
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        return pe.validate_primary_predicate_schema(
+            io["predicates"], case_ids=set(cases), test_ids=["t_run"],
+            schema=pe.snapshot_schema(ir), cases=cases, **pe.predicate_schema_context(ir))
+
+    def _evaluate(self, ir: dict) -> list[dict]:
+        run = _RunDir()
+        try:
+            for cid, n in (("a", 4), ("b", 8)):
+                h = [1.0] * n
+                run.write(cid, initial={"h": h, "ok": 0.0, "t": 0.0, "step": 0},
+                          final={"h": h, "ok": 1.0, "t": 1.0, "step": 10})
+            return pe.evaluate_primary_predicates(ir, run.root)
+        finally:
+            run.cleanup()
+
+    def test_an_xfail_test_s_step_count_form_is_not_exempt(self) -> None:
+        for ref in ("derived.z", "derived.n_step"):
+            with self.subTest(ref=ref):
+                ir = self._ir(outcome="xfail", ref=ref)
+                self.assertEqual(pe.drive_violations(ir, kind="problem"), [])  # (l): pass only
+                v = self._schema(ir)
+                self.assertEqual(len(v), 1, v)
+                self.assertTrue(v[0].startswith(self._MSG), v)
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                            r"predicates\[1\]: reads no captured state"):
+                    self._evaluate(ir)
+
+    def test_a_pass_test_s_accepted_closure_is_exempt(self) -> None:
+        ir = self._ir(outcome="pass", ref="derived.n_step")
+        self.assertEqual(self._schema(ir), [])
+        self.assertEqual([r["kind"] for r in self._evaluate(ir)], ["pass", "pass"])
+
+    def test_a_pass_test_s_closure_with_a_wrong_ref_is_not_exempt(self) -> None:
+        ir = self._ir(outcome="pass", ref="derived.z")
+        self.assertTrue([m for m in pe.drive_violations(ir, kind="problem")
+                         if m.startswith("(l) test 't_run'")])
+        v = self._schema(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith(self._MSG), v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"predicates\[1\]: reads no captured state"):
+            self._evaluate(ir)
 
 
 class LazyLoaderTest(unittest.TestCase):
