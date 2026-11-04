@@ -3013,6 +3013,24 @@ class ClosureExemptionTest(unittest.TestCase):
                 self.assertLess(len(window), 2000, "the window runs past the statement")
                 self.assertIn(token, window)
 
+    def test_the_evaluator_refuses_an_entry_that_reads_no_state_past_the_gate(self) -> None:
+        """R4-2: `evaluate_primary_predicates` refuses, by its OWN whole-entry message, an
+        entry the schema gate would refuse and that reaches it anyway (an IR the gate never
+        saw) — not only by the per-case refusal that follows it, whose message shares the
+        `reads no captured state` head."""
+        ir = self._ir(outcome="pass", ref="derived.n_step")
+        ir["io_contract"]["predicates"].append(
+            {**ir["io_contract"]["predicates"][0], "expr": "derived.n_step + inputs.grid.nx",
+             "op": "ge", "value": 0})
+        v = self._schema(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith("predicates[2]: reads no captured state"), v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, re.escape(
+                "predicates[2]: reads no captured state the kernel produced (final.<written "
+                "var>, initial.<var init writes>, history.<written var>, series.<written "
+                "var>_min|_max) in expr or a bind expr reaches") + r"\Z"):
+            self._evaluate(ir)
+
     def test_a_pass_test_s_closure_with_a_wrong_ref_is_not_exempt(self) -> None:
         ir = self._ir(outcome="pass", ref="derived.z")
         self.assertTrue([m for m in pe.drive_violations(ir, kind="problem")
