@@ -824,7 +824,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-27 (issue #589, PR-3): `phase_01_compile.md` states the zero extent of a guard
     # case, a dims token naming a scalar `derived` value and the one-cell reduction, and
     # `docs/TESTS.md` the extent guards and the host-rendered tendency.
-    "compile-docs-27": "a831fda646695bad43b3a214d365bbdfdf423b7aa79d5bafbc717fde08cbeba7",
+    "compile-docs-27": "e2f6af75c30ef32ce2a57293ef55abe728b2f7613efd528c7bde25980a068390",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1720,7 +1720,7 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-15": "4f68805600577b99bbac3d4640cde317f8337726ae3e1a1bc57b77dffc3e14bb",
     # execute-16 (issue #589, PR-3): `write_case_inputs` admits a zero extent on a case only `xfail`
     # tests target, and a dims token naming a scalar `derived` value.
-    "execute-16": "8be4edcf92670f1542c5c8f2439375e1d1b8e61f0652ddaf0135033f99fe7fb3",
+    "execute-16": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -1909,7 +1909,7 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-14": "6cb03ad825ada03b6ace831882eb6bce4a6c27563e78160bb93a8f7b124323e3",
     # verdict-15 (issue #589, PR-3): a one-cell state reduces, and a driver capture with no cell
     # loads; the post-execute gate admits the same capture.
-    "verdict-15": "1c7ddda4888f70f15cd0ab68293f7c91e14c3fc2957fbd22648a0e6320825dd4",
+    "verdict-15": "1929577324c3948284fae07a3568ecf1814f88bbb18c2f4c25caf4f74af80d36",
 }
 
 

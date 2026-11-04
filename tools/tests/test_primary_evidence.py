@@ -421,7 +421,7 @@ class EvaluationTest(unittest.TestCase):
         one = np.array([[3.0]])
         run.write_state("c", one, one)
         ir = _ir([{"test_id": "t", "quantity": "q", "target_cases": ["c"], "per_case": True,
-                   "expr": "max(abs(final.h)) + norm2(final.h) + sum(final.h)",
+                   "expr": "max(abs(final.h)) + norm2(final.h) + sum(final.h) + mean(final.h) - 3.0",
                    "op": "eq", "value": 9.0}], cases=[_case("c")])
         [rec] = pe.evaluate_primary_predicates(ir, run.root)
         self.assertEqual(rec["kind"], "pass", rec)
@@ -4565,7 +4565,16 @@ class DriveViolationsTest(unittest.TestCase):
         self.assertEqual([v for v in self._v(ir) if "(c)" in v], [])
         for case in ir["case"]["test_case_set"]:
             del case["derived"]["n_total"]
-        self.assertTrue(any("neither a rank-0 dummy" in v for v in self._v(ir)), self._v(ir))
+        self.assertTrue(any("nor a scalar derived value" in v for v in self._v(ir)), self._v(ir))
+
+    def test_a_dims_token_names_a_dummy_and_never_a_derived_value(self) -> None:   # (c)
+        """§5.1's `dims` are the operation's own: a name no dummy carries is refused beside a
+        `derived` value of that name, so a typo in §5.1 stops at Compile."""
+        ir = _toy()
+        next(a for a in self._sig(ir, "toy__step") if a["name"] == "h")["dims"] = ["n_typo"]
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["n_typo"] = "inputs.grid.nx"
+        self.assertTrue(any("which is not a rank-0 dummy" in v for v in self._v(ir)), self._v(ir))
 
     def _zero_nx(self) -> dict:
         ir = _toy()
@@ -4608,7 +4617,7 @@ class DriveViolationsTest(unittest.TestCase):
                 variable["shape_expr"] = "[n_total]"
         for case in ir["case"]["test_case_set"]:
             case["derived"]["n_total"] = "x"
-        self.assertTrue(any("neither a rank-0 dummy" in v for v in self._v(ir)), self._v(ir))
+        self.assertTrue(any("nor a scalar derived value" in v for v in self._v(ir)), self._v(ir))
 
     def test_a_derived_array_cannot_bind_a_rank_0_dummy(self) -> None:   # (c)
         ir = _toy()

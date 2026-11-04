@@ -94,7 +94,7 @@ Names, and where each resolves:
   state a rank-2 `[nx, ny]` capture never pairs with one). The state's shape is the
   one shape every captured array of the state's rank has; when those disagree the
   coordinate keeps extent 1 on the other axes, and a reduction over such a field is refused
-  until it is paired with a state array.
+  until it is paired with a state array, unless the case captured an array of that very shape.
 - ``at('<case_id>').initial.<var>`` / ``at('<case_id>').final.<var>``,
   ``at('<case_id>').inputs.<a>.<b>``, ``at('<case_id>').<coordinate name>`` — the same three
   kinds of value read in another case of the SAME predicate's `target_cases` (a cross-case
@@ -1326,8 +1326,8 @@ def _reducible(name: str, value: Any, srank: int | None = None,
     if len(shape) >= 2 and 1 in state_axes and tuple(state_axes) not in captured_shapes:
         raise PrimaryEvidenceError(
             f"{name}(): reduction over a field of shape {list(shape)} with an extent-1 axis "
-            "(a coordinate the host could not expand to the state's shape, or a state with "
-            "an axis of extent 1); pair it with a state array first")
+            "(a coordinate the host could not expand to the state's shape, or an array of "
+            "another case read through at()); pair it with a state array first")
     return value
 
 
@@ -3059,20 +3059,22 @@ def _rank0_extent(entry: DriveEntry, name: str, token: str, inputs: Any,
 
 
 def _extent(token: str, entry: DriveEntry, inputs: Any, derived: dict[str, Any],
-            what: str) -> int:
+            what: str, *, shape_expr: bool = False) -> int:
     """One dimension token evaluated under ``entry``'s bindings (gate (c)): an integer
-    literal, a rank-0 dummy of the operation bound to `inputs.*`, `derived.*` or a number, a
-    scalar `derived.<name>` (the extent of a dims-less dummy with a ghost width, whose
-    `shape_expr` cannot spell `nx + 2*ng`: `spec/schema/ir/shape_expr.schema.json`), and
-    `+ - *` / unary minus between them. The extent is an integer >= 0."""
+    literal, a rank-0 dummy of the operation bound to `inputs.*`, `derived.*` or a number, and
+    `+ - *` / unary minus between them; in a ``shape_expr`` token also a scalar `derived.<name>`
+    (the extent of a dims-less dummy with a ghost width, which a `shape_expr` cannot spell as
+    `nx + 2*ng`: `spec/schema/ir/shape_expr.schema.json`). §5.1's `dims` name dummies alone. The
+    extent is an integer >= 0."""
     def name_value(name: str) -> int:
         dummy = entry.dummy(name)
-        if dummy is None and name in derived and np.ndim(derived[name]) == 0:
+        if shape_expr and dummy is None and name in derived and np.ndim(derived[name]) == 0:
             return _integral(float(derived[name]), f"{what}: derived.{name}")
         if dummy is None or _dummy_rank(dummy) != 0:
+            also = " nor a scalar derived value" if shape_expr else ""
             raise PrimaryEvidenceError(
-                f"{what}: dims token {token!r} names {name!r}, which is neither a rank-0 "
-                f"dummy of {entry.operation} nor a scalar derived value")
+                f"{what}: dims token {token!r} names {name!r}, which is not a rank-0 "
+                f"dummy of {entry.operation}{also}")
         return _rank0_extent(entry, name, token, inputs, derived, what)
 
     return _extent_by(token, name_value, what)
@@ -3107,7 +3109,7 @@ def _unbound_extent(token: str, entries: list[DriveEntry], inputs: Any,
 
 def _extent_by(token: str, name_value: Callable[[str], int], what: str) -> int:
     """A dims / `shape_expr` token: an integer literal, a name ``name_value`` resolves, and
-    `+ - *` / unary minus between them; an integer >= 0 (`_refuse_zero_extent` asks the rest)."""
+    `+ - *` / unary minus between them; an integer >= 0 (`_evaluate_case` admits a 0 only on a case only `xfail` tests target)."""
     try:
         tree = ast.parse(token.strip(), mode="eval")
     except SyntaxError:
@@ -3146,7 +3148,8 @@ def _dummy_extents(entry: DriveEntry, dummy: dict[str, Any], tokens: list[str] |
             raise PrimaryEvidenceError(
                 f"{what}: the array dummy has no dims, and what it is bound to has no "
                 "shape_expr to evaluate instead")
-        dims = tokens
+        return tuple(_extent(str(t), entry, inputs, derived, what, shape_expr=True)
+                     for t in tokens)
     return tuple(_extent(str(t), entry, inputs, derived, what) for t in dims)
 
 
