@@ -4,7 +4,8 @@
 > document from disk; the rules it states reach the `generate.generate` leaf through the CUDA
 > C++ prompt fragments (`tools/prompt_templates/backends/language/cuda_cpp/`), the static-lint
 > rule set the linter backend renders (`tools/backends/linter/nvcc/lint.py`
-> `lint_rules_document`), and `docs/backends/language/cuda_cpp/CHECKS_ABI.md` §5. It is the
+> `lint_rules_document`), and §Legality and gate guards below, which the host seeds into the
+> `harness`-shape producer's work tree as `gate_guards.md`. It is the
 > canonical checklist behind them (`docs/workflow/phases/phase_02_generate.md` §2-1 states the
 > language-neutral rules and points here).
 
@@ -12,8 +13,8 @@
 
 The CUDA C++ backend serves every node of a `cpp_gpu`-style target: the `infrastructure` harness,
 whose leaf authors the model and the runner, and the `component` / `problem` nodes, whose leaf
-authors the model and the checks source while the host renders the runner and the checks header
-over the certified harness (`tools/backends/language/cuda_cpp/runner.py`, issue #289 R4-b PR-6).
+authors the model while the host renders the driver over the certified harness
+(`tools/backends/language/cuda_cpp/runner.py`, issue #589).
 
 ## 1. Lint idioms
 
@@ -24,7 +25,7 @@ over the certified harness (`tools/backends/language/cuda_cpp/runner.py`, issue 
 - Only `#include` and `#pragma unroll`: every other directive, `_Pragma`, `##` and every digraph
   is refused by the static check, and so are a `<...>` include of anything but a standard library
   header or `cuda_runtime.h`, a reserved identifier other than the CUDA keywords, and a
-  backslash at the end of a line (`CHECKS_ABI.md` §5).
+  backslash at the end of a line (§Legality and gate guards).
 
 ## 2. The syntax stage
 
@@ -40,7 +41,7 @@ refuses (typically a `toolchain.standard` or `hardware.architecture` it does not
 transport `fail_closed`. A passing stage is followed by the model-alone probe
 (`docs/workflow/phases/phase_02_generate.md`, issue #389): `<spec_id>_model.cu` and
 `<spec_id>_model.cuh` with the closure alone, which is what a consumer is staged. A model that
-includes another file of its `src/` — the checks header, or a `helper` `.cu` — fails it. It
+includes another file of its `src/` — a `helper` `.cu` — fails it. It
 checks syntax only, so a model that declares a function a `helper` `.cu` defines passes it and
 fails only at the dependent's link.
 
@@ -50,7 +51,7 @@ fails only at the dependent's link.
   `<spec_id>_model.cuh` and defines the published operations in `namespace <spec_id>_model`
   (`BUNDLE_BINDING.md` §1).
 - The runner includes the same header; on a physics node it is host-rendered and includes the
-  harness's header and `<spec_id>_checks.cuh` (`CHECKS_ABI.md` §1).
+  harness's header.
 - A consumer model uses each direct dependency the way the build links it
   (`source.validate_dependency_operations`): it includes the dependency's host-rendered
   `"<dep>_model.cuh"` (the host copies it into `src/` at Generate start and stages it into the
@@ -61,15 +62,13 @@ fails only at the dependent's link.
   `component`, `BUNDLE_BINDING.md` §2) may be called from inside a kernel the consumer defines, one
   element at a time, on views into device storage: that is a dependency call like any other, and
   the dataflow gate follows it through the kernel's launch (§5).
-- A `problem` node's header declares nothing of its operation (its IR has no signatures), so its
-  checks source declares the operation itself, in namespace `<spec_id>_model`, with exactly the
-  model's definition types; another spelling is refused (`checks_harness_isolation_violations`)
-  before it would be a link error at Build. The reopened namespace is not listed in the checks
-  file's `modules` (`BUNDLE_BINDING.md` §1); the producer fragment says so since `pure-63`.
-- Neither the model nor the checks source includes or names the harness, and the checks source
-  does no file I/O; no leaf source — the model and every helper included — names a file stream
-  or stream buffer, a file opener, renamer or deleter, a command runner, an exit handler
-  registration or `asm`, called or not (`CHECKS_ABI.md` §4); the runner ends with `std::_Exit`.
+- A `problem` node's header declares its `public_api` surface like any other node's, so its
+  model defines `<spec_id>__step` (and `<spec_id>__init`) against that declaration.
+- No leaf source — the model and every helper included — includes or names the harness, or names
+  a file stream or stream buffer, a file opener, renamer or deleter, a command runner, an exit
+  handler registration, `asm` or a language linkage, called or not, or holds a string literal
+  naming a file only the host writes (`source.model_harness_isolation_violations`, the producer's
+  `runner_consumer` fragment); the runner ends with `std::_Exit`.
 
 ## 4. The parallel presence floor
 
@@ -85,11 +84,10 @@ holds to the binding (the producer and the reviewer are both told). The device t
 consumers whose kernels call it.
 
 A failed CUDA call is a failure of the operation: it stops computing and returns without the
-result — a device buffer it keeps across calls (§6) stays allocated — and a checks callback still
-assigns its `out` arguments. It is not reported through the
-IR's input guard, whose formula is the IR's, over the inputs, and the runner does not read
-`case_run`'s `ok` (`runner.py`) — so whether a case's checks notice the missing result depends on
-what its outputs held, and the device trace below is what holds the rule. A host fallback — a path that recomputes a kernel's
+result — a device buffer it keeps across calls (§6) stays allocated. It is not reported through the
+IR's input guard, whose formula is the IR's, over the inputs, so whether a case's predicates notice
+the missing result depends on what its outputs held, and the device trace below is what holds the
+rule. A host fallback — a path that recomputes a kernel's
 result on the host when an allocation, copy, launch or synchronize fails — is forbidden: it makes a
 run whose kernels never executed produce correct-looking state. The producer is told (rule
 `target_lowering_floor`), `generate.verify` holds it (checklist G6), and `Validate.execute` reads
@@ -104,8 +102,7 @@ sends every case the run covers to the host (a size threshold above them) — is
 to fail (G6). A loop of the model source the plan keeps on the host is the plan's claim, held
 like a declared `none`: its reason must be about the loop itself (a carried dependence, a
 reduction, a copy that only reshapes host state), not about a gate or a run in which a kernel did
-not execute. How a loop of the checks module is lowered is not G6's to judge (issue #400); the rules above
-that hold for the checks module, the ban on a host fallback among them, still do. The
+not execute. The
 producer is told the same, and told that a kernel the trace never saw is launched where the cases
 reach it, in blocks of the run's `atmofab::launch_block_size` threads (§7) with a grid computed from
 it, and removed only when its work is not needed, never moved to a host loop (issue #307 PR-3).
@@ -186,33 +183,11 @@ value is one more output, whether or not its `return` names anything.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
-- **Checks reach (every M3c node, not `problem` only; issue #314).** The `Generate.gate` static
-  check refuses a `<spec_id>_checks.cu` whose `case_run` reaches no published operation of the
-  model (`source.checks_model_reach_violations`; the rule is
-  `docs/workflow/CHECKS_MODULE_CONTRACT.md` §1). The published set is every `<spec_id>__*` the
-  model DEFINES in `namespace <spec_id>_model`; an empty set is refused. From the `case_run` of
-  `namespace <spec_id>_checks`, every identifier of a defined function's body (comments,
-  literals and directives blanked, `using` declarations dropped) that names a function the
-  checks source defines is followed, and a published operation QUALIFIED by
-  `<spec_id>_model::` (or a `namespace md = <spec_id>_model;` alias) is a reach — a
-  `<<<...>>>` launch, a call split over lines, a call inside a lambda in a body, an operation
-  taken by address. In the checks source and every other leaf source but the model, the
-  operation's name appears only that way, or as the checks source's declaration in
-  `namespace <spec_id>_model`: a local lambda, functor, variable, member or template of that
-  name, and an unqualified call after a `using`, are refused. NOT followed, so an operation reached only
-  through one is refused — call it from a namespace-scope function instead: a namespace-scope
-  lambda variable, a struct member function, a template function, a macro. A call only from
-  `case_setup` does not count (its capture is the INITIAL state). Also refused: a checks-side
-  definition of a function named as a published operation, in any namespace (on a `problem`
-  node the checks source DECLARES it in `namespace <spec_id>_model` and never defines it). Same-named
-  functions merge (a call to either follows both). The
-  refusal reads `case_run reaches no published operation of the model`. It is a reach claim: a
-  dead or guarded call passes it and is `Generate.verify`'s.
 
 ## 6. The allocation and transfer default
 
-State residency is `host`: a published operation takes and returns host memory (`CHECKS_ABI.md`
-§3), so the copies at an operation's boundary are the contract's own cost. What this section
+State residency is `host`: a published operation takes and returns host memory, the host arrays
+the driver owns, so the copies at an operation's boundary are the contract's own cost. What this section
 shapes is what happens inside an operation: allocation per call, transfer of data the device
 already holds, and launches per element. The producer's default is three points.
 
@@ -306,8 +281,8 @@ compared across every other block size the profile names (its certified one and 
 `accelerator_mapping` is how the work maps onto blocks and grid, not the threads per block.
 
 The `Generate.gate` static check holds a necessary condition of B.1
-(`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every model source and
-the checks source of a `component` / `problem` node, whatever the plan and the loop count): a
+(`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every model source of a
+`component` / `problem` node, whatever the plan and the loop count): a
 source whose code launches a kernel (`<<<`) and never names `atmofab::launch_block_size` is
 refused, and so is a source that writes it through its qualified name (an assignment, compound or
 plain, or an increment; a local, parameter or member that merely shares the name is not refused,
@@ -319,3 +294,94 @@ expression a pattern over the source does not evaluate, and that launch is G6's.
 records is the block size the harness reports (`perf.json#parallelism.block_size`), which the
 `post_execute` gate compares with each shape's; it says the harness read the variable, not that
 every kernel used it.
+
+## Legality and gate guards
+
+This section applies to every leaf-authored CUDA C++ source of any `Generate` node (the model,
+and the hand-authored runner of an `infrastructure` node's self-test).
+
+- **The host declares the published surface; the model DEFINES it.** Before the gates run, the
+  host renders `<spec_id>_model.cuh` beside the sources from the IR's `public_api`: inside
+  `namespace <spec_id>_model` it declares every module parameter (`using dp = double;`,
+  `inline constexpr int case_id_len = 64;`), every published type as a `struct`, every
+  `interfaces` entry as a function-pointer alias, and every published operation's declaration;
+  it also defines the array view `atmofab::View`. The model source `<spec_id>_model.cu` begins
+  with `#include "<spec_id>_model.cuh"` and, inside `namespace <spec_id>_model { ... }`, gives
+  each published operation a body with EXACTLY the declared return type, parameter types and
+  parameter names, in order. It declares no published type, alias, module parameter or
+  operation of its own: a second declaration of a type is a compile error, and a definition
+  whose parameter types differ from the declaration is a different overload, which the
+  deterministic §5.1 check refuses (and a caller would not link against).
+- **The lowering the header uses**, so each definition can be written to match (`K` is the kind
+  symbol, e.g. `dp`, or the default `float` / `int` / `bool`):
+
+  | §5.1 argument | `intent(in)` | `intent(out)` / `inout` |
+  |---|---|---|
+  | `real` / `integer` / `logical`, rank 0 | `K name` | `K& name` |
+  | the same, rank R ≥ 1 | `atmofab::View<const K, R> name` | `atmofab::View<K, R> name` |
+  | the same, `alloc: true` | `const O& name` | `O& name` |
+  | `string`, rank 0 | `const std::string& name` | `std::string& name` |
+  | `derived T`, rank 0 | `const T& name` | `T& name` |
+  | `string` / `derived X`, rank R ≥ 1 | `const O& name` | `O& name` |
+  | `procedure` naming entry `P` | `P name` | — |
+
+  `O` is the OWNING container of the element type: `std::vector<X>` at rank 1, the header's
+  `atmofab::Array<X, R>` (members `std::vector<X> data` and `long extent[R]`, column-major) at
+  rank R ≥ 2. A `subroutine` returns `void`; a `function` returns its result's type
+  (`std::string` for a string, `T` for a derived type, `O` for an array). A component is the
+  scalar type or `O`. A string's `len` and an argument's `dims` are not part of the C++ type.
+- **The array view.** `atmofab::View<T, R>` has public members `T* data` and `long extent[R]`;
+  the element at 0-based indices `(i1, ..., iR)` is
+  `data[i1 + extent[0] * (i2 + extent[1] * (... + extent[R-2] * iR))]` — column-major, the first
+  index fastest. It does not own its data.
+- **Separate compilation.** Every `.cu` is compiled on its own and the objects are linked; the
+  runner reaches the model's surface through `#include "<spec_id>_model.cuh"` and defines
+  `int main(int argc, char** argv)`. Never `#include` a `.cu` file: the model would then be
+  defined in two objects, which fails at link. Every `.cu` sits at the top level of the source
+  directory, beside the header; one in a subdirectory is refused by the static check.
+- **Published operations are callable from the host.** A pointwise operation of a `component`
+  (`BUNDLE_BINDING.md` §2: every argument a scalar or a fixed-extent view) is
+  `__host__ __device__` as its header declares, defined with that pair, with a body that is legal
+  in device code (no standard-library container or string, no allocation, no exception, no I/O)
+  and that launches nothing, so a consumer's kernel may call it. Every other published operation carries
+  no `__global__`, `__device__` or vendor attribute: its device work sits in kernels it launches;
+  a kernel is internal, and its name does not start with `<spec_id>__`.
+- **Every warning is an error.** The deterministic `Generate.gate` lint check compiles each
+  source with the host compiler's `-Wall -Wextra -Werror` and `--Werror all-warnings`
+  (`tools/backends/linter/nvcc/lint.py`), under `-std=c++17`. An unused parameter, an unused
+  variable, and a comparison between signed and unsigned integers are therefore failures. Every
+  source is compiled as relocatable device code (`-rdc=true`, as the build compiles it), so a
+  kernel over the device's shared-memory limit is refused at Build's link step rather than by
+  this check.
+- **Intentionally-unused parameters.** When an interface FIXES a parameter the body never reads
+  (a name the §5.1 signature pins), the parameter keeps its name and the body opens with
+  `(void)<name>;`. A parameter no interface fixes — in a helper the leaf itself declared — is
+  deleted from the signature and from every call site instead. An unused local variable is not
+  declared at all.
+- **Only two preprocessor directives.** A leaf-authored source uses `#include "<file>"` /
+  `#include <header>` and `#pragma unroll [<argument>]` (in device code only: the host compiler
+  reports it unknown in a host function, which fails the lint), and no other directive — no `#define`, no
+  `#if` / `#ifdef` / `#endif`, no other `#pragma` (in particular no diagnostic pragma), no line
+  marker — and no `_Pragma` / `__pragma` operator, no `##` and no digraph. Three more rules
+  close the same door from the other side:
+  - `#include <...>` names a C++17 standard library header or `cuda_runtime.h` only
+    (`STANDARD_HEADERS`); a bundle or host file is included with `"..."`.
+  - No identifier reserved to the implementation — one starting with `_` and a capital letter,
+    or with `__` — except the CUDA keywords `__global__`, `__device__`, `__host__`, `__shared__`,
+    `__constant__`, `__managed__`, `__restrict__`, `__launch_bounds__`, `__forceinline__`,
+    `__noinline__`, `__syncthreads`, `__syncwarp` and `__func__`
+    (`RESERVED_IDENTIFIERS_ALLOWED`). The toolchain's headers define macros under reserved names
+    that expand to a diagnostic pragma, the runtime header the driver includes into every source
+    among them.
+  - No backslash at the end of a line, in a comment or a literal included: a continued comment
+    is read one way by the compiler and another by the static check.
+
+  The deterministic `Generate.gate` static check refuses each by presence
+  (`tools/backends/language/cuda_cpp/source.py` `preprocessor_violations`): a suppression pragma
+  would switch the lint off, and a macro or a conditional would make the §5.1 check read another
+  program than the compiler builds. The host-rendered header is not a leaf source and is not
+  held to this.
+- **The syntax stage compiles for the target.** The `Generate.gate` syntax check runs
+  `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -rdc=true -c` over
+  every `.cu` of the source directory, each on its own, with the host-rendered header staged
+  beside them (`tools/backends/compiler/nvcc/syntax.py`).

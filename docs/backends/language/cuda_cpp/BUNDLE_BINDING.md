@@ -27,26 +27,22 @@
   was computed (the key itself binds the member's published surface, which the header renders)
   (`workflow_conductor._write_dependency_headers`); Build stages the same bytes beside each
   member's source in the object directory (`_stage_dependency_sources`), which is on the include
-  path. On a physics node the host also renders `<spec_id>_checks.cuh`, the declarations of the
-  checks ABI and the bound state the leaf's `<spec_id>_checks.cu` defines (`CHECKS_ABI.md` §1).
+  path.
   No object of one source is a prerequisite of another's compile (`source.source_module_deps`
   states no edge). The rendered control file does not name the header as a prerequisite either:
   Build compiles into a fresh object directory, and the header is rewritten with every accepted
   bundle.
 - **`modules`.** A module is a C++ namespace. The model file declares the namespace
   `<spec_id>_model`, which holds its whole published surface; a consumer names a published
-  symbol as `<spec_id>_model::<name>`. A `problem` node's checks source reopens `<spec_id>_model`
-  only to declare the operation (`GENERATE_RULES.md` §3); that extent defines nothing, and the
-  checks file's `modules` lists `<spec_id>_checks` and not `<spec_id>_model` — `validate_bundle`
-  refuses a namespace two files list (issue #384).
+  symbol as `<spec_id>_model::<name>`. `validate_bundle` refuses a namespace two files list
+  (issue #384).
 - **Host-given names.** The host names a node's model source `<spec_id>_model.cu`, its header
-  `<spec_id>_model.cuh`, its checks source `<spec_id>_checks.cu` and its runner
-  `<spec_id>_runner.cu` (`model_basename` / `header.basename` / `checks_basename` /
-  `runner_basename`).
+  `<spec_id>_model.cuh` and its runner `<spec_id>_runner.cu` (`model_basename` / `header.basename`
+  / `runner_basename`).
 - **Identifiers.** An identifier is 1-1024 characters starting with a letter
   (`IDENTIFIER_MAX`, `IDENTIFIER_PATTERN`). C++ identifiers are case-sensitive, so
-  `identifier_key` is the name itself: the contract compares a CUDA C++ file's namespaces,
-  symbols and bound storage names exactly, and the §5.1 pin compares case-sensitively. The
+  `identifier_key` is the name itself: the contract compares a CUDA C++ file's namespaces and
+  symbols exactly, and the §5.1 pin compares case-sensitively. The
   neutral vocabulary refuses two names that differ only in case for another reason — the rule
   every language agrees on (`tools/structured_signatures.py`).
 
@@ -76,7 +72,7 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
   result is a rank-0 `real` / `integer` / `logical` (`signatures.is_pointwise`). A string, a
   derived value, a procedure argument, an allocatable array or an extent that is a symbol
   (`nx`) makes an operation not pointwise. Only a `component` takes the pair
-  (`signatures.DEVICE_CALLABLE_SPEC_KINDS`): a `problem` is called by its harness, and an
+  (`signatures.DEVICE_CALLABLE_SPEC_KINDS`): a `problem` is called by the host-rendered driver, and an
   `infrastructure` node's operations are host I/O. The node kind is the host's own identity for
   the node (its `node_key`) when the header is rendered, and the certified IR's `meta.spec_kind` at
   the pin, which Compile holds to the node's own kind. Whether a consumer calls the operation from
@@ -101,7 +97,7 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
   gate renders every §5.1 in every language that declares `signatures`, so a §5.1 using one of
   these fails Compile.
 - **`atmofab::View<T, R>`** is the array view every rendered header defines, once per
-  translation unit (`header.VIEW_DEFINITION`; its layout is `CHECKS_ABI.md` §5).
+  translation unit (`header.VIEW_DEFINITION`; its layout is `GENERATE_RULES.md` §Legality and gate guards).
 
 ## 3. The pin on a generated source
 
@@ -119,7 +115,7 @@ it; a `__device__`-only definition compares equal, and the compiler merges it wi
 declaration, so it stays callable from the host — and every other operation neither — the expected
 header is rendered from §5.1 with the node's kind, not read off the header beside the source. No
 function may carry a prototype's name, and every module parameter must be
-declared once. Every leaf source is also held to the preprocessor allowlist of `CHECKS_ABI.md` §5,
+declared once. Every leaf source is also held to the preprocessor allowlist of `GENERATE_RULES.md` §Legality and gate guards,
 so the text the pin reads is the program the compiler builds.
 
 ## 4. Build graph

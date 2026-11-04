@@ -35,7 +35,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 ### phase sequence
 0. `Spec` (manual): create `controlled_spec.md`, `tests.md`, and `deps.yaml`.
 1. `Compile`: integrate the natural-language specification + dependency resolution into a **single structural IR** (`spec.ir.yaml`).
-2. `Generate`: take the IR as input and generate the source of `model` and `runner`. (On an M3c physics node — a non-`infrastructure` node whose target toolchain the host renders a runner for; the runner is glue over the target's harness — the leaf authors `model` + the `<spec_id>_checks` source (the file names are the language's `bundle_facts`; for `fortran`, [BUNDLE_BINDING.md](../backends/language/fortran/BUNDLE_BINDING.md) §1) and the `runner` is host-rendered by the conductor; see phase_02 §2-1.)
+2. `Generate`: take the IR as input and generate the source of `model` and `runner`. (On an M3c physics node — a non-`infrastructure` node whose target toolchain the host renders a runner for; the runner is glue over the target's harness — the leaf authors `model` alone (the file name is the language's `bundle_facts`; for `fortran`, [BUNDLE_BINDING.md](../backends/language/fortran/BUNDLE_BINDING.md) §1) and the `runner` is host-rendered by the conductor as the node's driver; see phase_02 §2-1.)
 3. `Build`: deterministically turn the generated source into a binary with a standard build tool.
 4. `Validate`: run the binary, evaluate the IR's predicates over the captures, and finalize the `verdict`.
 
@@ -162,7 +162,9 @@ workspace/
               quality_check.json
               raw/
                 state_snapshots/
-                  initial/          # a host-rendered runner's capture right after case_setup, per case
+                  initial/          # a host-rendered runner's capture before the first call, per case
+                  history/          # a host-rendered runner's samples on a loop node, <case_id>__<k>.json
+                  series/           # a host-rendered runner's per-step extrema on a loop node, per case
               verdict.json
               aggregate_verdict.json
               summary.json

@@ -12,9 +12,9 @@
 
 > **Scope note (R1/M3c-β → M3d).** On an *M3c node* (a physics node of a target the host
 > authors the build control file and renders the runner for, over that target's harness) the
-> `runner` is **host-rendered** — the leaf authors the model and the checks module (see
-> `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly; the host authors the
-> verdict. A rendered runner calls no writer but the snapshot and performance ones.
+> `runner` is **host-rendered**, the **driver** — the leaf authors the model alone, the harness
+> owns the JSON assembly, and the host authors the verdict. A rendered runner calls no writer but
+> the snapshot and performance ones. What it does per case is §3, and what it reads is §6.
 > Since M3d this doc is **not for a physics `Generate` leaf** (it authors no runner). It
 > governs the runner-authoring one — the `infrastructure` self-test — and
 > `Validate.judge`. Both get it (issue #169) as the seed `runner_output_contract.md`: whole,
@@ -40,12 +40,18 @@ gate, which mandatorily verifies `walltime_sec` / `throughput_cells_per_sec` /
 
 - `case_id`: string
 - `target`: `cpu|gpu|...`
-- `walltime_sec`: elapsed wall-clock seconds of the case executions: from
-  before the first case to after the last, the work `steps` / `cells_updated`
-  count, final before `write_perf` is called. The run-wide writers and a
-  self-test's re-parse of its own `perf.json` are outside it.
-- `steps`: number of execution steps
-- `cells_updated`: total updated cells (`nx*ny*nz*steps` etc.)
+- `walltime_sec`: elapsed wall-clock seconds, final before `write_perf` is called.
+  - On a host-rendered driver it is the sum over the calls of the `step` operation alone: reading a
+    case, allocating, `init`, the captures, the series fold and the samples are outside it. A run
+    whose calls measure no positive time writes `1.0e-9`.
+  - On a hand-authored runner it is the case executions: from before the first case to after the
+    last, the work `steps` / `cells_updated` count. The run-wide writers and a self-test's re-parse
+    of its own `perf.json` are outside it.
+- `steps`: number of execution steps. On a host-rendered driver, the sum over the cases of the
+  committed steps.
+- `cells_updated`: total updated cells (`nx*ny*nz*steps` etc.). On a host-rendered driver, the sum
+  over the cases of the committed steps times the cell count of the case's largest state array,
+  saturating at the default integer's largest value. No gate reads `steps` or `cells_updated`.
 - `throughput_cells_per_sec`: `cells_updated / walltime_sec`
 - `parallelism` (required object): `mpi_ranks` / `threads_per_rank` /
   `gpu_devices` / `parallel_degree_total`
@@ -91,15 +97,38 @@ source; do not uniformly require a fixed minimal composition.
   When `required_evidence` does not declare `state_snapshots` as required,
   `raw/state_snapshots/` must not be required.
 - **`raw/state_snapshots/initial/<case_id>.json`** (host-rendered runners only) — the
-  glue the host renders for an M3c physics node writes a SECOND capture of each case,
-  taken right after `case_setup` and before `case_run`, under `initial/`, of exactly the
-  per-case shape above (Z6, issue #255). It is a deliverable of that runner and is
+  driver the host renders for an M3c physics node writes a SECOND capture of each case,
+  before the first call of `step`, after `init`, under `initial/`, of exactly the per-case
+  shape above (Z6, issue #255). It is a deliverable of that runner and is
   shape-checked like the final snapshot. A hand-authored runner (a harness self-test)
   does not write it, and nothing requires it to. The host pre-creates
   `raw/state_snapshots/` in the run directory of every runner, and
-  `raw/state_snapshots/initial/` only for a host-rendered one, so a hand-authored
-  runner's run directory `raw/state_snapshots/` holds exactly the files it writes
+  `raw/state_snapshots/initial/`, `history/` and `series/` only for a host-rendered one, so a
+  hand-authored runner's run directory `raw/state_snapshots/` holds exactly the files it writes
   ([issue #368](https://github.com/seiya/atmofab/issues/368)).
+- **`raw/state_snapshots/history/<case_id>__<k>.json`** (a host-rendered runner on a node whose
+  `drive` declares `loop`, when the IR requires `state_history`) — a sample of the full state at
+  committed step `<k>`, every `every` committed steps (`every` = 0: none), of the per-case shape
+  above.
+- **`raw/state_snapshots/series/<case_id>.json`** (the same node, when the IR requires
+  `step_series`) — exactly the names the IR's `step_series` entry declares, `step`, `<v>_min` and
+  `<v>_max` of every array state, each a list with one entry per committed step, all of one length,
+  and the writer's scalar `t`, the time of the last committed state. `t` is not a series name. The
+  driver folds the extrema over the committed state and carries a non-finite committed cell into
+  the entry as `NaN`, and the host's series reader refuses such an entry.
+
+**What the driver captures.** A capture of a host-rendered driver holds every state variable, `step`
+and the writer's scalar `t`. Per case the driver reads the case through `__read_case` and the getters
+(§6), allocates each state and fills it from the case's `initial_state`, and calls `init` if `drive`
+declares one on the state itself; a false `init` result leaves the case with both captures written
+and no step. It then writes the initial capture. On a node whose `drive` declares `loop` it calls
+`step` up to `n_step` times through work copies: an `inout` dummy receives a copy of the state and every `out`
+array a NaN-filled work array. A true result commits the call: the state is copied back, `step`
+advances, `t = t_start + step * dt`, a series entry is appended and a sample is written every `every`
+steps. A false result ends the loop on the last committed state. Without `loop` it makes ONE call on the
+state itself, each `out` starting at its `initial_state` content, and `step` becomes 1 only on a true
+result. After every call each logical `out` is written into its state as 1 or 0. It then writes the
+final capture and, on a `loop` node, the series file; after the last case, `__write_perf`.
 
 ## 4. JSON serialization (UTF-8)
 
@@ -146,7 +175,8 @@ to this document wherever this document is seeded whole.
 
 - The host evaluates each case's inputs and writes the result to
   `case_inputs/<case_id>.json` beside `spec.ir.yaml`, before the program runs, for every
-  case of the IR. The `runner` opens this file through the certified harness's `__read_case`
+  case of the IR: at every `Validate.execute`, and in a `workshop leaf`'s `run` operation beside
+  the IR the host seeded in its tree. The `runner` opens this file through the certified harness's `__read_case`
   and reads each value through the typed getters; it parses neither the file nor
   `spec.ir.yaml` itself.
 - The file is one flat JSON object on one line of any length, with sorted keys. A key is

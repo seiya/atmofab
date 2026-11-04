@@ -4,6 +4,11 @@
 > No leaf reads this document: a producer is told these rules by the `mpi` prompt fragments
 > (`tools/prompt_templates/backends/parallel/mpi/`), and a physics source is held to them by the
 > code named below. Issue #316 (R4-c PR-4).
+>
+> **A physics node on this target is refused at preflight** (`driver_distributed_pending`,
+> `docs/ORCHESTRATION.md`) until the distributed driver lands. The rules below hold the
+> distribution that driver will take; where a rule names a run of a physics node it is not
+> reachable today.
 
 ## 1. How a kernel is distributed
 
@@ -25,19 +30,12 @@ distributed harness under a backend with no launcher (`target_profile._process_m
   and the four reductions.
 - A `component`'s published operations are called by every consumer on that consumer's own
   rank's block, so they compute exactly what the spec says over the arrays they are handed and
-  name no harness operation; the component distributes its own cases in its checks module
-  (`case_setup` partitions and allocates the block, `case_run` exchanges the halo and calls the
-  unmodified operation). A `problem` drives its components the same way (issue #512 PR-4a's
+  name no harness operation. A `problem` drives its components the same way (issue #512 PR-4a's
   closing run: components that partitioned inside their operations made the problem wrong on
   every grid with `p1 > 1`).
-- The host-rendered runner starts and ends the runtime, gathers every partitioned bound array
-  onto rank 0 at each capture point, sums the ranks' updated-cell counts, and calls the writers
-  on rank 0 only. Which arrays are partitioned, and how, is the checks module's partition
-  metadata (`docs/backends/language/fortran/CHECKS_ABI.md` §1-c).
-- A `source: reported` scalar (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-b) is the whole-domain
-  reduction: the capture writes rank 0's copy of a bound scalar, so the kernel reduces it with
-  `<harness>__reduce_max` / `__reduce_min` (on `fortran_cpu_mpi`,
-  `harness_fortran_cpu_mpi__reduce_max` / `__reduce_min`) before the operation returns.
+- The distributed driver starts and ends the runtime, gathers every partitioned array onto rank 0
+  at each capture point, sums the ranks' updated-cell counts, and calls the writers on rank 0 only.
+  How it learns which arrays are partitioned is the distributed driver's to state.
 - A bundle that distributes its state declares `target_lowering_plan.state_residency:
   distributed`, `distributed_state@2` among its `capability_requirements`, and says how in the
   plan's `parallelization` (`"model": "mpi"`) and `decomposition` members.
@@ -46,11 +44,11 @@ distributed harness under a backend with no launcher (`target_profile._process_m
 
 | gate | refused | code |
 |---|---|---|
-| `Generate.gate` static check, the presence floor (`component` / `problem` only) | a model or checks source that reaches the library directly: a `use` of `mpi` / `mpi_f08`, an `include` of `mpif.h`, a call of or reference to a name that starts with `mpi_` — whatever the plan says; on a `component`, a MODEL source that names any harness operation, whatever the plan says (issue #512: consumers call a component's operations on their own block) | `tools/backends/parallel/mpi/directives.py` |
-| same, unless the plan's `parallelization` model explicitly names `none` or another model | a plan whose `state_residency` is not `distributed`; sources with no statement (or one-line logical `if`) calling the target harness's `<harness>__partition` or `<harness>__exchange_halo_r1` / `_r2` by that name (a leaf's own `<spec_id>__partition` is not one); a checks module that sets no bound array's `sb_<var>_axis1` / `sb_<var>_axis2` to anything but a literal `0` | same |
-| `Generate.gate` static check, the checks-source gate | a physics `use` of the harness module without `only:`, or naming a harness name other than the distributed-state operations for a physics source; a bound array's partition metadata left unpublished | `tools/validate_pipeline_semantics._validate_checks_source_files`, with the renderer's `physics_harness_uses` / `distributed_state_names` |
-| bundle acceptance | the same unpublished metadata, before anything is written; a `distributed` residency without `distributed_state@N` | `tools/codegen_bundle.pure_bundle_contract_violation` |
-| the run | a bound array whose `sb_<var>_axis1` or `sb_<var>_axis2` is outside `0` to its rank, or not allocated at a capture point (the runner); contributed blocks that do not tile the global array, or the same non-zero axis in both slots (the harness's gather); an `ATMOFAB_PROCESS_GRID` that is malformed or does not multiply to the rank count (the harness's start); a gathered shape other than the IR's `shape_expr` (the post-execute snapshot gate) | the rendered runner, the harness, `validate_pipeline_semantics` |
+| `Generate.gate` static check, the presence floor (`component` / `problem` only) | a source that reaches the library directly: a `use` of `mpi` / `mpi_f08`, an `include` of `mpif.h`, a call of or reference to a name that starts with `mpi_` — whatever the plan says; on a `component`, a MODEL source that names any harness operation, whatever the plan says (issue #512: consumers call a component's operations on their own block) | `tools/backends/parallel/mpi/directives.py` |
+| same, unless the plan's `parallelization` model explicitly names `none` or another model | a plan whose `state_residency` is not `distributed`; sources with no statement (or one-line logical `if`) calling the target harness's `<harness>__partition` or `<harness>__exchange_halo_r1` / `_r2` by that name (a leaf's own `<spec_id>__partition` is not one) | same |
+| `Generate.gate` static check, the source-isolation gate | a physics `use` of the harness module without `only:`, or naming a harness name other than the distributed-state operations for a physics source | `tools/validate_pipeline_semantics._validate_model_source_isolation`, with the renderer's `physics_harness_uses` |
+| bundle acceptance | a `distributed` residency without `distributed_state@N` | `tools/codegen_bundle.pure_bundle_contract_violation` |
+| the run | contributed blocks that do not tile the global array, or the same non-zero axis in both slots (the harness's gather); an `ATMOFAB_PROCESS_GRID` that is malformed or does not multiply to the rank count (the harness's start); a gathered shape other than the IR's `shape_expr` (the post-execute snapshot gate) | the harness, `validate_pipeline_semantics` |
 
 The presence floor does not count loops: whether a kernel needs distributing does not depend on
 whether its source spells a counted loop, and a whole-array source is held to it as well.
@@ -58,13 +56,13 @@ whether its source spells a counted loop, and a whole-array source is held to it
 ## 3. What no gate sees
 
 The floor is a PRESENCE floor. A kernel that computes the whole global range on every rank and
-reports a partition — a `__partition` call, a non-zero axis, owned ranges that tile — passes
+reports a partition — a `__partition` call, owned ranges that tile — passes
 every check above, and its run gives the right answer, which the one-process quality check
 confirms. It is certified as distributed without distributing. No deterministic check tells it
 apart: `perf.json#cells_updated` does come out larger (each rank reports the whole range, and the
 runner sums the ranks' reports), but it is the kernel's own report and nothing compares it. Its sibling reports a partition only in a
 branch no case reaches — every case computed replicated, "too small to distribute", with
-`sb_<var>_axis<d>` set non-zero in the unreached branch, which the floor counts. The producer IS told
+the `__partition` call in the unreached branch, which the floor counts. The producer IS told
 to replicate a case whose grid cannot give every rank `m_d` cells along every partitioned axis
 (fewer than `p_d * m_d` cells along the axis partitioned along grid dimension `d`), `m_d` the
 larger of the `ng` cells the halo exchange needs and the smallest block extent the operations
@@ -78,7 +76,7 @@ with `p2 > 1` every rank of a line along dimension 2 computes the same copy, the
 coordinate `0`'s, and the state agrees; the reviewer is told that the second spatial axis is
 partitioned along dimension 2. Both are `Generate.verify`
 G6's judgment, told in the `mpi` reviewer fragment: whether each rank computes only the cells
-it owns, whether the partition metadata describes the cells it contributes to the declared global array, whether the halo exchange precedes every
+it owns, whether the halo exchange precedes every
 stencil read with the spec's periodicity, and whether every global quantity the kernel reports
 goes through a reduction. The same class as the OpenMP floor's "a directive on some loops
 only".

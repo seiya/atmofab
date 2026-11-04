@@ -73,8 +73,7 @@ The floor is a PRESENCE floor. A directive on some loops only, a schedule other 
 an incorrect parallelization, and the honesty of a declared `none` all pass it; they are
 `Generate.verify` G6's judgment, told in the `openmp` reviewer fragment. Where the floor does not
 run — an `infrastructure` node, a source out of its reach (§2), a plan that declines — whether the
-source reflects the plan at all is G6's too. The floor reads the model source only: how a checks
-module's loops are lowered is never a finding (issue #400).
+source reflects the plan at all is G6's too. The floor reads the model source only.
 
 ## 4. The launch environment
 

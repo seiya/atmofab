@@ -157,7 +157,7 @@ together with the bundle's `target_lowering_plan.parallelization`.
   - The launch gate `tools/target_profile.py:target_profile_violations` (its toolchain half is
     `toolchain_servable_reasons`; until R4-a PR-3, issue #284, the question was asked of the
     IR at `Compile.static`) requires a language to declare every capability `Generate` reads of
-    it for any node kind — `bundle_facts`, `syntax_promotions`, `prompt_fragments`, `checks_abi`,
+    it for any node kind — `bundle_facts`, `syntax_promotions`, `prompt_fragments`,
     `source_reading`, `signatures`, `control_file` (`LANGUAGE_CAPABILITIES_EVERY_NODE`, issue
     #289; `control_file` since R4-b PR-4, with the build system's half) — and, for a
     non-`infrastructure` node, `runner_render`. It, together with the validator's dispatch into the
@@ -197,12 +197,11 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `pure_language`; a parallel backend's `prompt_fragments` is composed after them by
     `pure_parallel` (issue #316). A parallel model's rules go there; the `cuda` floor alone was
     left in the `cuda_cpp` language fragment, because the one checked-in `cuda_cpp` target runs
-    `cuda` and moving it would only widen the byte-identity check of that change. The
-    checks-module contract is neutral and its binding is the language's `checks_abi`. Which
+    `cuda` and moving it would only widen the byte-identity check of that change. Which
     linter a language is linted with is each linter backend's `LANGUAGES`
     (`registry.linter_for_language`).
   - **Every deterministic gate that READS a node's source reads it through the target
-    language's backend** (issue #289, R4-b PR-3): the model-source, checks-source, runner-output
+    language's backend** (issue #289, R4-b PR-3): the model-source, runner-output
     and dependency-use gates through `source_reading`; the §5.1 signature gates through
     `signatures` — at `Generate.static` in the pipeline's target language, and at the
     target-free `Compile.static` in EVERY language that declares it; the dependency facts a
@@ -218,8 +217,7 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `parallel_directives`.
   - **A remedy or prompt paragraph a leaf reads that names a language's statements is stated by
     that language's backend**, whichever neutral gate decides the finding (issue #289, the R4-b
-    PR-4 preconditions): the checks-ABI and bound-state remedies by the runner backend through
-    `host_render`, the component-surface remedies by `source_reading`, the dependency-operation
+    PR-4 preconditions): the component-surface remedies by `source_reading`, the dependency-operation
     guidance by `signatures`, the exemplar's gate-drift caveat and the neutral templates'
     language-shaped clauses by `prompt_fragments`. A target-free remedy (Compile's) names no
     language's statements. R4-b PR-4 cleared the leftovers a `cuda_cpp` leaf would read (the Compile

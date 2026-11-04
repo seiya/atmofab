@@ -20,8 +20,8 @@
 - `case_id`: string
 - `target`: cpu|gpu|...
 - `walltime_sec`: seconds; the interval it covers is defined in `RUNNER_OUTPUT_CONTRACT.md` §2
-- `steps`: the number of execution steps
-- `cells_updated`: the total number of updated cells (nx*ny*nz*steps etc.)
+- `steps`: the number of execution steps; on a host-rendered driver the committed steps, `RUNNER_OUTPUT_CONTRACT.md` §2
+- `cells_updated`: the total number of updated cells; on a host-rendered driver the driver's own count, defined in `RUNNER_OUTPUT_CONTRACT.md` §2
 - `throughput_cells_per_sec`: cells_updated / walltime_sec
 - `parallelism`: parallelism information (required object)
   - `mpi_ranks`: the number of processes the run started (1 when the target's parallel backend runs no launcher). Under a launcher the post-execute gate requires it to equal the target profile's `execution.ranks` (issue #316), so the runner of such a target must write the count the harness observes at run time, never the profile's value

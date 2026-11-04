@@ -58,8 +58,9 @@ case:
       initial_state:   # HOST DATA (issue #589): the content each state variable holds before
         # the first call, which the host evaluates per case (`primary_evidence.evaluate_case_inputs`;
         # `Compile.static` refuses a non-finite value or a shape mismatch). Exactly one entry per
-        # schema variable in EVERY case, except a variable `drive.init` writes and a logical state
-        # (both start at 0, the driver's; an entry for either is refused); no key outside the schema.
+        # schema variable in EVERY case, except a variable `drive.init` writes, a logical state and a
+        # `calls` or `record` state of a procedure binding (each starts at 0, the driver's; an entry for
+        # one is refused); no key outside the schema.
         # The classes are THE CASE'S: on a list-form `drive.step` they follow from the entries that run
         # this case, so a logical state, an operation-only output or a written state of ANOTHER entry,
         # and a state this case's entries only read or do not bind, is host data here and takes its
@@ -125,7 +126,7 @@ io_contract:
             - {name: x, axis: 0, count: inputs.grid.nx, length: inputs.grid.L_x, placement: cell_center}
       - artifact: "state_history"     # declared iff `drive.loop` is: the full state (every schema variable, `t`, `step`) every `drive.history.every` committed steps, raw/state_snapshots/history/<case_id>__<k>.json (k the committed step); no schema of its own (the state_snapshots one)
       - artifact: "step_series"       # declared iff `drive.loop` is: one entry per committed step, raw/state_snapshots/series/<case_id>.json
-        names: ["t", "step", "<v>_min", "<v>_max", ...]   # EXACTLY {t, step} ∪ {<v>_min, <v>_max for every ARRAY schema variable} (gate (h)); the host-rendered driver folds each extremum over the committed state, a non-finite cell folding to a non-finite entry the host refuses
+        names: ["step", "<v>_min", "<v>_max", ...]   # EXACTLY {step} ∪ {<v>_min, <v>_max for every ARRAY schema variable} (gate (h)); the host-rendered driver folds each extremum over the committed state, a non-finite cell folding to a non-finite entry the host refuses. `t` is not a name of this list and not a grammar name: the harness writer adds the scalar `t`, the time of the last committed state, to the file
   semantic_dependency:
     required_sources: ["<var1>", "<var2>", ...]   # a non-empty string array
   tests:
@@ -149,7 +150,7 @@ io_contract:
     # `drive` entry writes (an `out` / `inout` dummy), `initial.<v>` of a
     # variable `drive.init` writes, or `history.<v>` / `series.<v>_min` / `series.<v>_max` of a variable a `drive`
     # entry writes. `final.t`, `final.step`, `initial.t`, `initial.step`, the driver's counters `history.t`,
-    # `history.step`, `series.t` and `series.step`, a logical `out` state `<f>` of `step` or `init`
+    # `history.step` and `series.step`, a logical `out` state `<f>` of `step` or `init`
     # (a flag, `result:` or not), `initial.<v>` of a variable the host filled from
     # `initial_state`, `final.<v>` of a variable nothing writes (and its history and series), `derived.*` and
     # `inputs.*` value nothing the kernel produced, and an entry that reads only
@@ -336,17 +337,17 @@ drive:
   # REQUIRED on a `problem` / `component` node, REFUSED on an `infrastructure` one (issue #589). The kind
   # is the one spec/registry/spec_catalog.yaml records for `meta.spec_id`: an IR the catalog cannot answer
   # for, or whose `meta.spec_kind` disagrees with it, is refused. `drive` is the contract the host-rendered
-  # DRIVER of one case is rendered to, whose renderer lands with issue #589 PR-1b: every schema variable is a
-  # state the driver is to allocate to the extents its bound dummies' §5.1
+  # DRIVER of one case is rendered to: every schema variable is a
+  # state the driver allocates to the extents its bound dummies' §5.1
   # `dims` give (an array no entry running the case binds: its `shape_expr`, each token resolved through
   # ANY entry's rank-0 dummy of that name against this case's inputs — none, or two that disagree, is
-  # refused) and to fill from `initial_state` (a logical state and every variable `init` writes start at
-  # 0); it is to call `init` once, capture `initial/`, call `step` once (no `loop`) or up to `loop.n_step`
-  # times, and capture the final state. Under that contract a refusal is a `false` result, never a stop: a false `init`
+  # refused) and fills from `initial_state` (a logical state, a `calls` or `record` state of a procedure binding, and every variable `init` writes
+  # start at 0); it calls `init` once, captures `initial/`, calls `step` once (no `loop`) or up to `loop.n_step`
+  # times, and captures the final state. A refusal is a `false` result, never a stop: a false `init`
   # refuses the case (both captures still written); on a `loop` node a step is COMMITTED only on a true
   # result (the state copied back, `step` advanced, `t = t_start + step * dt`, the series entry appended,
-  # a sample written every `every` steps), an `out` array starts each call unassigned (a cell the call
-  # leaves unwritten is refused at capture), and a false result ends the loop on the last committed state;
+  # a sample written every `every` steps), an `out` array starts each call NaN-filled (a committed cell the
+  # call leaves unwritten folds to a non-finite series entry, and a predicate that reads it is refused), and a false result ends the loop on the last committed state;
   # on a node without `loop` the one call runs on the states themselves, each `out` starting at its
   # `initial_state` content, and `step` becomes 1 only on a true result. After every call each logical
   # `out` is written into its state as 1 / 0.
@@ -367,9 +368,18 @@ drive:
     every: "inputs.<path>"                 # an inputs reference only; 0 means no samples
   # BINDINGS (an `arguments` value): "inputs.<dotted path>" (the case input, a nested list for an array),
   #   "derived.<name>", "state.<var>" (a schema variable), "time" (the driver's t), "step" (the committed
-  #   step count), a number or boolean literal, or {procedure: "<expression>"} for a dummy whose type is
-  #   `procedure` and for no other.
-  # BY DUMMY INTENT, gate (b): `in` takes any binding but {procedure}, an array dummy an array value; `inout` is
+  #   step count), a number or boolean literal, or a PROCEDURE BINDING for a dummy whose type is `procedure`
+  #   and for no other:
+  #     {procedure: "<expression>", calls: "state.<scalar>", record: {"<prototype in dummy>": "state.<rank-1>" | ["state.<var>", ...]}}
+  #   The host renders a procedure of the prototype the dummy's `interface` names. It assigns the prototype's
+  #   one real array `out` elementwise from the expression, which reads only the prototype's rank-0 real and
+  #   same-rank real `in` dummies, `inputs.*` and the constants, and calls only abs, sqrt, exp, log, sin, cos,
+  #   min, max. `calls` (optional) names a scalar state the driver counts the calls into. `record` (optional)
+  #   stores what the operation passed at its first calls: a rank-0 dummy into ONE rank-1 state, one entry per
+  #   call; an array dummy into a LIST of states of its rank, one per call. The `calls` and `record` states are
+  #   the driver's: they start at 0, take no `initial_state` entry, and count as bound and as written by
+  #   the entry.
+  # BY DUMMY INTENT, gate (b): `in` takes any binding but a procedure binding, an array dummy an array value; `inout` is
   #   an array bound to "state.<var>" (a rank-0 `inout` is refused); an `out` array binds "state.<var>"; a
   #   logical `out` binds "state.<var>" of a `scalar` schema variable (a LOGICAL STATE, no `initial_state`
   #   entry); a rank-0 real / integer `out` of `init`, or of `step` on a node WITHOUT `loop`, binds
@@ -386,7 +396,8 @@ drive:
   #   target case of a test must be valued by a read that is kernel state in THAT case, or on an
   #   `xfail` test by a flag predicate with `value: 0`.
   # GATES (Compile.static, primary_evidence.drive_violations; each a `Compile fail`): (a) a `problem`
-  #   publishes `<spec_id>__step` and every `step` entry names it; (b) the intent rules above; (c) each array
+  #   publishes `<spec_id>__step` and every `step` entry names it; (b) the intent rules above, and the
+  #   procedure binding as stated above; (c) each array
   #   dummy's `dims` (a dims-less one: its state's `shape_expr`) EVALUATE PER CASE under the entry's bindings
   #   — a token naming a rank-0 dummy bound to an input, a `derived` value or a literal resolves, `nx + 1`
   #   arithmetic included, any other token is refused; an array no entry running the case binds: as the
@@ -394,7 +405,8 @@ drive:
   #   extents, a numeric `shape_expr` extent agrees, and an array input or `derived` value has its dummy's
   #   extents; (d) `result` above; (e) `loop` references resolve (`state.<var>` only to a scalar `init`
   #   writes), `t_end` is declared, a rank-0 `step` dummy named `dt` binds `loop.dt`'s reference and one
-  #   named `t` binds `time`; (f) `initial_state` as the `case` block states, under each case's classes; (f') a `step` list's
+  #   named `t` binds `time`; (f) `initial_state` as the `case` block states, under each case's classes, a `calls` or `record` state
+  #   of a procedure binding taking no entry; (f') a `step` list's
   #   `cases` partition `test_case_set` exactly once, and a `loop` node has one mapping entry; (g) the
   #   `initial_state` / `derived` name rules of the `case` block, checked statically; (h) `step_series` and
   #   `state_history` as their `required_evidence` entries state; (i) the one-call scalar pairing
@@ -600,11 +612,11 @@ These deterministic gates run in the conductor's `Compile.static` substep (`_com
   - **drive and case inputs** (`primary_evidence.drive_violations`, `primary_evidence.evaluate_case_inputs`, issue #589): the gates (a)-(m) and the per-case evaluation the schema block's `drive` comment states, the kind read from `spec/registry/spec_catalog.yaml`; it writes nothing. Each violation is a `Compile fail` routed to `Compile.generate`.
   - **harness render preconditions** (`_validate_harness_render_preconditions`, every non-`infrastructure` node, asked once per declared target profile whose toolchain the host renders a runner for, with that target's language and harness — the IR is target-free, so it must render for each; issue #284): the node's runner is host-rendered from this IR alone, so IR *content* the renderer cannot render is caught here instead of at the render backstop (which terminates the workflow rather than retrying). The gate delegates to `tools/host_render.ir_content_violations`, which invokes the language backend's renderer itself, so it cannot drift. Each violation is a `Compile fail` routed to `Compile.generate`:
     - `raw_requirements.required_evidence` holds a `state_snapshots` entry with a non-empty `schema.variables[]`, and its `schema.time_variable` is `t` (the harness's fixed snapshot-time key); separately, at V3 (`_validate_io_contract_file`, every node kind): every `state_variables[].name` of the resolved state contract is a `state_snapshots` schema variable — a declared primary state the runner never captures is a `Compile fail` (`are not state_snapshots schema variables`), because no host-evaluated predicate could reach it and the bundle binds the schema alone (Z6, [issue #255](https://github.com/seiya/atmofab/issues/255));
-    - no snapshot variable is named `t` / `case_id` / `step` (harness-reserved snapshot keys); every snapshot variable is a bindable identifier — on a `problem` / `component` node it is a state the host-rendered DRIVER declares under that name, allocates and passes to the operations `drive` binds it to (§`drive`), never a variable of generated code; the runner the renderer emits until the driver renderer lands (issue #589 PR-1b) still imports it from the checks module under the alias `sb_<name>` (Z6, issue #255), so this gate keeps that renderer's bounds — so it matches `[A-Za-z][A-Za-z0-9_]*`, its `sb_` alias fits the 63-character identifier bound, no two names fold to one identifier (the bound target languages include a case-insensitive one), and none folds to a checks-ABI procedure name (`case_setup`, `case_run`, `get_time`);
+    - no snapshot variable is named `t` / `case_id` / `step` (harness-reserved snapshot keys); every snapshot variable is a bindable identifier — on a `problem` / `component` node it is a state the host-rendered DRIVER declares, allocates and passes to the operations `drive` binds it to (§`drive`), never a variable of generated code — so it matches `[A-Za-z][A-Za-z0-9_]*`, the driver's state variable named after it fits the 63-character identifier bound, and no two names fold to one identifier (the bound target languages include a case-insensitive one);
     - every snapshot variable (each is captured for every case) declares `shape_expr` as `scalar` or the bracket form `[d1, ...]` of rank 1–4; the `(d1, ...)` paren form this grammar otherwise permits is rejected, as is rank > 4;
     - `case.test_case_set[]` is non-empty with pairwise-distinct `case_id`s (duplicates render overlapping case labels in the host-rendered runner's case dispatch), each ≤ 64 chars — the harness `case_id_len`, which `__parse_cases` truncates a longer id to, so the runner's case label could never match and every run would stop with an error despite compiling — and each matching `[A-Za-z0-9._][A-Za-z0-9._-]*` with no `..`: a case_id is concatenated into the per-case snapshot path (`raw/state_snapshots/<case_id>.json`), so a `/` or `..` would let the run write outside its directory, and a leading `-` would be read as an option in the runner's argv;
     - every name the renderer embeds in the runner (`case_id`, snapshot variable, the target's hardware class) is printable ASCII — a control character has no literal form in the runner's language, and a non-ASCII character makes the rendered byte length disagree with the code-point length every render bound is measured in — and no rendered line exceeds 100 columns, so an over-long IR-sourced name is rejected rather than emitted as an unlintable runner.
-  - Node-**identity** preconditions are excluded from these gates because re-authoring the IR cannot repair them: `spec_id` ≤ 55 characters, the minimum of the declared language backends' `SPEC_ID_MAX` (it keeps the derived `<spec_id>_runner` / `_checks` / `_model` identifiers within 63 characters, the shortest identifier bound an implemented language backend declares), and **no** `infrastructure` dependency declared in `deps.yaml` on any `spec` (issue #284: the runner harness is the attribute of the target profile a node is built for, `spec/targets/<target_id>.yaml` `harness`, and the host adds it to every pipeline of a non-`infrastructure` node; a declaration is refused as `infrastructure_dependency_declared_in_deps`, and inside a `profile` as `profile_declares_infrastructure` at the Compile start of each ADOPTING node). Both are enforced at **spec-input**, before any phase runs — for the target `spec` and for every member of a `--with-deps` closure alike. A `deps.yaml` that is **missing or whose `dependencies:` schema is malformed** is likewise rejected at spec-input on a non-`infrastructure` `spec`, since its dependency declaration cannot be read. A resume re-resolves its node through the same gate, so the remedy is to fix `deps.yaml` (or rename the `spec`) and start a new run.
+  - Node-**identity** preconditions are excluded from these gates because re-authoring the IR cannot repair them: `spec_id` ≤ 55 characters, the minimum of the declared language backends' `SPEC_ID_MAX` (it keeps the derived `<spec_id>_runner` / `_model` identifiers within 63 characters, the shortest identifier bound an implemented language backend declares), and **no** `infrastructure` dependency declared in `deps.yaml` on any `spec` (issue #284: the runner harness is the attribute of the target profile a node is built for, `spec/targets/<target_id>.yaml` `harness`, and the host adds it to every pipeline of a non-`infrastructure` node; a declaration is refused as `infrastructure_dependency_declared_in_deps`, and inside a `profile` as `profile_declares_infrastructure` at the Compile start of each ADOPTING node). Both are enforced at **spec-input**, before any phase runs — for the target `spec` and for every member of a `--with-deps` closure alike. A `deps.yaml` that is **missing or whose `dependencies:` schema is malformed** is likewise rejected at spec-input on a non-`infrastructure` `spec`, since its dependency declaration cannot be read. A resume re-resolves its node through the same gate, so the remedy is to fix `deps.yaml` (or rename the `spec`) and start a new run.
 
 #### Severity of a finding (`issue_severity`)
 `issue_severity` names the repair a finding calls for. You return it in your verdict and the host projects it, with `last_fail_reason`, onto `ir_meta.json`; you do not write that file. (An agentic leaf recorded it there itself until Z4, issue #171.) The conductor acts on the value as `docs/workflow/WORKFLOW_CORE.md` states; the value does not grade the consequence the defect would have at `Generate` or `Validate`, and the size of the correction does not change it. One question selects the value: whether `Compile.generate`, re-run with the finding and the same `controlled_spec.md`, `tests.md`, `deps.yaml` and `spec/registry/spec_catalog.yaml` — this substep's verification inputs, listed in §I/O contract above — can resolve the finding. This is the axis `docs/workflow/phases/phase_02_generate.md` §2-2 §Severity of a finding applies to `Generate.verify`; `spec.ir.yaml` is the artifact under review here and an input there, so a thin lowering takes `minor` here and `major` there.
