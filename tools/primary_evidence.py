@@ -3492,11 +3492,16 @@ def scalar_pairing_violations(ir: dict[str, Any]) -> list[str]:
     writes on a node without `loop`), needs ANOTHER predicate of the SAME test and quantity, not
     cross-target, that reads `final.<s>` in every case it reads `s` in, and in each of those
     cases one of the two reads `final.<a>` of an array state the same operation writes
-    (`scalar_pairs`; reads that enter the value, `point_reads`). A scalar a kernel reports is
-    judged beside the state its call wrote, by a predicate other than the one reading it: a
-    sole predicate reading both — `final.s + 1e-300 * sum(final.F)` — is judged by `s` alone,
-    the spelling the retired `reported_read_violations` refused (review round 1, R1-4). An IR
-    with no `drive`, or a malformed one (`drive_violations` reports it), gives none here."""
+    (`scalar_pairs`; reads that enter the value, `point_reads`).
+
+    What this closes, and only this: ONE predicate reading both `final.<s>` and an array is not
+    its own pair — `final.s + 1e-300 * sum(final.F)` alone, the spelling the retired
+    `reported_read_violations` refused, is refused (review round 1, R1-4). It is SYNTACTIC, like
+    every gate here: it sees that the array is read, not that it weighs in, so `final.s` beside
+    `final.s + 1e-300 * sum(final.F)` is admitted — no gate parses thresholds or coefficients,
+    and whether the pair's array term carries weight is `Compile.verify` V3's judgment (review
+    round 2, R2-4). An IR with no `drive`, or a malformed one (`drive_violations` reports it),
+    gives none here."""
     if not _has_drive(ir):
         return []
     try:
