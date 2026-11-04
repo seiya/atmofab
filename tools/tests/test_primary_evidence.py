@@ -3124,8 +3124,9 @@ class ClosureExemptionTest(unittest.TestCase):
         self.assertTrue(v[0].startswith("predicates[2]: reads no captured state"), v)
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, re.escape(
                 "predicates[2]: reads no captured state the kernel produced (final.<written "
-                "var>, initial.<var init writes>, history.<written var>, series.<written "
-                "var>_min|_max) in expr or a bind expr reaches") + r"\Z"):
+                "non-logical var>, initial.<var init writes>, history.<written var>, "
+                "series.<written var>_min|_max) in expr or a bind expr reaches. "
+                f"{pe.FLAG_FORM_STATEMENT}") + r"\Z"):
             self._evaluate(ir)
 
     def test_a_pass_test_s_closure_with_a_wrong_ref_is_not_exempt(self) -> None:
@@ -3232,6 +3233,28 @@ class ResultFlagFormTest(unittest.TestCase):
         records = pe.evaluate_primary_predicates(honest, run.root)
         doc = evaluate_verdict(honest["io_contract"]["tests"], records)
         self.assertEqual(doc["per_test"][0]["status"], "fail")
+
+    def test_the_refusal_names_the_one_admitted_form(self) -> None:
+        """R5-3: the text a repairing leaf reads, from both sites, says a logical `out` is no
+        kernel-state read and names the form, so the repair is the form and not deleting the
+        judgment."""
+        form = ("A logical `out` state is no kernel-state read: a flag is judged in one form "
+                "alone, `expr: final.<f>` (or `initial.<f>` for one init writes), `op: eq`, "
+                "`value: 0|1`, no bind, `per_case: true` over all the test's target cases, under "
+                "`quantity: <f>`, once per point and flag in a test; it values its cases only on "
+                "an xfail test")
+        self.assertEqual(pe.FLAG_FORM_STATEMENT, form)
+        rus = self._rus_xfail(quantity="guard")
+        v = [m for m in self._schema(rus) if self._NO_STATE in m]
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith(f"predicates[0]: {self._NO_STATE} (final.<v> of a "
+                                        "non-logical variable an operation writes"), v)
+        self.assertTrue(v[0].endswith(f"kernel state). {form}"), v)
+        with self.assertRaises(pe.PrimaryEvidenceError) as caught:
+            pe.evaluate_primary_predicates(rus, Path("/nonexistent-run-dir"))
+        self.assertTrue(str(caught.exception).startswith(
+            f"predicates[0]: {self._NO_STATE} (final.<written non-logical var>"), caught.exception)
+        self.assertTrue(str(caught.exception).endswith(f"reaches. {form}"), caught.exception)
 
     def test_a_loop_node_s_result_under_a_physics_quantity_reads_nothing(self) -> None:
         ir = _toy()

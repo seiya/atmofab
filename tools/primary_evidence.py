@@ -621,6 +621,14 @@ def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str
 FORM_CLOSURE = "closure"
 FORM_FLAG = "flag"
 
+#: What a refusal says of a flag (review round 5, R5-3): the repair of a flag judgment is this
+#: form, never deleting the judgment.
+FLAG_FORM_STATEMENT = (
+    "A logical `out` state is no kernel-state read: a flag is judged in one form alone, `expr: "
+    "final.<f>` (or `initial.<f>` for one init writes), `op: eq`, `value: 0|1`, no bind, "
+    "`per_case: true` over all the test's target cases, under `quantity: <f>`, once per point "
+    "and flag in a test; it values its cases only on an xfail test")
+
 _FLAG_RE = re.compile(r"^(?P<point>final|initial)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)$")
 
 
@@ -1744,9 +1752,9 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         scope, contexts = _predicate_scope(pred, loc)
         if not predicate_reads_state(expr_refs, bind_refs, reads) and not closure:
             raise PrimaryEvidenceError(
-                f"{loc}: reads no captured state the kernel produced (final.<written var>, "
-                "initial.<var init writes>, history.<written var>, series.<written var>_min|"
-                "_max) in expr or a bind expr reaches")
+                f"{loc}: reads no captured state the kernel produced (final.<written non-logical "
+                "var>, initial.<var init writes>, history.<written var>, series.<written var>_"
+                f"min|_max) in expr or a bind expr reaches. {FLAG_FORM_STATEMENT}")
         unread = [] if closure else unread_scope_cases(expr_refs, bind_refs, reads, contexts)
         if unread:
             raise PrimaryEvidenceError(
@@ -2298,13 +2306,13 @@ def validate_primary_predicate_schema(
             continue
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<v> of a "
-                     "variable an operation writes, initial.<v> of one init writes, "
+                     "non-logical variable an operation writes, initial.<v> of one init writes, "
                      "history.<v> / series.<v>_min|_max of a written v) in expr or a "
                      "bind expr reaches: a predicate values the state the kernel produced (the "
                      "host's own initial_state read back, a derived.* value, final.step / "
                      "final.t, the driver's history.t / history.step / series.t / series.step, "
                      "and a comparand.<point>.<var> — another target's state — are not "
-                     "this run's kernel state)")
+                     f"this run's kernel state). {FLAG_FORM_STATEMENT}")
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
                                                       state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<var> / "
