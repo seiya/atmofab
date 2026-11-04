@@ -28,7 +28,10 @@ class BindingTest(unittest.TestCase):
                             ("time", ("time", None)), ("step", ("step", None)),
                             (2, ("literal", 2)), (0.5, ("literal", 0.5)),
                             (True, ("literal", True)),
-                            ({"procedure": " f(x) "}, ("procedure", "f(x)"))):
+                            ({"procedure": " f(x) "}, ("procedure", ("f(x)", None, ()))),
+                            ({"procedure": "u", "calls": "state.n",
+                              "record": {"t": "state.st", "u": ["state.a", "state.b"]}},
+                             ("procedure", ("u", "n", (("t", ("st",)), ("u", ("a", "b"))))))):
             with self.subTest(value=value):
                 self.assertEqual(r.drive_binding(value), want)
 
@@ -119,6 +122,11 @@ class ReadersTest(unittest.TestCase):
                     r.drive_history_every(ir)
 
 
+def _binding(b: pe.Binding) -> tuple:
+    """`pe.Binding` in `runner_ir.drive_binding`'s shape: a procedure's `ref` holds all three."""
+    return (b.kind, (b.ref, b.calls, b.record)) if b.kind == "procedure" else (b.kind, b.ref)
+
+
 class DriveAgreementTest(unittest.TestCase):
     """`runner_ir.drive_state_classes` equals `primary_evidence.drive_model`'s classes, and the
     bindings equal its `parse_binding`, on every fixture of the drive shape."""
@@ -149,10 +157,10 @@ class DriveAgreementTest(unittest.TestCase):
                                  [(e.operation, e.result, list(e.cases) if e.cases else None)
                                   for e in block.step])
                 for s, e in zip(steps, block.step):
-                    self.assertEqual(s["bindings"], {k: tuple(b) for k, b in e.arguments.items()})
+                    self.assertEqual(s["bindings"], {k: _binding(b) for k, b in e.arguments.items()})
                 loop = r.drive_loop(ir)
                 self.assertEqual(loop, None if block.loop is None
-                                 else {k: tuple(b) for k, b in block.loop.items()})
+                                 else {k: _binding(b) for k, b in block.loop.items()})
                 self.assertEqual(r.drive_history_every(ir), block.history_every)
 
     def test_the_classes_on_the_known_fixtures(self) -> None:

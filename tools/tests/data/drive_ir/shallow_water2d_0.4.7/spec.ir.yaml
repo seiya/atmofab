@@ -1533,7 +1533,7 @@ algorithm:
     description: 'Step 1 of controlled_spec §5 (realizes the case input boundary.kind = periodic, the only boundary allowed):
       call dynamics_shallow_water_boundary_2d_periodic_copy__apply(nx, ny, ng=1, nx_total, ny_total, U_in, U_out, grid_valid)
       once per component k = 0, 1, 2 with U_in = W_ext(k,:,:) and the result written back to W_ext(k,:,:). Only U is mapped;
-      z_b is not passed. grid_valid = false is a runtime error (stop, fail closed).'
+      z_b is not passed. grid_valid = false makes the step return ok = false.'
   - step_id: step_09_s1_reconstruct
     step_kind: reconstruct
     operation_ref: hydrostatic_reconstruction_p0
@@ -1573,7 +1573,7 @@ algorithm:
       U_R, U_B, U_T, g, F_star, G_star, a_x, a_y, guard_ok) with the reconstructed states of step 2 of that cell''s east face
       (U_L, U_R) and north face (U_B, U_T); store F_e(:,i,j) = F_star (= F*_{i+1/2,j}) and G_n(:,i,j) = G_star (= G*_{i,j+1/2}).
       The component''s contract is unchanged: it consumes the states the caller supplies. guard_ok = false is a runtime error
-      (stop).'
+      (the step returns ok = false).'
   - step_id: step_11_s1_source
     step_kind: source_term
     operation_ref: hydrostatic_bed_source
@@ -1619,7 +1619,7 @@ algorithm:
     - guard_pass
     description: 'First call of step 5 of controlled_spec §5: dynamics_shallow_water_time_update_2d_ssprk2__advance(ncomp=3,
       nx, ny, U_n, L_flux(U_n), S_b(U_n), z_b, dt, dx, dy, U_np1 -> U_1, guard_pass); at the component''s L0 profile one call
-      is U_1 = U_n + dt*(L_flux + S_b). z_b is passed but inert there. guard_pass = false is a runtime error (stop).'
+      is U_1 = U_n + dt*(L_flux + S_b). z_b is passed but inert there. guard_pass = false makes the step return ok = false.'
   - step_id: step_14_s2_halo_fill
     step_kind: pointwise_process
     operation_ref: fill_halo_interior
@@ -1718,7 +1718,7 @@ algorithm:
     - U_2
     - guard_pass
     description: 'Second call of step 5: advance(U_1; L_flux(U_1), S_b(U_1)) -> U_2 = U_1 + dt*L(U_1). guard_pass = false
-      is a runtime error (stop).'
+      makes the step return ok = false.'
   - step_id: step_21_ssprk2_average
     step_kind: time_integrate
     operation_ref: ssprk2_average
@@ -2061,7 +2061,6 @@ io_contract:
     - artifact: state_history
     - artifact: step_series
       names:
-      - t
       - step
       - h_min
       - h_max

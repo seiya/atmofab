@@ -1,4 +1,4 @@
-# CodegenBundle contract (`bundle_schema_version` 1.2.0)
+# CodegenBundle contract (`bundle_schema_version` 2.0.0)
 
 > **Scope note.** The `Generate.generate` leaf — a `workshop leaf` since
 > [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, the `Z2` pure-function
@@ -10,7 +10,7 @@
 >
 > | shape | node | the leaf authors | the host renders |
 > |---|---|---|---|
-> | `m3c` | a non-`infrastructure` node whose target toolchain the host writes the build control file for and renders the runner for (the `control_file` and `runner_render` capabilities); no dependency count enters it (until R4-a PR-3, issue #284, it also required exactly one `infrastructure` dependency) | `model` + `checks` | the runner glue over the target's harness, and the build control file |
+> | `m3c` | a non-`infrastructure` node whose target toolchain the host writes the build control file for and renders the runner for (the `control_file` and `runner_render` capabilities); no dependency count enters it (until R4-a PR-3, issue #284, it also required exactly one `infrastructure` dependency) | `model` | the driver over the target's harness (`RUNNER_OUTPUT_CONTRACT.md`, [issue #589](https://github.com/seiya/atmofab/issues/589)), and the build control file |
 > | `harness` | an `infrastructure` self-test (bundle 1.1.0's `runner` role) | `model` + `runner` | the build control file only |
 >
 > WHICH shape a node has is not a property of this document — `validate_bundle` sees a
@@ -24,15 +24,14 @@
 >
 > This document is the canonical contract for the bundle document itself; the schema
 > (`spec/schema/generate/codegen_bundle.schema.json`) and the validator module
-> `tools/codegen_bundle.py` are pinned at `bundle_schema_version` 1.2.0.
+> `tools/codegen_bundle.py` are pinned at `bundle_schema_version` 2.0.0.
 
 ## Purpose
 
 A `CodegenBundle` is the typed output of target-specific code generation for one
 `optimization unit`. It carries the complete generated source-file set, the file
 roles, the externally visible `entrypoints`, the `target lowering plan`, the
-`capability_requirements` against the `harness capability ABI`, and the
-`state_bindings`. The host derives the build graph from the bundle's declared roles
+`capability_requirements` against the `harness capability ABI`. The host derives the build graph from the bundle's declared roles
 and capabilities; the bundle never carries build or shell commands.
 
 The contract exists so the model retains freedom over internal code organization
@@ -70,7 +69,7 @@ optimization boundary.
   with the gate that checked it: no leaf reaches the build-runtime library. The
   disambiguation is kept because the word still appears in records written before the cut.
 - **harness capability** (this document) — a declared feature of a target harness ABI
-  (`sync_single_case@1`, `state_registration@1`, …). It is a code-generation contract
+  (`sync_single_case@1`, `distributed_state@2`, …). It is a code-generation contract
   term and carries no authority.
 
 The two share only the English word. Every identifier in this contract that refers to
@@ -81,7 +80,7 @@ token.
 ## Serialization
 
 A bundle is a single JSON document. `bundle_schema_version` is required and is
-compared by major version: `CODEGEN_BUNDLE_SCHEMA_VERSION = "1.2.0"`, and a document
+compared by major version: `CODEGEN_BUNDLE_SCHEMA_VERSION = "2.0.0"`, and a document
 whose major version differs from the module's is rejected without further inspection.
 Every object in the document is closed (`additionalProperties: false`) with **one declared
 exception**: the value objects of `target_lowering_plan` (`precision`, `data_layout`,
@@ -90,21 +89,20 @@ are the `A5` target-backend extension point and are not constrained in v1. Every
 an unknown key is a violation.
 
 **Version compatibility is backward only, by design.** The major-version comparison lets a
-*later* validator read an *earlier* same-major document (a `1.3` validator accepts a `1.0`
+*later* validator read an *earlier* same-major document (a `2.3` validator accepts a `2.0`
 bundle). It does **not** make an earlier validator forward-compatible with a later minor: a
-minor release is additive, so a `1.1` document may carry a field a `1.0` validator does not
+minor release is additive, so a `2.1` document may carry a field a `2.0` validator does not
 know, and closed-object validation rejects that field. This is intentional — the closure is a
 load-bearing security property (a command cannot ride in on an unknown key) and is never
 relaxed for forward compatibility. A producer that emits a new minor's fields therefore
 requires a validator of that minor; it does not silently pass an older one. The 1.0.0 -> 1.1.0
-bump is the worked example of the additive case: it adds the `runner` role, which no 1.0.0
-validator's role enum admits, and producer and validator move together in one change. The
-1.1.0 -> 1.2.0 bump (`Z6`) is the worked example of the OTHER direction the rule allows: a
-minor that NARROWS — the `capture` enum loses `checks_getter` and `state_bindings` becomes
-required on the `m3c` shape — so a 1.1.0 document of the old shape is a same-major document
-this validator reads and refuses on its content, which is what "backward only, by design"
-means for a retirement: nothing is relaxed to keep the old shape passing. The declarative
-schema's `bundle_schema_version` pattern pins the supported major (`^1\.[0-9]+\.[0-9]+(?![\s\S])`), so a
+bump is the worked example of the additive case: it added the `runner` role, which no 1.0.0
+validator's role enum admitted, and producer and validator moved together in one change. The
+1.2.0 -> 2.0.0 bump ([issue #589](https://github.com/seiya/atmofab/issues/589)) is a major one:
+the `checks` role, the `checks_interface` entrypoint kind, `state_bindings` and the
+`state_registration` capability left the document, so a 1.x document is refused at the version
+layer without further inspection. The declarative
+schema's `bundle_schema_version` pattern pins the supported major (`^2\.[0-9]+\.[0-9]+(?![\s\S])`), so a
 schema-only consumer (structured generation) rejects an incompatible major at the schema
 boundary rather than admitting it to fail later at `validate_bundle`.
 
@@ -116,24 +114,17 @@ as untrusted model-authored input, exactly as it treats `files[].content`.
 
 ```json
 {
-  "bundle_schema_version": "1.2.0",
+  "bundle_schema_version": "2.0.0",
   "optimization_unit": {"members": ["problem/adv1d@0.1.0"]},
   "files": [{"logical_path": "adv1d_model.f90", "role": "model",
              "language": "fortran", "member_node_key": "problem/adv1d@0.1.0",
-             "content": "module adv1d_model\n...", "modules": ["adv1d_model"]},
-            {"logical_path": "adv1d_checks.f90", "role": "checks",
-             "language": "fortran", "member_node_key": "problem/adv1d@0.1.0",
-             "content": "module adv1d_checks\n...", "modules": ["adv1d_checks"]}],
-  "entrypoints": [{"symbol": "adv1d__apply", "kind": "operation",
+             "content": "module adv1d_model\n...", "modules": ["adv1d_model"]}],
+  "entrypoints": [{"symbol": "adv1d__step", "kind": "operation",
                    "node_key": "problem/adv1d@0.1.0", "defined_in": "adv1d_model.f90",
                    "module": "adv1d_model"}],
   "target_lowering_plan": {"precision": {"real_kind": "real64"},
                            "state_residency": "host"},
-  "capability_requirements": ["sync_single_case@1", "state_registration@1"],
-  "state_bindings": [{"node_key": "problem/adv1d@0.1.0", "state_variable": "q",
-                      "storage_symbol": "q", "module": "adv1d_checks",
-                      "capture": "harness_registration",
-                      "capability": "state_registration@1"}]
+  "capability_requirements": ["sync_single_case@1"]
 }
 ```
 
@@ -142,10 +133,10 @@ The example is a bundle for a `fortran` target: its file names, `language` value
 states the binding they follow.
 
 `files[].content` is inline. A detached-content variant (a content hash plus a
-side-channel payload) is not part of v1; if `Z2` requires one it is added as a minor
-version bump. Per the compatibility rule above, a `1.0` validator does not read a bundle
+side-channel payload) is not part of v2; if `Z2` requires one it is added as a minor
+version bump. Per the compatibility rule above, a `2.0` validator does not read a bundle
 that uses the new detached field — the producer and validator move to that minor together. A
-`1.0` producer keeps emitting inline `content`, which every same-or-later-major validator
+`2.0` producer keeps emitting inline `content`, which every same-or-later-major validator
 still accepts.
 
 ## Optimization unit
@@ -168,10 +159,9 @@ common data layout across members. Consequently every member must remain
 independently addressable in the generated code: each member requires at least one
 `model`-role file and at least one `operation` entrypoint, defined in a file belonging to that
 same member (an entrypoint attributed to another member's file would satisfy the count while
-leaving the member unaddressable). Operation **cardinality is by node kind**: a `problem` node
-publishes **exactly one** operation (its single integration update path — the contract carries
-no operation selector, so two would leave the host unable to pick it); a `component` or
-`infrastructure` node publishes an API of one or more operations (the harness ABI is many). A
+leaving the member unaddressable). How many operations a member publishes is its IR's to say
+(§Entrypoints, the published-surface invariant); the host's `drive` block says which one the
+driver calls, so a `problem`'s `<spec_id>__step` and `<spec_id>__init` need no selector here. A
 `profile` member is **rejected outright** whatever it publishes: since issue #175 a `profile` is a
 compile-time selection policy the host resolves, so no phase runs on one and no optimization unit
 can name one.
@@ -192,7 +182,7 @@ case-sensitive one two); between files of two languages, a pair EITHER language 
 collides. In a language whose publication unit can be reopened, a
 file that opens another file's module only to declare into it does not list that module; the
 file whose definitions it holds does (the binding states the case). This list is
-what ties an `entrypoints[].module` or a `state_bindings[].module` to the file that owns it —
+what ties an `entrypoints[].module` to the file that owns it —
 and, through the file's `member_node_key`, to a member: without it, an attribution that names
 the member's own file in `defined_in` could still route the rendered `use <module>, only:
 <symbol>` to another member's export. Each such `module` is matched against a file's `modules`
@@ -205,10 +195,9 @@ never parses the source.
 
 | role | meaning | may hold an entrypoint |
 |---|---|---|
-| `model` | the physics kernel and the published operation of a member | yes (`operation`) |
-| `checks` | the member's checks module (`CHECKS_MODULE_CONTRACT.md`) | yes (`checks_interface`) |
-| `helper` | a private procedure set the `checks` / `runner` file (or another private file) calls | no |
-| `internal_module` | an internal module (shared types, parameters, work arrays) the `checks` / `runner` file (or another private file) uses | no |
+| `model` | the physics kernel and the published operations of a member | yes (`operation`) |
+| `helper` | a private procedure set the `runner` file (or another private file) calls | no |
+| `internal_module` | an internal module (shared types, parameters, work arrays) the `runner` file (or another private file) uses | no |
 | `runner` | the unit member's executable entry (added in 1.1.0) | no |
 
 There is **no build or script role**: this is the backbone of the no-arbitrary-command rule.
@@ -226,13 +215,15 @@ the conditional can, so the declarative copy is not weaker than the canonical on
 
 `member_node_key` is either one of the unit's members or `null`. `null` means the file
 is shared by the whole unit, and only `helper` / `internal_module` may be shared — a
-`model`, `checks` or `runner` file belongs to exactly one member.
+`model` or `runner` file belongs to exactly one member.
 
 **Privacy invariant.** A `helper` or `internal_module` file cannot be the `defined_in`
 of any entrypoint. This *is* the definition of "private" in this contract: privacy is
 declared by role, not inferred from a language's own accessibility statement. A `runner` file cannot be
 one either, for the opposite reason: it is the executable entry, which nothing may `use`.
-A `helper` / `internal_module` file is reachable from the `checks` (or `runner`) file only. A
+On the `m3c` shape the host-rendered runner calls the model alone, so no `use` reaches a
+`helper` / `internal_module` file; a link-time reference out of the model can, which is why the
+leaf-source gates read it too, and no consumer could resolve it. A
 consumer is staged exactly a member's `model` file, so the `model` compiles alone against the
 dependency closure; the producing node's `Generate.gate` syntax check compiles it that way
 (issue #389). A private file may `use` the model in turn, and builds after it (see
@@ -278,9 +269,8 @@ of the *same* role (two `internal_module`s, for instance) are ordered by `compil
 Each entry must resolve to another `files[]` entry, must not name the file itself, and the
 whole edge set must be acyclic. An edge may order files **within** a role or **agree with**
 role precedence; it must never **reverse** it — a `model` file cannot declare
-`compile_after` on a `checks` file, because `ROLE_BUILD_PRECEDENCE` already orders the model
-first and the checks module `use`s it, nor on a `helper` / `internal_module` file, because the
-model compiles alone (the edge is the bundle-layer form of that rule). The host never infers these edges by parsing the
+`compile_after` on a `helper` / `internal_module` file, because `ROLE_BUILD_PRECEDENCE` orders the
+model first and the model compiles alone (the edge is the bundle-layer form of that rule). The host never infers these edges by parsing the
 source; the bundle declares them, and `derive_build_graph` topologically sorts by them.
 
 ### Language
@@ -295,10 +285,9 @@ binding of this contract is `docs/backends/language/<language>/BUNDLE_BINDING.md
 ## Entrypoints
 
 `entrypoints[]` is non-empty. Each entry declares `symbol` (an identifier of the language of
-its `defined_in` file), `module` (the module that publishes `symbol`), `kind` (`operation` or `checks_interface`),
+its `defined_in` file), `module` (the module that publishes `symbol`), `kind` (`operation`, the one kind),
 `node_key` (a unit member), and `defined_in` (the `logical_path` of a file in this bundle).
-An identifier — `symbol`, `module`, and in `state_bindings` (`state_variable`,
-`storage_symbol`, `module`) — is at most `codegen_bundle.IDENTIFIER_MAX` characters and matches
+An identifier — `symbol`, `module` — is at most `codegen_bundle.IDENTIFIER_MAX` characters and matches
 `codegen_bundle.IDENTIFIER_PATTERN`. The bound and the grammar are the language backend's
 (`tools/backends/language/<backend_id>/bundle.py`, reached through
 `tools/backends/registry.py`), not this contract's; a longer name is rejected here rather than
@@ -309,16 +298,14 @@ The check has two layers. The schema layer admits the UNION of the bundle langua
 largest bound), because a schema pattern cannot know which file an identifier belongs to. The
 cross-field layer then holds each identifier to the grammar of the language of the FILE that
 declares it (`_identifier_language_violations`): a file's `modules` to its own language, an
-entrypoint's `symbol` / `module` to its `defined_in` file's, a binding's names to the file that
-defines its `module`. So a name only one language admits is refused in a file of the other.
+entrypoint's `symbol` / `module` to its `defined_in` file's. So a name only one language admits is refused in a file of the other.
 
 `module` exists so the host renders the boundary glue `use <module>, only: <symbol>`
 mechanically. A file may define several modules or name them freely, and the host never
 parses the generated source to discover which module publishes a symbol — the bundle
 declares it.
 
-- `kind: operation` must be defined in a `model`-role file; `kind: checks_interface`
-  in a `checks`-role file.
+- `kind: operation` must be defined in a `model`-role file.
 - `defined_in` must resolve to an existing `files[]` entry.
 - **Attribution invariant**: the file named by `defined_in` belongs to the entrypoint's
   own `node_key` (`files[].member_node_key == entrypoints[].node_key`), **and** `module` is
@@ -327,26 +314,23 @@ declares it.
   another member's export.
 - **Symbol uniqueness**: a symbol is published at most once **per module**, both compared
   under the case rule of the language of the `defined_in` file. A symbol is module-qualified, so
-  each member's checks module legitimately exports the same fixed ABI name (`case_run`,
-  `get_time`) — `a_checks::case_run` and `b_checks::case_run` are distinct procedures. Only the
-  same name in the same module is an unlinkable duplicate.
+  only the same name in the same module is an unlinkable duplicate.
 - **Coverage invariant**: every unit member owns at least one `model` file and an
-  `operation` entrypoint count set by its kind (see "Optimization unit"): a `problem` member
-  **exactly one**, a `component` / `infrastructure` member **at least one**; a `profile` member is
-  rejected rather than counted (issue #175). A member may have any number of `checks_interface`
-  entrypoints — the checks surface is a fixed ABI.
-- **Published-surface invariant (L1c, `component` members)**: when the member's certified IR
+  `operation` entrypoint: **at least one** on a `problem` / `component` / `infrastructure` member,
+  how many being its IR's to say (the next invariant; a `problem` publishes `<spec_id>__step` and
+  optionally `<spec_id>__init`, issue #589); a `profile` member is rejected rather than counted
+  (issue #175).
+- **Published-surface invariant (L1c, `problem` / `component` / `infrastructure` members)**: when the member's certified IR
   pins its published operation names in `public_api.published_operations`, that member's
   `operation` entrypoint `symbol` set must equal that name set, compared under the target
   language's case rule — a member with a
   published op but no matching entrypoint, or an entrypoint symbol absent from the pinned
   surface, is rejected (`bundle_published_surface_mismatch`). The host passes the pinned names
   to `pure_bundle_contract_violation` as `ir_published_operations` (single-sourced via
-  `published_operations_from_ir`); it is inert on a legacy IR with no `public_api` pin or a
-  non-`component` member. This keeps the bundle entrypoints, the generated `<spec_id>__`
+  `published_operations_from_ir`); it is inert on a legacy IR with no `public_api` pin. This keeps the bundle entrypoints, the generated `<spec_id>__`
   procedures (`_validate_component_generated_surface`), and the IR public_api one surface.
 
-`entrypoints` plus `state_bindings` are the structural anchors that replace
+`entrypoints` is the structural anchor that replaces
 signature-shape heuristics: the published update path of a node is a declared field,
 not something recovered by counting the output arguments of a generated procedure
 (`docs/design/deterministic_followups.md`, "Problem state-array usage";
@@ -402,7 +386,6 @@ integer version. The version is part of the token, not a range.
 | `batched_cases` | the harness drives several cases per invocation (reserved) |
 | `full_state_capture` | the harness captures full snapshots itself (reserved, `A4`/`Z6`) |
 | `trusted_reductions` | the harness computes certified reductions over state (reserved, `A4`/`Z6`) |
-| `state_registration` | generated code holds its state in module-level storage the host-rendered runner reads and serializes through the harness (`Z6`, [issue #255](https://github.com/seiya/atmofab/issues/255)) |
 
 `capability_requirements` is a duplicate-free list of tokens. A name outside the
 vocabulary is a violation (fail-closed: an unrecognized capability is never treated as
@@ -415,25 +398,13 @@ bundle states how it expects to be driven.
 `HARNESS_CAPABILITY_MANIFESTS` maps a harness `node_key` to the capability set it
 provides. It is tool-side data, not a field of the harness `controlled_spec.md`: adding
 it to the spec would edit a certified artifact and force recertification for no change
-in generated behavior. `Z6` ([issue #255](https://github.com/seiya/atmofab/issues/255))
-kept it here on the same ground — `state_registration@1` is defined by the render contract
-of the language backend that renders the runner, not by any operation of the harness
-source, so a spec-side `§capabilities` section would be a copy with no reader; the plan on
-the issue records this as a departure from `zero_base_architecture.md` §A4 as written.
+in generated behavior.
 
 ```
-"infrastructure/harness_fortran_cpu@0.10.0": {"sync_single_case@1", "state_registration@1"}
-"infrastructure/harness_cpp_gpu@0.4.0":      {"sync_single_case@1", "state_registration@1"}
-"infrastructure/harness_fortran_cpu_mpi@0.4.0": {"sync_single_case@1", "state_registration@1",
-                                                 "distributed_state@2"}
+"infrastructure/harness_fortran_cpu@0.10.0": {"sync_single_case@1"}
+"infrastructure/harness_cpp_gpu@0.4.0":      {"sync_single_case@1"}
+"infrastructure/harness_fortran_cpu_mpi@0.4.0": {"sync_single_case@1", "distributed_state@2"}
 ```
-
-`state_registration@1` is defined as: the host-rendered runner reads every IR snapshot
-variable straight from the module-level storage of the bundle's checks module
-(`use <spec_id>_checks, only: sb_<var> => <var>`) and serializes it through the harness's
-`__emit_*` / `__write_snapshot` right after `case_setup` and right after `case_run`
-(`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1-b).
-The harness source needs no new operation for it, so the harness version is unchanged.
 
 `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
 version: at this writing the canonical interface block of `harness_fortran_cpu@0.10.0` §5.1
@@ -447,7 +418,7 @@ distinguishes a generation. Until `0.9.0`
 ([issue #582](https://github.com/seiya/atmofab/issues/582)) the block also held the writers of two
 documents no runner writes now, and their types, which no consuming node's bundle code called.
 Its performance-record writer, which no consuming node's bundle code calls either (the
-host-rendered runner calls it, `CHECKS_MODULE_CONTRACT.md` §4, and so does the providing harness's
+host-rendered runner calls it, and so does the providing harness's
 own self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
 shared-memory runtime gives the program itself (issue #512); `harness_fortran_cpu_mpi@0.4.0` §5.1
 begins with the block with the eight-argument writer instead. `harness_cpp_gpu@0.4.0` §5.1 likewise begins
@@ -473,14 +444,11 @@ harness in the manifest provides it now.) `distributed_state@2` carries one rule
 every caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
 values. Like `sync_single_case@1` it names operations of the harness source, so the harness's own
 `Generate.static` pin of §5.1 enforces the operations, and so does the language backend's
-`assert_harness_pin` for the host-rendered runner over that harness (issue #316 PR-4), which
-starts and ends the runtime, gathers every partitioned bound array onto rank 0 before it is
-captured, and writes on rank 0 only. What a bundle states to be driven this way is
+`assert_harness_pin`. A physics node on a target whose parallel backend declares a launcher is
+refused at preflight (`driver_distributed_pending`, `docs/ORCHESTRATION.md`) until the distributed
+driver lands. What a bundle states to be driven this way is
 `target_lowering_plan.state_residency: distributed` with `distributed_state@2` among its
-`capability_requirements` (the residency coupling below); what its checks module publishes for
-each bound array — for each grid dimension, the axis partitioned along it and which cells of the
-global array a rank contributes along that axis, with the global index of the first — is the language binding's (`docs/backends/language/<language>/CHECKS_ABI.md`),
-fixed by the same convention as the bound state itself, so the bundle carries no name of it.
+`capability_requirements` (the residency coupling below).
 
 ### The manifest document
 
@@ -516,69 +484,6 @@ Negotiation is two pure functions and is fail-closed:
   gate is always closed.
 
 Assembly fails closed when any required capability is unsatisfied.
-
-## State bindings
-
-`state_bindings[]` records how each member's primary state is reached: the module-level
-storage the host-rendered runner reads and serializes through the certified harness at
-the two capture points of a case (right after `case_setup`, right after `case_run`), before
-any generated callback of that case runs. Each entry declares `node_key` (a unit member),
-`state_variable`, `storage_symbol`, `module`, `capture`, and `capability`.
-`(node_key, state_variable)` is the identity
-of a member's primary state and is **unique** across the array: a second binding for the same
-pair would leave the mapping ambiguous (two consumers could register or read different storage
-for one declared state). The same `state_variable` name on two distinct members is allowed —
-the identity is the pair, not the name.
-
-Since 1.2.0 (`Z6`, [issue #255](https://github.com/seiya/atmofab/issues/255)) the array is
-**required on the `m3c` shape** and its content is fixed by the IR: the acceptance
-contract (`pure_bundle_contract_violation`, the layer both the producer's gate and the
-post-generate tamper gate run) requires exactly one entry per IR snapshot variable
-(`io_contract.raw_requirements.required_evidence[state_snapshots].schema.variables[]` —
-an unbound variable and a binding of an undeclared name are both
-`bundle_state_binding_mismatch`), each with `storage_symbol == state_variable`,
-`module == <spec_id>_checks`, `capture: harness_registration` and
-`capability: state_registration@1`. That is the convention the host renders
-`use <spec_id>_checks, only: sb_<var> => <var>` from WITHOUT reading the bundle — the runner
-is rendered from the IR alone, before the leaf runs — so the entry declares that the module
-implements the convention, and the checks-ABI layer then requires each bound variable
-published by that module. The `harness` shape carries no binding (its runner is its own
-writer, and there is no checks module to bind).
-
-`module` is the module that publishes `storage_symbol`, so the host renders the runner's
-import of it mechanically (as for an entrypoint). It must be a
-module a `checks`-role file **owned by the binding's own `node_key`** declares — for **either
-capture**. Otherwise a binding for member A could name member B's checks module and
-capture/register B's storage as A's state, producing incorrect verification evidence with no
-compile or link failure. The exporting module is declared, never inferred from the source.
-
-- `capture: harness_registration` — the one capture since 1.2.0: the generated code holds
-  the state in module-level storage the host-rendered runner reads directly. It requires a
-  `state_registration@N` token in `capability`, and the same token must appear in
-  `capability_requirements`. `storage_symbol` is the actual storage, so
-  `(module, storage_symbol)` is **unique** across bindings — two states bound to one storage
-  would silently capture the same evidence for both.
-- `capture: checks_getter` (1.1.0) is **retired** with the snapshot getters
-  (`get_scalar` / `get_r1..r4`) it read through: a value that passed through a generated
-  procedure could have been anything the procedure wrote, and `Z6` makes that path unrepresentable rather than
-  policed. The token is no longer a member of the `capture` enum, so a 1.1.0 document that
-  declares it fails the schema layer; there is no backfill (the 1.1.0 → 1.2.0 bump is the
-  minor a document of the old shape does not satisfy — see "Version compatibility").
-
-The coupling holds in **both directions, per token**: each `state_registration@N` token in
-`capability_requirements` requires a `harness_registration` binding whose `capability` is
-that same token. A declared `state_registration@2` is not licensed by a binding that uses
-`state_registration@1`; otherwise the bundle negotiates an ABI wider than the code it ships
-actually uses.
-
-Agreement between `state_bindings[]` and the IR's snapshot variables (the set equality and
-the convention above) is checked at assembly time (`Z2`), where the IR is in scope. This
-contract validates the bundle in isolation and therefore does not check it. (Through 1.1.0
-the assembly-time check was membership in `algorithm.state_variables`; the snapshot schema
-is the wider set — the compile gate requires `algorithm.state_variables` ⊆ snapshot variables
-(`_validate_io_contract_file`, added with Z6: a declared state the runner never captures is
-a `Compile fail`) — and it is the set the runner captures, so it is the one the binding must
-cover.)
 
 ## Build-graph derivation
 
@@ -640,8 +545,7 @@ import-statement analysis of the generated source:
    boundary, so a false reject of an independent-branch closure is worse than a skipped check.
    The safety property it protects (a buildable order) is not the closure's to guarantee; the
    bundle's own acyclicity is enforced by `compile_after` (the cycle check) regardless;
-2. the bundle files by `ROLE_BUILD_PRECEDENCE = (model, internal_module, helper, checks,
-   runner)`, tie-broken by unit-member order and then by `logical_path` lexical order. The
+2. the bundle files by `ROLE_BUILD_PRECEDENCE = (model, internal_module, helper, runner)`, tie-broken by unit-member order and then by `logical_path` lexical order. The
    model comes first because it compiles alone; every private role follows it, so a private
    file may `use` the model with no declaration (issue #415; until then the private roles
    preceded the model, and the host's own control file was refused for a private file that
@@ -682,15 +586,13 @@ result: `json.dumps(graph, sort_keys=True)` is byte-identical. This is what lets
 graph become a derivation input in `Z5`.
 
 **Parity.** For a bundle of the `harness` shape the derived order is
-`model` → `internal_module` → `helper` → `runner` — `checks` sits between the last two in
-`ROLE_BUILD_PRECEDENCE`, and this shape forbids that role, so no bundle of it can carry one —
-and the executable entry is last
+`model` → `internal_module` → `helper` → `runner`, and the executable entry is last
 in the link exactly where the host glue is on the other shape; there is no IR-shaped
 counterpart to compare it against, because the IR-shaped control-file renderer assumes the fixed
-model/checks/runner set. For a bundle of the `M3c` shape (one member, `model` + `checks`, a
+model/runner set. For a bundle of the `M3c` shape (one member, `model`, a
 dependency closure, host-rendered runner glue), the derived object order equals the
 object order of the IR-shaped build control file the conductor renders via `_write_makefile`
-(the build system's `control_file.render_node`): dependency objects → model → checks → runner.
+(the build system's `control_file.render_node`): dependency objects → model → runner.
 `_write_makefile` is the control-file author for Model B
 dependency closures. Its reachability narrowed in Z4 (issue #171) and the accounting is
 worth stating: its sole call site is guarded by `not self._leaf_substep(refs,

@@ -29,7 +29,7 @@
   build that refuses a declared flag from reaching the gate, so the gate reads 0 / 1 / 2 / 255 as a
   verdict and any other status as an unusable invocation.
 - **Suppression.** No flag disables an in-source diagnostic pragma, so the language backend's
-  static check refuses every one (`docs/backends/language/cuda_cpp/CHECKS_ABI.md` §5).
+  static check refuses every one (`docs/backends/language/cuda_cpp/GENERATE_RULES.md` §Legality and gate guards).
 
 ## Measurements
 

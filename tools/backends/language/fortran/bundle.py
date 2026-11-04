@@ -32,9 +32,8 @@ COMPILER_SELECTOR_FAMILIES: tuple[str, ...] = (
     "nagfor", "mpif90", "mpifort", "mpif77", "frt", "frtpx",
 )
 
-#: An identifier is 1-63 characters (the f2008/f2018 limit). An entrypoint `symbol` / `module`,
-#: or a `state_bindings` `state_variable` / `storage_symbol`, longer than this cannot pass the
-#: mandatory `Generate.gate` syntax check, so the bundle contract rejects it before assembly
+#: An identifier is 1-63 characters (the f2008/f2018 limit). An entrypoint `symbol` / `module`
+#: longer than this cannot pass the mandatory `Generate.gate` syntax check, so the bundle contract rejects it before assembly
 #: rather than deferring the failure to the build.
 IDENTIFIER_MAX = 63
 
@@ -45,7 +44,7 @@ IDENTIFIER_MAX = 63
 IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,{IDENTIFIER_MAX - 1}}}(?![\s\S])"
 
 #: The bound on a spec_id, DERIVED rather than restated: the longest name generated from a
-#: spec_id appends a 7-character role suffix (`_runner` / `_checks`), and `IDENTIFIER_MAX` is this
+#: spec_id appends a 7-character role suffix (`_runner`), and `IDENTIFIER_MAX` is this
 #: language's identifier limit — the one place that number is spelled for this backend. The extra
 #: character is margin. The neutral spec-input gate takes the minimum of every declared
 #: language's value (`tools/spec_input_gates.max_spec_id_len`), and the runner's render-time check
@@ -82,7 +81,7 @@ MANDATORY_SYNTAX_COMPILER = DEFAULT_COMPILER
 COMPILED = True
 
 #: The extension of every source file the HOST names for this language — the staged dependency
-#: model, the host-rendered runner glue, the model and checks files the runner `use`s by fixed
+#: model, the host-rendered runner glue, the model file the runner `use`s by fixed
 #: name. One of `SOURCE_EXTENSIONS`.
 HOST_SOURCE_EXTENSION = ".f90"
 
@@ -90,11 +89,6 @@ HOST_SOURCE_EXTENSION = ".f90"
 def model_basename(spec_id: str) -> str:
     """The node's model source, which the runner and every consumer's build `use` by name."""
     return f"{spec_id}_model{HOST_SOURCE_EXTENSION}"
-
-
-def checks_basename(spec_id: str) -> str:
-    """The node's checks source, which the host-rendered runner `use`s by name."""
-    return f"{spec_id}_checks{HOST_SOURCE_EXTENSION}"
 
 
 def runner_basename(spec_id: str) -> str:

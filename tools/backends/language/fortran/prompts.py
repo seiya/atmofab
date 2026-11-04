@@ -5,7 +5,7 @@ The `prompt_fragments` capability. The neutral templates (`tools/prompt_template
 state the contract every language shares and mark the places a language's rules go with
 `{{language:<name>}}`; the fragment files under `tools/prompt_templates/backends/language/fortran/`
 hold what goes there for Fortran — the lint and syntax idioms, the lowering of neutral signature
-tokens, the checks-module binding. `tools/orchestration_runtime.py` composes the two before it
+tokens. `tools/orchestration_runtime.py` composes the two before it
 substitutes anything, so a composed template is exactly the text the leaf reads. The fragment
 files' format is neutral (`tools/prompt_fragments.py`).
 
@@ -49,6 +49,18 @@ def runner_output_document() -> str:
     """The runner-output binding, whole. Raises `OSError` / `UnicodeError` when it cannot be
     read; the caller turns that into a named fail-closed outcome."""
     return RUNNER_OUTPUT_DOCUMENT.read_text(encoding="utf-8")
+
+
+#: This language's generate rules, from which the conductor slices the gate guards the `harness`
+#: producer is shown (`workflow_conductor._gate_guards_section`).
+GENERATE_RULES_DOCUMENT = (Path(__file__).resolve().parents[4]
+                           / "docs" / "backends" / "language" / "fortran" / "GENERATE_RULES.md")
+
+
+def generate_rules_document() -> str:
+    """The generate rules, whole. Raises `OSError` / `UnicodeError` when they cannot be read; the
+    caller turns that into a named fail-closed outcome."""
+    return GENERATE_RULES_DOCUMENT.read_text(encoding="utf-8")
 
 
 #: The gate rule a certified exemplar most often predates, and how to satisfy it, appended to the

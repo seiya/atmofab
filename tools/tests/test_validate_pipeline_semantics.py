@@ -460,23 +460,6 @@ def _harness_validated_elsewhere():
     return mock.patch.object(vps, "_closure_node_validated_in_own_pipeline", side_effect=answer)
 
 
-def _m3c_checks_source(stem: str = "shallow_water2d",
-                       state: tuple[str, ...] = ("h", "hu", "hv", "ok")) -> str:
-    """A fixed-ABI checks module for `stem` publishing the bound `state`: since R4-a PR-3 (issue
-    #284) every physics node of a runner-rendering target is M3c, so a post_generate row about
-    something else carries one. Its `case_run` calls `<stem>__step`, which the model must
-    define (the checks-reach gate, issue #314)."""
-    names = _abi_names()
-    return (f"module {stem}_checks\n  use {stem}_model, only: {stem}__step\n"
-            "  implicit none\n  private\n"
-            + "".join(f"  real, allocatable :: {v}(:,:)\n  public :: {v}\n" for v in state)
-            + "".join(f"  public :: {n}\n" for n in names) + "contains\n"
-            + "".join(f"  subroutine {n}()\n"
-                      + (f"    call {stem}__step()\n" if n == "case_run" else "")
-                      + f"  end subroutine {n}\n" for n in names)
-            + f"end module {stem}_checks\n")
-
-
 #: The mock problem's published operation (issue #589): a `problem` publishes `<spec_id>__step`, and
 #: the shared fixture's IR drives it — one call per case (no `loop`), the three state arrays
 #: `inout` (assumed shape: their extents are the schema's `[2,2]`), the logical result `ok`.
@@ -9346,8 +9329,7 @@ end program shallow_water2d_runner
         runtime input needs no evidence form of its own. Since Z6 (issue #255) the remedy routes
         a case INPUT to `case.test_case_set[].inputs` and not into the snapshot at all; what this
         row still pins is the validator half — a numeric-coded `scalar` snapshot variable (the
-        only form the producer can emit: a `real(dp)` module variable, `CHECKS_MODULE_CONTRACT.md`
-        §1-b) is accepted and a one-element list is refused (PR #236 round 1 corrected the remedy
+        only form a driver's capture can emit: a number) is accepted and a one-element list is refused (PR #236 round 1 corrected the remedy
         from "a string is scalar", which the validator accepts and no runner produces).
         Driven through `_validate_raw_evidence` via the full validator over the default
         fixture with one numeric-coded variable added to the IR schema, the on-disk
@@ -9468,6 +9450,9 @@ end program shallow_water2d_runner
                 if initial is not None:
                     case_path = snapshots_dir / "snapshot000.json"
                     doc = json.loads(case_path.read_text(encoding="utf-8"))
+                    # Both captures of a driver carry its `step` (issue #589 D8).
+                    doc["step"] = 0
+                    _write_json(case_path, doc)
                     doc.update(initial)
                     _write_json(snapshots_dir / "initial" / "snapshot000.json", doc)
                 return validate(repo_root=repo_root, workspace_root="workspace")
@@ -12133,8 +12118,6 @@ shallow_water2d_model.o shallow_water2d_model.mod: shallow_water2d_model.f90 dyn
 shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
 \t$(FC) -c $<
 
-shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 shallow_water2d_model.mod
-\t$(FC) -c $<
 """
             _create_minimal_execution_tree(
                 repo_root,
@@ -12144,7 +12127,6 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                 run_command=["x", "y"],
                 extra_sources={
                     "dynamics_shallow_water_flux_2d_rusanov_p0_model.f90": dep_model_text,
-                    "shallow_water2d_checks.f90": _m3c_checks_source(),
                 },
                 makefile_text=makefile_text,
             )
@@ -12267,8 +12249,6 @@ shallow_water2d_model.o shallow_water2d_model.mod: shallow_water2d_model.f90 dyn
 shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
 \t$(FC) -c $<
 
-shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 shallow_water2d_model.mod
-\t$(FC) -c $<
 """
             _create_minimal_execution_tree(
                 repo_root,
@@ -12278,7 +12258,6 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                 run_command=["x", "y"],
                 extra_sources={
                     "dynamics_shallow_water_flux_2d_rusanov_p0_model.f90": dep_model_text,
-                    "shallow_water2d_checks.f90": _m3c_checks_source(),
                 },
                 makefile_text=makefile_text,
                 dependency_resolved={
@@ -14985,10 +14964,9 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
         )
         self.assertIn("`!$omp` presence floor", phase_02,
                       "phase_02 no longer documents the Generate.gate presence floor")
-        # Issue #400: a checks-module loop's lowering is not G6's to judge, so phase_02 no longer
-        # hands those loops to the reviewer.
+        # Issue #400: phase_02 hands the reviewer no loop outside the model (the checks module
+        # those loops lived in went with issue #589, and its G6 sentence with it).
         self.assertNotIn("always yours", phase_02)
-        self.assertIn("G6 does not judge how its loops are lowered", phase_02)
         self.assertIn(
             "_validate_parallel_presence_floor", phase_02,
             "phase_02 no longer names the emitting checker (doc<->gate drift guard)",
@@ -15535,8 +15513,8 @@ class ControlFileDispatchTest(unittest.TestCase):
 class TargetLanguageRefusalTest(unittest.TestCase):
     """The source gates' language refusals land where they are raised (issue #289, R4-b PR-3):
     a target whose language declares neither `bundle_facts` nor `source_reading` is refused by
-    `_validate_generate_outputs` on the src dir, and the checks gate refuses a language without
-    `bundle_facts` — never read as Fortran, never a silent pass."""
+    `_validate_generate_outputs` on the src dir, and the isolation gate refuses a language without
+    `source_reading` — never read as Fortran, never a silent pass."""
 
     def test_generate_outputs_refuses_a_language_it_cannot_read(self) -> None:
         from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
@@ -15555,15 +15533,16 @@ class TargetLanguageRefusalTest(unittest.TestCase):
             self.assertTrue(any(f"'zz_lang' declares no '{capability}'" in v
                                 for v in violations), (capability, violations))
 
-    def test_the_checks_gate_refuses_a_language_without_file_facts(self) -> None:
+    def test_the_isolation_gate_refuses_a_language_without_a_source_reader(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             src = Path(t)
-            (src / "bx_checks.f90").write_text("module bx_checks\nend module bx_checks\n")
+            (src / "bx_model.f90").write_text("module bx_model\nend module bx_model\n")
             violations: list[str] = []
-            vps._validate_checks_source_files(
+            vps._validate_model_source_isolation(
                 NodeExecution(node_key="component/bx@0.1.0", node_dir=src, exec_dir=src,
-                              pipeline_dir=src), "zz_lang", src, [], violations)
-        self.assertTrue(any("'zz_lang' declares no 'bundle_facts'" in v for v in violations),
+                              pipeline_dir=src), "zz_lang", src, [src / "bx_model.f90"],
+                violations)
+        self.assertTrue(any("'zz_lang' declares no 'source_reading'" in v for v in violations),
                         violations)
 
 
@@ -15604,25 +15583,6 @@ class SourceGateDispatchTest(unittest.TestCase):
             violations: list[str] = []
             vps._validate_runner_outputs(root, execution, src, violations)
         self.assertTrue(any("hardcoded snapshot filename" in v for v in violations), violations)
-
-    def test_a_case_run_reaching_no_operation_is_reported_by_the_generation_gates(self) -> None:
-        """Issue #314: the checks-reach gate, through the post_generate entry on an M3c node."""
-        model = ("module p_model\n  implicit none\ncontains\n  subroutine p__step(u)\n"
-                 "    real, intent(inout) :: u(:)\n    u = 2*u\n  end subroutine p__step\n"
-                 "end module p_model\n")
-        checks = _reach_checks("BODY").replace("bx_", "p_").replace("bx__", "p__")
-        for body, reported in (("    u = 2*u\n", True), ("    call p__step(u)\n", False)):
-            with self.subTest(body=body), tempfile.TemporaryDirectory() as t:
-                root = Path(t)
-                execution, src = self._pipeline(root)
-                (src / "p_model.f90").write_text(model)
-                (src / "p_checks.f90").write_text(checks.replace("BODY", body))
-                violations: list[str] = []
-                with unittest.mock.patch.object(vps, "_execution_m3c_language",
-                                                return_value="fortran"):
-                    vps._validate_generate_outputs_for_generation(root, execution, "src_1",
-                                                                  violations)
-                self.assertEqual(any(_REACH in v for v in violations), reported, violations)
 
 
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):
@@ -20953,7 +20913,8 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                 ("no comparison without one publishing unit", violations))
 
     def test_the_three_carried_shapes_are_refused_by_the_pre_existing_arm(self) -> None:
-        # THE PREMISE OF THIS FIX, as a row. `checks_module_abi_facts`' docstring names three
+        # THE PREMISE OF THIS FIX, as a row. `checks_module_abi_facts`' docstring (deleted with
+        # the module, issue #589) named three
         # shapes a `n not in defined_procs` refusal would fail: use-association, a generic
         # interface, and a submodule implementation. Each is legal Fortran (`gfortran
         # -fsyntax-only` rc=0, executed) — the use-association one only with its `dep_mod`
@@ -21209,214 +21170,150 @@ class DependencyExpectedNodeKeysTests(unittest.TestCase):
                          {"component/top", "component/base"})
 
 
-_CHECKS_OK = """\
-module bx_checks
-  use, intrinsic :: iso_fortran_env, only: real64
-  use bx_model, only: bx__step
-  ! allow(C003)
-  implicit none
-  private
-  real(real64), allocatable :: u(:)
-  public :: case_setup, case_run, get_time
-  public :: u
-contains
-  subroutine case_setup(case_id, ok)
-    character(len=*), intent(in) :: case_id
-    logical, intent(out) :: ok
-    ok = .true.
-    if (len_trim(case_id) < 0) continue
-  end subroutine case_setup
-  subroutine case_run(case_id, steps, cells_updated, ok)
-    character(len=*), intent(in) :: case_id
-    integer, intent(out) :: steps, cells_updated
-    logical, intent(out) :: ok
-    call bx__step(u)
-    steps = 1
-    cells_updated = size(u)
-    ok = len_trim(case_id) >= 0
-  end subroutine case_run
-end module bx_checks
-"""
-
-# Issue #314: the model publishes the operation `case_run` calls (the checks-reach gate).
+# Issue #314's fixture model, and since issue #589 the source the isolation gate reads.
 _MODEL_OK = ("module bx_model\n! allow(C003)\nimplicit none\ncontains\n"
              "subroutine bx__step(u)\nreal(8), intent(inout) :: u(:)\nu = 2*u\n"
              "end subroutine bx__step\nend module bx_model\n")
 
 
-def _abi_names() -> tuple[str, ...]:
-    from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
-    return CHECKS_PUBLIC_NAMES
+class ModelSourceIsolationGateTests(unittest.TestCase):
+    """`_validate_model_source_isolation` (issue #589 PR-1b; `_validate_checks_source_files`'s
+    surviving half): a physics node's leaf-authored sources do not `use` the harness, open a file,
+    or name a run output only the host writes. Every row drives the handler over a model source
+    (and, where a row says so, a second source of the bundle)."""
 
-
-#: The fixed checks ABI, read from its authority (the runner renderer) rather than restated.
-_ABI_NAMES = _abi_names()
-
-
-class ChecksAbiSingleAuthorityTests(unittest.TestCase):
-    """One fact, one authority. Two copies of the ABI name set is precisely how the Z2 bundle
-    gate came to require the runner-imported SUBSET while this gate required all ten, so a
-    prompt-conformant bundle passed one and failed the other."""
-
-    def test_static_gate_and_renderer_share_one_tuple(self) -> None:
-        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
-        from tools import host_render
-        # `is`, not `==`: equal-but-separate tuples are the drift surface, and they would be
-        # equal right up to the commit that edits one of them. The seam hands back the
-        # renderer's own object (`tuple(t) is t` for a tuple), so identity still holds across it.
-        self.assertIs(host_render.checks_public_names("fortran"), CHECKS_PUBLIC_NAMES)
-
-    def test_the_static_gate_reads_the_set_and_does_not_restate_it(self) -> None:
-        # The gate lost its module-level import when the ABI moved into the backend (module
-        # scope has no node, so it has no language to ask about). What must not come back is a
-        # literal list: that is the second authority this class exists to forbid.
-        import inspect
-        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
-        src = inspect.getsource(vps._validate_checks_source_files)
-        self.assertIn("checks_public_names", src)
-        for name in CHECKS_PUBLIC_NAMES:
-            # BOTH quote styles: scanning for one of them let a restatement in the other pass,
-            # which is the whole failure this class is about.
-            for literal in (f'"{name}"', f"'{name}'"):
-                self.assertNotIn(literal, src, "the ABI names must not be restated here")
-
-    def test_bundle_gate_requires_exactly_that_set(self) -> None:
-        # The Z2 acceptance layer must key off the same authority, not a restatement.
-        import inspect
-        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
-        import tools.codegen_bundle as _cb
-        src = inspect.getsource(_cb.m3c_checks_abi_violation)
-        self.assertIn("CHECKS_PUBLIC_NAMES", src)
-        for name in CHECKS_PUBLIC_NAMES:
-            self.assertNotIn(f'"{name}"', src, "the ABI names must not be restated here")
-
-
-class ChecksAbiFactsStatementSplitTests(unittest.TestCase):
-    """`checks_module_abi_facts` reads STATEMENTS, not lines. Every rule in it is written against
-    one statement, so a logical line carrying `;` separators must be split first — otherwise legal
-    Fortran (gfortran rc=0) is reported as unpublished by BOTH gates that share this parser."""
-
-    def test_semicolon_separated_public_statements(self) -> None:
-        src = ("module demo_checks\n  private\n  public :: case_setup; public :: case_run\n"
-               "contains\n  subroutine case_setup()\n  end subroutine case_setup\n"
-               "  subroutine case_run()\n  end subroutine case_run\nend module demo_checks\n")
-        published, _, _ = fortran_source.checks_module_abi_facts(src, "demo")
-        self.assertIn("case_setup", published)  # was lost: its token was `case_setup;`
-        self.assertIn("case_run", published)
-        self.assertNotIn("public", published)  # was invented from the second statement's keyword
-
-    def test_semicolon_after_bare_private_still_flips_the_default(self) -> None:
-        # `private; public :: case_setup` => default private, and ONLY case_setup published.
-        src = ("module demo_checks\n  private; public :: case_setup\ncontains\n"
-               "  subroutine case_setup()\n  end subroutine case_setup\n"
-               "  subroutine case_run()\n  end subroutine case_run\nend module demo_checks\n")
-        published, _, _ = fortran_source.checks_module_abi_facts(src, "demo")
-        self.assertEqual(published, {"case_setup"})
-
-    def test_string_literal_naming_subroutine_does_not_corrupt_the_parse(self) -> None:
-        # The type-spec prefix of `proc_start` is greedy enough to run from a declaration's type
-        # keyword into a string literal, registering a phantom definition AND incrementing
-        # proc_depth — which suppressed every later `public ::` and real definition, so both gates
-        # reported the whole ABI unpublished on a module gfortran accepts.
-        src = ("module demo_checks\n  private\n"
-               "  character(len=*), parameter :: note = 'run subroutine case_setup first'\n"
-               "  public :: case_setup, case_run\ncontains\n"
-               "  subroutine case_setup()\n  end subroutine case_setup\n"
-               "  subroutine case_run()\n  end subroutine case_run\nend module demo_checks\n")
-        published, subs, defined = fortran_source.checks_module_abi_facts(src, "demo")
-        self.assertEqual(published, {"case_setup", "case_run"})
-        self.assertEqual(defined, {"case_setup", "case_run"})
-        self.assertEqual(subs, {"case_setup", "case_run"})
-
-    def test_quoted_type_spec_function_header_is_recognized(self) -> None:
-        # Codex review, the reverse of the string-literal case: a legal type-spec may hold a quote
-        # in its parens. Excluding quotes from the prefix made the header unmatchable, so the
-        # function went unrecorded — published but not in `defined_subroutines`, which let the
-        # bundle gate accept a FUNCTION for a name the runner `call`s. Masking the string CONTENT
-        # (not excluding quotes) recognizes it.
-        src = ("module demo_checks\n  public\ncontains\n"
-               "  character(kind=kind('a')) function metric_compute()\n"
-               "    metric_compute = 'x'\n  end function metric_compute\n"
-               "  subroutine case_setup()\n  end subroutine case_setup\nend module demo_checks\n")
-        published, subs, defined = fortran_source.checks_module_abi_facts(src, "demo")
-        self.assertIn("metric_compute", defined)
-        self.assertNotIn("metric_compute", subs)  # it is a function, not a subroutine
-        self.assertIn("case_setup", subs)
-
-    def test_typed_function_statements_still_register(self) -> None:
-        # ...and excluding quotes from the prefix must not lose a real typed function header.
-        src = ("module demo_checks\n  public\ncontains\n"
-               "  real(kind(1d0)) function f(x)\n    real(kind(1d0)) :: x\n    f = x\n"
-               "  end function f\n  character(len=32) function name()\n    name = 'x'\n"
-               "  end function name\nend module demo_checks\n")
-        published, subs, defined = fortran_source.checks_module_abi_facts(src, "demo")
-        self.assertEqual(defined, {"f", "name"})
-        self.assertEqual(subs, set())
-
-    def test_semicolon_inside_a_string_does_not_split(self) -> None:
-        src = ("module demo_checks\n  character(len=*), parameter :: s = 'a;b'\n  private\n"
-               "  public :: case_setup\ncontains\n  subroutine case_setup()\n"
-               "  end subroutine case_setup\nend module demo_checks\n")
-        published, _, _ = fortran_source.checks_module_abi_facts(src, "demo")
-        self.assertEqual(published, {"case_setup"})
-
-
-class DistributedChecksSourceGateTests(unittest.TestCase):
-    """`_validate_checks_source_files` on a harness that runs the program as several ranks
-    (issue #316, R4-c PR-4): the checks module publishes each bound ARRAY's partition metadata,
-    and a physics source may `use` the harness for its distributed-state operations and for
-    nothing else. The single-process harness keeps both rules as they were."""
-
-    _MPI = "harness_fortran_cpu_mpi"
-    _META = ("sb_u_axis1", "sb_u_lo1", "sb_u_hi1", "sb_u_glo1",
-             "sb_u_axis2", "sb_u_lo2", "sb_u_hi2", "sb_u_glo2")
-    _CHECKS = _CHECKS_OK.replace(
-        "  public :: u\n",
-        "  public :: u, s\n  public :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1, "
-        "sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2\n"
-        "  integer :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1, "
-        "sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2\n  real(real64) :: s\n")
-
-    def _run(self, checks: str, *, harness: str | None = _MPI, model: str = _MODEL_OK,
-             bound_state: object = None) -> list[str]:
+    def _run(self, model: str = _MODEL_OK, *, helper: str | None = None,
+             runner: str | None = None, harness: str | None = None) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             src = tmp / "src"
             src.mkdir()
             (src / "bx_model.f90").write_text(model)
-            (src / "bx_checks.f90").write_text(checks)
+            if helper is not None:
+                (src / "bx_helper.f90").write_text(helper)
+            if runner is not None:
+                (src / "bx_runner.f90").write_text(runner)
             violations: list[str] = []
-            vps._validate_checks_source_files(
+            vps._validate_model_source_isolation(
                 NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp, exec_dir=tmp,
                               pipeline_dir=tmp), "fortran", src, [src / "bx_model.f90"],
-                violations,
-                bound_state={"u": "[8]", "s": "scalar"} if bound_state is None else bound_state,
-                harness_spec_id=harness)
+                violations, harness_spec_id=harness)
             return violations
 
-    def test_the_metadata_of_every_bound_array_is_required_published(self) -> None:
-        self.assertEqual(self._run(self._CHECKS), [])
-        for hidden in self._META:
-            with self.subTest(hidden=hidden):
-                v = self._run(self._CHECKS.replace(
-                    "  public :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1, "
-                    "sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2\n",
-                    "  public :: " + ", ".join(m for m in self._META if m != hidden) + "\n"))
-                self.assertEqual(len(v), 1, v)
-                self.assertIn(f"['{hidden}']", v[0])
-        # A scalar needs none, and an unparseable shape asks none (the render refuses it).
-        self.assertEqual(self._run(self._CHECKS.replace("public :: u, s", "public :: u, s, q"),
-                                   bound_state={"u": "[8]", "s": "scalar", "q": "[,]"}), [])
+    def _with(self, statement: str) -> str:
+        """`_MODEL_OK` with `statement` in its specification part."""
+        return _MODEL_OK.replace("! allow(C003)\n", f"! allow(C003)\n{statement}\n")
 
-    def test_a_single_process_harness_asks_for_no_metadata(self) -> None:
-        for harness in ("harness_fortran_cpu", None, ""):
-            with self.subTest(harness=harness):
-                self.assertEqual(self._run(_CHECKS_OK.replace("  public :: u\n",
-                                                               "  public :: u, s\n"),
-                                           harness=harness), [])
+    def test_a_clean_model_passes(self) -> None:
+        self.assertEqual(self._run(), [])
+
+    def test_open_inside_a_string_literal_is_not_file_io(self) -> None:
+        # The `open(` scan reads code, so a quoted `'open('` in a message is not a call — matching
+        # it would fail-close a legal module.
+        legal = self._with("  character(len=8), parameter :: s = 'open('")
+        self.assertEqual([v for v in self._run(legal) if "file I/O" in v], [])
+        real = _MODEL_OK.replace("u = 2*u\n", "open(unit=10, file='x')\nu = 2*u\n")
+        self.assertTrue(any("file I/O" in v for v in self._run(real)))
+
+    def test_harness_use_as_a_second_statement_is_still_caught(self) -> None:
+        # Fail-OPEN guard. The harness-isolation scan is an anchored `^\s*use\b` regex, so a
+        # harness `use` written as the second statement of a `;`-joined line was invisible —
+        # legal Fortran (gfortran rc=0) that breaches the isolation invariant with nothing
+        # downstream to catch it: the harness IS staged for Generate.syntax, and the bundle
+        # contract has no isolation layer. The gate reads STATEMENTS.
+        src = _MODEL_OK.replace(
+            "module bx_model\n",
+            "module bx_model\n  use, intrinsic :: iso_fortran_env, only: dp => real64; "
+            "use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n", 1)
+        self.assertTrue(any("must not `use` the harness" in v for v in self._run(src)),
+                        self._run(src))
+
+    def test_commented_out_harness_use_behind_an_exotic_separator_is_not_live(self) -> None:
+        # issue #23, defect A: the false-REJECT direction of this gate. `str.splitlines()` broke
+        # on eight separators Fortran does not treat as line ends, so a form feed inside a
+        # comment ended the comment early and re-admitted its tail AS CODE — a commented-out
+        # `use harness_...` became a live isolation breach and failed Generate on a source
+        # gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         ("\u2028", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = self._with(f"  ! dropped this: {ch} use harness_fortran_cpu_model")
+                self.assertEqual([v for v in self._run(src) if "harness" in v], [],
+                                 f"a {name} must not end the comment")
+
+    def test_comment_line_inside_a_wrapped_literal_does_not_spill_it_as_code(self) -> None:
+        # A continued character context resumes at "the next line that is not a comment line"
+        # (F2008 3.3.2.4), and a blank line is a comment line (3.3.2.3) — verified against
+        # gfortran 14.2, which compiles the fixture below at `-std=f2008` with no diagnostic.
+        # Terminating the statement at the gap instead flushes a truncated literal and lets the
+        # REST of it be read as code: the `open(` here is prose inside a string, and the gate
+        # would report file I/O in a module that does none.
+        for gap, label in (("\n", "blank line"), ("    ! wrap note\n", "comment line")):
+            with self.subTest(gap=label):
+                src = self._with(
+                    "  character(len=*), parameter :: hint = 'fill the state in the runner&\n"
+                    + gap + "    & with open(unit=...), never here'")
+                self.assertEqual([v for v in self._run(src) if "file I/O" in v], [])
+
+    def test_a_model_using_the_harness_is_refused_in_every_form(self) -> None:
+        # `use :: harness_...` and `use, non_intrinsic :: ...` must also be caught.
+        for form in ("use harness_fortran_cpu_model", "use :: harness_fortran_cpu_model",
+                     "use, non_intrinsic :: harness_fortran_cpu_model"):
+            with self.subTest(form=form):
+                self.assertTrue(any("must not `use` the harness" in v
+                                    for v in self._run(self._with(f"  {form}"))), form)
+
+    def test_a_forbidden_output_name_in_a_literal_is_refused_and_a_comment_is_not(self) -> None:
+        # What each scan reads is the statement with its literal contents kept: the name lives
+        # in a string. Comment-free since issue #589: a comment naming one writes nothing.
+        literal = self._with("  character(len=*), parameter :: n = 'verdict.json'")
+        self.assertTrue(any("forbidden judge-artifact filename detected (verdict.json)" in v
+                            for v in self._run(literal)), self._run(literal))
+        self.assertEqual(self._run(self._with("  ! writes verdict.json")), [])
+
+    def test_every_other_bundle_source_is_read_and_the_host_runner_is_not(self) -> None:
+        # What the checks module's half of this gate became: a helper the model reaches through
+        # an external reference is a leaf source like the model, and the host-rendered runner,
+        # the sole `use harness_*` site, is the one file the scan skips.
+        io = "subroutine h()\n  open(unit=9, file='x')\nend subroutine h\n"
+        harness = "subroutine h()\n  use harness_fortran_cpu_model\nend subroutine h\n"
+        for helper, needle in ((io, "file I/O"), (harness, "must not `use` the harness"),
+                               ("subroutine h()\n  character(len=*), parameter :: n = "
+                                "'verdict.json'\nend subroutine h\n", "verdict.json")):
+            with self.subTest(needle=needle):
+                v = self._run(helper=helper)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(needle, v[0])
+                self.assertIn("bx_helper.f90", v[0])
+        self.assertEqual(self._run(runner=f"program bx_runner\n{harness}end program\n"), [])
+
+    def test_the_seam_refusal_and_a_load_failure_are_violations_never_raises(self) -> None:
+        # `_validate_compile_stage_impl` has no handler: an escape would replace every sibling
+        # gate's violation with a traceback. Each failure lands beside the scans' own findings.
+        bad = _MODEL_OK.replace("u = 2*u\n", "open(unit=10, file='x')\nu = 2*u\n")
+        with unittest.mock.patch.object(vps.host_render, "runner_render_refusal",
+                                        return_value="backend down"):
+            v = self._run(bad)
+        self.assertTrue(any("its runner cannot be rendered" in x and "backend down" in x
+                            for x in v), v)
+        self.assertTrue(any("file I/O" in x for x in v), v)
+        with unittest.mock.patch.object(vps.host_render, "runner_render_refusal",
+                                        side_effect=ImportError("broken package")):
+            v = self._run(bad)
+        self.assertTrue(any("could not be loaded" in x and "broken package" in x for x in v), v)
+        self.assertTrue(any("file I/O" in x for x in v), v)
+        with unittest.mock.patch.object(vps.host_render, "physics_harness_uses",
+                                        side_effect=RuntimeError("no binding")):
+            v = self._run(bad, harness="harness_fortran_cpu_mpi")
+        self.assertTrue(any("the distributed binding of harness" in x and "no binding" in x
+                            for x in v), v)
+        self.assertTrue(any("file I/O" in x for x in v), v)
 
     def test_a_physics_source_may_use_the_harness_for_its_distributed_operations_only(
             self) -> None:
+        # Issue #316 (R4-c PR-4), over the model and a second bundle source: the rule keeps its
+        # allowance on a harness that runs the program as several ranks, and nowhere else.
+        mpi = "harness_fortran_cpu_mpi"
         use = "  use harness_fortran_cpu_mpi_model, only: "
         ok = (f"{use}harness_fortran_cpu_mpi__partition, harness_fortran_cpu_mpi__reduce_sum\n",
               f"{use}part => harness_fortran_cpu_mpi__partition\n",
@@ -21433,26 +21330,24 @@ class DistributedChecksSourceGateTests(unittest.TestCase):
             (f"{use}harness_fortran_cpu_mpi__h_named\n", "__h_named`"),
             ("  use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n",
              "module harness_fortran_cpu_model is not"))
-        for where in ("checks", "model"):
+
+        def run(line: str, where: str, harness: str) -> list[str]:
+            if where == "model":
+                return self._run(_MODEL_OK.replace("! allow(C003)", line + "! allow(C003)"),
+                                 harness=harness)
+            return self._run(helper=f"module bx_helper\n{line}end module bx_helper\n",
+                             harness=harness)
+
+        for where in ("model", "helper"):
             for line in ok:
                 with self.subTest(where=where, line=line):
-                    if where == "checks":
-                        v = self._run(self._CHECKS.replace("  private\n", line + "  private\n"))
-                    else:
-                        v = self._run(self._CHECKS, model=_MODEL_OK.replace(
-                            "! allow(C003)", line + "! allow(C003)"))
-                    self.assertEqual(v, [])
+                    self.assertEqual(run(line, where, mpi), [])
                     # ...and none of it on a single-process harness.
-                    self.assertTrue(any("must not `use` the harness module" in x for x in (
-                        self._run(_CHECKS_OK.replace("  private\n", line + "  private\n"),
-                                  harness="harness_fortran_cpu"))))
+                    self.assertTrue(any("must not `use` the harness module" in x
+                                        for x in run(line, where, "harness_fortran_cpu")))
             for line, needle in refused:
                 with self.subTest(where=where, line=line):
-                    if where == "checks":
-                        v = self._run(self._CHECKS.replace("  private\n", line + "  private\n"))
-                    else:
-                        v = self._run(self._CHECKS, model=_MODEL_OK.replace(
-                            "! allow(C003)", line + "! allow(C003)"))
+                    v = run(line, where, mpi)
                     self.assertEqual(len(v), 1, v)
                     self.assertIn(needle, v[0])
                     self.assertIn(f"bx_{where}.f90", v[0])
@@ -21462,7 +21357,7 @@ class DistributedChecksSourceGateTests(unittest.TestCase):
         """Through the caller: the harness is the TARGET's (issue #284), read off the pipeline's
         profile — a pipeline for a distributed target asks with that harness."""
         from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
-        for harness in (self._MPI, "harness_fortran_cpu"):
+        for harness in ("harness_fortran_cpu_mpi", "harness_fortran_cpu"):
             with self.subTest(harness=harness), tempfile.TemporaryDirectory() as t:
                 root = Path(t)
                 install_target_profile(root, profile_with(
@@ -21471,792 +21366,211 @@ class DistributedChecksSourceGateTests(unittest.TestCase):
                 src = pipe / "source" / "src_1" / "src"
                 src.mkdir(parents=True)
                 (src / "bx_model.f90").write_text(_MODEL_OK)
-                (src / "bx_checks.f90").write_text(_CHECKS_OK)
                 execution = NodeExecution(node_key="component/bx@0.1.0", node_dir=pipe,
                                           exec_dir=pipe, pipeline_dir=pipe)
                 with unittest.mock.patch.object(vps, "_execution_m3c_language",
                                                 return_value="fortran"), \
                         unittest.mock.patch.object(
-                            vps, "_validate_checks_source_files",
+                            vps, "_validate_model_source_isolation",
                             autospec=True) as spy:
                     vps._validate_generate_outputs_for_generation(root, execution, "src_1", [])
                 self.assertEqual(spy.call_count, 1)
                 self.assertEqual(spy.call_args.kwargs["harness_spec_id"], harness)
 
-
-_REACH = "case_run reaches no published operation of the model"
-_G18_DIR = Path(__file__).parent / "data" / "checks_reach_g18"
-
-
-def _reach_checks(run_body: str, *, uses: str = "  use bx_model, only: bx__step\n",
-                  setup_body: str = "", extra: str = "", tail: str = "") -> str:
-    """A fixed-ABI `bx_checks` whose `case_run` body is `run_body` (issue #314)."""
-    return ("module bx_checks\n  use, intrinsic :: iso_fortran_env, only: real64\n" + uses
-            + "  implicit none\n  private\n  real(real64), allocatable :: u(:)\n"
-            "  public :: case_setup, case_run, get_time\n"
-            "  public :: u\ncontains\n"
-            "  subroutine case_setup(case_id, ok)\n    character(len=*), intent(in) :: case_id\n"
-            "    logical, intent(out) :: ok\n" + setup_body + "    ok = len_trim(case_id) >= 0\n"
-            "  end subroutine case_setup\n"
-            "  subroutine case_run(case_id, steps, cells_updated, ok)\n"
-            "    character(len=*), intent(in) :: case_id\n"
-            "    integer, intent(out) :: steps, cells_updated\n    logical, intent(out) :: ok\n"
-            + run_body + "    steps = 1\n    cells_updated = size(u)\n"
-            "    ok = len_trim(case_id) >= 0\n  end subroutine case_run\n" + extra
-            + "end module bx_checks\n" + tail)
-
-
-class ChecksReachGateTests(unittest.TestCase):
-    """Issue #314: the checks-reach gate, pinned at the handler (`_validate_checks_source_files`)
-    so deleting its wiring is red. Each row is named for the mutant it kills."""
-
-    def _run(self, checks: str, model: str | None = _MODEL_OK, *, spec: str = "bx",
-             language: str = "fortran", node_key: str = "component/bx@0.1.0",
-             suffix: str = ".f90") -> list[str]:
+    def test_the_generation_gate_reports_a_finding_of_the_handler(self) -> None:
+        # The other half of the row above (which spies the handler): the finding reaches the list.
+        from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
         with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            src = tmp / "src"
-            src.mkdir()
-            models = []
-            if model is not None:
-                (src / f"{spec}_model{suffix}").write_text(model)
-                models = [src / f"{spec}_model{suffix}"]
-            (src / f"{spec}_checks{suffix}").write_text(checks)
+            root = Path(t)
+            install_target_profile(root, profile_with())
+            pipe = root / pipe_ref("component__bx__0.1.0", "p1")
+            src = pipe / "source" / "src_1" / "src"
+            src.mkdir(parents=True)
+            (src / "bx_model.f90").write_text(self._with("  use harness_fortran_cpu_model"))
+            execution = NodeExecution(node_key="component/bx@0.1.0", node_dir=pipe,
+                                      exec_dir=pipe, pipeline_dir=pipe)
             violations: list[str] = []
-            vps._validate_checks_source_files(
-                NodeExecution(node_key=node_key, node_dir=tmp, exec_dir=tmp, pipeline_dir=tmp),
-                language, src, models, violations)
-            return violations
+            with unittest.mock.patch.object(vps, "_execution_m3c_language",
+                                            return_value="fortran"):
+                vps._validate_generate_outputs_for_generation(root, execution, "src_1", violations)
+        self.assertTrue(any("must not `use` the harness" in v for v in violations), violations)
 
-    def _reach(self, checks: str, model: str | None = _MODEL_OK) -> list[str]:
-        return [v for v in self._run(checks, model) if _REACH in v]
 
-    def test_a_case_run_that_calls_the_operation_passes(self) -> None:
-        self.assertEqual(self._run(_reach_checks("    call bx__step(u)\n")), [])
+class DriverEvidencePerArtifactTests(unittest.TestCase):
+    """Issue #589 D8, through the whole validator over the shared execution fixture: what the
+    host-rendered driver writes is held per artifact. A capture (the final one, `initial/`, a
+    `history/` sample) holds every declared variable and `step`; a `series/` file holds exactly
+    the IR's `step_series` names and the writer's scalar `t`, of one length, one per final
+    capture. A harness's own runner writes no `initial/`, and its snapshot needs no `step`."""
 
-    def test_m1_a_case_run_computing_the_state_inline_is_refused(self) -> None:
-        v = self._run(_reach_checks("    u = 2*u\n"))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn(_REACH, v[0])
-        self.assertIn("(one of: bx__step)", v[0])
-        self.assertIn("bx_checks.f90", v[0])
+    _ARRAYS = ("h", "hu", "hv")
+    _NAMES = ("step", "h_max", "h_min", "hu_max", "hu_min", "hv_max", "hv_min")
 
-    def test_m2_a_model_defining_no_operation_is_refused(self) -> None:
-        model = ("module bx_model\nimplicit none\ncontains\nsubroutine solve(u)\n"
-                 "real(8), intent(inout) :: u(:)\nu = 2*u\nend subroutine solve\n"
-                 "end module bx_model\n")
-        for label, m in (("no op", model), ("no model file", None),
-                         ("abstract interface only",
-                          ("module bx_model\nimplicit none\nabstract interface\n"
-                           "subroutine bx__step(u)\nreal(8), intent(inout) :: u(:)\n"
-                           "end subroutine bx__step\nend interface\nend module bx_model\n"))):
-            with self.subTest(label):
-                v = self._run(_reach_checks("    call bx__step(u)\n"), m)
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("the model source defines no `subroutine bx__<op>`", v[0])
+    def _violations(self, change, *, step_series: bool = True, driver: bool = True) -> list[str]:
+        """`validate()` over a tree holding one case's whole driver evidence, after
+        `change(snapshots_dir)`. `driver=False` is a harness's own run: the final capture alone."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text=("module shallow_water2d_model\n"
+                            "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+                            "implicit none\ncontains\nsubroutine solve(flag)\n"
+                            "  logical, intent(out) :: flag\n"
+                            "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+                            "end subroutine solve\nend module shallow_water2d_model\n"),
+                runner_text=("program shallow_water2d_runner\nimplicit none\n"
+                             "write(*,*) 'diagnostics only'\nend program shallow_water2d_runner\n"),
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            workspace = repo_root / "workspace"
+            ir_path = (workspace / "ir" / "problem__shallow_water2d__0.3.0"
+                       / "shallow-water2d_20260415_001" / "spec.ir.yaml")
+            ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            if step_series:
+                ir_doc["io_contract"]["raw_requirements"]["required_evidence"].append(
+                    {"artifact": "step_series", "required": True, "names": list(self._NAMES)})
+                _write_json(ir_path, ir_doc)
+            snapshots = (workspace / "pipelines" / "problem__shallow_water2d__0.3.0" / _TARGET_ID
+                         / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
+                         / "problem__shallow_water2d__0.3.0" / "raw" / "state_snapshots")
+            final = snapshots / "snapshot000.json"
+            doc = json.loads(final.read_text(encoding="utf-8"))
+            if driver:
+                doc["step"] = 2
+                _write_json(final, doc)
+                _write_json(snapshots / "initial" / final.name, {**doc, "step": 0})
+                _write_json(snapshots / "history" / "snapshot000__1.json", {**doc, "step": 1})
+                if step_series:
+                    _write_json(snapshots / "series" / final.name, {
+                        "t": 0.5, **{n: [0.0, 1.0] for n in self._NAMES}})
+            change(snapshots)
+            with _harness_validated_elsewhere():
+                return validate(repo_root=repo_root, workspace_root="workspace")
 
-    def test_a_boz_literal_names_no_procedure_for_the_walk(self) -> None:
-        # Issue #501, round 2 (Codex): a mask that KEPT a BOZ's text left its prefix letter and
-        # its hex digits in the view as identifiers, so `int(z'dead')` in `case_run` was an edge
-        # to an orphan helper `dead` that calls the operation, and the gate passed a `case_run`
-        # that never reaches the model. Each row names its helper after a word the literal
-        # spells; the `z'1234'` row spells no word and is the control that the fixture refuses
-        # for the reach reason at all.
-        for helper, lit in (("dead", "z'dead'"), ("z", "z'1'"), ("o", "o'7'"), ("b", "b'1'"),
-                            ("dead", "z'1234'")):
-            with self.subTest(lit):
-                extra = (f"  subroutine {helper}()\n    call bx__step(u)\n"
-                         f"  end subroutine {helper}\n")
-                checks = _reach_checks(f"    integer :: k\n    k = int({lit})\n", extra=extra)
-                v = self._run(checks)
-                self.assertEqual(len(v), 1, v)
-                self.assertIn(_REACH, v[0])
+    def _drop(self, relative: str, key: str):
+        def change(snapshots: Path) -> None:
+            path = snapshots / relative
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            del doc[key]
+            _write_json(path, doc)
+        return change
 
-    def test_m2_the_backend_function_refuses_an_empty_model_list(self) -> None:
-        v = fortran_source.checks_model_reach_violations(
-            Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"), [], "bx")
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("defines no `subroutine bx__<op>`", v[0])
-
-    def test_m3_only_case_run_is_the_root(self) -> None:
-        orphan = ("  subroutine orphan()\n    call bx__step(u)\n  end subroutine orphan\n")
-        decoy = ("module other_checks\n  use bx_model, only: bx__step\n  implicit none\n"
-                 "contains\n  subroutine case_run()\n    real(8) :: w(2)\n"
-                 "    call bx__step(w)\n  end subroutine case_run\nend module other_checks\n")
-        for label, checks in (
-                ("from case_setup", _reach_checks("", setup_body="    call bx__step(u)\n")),
-                ("from an orphan helper", _reach_checks("", extra=orphan)),
-                ("from a case_run in another module", _reach_checks("", tail=decoy))):
-            with self.subTest(label):
-                self.assertEqual(len(self._reach(checks)), 1, self._run(checks))
-
-    def test_m4_a_helper_case_run_reaches_is_followed(self) -> None:
-        sub = "  subroutine advance()\n    call bx__step(u)\n  end subroutine advance\n"
-        fn = ("  function advance(v) result(r)\n    real(real64), intent(in) :: v(:)\n"
-              "    real(real64) :: r\n    call bx__step(u)\n    r = sum(v)\n"
-              "  end function advance\n")
-        chain = ("  subroutine outer()\n    call inner\n  end subroutine outer\n"
-                 "  subroutine inner()\n    call bx__step(u)\n  end subroutine inner\n")
-        for label, body, extra in (
-                ("subroutine", "    call advance()\n", sub),
-                ("zero-argument subroutine without parentheses", "    call advance\n", sub),
-                ("function", "    s = advance(u)\n", fn),
-                ("two levels", "    call outer()\n", chain)):
-            with self.subTest(label):
-                checks = _reach_checks("    real(real64) :: s\n" + body, extra=extra)
-                self.assertEqual(self._run(checks), [])
-                # ...and the same helper NOT reached from case_run is refused.
-                self.assertEqual(len(self._reach(_reach_checks("", extra=extra))), 1)
-
-    def test_m5_a_rename_onto_the_operation_is_followed_and_no_other(self) -> None:
-        self.assertEqual(self._run(_reach_checks(
-            "    call step(u)\n", uses="  use bx_model, only: step => bx__step\n")), [])
-        self.assertEqual(self._run(_reach_checks(
-            "    call step(u)\n",
-            uses="  use bx_model, only: bx__other, step => bx__step\n")), [])
-        for label, uses in (
-                ("dependency rename", "  use bx_model\n  use dep_model, only: step => dep__flux\n"),
-                ("rename onto a name the model does not define",
-                 "  use bx_model, only: bx__step, step => bx__other\n"),
-                ("no rename", "  use bx_model, only: bx__step\n")):
-            with self.subTest(label):
-                self.assertEqual(len(self._reach(_reach_checks("    call step(u)\n",
-                                                               uses=uses))), 1)
-
-    def test_m6_the_published_set_is_the_models_and_is_not_shadowed(self) -> None:
-        shadow = "  subroutine bx__step(v)\n    real(real64) :: v(:)\n  end subroutine bx__step\n"
-        other = _MODEL_OK.replace("bx__step", "bx__other")
-        v = self._run(_reach_checks("    call bx__step(u)\n", uses="  use bx_model\n",
-                                    extra=shadow), other)
-        # P is read from the MODEL: a checks-defined `bx__step` is not a member, so the call to
-        # it is no reach (and, being outside P, no shadow either).
-        self.assertEqual(len(v), 1, v)
-        self.assertIn(_REACH, v[0])
-        self.assertIn("(one of: bx__other)", v[0])
-        v = self._run(_reach_checks("    call bx__step(u)\n", uses="  use bx_model\n",
-                                    extra=shadow))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("names `bx__step`, a published operation of the model, other than in", v[0])
-        self.assertEqual(len(self._reach(_reach_checks(
-            "    call dep__flux(u)\n", uses="  use bx_model\n  use dep_model\n"))), 1)
-        # Without the `use` the name is not the operation: both refusals.
-        v = self._run(_reach_checks("    call bx__step(u)\n", uses=""))
-        self.assertEqual(len(v), 2, v)
-        self.assertIn("no `use bx_model`", v[0])
-        self.assertIn(_REACH, v[1])
-        # An import inside a procedure is not the module's: no hit (round 2 — the model
-        # imported only in a sibling procedure let an unrelated `bx__step` count).
-        v = self._run(_reach_checks("    call bx__step(u)\n", uses="").replace(
-            "  subroutine case_setup(case_id, ok)\n",
-            "  subroutine case_setup(case_id, ok)\n    use bx_model, only: bx__step\n"))
-        self.assertTrue(any("no `use bx_model` in the specification part" in x for x in v), v)
-        self.assertTrue(any(_REACH in x for x in v), v)
-
-    def test_a_local_entity_named_as_the_operation_is_refused(self) -> None:
-        """Round 1 (issue #314): a call to a LOCAL entity carrying the operation's name — a
-        procedure pointer, a statement function, a dummy procedure, a variable, a component —
-        looks like a call to the model and runs the checks module's own update. Since round 2
-        the rule is stated by position, not by declaration form: a member of P appears only in a
-        `use bx_model` statement or as the callee of a `call`, so each of these is refused; a
-        rename's local name is NOT policed (a disclosed residual, asserted `[]` below), and a
-        name the module did not import from the model is not a reach."""
-        impl = ("  subroutine impl(v)\n    real(real64), intent(inout) :: v(:)\n    v = 2*v\n"
-                "  end subroutine impl\n")
-        spec = "    integer, intent(out) :: steps, cells_updated\n"
-        for label, checks, name in (
-                ("procedure pointer", _reach_checks(
-                    "    bx__step => impl\n    call bx__step(u)\n", extra=impl).replace(
-                    spec, spec + "    procedure(impl), pointer :: bx__step\n"), "bx__step"),
-                ("pointer under a rename", _reach_checks(
-                    "    bx__step => impl\n    call bx__step(u)\n",
-                    uses="  use bx_model, only: real_op => bx__step\n", extra=impl).replace(
-                    spec, spec + "    procedure(impl), pointer :: bx__step\n"), "bx__step"),
-                ("rename's local name bound", _reach_checks(
-                    "    step => impl\n    call step(u)\n",
-                    uses="  use bx_model, only: step => bx__step\n", extra=impl).replace(
-                    spec, spec + "    procedure(impl), pointer :: step\n"), "step"),
-                ("statement function", _reach_checks(
-                    "    u = bx__step(u)\n", uses="  use bx_model, only:\n").replace(
-                    spec, spec + "    real(real64) :: bx__step, x\n    bx__step(x) = 2*x\n"),
-                 "bx__step"),
-                ("dummy procedure", _reach_checks(
-                    "    call drive(impl)\n", extra=impl + (
-                        "  subroutine drive(bx__step)\n    procedure(impl) :: bx__step\n"
-                        "    call bx__step(u)\n  end subroutine drive\n")), "bx__step"),
-                ("undeclared dummy procedure", _reach_checks(
-                    "    call drive(impl)\n", extra=impl + (
-                        "  subroutine drive(bx__step)\n    call bx__step(u)\n"
-                        "  end subroutine drive\n")), "bx__step"),
-                ("variable", _reach_checks("    bx__step = 1\n", uses="  use bx_model, only:\n"
-                                           ).replace(spec, spec + "    integer :: bx__step\n"),
-                 "bx__step"),
-                ("another module's rename onto the name", _reach_checks(
-                    "    call bx__step(u)\n",
-                    uses="  use bx_model, only: bx__other\n  use fake_mod, only: bx__step => fake\n",
-                    tail="module fake_mod\ncontains\n  subroutine fake(v)\n    real(8) :: v(:)\n"
-                         "    v = 2*v\n  end subroutine fake\nend module fake_mod\n"), "bx__step"),
-                ("local variable under an unrelated import", _reach_checks(
-                    "    bx__step = 1\n    u = 2*u\n", uses="  use bx_model, only: bx__other\n"
-                    ).replace(spec, spec + "    real(real64) :: bx__step\n"), "bx__step"),
-                ("component", _reach_checks("    q%bx__step = 1\n").replace(
-                    "  real(real64), allocatable :: u(:)\n",
-                    "  real(real64), allocatable :: u(:)\n  type :: holder\n"
-                    "    integer :: bx__step\n  end type holder\n  type(holder) :: q\n"),
-                 "bx__step")):
-            with self.subTest(label):
-                v = self._run(checks)
-                if name == "bx__step":
-                    self.assertTrue(any(f"names `{name}`, a published operation of the model, "
-                                        f"other than in" in x for x in v), v)
+    def _series(self, **changes):
+        def change(snapshots: Path) -> None:
+            path = snapshots / "series" / "snapshot000.json"
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            for key, value in changes.items():
+                if value is None:
+                    del doc[key]
                 else:
-                    # A rename's local name is not policed (an ordinary word another scope
-                    # may use); its redeclaration is a disclosed residual of a dead call's gain.
-                    self.assertEqual(v, [], v)
-        # A name the module never imported from the model is not a reach, whatever it is.
-        v = self._run(_reach_checks("    call bx__step(u)\n",
-                                    uses="  use bx_model, only: bx__other\n"))
-        self.assertTrue(any(_REACH in x for x in v), v)
+                    doc[key] = value
+            _write_json(path, doc)
+        return change
 
-    def test_m7_a_comment_a_literal_or_a_use_is_not_a_reach(self) -> None:
-        spec_anchor = "    integer, intent(out) :: steps, cells_updated\n"
-        head_anchor = "  subroutine case_run(case_id, steps, cells_updated, ok)\n"
-        uses = "  use bx_model, only: bx__other\n"
-        for label, checks in (
-                ("comment", _reach_checks("    ! call bx__step(u)\n", uses=uses)),
-                ("literal", _reach_checks("    print *, 'call bx__step(u)'\n", uses=uses)),
-                ("procedure-local use", _reach_checks("", uses=uses).replace(
-                    head_anchor, head_anchor + "    use bx_model, only: step => bx__step\n")),
-                ("interface body", _reach_checks("", uses=uses).replace(
-                    spec_anchor, spec_anchor + "    interface\n      subroutine bx__step(v)\n"
-                    "        real(8) :: v(:)\n      end subroutine bx__step\n"
-                    "    end interface\n"))):
-            with self.subTest(label):
-                self.assertEqual(len(self._reach(checks)), 1, self._run(checks))
-                # An interface body naming the operation is also a misplaced name (round 2).
-                self.assertEqual(len(self._run(checks)), 2 if label == "interface body" else 1,
-                                 self._run(checks))
+    def test_the_whole_evidence_of_a_driver_passes(self) -> None:
+        self.assertEqual(self._violations(lambda _s: None), [])
 
-    def test_m8_an_unreadable_structure_is_a_violation_and_a_missing_reader_raises(
-            self) -> None:
-        # `endsubroutine` is a legal variable name (gfortran accepts it) that the structure
-        # reader reads as the statement it spells — the documented carrier of a parse error.
-        checks = _reach_checks("    endsubroutine = 1.0\n    call bx__step(u)\n").replace(
-            "    logical, intent(out) :: ok\n",
-            "    logical, intent(out) :: ok\n    real :: endsubroutine\n")
-        v = fortran_source.checks_model_reach_violations(
-            Path("bx_checks.f90"), checks, [], "bx")
-        self.assertIn("defines no", v[0])  # P is read first
-        with tempfile.TemporaryDirectory() as t:
-            model = Path(t) / "bx_model.f90"
-            model.write_text(_MODEL_OK)
-            v = fortran_source.checks_model_reach_violations(
-                Path("bx_checks.f90"), checks, [model], "bx")
-            self.assertTrue(v, v)
-            self.assertTrue(all("checks-reach gate cannot read" in x for x in v), v)
-            with unittest.mock.patch.object(
-                    fortran_source, "structure_reading",
-                    side_effect=fortran_structure.FortranStructureUnavailableError("absent")), \
-                    self.assertRaises(fortran_structure.FortranStructureUnavailableError):
-                fortran_source.checks_model_reach_violations(
-                    Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"),
-                    [model], "bx")
+    def test_a_capture_missing_a_declared_variable_is_refused_per_artifact(self) -> None:
+        for relative in ("snapshot000.json", "initial/snapshot000.json",
+                         "history/snapshot000__1.json"):
+            with self.subTest(relative=relative):
+                v = self._violations(self._drop(relative, "h"))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(f"{{'{Path(relative).name}': ['h']}}", v[0])
+                self.assertIn("declared state_variables missing", v[0])
 
-    def test_a_reach_refusal_does_not_stop_the_sibling_gates(self) -> None:
-        """The handler appends the reach findings and runs on: the forbidden-filename scan that
-        follows it still reports (round 1 — a `return` there survived every row)."""
-        v = self._run(_reach_checks("    u = 2*u\n    ! see summary.json\n"))
-        self.assertTrue(any(_REACH in x for x in v), v)
-        self.assertTrue(any("forbidden judge-artifact filename detected (summary.json)" in x
-                            for x in v), v)
+    def test_a_capture_without_step_is_refused_per_artifact(self) -> None:
+        for relative in ("snapshot000.json", "initial/snapshot000.json",
+                         "history/snapshot000__1.json"):
+            with self.subTest(relative=relative):
+                v = self._violations(self._drop(relative, "step"))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(relative, v[0])
+                self.assertIn("the driver's capture carries no 'step'", v[0])
 
-    def test_a_checks_module_without_case_run_is_refused(self) -> None:
-        checks = _reach_checks("    call bx__step(u)\n").replace(
-            "subroutine case_run(", "subroutine case_go(").replace(
-            "end subroutine case_run", "end subroutine case_go")
-        v = self._reach_only_root(checks)
+    def test_a_harness_s_own_snapshot_without_step_is_admitted(self) -> None:
+        # The polarity's other half: only the driver writes `initial/`, which is how the gate
+        # knows whose capture this is. No `step_series`, no `initial/`, and no `step`.
+        self.assertEqual(self._violations(lambda _s: None, step_series=False, driver=False), [])
+
+    def test_a_driver_capture_without_step_is_refused_on_a_call_node_too(self) -> None:
+        # A one-call node declares no `step_series`, and its driver still counts.
+        def change(snapshots: Path) -> None:
+            self._drop("snapshot000.json", "step")(snapshots)
+        v = self._violations(change, step_series=False)
         self.assertEqual(len(v), 1, v)
-        self.assertIn("module bx_checks defines no `case_run`", v[0])
+        self.assertIn("the driver's capture carries no 'step'", v[0])
 
-    def _reach_only_root(self, checks: str) -> list[str]:
-        return [v for v in self._run(checks) if "case_run" in v and "fixed ABI" not in v]
-
-    def test_m10_an_operation_passed_as_an_actual_is_refused(self) -> None:
-        """Round 2: only the callee position names the operation; passed as an actual it is a
-        name a callee could run as anything (0 corpus occurrences)."""
-        v = self._run(_reach_checks(
-            "    call driver(bx__step)\n",
-            extra="  subroutine driver(op)\n    external :: op\n  end subroutine driver\n"))
-        self.assertTrue(any("names `bx__step`" in x for x in v), v)
-
-    def test_a_logical_if_call_is_a_reach(self) -> None:
-        self.assertEqual(self._run(_reach_checks(
-            "    if (size(u) > 0) call bx__step(u)\n")), [])
-
-    def test_a_rename_local_used_as_an_ordinary_name_elsewhere_passes(self) -> None:
-        """Round 2's over-refusal probe: a rename's local name is an ordinary word."""
-        self.assertEqual(self._run(_reach_checks(
-            "    call step(u)\n", uses="  use bx_model, only: step => bx__step\n",
-            extra="  subroutine count_it(n)\n    integer, intent(out) :: n\n"
-                  "    integer :: step\n    n = 0\n    do step = 1, 3\n      n = n + step\n"
-                  "    end do\n  end subroutine count_it\n")), [])
-
-    def test_an_import_in_another_unit_of_the_file_is_not_the_modules(self) -> None:
-        """Round 3: a second module in the file renaming the operation onto `step` does not make
-        the checks module's own `step` the operation."""
-        checks = ("module helper_m\n  use bx_model, only: step => bx__step\nend module helper_m\n"
-                  + _reach_checks("    call step(u)\n", extra=(
-                      "  subroutine step(v)\n    real(real64), intent(inout) :: v(:)\n"
-                      "    v = 2*v\n  end subroutine step\n")))
-        self.assertTrue(any(_REACH in x for x in self._run(checks)), self._run(checks))
-
-    def test_only_a_call_callee_is_a_reach(self) -> None:
-        """A rename's local name mentioned but never called (here a local variable that shadows
-        it) is no reach — only the callee of a `call` counts."""
-        checks = _reach_checks("    step = 1\n    u = 2*u\n",
-                               uses="  use bx_model, only: step => bx__step\n").replace(
-            "    integer, intent(out) :: steps, cells_updated\n",
-            "    integer, intent(out) :: steps, cells_updated\n    integer :: step\n")
-        self.assertEqual([_REACH in x for x in self._run(checks)], [True])
-
-    def test_round_2_forms_are_refused(self) -> None:
-        """Round 2: a generic interface, a construct name, an interface body inside case_run and
-        a helper file, each carrying the operation's name."""
-        spec = "    integer, intent(out) :: steps, cells_updated\n"
-        own = ("  subroutine own_update(v)\n    real(real64), intent(inout) :: v(:)\n"
-               "    v = 2*v\n  end subroutine own_update\n")
-        for label, checks in (
-                ("generic interface", _reach_checks(
-                    "    call bx__step(u)\n", uses="  use bx_model, only: bx__other\n",
-                    extra=own).replace("  public :: u\n", "  public :: u\n  interface bx__step\n"
-                                       "    module procedure own_update\n  end interface\n")),
-                ("construct name", _reach_checks(
-                    "    bx__step: block\n      u = 2*u\n    end block bx__step\n")),
-                ("interface body in case_run", _reach_checks("    call bx__step(u)\n").replace(
-                    spec, spec + "    interface\n      subroutine bx__step(v)\n"
-                    "        real(8) :: v(:)\n      end subroutine bx__step\n"
-                    "    end interface\n"))):
-            with self.subTest(label):
-                v = self._run(checks)
-                self.assertTrue(any("names `bx__step`" in x for x in v), v)
-        with tempfile.TemporaryDirectory() as t:
-            src = Path(t)
-            (src / "bx_model.f90").write_text(_MODEL_OK)
-            (src / "bx_helpers.f90").write_text(
-                "module bx_helpers\ncontains\n  subroutine bx__step(v)\n    real(8) :: v(:)\n"
-                "    v = 2*v\n  end subroutine bx__step\nend module bx_helpers\n")
-            v = fortran_source.checks_model_reach_violations(
-                src / "bx_checks.f90", _reach_checks("    call bx__step(u)\n"),
-                [src / "bx_model.f90"], "bx")
+    def test_a_series_with_a_subset_of_the_names_is_refused(self) -> None:
+        v = self._violations(self._series(hv_max=None))
         self.assertEqual(len(v), 1, v)
-        self.assertIn("bx_helpers.f90: names `bx__step`", v[0])
-        # The host-rendered runner is not a leaf source and is not read.
-        with tempfile.TemporaryDirectory() as t:
-            src = Path(t)
-            (src / "bx_model.f90").write_text(_MODEL_OK)
-            (src / "bx_runner.f90").write_text("program bx_runner\n  integer :: bx__step\n"
-                                               "end program bx_runner\n")
-            self.assertEqual(fortran_source.checks_model_reach_violations(
-                src / "bx_checks.f90", _reach_checks("    call bx__step(u)\n"),
-                [src / "bx_model.f90"], "bx"), [])
-            # ...but a leaf file of the runner's NAME in a subdirectory is read (round 3).
-            (src / "sub").mkdir()
-            (src / "sub" / "bx_runner.f90").write_text(
-                "module fake_m\ncontains\n  subroutine bx__step(v)\n    real(8) :: v(:)\n"
-                "    v = 2*v\n  end subroutine bx__step\nend module fake_m\n")
-            v = fortran_source.checks_model_reach_violations(
-                src / "bx_checks.f90", _reach_checks("    call bx__step(u)\n"),
-                [src / "bx_model.f90"], "bx")
-            self.assertEqual(len(v), 1, v)
-            self.assertIn("sub/bx_runner.f90: names `bx__step`", v[0])
+        self.assertIn("exactly the step_series names", v[0])
+        self.assertIn("series/snapshot000.json", v[0])
 
-    def test_m11_case_is_folded_on_both_sides(self) -> None:
-        self.assertEqual(self._run(_reach_checks("    CALL BX__STEP(U)\n")), [])
-        self.assertEqual(self._run(_reach_checks("    call bx__step(u)\n"),
-                                   _MODEL_OK.replace("bx__step", "BX__Step")), [])
-
-    def test_m12_a_contained_procedure_is_its_own_node(self) -> None:
-        contained = ("  contains\n    subroutine inner()\n      call bx__step(u)\n"
-                     "    end subroutine inner\n")
-        reached = _reach_checks("    call inner()\n").replace(
-            "  end subroutine case_run\n", contained + "  end subroutine case_run\n")
-        self.assertEqual(self._run(reached), [])
-        orphan = _reach_checks("").replace(
-            "  end subroutine case_run\n", contained + "  end subroutine case_run\n")
-        self.assertEqual(len(self._reach(orphan)), 1, self._run(orphan))
-
-    def test_g18_the_certified_pair_passes_and_the_inline_rewrite_is_refused(self) -> None:
-        checks = (_G18_DIR / "advdiff1d_linear_checks.f90").read_text()
-        model = (_G18_DIR / "advdiff1d_linear_model.f90").read_text()
-        kw = {"spec": "advdiff1d_linear", "node_key": "problem/advdiff1d_linear@0.4.3"}
-        self.assertEqual(self._run(checks, model, **kw), [])
-        call = ("      call advdiff1d_linear__step(cur_nx, cur_len, cur_a, cur_nu, cur_t_start, &\n"
-                "        cur_t_end, cur_n_step, n, u, u_work, t_new, step_ok)\n")
-        self.assertEqual(checks.count(call), 1)
-        g18 = checks.replace(call, "      u_work = u - 0.1_dp*(u - cshift(u, -1))\n"
-                                   "      t_new = t + 0.1_dp\n      step_ok = .true.\n")
-        v = self._run(g18, model, **kw)
+    def test_a_series_with_a_name_the_ir_does_not_declare_is_refused(self) -> None:
+        v = self._violations(self._series(extra=[0.0, 1.0]))
         self.assertEqual(len(v), 1, v)
-        self.assertIn(_REACH, v[0])
-        self.assertIn("(one of: advdiff1d_linear__step)", v[0])
+        self.assertIn("exactly the step_series names", v[0])
 
-    def test_g18_cuda_the_certified_pair_passes_and_the_inline_rewrite_is_refused(
-            self) -> None:
-        checks = (_G18_DIR / "advdiff1d_linear_checks.cu").read_text()
-        model = (_G18_DIR / "advdiff1d_linear_model.cu").read_text()
-        kw = {"spec": "advdiff1d_linear", "node_key": "problem/advdiff1d_linear@0.4.3",
-              "language": "cuda_cpp", "suffix": ".cu"}
-        self.assertEqual([x for x in self._run(checks, model, **kw) if "reach" in x], [])
-        self.assertEqual(self._run(checks, model, **kw), [])
-        call = ("    advdiff1d_linear_model::advdiff1d_linear__step(g_case.nx, kA, kNu, g_case.dx, "
-                "g_case.dt, u_view_in,\n"
-                "                                                   u_view_out, step_ok);\n")
-        decl_start = checks.index("namespace advdiff1d_linear_model {")
-        decl_end = checks.index("}  // namespace advdiff1d_linear_model\n") + len(
-            "}  // namespace advdiff1d_linear_model\n")
-        self.assertEqual(checks.count(call), 1)
-        g18 = (checks[:decl_start] + checks[decl_end:]).replace(
-            call, "    for (int i = 0; i < g_case.nx; ++i) { u[i] = u[i] * 0.9; }\n"
-                  "    step_ok = true;\n")
-        v = self._run(g18, model, **kw)
+    def test_a_series_without_t_is_refused(self) -> None:
+        v = self._violations(self._series(t=None))
         self.assertEqual(len(v), 1, v)
-        self.assertIn(_REACH, v[0])
+        self.assertIn("a series file holds t", v[0])
 
-    def test_m1_cuda_wiring_through_the_handler(self) -> None:
-        model = ("namespace p_model {\nvoid p__step(std::vector<double>& u) { u[0] = 1.0; }\n}\n")
-        checks = ('#include "p_checks.cuh"\nnamespace p_model { void p__step(std::vector<double>& u); }\n'
-                  "namespace p_checks {\nstd::vector<double> u;\n"
-                  "void case_run(const std::string& case_id, int& steps, int& cells_updated, "
-                  "bool& ok) {\n  BODY\n  steps = 1; cells_updated = 1; ok = true;\n}\n}\n")
-        kw = {"spec": "p", "node_key": "problem/p@0.1.0", "language": "cuda_cpp", "suffix": ".cu"}
-        reach = [x for x in self._run(checks.replace("BODY", "p_model::p__step(u);"), model, **kw)
-                 if "reach" in x]
-        self.assertEqual(reach, [])
-        reach = [x for x in self._run(checks.replace("BODY", "u[0] = 1.0;"), model, **kw)
-                 if _REACH in x]
-        self.assertEqual(len(reach), 1)
+    def test_a_series_of_two_lengths_is_refused(self) -> None:
+        v = self._violations(self._series(h_max=[1.0]))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("all of one length", v[0])
 
+    def test_a_series_name_that_is_no_list_is_refused(self) -> None:
+        v = self._violations(self._series(h_max=1.0))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("every series name is a list", v[0])
 
-class ChecksSourceGateTests(unittest.TestCase):
-    """R1/M3c-β `_validate_checks_source_files`: the leaf-authored fixed-ABI checks module."""
+    def test_a_series_name_of_no_numbers_is_refused(self) -> None:
+        # The gate's docstring: "each name a list of numbers of one length".
+        v = self._violations(self._series(h_max=["a", "b"]))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("every series name is a list", v[0])
 
-    def test_open_inside_a_string_literal_is_not_file_io(self) -> None:
-        # The `open(` scan reads code, so a quoted `'open('` in a message is not a call — matching
-        # it would fail-close a legal module. Masking strings for this scan (but NOT for the
-        # forbidden-filename scan, which inspects string content) draws the line correctly.
-        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES as TEN
-        body = ("".join(f"  public :: {n}\n" for n in TEN) + "contains\n"
-                + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in TEN))
-        legal = ("module bx_checks\n  private\n"
-                 "  character(len=8), parameter :: s = 'open('\n" + body + "end module\n")
-        self.assertEqual([v for v in self._run(legal) if "file I/O" in v], [])
-        real = ("module bx_checks\n  private\n" + body.replace(
-            "  subroutine case_setup()\n  end subroutine case_setup\n",
-            "  subroutine case_setup()\n    open(unit=10, file='x')\n  end subroutine case_setup\n")
-            + "end module\n")
-        self.assertTrue(any("file I/O" in v for v in self._run(real)))
+    def test_a_series_t_that_is_no_scalar_is_refused(self) -> None:
+        # The gate's docstring: "the writer's scalar `t`".
+        v = self._violations(self._series(t=[0.0, 1.0]))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("a series file holds t", v[0])
 
-    def test_harness_use_as_a_second_statement_is_still_caught(self) -> None:
-        # Fail-OPEN guard. The harness-isolation scan is an anchored `^\s*use\b` regex, so a
-        # harness `use` written as the second statement of a `;`-joined line was invisible —
-        # legal Fortran (gfortran rc=0) that breaches the isolation invariant with nothing
-        # downstream to catch it: the harness IS staged for Generate.syntax, and the bundle
-        # contract has no isolation layer. Both halves of the gate now read STATEMENTS.
-        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES as TEN
-        body = ("".join(f"  public :: {n}\n" for n in TEN) + "contains\n"
-                + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in TEN))
-        src = ("module bx_checks\n"
-               "  use, intrinsic :: iso_fortran_env, only: dp => real64; "
-               "use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n"
-               "  implicit none\n  private\n" + body + "end module\n")
-        self.assertTrue(any("harness" in v for v in self._run(src)), self._run(src))
+    def test_a_series_file_that_is_no_object_or_no_json_is_refused(self) -> None:
+        def as_list(snapshots: Path) -> None:
+            (snapshots / "series" / "snapshot000.json").write_text("[1]", encoding="utf-8")
 
-    def test_commented_out_harness_use_behind_an_exotic_separator_is_not_live(self) -> None:
-        # issue #23, defect A: the false-REJECT direction of this gate. `str.splitlines()` broke
-        # on eight separators Fortran does not treat as line ends, so a form feed inside a
-        # comment ended the comment early and re-admitted its tail AS CODE — a commented-out
-        # `use harness_...` became a live isolation breach and failed Generate on a source
-        # gfortran and fortitude both accept.
-        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
-                         ("\u2028", "LINE SEPARATOR")):
-            with self.subTest(separator=name):
-                src = _CHECKS_OK.replace(
-                    "  private\n",
-                    f"  private\n  ! dropped this: {ch} use harness_fortran_cpu_model\n")
-                self.assertEqual([v for v in self._run(src) if "harness" in v], [],
-                                 f"a {name} must not end the comment")
+        def as_text(snapshots: Path) -> None:
+            (snapshots / "series" / "snapshot000.json").write_text("{", encoding="utf-8")
+        self.assertTrue(any("must be json object" in x for x in self._violations(as_list)))
+        self.assertTrue(any("invalid json" in x for x in self._violations(as_text)))
 
-    def test_comment_line_inside_a_wrapped_literal_does_not_spill_it_as_code(self) -> None:
-        # A continued character context resumes at "the next line that is not a comment line"
-        # (F2008 3.3.2.4), and a blank line is a comment line (3.3.2.3) — verified against
-        # gfortran 14.2, which compiles the fixture below at `-std=f2008` with no diagnostic.
-        # Terminating the statement at the gap instead flushes a truncated literal and lets the
-        # REST of it be read as code: the `open(` here is prose inside a string, and the gate
-        # would report file I/O in a module that does none.
-        for gap, label in (("\n", "blank line"), ("    ! wrap note\n", "comment line")):
-            with self.subTest(gap=label):
-                src = _CHECKS_OK.replace(
-                    "  private\n",
-                    "  private\n"
-                    "  character(len=*), parameter :: hint = 'fill the state in the runner&\n"
-                    + gap +
-                    "    & with open(unit=...), never here'\n")
-                self.assertEqual([v for v in self._run(src) if "file I/O" in v], [])
+    def test_a_series_file_on_a_node_that_declares_no_step_series_is_refused(self) -> None:
+        def change(snapshots: Path) -> None:
+            _write_json(snapshots / "series" / "snapshot000.json", {"t": 0.5, "step": [1]})
+        v = self._violations(change, step_series=False)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("a series file on a node that declares no step_series", v[0])
 
-    def test_hidden_bound_state_is_still_reported_when_the_runner_backend_is_down(self) -> None:
-        # Issue #289 (R4-b PR-4 preconditions): the remedy is the runner backend's words, so
-        # when that backend cannot be reached the finding is stated without one — beside the
-        # ABI refusal that names why — and the backend is not asked (it would raise).
-        hidden = _CHECKS_OK.replace("  private\n", "  private\n  real :: q\n")
-        with unittest.mock.patch.object(vps.host_render, "runner_render_refusal",
-                                        return_value="backend down"), \
-                unittest.mock.patch.object(vps.host_render, "hidden_bound_state_remedy",
-                                           side_effect=AssertionError("asked a down backend")):
-            v = self._run(hidden, bound_state=("q",))
-        self.assertTrue(any("backend down" in x for x in v), v)
-        self.assertTrue(any(x.endswith("checks module must publish every bound state "
-                                       "variable: ['q']") for x in v), v)
+    def test_a_case_with_no_series_file_is_refused(self) -> None:
+        def change(snapshots: Path) -> None:
+            (snapshots / "series" / "snapshot000.json").unlink()
+        v = self._violations(change)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("series/snapshot000.json: missing", v[0])
 
-    def test_a_bound_state_remedy_that_cannot_be_stated_still_reports_the_finding(self) -> None:
-        hidden = _CHECKS_OK.replace("  private\n", "  private\n  real :: q\n")
-        with unittest.mock.patch.object(vps.host_render, "hidden_bound_state_remedy",
-                                        side_effect=RuntimeError("no words")):
-            v = self._run(hidden, bound_state=("q",))
-        self.assertTrue(any("must publish every bound state variable: ['q'] (the language's "
-                            "remedy could not be stated: RuntimeError('no words'))" in x
-                            for x in v), v)
-
-    def _exec(self, tmp: Path) -> NodeExecution:
-        return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
-                             exec_dir=tmp, pipeline_dir=tmp)
-
-    def _run(self, checks: str | None, model: str = _MODEL_OK,
-             bound_state: tuple[str, ...] = ()) -> list[str]:
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            src = tmp / "src"
-            src.mkdir()
-            (src / "bx_model.f90").write_text(model)
-            if checks is not None:
-                (src / "bx_checks.f90").write_text(checks)
-            violations: list[str] = []
-            vps._validate_checks_source_files(
-                self._exec(tmp), "fortran", src, [src / "bx_model.f90"], violations,
-                bound_state=bound_state)
-            return violations
-
-    def test_clean_checks_passes(self) -> None:
-        self.assertEqual(self._run(_CHECKS_OK), [])
-
-    def test_missing_checks_file(self) -> None:
-        self.assertTrue(any("must author bx_checks.f90" in v for v in self._run(None)))
-
-    def test_wrong_module_name(self) -> None:
-        bad = _CHECKS_OK.replace("module bx_checks", "module bx_wrong", 1).replace(
-            "end module bx_checks", "end module bx_wrong")
-        # The declaration check's own words: since issue #314 the reach gate's refusals also
-        # name `module bx_checks`, and a bare needle was satisfied by them (round 3).
-        self.assertTrue(any("must declare `module bx_checks` (the fixed ABI module)" in v for v in self._run(bad)))
-
-    def test_a_module_declaration_only_inside_a_comment_does_not_satisfy_the_gate(self) -> None:
-        # The module-name check reads COMMENT-STRIPPED, CONTINUATION-JOINED logical lines, and
-        # that was caught by nothing behavioural: a census showed the only thing observing it was
-        # the sampled token ratchet, and a token-preserving weakening to raw `splitlines()` left
-        # the whole suite green. Both directions are pinned here.
-        #
-        # Fail-OPEN half: a `module bx_checks` that exists only inside a comment must NOT satisfy
-        # the declaration requirement.
-        commented = _CHECKS_OK.replace("module bx_checks\n",
-                                       "module bx_wrong\n  ! module bx_checks\n", 1).replace(
-            "end module bx_checks", "end module bx_wrong")
-        self.assertTrue(any("must declare `module bx_checks` (the fixed ABI module)" in v for v in self._run(commented)),
-                        "a commented-out declaration satisfied the gate")
-
-        # Over-rejection half: a declaration legally split across a `&` continuation must still
-        # satisfy it. Raw line splitting sees `module bx_&` and reports the module missing on a
-        # source gfortran accepts.
-        continued = _CHECKS_OK.replace("module bx_checks\n", "module bx_&\n  &checks\n", 1)
-        self.assertEqual([v for v in self._run(continued) if "must declare `module bx_checks` (the fixed ABI module)" in v], [],
-                         "a continuation-split declaration was reported missing")
-
-    def test_missing_public_name(self) -> None:
-        bad = _CHECKS_OK.replace("case_run, get_time", "case_run")
-        v = self._run(bad)
-        self.assertTrue(any("get_time" in x for x in v), v)
-
-    def test_bound_state_must_be_published(self) -> None:
-        # Z6 (issue #255): the host-rendered runner imports every IR snapshot variable as
-        # `sb_<var> => <var>`, so the static gate requires each one published under the same
-        # scan as the ABI names. `bound_state` is what the caller reads from the IR's snapshot
-        # schema; the default (no bound state) keeps every other row of this class as it was.
-        hidden = _CHECKS_OK.replace("  public :: u\n", "")
-        self.assertNotEqual(hidden, _CHECKS_OK)
-        v = self._run(hidden, bound_state=("u",))
-        self.assertTrue(any("must publish every bound state variable" in x and "['u']" in x
-                            for x in v), v)
-        self.assertEqual(self._run(_CHECKS_OK, bound_state=("u",)), [])
-        # explicit `private ::` hides it under the default-public module too
-        private = ("module bx_checks\n  implicit none\n  private :: u\n"
-                   "  real :: u(4)\ncontains\n"
-                   + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in _ABI_NAMES)
-                   + "end module bx_checks\n")
-        v = self._run(private, bound_state=("u",))
-        self.assertTrue(any("must publish every bound state variable" in x for x in v), v)
-        # ...while the default-public module with no statement publishes it (the language's
-        # rule; an undeclared name is the syntax gate's)
-        v = self._run(private.replace("  private :: u\n", ""), bound_state=("u",))
-        self.assertFalse(any("bound state" in x for x in v), v)
-
-    def test_bound_state_is_read_from_the_ir_snapshot_schema(self) -> None:
-        # Pin at the handler: `_validate_generate_outputs_for_generation` passes the IR's
-        # snapshot variables, not the default. Read its source for the wiring rather than
-        # driving the whole generate-output gate (which needs a staged tree this class lacks).
-        import inspect
-        src = inspect.getsource(vps._validate_generate_outputs_for_generation)
-        self.assertIn("bound_state=_state_snapshot_requirement_details(repo_root, execution)[0]",
-                      src)
-
-    def test_checks_uses_harness_forbidden(self) -> None:
-        bad = _CHECKS_OK.replace(
-            "  private\n", "  private\n  use harness_fortran_cpu_model\n")
-        self.assertTrue(any("must not `use` the harness" in v for v in self._run(bad)))
-
-    def test_checks_uses_harness_double_colon_form_forbidden(self) -> None:
-        # `use :: harness_...` and `use, intrinsic :: ...` must also be caught.
-        for form in ("use :: harness_fortran_cpu_model",
-                     "use, non_intrinsic :: harness_fortran_cpu_model"):
-            bad = _CHECKS_OK.replace("  private\n", f"  private\n  {form}\n")
-            self.assertTrue(any("must not `use` the harness" in v for v in self._run(bad)),
-                            form)
-
-    def test_bare_public_missing_definition_caught(self) -> None:
-        # A default-public (bare `public`) module that never DEFINES an ABI name is caught.
-        bad = ("module bx_checks\n  implicit none\n  public\ncontains\n"
-               "  subroutine case_setup(case_id, ok)\n"
-               "    character(len=*), intent(in) :: case_id\n"
-               "    logical, intent(out) :: ok\n    ok = .true.\n"
-               "  end subroutine case_setup\nend module bx_checks\n")
-        v = self._run(bad)
-        self.assertTrue(any("get_time" in x for x in v), v)
-
-    def test_bare_public_all_defined_passes(self) -> None:
-        # A bare-`public` module that DEFINES every ABI name passes the name check.
-        body = "".join(
-            f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES)
-        ok = f"module bx_checks\n  implicit none\n  public\ncontains\n{body}end module bx_checks\n"
-        # (only the ABI-name check is asserted here; other rules are satisfied)
-        self.assertFalse(any("must publish the fixed ABI names" in v for v in self._run(ok)))
-
-    def _module_defining_all(self, extra_spec: str = "", private_stmt: str = "") -> str:
-        body = "".join(
-            f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES)
-        return (f"module bx_checks\n  implicit none\n{private_stmt}{extra_spec}"
-                f"contains\n{body}end module bx_checks\n")
-
-    def test_no_accessibility_statement_all_defined_passes(self) -> None:
-        # A module with NEITHER `private` NOR `public` is default-PUBLIC in Fortran; a
-        # conformant module that defines every ABI name must not be false-rejected.
-        ok = self._module_defining_all()
-        self.assertFalse(any("must publish the fixed ABI names" in v for v in self._run(ok)),
-                         self._run(ok))
-
-    def test_bare_private_without_public_is_caught(self) -> None:
-        # A bare module-level `private` flips the default; without an explicit `public ::`
-        # the ABI names are NOT exposed and the gate must catch it (no fail-open).
-        bad = self._module_defining_all(private_stmt="  private\n")
-        self.assertTrue(any("must publish the fixed ABI names" in v for v in self._run(bad)), bad)
-
-    def test_private_entity_excludes_name(self) -> None:
-        # Default-public module, but one ABI name is explicitly `private ::`'d → not published.
-        bad = self._module_defining_all(extra_spec="  private :: get_time\n")
-        v = self._run(bad)
-        self.assertTrue(any("get_time" in x for x in v), v)
-
-    def test_interface_prototype_is_not_a_definition(self) -> None:
-        # A default-public module that only PROTOTYPES an ABI name in an `interface` block
-        # (never defining it) must still be caught — an interface header is not a definition.
-        body = "".join(
-            f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES if n != "get_time")
-        proto = ("  abstract interface\n    subroutine get_time()\n"
-                 "    end subroutine get_time\n  end interface\n")
-        bad = f"module bx_checks\n  implicit none\n{proto}contains\n{body}end module bx_checks\n"
-        v = self._run(bad)
-        self.assertTrue(any("get_time" in x for x in v), v)
-
-    def test_nested_internal_procedure_is_not_a_definition(self) -> None:
-        # A default-public module that defines an ABI name ONLY as an internal procedure
-        # nested inside another procedure's `contains` must be caught — an internal
-        # procedure is not a module entity the host-rendered runner can `use ... only:`.
-        nine = "".join(
-            f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES if n != "get_time")
-        holder = ("  subroutine holder()\n  contains\n"
-                  "    subroutine get_time()\n    end subroutine get_time\n"
-                  "  end subroutine holder\n")
-        bad = f"module bx_checks\n  implicit none\ncontains\n{nine}{holder}end module bx_checks\n"
-        v = self._run(bad)
-        self.assertTrue(any("get_time" in x for x in v), v)
-
-    def test_abi_defined_in_second_module_is_caught(self) -> None:
-        # ABI procedures defined in a SECOND module (or after `end module <sid>_checks`) are
-        # not importable via `use <sid>_checks, only:` — only the target module's own
-        # definitions count, so an empty/partial target module must be caught.
-        ten = "".join(
-            f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES)
-        bad = (f"module bx_checks\n  implicit none\nend module bx_checks\n"
-               f"module other\n  implicit none\ncontains\n{ten}end module other\n")
-        self.assertTrue(any("must publish the fixed ABI names" in v for v in self._run(bad)), bad)
-
-    def test_target_module_second_in_file_passes(self) -> None:
-        # The target checks module need not be the first module in the file; its own
-        # module-level definitions still count wherever it appears.
-        ten = "".join(
-            f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES)
-        ok = ("module other\n  implicit none\ncontains\n"
-              "  subroutine junk()\n  end subroutine junk\nend module other\n"
-              f"module bx_checks\n  implicit none\ncontains\n{ten}end module bx_checks\n")
-        self.assertFalse(any("must publish the fixed ABI names" in v for v in self._run(ok)),
-                         self._run(ok))
-
-    def test_module_level_proc_with_nested_helper_passes(self) -> None:
-        # Nesting alone must not cause a false-reject: every ABI name IS module-level;
-        # one of them additionally carries an internal helper.
-        ten = "".join(
-            f"  subroutine {n}()\n  end subroutine {n}\n"
-            for n in _ABI_NAMES)
-        extra = ("  subroutine another()\n  contains\n    subroutine inner()\n"
-                 "    end subroutine inner\n  end subroutine another\n")
-        ok = f"module bx_checks\n  implicit none\ncontains\n{ten}{extra}end module bx_checks\n"
-        self.assertFalse(any("must publish the fixed ABI names" in v for v in self._run(ok)),
-                         self._run(ok))
-
-    def test_private_component_type_does_not_flip_module_default(self) -> None:
-        # A bare `private` INSIDE a derived-type def is a component attribute, not the
-        # module default — it must not turn a default-public module into a false-reject.
-        type_def = ("  type :: box\n    private\n    real :: x\n  end type box\n")
-        ok = self._module_defining_all(extra_spec=type_def)
-        self.assertFalse(any("must publish the fixed ABI names" in v for v in self._run(ok)),
-                         self._run(ok))
-
-    def test_model_uses_harness_forbidden(self) -> None:
-        bad_model = "module bx_model\nuse harness_fortran_cpu_model\nend module bx_model\n"
-        self.assertTrue(any("must not `use` the harness" in v
-                            for v in self._run(_CHECKS_OK, model=bad_model)))
-
-    def test_checks_file_io_forbidden(self) -> None:
-        bad = _CHECKS_OK.replace(
-            "    ok = .true.\n",
-            "    ok = .true.\n    open(unit=9, file='x.json')\n")
-        self.assertTrue(any("file I/O" in v for v in self._run(bad)))
-
-    def test_checks_forbidden_output_filename(self) -> None:
-        bad = _CHECKS_OK.replace(
-            "    ok = .true.\n", "    ok = .true.\n    ! writes verdict.json\n")
-        self.assertTrue(any("verdict.json" in v for v in self._run(bad)))
+    def test_the_series_is_not_read_as_a_capture(self) -> None:
+        # The other half of the per-artifact split: a series holds no declared variable, and
+        # the capture walk that would refuse it for that is told so. `test_the_whole...` is the
+        # witness; this one is that a capture's own refusal does not ask of the series.
+        v = self._violations(self._drop("history/snapshot000__1.json", "hu"))
+        self.assertFalse(any("series/" in x for x in v), v)
 
 
 class SpecKindNormalizationParityTests(unittest.TestCase):
@@ -23971,7 +23285,7 @@ class RegistryClauseReadersTests(unittest.TestCase):
     def test_the_m3c_mirror_follows_the_registry_clause_by_clause(self) -> None:
         """`_m3c_language` is the validator's reader of the host-authorship question, over the
         pipeline's target toolchain (issue #284; `_ir_is_m3c_physics` read the IR's until R4-a
-        PR-3). It gates `_validate_checks_source_files`, so if it disagrees with
+        PR-3). It gates `_validate_model_source_isolation`, so if it disagrees with
         `_conductor_authors_runner` the disagreement is a wrong verdict in one direction or the
         other. Each clause is driven separately, because that is the granularity at which they
         were deletable."""
@@ -24558,10 +23872,14 @@ def _doc_prose(rel: str, text: str) -> str:
 
 
 class MpiPresenceFloorGateTests(unittest.TestCase):
-    """The MPI floor (issue #316, R4-c PR-4), reached through `_validate_parallel_presence_floor`
-    on a pipeline whose TARGET's parallel backend is `mpi`: a whole-node judgment over the model
-    and the checks module (`tools/backends/parallel/mpi/directives.py`). The OpenMP rows above
-    pin that the per-file directive floor is unchanged."""
+    """The MPI floor (issue #316, R4-c PR-4): a whole-node judgment
+    (`tools/backends/parallel/mpi/directives.py`). `_run` reaches it through
+    `_validate_parallel_presence_floor` on a pipeline whose TARGET's parallel backend is `mpi`, and
+    that caller hands it no checks text since issue #589: no leaf source answers to one, and a
+    physics node is refused on this target at preflight (`driver_distributed_pending`) until the
+    distributed driver rewrites the floor. `_floor` asks the floor's own function with the keyword
+    it keeps until then, so what that rewrite starts from stays pinned. The OpenMP rows above pin
+    that the per-file directive floor is unchanged."""
 
     _H = "harness_fortran_cpu_mpi"
     _DIST = {"precision": {}, "state_residency": "distributed",
@@ -24575,7 +23893,18 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n"
                "    sb_u_axis1 = 1\n  end subroutine\nend module\n")
 
-    def _run(self, model: str | None = None, checks: str | None = None, *,
+    def _floor(self, model: str | None = None, checks: str | None = None, *,
+               plan: object = None, node_key: str = "problem/dep_base@0.1.0",
+               array: str = "u") -> list[str]:
+        from tools.backends.parallel.mpi.directives import presence_floor
+        floor = presence_floor(language="fortran", hardware_class="cpu")
+        return floor.node_violations(
+            model_texts={Path("dep_base_model.f90"): self._MODEL if model is None else model},
+            checks_texts={Path("dep_base_checks.f90"): self._CHECKS if checks is None else checks},
+            plan=self._DIST if plan is None else plan, bound_arrays=[array],
+            harness_spec_id=self._H, node_kind=node_key.split("/", 1)[0])
+
+    def _run(self, model: str | None = None, *, stray_checks: str | None = None,
              plan: object = None, node_key: str = "problem/dep_base@0.1.0",
              array: str = "u") -> list[str]:
         with tempfile.TemporaryDirectory() as t:
@@ -24604,15 +23933,37 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 encoding="utf-8")
             model_path = src_dir / "dep_base_model.f90"
             model_path.write_text(self._MODEL if model is None else model, encoding="utf-8")
-            (src_dir / "dep_base_checks.f90").write_text(
-                self._CHECKS if checks is None else checks, encoding="utf-8")
+            if stray_checks is not None:
+                (src_dir / "dep_base_checks.f90").write_text(stray_checks, encoding="utf-8")
             execution = vps._stub_execution(pipeline_dir, node_key)
             v: list[str] = []
             vps._validate_parallel_presence_floor(repo_root, execution, src_dir, [model_path], v)
             return v
 
     def test_a_distributed_node_through_the_harness_passes(self) -> None:
-        self.assertEqual(self._run(), [])
+        self.assertEqual(self._floor(), [])
+
+    def test_the_gate_hands_the_floor_the_model_sources_and_no_checks_text(self) -> None:
+        # Through the caller, with what a physics node on this target can still reach it with:
+        # the model's findings reach the list, and a stray file named as the deleted module
+        # settles nothing, so a distributed plan is refused for the axis on the model's path.
+        v = self._run(stray_checks=self._CHECKS)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("dep_base_model.f90", v[0])
+        self.assertIn("never sets a partition axis", v[0])
+        declined = {"precision": {}, "state_residency": "host",
+                    "parallelization": {"model": "none"}}
+        self.assertEqual(self._run(plan=declined), [])
+        v = self._run(model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
+                      plan=declined)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("reaches the message-passing runtime only through the target's harness", v[0])
+        self.assertIn("dep_base_model.f90", v[0])
+        # The node's kind and its bound arrays are the caller's to pass.
+        v = self._run(model=self._MODEL, node_key="component/dep_base@0.1.0", plan=declined)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("a component's published operations", v[0])
+        self.assertIn("(u)", self._run()[0])
 
     def test_a_component_model_names_no_harness_operation(self) -> None:
         """Issue #512: a consumer calls a component's operations on its own rank's block, so a
@@ -24628,21 +23979,21 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
             ".true.)\n")
         bare = ("module dep_base_model\ncontains\n  subroutine dep_base__step(u)\n"
                 "    real(8), intent(inout) :: u(:)\n    u = u\n  end subroutine\nend module\n")
-        self.assertEqual(self._run(model=bare, checks=checks, node_key=component), [])
+        self.assertEqual(self._floor(model=bare, checks=checks, node_key=component), [])
         for op in ("exchange_halo_r1(u, 1, 1, .true.)", "partition(n, 1, glo, ghi)",
                    "grid_dims(p1, p2)"):
             with self.subTest(op=op):
                 model = bare.replace("    u = u\n", f"    call harness_fortran_cpu_mpi__{op}\n")
-                v = self._run(model=model, checks=checks, node_key=component)
+                v = self._floor(model=model, checks=checks, node_key=component)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("dep_base_model.f90: a component's published operations", v[0])
                 self.assertIn(f"'harness_fortran_cpu_mpi__{op.split('(')[0]}'", v[0])
                 # ...and whatever the plan says.
-                self.assertEqual(len(self._run(model=model, checks=checks, node_key=component,
+                self.assertEqual(len(self._floor(model=model, checks=checks, node_key=component,
                                                plan={"precision": {}, "parallelization": {
                                                    "model": "none"}})), 1)
                 # A problem's model may.
-                self.assertEqual(self._run(model=model, checks=checks), [])
+                self.assertEqual(self._floor(model=model, checks=checks), [])
         # A use list naming one, or a function reference, is a reference too; a string or a
         # comment is not, and neither is a name that only starts the same way.
         for line, refused in (
@@ -24657,7 +24008,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
             with self.subTest(line=line):
                 model = bare.replace("    u = u\n", line) if not line.startswith("  use") \
                     else bare.replace("contains", line.rstrip("\n") + "\ncontains")
-                v = self._run(model=model, checks=checks, node_key=component)
+                v = self._floor(model=model, checks=checks, node_key=component)
                 self.assertEqual(len(v), int(refused), v)
 
     def test_a_direct_use_of_the_library_is_refused_whatever_the_plan(self) -> None:
@@ -24675,7 +24026,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                                                 "sb_u_axis1 = 1\n    t = MPI_Wtime()"))):
             for plan in (None, declined):
                 with self.subTest(where=where, text=text[-60:], plan=plan):
-                    v = self._run(**{where: text}, plan=plan)
+                    v = self._floor(**{where: text}, plan=plan)
                     self.assertEqual(len(v), 1, v)
                     self.assertIn("reaches the message-passing runtime only through the "
                                   "target's harness", v[0])
@@ -24689,7 +24040,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                      self._CHECKS.replace("sb_u_axis1 = 1",
                                           "sb_u_axis1 = 1\n    m = 'call mpi_send('")):
             with self.subTest(text=text[-40:]):
-                self.assertEqual(self._run(checks=text), [])
+                self.assertEqual(self._floor(checks=text), [])
 
     def test_a_non_distributed_residency_is_refused_unless_the_plan_declines(self) -> None:
         v = self._run(plan={**self._DIST, "state_residency": "host"})
@@ -24717,7 +24068,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 self._CHECKS.replace("call harness_fortran_cpu_mpi__partition",
                                      "! call harness_fortran_cpu_mpi__partition")):
             with self.subTest(checks=checks[40:110]):
-                v = self._run(model=model, checks=checks)
+                v = self._floor(model=model, checks=checks)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("neither the model nor the checks source calls the harness's", v[0])
                 self.assertIn("harness_fortran_cpu_mpi__partition", v[0])
@@ -24727,17 +24078,17 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                      "call harness_fortran_cpu__partition(n, glo, ghi)",
                      "call harness_fortran_cpu_mpi__exchange_halo_r3(u, 1, 1, .true.)"):
             with self.subTest(call=call):
-                v = self._run(model=model, checks=self._CHECKS.replace(
+                v = self._floor(model=model, checks=self._CHECKS.replace(
                     "call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)", call))
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("neither the model nor the checks source calls", v[0])
         # The action of a one-line logical `if` is a call too.
-        self.assertEqual(self._run(model=model, checks=self._CHECKS.replace(
+        self.assertEqual(self._floor(model=model, checks=self._CHECKS.replace(
             "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n",
             "    if (n > 0) call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n")), [])
         # Either one suffices, in either source.
-        self.assertEqual(self._run(model=model), [])
-        self.assertEqual(self._run(checks=self._CHECKS.replace(
+        self.assertEqual(self._floor(model=model), [])
+        self.assertEqual(self._floor(checks=self._CHECKS.replace(
             "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n", "")), [])
 
     def test_a_checks_module_that_sets_no_partition_axis_is_refused(self) -> None:
@@ -24750,27 +24101,27 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                            # third grid dimension, name no slot (issue #512)
                            "sb_u_axis = 1", "sb_u_axis3 = 1"):
             with self.subTest(assignment=assignment):
-                v = self._run(checks=self._CHECKS.replace("sb_u_axis1 = 1", assignment))
+                v = self._floor(checks=self._CHECKS.replace("sb_u_axis1 = 1", assignment))
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("never sets a partition axis", v[0])
                 self.assertIn("dep_base_checks.f90", v[0])
         for assignment in ("sb_u_axis1 = 2", "sb_u_axis1 = k", "sb_v_axis1 = 0; sb_u_axis1 = 1", "sb_u_axis2 = 2",
                            "sb_u_axis1=1"):
             with self.subTest(assignment=assignment):
-                self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis1 = 1",
+                self.assertEqual(self._floor(checks=self._CHECKS.replace("sb_u_axis1 = 1",
                                                                        assignment)), [])
         # The model module setting it does not count: the checks module owns the binding.
-        v = self._run(model=self._MODEL.replace("contains", "  integer :: sb_u_axis1 = 1\ncontains"),
+        v = self._floor(model=self._MODEL.replace("contains", "  integer :: sb_u_axis1 = 1\ncontains"),
                       checks=self._CHECKS.replace("sb_u_axis1 = 1", "x = 0"))
         self.assertEqual(len(v), 1, v)
         self.assertIn("never sets a partition axis", v[0])
         # The bound array's name is compared as Fortran compares identifiers, on both sides:
         # the corpus declares upper-case snapshot names (`U`, `U_in`).
-        self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis1 = 1", "SB_U_AXIS1 = 1")),
+        self.assertEqual(self._floor(checks=self._CHECKS.replace("sb_u_axis1 = 1", "SB_U_AXIS1 = 1")),
                          [])
-        self.assertEqual(self._run(array="U"), [])
+        self.assertEqual(self._floor(array="U"), [])
         # A declaration's initializer is a setting too.
-        self.assertEqual(self._run(checks=self._CHECKS.replace(
+        self.assertEqual(self._floor(checks=self._CHECKS.replace(
             "sb_u_axis1 = 1", "x = 0").replace("contains", "  integer :: sb_u_axis1 = 1\ncontains")),
             [])
 
@@ -25824,12 +25175,27 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
         return {
             "meta": {"spec_kind": spec_kind, "spec_id": "bx"},
             "dependency": {"direct_deps": []},
-            "case": {"test_case_set": [{"case_id": "c_a"}]},
+            # What the driver calls (issue #589): the render this gate mirrors reads both.
+            "public_api": {
+                "published_operations": [{"operation_id": "bx__step"}],
+                "signatures": [{"symbol": "bx__step", "signature": {
+                    "kind": "subroutine", "name": "bx__step", "args": [
+                        {"name": "nx", "intent": "in", "spec": {"type": "integer"}},
+                        {"name": "ny", "intent": "in", "spec": {"type": "integer"}},
+                        {"name": "U", "intent": "inout", "dims": ["nx", "ny"], "rank": 2,
+                         "spec": {"type": "real", "kind": "dp"}},
+                        {"name": "ok", "intent": "out", "spec": {"type": "logical"}}]}}]},
+            "drive": {"step": {"operation": "bx__step", "result": "ok", "arguments": {
+                "nx": "inputs.grid.nx", "ny": "inputs.grid.ny", "U": "state.U",
+                "ok": "state.ok"}}},
+            "case": {"test_case_set": [{"case_id": "c_a", "inputs": {"grid": {"nx": 2, "ny": 2}},
+                                        "initial_state": {"U": 0.0}}]},
             "io_contract": {
                 "raw_requirements": {"required_evidence": [
                     {"artifact": "state_snapshots", "required": True, "schema": {
                         "time_variable": "t",
-                        "variables": [{"name": "U", "shape_expr": "[nx, ny]"}]}}]},
+                        "variables": [{"name": "U", "shape_expr": "[nx, ny]"},
+                                      {"name": "ok", "shape_expr": "scalar"}]}}]},
                 "tests": [{"test_id": "t1", "expected_outcome": "pass",
                            "target_cases": ["c_a"], "quantities": ["q"]}],
                 "predicates": [{"test_id": "t1", "quantity": "q", "target_cases": ["c_a"],
@@ -27632,7 +26998,7 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
     helper-level assertion would stay green while an unwrapped `violations.append` or a list
     rebuild degraded production to exit code 1.
 
-    THE FIXTURE IS DELIBERATELY DIRTY. Its node authors no `advx_checks.f90` and its IR names no
+    THE FIXTURE IS DELIBERATELY DIRTY. Its model opens a file and its IR names no
     `controlled_spec`, so two plain-`str` (rc 1) violations ALWAYS co-occur with the
     host-authored one — which is what makes the precedence rows real rather than hypothetical.
     Only the first of the two is leaf-repairable; the second (`_fail_closed_if_pinned`: the
@@ -27687,8 +27053,11 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
                         / _TARGET_ID / "advx_20260415_001")
         src_dir = pipeline_dir / "source" / self._SOURCE_ID / "src"
         src_dir.mkdir(parents=True)
+        # The leaf-repairable half of the fixture's dirt (the isolation gate, on an M3c node):
+        # the missing checks module that was this finding went with issue #589.
         (src_dir / "advx_model.f90").write_text(
-            "module advx_model\nend module advx_model\n", encoding="utf-8")
+            "module advx_model\ncontains\nsubroutine s()\n  open(unit=9, file='x')\n"
+            "end subroutine s\nend module advx_model\n", encoding="utf-8")
         runner = "program advx_runner\n"
         if runner_finding:
             # `FORBIDDEN_RUNNER_OUTPUTS` — the cheapest of the runner gates to trip, and one
@@ -27769,6 +27138,8 @@ class HostAuthoredArtifactExitCodeTests(unittest.TestCase):
             [b for b in self._bullets(proc.stdout)
              if vps.HOST_AUTHORED_ARTIFACT_MARKER not in b],
             f"fixture no longer produces an ordinary violation to co-occur: {proc.stdout}")
+        self.assertTrue([b for b in self._bullets(proc.stdout) if "file I/O" in b],
+                        f"the leaf-repairable co-finding is gone: {proc.stdout}")
         self.assertEqual(proc.returncode, vps.HOST_AUTHORED_ARTIFACT_EXIT_CODE, proc.stdout)
 
     def test_a_leaf_authored_runner_keeps_the_generic_exit_code(self) -> None:
@@ -29222,15 +28593,15 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
         self.assertIn("has no column(s)", violations[0])
         self.assertNotIsInstance(violations[0], vps.DeviceKernelsAbsentViolation)
 
-    def test_the_checks_source_s_kernels_are_required_too(self) -> None:
+    def test_every_source_s_kernels_are_required_too(self) -> None:
         """Every `.cu` the node's src dir holds is read, not the model file alone."""
         sources = {"k_model.cu": self._KERNELS,
-                   "k_checks.cu": "__global__ void check_kernel(const double* x) {}\n",
+                   "k_helper.cu": "__global__ void check_kernel(const double* x) {}\n",
                    "sub/extra.cu": "__global__ void extra_kernel(int* y) {}\n"}
         with tempfile.TemporaryDirectory() as t:
             repo = Path(t)
             execution, src_dir = self._tree(repo, sources={"k_model.cu": self._KERNELS})
-            (src_dir / "k_checks.cu").write_text(sources["k_checks.cu"], encoding="utf-8")
+            (src_dir / "k_helper.cu").write_text(sources["k_helper.cu"], encoding="utf-8")
             (src_dir / "sub").mkdir()
             (src_dir / "sub" / "extra.cu").write_text(sources["sub/extra.cu"], encoding="utf-8")
             violations: list[str] = []
@@ -30340,8 +29711,8 @@ class DriveGateStageTests(unittest.TestCase):
              "a number literal"),
             ("the logical result takes none",
              lambda c: c["initial_state"].update(guard_pass=0),
-             f"(f) case '{first}': initial_state.guard_pass — a variable init writes, or a "
-             "logical result the driver writes, takes no initial_state entry"),
+             f"(f) case '{first}': initial_state.guard_pass — a variable init writes, a "
+             "logical result or a call record the driver writes, takes no initial_state entry"),
         ]
         for label, edit, fragment in rows:
             with self.subTest(label):
@@ -30390,7 +29761,7 @@ class DriveGateStageTests(unittest.TestCase):
         self.assertEqual(len(self._hits(v, "(h) the state_history evidence entry is declared "
                                            "iff drive.history is")), 1, v)
         v = _drive_stage("coriolis", lambda ir: ir["io_contract"]["raw_requirements"][
-            "required_evidence"].append({"artifact": "step_series", "names": ["t", "step"]}))
+            "required_evidence"].append({"artifact": "step_series", "names": ["step"]}))
         self.assertEqual(len(self._hits(v, "(h) the step_series evidence entry is declared "
                                            "iff drive.loop is")), 1, v)
 

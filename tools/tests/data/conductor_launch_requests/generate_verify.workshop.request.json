@@ -701,7 +701,6 @@
     "tests_document": "<redacted: 109802 bytes sha256:01236056422e583c22eb7741646ba201c9d9796dd3203c9eeb73a8fc798188ad>",
     "ir_document": "<redacted: 918360 bytes sha256:88e90b122b5ab85c457ec9142b86184420329b63dd0cb47021b2df11a9e877a9>",
     "target_profile": "<redacted: 517 bytes sha256:f037029363c7606f732d2506fbb7bcc3d52f3bd6a2e69578e9c8e3133bf7c2a2>",
-    "checks_module_contract_document": "<redacted: 20002 bytes sha256:1c2a9459c3f13f63d475d4feffac833ab1986d93a47cfd54f16aca5535d9acd0>",
     "severity_rubric_document": "<redacted: 2762 bytes sha256:e8aae7c7a1d458f535d045612b363602220dbaef993b21711843a52b9dcf34e1>",
     "bundle_document": "<redacted: 99301 bytes sha256:91ce96a0dec0e5f8dedb9ed7f3c40abdb8c3f3a4f0acf22896fc3aad813dce01>"
   },

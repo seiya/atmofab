@@ -88,7 +88,7 @@ def launch_violations(texts: dict[Path, str]) -> list[str]:
 @dataclass(frozen=True)
 class PresenceFloor:
     """What the floor asks of one (language, hardware class) pair. `launch_violations`, when
-    set, is asked of every leaf source of the node (the model sources and the checks source)
+    set, is asked of the node's model sources
     whatever the plan and the loop count."""
 
     directive: Any

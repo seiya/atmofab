@@ -21,23 +21,19 @@
   `private` statement does not make a file private in the contract's sense, and a private file
   is not reachable from the model: a staged dependency is `<spec_id>_model.f90` alone
   (§Host-given names).
-- **Host-given names.** The host names a node's model source `<spec_id>_model.f90`, its checks
-  source `<spec_id>_checks.f90` and its runner `<spec_id>_runner.f90` (`model_basename` /
-  `checks_basename` / `runner_basename`); a staged dependency is `<spec_id>_model.f90`.
+- **Host-given names.** The host names a node's model source `<spec_id>_model.f90` and its runner
+  `<spec_id>_runner.f90` (`model_basename` / `runner_basename`); a staged dependency is `<spec_id>_model.f90`.
 
-## 2. Entrypoints and state bindings
+## 2. Entrypoints
 
 - **Identifiers.** An identifier is 1-63 characters, starting with a letter (`IDENTIFIER_MAX`,
   `IDENTIFIER_PATTERN`, the f2008/f2018 limit), so a symbol over the bound cannot pass the
   mandatory `Generate.gate` syntax check.
 - **Case.** Fortran is case-insensitive in module and symbol names, so `identifier_key` is the
-  case-folded name, and the contract compares a Fortran file's modules, symbols and bound
-  storage names, and the names a Fortran target's runner or consumer imports, under it.
-- **Imports.** The host renders an entrypoint's or a binding's import as
-  `use <module>, only: <symbol>` (for a bound state variable, `use <spec_id>_checks, only:
-  sb_<name> => <name>` — `docs/backends/language/fortran/CHECKS_ABI.md` §1-b).
-- **The retired signature-shape count.** Before `entrypoints` and `state_bindings` were declared
-  fields, a node's published update path was recovered from the generated source by counting
+  case-folded name, and the contract compares a Fortran file's modules and symbols, and the names a Fortran target's runner or consumer imports, under it.
+- **Imports.** The host renders an entrypoint's import as `use <module>, only: <symbol>`.
+- **The retired signature-shape count.** Before `entrypoints` was a declared
+  field, a node's published update path was recovered from the generated source by counting
   the `intent(out)` dummy arguments of a `subroutine`; the contract's "counting the output
   arguments of a generated procedure" is that count, and no gate reads it now
   (`docs/design/deterministic_followups.md`, "Problem state-array usage").

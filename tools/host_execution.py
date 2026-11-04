@@ -175,6 +175,12 @@ def imposes_block_size(parallel_backend: str) -> bool:
     return getattr(module, "BLOCK_SIZES", None) is not None
 
 
+#: The refusal reason of a physics node on a target whose parallel backend declares a launcher
+#: (issue #589, D12): at preflight (`target_profile.target_profile_violations`) and, as the
+#: backstop, at render.
+DRIVER_DISTRIBUTED_PENDING = "driver_distributed_pending"
+
+
 def declares_launcher(parallel_backend: str) -> bool:
     """Whether a binary built for `parallel_backend` runs under a launcher (`launcher`). A
     value with no record answers False, as `registry.provides` does; the gate that refuses it is

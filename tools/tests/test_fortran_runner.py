@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Unit tests for the Fortran backend's runner_render capability (R1/M3c-β runner glue).
+"""Unit tests for the Fortran backend's runner_render capability (issue #589: the host-rendered
+driver).
 
-`render_runner` is a pure function of the IR: these tests pin its rendered shape
-(a boundary-copy IR and a higher-rank IR), determinism, the render-error
-matrix, and the harness signature pin. A `gfortran`-gated smoke compiles+runs the
-rendered runner against a v2 harness stub + a fixed-ABI checks stub end-to-end.
+`render_runner` is a pure function of the IR: these tests pin its rendered shape (a boundary-copy
+IR and a higher-rank IR), determinism, the render-error matrix, and the harness signature pin. A
+`gfortran`-gated smoke compiles and runs the rendered runner over a model holding the operation the
+IR's `drive` names, against the reading harness of `data/driver_e2e/`. What the driver promises per
+case is `test_driver_render`'s; this file is about the text and the refusals.
 """
 
 from __future__ import annotations
@@ -21,14 +23,17 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
+import yaml
+
+from tools import primary_evidence as pe
 from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
-    CHECKS_PUBLIC_NAMES,
     EXPECTED_HARNESS_SPEC_ID,
     _HARNESS_PINS,
     _HARNESS_V3_PARAMETERS,
     _HARNESS_V3_INTERFACE,
     _SINGLE_PROCESS_INTERFACE,
+    _used_harness_ops,
     assert_harness_pin,
     ir_content_violations,
     render_runner,
@@ -36,6 +41,7 @@ from tools.backends.language.fortran.runner import (
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.host_render import RenderError
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
+from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir
 
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
@@ -67,15 +73,70 @@ def _require_declared_linter() -> None:
             f"measured on: {reason}; install {_lint.SUPPORTED_VERSION_SPEC}")
 
 
+REAL = {"type": "real", "kind": "dp"}
+DRIVER_E2E = Path(__file__).parent / "data" / "driver_e2e"
+
+
+def _dummy(name: str, intent: str, spec: dict, rank: int = 0) -> dict:
+    out = {"name": name, "intent": intent, "spec": spec}
+    if rank:
+        out["dims"] = [":"] * rank
+        out["rank"] = rank
+    return out
+
+
+def _driven(ir: dict, op: str, states: dict[str, tuple[str, int]]) -> dict:
+    """`ir` with the one operation it is driven by: an integer `mode` from the case's inputs, a
+    real dummy per entry of `states` (name -> intent, rank) bound to the state of that name, and
+    the logical result `ok`, which joins the snapshot schema. Assumed-shape dummies, so an array
+    takes its extent from the case file."""
+    dummies = [_dummy("mode", "in", {"type": "integer"}),
+               *(_dummy(n, intent, REAL, rank) for n, (intent, rank) in states.items()),
+               _dummy("ok", "out", {"type": "logical"})]
+    ir["public_api"] = {
+        "published_operations": [{"operation_id": op}],
+        "module_parameters": [{"name": "dp", "value": "float64"}],
+        "signatures": [{"symbol": op, "signature": {"kind": "subroutine", "name": op,
+                                                    "args": dummies}}]}
+    ir["drive"] = {"step": {"operation": op, "result": "ok", "arguments": {
+        "mode": "inputs.mode", **{n: f"state.{n}" for n in states}, "ok": "state.ok"}}}
+    schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+    schema["variables"].append({"name": "ok", "shape_expr": "scalar"})
+    return ir
+
+
+def _rename_state(ir: dict, old: str, new: str) -> None:
+    """Rename a state where the IR names it: the schema and the operation's binding."""
+    schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+    for var in schema["variables"]:
+        if var["name"] == old:
+            var["name"] = new
+    arguments = ir["drive"]["step"]["arguments"]
+    for dummy, binding in arguments.items():
+        if binding == f"state.{old}":
+            arguments[dummy] = f"state.{new}"
+
+
+BOUNDARY_OP = f"{BOUNDARY_SID}__fill"
+
+
 def _boundary_ir() -> dict:
-    """A boundary_2d_periodic_copy-shaped IR: 3 cases (2 pass + 1 xfail), rank-2 +
-    scalar snapshot variables, 3 tests, 1 infra dep."""
-    return {
+    """A boundary_2d_periodic_copy-shaped IR: 3 cases (2 pass + 1 xfail), rank-2 + scalar snapshot
+    variables, 3 tests, 1 infra dep, one call per case. Each case's `mode` is its ordinal; its
+    initial state is an all-zero ghost array around a known interior."""
+    interior = [[11.0, 12.0], [21.0, 22.0]]
+
+    def case(case_id: str, mode: int) -> dict:
+        return {"case_id": case_id, "inputs": {"mode": mode},
+                "initial_state": {"field_ghost": 0.0, "field_interior": interior,
+                                  "max_abs_deviation": -1.0, "guard_fired": 0.0}}
+
+    return _driven({
         "meta": {"spec_id": BOUNDARY_SID, "spec_kind": "component"},
         "case": {"test_case_set": [
-            {"case_id": "l0_periodic_x_wrap_pass"},
-            {"case_id": "l0_periodic_y_wrap_pass"},
-            {"case_id": "l0_invalid_ny_xfail"},
+            case("l0_periodic_x_wrap_pass", 1),
+            case("l0_periodic_y_wrap_pass", 2),
+            case("l0_invalid_ny_xfail", 3),
         ]},
         "impl_defaults": {
             "target": {"class": "cpu", "backend": "openmp"},
@@ -108,14 +169,43 @@ def _boundary_ir() -> dict:
             "node_key": f"component/{BOUNDARY_SID}@0.1.0",
             "direct_deps": [{"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}],
         },
-    }
+    }, BOUNDARY_OP, {"field_ghost": ("out", 2), "field_interior": ("in", 2),
+                     "max_abs_deviation": ("out", 0), "guard_fired": ("out", 0)})
+
+
+# The operation `_boundary_ir` drives: the interior copied into the centre of the ghost array, the
+# case's ordinal in `max_abs_deviation`, and mode 3 the xfail case's refusal.
+_BOUNDARY_MODEL = textwrap.dedent(f"""\
+    module {BOUNDARY_SID}_model
+      use, intrinsic :: iso_fortran_env, only: dp => real64
+      implicit none
+      private
+      public :: {BOUNDARY_OP}
+    contains
+      subroutine {BOUNDARY_OP}(mode, field_ghost, field_interior, &
+          max_abs_deviation, guard_fired, ok)
+        integer, intent(in) :: mode
+        real(dp), intent(out) :: field_ghost(:, :)
+        real(dp), intent(in) :: field_interior(:, :)
+        real(dp), intent(out) :: max_abs_deviation
+        real(dp), intent(out) :: guard_fired
+        logical, intent(out) :: ok
+        field_ghost = 0.0_dp
+        field_ghost(2:3, 2:3) = field_interior
+        max_abs_deviation = real(mode, dp)
+        guard_fired = merge(1.0_dp, 0.0_dp, mode == 3)
+        ok = mode /= 3
+      end subroutine {BOUNDARY_OP}
+    end module {BOUNDARY_SID}_model
+    """)
 
 
 def _metrics_ir() -> dict:
     """A minimal problem-shaped IR with one rank-1 snapshot variable."""
-    return {
+    return _driven({
         "meta": {"spec_id": "prob_x", "spec_kind": "problem"},
-        "case": {"test_case_set": [{"case_id": "c_pass"}]},
+        "case": {"test_case_set": [{"case_id": "c_pass", "inputs": {"mode": 0},
+                                    "initial_state": {"u": [1.0, 2.0, 3.0]}}]},
         "impl_defaults": {
             "target": {"class": "cpu", "backend": "openmp"},
             "backend_overrides": {"openmp": {"num_threads": 4}},
@@ -133,18 +223,21 @@ def _metrics_ir() -> dict:
         },
         "dependency": {"node_key": "problem/prob_x@0.1.0",
                        "direct_deps": [{"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]},
-    }
+    }, "prob_x__apply", {"u": ("inout", 1)})
 
 
 RANK_SID = "prob_rank"
+RANK_OP = f"{RANK_SID}__apply"
 
 
 def _rank34_metrics_ir() -> dict:
-    """A problem IR exercising the rank-3 + rank-4 emitter paths — the code families the
+    """A problem IR exercising the rank-3 + rank-4 reader and emitter paths — the code families the
     boundary IR never compiles."""
-    return {
+    a3 = [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]
+    return _driven({
         "meta": {"spec_id": RANK_SID, "spec_kind": "problem"},
-        "case": {"test_case_set": [{"case_id": "c0"}]},
+        "case": {"test_case_set": [{"case_id": "c0", "inputs": {"mode": 0},
+                                    "initial_state": {"a3": a3, "a4": [a3, a3], "s": 0.0}}]},
         "impl_defaults": {
             "target": {"class": "cpu", "backend": "openmp"},
             "backend_overrides": {"openmp": {"num_threads": 2}},
@@ -166,48 +259,29 @@ def _rank34_metrics_ir() -> dict:
         },
         "dependency": {"node_key": f"problem/{RANK_SID}@0.1.0",
                        "direct_deps": [{"node_key": "infrastructure/harness_fortran_cpu@0.2.0"}]},
-    }
+    }, RANK_OP, {"a3": ("inout", 3), "a4": ("inout", 4), "s": ("out", 0)})
 
 
-# A checks stub matching _rank34_metrics_ir: rank-3 + rank-4 + scalar BOUND storage with
-# real data (the module-level variables the runner reads directly, named as the IR snapshot
-# variables) — enough to compile+link+run against the harness stub.
-_RANK_CHECKS_STUB = textwrap.dedent(f"""\
-    module {RANK_SID}_checks
-      use, intrinsic :: iso_fortran_env, only: real64
-      ! allow(C003)
+# The operation `_rank34_metrics_ir` drives: both arrays doubled, `s` the sum of the rank-3 one.
+_RANK_MODEL = textwrap.dedent(f"""\
+    module {RANK_SID}_model
+      use, intrinsic :: iso_fortran_env, only: dp => real64
       implicit none
       private
-      integer, parameter :: dp = real64
-      real(dp), allocatable :: a3(:, :, :)
-      real(dp), allocatable :: a4(:, :, :, :)
-      real(dp) :: s = 0.0_dp
-      public :: case_setup, case_run, get_time
-      public :: a3, a4, s
+      public :: {RANK_OP}
     contains
-      subroutine case_setup(case_id, ok)
-        character(len=*), intent(in) :: case_id
+      subroutine {RANK_OP}(mode, a3, a4, s, ok)
+        integer, intent(in) :: mode
+        real(dp), intent(inout) :: a3(:, :, :)
+        real(dp), intent(inout) :: a4(:, :, :, :)
+        real(dp), intent(out) :: s
         logical, intent(out) :: ok
-        if (.not. allocated(a3)) allocate(a3(2, 2, 2))
-        if (.not. allocated(a4)) allocate(a4(2, 2, 2, 2))
-        a3 = 1.0_dp
-        a4 = 2.0_dp
-        s = 3.0_dp
-        ok = len_trim(case_id) > 0
-      end subroutine case_setup
-      subroutine case_run(case_id, steps, cells_updated, ok)
-        character(len=*), intent(in) :: case_id
-        integer, intent(out) :: steps, cells_updated
-        logical, intent(out) :: ok
-        steps = 1
-        cells_updated = 8
-        ok = len_trim(case_id) > 0
-      end subroutine case_run
-      subroutine get_time(t)
-        real(dp), intent(out) :: t
-        t = 0.0_dp
-      end subroutine get_time
-    end module {RANK_SID}_checks
+        a3 = 2.0_dp * a3
+        a4 = 2.0_dp * a4
+        s = sum(a3)
+        ok = mode == 0
+      end subroutine {RANK_OP}
+    end module {RANK_SID}_model
     """)
 
 
@@ -241,6 +315,10 @@ _HARNESS_STUB = textwrap.dedent("""\
       public :: harness_fortran_cpu__emit_array_r3, harness_fortran_cpu__emit_array_r4
       public :: harness_fortran_cpu__box, harness_fortran_cpu__write_snapshot
       public :: harness_fortran_cpu__write_perf
+      public :: harness_fortran_cpu__read_case, harness_fortran_cpu__get_real
+      public :: harness_fortran_cpu__get_int, harness_fortran_cpu__get_bool
+      public :: harness_fortran_cpu__get_array_r1, harness_fortran_cpu__get_array_r2
+      public :: harness_fortran_cpu__get_array_r3, harness_fortran_cpu__get_array_r4
     contains
       subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)
         character(len=*), intent(in) :: tokens(:)
@@ -369,6 +447,46 @@ _HARNESS_STUB = textwrap.dedent("""\
           '{ "threads_per_rank": '//harness_fortran_cpu__emit_int(threads_per_rank)//' } }'
         close(u)
       end subroutine harness_fortran_cpu__write_perf
+      subroutine harness_fortran_cpu__read_case(case_id, ok)
+        character(len=*), intent(in) :: case_id
+        logical, intent(out) :: ok
+        ok = len_trim(case_id) > 0
+      end subroutine harness_fortran_cpu__read_case
+      function harness_fortran_cpu__get_real(name) result(x)
+        character(len=*), intent(in) :: name
+        real(dp) :: x
+        x = real(len(name), dp)
+      end function harness_fortran_cpu__get_real
+      function harness_fortran_cpu__get_int(name) result(i)
+        character(len=*), intent(in) :: name
+        integer :: i
+        i = len(name)
+      end function harness_fortran_cpu__get_int
+      function harness_fortran_cpu__get_bool(name) result(b)
+        character(len=*), intent(in) :: name
+        logical :: b
+        b = len(name) > 0
+      end function harness_fortran_cpu__get_bool
+      subroutine harness_fortran_cpu__get_array_r1(name, a)
+        character(len=*), intent(in) :: name
+        real(dp), allocatable, intent(out) :: a(:)
+        allocate(a(len(name)))
+      end subroutine harness_fortran_cpu__get_array_r1
+      subroutine harness_fortran_cpu__get_array_r2(name, a)
+        character(len=*), intent(in) :: name
+        real(dp), allocatable, intent(out) :: a(:,:)
+        allocate(a(len(name), 1))
+      end subroutine harness_fortran_cpu__get_array_r2
+      subroutine harness_fortran_cpu__get_array_r3(name, a)
+        character(len=*), intent(in) :: name
+        real(dp), allocatable, intent(out) :: a(:,:,:)
+        allocate(a(len(name), 1, 1))
+      end subroutine harness_fortran_cpu__get_array_r3
+      subroutine harness_fortran_cpu__get_array_r4(name, a)
+        character(len=*), intent(in) :: name
+        real(dp), allocatable, intent(out) :: a(:,:,:,:)
+        allocate(a(len(name), 1, 1, 1))
+      end subroutine harness_fortran_cpu__get_array_r4
     end module harness_fortran_cpu_model
     """)
 
@@ -406,83 +524,6 @@ _STUB_WRITE_PERF_HEAD_8 = textwrap.indent(textwrap.dedent("""\
 """), "  ")
 _EIGHT_ARG_HARNESS_STUB = _HARNESS_STUB.replace(_STUB_WRITE_PERF_HEAD, _STUB_WRITE_PERF_HEAD_8)
 
-# The boundary checks stub. Its snapshot variables are BOUND module-level storage (named as the
-# IR declares them, `public ::`-listed, arrays allocated by `case_setup`) that the rendered
-# runner reads directly. Two deliberate properties make it the Z6 fixture (d)
-# (`zero_base_architecture.md:253`): `get_time`, the one callback the runner calls after a capture,
-# OVERWRITES every bound variable with a sentinel (-99) and `case_run` restores them, so a runner
-# that called it BEFORE a capture — or re-read storage instead of the serialized copy — would emit
-# -99 somewhere; and `case_run` changes `field_ghost` from its `case_setup` value, so the
-# `initial/` and the final snapshot of one case are distinguishable. The bound values carry a
-# per-case ordinal, so one case's snapshot holding another's state is detectable.
-_CHECKS_STUB = textwrap.dedent("""\
-    module dynamics_shallow_water_boundary_2d_periodic_copy_checks
-      use, intrinsic :: iso_fortran_env, only: real64
-      ! allow(C003)
-      implicit none
-      private
-      integer, parameter :: dp = real64
-      real(dp), allocatable :: field_ghost(:, :)
-      real(dp), allocatable :: field_interior(:, :)
-      real(dp) :: max_abs_deviation = 0.0_dp
-      real(dp) :: guard_fired = 0.0_dp
-      integer :: ncase_seen = 0
-      public :: case_setup, case_run, get_time
-      public :: field_ghost, field_interior, max_abs_deviation, guard_fired
-    contains
-      subroutine case_setup(case_id, ok)
-        character(len=*), intent(in) :: case_id
-        logical, intent(out) :: ok
-        if (.not. allocated(field_ghost)) allocate(field_ghost(4, 4))
-        if (.not. allocated(field_interior)) allocate(field_interior(2, 2))
-        call set_interior()
-        field_ghost = 0.0_dp
-        ! A per-case ordinal, so a snapshot that carried the WRONG case's state is detectable.
-        ncase_seen = ncase_seen + 1
-        max_abs_deviation = real(ncase_seen, dp)
-        guard_fired = 0.0_dp
-        ok = trim(case_id) /= 'l0_invalid_ny_xfail'
-      end subroutine case_setup
-      subroutine case_run(case_id, steps, cells_updated, ok)
-        character(len=*), intent(in) :: case_id
-        integer, intent(out) :: steps, cells_updated
-        logical, intent(out) :: ok
-        steps = 1
-        cells_updated = 4
-        ! `get_time` left the sentinel in the storage after the initial capture.
-        call set_interior()
-        field_ghost(:, :) = 0.0_dp
-        field_ghost(2:3, 2:3) = field_interior
-        max_abs_deviation = real(ncase_seen, dp)
-        guard_fired = 0.0_dp
-        if (trim(case_id) == 'l0_invalid_ny_xfail') then
-          guard_fired = 1.0_dp
-          ok = .false.
-        else
-          ok = .true.
-        end if
-      end subroutine case_run
-      subroutine get_time(t)
-        real(dp), intent(out) :: t
-        t = 0.0_dp
-        ! Fixture (d): a callback that writes to the bound storage AFTER a capture. The
-        ! captured snapshot must not see it.
-        field_ghost = -99.0_dp
-        field_interior = -99.0_dp
-        max_abs_deviation = -99.0_dp
-        guard_fired = -99.0_dp
-      end subroutine get_time
-      subroutine set_interior()
-        integer :: i, j
-        do i = 1, 2
-          do j = 1, 2
-            field_interior(i, j) = real(i * 10 + j, dp)
-          end do
-        end do
-      end subroutine set_interior
-    end module dynamics_shallow_water_boundary_2d_periodic_copy_checks
-    """)
-
 
 class RenderShapeTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -491,75 +532,94 @@ class RenderShapeTest(unittest.TestCase):
     def test_program_and_uses(self) -> None:
         self.assertIn(f"program {BOUNDARY_SID}_runner", self.txt)
         self.assertIn("use harness_fortran_cpu_model, only:", self.txt)
-        self.assertIn(f"use {BOUNDARY_SID}_checks, only:", self.txt)
+        self.assertIn(f"use {BOUNDARY_SID}_model, only: &\n    {BOUNDARY_OP}\n", self.txt)
+        self.assertNotIn("_checks", self.txt)
         # only the emitters for the ranks in use are imported (r2 + scalar; not r1/r3/r4)
         self.assertIn("harness_fortran_cpu__emit_array_r2", self.txt)
         self.assertIn("harness_fortran_cpu__emit_real", self.txt)
         self.assertNotIn("emit_array_r1", self.txt)
         self.assertNotIn("emit_array_r3", self.txt)
-
-    def test_calls_checks_abi(self) -> None:
-        for name in ("case_setup", "case_run", "get_time"):
-            self.assertIn(f"call {name}(", self.txt)
-
-    def test_snapshot_is_read_from_bound_storage_not_a_getter(self) -> None:
-        # Z6 fixture (b) (`zero_base_architecture.md:253`): the retired getter path must be
-        # UNREACHABLE from the rendered runner — no getter is named in the ABI, imported, or
-        # called; the snapshot values come from the checks module's bound storage, imported
-        # under the `sb_` alias and passed straight to the certified harness emitter.
-        for gone in ("get_scalar", "get_r1", "get_r2", "get_r3", "get_r4",
-                     "gfound", "r2buf", "sval"):
-            self.assertNotIn(gone, CHECKS_PUBLIC_NAMES)
+        # likewise the readers: what the case file holds for this IR, no other rank's
+        self.assertIn("harness_fortran_cpu__get_array_r2", self.txt)
+        self.assertIn("harness_fortran_cpu__get_real", self.txt)
+        self.assertIn("harness_fortran_cpu__get_int", self.txt)
+        for gone in ("get_array_r1", "get_array_r3", "get_array_r4", "get_bool"):
             self.assertNotIn(gone, self.txt)
-        self.assertEqual(
-            CHECKS_PUBLIC_NAMES,
-            ("case_setup", "case_run", "get_time"))
-        self.assertIn("    sb_field_ghost => field_ghost, &", self.txt)
-        self.assertIn("    sb_max_abs_deviation => max_abs_deviation, &", self.txt)
+
+    def test_the_operation_is_called_with_the_state_itself(self) -> None:
+        # Every dummy's actual, in dummy order: the case's input, then each state.
+        self.assertIn(
+            f"call {BOUNDARY_OP}( &\n"
+            "        h1, &\n        st_field_ghost, &\n        st_field_interior, &\n"
+            "        st_max_abs_deviation, &\n        st_guard_fired, &\n        lg_ok)\n",
+            self.txt)
+        self.assertEqual(self.txt.count(f"call {BOUNDARY_OP}("), 1)
+
+    def test_a_captured_value_is_the_drivers_own_variable_read_by_the_emitter(self) -> None:
+        # No generated procedure sits between a state and its emitter, so nothing can filter,
+        # compute or rewrite a captured value on its way out (Z6 fixture (b),
+        # `zero_base_architecture.md:253`, whose retired getter names stay absent).
+        for gone in ("get_scalar", "get_r1", "get_r2", "get_r3", "get_r4",
+                     "gfound", "r2buf", "sval", "sb_"):
+            self.assertNotIn(gone, self.txt)
         self.assertIn(
             "    out(1) = harness_fortran_cpu__box('field_ghost', &\n"
-            "      harness_fortran_cpu__emit_array_r2(sb_field_ghost))", self.txt)
+            "      harness_fortran_cpu__emit_array_r2(st_field_ghost))", self.txt)
         self.assertIn(
             "harness_fortran_cpu__box('max_abs_deviation', &\n"
-            "      harness_fortran_cpu__emit_real(sb_max_abs_deviation))", self.txt)
-        # an unallocated bound array stops the run (never an unallocated actual to the emitter)
-        self.assertIn("    call require_bound(allocated(sb_field_ghost), &\n"
-                      "      'field_ghost', cid)", self.txt)
-        self.assertNotIn("require_bound(allocated(sb_max_abs_deviation)", self.txt)  # scalar
-        # EVERY declared variable is captured for EVERY case — the snapshot is the full state:
-        # one capture body, no per-case select.
-        self.assertIn("    allocate(out(4))", self.txt)
+            "      harness_fortran_cpu__emit_real(st_max_abs_deviation))", self.txt)
+        # EVERY declared variable, and `step`, is captured for EVERY case — the snapshot is the
+        # full state: one capture body, no per-case select.
+        self.assertIn("    allocate(out(6))", self.txt)
+        self.assertIn("    out(6) = harness_fortran_cpu__box('step', &", self.txt)
         self.assertNotIn("select case (cid)", self.txt)
         self.assertEqual(self.txt.count("harness_fortran_cpu__box('guard_fired', &"), 1)
 
+    def test_a_case_with_several_entries_selects_on_the_case_id(self) -> None:
+        # The list form of `drive.step`: the select appears, each case to its entry, and a case no
+        # entry names stops the run.
+        ir = copy.deepcopy(_boundary_ir())
+        step = ir["drive"]["step"]
+        ir["drive"]["step"] = [
+            {**step, "cases": ["l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"]},
+            {**step, "cases": ["l0_invalid_ny_xfail"]}]
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertIn("    select case (cid)\n    case ('l0_periodic_x_wrap_pass')\n"
+                      "      entry_no = 1\n    case ('l0_periodic_y_wrap_pass')\n"
+                      "      entry_no = 1\n    case ('l0_invalid_ny_xfail')\n      entry_no = 2\n",
+                      txt)
+        self.assertIn("'error: no drive entry runs case '//cid", txt)
+        self.assertEqual(txt.count(f"call {BOUNDARY_OP}("), 2)
+
     def test_a_schema_variable_no_test_requires_is_still_captured(self) -> None:
-        # The set the runner reads is the SCHEMA, not what the tests' predicates read:
-        # a declared state no test names is imported, its emitter imported, and captured for
+        # The set the runner reads is the SCHEMA, not what the tests' predicates read: a declared
+        # state no test names is read from the case file, its emitter imported, and captured for
         # every case (the round-3 census's only corpus-dependent decision on the renderer).
         ir = copy.deepcopy(_boundary_ir())
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
         schema["variables"].append({"name": "orphan_r1", "shape_expr": "[7]"})
         txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertIn("    sb_orphan_r1 => orphan_r1", txt)
+        self.assertIn("  real(dp), allocatable :: st_orphan_r1(:)", txt)
         self.assertIn("    harness_fortran_cpu__emit_array_r1, &", txt)
-        self.assertIn("    allocate(out(5))", txt)
-        self.assertIn("harness_fortran_cpu__emit_array_r1(sb_orphan_r1))", txt)
+        self.assertIn("    allocate(out(7))", txt)
+        self.assertIn("harness_fortran_cpu__emit_array_r1(st_orphan_r1))", txt)
+        self.assertIn("call harness_fortran_cpu__get_array_r1('orphan_r1', &\n      st_orphan_r1)",
+                      txt)
 
-    def test_capture_points_bracket_case_run_and_precede_every_callback(self) -> None:
-        # Z6 capture contract: initial capture right after case_setup, final capture right
-        # after case_run, each BEFORE the `get_time` that follows it; `initial/` snapshots go
-        # under the sub-directory.
+    def test_the_captures_bracket_the_call_and_the_case_file_is_read_before_either(self) -> None:
+        # The capture contract: the case file read whole, the initial capture on what it held,
+        # the operation, the final capture on what it left; `initial/` snapshots go under the
+        # sub-directory. What each capture then holds is `test_driver_render`'s.
         body = self.txt[self.txt.index("  do ci = 1, ncases"):
-                        self.txt.index("  call system_clock(count=clock1)")]
+                        self.txt.index("  if (walltime <= 0.0_dp)")]
         order = [
-            "call case_setup(trim(case_ids(ci)), setup_ok)",
-            "call capture_state(trim(case_ids(ci)), vals)",
-            "call get_time(tval)",  # generated code: only AFTER the capture
-            "call harness_fortran_cpu__write_snapshot('initial/'//trim(case_ids(ci)), vals, tval)",
-            "call case_run(trim(case_ids(ci)), steps_c, cells_c, run_ok)",
-            "call capture_state(trim(case_ids(ci)), vals)",
-            "call get_time(tval)",
-            "call harness_fortran_cpu__write_snapshot(trim(case_ids(ci)), vals, tval)",
+            "call harness_fortran_cpu__read_case(cid, ok)",
+            "call harness_fortran_cpu__get_array_r2('field_ghost', &",
+            "call capture_state(vals)",
+            "call harness_fortran_cpu__write_snapshot('initial/'//cid, vals, t_c)",
+            f"call {BOUNDARY_OP}( &",
+            "call capture_state(vals)",
+            "call harness_fortran_cpu__write_snapshot(cid, vals, t_c)",
         ]
         pos = -1
         for needle in order:
@@ -568,13 +628,10 @@ class RenderShapeTest(unittest.TestCase):
             pos = nxt
         self.assertEqual(body.count("call capture_state("), 2)
         self.assertEqual(body.count("write_snapshot("), 2)
-        # no generated procedure runs between case_setup / case_run returning and the capture
-        setup_end = body.index("call case_setup(")
-        self.assertLess(body.index("call capture_state(", setup_end),
-                        body.index("call get_time(", setup_end))
-        run_end = body.index("call case_run(")
-        self.assertLess(body.index("call capture_state(", run_end),
-                        body.index("call get_time(", run_end))
+        # no procedure runs between the operation returning and the final capture
+        tail = body[body.index(f"call {BOUNDARY_OP}("):body.rindex("call capture_state(")]
+        self.assertEqual(re.findall(r"call (\w+)\(", tail),
+                         [BOUNDARY_OP, "system_clock"])
 
     def test_terminal_writer(self) -> None:
         self.assertEqual(1, self.txt.count("call harness_fortran_cpu__write_perf("))
@@ -582,7 +639,8 @@ class RenderShapeTest(unittest.TestCase):
         # the count the run is given itself (`harness_fortran_cpu@0.10.0` §3.2, issue #512:
         # Validate runs the binary at several counts, so the profile's is the wrong one for
         # every sweep shape).
-        self.assertIn("    steps_total, cells_total, walltime, 1, 0)\n", self.txt)
+        self.assertIn("    steps_total, int(min(cells_total, int(huge(0), int64))), walltime, 1, 0)\n",
+                      self.txt)
         # The perf line carries no thread count of the profile's: a render under another
         # count is the same text.
         other = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target={
@@ -626,18 +684,19 @@ class PerfParallelismRenderTest(unittest.TestCase):
         # The runner passes no thread count: the harness's writer records its run-time count
         # (issue #512) — neither the profile's nor the IR's `backend_overrides.openmp.num_threads`,
         # which nothing runs with.
-        self.assertIn("    steps_total, cells_total, walltime, 1, 0)\n", txt)
+        perf_line = "    steps_total, int(min(cells_total, int(huge(0), int64))), walltime, 1, %d)\n"
+        self.assertIn(perf_line % 0, txt)
         other = {**_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7},
                  "hardware": {"class": "gpu", "architecture": "a"}}
         other_txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=other)
         # The rank and device counts are `host_execution.perf_parallelism`'s (issue #316): a
         # class whose backend states one device per rank records it, where the renderer used
         # to write 0 for every class.
-        self.assertIn("    steps_total, cells_total, walltime, 1, 1)\n", other_txt)
+        self.assertIn(perf_line % 1, other_txt)
         self.assertIn("'gpu', &", other_txt)
-        # rank-1 snapshot var -> bound `sb_u` + emit_array_r1
-        self.assertIn("    sb_u => u", txt)
-        self.assertIn("harness_fortran_cpu__emit_array_r1(sb_u))", txt)
+        # rank-1 snapshot var -> the driver's `st_u` + emit_array_r1
+        self.assertIn("  real(dp), allocatable :: st_u(:)", txt)
+        self.assertIn("harness_fortran_cpu__emit_array_r1(st_u))", txt)
         self.assertNotIn("emit_array_r2", txt)
 
 
@@ -668,45 +727,45 @@ class RenderErrorMatrixTest(unittest.TestCase):
         with self.assertRaises(RenderError):
             render_runner(_boundary_ir(), "z" * 56, HARNESS, target=_TARGET_PROFILE.doc)
 
-    def _rename_snapshot_var(self, ir: dict, old: str, new: str) -> None:
-        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        for v in schema["variables"]:
-            if v["name"] == old:
-                v["name"] = new
+    _rename_snapshot_var = staticmethod(_rename_state)
 
     def test_snapshot_variable_must_be_a_bindable_identifier(self) -> None:
-        # A snapshot variable IS a module-level variable of the checks module (the binding
-        # convention), so a name Fortran cannot declare is refused at render / compile.static
-        # rather than left to fail the syntax gate on a file no leaf can edit.
+        # A snapshot variable IS a variable of the driver, `st_<name>`, so a name Fortran cannot
+        # declare is refused at render / compile.static rather than left to fail the syntax gate
+        # on a file no leaf can edit.
         for bad in ("field-ghost", "1field", "field ghost", "field.ghost"):
             with self.subTest(bad=bad):
                 self._expect(lambda ir, b=bad: self._rename_snapshot_var(ir, "field_ghost", b))
 
-    def test_snapshot_variable_alias_bounded_by_identifier_limit(self) -> None:
-        # 61 chars is a legal identifier, but `sb_` + 61 = 64 > 63: refused by the alias
-        # bound, with its own message (the 100-column backstop would also catch it, one
-        # step later and with a message about line width rather than the identifier).
+    def test_snapshot_variable_bounded_by_the_identifier_limit_through_its_prefix(self) -> None:
+        # 61 chars is a legal identifier, but `st_` + 61 = 64 > 63: refused by the bound, with its
+        # own message (the 100-column backstop would also catch it, one step later and with a
+        # message about line width rather than the identifier).
         ir = copy.deepcopy(_boundary_ir())
         self._rename_snapshot_var(ir, "field_ghost", "f" * 61)
         with self.assertRaises(RenderError) as cm:
             render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("exceeds the 63-char identifier limit", str(cm.exception))
-        # A long name that fits every rendered line takes the wrapped rename form.
+        # A long name that fits the limit and every rendered line renders.
         ir = copy.deepcopy(_boundary_ir())
         self._rename_snapshot_var(ir, "field_ghost", "f" * 50)
         txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertIn("    sb_" + "f" * 50 + " => &\n      " + "f" * 50 + ", &", txt)
+        self.assertIn("  real(dp), allocatable :: st_" + "f" * 50 + "(:,:)", txt)
 
     def test_snapshot_variables_that_fold_to_one_identifier_are_refused(self) -> None:
-        # `guard_fired` and `Guard_Fired` are ONE variable to Fortran; two bindings of one
-        # storage would be an ambiguous mapping, and a schema that lists both is unbindable.
+        # `guard_fired` and `Guard_Fired` are ONE variable to Fortran, declared twice.
         self._expect(lambda ir: self._rename_snapshot_var(ir, "field_ghost", "Guard_Fired"))
 
-    def test_snapshot_variable_named_like_an_abi_procedure_is_refused(self) -> None:
-        # A module cannot hold a variable and a procedure of one name.
-        for name in CHECKS_PUBLIC_NAMES + ("Case_Run",):
+    def test_a_state_named_like_a_retired_callback_renders_under_its_prefix(self) -> None:
+        # There is no module of the leaf's for a state's name to collide with any more: a state's
+        # variable is the driver's, under its prefix, whatever the name spells.
+        for name in ("case_setup", "case_run", "get_time"):
             with self.subTest(name=name):
-                self._expect(lambda ir, n=name: self._rename_snapshot_var(ir, "field_ghost", n))
+                ir = copy.deepcopy(_boundary_ir())
+                self._rename_snapshot_var(ir, "field_ghost", name)
+                txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+                self.assertIn(f"  real(dp), allocatable :: st_{name}(:,:)", txt)
+                self.assertEqual(ir_content_violations(ir, BOUNDARY_SID, HARNESS), [])
 
     def test_over_long_case_id_fails_closed(self) -> None:
         # 70 chars: over the harness `case_id_len = 64`, which `__parse_cases` truncates a parsed
@@ -794,11 +853,16 @@ def _over_long_case_id_mut(ir: dict) -> None:
     ir["case"]["test_case_set"][0]["case_id"] = "c_" + "x" * 68  # > CASE_ID_LEN
 
 
+#: The widest line a rank-2 state's name reaches: its reader. A name of this many characters puts
+#: it at exactly 100 columns, the linter's limit on the builds where the rule fires at the limit.
+_R2_READER_LINE = "    call harness_fortran_cpu__get_array_r2('', &"
+_NAME_AT_100 = "m" * (100 - len(_R2_READER_LINE))
+
+
 def _long_name_mut(ir: dict) -> None:
-    # A SNAPSHOT VARIABLE whose `sb_` alias fits the identifier limit and whose
-    # `    out(3) = harness_fortran_cpu__box('<name>', &` line reaches the 100-column lint limit.
-    schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-    schema["variables"][2]["name"] = "m" * (100 - len("    out(3) = harness_fortran_cpu__box('', &"))
+    # A SNAPSHOT VARIABLE whose `st_` local fits the identifier limit and whose reader line reaches
+    # the 100-column lint limit.
+    _rename_state(ir, "field_ghost", _NAME_AT_100)
 
 
 # (label, mutate, spec_id, is_identity): each mutation of _boundary_ir makes render_runner raise.
@@ -899,7 +963,7 @@ class SpecIdBoundAgreementTest(unittest.TestCase):
         # the declared margin. Pinned to 55 as the value the documents state for this backend.
         self.assertEqual(55, bundle.SPEC_ID_MAX)
         self.assertEqual(bundle.IDENTIFIER_MAX - len("_runner") - 1, bundle.SPEC_ID_MAX)
-        for suffix in ("_runner", "_checks", "_model"):
+        for suffix in ("_runner", "_model", "_drv"):
             self.assertLessEqual(bundle.SPEC_ID_MAX + len(suffix), bundle.IDENTIFIER_MAX)
 
     def test_the_bound_tracks_the_language_identifier_limit(self) -> None:
@@ -1031,49 +1095,57 @@ class LineWidthTest(unittest.TestCase):
         self.assertIn(f"{lowered}-column limit", str(cm.exception))
 
     def test_every_limit_read_follows_the_linter_s_declaration_upward(self) -> None:
-        """The row above lowers the limit, which the global backstop alone would catch; this one
-        RAISES it, so the renderer's other read must follow the declaration on its own: the
-        state-binding import keeps a 102-column `sb_<v> => <v>, &` line on one line rather than
-        wrapping it. A literal 100 restored at that read turns this row red (the backstop does
-        not see it, because the raised limit is above the line)."""
+        """The row above lowers the limit; this one RAISES it, so the refusal must follow the
+        declaration both ways: a 100-column line, which the declared limit refuses, renders under
+        a raised one. A literal 100 restored at the backstop turns this row red."""
         from tools.backends import registry
 
         lint = registry.capability_module(
             "linter", registry.linter_for_language("fortran"), "lint")
         raised = 110
-        name = "v" * 44  # `    sb_<44> => <44>, &` == 14 + 88 == 102 columns
-        self.assertEqual(len(f"    sb_{name} => {name}, &"), 102)
         ir = copy.deepcopy(_boundary_ir())
-        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        for v in schema["variables"]:
-            if v["name"] == "max_abs_deviation":
-                v["name"] = name
+        _long_name_mut(ir)
         with mock.patch.object(lint, "LINE_LENGTH_LIMIT", raised):
             txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertLess(self._maxw(txt), raised)
-        self.assertIn(f"sb_{name} => {name}", txt)
-        self.assertNotIn(f"sb_{name} => &", txt)
+        self.assertEqual(self._maxw(txt), 100)
+        self.assertIn(f"get_array_r2('{_NAME_AT_100}', &", txt)
 
     def test_a_snapshot_name_rendering_an_exactly_100_column_line_is_refused(self) -> None:
-        # The variable-name path had no `_checks`-style strict bound: a scalar name whose
-        # `out(k) = harness_fortran_cpu__box('<name>', &` line is EXACTLY 100 columns slipped a
-        # `> 100` backstop and failed S001 on a host-authored line (a round-1 reviewer measured
-        # it on fortitude 0.8.0). The backstop is `>=` now, so no rendered line reaches 100.
+        # A name whose reader line is EXACTLY 100 columns would slip a `> 100` backstop and fail
+        # S001 on a host-authored line (a round-1 reviewer measured the shape on fortitude 0.8.0).
+        # The backstop is `>=`, so no rendered line reaches 100.
         ir = copy.deepcopy(_boundary_ir())
-        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        name = "m" * (100 - len("    out(3) = harness_fortran_cpu__box('', &"))
-        for v in schema["variables"]:
-            if v["name"] == "max_abs_deviation":
-                v["name"] = name
+        _long_name_mut(ir)
         with self.assertRaises(RenderError) as cm:
             render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn("reaches the linter's 100-column limit (100 columns", str(cm.exception))
+        self.assertFalse(cm.exception.identity)
         # one char shorter renders, and every line is at most 99 wide
-        ir2 = copy.deepcopy(ir)
-        for v in ir2["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:
-            if v["name"] == name:
-                v["name"] = name[:-1]
-        self.assertLessEqual(self._maxw(render_runner(ir2, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)), 99)
+        ir2 = copy.deepcopy(_boundary_ir())
+        _rename_state(ir2, "field_ghost", _NAME_AT_100[:-1])
+        txt = render_runner(ir2, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertEqual(self._maxw(txt), 99)
+
+    def test_a_loop_drive_ir_is_held_to_the_same_limit(self) -> None:
+        # The loop's own lines, over the state its step writes through a work copy: that name's
+        # widest line is the copy's reallocation, which spells it twice, and is 39 + 2 * width.
+        for width, refused in ((31, True), (30, False)):
+            with self.subTest(width=width):
+                ir = loop_ir(0)
+                schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+                name = "w" * width
+                schema["variables"][1]["name"] = name
+                ir["drive"]["step"]["arguments"]["w"] = f"state.{name}"
+                if refused:
+                    with self.assertRaises(RenderError) as cm:
+                        render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+                    self.assertIn("100-column limit", str(cm.exception))
+                    self.assertFalse(cm.exception.identity)
+                    self.assertEqual(len(ir_content_violations(ir, "drv_toy", HARNESS)), 1)
+                else:
+                    txt = render_runner(ir, "drv_toy", HARNESS, target=_TARGET_PROFILE.doc)
+                    self.assertLess(self._maxw(txt), 100)
+                    self.assertEqual(ir_content_violations(ir, "drv_toy", HARNESS), [])
 
 
 class FortranLiteralEscapingTest(unittest.TestCase):
@@ -1408,6 +1480,91 @@ class HarnessPinTest(unittest.TestCase):
         self.assertIn("model source signature", str(cm.exception))
 
 
+    # Amendment 4 of issue #589: the pin is enforced for what `_used_harness_ops` lists, so a
+    # surface the IR's driver does not call may be absent from the certified harness, and one it
+    # does call may not. Each row below drives both polarities through the real pin.
+
+    @staticmethod
+    def _without(source: str, *symbols: str) -> str:
+        """`source` with the definition of each harness procedure removed."""
+        for symbol in symbols:
+            out, n = re.subn(rf"[ ]*(subroutine|function) {symbol}\(.*?end \1 {symbol}\n", "",
+                             source, count=1, flags=re.S)
+            if n != 1:
+                raise AssertionError(f"{symbol} is not defined in the stub")
+            source = out
+        return source
+
+    def test_a_certified_source_missing_read_case_is_refused(self) -> None:
+        symbol = "harness_fortran_cpu__read_case"
+        self.assertIn("read_case", _used_harness_ops(self.ir))
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs,
+                               self._without(self.src, symbol))
+        self.assertIn(f"certified harness model source omits {symbol!r}", str(cm.exception))
+        # ...and in the certified IR's signatures, the pin's other half.
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS,
+                               [e for e in self.sigs if e["symbol"] != symbol], self.src)
+        self.assertIn(f"public_api.signatures omits {symbol!r}", str(cm.exception))
+
+    def test_a_drifted_read_case_is_refused(self) -> None:
+        header = "subroutine harness_fortran_cpu__read_case(case_id, ok)"
+        self.assertIn(header, self.src)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
+                header, "subroutine harness_fortran_cpu__read_case(id, ok)").replace(
+                "character(len=*), intent(in) :: case_id\n        logical, intent(out) :: ok\n"
+                "        ok = len_trim(case_id) > 0",
+                "character(len=*), intent(in) :: id\n        logical, intent(out) :: ok\n"
+                "        ok = len_trim(id) > 0"))
+        self.assertIn("harness_fortran_cpu__read_case", str(cm.exception))
+
+    def test_the_getters_are_pinned_exactly_when_the_ir_uses_them(self) -> None:
+        used = _used_harness_ops(self.ir)
+        for getter in ("get_array_r2", "get_real", "get_int"):
+            self.assertIn(getter, used)
+            with self.subTest(getter=getter), self.assertRaises(RenderError) as cm:
+                assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs,
+                                   self._without(self.src, f"harness_fortran_cpu__{getter}"))
+            self.assertIn(f"omits 'harness_fortran_cpu__{getter}'", str(cm.exception))
+        unused = ("get_array_r1", "get_array_r3", "get_array_r4", "get_bool")
+        for getter in unused:
+            self.assertNotIn(getter, used)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self._without(
+            self.src, *(f"harness_fortran_cpu__{g}" for g in unused)))
+
+    def test_the_rank_1_emitter_is_pinned_on_a_loop_for_its_series(self) -> None:
+        # No rank-1 state in `_boundary_ir`: the rank-1 emitter is the series' on a loop node, and
+        # nothing's on a one-call node.
+        symbol = "harness_fortran_cpu__emit_array_r1"
+        self.assertNotIn("emit_array_r1", _used_harness_ops(self.ir))
+        cut = self._without(self.src, symbol)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, cut)
+        looped = copy.deepcopy(self.ir)
+        looped["drive"]["loop"] = {"n_step": "inputs.n_step", "dt": "inputs.dt",
+                                   "t_start": "inputs.t_start", "t_end": "inputs.t_end"}
+        looped["drive"]["history"] = {"every": "inputs.every"}
+        self.assertIn("emit_array_r1", _used_harness_ops(looped))
+        assert_harness_pin(looped, BOUNDARY_SID, HARNESS, self.sigs, self.src)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(looped, BOUNDARY_SID, HARNESS, self.sigs, cut)
+        self.assertIn(f"omits {symbol!r}", str(cm.exception))
+
+    def test_the_rendered_runner_calls_nothing_of_the_harness_the_pin_does_not_ask(self) -> None:
+        """The reason `_used_harness_ops`' list can be trusted: a harness symbol the text names and
+        the list omits would be an unenforced pin. Over each shape of driver."""
+        for label, ir, sid in (("one call", _boundary_ir(), BOUNDARY_SID),
+                               ("high rank", _rank34_metrics_ir(), RANK_SID),
+                               ("loop", loop_ir(0), "drv_toy"), ("init", init_ir(0), "drv_toy"),
+                               ("call", call_ir(0), "drv_toy"),
+                               ("procedure", procedure_ir(), "drv_toy")):
+            with self.subTest(label):
+                txt = render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc)
+                named = set(re.findall(r"harness_fortran_cpu__(\w+)", txt)) - {"h_named"}
+                self.assertEqual(named, set(_used_harness_ops(ir)))
+
+
 class DeclaredLintRuleHoldTest(unittest.TestCase):
     """Hold the RENDERED runner to the rule set the `Generate.gate` lint check imposes.
 
@@ -1456,6 +1613,49 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         self._assert_runner_clean_under_the_declared_lint_rules(
             _rank34_metrics_ir(), RANK_SID)
 
+    def test_each_shape_of_driver_is_clean_under_the_declared_lint_rules(self) -> None:
+        # The loop, `init`, one-call and procedure-argument shapes, each with lines the two rows
+        # above never render.
+        for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
+                          ("procedure", procedure_ir())):
+            with self.subTest(label):
+                self._assert_runner_clean_under_the_declared_lint_rules(ir, "drv_toy")
+
+
+def _build_and_run(d: Path, ir: dict, sid: str, model: str, flags: list[str] | None = None,
+                   env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """Render `ir`'s runner, build it with `model` against the reading harness of
+    `data/driver_e2e/`, and run every case of `ir` in `d`."""
+    from tools.backends.language.fortran import control_file
+
+    flags = flags if flags is not None else control_file.flags("f2008", "none").split(" -J")[0].split()
+    (d / "ir").mkdir(exist_ok=True)
+    (d / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+    pe.write_case_inputs(ir, d / "ir")
+    (d / "harness_fortran_cpu_model.f90").write_text(
+        (DRIVER_E2E / "harness_fortran_cpu_model.f90").read_text())
+    (d / f"{sid}_model.f90").write_text(model)
+    (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc))
+    objects = []
+    for stem in ("harness_fortran_cpu_model", f"{sid}_model", f"{sid}_runner"):
+        built = subprocess.run(["gfortran", *flags, "-c", f"{stem}.f90", "-o", f"{stem}.o"],
+                               cwd=d, capture_output=True, text=True)
+        if built.returncode != 0:
+            raise AssertionError(f"{stem}: {built.stderr[:3000]}")
+        objects.append(f"{stem}.o")
+    subprocess.run(["gfortran", *flags, *objects, "-o", "runner"], cwd=d, check=True,
+                   capture_output=True)
+    for sub in ("initial", "history", "series"):
+        (d / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    return _rerun(d, ir, env)
+
+
+def _rerun(d: Path, ir: dict, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["./runner", "--cases", "ir/spec.ir.yaml",
+         *(c["case_id"] for c in ir["case"]["test_case_set"])],
+        cwd=d, capture_output=True, text=True, env={**os.environ, **(env or {})})
+
 
 class GfortranSmokeTest(unittest.TestCase):
     @classmethod
@@ -1470,7 +1670,7 @@ class GfortranSmokeTest(unittest.TestCase):
         flag, the query compiles away and the record states 1."""
         from tools.backends.language.fortran import control_file
         from tools.backends.parallel.openmp import execution as omp_execution
-        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        ir = _boundary_ir()
         omp_flags = control_file.flags("f2008", "openmp").split(" -J")[0].split()
         self.assertIn("-fopenmp", omp_flags)
         for flags, counts in ((omp_flags, {2: 2, 3: 3}),
@@ -1478,188 +1678,109 @@ class GfortranSmokeTest(unittest.TestCase):
                                {3: 1})):
             with tempfile.TemporaryDirectory() as td:
                 d = Path(td)
-                (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-                (d / f"{BOUNDARY_SID}_checks.f90").write_text(_CHECKS_STUB)
-                (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
-                build = subprocess.run(
-                    ["gfortran", *flags, "harness_fortran_cpu_model.f90",
-                     f"{BOUNDARY_SID}_checks.f90", f"{BOUNDARY_SID}_runner.f90", "-o", "runner"],
-                    cwd=d, capture_output=True, text=True)
-                self.assertEqual(build.returncode, 0, build.stderr)
-                (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
+                built = _build_and_run(d, ir, BOUNDARY_SID, _BOUNDARY_MODEL, flags)
+                self.assertEqual(built.returncode, 0, built.stderr)
                 for launched, recorded in counts.items():
                     self.assertNotEqual(launched, _TARGET_PROFILE.threads_per_rank)
-                    run = subprocess.run(
-                        ["./runner", "--cases", "spec.ir.yaml", "l0_periodic_x_wrap_pass",
-                         "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail"],
-                        cwd=d, capture_output=True, text=True,
-                        env={**os.environ, **omp_execution.environment(launched)})
+                    run = _rerun(d, ir, omp_execution.environment(launched))
                     self.assertEqual(run.returncode, 0, run.stderr)
                     perf = json.loads((d / "perf.json").read_text())
                     with self.subTest(flags=flags, launched=launched):
                         self.assertEqual(perf["parallelism"]["threads_per_rank"], recorded)
 
     def test_rendered_runner_compiles_and_runs(self) -> None:
-        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-            (d / f"{BOUNDARY_SID}_checks.f90").write_text(_CHECKS_STUB)
-            (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
-
-            def fc(*srcs: str) -> None:
-                r = subprocess.run(
-                    ["gfortran", "-std=f2008", "-c", *srcs],
-                    cwd=d, capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, r.stderr)
-
-            fc("harness_fortran_cpu_model.f90")
-            fc(f"{BOUNDARY_SID}_checks.f90")
-            fc(f"{BOUNDARY_SID}_runner.f90")
-            link = subprocess.run(
-                ["gfortran", "harness_fortran_cpu_model.o",
-                 f"{BOUNDARY_SID}_checks.o", f"{BOUNDARY_SID}_runner.o", "-o", "runner"],
-                cwd=d, capture_output=True, text=True)
-            self.assertEqual(link.returncode, 0, link.stderr)
-
-            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
-            run = subprocess.run(
-                ["./runner", "--cases", "spec.ir.yaml",
-                 "l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail"],
-                cwd=d, capture_output=True, text=True)
+            run = _build_and_run(d, _boundary_ir(), BOUNDARY_SID, _BOUNDARY_MODEL)
             self.assertEqual(run.returncode, 0, run.stderr)
             # every case emitted its own snapshot, perf exists, and nothing else the retired
             # judging half wrote does (issue #582)
-            for cid in ("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass",
-                        "l0_invalid_ny_xfail"):
+            cases = ("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail")
+            for cid in cases:
                 self.assertTrue((d / "raw" / "state_snapshots" / f"{cid}.json").is_file())
                 self.assertTrue(
                     (d / "raw" / "state_snapshots" / "initial" / f"{cid}.json").is_file())
             self.assertTrue((d / "perf.json").is_file())
             self.assertFalse((d / "diagnostics.json").exists())
             self.assertFalse((d / "raw" / "metrics_basis.json").exists())
-            # Z6 fixture (d): the checks stub overwrites every bound variable with -99 inside
-            # `get_time`, which runs AFTER each capture. Neither snapshot may carry the sentinel
-            # — the captured value is the serialized copy taken before any callback, not a later
-            # re-read of the storage.
-            initial_path = d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json"
-            final_path = d / "raw" / "state_snapshots" / "l0_periodic_x_wrap_pass.json"
-            # On the RAW text: the harness writes `-9.9000000000000000E+001`, which a parsed
-            # document re-serializes as `-99.0` (a round-3 reviewer found the assertion on
-            # `json.dumps(doc)` vacuous for that reason).
-            for path in (initial_path, final_path):
-                self.assertNotIn("-9.9", path.read_text(), path)
-            initial = json.loads(initial_path.read_text())
-            final = json.loads(final_path.read_text())
-            # initial = the case_setup state (ghost all zero), final = after case_run (the
+            initial = json.loads(
+                (d / "raw" / "state_snapshots" / "initial" / f"{cases[0]}.json").read_text())
+            final = json.loads((d / "raw" / "state_snapshots" / f"{cases[0]}.json").read_text())
+            # initial = the case file's state (ghost all zero), final = after the call (the
             # interior copied into the ghost's centre): the two capture points differ.
             self.assertEqual(initial["field_ghost"][1][1], 0.0)
             self.assertEqual(final["field_ghost"][1][1], 11.0)
             self.assertEqual(final["field_interior"], [[11.0, 12.0], [21.0, 22.0]])
+            self.assertEqual(initial["max_abs_deviation"], -1.0)
             self.assertEqual(final["max_abs_deviation"], 1.0)
-            self.assertEqual(initial["max_abs_deviation"], 1.0)
-            # Each case's snapshot carries ITS OWN state: the stub's bound value is the case
-            # ordinal, in the order the cases were asked for.
-            for ordinal, cid in enumerate(("l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass",
-                                           "l0_invalid_ny_xfail"), start=1):
+            # Each case's snapshot carries ITS OWN state: the operation's value is the case's
+            # ordinal; the third refused, and its capture still holds what it wrote.
+            for ordinal, cid in enumerate(cases, start=1):
                 snap = json.loads((d / "raw" / "state_snapshots" / f"{cid}.json").read_text())
                 self.assertEqual(snap["max_abs_deviation"], float(ordinal), cid)
+                self.assertEqual(snap["ok"], 0.0 if ordinal == 3 else 1.0, cid)
+                self.assertEqual(snap["step"], 0.0 if ordinal == 3 else 1.0, cid)
+                self.assertEqual(snap["guard_fired"], 1.0 if ordinal == 3 else 0.0, cid)
 
-    def test_unallocated_bound_array_stops_the_run(self) -> None:
-        # A checks module whose `case_setup` never allocates a bound array is a binding that
-        # was never established: the runner must `error stop` with the variable named, not
-        # hand an unallocated actual to the emitter.
-        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        broken = _CHECKS_STUB
-        for line in ("    if (.not. allocated(field_ghost)) allocate(field_ghost(4, 4))\n",
-                     "    field_ghost = 0.0_dp\n",
-                     "    field_ghost(:, :) = 0.0_dp\n",
-                     "    field_ghost(2:3, 2:3) = field_interior\n",
-                     "    field_ghost = -99.0_dp\n"):
-            self.assertEqual(broken.count(line), 1, line)
-            broken = broken.replace(line, "")
+    def test_an_operation_cannot_replace_a_snapshot(self) -> None:
+        # The final capture is written after the last call of the case, so what an operation
+        # wrote at that path does not survive. (The source gate refuses the OPEN too; this pins
+        # the runner's half on its own.)
+        model = _BOUNDARY_MODEL.replace(
+            "    field_ghost = 0.0_dp\n",
+            "    if (mode == 1) then\n"
+            "      open(newunit=u, file='raw/state_snapshots/l0_periodic_x_wrap_pass.json', &\n"
+            "        status='replace')\n      write(u, '(A)') '{}'\n      close(u)\n"
+            "    end if\n    field_ghost = 0.0_dp\n").replace(
+            "    logical, intent(out) :: ok\n",
+            "    logical, intent(out) :: ok\n    integer :: u\n")
+        self.assertIn("open(newunit=u", model)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-            (d / f"{BOUNDARY_SID}_checks.f90").write_text(broken)
-            (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
-            for srcs in (["harness_fortran_cpu_model.f90"], [f"{BOUNDARY_SID}_checks.f90"],
-                         [f"{BOUNDARY_SID}_runner.f90"]):
-                r = subprocess.run(["gfortran", "-std=f2008", "-c", *srcs],
-                                   cwd=d, capture_output=True, text=True, check=False)
-                self.assertEqual(r.returncode, 0, r.stderr)
-            link = subprocess.run(
-                ["gfortran", "harness_fortran_cpu_model.o",
-                 f"{BOUNDARY_SID}_checks.o", f"{BOUNDARY_SID}_runner.o", "-o", "runner"],
-                cwd=d, capture_output=True, text=True, check=False)
-            self.assertEqual(link.returncode, 0, link.stderr)
-            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
-            run = subprocess.run(
-                ["./runner", "--cases", "spec.ir.yaml", "l0_periodic_x_wrap_pass"],
-                cwd=d, capture_output=True, text=True, check=False)
-            self.assertNotEqual(run.returncode, 0)
-            self.assertIn("bound state field_ghost is not allocated at capture", run.stderr)
-            self.assertFalse(
-                (d / "raw" / "state_snapshots" / "initial" / "l0_periodic_x_wrap_pass.json")
-                .is_file())
+            run = _build_and_run(d, _boundary_ir(), BOUNDARY_SID, model)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            final = json.loads(
+                (d / "raw" / "state_snapshots" / "l0_periodic_x_wrap_pass.json").read_text())
+            self.assertIn("field_ghost", final)
 
     def test_high_rank_runner_compiles_and_runs(self) -> None:
         # The boundary smoke only covers the scalar+rank-2 family. This one compiles+links+runs
-        # the rank-3/rank-4 emitter path, so a future edit that makes it produce invalid Fortran
-        # cannot ship green.
-        runner = render_runner(_rank34_metrics_ir(), RANK_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        # the rank-3/rank-4 reader and emitter path, so a future edit that makes it produce
+        # invalid Fortran, or reorders an index, cannot ship green.
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-            (d / f"{RANK_SID}_checks.f90").write_text(_RANK_CHECKS_STUB)
-            (d / f"{RANK_SID}_runner.f90").write_text(runner)
-
-            def fc(*srcs: str) -> None:
-                r = subprocess.run(
-                    ["gfortran", "-std=f2008", "-c", *srcs],
-                    cwd=d, capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, r.stderr)
-
-            fc("harness_fortran_cpu_model.f90")
-            fc(f"{RANK_SID}_checks.f90")
-            fc(f"{RANK_SID}_runner.f90")
-            link = subprocess.run(
-                ["gfortran", "harness_fortran_cpu_model.o",
-                 f"{RANK_SID}_checks.o", f"{RANK_SID}_runner.o", "-o", "runner"],
-                cwd=d, capture_output=True, text=True)
-            self.assertEqual(link.returncode, 0, link.stderr)
-
-            (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
-            run = subprocess.run(
-                ["./runner", "--cases", "spec.ir.yaml", "c0"],
-                cwd=d, capture_output=True, text=True)
+            ir = _rank34_metrics_ir()
+            run = _build_and_run(d, ir, RANK_SID, _RANK_MODEL)
             self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertTrue((d / "raw" / "state_snapshots" / "c0.json").is_file())
-            self.assertTrue((d / "raw" / "state_snapshots" / "initial" / "c0.json").is_file())
             self.assertTrue((d / "perf.json").is_file())
-            # the rank-3/rank-4 snapshot values were emitted as nested JSON arrays
-            snap = (d / "raw" / "state_snapshots" / "c0.json").read_text()
-            self.assertIn("\"a3\"", snap)
-            self.assertIn("\"a4\"", snap)
+            given = ir["case"]["test_case_set"][0]["initial_state"]
+            initial = json.loads((d / "raw" / "state_snapshots" / "initial" / "c0.json").read_text())
+            final = json.loads((d / "raw" / "state_snapshots" / "c0.json").read_text())
+            # the nested arrays come back as the case gave them, the leading index outermost
+            self.assertEqual(initial["a3"], given["a3"])
+            self.assertEqual(initial["a4"], given["a4"])
+            self.assertEqual(final["a3"][1][1], [14.0, 16.0])
+            self.assertEqual(final["a4"][1][0][1], [6.0, 8.0])
+            self.assertEqual(final["s"], 72.0)
 
-    def _assert_runner_clean_under_promoted_warnings(
-            self, ir: dict, sid: str, checks_stub: str) -> None:
+    def _assert_runner_clean_under_promoted_warnings(self, ir: dict, sid: str, model: str) -> None:
         """The `Generate.gate` syntax check promotes unused-dummy-argument / unused-variable /
         ampersand to errors over the whole staged set. The runner is host-rendered, so such a
         warning is unfixable by the leaf and would spin a futile warm-repair loop — the
-        rendered artifact must be clean under all three. The stubs are compiled WITHOUT the
-        flags: only the runner, the artifact the renderer owns, is held to them."""
+        rendered artifact must be clean under all three. The harness and the model are compiled
+        WITHOUT the flags: only the runner, the artifact the renderer owns, is held to them."""
         runner = render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             mods = d / "mods"
             mods.mkdir()
-            (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
-            (d / f"{sid}_checks.f90").write_text(checks_stub)
+            (d / "harness_fortran_cpu_model.f90").write_text(
+                (DRIVER_E2E / "harness_fortran_cpu_model.f90").read_text())
+            (d / f"{sid}_model.f90").write_text(model)
             (d / f"{sid}_runner.f90").write_text(runner)
             pre = subprocess.run(
                 ["gfortran", "-fsyntax-only", "-std=f2008", "-J", str(mods),
-                 "harness_fortran_cpu_model.f90", f"{sid}_checks.f90"],
+                 "harness_fortran_cpu_model.f90", f"{sid}_model.f90"],
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(pre.returncode, 0, pre.stderr)
             r = subprocess.run(
@@ -1672,40 +1793,40 @@ class GfortranSmokeTest(unittest.TestCase):
 
     def test_rendered_runner_clean_under_promoted_unused_warnings(self) -> None:
         self._assert_runner_clean_under_promoted_warnings(
-            _boundary_ir(), BOUNDARY_SID, _CHECKS_STUB)
+            _boundary_ir(), BOUNDARY_SID, _BOUNDARY_MODEL)
 
     def test_rendered_high_rank_runner_clean_under_promoted_unused_warnings(self) -> None:
-        self._assert_runner_clean_under_promoted_warnings(
-            _rank34_metrics_ir(), RANK_SID, _RANK_CHECKS_STUB)
+        self._assert_runner_clean_under_promoted_warnings(_rank34_metrics_ir(), RANK_SID, _RANK_MODEL)
+
+    def test_each_shape_of_driver_is_clean_under_promoted_unused_warnings(self) -> None:
+        model = (DRIVER_E2E / "drv_toy_model.f90").read_text()
+        for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
+                          ("procedure", procedure_ir())):
+            with self.subTest(label):
+                self._assert_runner_clean_under_promoted_warnings(ir, "drv_toy", model)
 
 
-
-
-# --- the distributed variant (issue #316, R4-c PR-4) -------------------------------------------
+# --- the distributed harness (issue #316, R4-c PR-4) --------------------------------------------
+#
+# The driver does not render for it yet (`test_driver_render.RenderRefusalTest`), so what stays
+# here is what a physics source and the pin still hold it to.
 
 DIST_HARNESS = "harness_fortran_cpu_mpi"
 DIST_SID = "prob_dist"
-# A wrapper and a launcher of one installation, found as the backend's own tests find them.
-from tools.tests.test_parallel_mpi import _PAIR as _MPI_PAIR  # noqa: E402
-from tools.tests.test_parallel_mpi import _require_mpi_pair
 
 
 def _distributed_ir() -> dict:
-    """A problem IR over the capture shapes of the distributed runner: a rank-1 array
-    partitioned along grid dimension 1, a rank-2 array whose axis 2 is partitioned along grid
-    dimension 2, a rank-2 array partitioned along both, a replicated rank-1 array, and a
-    scalar."""
-    return {
+    """A problem IR whose driver would read and emit the array ranks the distributed harness's
+    gather covers: what `assert_harness_pin` asks of that harness."""
+    return _driven({
         "meta": {"spec_id": DIST_SID, "spec_kind": "problem"},
-        "case": {"test_case_set": [{"case_id": "c0"}]},
+        "case": {"test_case_set": [{"case_id": "c0", "inputs": {"mode": 0}}]},
         "io_contract": {
             "raw_requirements": {"required_evidence": [
                 {"artifact": "state_snapshots", "schema": {
                     "variables": [
                         {"name": "u", "shape_expr": "[10]"},
                         {"name": "w", "shape_expr": "[3, 10]"},
-                        {"name": "q", "shape_expr": "[6, 8]"},
-                        {"name": "c", "shape_expr": "[2]"},
                         {"name": "s", "shape_expr": "scalar"},
                     ],
                     "time_variable": "t",
@@ -1716,461 +1837,10 @@ def _distributed_ir() -> dict:
             "predicates": [],
         },
         "dependency": {"node_key": f"problem/{DIST_SID}@0.1.0", "direct_deps": []},
-    }
+    }, f"{DIST_SID}__apply", {"u": ("inout", 1), "w": ("inout", 2), "s": ("out", 0)})
 
 
-# The single-process harness stub under the distributed harness's names, plus the operations the
-# distributed runner and the checks stub below call, over the library's `mpi` module (the one
-# binding every installation ships for this compiler; the certified harness uses `mpi_f08`, which
-# is its own business). It reads the process grid from `ATMOFAB_PROCESS_GRID` as §3.3 of the
-# harness spec states, and its gathers place each contributing rank's block by its `glo<d>`; the
-# tile check is not reproduced — it is the harness's, not the runner's.
-_DIST_HARNESS_STUB = _EIGHT_ARG_HARNESS_STUB.replace("harness_fortran_cpu", DIST_HARNESS).replace(
-    "  private\n",
-    "  private\n"
-    "  integer :: grid_p1 = 1, grid_p2 = 1\n"
-    f"  public :: {DIST_HARNESS}__init, {DIST_HARNESS}__finalize\n"
-    f"  public :: {DIST_HARNESS}__comm_rank, {DIST_HARNESS}__comm_size\n"
-    f"  public :: {DIST_HARNESS}__grid_dims, {DIST_HARNESS}__grid_coord\n"
-    f"  public :: {DIST_HARNESS}__partition, {DIST_HARNESS}__reduce_sum\n"
-    f"  public :: {DIST_HARNESS}__reduce_sum_int\n"
-    f"  public :: {DIST_HARNESS}__gather_r1, {DIST_HARNESS}__gather_r2\n", 1).replace(
-    f"end module {DIST_HARNESS}_model\n",
-    textwrap.indent(textwrap.dedent(f"""\
-      subroutine {DIST_HARNESS}__init()
-        integer :: ierr, n, ln, st
-        character(len=64) :: val
-        call mpi_init(ierr)
-        call mpi_comm_size(mpi_comm_world, n, ierr)
-        grid_p1 = n
-        grid_p2 = 1
-        call get_environment_variable('ATMOFAB_PROCESS_GRID', val, ln, st)
-        if (st == 0 .and. ln > 0) read(val, *) grid_p1, grid_p2
-        if (grid_p1 * grid_p2 /= n) error stop 3
-      end subroutine {DIST_HARNESS}__init
-      subroutine {DIST_HARNESS}__finalize()
-        integer :: ierr
-        call mpi_finalize(ierr)
-      end subroutine {DIST_HARNESS}__finalize
-      function {DIST_HARNESS}__comm_rank() result(r)
-        integer :: r, ierr
-        call mpi_comm_rank(mpi_comm_world, r, ierr)
-      end function {DIST_HARNESS}__comm_rank
-      function {DIST_HARNESS}__comm_size() result(n)
-        integer :: n, ierr
-        call mpi_comm_size(mpi_comm_world, n, ierr)
-      end function {DIST_HARNESS}__comm_size
-      subroutine {DIST_HARNESS}__grid_dims(p1, p2)
-        integer, intent(out) :: p1, p2
-        p1 = grid_p1
-        p2 = grid_p2
-      end subroutine {DIST_HARNESS}__grid_dims
-      subroutine {DIST_HARNESS}__grid_coord(c1, c2)
-        integer, intent(out) :: c1, c2
-        c1 = {DIST_HARNESS}__comm_rank() / grid_p2
-        c2 = mod({DIST_HARNESS}__comm_rank(), grid_p2)
-      end subroutine {DIST_HARNESS}__grid_coord
-      subroutine {DIST_HARNESS}__partition(n_global, dim, glo, ghi)
-        integer, intent(in) :: n_global, dim
-        integer, intent(out) :: glo, ghi
-        integer :: c1, c2, c, p, b, m, k
-        call {DIST_HARNESS}__grid_coord(c1, c2)
-        c = merge(c1, c2, dim == 1)
-        p = merge(grid_p1, grid_p2, dim == 1)
-        b = n_global / p
-        m = mod(n_global, p)
-        k = b
-        if (c < m) k = b + 1
-        glo = c * b + min(c, m) + 1
-        ghi = glo + k - 1
-      end subroutine {DIST_HARNESS}__partition
-      function {DIST_HARNESS}__reduce_sum(x) result(s)
-        real(dp), intent(in) :: x
-        real(dp) :: s
-        integer :: ierr
-        call mpi_allreduce(x, s, 1, mpi_double_precision, mpi_sum, mpi_comm_world, ierr)
-      end function {DIST_HARNESS}__reduce_sum
-      function {DIST_HARNESS}__reduce_sum_int(i) result(s)
-        integer, intent(in) :: i
-        integer :: s, ierr
-        call mpi_allreduce(i, s, 1, mpi_integer, mpi_sum, mpi_comm_world, ierr)
-      end function {DIST_HARNESS}__reduce_sum_int
-      subroutine {DIST_HARNESS}__gather_r2(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
-        real(dp), intent(in) :: a(:, :)
-        integer, intent(in) :: axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2
-        real(dp), allocatable, intent(out) :: g(:, :)
-        integer :: lo(2), hi(2), st(2), cnt(2), meta(4), n, k, ierr, c1, c2
-        integer, allocatable :: all_meta(:, :), counts(:), displs(:)
-        real(dp), allocatable :: buf(:), all(:)
-        lo = 1
-        hi = shape(a)
-        st = 1
-        if (axis1 > 0) then
-          lo(axis1) = lo1
-          hi(axis1) = hi1
-          st(axis1) = glo1
-        end if
-        if (axis2 > 0) then
-          lo(axis2) = lo2
-          hi(axis2) = hi2
-          st(axis2) = glo2
-        end if
-        cnt = max(hi - lo + 1, 0)
-        call {DIST_HARNESS}__grid_coord(c1, c2)
-        if ((axis1 == 0 .and. c1 /= 0) .or. (axis2 == 0 .and. c2 /= 0)) cnt = 0
-        if (any(cnt == 0)) cnt = 0
-        meta = [st, cnt]
-        n = {DIST_HARNESS}__comm_size()
-        allocate(all_meta(4, n), counts(n), displs(n))
-        call mpi_allgather(meta, 4, mpi_integer, all_meta, 4, mpi_integer, mpi_comm_world, ierr)
-        counts = all_meta(3, :) * all_meta(4, :)
-        displs(1) = 0
-        do k = 2, n
-          displs(k) = displs(k - 1) + counts(k - 1)
-        end do
-        allocate(buf(max(product(cnt), 1)), all(max(sum(counts), 1)))
-        if (product(cnt) > 0) buf(1:product(cnt)) = &
-          reshape(a(lo(1):hi(1), lo(2):hi(2)), [product(cnt)])
-        call mpi_gatherv(buf, product(cnt), mpi_double_precision, all, counts, displs, &
-          mpi_double_precision, 0, mpi_comm_world, ierr)
-        if ({DIST_HARNESS}__comm_rank() /= 0) return
-        allocate(g(maxval(all_meta(1, :) + all_meta(3, :) - 1), &
-          maxval(all_meta(2, :) + all_meta(4, :) - 1)))
-        do k = 1, n
-          if (counts(k) > 0) g(all_meta(1, k):all_meta(1, k) + all_meta(3, k) - 1, &
-            all_meta(2, k):all_meta(2, k) + all_meta(4, k) - 1) = &
-            reshape(all(displs(k) + 1:displs(k) + counts(k)), all_meta(3:4, k))
-        end do
-      end subroutine {DIST_HARNESS}__gather_r2
-      subroutine {DIST_HARNESS}__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
-        real(dp), intent(in) :: a(:)
-        integer, intent(in) :: axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2
-        real(dp), allocatable, intent(out) :: g(:)
-        real(dp), allocatable :: g2(:, :)
-        call {DIST_HARNESS}__gather_r2(reshape(a, [size(a), 1]), axis1, lo1, hi1, glo1, &
-          axis2, lo2, hi2, glo2, g2)
-        if (allocated(g2)) g = g2(:, 1)
-      end subroutine {DIST_HARNESS}__gather_r1
-    """), "  ") + f"end module {DIST_HARNESS}_model\n", 1).replace(
-    "  use, intrinsic :: iso_fortran_env, only: real64\n",
-    "  use, intrinsic :: iso_fortran_env, only: real64\n  use mpi\n", 1)
-
-# The checks stub of `_distributed_ir`: `u` holds one ghost cell at each end around this rank's
-# owned block of 10 cells along grid dimension 1, `w` holds its owned columns of a 3 x 10 array
-# along grid dimension 2, `q` its owned block of a 6 x 8 array along both dimensions, and each
-# owned cell holds its GLOBAL index (plus 100 per row of `w`, plus 100 per column of `q`), so the
-# gathered arrays are known exactly whatever the grid. `c` is replicated. `case_run` reports this
-# rank's own cell count, and sets the replicated `s` through the harness's collective sum.
-_DIST_CHECKS_STUB = textwrap.dedent(f"""\
-    module {DIST_SID}_checks
-      use, intrinsic :: iso_fortran_env, only: real64
-      use {DIST_HARNESS}_model, only: {DIST_HARNESS}__partition, &
-        {DIST_HARNESS}__reduce_sum, {DIST_HARNESS}__grid_coord
-      ! allow(C003)
-      implicit none
-      private
-      integer, parameter :: dp = real64
-      real(dp), allocatable :: u(:), w(:, :), q(:, :), c(:)
-      real(dp) :: s = 0.0_dp
-      integer :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1
-      integer :: sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2
-      integer :: sb_w_axis1, sb_w_lo1, sb_w_hi1, sb_w_glo1
-      integer :: sb_w_axis2, sb_w_lo2, sb_w_hi2, sb_w_glo2
-      integer :: sb_q_axis1, sb_q_lo1, sb_q_hi1, sb_q_glo1
-      integer :: sb_q_axis2, sb_q_lo2, sb_q_hi2, sb_q_glo2
-      integer :: sb_c_axis1, sb_c_lo1, sb_c_hi1, sb_c_glo1
-      integer :: sb_c_axis2, sb_c_lo2, sb_c_hi2, sb_c_glo2
-      integer :: nloc = 0, c2 = 0
-      public :: case_setup, case_run, get_time
-      public :: u, w, q, c, s
-      public :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1
-      public :: sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2
-      public :: sb_w_axis1, sb_w_lo1, sb_w_hi1, sb_w_glo1
-      public :: sb_w_axis2, sb_w_lo2, sb_w_hi2, sb_w_glo2
-      public :: sb_q_axis1, sb_q_lo1, sb_q_hi1, sb_q_glo1
-      public :: sb_q_axis2, sb_q_lo2, sb_q_hi2, sb_q_glo2
-      public :: sb_c_axis1, sb_c_lo1, sb_c_hi1, sb_c_glo1
-      public :: sb_c_axis2, sb_c_lo2, sb_c_hi2, sb_c_glo2
-    contains
-      subroutine case_setup(case_id, ok)
-        character(len=*), intent(in) :: case_id
-        logical, intent(out) :: ok
-        integer :: glo, ghi, wlo, whi, ql1, qh1, ql2, qh2, c1, i, j
-        call {DIST_HARNESS}__grid_coord(c1, c2)
-        call {DIST_HARNESS}__partition(10, 1, glo, ghi)
-        call {DIST_HARNESS}__partition(10, 2, wlo, whi)
-        call {DIST_HARNESS}__partition(6, 1, ql1, qh1)
-        call {DIST_HARNESS}__partition(8, 2, ql2, qh2)
-        nloc = ghi - glo + 1
-        if (allocated(u)) deallocate(u)
-        if (allocated(w)) deallocate(w)
-        if (allocated(q)) deallocate(q)
-        if (allocated(c)) deallocate(c)
-        allocate(u(nloc + 2), w(3, whi - wlo + 1), q(qh1 - ql1 + 1, qh2 - ql2 + 1), c(2))
-        u = -1.0_dp
-        do i = 1, nloc
-          u(i + 1) = real(glo + i - 1, dp)
-        end do
-        do i = 1, whi - wlo + 1
-          do j = 1, 3
-            w(j, i) = real(100 * j + wlo + i - 1, dp)
-          end do
-        end do
-        do j = 1, qh2 - ql2 + 1
-          do i = 1, qh1 - ql1 + 1
-            q(i, j) = real(ql1 + i - 1 + 100 * (ql2 + j - 1), dp)
-          end do
-        end do
-        c = [7.0_dp, 8.0_dp]
-        s = 5.0_dp
-        sb_u_axis1 = 1
-        sb_u_lo1 = 2
-        sb_u_hi1 = nloc + 1
-        sb_u_glo1 = glo
-        sb_u_axis2 = 0
-        sb_u_lo2 = 0
-        sb_u_hi2 = 0
-        sb_u_glo2 = 0
-        sb_w_axis1 = 0
-        sb_w_lo1 = 0
-        sb_w_hi1 = 0
-        sb_w_glo1 = 0
-        sb_w_axis2 = 2
-        sb_w_lo2 = 1
-        sb_w_hi2 = whi - wlo + 1
-        sb_w_glo2 = wlo
-        sb_q_axis1 = 1
-        sb_q_lo1 = 1
-        sb_q_hi1 = qh1 - ql1 + 1
-        sb_q_glo1 = ql1
-        sb_q_axis2 = 2
-        sb_q_lo2 = 1
-        sb_q_hi2 = qh2 - ql2 + 1
-        sb_q_glo2 = ql2
-        sb_c_axis1 = 0
-        sb_c_lo1 = 1
-        sb_c_hi1 = 2
-        sb_c_glo1 = 1
-        sb_c_axis2 = 0
-        sb_c_lo2 = 0
-        sb_c_hi2 = 0
-        sb_c_glo2 = 0
-        ok = len_trim(case_id) > 0
-      end subroutine case_setup
-      subroutine case_run(case_id, steps, cells_updated, ok)
-        character(len=*), intent(in) :: case_id
-        integer, intent(out) :: steps, cells_updated
-        logical, intent(out) :: ok
-        real(dp) :: part
-        steps = 1
-        cells_updated = nloc
-        ok = len_trim(case_id) > 0
-        ! `u` is held whole by every rank of a line along dimension 2; count it once.
-        part = 0.0_dp
-        if (c2 == 0) part = sum(u(2:nloc + 1))
-        s = {DIST_HARNESS}__reduce_sum(part)
-      end subroutine case_run
-      subroutine get_time(t)
-        real(dp), intent(out) :: t
-        t = 0.0_dp
-      end subroutine get_time
-    end module {DIST_SID}_checks
-    """)
-
-
-class DistributedRunnerSmokeTest(unittest.TestCase):
-    """The distributed runner compiled with the wrapper and run under the launcher at one and
-    at four processes, on each process grid the host may impose on four (issue #512): the
-    gathered arrays are the global ones every time, the replicated and scalar values are rank
-    0's, only one set of outputs is written, and the checks source's sum over the ranks reaches
-    the final snapshot."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        _require_mpi_pair()
-
-    def _build(self, d: Path, checks: str = _DIST_CHECKS_STUB) -> None:
-        runner = render_runner(_distributed_ir(), DIST_SID, DIST_HARNESS,
-                               target=_TARGET_PROFILE.doc)
-        (d / f"{DIST_HARNESS}_model.f90").write_text(_DIST_HARNESS_STUB)
-        (d / f"{DIST_SID}_checks.f90").write_text(checks)
-        (d / f"{DIST_SID}_runner.f90").write_text(runner)
-        wrapper = f"{_MPI_PAIR}/mpif90"
-        for src in (f"{DIST_HARNESS}_model.f90", f"{DIST_SID}_checks.f90",
-                    f"{DIST_SID}_runner.f90"):
-            r = subprocess.run([wrapper, "-c", src], cwd=d, capture_output=True, text=True)
-            self.assertEqual(r.returncode, 0, r.stderr)
-        link = subprocess.run(
-            [wrapper, f"{DIST_HARNESS}_model.o", f"{DIST_SID}_checks.o",
-             f"{DIST_SID}_runner.o", "-o", "runner"], cwd=d, capture_output=True, text=True)
-        self.assertEqual(link.returncode, 0, link.stderr)
-
-    def _run(self, d: Path, argv_prefix: list[str], grid: str | None) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "ATMOFAB_PROCESS_GRID"}
-        if grid is not None:
-            env["ATMOFAB_PROCESS_GRID"] = grid
-        run = subprocess.run([*argv_prefix, "./runner", "--cases", "spec.ir.yaml", "c0"],
-                             cwd=d, capture_output=True, text=True, timeout=120, env=env)
-        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        for name in ("initial/c0.json", "c0.json"):
-            snap = json.loads((d / "raw" / "state_snapshots" / name).read_text())
-            self.assertEqual(snap["u"], [float(i) for i in range(1, 11)], name)
-            self.assertEqual(snap["w"], [[float(100 * j + i) for i in range(1, 11)]
-                                         for j in (1, 2, 3)], name)
-            self.assertEqual(snap["q"], [[float(i + 100 * j) for j in range(1, 9)]
-                                         for i in range(1, 7)], name)
-            self.assertEqual(snap["c"], [7.0, 8.0], name)
-            # `case_setup` sets 5; `case_run` replaces it with the sum over the ranks.
-            self.assertEqual(snap["s"], 5.0 if name.startswith("initial/") else 55.0, name)
-        self.assertTrue((d / "perf.json").is_file())
-        self.assertFalse((d / "diagnostics.json").exists())
-
-    def test_one_process_and_four_ranks_capture_the_same_global_state(self) -> None:
-        # Four ranks over 10 cells (blocks of 3, 3, 2, 2) along one dimension, or 5 + 5 along
-        # each of two — no launcher option beyond `-n`, which every implementation shares; a
-        # host with fewer CPUs runs one process only.
-        shapes: list[tuple[list[str], str | None]] = [([], None)]
-        if len(os.sched_getaffinity(0)) >= 4:
-            mpirun = [f"{_MPI_PAIR}/mpirun", "-n", "4"]
-            shapes += [(mpirun, None), (mpirun, "2,2"), (mpirun, "1,4")]
-        # The same binding with `u` declared from 0 (`u(0:nloc+1)`): `sb_u_lo1` / `sb_u_hi1` are
-        # indices in the array's own bounds, which the runner shifts to the gather's positions.
-        zero_based = _DIST_CHECKS_STUB
-        # `w` is declared from 0 along its PARTITIONED axis (2), and `q` from 0 along its axis 2
-        # only, so each shift must read the lower bound along its own slot's axis, not along
-        # axis 1 (round-2 mutant M1 of issue #316).
-        for old, new in ((("allocate(u(nloc + 2), w(3, whi - wlo + 1), "
-                           "q(qh1 - ql1 + 1, qh2 - ql2 + 1), c(2))"),
-                          ("allocate(u(0:nloc + 1), w(3, 0:whi - wlo), "
-                           "q(qh1 - ql1 + 1, 0:qh2 - ql2), c(2))")),
-                         ("u(i + 1) = real(glo + i - 1, dp)", "u(i) = real(glo + i - 1, dp)"),
-                         ("w(j, i) = real(100 * j + wlo + i - 1, dp)",
-                          "w(j, i - 1) = real(100 * j + wlo + i - 1, dp)"),
-                         ("q(i, j) = real(ql1 + i - 1 + 100 * (ql2 + j - 1), dp)",
-                          "q(i, j - 1) = real(ql1 + i - 1 + 100 * (ql2 + j - 1), dp)"),
-                         ("sb_u_lo1 = 2", "sb_u_lo1 = 1"),
-                         ("sb_u_hi1 = nloc + 1", "sb_u_hi1 = nloc"),
-                         ("sb_w_lo2 = 1", "sb_w_lo2 = 0"),
-                         ("sb_w_hi2 = whi - wlo + 1", "sb_w_hi2 = whi - wlo"),
-                         ("sb_q_lo2 = 1", "sb_q_lo2 = 0"),
-                         ("sb_q_hi2 = qh2 - ql2 + 1", "sb_q_hi2 = qh2 - ql2"),
-                         ("sum(u(2:nloc + 1))", "sum(u(1:nloc))")):
-            self.assertEqual(zero_based.count(old), 1, old)
-            zero_based = zero_based.replace(old, new)
-        for checks_name, checks in (("one-based", _DIST_CHECKS_STUB),
-                                    ("zero-based", zero_based)):
-            for argv_prefix, grid in shapes:
-                with self.subTest(checks=checks_name, argv_prefix=argv_prefix, grid=grid), \
-                        tempfile.TemporaryDirectory() as td:
-                    d = Path(td)
-                    self._build(d, checks)
-                    (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
-                    self._run(d, argv_prefix, grid)
-
-
-class DistributedRenderTest(unittest.TestCase):
-    """The distributed variant's text (issue #316, R4-c PR-4): chosen by the harness, not the
-    target; the single-process variant is unchanged by it."""
-
-    def _render(self, harness: str = DIST_HARNESS, ir: dict | None = None) -> str:
-        return render_runner(_distributed_ir() if ir is None else ir, DIST_SID, harness,
-                             target=_TARGET_PROFILE.doc)
-
-    def test_the_variant_is_the_harnesss(self) -> None:
-        dist, single = self._render(), self._render("harness_fortran_cpu")
-        for needle in (f"call {DIST_HARNESS}__init()", f"call {DIST_HARNESS}__finalize()",
-                       f"rank = {DIST_HARNESS}__comm_rank()",
-                       f"cells_total = {DIST_HARNESS}__reduce_sum_int(cells_total)",
-                       f"{DIST_HARNESS}__comm_size(), {_TARGET_PROFILE.threads_per_rank}, 0)",
-                       f"call {DIST_HARNESS}__gather_r1( &", f"call {DIST_HARNESS}__gather_r2( &",
-                       "        sb_u_axis1, &", "        sb_w_glo2, &", "        sb_q_glo1, &",
-                       "    call require_axis(sb_w_axis2, 2, &",
-                       "    call require_axis(sb_q_axis1, 2, &",
-                       "    if (sb_c_axis1 == 0 .and. &", "      sb_c_axis2 == 0) then",
-                       # A slot's shift reads that slot's axis, and only when it names one:
-                       # `lbound(a, 0)` is not a valid DIM (issue #512).
-                       "      if (sb_w_axis1 > 0) then\n        off1 = lbound(sb_w, &\n"
-                       "          sb_w_axis1) - 1\n      end if",
-                       "      if (sb_w_axis2 > 0) then\n        off2 = lbound(sb_w, &\n"
-                       "          sb_w_axis2) - 1\n      end if",
-                       "  subroutine require_axis("):
-            with self.subTest(needle=needle):
-                self.assertIn(needle, dist)
-                self.assertNotIn(needle.replace(DIST_HARNESS, "harness_fortran_cpu"), single)
-        # The axis guard's two bounds: 0 (replicated) up to the array's rank.
-        self.assertIn("    if (axis >= 0 .and. axis <= max_axis) return", dist)
-        # The single-process variant writes the one process it runs, never the profile's
-        # count, which the post-execute gate compares the record with (round 3).
-        three = render_runner(_distributed_ir(), DIST_SID, "harness_fortran_cpu", target={
-            **_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 1, "ranks": 3}})
-        self.assertIn("    steps_total, cells_total, walltime, 1, 0)\n", three)
-        self.assertNotIn("sb_s_axis", dist)
-        # The single-process variant passes no thread count, its harness's writer obtaining
-        # it (issue #512); the distributed one passes the profile's, one thread per rank, to
-        # its harness's eight-argument writer.
-        self.assertIn("    steps_total, cells_total, walltime, 1, 0)\n", single)
-        self.assertNotIn(f"walltime, 1, {_TARGET_PROFILE.threads_per_rank}, 0)", single)
-        self.assertNotIn("comm_size", single)
-
-    def test_every_write_is_rank_0s_and_every_collective_is_every_ranks(self) -> None:
-        # Walk the block `if`s: each pushes whether it is the rank-0 guard.
-        stack: list[bool] = []
-        guarded, collective = [], []
-        # One statement per entry: a condition the renderer continues over two lines (the
-        # replicated test of a long binding name) is one `if`.
-        statements: list[str] = []
-        pending = ""
-        for line in self._render().splitlines():
-            code = pending + line.strip()
-            if code.endswith("&") and not code.startswith("!"):
-                pending = code[:-1].rstrip() + " "
-                continue
-            pending = ""
-            statements.append(code)
-        for code in statements:
-            if code.startswith("if (") and code.endswith(" then"):
-                stack.append(code == "if (rank == 0) then")
-                continue
-            if code in ("end if", "else"):
-                if code == "end if":
-                    stack.pop()
-                continue
-            under_guard = any(stack)
-            if (code.startswith("call ") and "__write_" in code) or (
-                    code.startswith("out(") and "__box(" in code):
-                guarded.append((code, under_guard))
-            if any(op in code for op in ("__gather_r", "__reduce_sum_int(", "__finalize(",
-                                         "call case_run(",
-                                         "call capture_state(")):
-                collective.append((code, under_guard))
-        self.assertGreaterEqual(len(guarded), 5)
-        self.assertEqual([c for c, g in guarded if not g], [])
-        self.assertGreaterEqual(len(collective), 6)
-        self.assertEqual([c for c, g in collective if g], [])
-
-    def test_a_distributed_binding_name_that_cannot_be_published_is_refused(self) -> None:
-        ir = _distributed_ir()
-        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        long_name = "v" * 55   # `sb_<v>` fits, `sb_<v>_axis1` does not
-        schema["variables"].append({"name": long_name, "shape_expr": "[10]"})
-        with self.assertRaises(RenderError) as cm:
-            self._render(ir=ir)
-        self.assertIn(f"its distributed binding 'sb_{long_name}_axis1' exceeds the 63-char "
-                      "identifier limit", str(cm.exception))
-        self.assertFalse(cm.exception.identity)
-        # The longest name whose metadata fits renders (each argument has its own line).
-        schema["variables"][-1]["name"] = "v" * 54
-        self.assertIn("sb_" + "v" * 54 + "_axis1", self._render(ir=ir))
-        # A bound name that IS another's metadata cannot be published beside it.
-        ir = _distributed_ir()
-        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        schema["variables"].append({"name": "sb_u_lo2", "shape_expr": "scalar"})
-        with self.assertRaises(RenderError) as cm:
-            self._render(ir=ir)
-        self.assertIn("is one identifier with another bound name", str(cm.exception))
-        self.assertEqual(ir_content_violations(ir, DIST_SID, "harness_fortran_cpu"), [])
-        self.assertEqual(len(ir_content_violations(ir, DIST_SID, DIST_HARNESS)), 1)
-
+class DistributedHarnessBoundTest(unittest.TestCase):
     def test_every_distributed_operation_name_is_bounded(self) -> None:
         """`_check_identifier_lengths` refuses a harness id whose longest name would not fit, the
         distributed operations included: one of them is longer than any plumbing name, and
@@ -2186,32 +1856,10 @@ class DistributedRenderTest(unittest.TestCase):
         with self.assertRaisesRegex(fortran_runner.RenderError, "exchange_halo_r1"):
             fortran_runner._check_identifier_lengths("bx", fits + "h")
 
-    def test_the_abi_comment_states_the_partition_variables_by_grid_dimension(self) -> None:
-        """Issue #512: the comment is the producer's source for the binding, so it names every
-        partition variable in its per-dimension form (derived from the suffixes the runner
-        imports) and the grid queries, and no longer the one-axis form."""
-        from tools.backends.language.fortran.runner import DISTRIBUTED_BINDING_SUFFIXES
-        comment = "\n".join(line for line in self._render().splitlines()
-                             if line.startswith("  !"))
-        flat = " ".join(comment.replace("!", " ").split())
-        for suffix in DISTRIBUTED_BINDING_SUFFIXES:
-            with self.subTest(suffix=suffix):
-                self.assertIn(f"sb_<var>_{suffix[:-1]}<d>", flat)
-        self.assertIn("grid_dims / grid_coord report it", flat)
-        self.assertIn("exchanging along one dimension and then the other fills the corner",
-                      flat)
-        self.assertNotIn("sb_<var>_axis,", flat)
-        # Issue #512 (closing run): the operations a physics source may call are the checks
-        # module's and a problem's model's; a component's model names none.
-        self.assertIn("A component's model names none", flat)
-
-    def test_the_abi_comment_states_the_operations_a_physics_source_may_call(self) -> None:
-        from tools.backends.language.fortran.runner import PHYSICS_CALLABLE_DISTRIBUTED_OPS
-        text = self._render()
-        for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS:
-            self.assertRegex(text, rf"  !   (?:subroutine|function) {DIST_HARNESS}__{op}\(")
-        for op in ("init", "finalize", "gather_r1", "write_snapshot"):
-            self.assertNotRegex(text, rf"  !   (?:subroutine|function) {DIST_HARNESS}__{op}\(")
+    def test_a_refused_distributed_render_is_excluded_from_the_compile_mirror(self) -> None:
+        # A re-author cannot repair it, so it must not reach `compile.generate` as a content
+        # defect; its refusal is the target's preflight and the render's backstop.
+        self.assertEqual(ir_content_violations(_distributed_ir(), DIST_SID, DIST_HARNESS), [])
 
 
 class HarnessPinTableTest(unittest.TestCase):
@@ -2282,57 +1930,41 @@ class HarnessPinTableTest(unittest.TestCase):
         self.assertEqual(uses[f"{DIST_HARNESS}_model"], frozenset(
             f"{DIST_HARNESS}__{op}" for op in fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS))
         self.assertEqual(fortran_runner.physics_harness_uses("harness_fortran_cpu"), {})
-        self.assertEqual(fortran_runner.distributed_state_names(DIST_HARNESS, ["u", "w"]),
-                         ["sb_u_axis1", "sb_u_lo1", "sb_u_hi1", "sb_u_glo1",
-                          "sb_u_axis2", "sb_u_lo2", "sb_u_hi2", "sb_u_glo2",
-                          "sb_w_axis1", "sb_w_lo1", "sb_w_hi1", "sb_w_glo1",
-                          "sb_w_axis2", "sb_w_lo2", "sb_w_hi2", "sb_w_glo2"])
-        self.assertEqual(fortran_runner.distributed_state_names("harness_fortran_cpu", ["u"]),
-                         [])
 
 
 class HostVerdictRunnerSurfaceTest(unittest.TestCase):
     """Issue #582: a test is decided by host predicates over the captures, so the rendered runner
-    of EVERY variant judges nothing and imports only what it calls. Over the single-process
-    variant (two rank families) and the distributed one; the CUDA renderer's counterpart is in
-    `test_language_cuda_cpp_runner`."""
+    judges nothing and imports only what it calls. Over two rank families and the driver's other
+    shapes; the CUDA renderer's counterpart is in `test_language_cuda_cpp_runner`."""
 
     #: The judging half of the retired runner, as text: the two callbacks, the two writers, and
     #: the records and helpers only they used.
     RETIRED = ("checks_compute", "metric_compute", "write_diagnostics", "write_metrics_basis",
                "mb_entries", "results", "find_case_index", "pick(", "expected_xfail",
                "h_check", "h_metric", "h_case_result", "h_mb_entry", "cstatus")
+    #: The leaf-authored checks module the driver replaced (issue #589), as text.
+    RETIRED_CHECKS = ("_checks", "case_setup", "case_run", "get_time", "sb_", "require_bound")
 
     @staticmethod
     def _variants() -> list[tuple[str, dict, str, str]]:
         return [("boundary", _boundary_ir(), BOUNDARY_SID, HARNESS),
                 ("high_rank", _rank34_metrics_ir(), RANK_SID, HARNESS),
-                ("distributed", _distributed_ir(), DIST_SID, DIST_HARNESS)]
+                ("loop", loop_ir(0), "drv_toy", HARNESS),
+                ("init", init_ir(0), "drv_toy", HARNESS),
+                ("procedure", procedure_ir(), "drv_toy", HARNESS)]
 
     @staticmethod
     def _use_block(text: str, module: str) -> tuple[list[str], str]:
-        """The names a `use <module>, only:` block imports (a rename reads as its local name),
-        and the text after the block."""
+        """The names a `use <module>, only:` block imports, and the text after the block."""
         lines = text.splitlines()
         start = next(i for i, ln in enumerate(lines) if ln.startswith(f"  use {module}, only: &"))
         names, i = [], start + 1
-        logical = ""
         while True:
-            logical += lines[i].strip()
+            names.append(lines[i].strip().rstrip("&").strip().rstrip(","))
             i += 1
-            if logical.endswith("&"):
-                logical = logical[:-1].strip() + " "
-                if "=>" in logical and not logical.rstrip().endswith("=>"):
-                    continue
-                if logical.rstrip().endswith("=>"):
-                    continue
-                names.append(logical.strip().rstrip(","))
-                logical = ""
-                continue
-            names.append(logical.strip())
-            break
-        return ([re.split(r"\s*=>\s*", n)[0].strip().rstrip(",") for n in names],
-                "\n".join(lines[i:]))
+            if not lines[i - 1].rstrip().endswith("&"):
+                break
+        return names, "\n".join(lines[i:])
 
     def _each(self):
         for label, ir, sid, harness in self._variants():
@@ -2342,10 +1974,10 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
 
     def test_no_retired_callback_writer_or_record_is_named(self) -> None:
         for _ir, _sid, _harness, text in self._each():
-            for gone in self.RETIRED:
+            for gone in (*self.RETIRED, *self.RETIRED_CHECKS):
                 self.assertNotIn(gone, text)
 
-    def test_every_imported_harness_and_checks_name_is_used(self) -> None:
+    def test_every_imported_harness_and_model_name_is_used(self) -> None:
         for _ir, sid, harness, text in self._each():
             imported, after = self._use_block(text, f"{harness}_model")
             self.assertIn(f"{harness}__h_named", imported)
@@ -2354,10 +1986,10 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
             # the types the runner no longer builds are not imported, though the pinned harness
             # still publishes them until the harness PR
             self.assertEqual([n for n in imported if "__h_" in n], [f"{harness}__h_named"])
-            bound, after = self._use_block(text, f"{sid}_checks")
-            self.assertEqual(bound[:3], ["case_setup", "case_run", "get_time"])
-            for name in bound:
-                self.assertRegex(after, rf"\b{name}\b", name)
+            operations, after = self._use_block(text, f"{sid}_model")
+            self.assertTrue(operations)
+            for name in operations:
+                self.assertRegex(after, rf"call {name}\(", name)
 
     def test_every_schema_variable_is_captured_at_both_points(self) -> None:
         for ir, _sid, harness, text in self._each():
@@ -2365,32 +1997,26 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
                 "required_evidence"][0]["schema"]["variables"]]
             capture = text[text.index("  subroutine capture_state("):
                            text.index("  end subroutine capture_state")]
-            self.assertIn(f"allocate(out({len(variables)}))", capture)
+            self.assertIn(f"allocate(out({len(variables) + 1}))", capture)
             for name in variables:
                 self.assertRegex(capture, rf"__box\(\s*&?\s*'{name}'", name)
-                self.assertIn(f"sb_{name}", capture)
-            loop = text[text.index("  do ci = 1, ncases"):text.index("  end do\n\n  call system_clock")]
-            setup = loop.index("call case_setup(")
-            run = loop.index("call case_run(")
-            # right after: nothing is called between the callback and its capture
-            for start, end in ((setup, run), (run, len(loop))):
-                calls = re.findall(r"call (\w+)\(", loop[start:end])
-                self.assertEqual(calls[1], "capture_state", calls)
-            self.assertEqual(2, loop.count("call capture_state("))
-            self.assertEqual(2, loop.count(f"call {harness}__write_snapshot("))
+                self.assertIn(f"st_{name}", capture)
+            self.assertIn(f"call {harness}__write_snapshot('initial/'//cid, vals, t_c)", text)
+            self.assertIn(f"call {harness}__write_snapshot(cid, vals, t_c)", text)
 
     def test_write_perf_is_called_once_after_the_case_loop(self) -> None:
         for _ir, _sid, harness, text in self._each():
             self.assertEqual(1, text.count(f"call {harness}__write_perf("))
-            self.assertLess(text.index("call system_clock(count=clock1)"),
+            self.assertLess(text.rindex("    steps_total = steps_total + step_c"),
                             text.index(f"call {harness}__write_perf("))
+            self.assertLess(text.index(f"call {harness}__write_perf("), text.index("contains\n\n  !"))
 
     def test_the_runner_reads_neither_the_tests_nor_the_predicates(self) -> None:
         """What a test judges changes nothing in the runner: it captures the schema."""
         for ir, sid, harness, text in self._each():
             changed = copy.deepcopy(ir)
-            del changed["io_contract"]["tests"]
-            del changed["io_contract"]["predicates"]
+            changed["io_contract"].pop("tests", None)
+            changed["io_contract"].pop("predicates", None)
             self.assertEqual(text, render_runner(changed, sid, harness,
                                                  target=_TARGET_PROFILE.doc))
 
@@ -2404,9 +2030,6 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
                 "__h_case_result", "__h_mb_entry"))], [])
         assert_harness_pin(_boundary_ir(), BOUNDARY_SID, HARNESS, _harness_signatures(),
                            _HARNESS_STUB)
-
-    def test_the_checks_abi_is_the_three_procedures(self) -> None:
-        self.assertEqual(CHECKS_PUBLIC_NAMES, ("case_setup", "case_run", "get_time"))
 
 
 if __name__ == "__main__":

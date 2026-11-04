@@ -4023,18 +4023,18 @@ def _exemplar_contract_version_matches(model_src: Path) -> bool:
     ``LEAF_PROMPT_CONTRACT_VERSION``, read from its ``bundle_meta.json#prompt_contract_version``.
 
     ``model_src`` is ``.../source/<source_id>/src/<id>_model.f90``, so the pure ``bundle_meta.json``
-    is two parents up. This gates the R5 M3c model+checks exemplar: a sibling's ``<id>_checks.f90``
-    is authored against the checks-module ABI of the contract that certified it, and when that ABI
-    has since changed (e.g. issue #582 retiring its judging half), an older-vintage sibling carries the
-    RETIRED signature. Injecting it as concrete prior art can steer the doc-blind leaf into a bundle
-    the acceptance gate — which checks only procedure name/kind, not arity — admits, and which then
+    is two parents up. This gates the R5 M3c model exemplar: a sibling's model is authored against
+    the operations the host-rendered driver of its contract calls, and when that surface has since
+    changed (issue #589 moving the time loop to the driver), an older-vintage sibling carries the
+    RETIRED shape. Injecting it as concrete prior art can steer the doc-blind leaf into a bundle
+    the acceptance gate — which checks only names, not arity — admits, and which then
     fails ``Generate.gate`` against the current host-rendered runner (an unrepairable-until-
     reroll waste). The bundle gate cannot see the arity, so gate the exemplar HERE on the vintage.
 
     Fail-SAFE polarity: any missing / unreadable / mismatched version returns ``False`` (the
     exemplar is dropped, and Generate proceeds without one), never keeps a possibly-stale exemplar.
     An exemplar is advisory (never a gate), so dropping a stale-vintage one only forgoes a hint —
-    the correct ABI still reaches the leaf verbatim through the inlined host-rendered runner."""
+    the correct surface still reaches the leaf verbatim through the inlined host-rendered runner."""
     try:
         doc = json.loads((model_src.parent.parent / "bundle_meta.json").read_text(encoding="utf-8"))
     except Exception:
@@ -4057,8 +4057,8 @@ def _resolve_exemplar_source(
     cross-node-identical plumbing, raising first-attempt pass rate; the corpus is
     self-bootstrapping (every certified node becomes an exemplar for its siblings). Pre-R1 the
     injected sources are the certified ``<spec_id>_model.f90`` + ``<spec_id>_runner.f90``; once
-    R1 lands the harness node, the runner leaves the physics node and the exemplar becomes
-    model + checks.
+    R1 lands the harness node, the runner leaves the physics node; since issue #589 the exemplar
+    is the model alone.
 
     Discovery mirrors the certified-source selection used for dependencies (``_verify_dep_stage``
     / ``_certified_model_source``): for each sibling catalog spec, its SELECTED certified
@@ -4093,7 +4093,7 @@ def _resolve_exemplar_source(
         # target's harness) authors model + checks, so its exemplar is a sibling's model +
         # checks — NOT the pre-M3c model + runner (injecting a 600-line self-authored runner
         # would be misleading prior art). Both files must be present (a pre-M3c sibling without
-        # a checks.f90 is skipped, not partially injected). Mirror the conductor's
+        # a sibling without its model is skipped, not partially injected). Mirror the conductor's
         # `_conductor_authors_runner` predicate (a control file and a runner the host authors ∧
         # non-infra) so the exemplar shape matches what the leaf actually authors. Both halves
         # are the TARGET's, the question the conductor asks of the same profile
@@ -4147,14 +4147,14 @@ def _resolve_exemplar_source(
                     continue
                 # `<pipe>/source/<source_id>/src/<id>_model.f90` -> the pipeline directory.
                 pipe_dir = model_src.parent.parent.parent.parent
-                # R5 ABI-drift guard (M3c only): the checks exemplar must be authored under the
-                # CURRENT contract, else its `<id>_checks.f90` may carry a retired checks ABI the
-                # acceptance gate (name/kind only) admits but Generate.gate then rejects. The
-                # non-M3c model+runner exemplar carries no checks module, so it is not gated here.
+                # R5 surface-drift guard (M3c only): the model exemplar must be authored under the
+                # CURRENT contract, else it may carry a retired operation shape the acceptance
+                # gate (names only) admits but Generate.gate then rejects. The non-M3c
+                # model+runner exemplar calls its own operations, so it is not gated here.
                 if target_is_m3c and not _exemplar_contract_version_matches(model_src):
                     continue
                 exemplar_files = (
-                    (facts.model_basename(cand_id), facts.checks_basename(cand_id))
+                    (facts.model_basename(cand_id),)
                     if target_is_m3c
                     else (facts.model_basename(cand_id), facts.runner_basename(cand_id)))
                 sources: list[dict[str, str]] = []
@@ -4169,8 +4169,8 @@ def _resolve_exemplar_source(
                             missing = True
                     else:
                         missing = True
-                # M3c: require BOTH model + checks — a sibling lacking checks.f90 is pre-M3c
-                # and its legacy runner must not be injected, so skip it entirely.
+                # M3c: require the model — a sibling lacking it has nothing to show, and its
+                # legacy runner must not be injected, so skip it entirely.
                 if target_is_m3c and missing:
                     continue
                 if not sources:
@@ -4597,18 +4597,11 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILIT
 # restructure this ended: docs/design/leaf_must_read_restructure.md.
 # Consolidated runner-output contract, INLINED into the prompts that need it: §3 to
 # `validate.judge` (what it reads the raw evidence against), and whole to the `harness` shape's producer and reviewer — the
-# runner-authoring leaf. An `m3c` physics producer does not receive it (it authors
-# model+checks over a host-rendered runner) and takes `CHECKS_MODULE_CONTRACT.md` instead.
+# runner-authoring leaf. An `m3c` physics producer does not receive it (it authors the model under
+# a host-rendered runner).
 # The node-aware SELECTION used to be `leaf_contract_doc_refs`, deleted with the force-read
 # set in Z4 (issue #171); `Conductor._build_leaf_*_context` makes the same choice now.
 RUNNER_OUTPUT_CONTRACT_REF = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
-# R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
-# (the leaf-authored callbacks the host-rendered runner drives). Reaches every `generate`
-# leaf INLINED: §1-4 to the `m3c` reviewer (followed by the target language's binding of them)
-# and to the compile producer; the `harness` producer's gate guards are the BINDING's §5 since
-# issue #289. It was a force-read must-read whose SKILL branched on the node kind
-# until Z4 (issue #171). NOT given to validate.judge (it never sees the checks source).
-CHECKS_MODULE_CONTRACT_REF = "docs/workflow/CHECKS_MODULE_CONTRACT.md"
 # Canonical step -> phase-doc map. Of these, only `compile` reaches a leaf — inlined whole
 # into both compile prompts as `phase_contract_document`; it was the one force-read phase doc
 # before Z4 (issue #171) and the selection lived in `leaf_contract_doc_refs`. The rest are the
@@ -9872,8 +9865,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
                                "ir_document",
                                "tests_document", "runner_document"),
     ("generate", "verify"): ("controlled_spec_document", "tests_document", "ir_document",
-                             "target_profile",
-                             "checks_module_contract_document", "severity_rubric_document",
+                             "target_profile", "severity_rubric_document",
                              "bundle_document"),
     # `validate.judge` (Z3, issue #169). The two canonical sources (tests + the IR's
     # `io_contract`), the runner-output contract slice that says what the run's own output is
@@ -9907,8 +9899,8 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
     # The harness self-test producer. Same four host-resolved documents as the default generate
     # producer, with the runner-output contract in place of the host-rendered runner: on this
     # shape there is no host-rendered runner, and the leaf authors the executable entry itself.
-    # `gate_guards_document` is §5 of the target language's checks-ABI binding (of the neutral
-    # checks-module contract until issue #289) — the deterministic gate's rule
+    # `gate_guards_document` is the `Legality and gate guards` section of the target language's
+    # generate rules (`workflow_conductor._gate_guards_section`) — the deterministic gate's rule
     # set for every leaf-authored source. The AGENTIC leaf force-read it; a pure leaf force-reads
     # nothing, so it is inlined here or the leaf is held to rules no document it receives states.
     ("generate", "generate", "harness"): ("harness_capabilities", "target_profile",
@@ -9916,8 +9908,8 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
                                           "runner_output_contract_document",
                                           "gate_guards_document",
                                           "lint_rules_document"),
-    # Its reviewer: the default generate reviewer's documents, with the runner-output contract
-    # in place of the checks-module ABI (a harness bundle carries no checks module).
+    # Its reviewer: the default generate reviewer's documents and the runner-output contract (a
+    # harness bundle carries the executable entry itself).
     ("generate", "verify", "harness"): ("controlled_spec_document", "tests_document",
                                         "ir_document", "target_profile",
                                         "runner_output_contract_document",
@@ -12527,7 +12519,7 @@ def _validate_step_result_payload(
     # _validate_terminal_run_payload) and the HOST authors the phase's deliverables AFTER the child
     # window closes. So a pure substep is exempt from the non-empty-output_refs requirement and its
     # (empty) refs contribute nothing to substep_outputs. When ANY effective substep is pure the
-    # whole phase is host-authored: the deliverables in required_outputs (model/checks/source_meta)
+    # whole phase is host-authored: the deliverables in required_outputs (model/runner/source_meta)
     # are not published by any substep, so they are vouched by ON-DISK EXISTENCE instead of substep
     # coverage below (anti-mock-green: a declared-but-absent deliverable still fails). Detected from
     # the launch request (the single source the producer stamps), mirroring the pure carve-out in

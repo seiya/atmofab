@@ -5,7 +5,7 @@
 filesystem away from `validate.judge`'s context, and `raw/` is megabytes of float arrays
 (`shallow_water2d`: twelve snapshots of 100 KB - 1.65 MB, all `[nx, ny]`), so it is not seeded
 whole. What the host seeds instead is this excerpt: per-array SUMMARIES — shape, extent,
-non-finite counts, all-zero — with each variable's `source` (`tools/primary_evidence.py`), from
+non-finite counts, all-zero — from
 which the judge can ask whether the host's records are supported by the state they read. These
 are FACTS, not verdicts: an all-zero array is ordinary physics on many nodes (see `_summarize`),
 and what makes one a finding is what the tests and the IO contract say that variable should do.
@@ -36,7 +36,7 @@ from typing import Any, NamedTuple
 #: Bumped when what the excerpt CONTAINS changes, so a recorded `semantic_review.json` says
 #: which window its judge was looking through. Stamped by the host into that file.
 #: 2: each snapshot case additionally carries `initial` — the summary of the host-rendered
-#: runner's capture right after `case_setup` (`raw/state_snapshots/initial/<case_id>.json`,
+#: runner's capture before the case's step (`raw/state_snapshots/initial/<case_id>.json`,
 #: Z6, issue #255) — so the judge sees both capture points of a case.
 #: `schema.min_samples` was dropped without a bump (issue #396): `phase_04_validate.md` §4-2-1,
 #: canonical for the contents, never listed it, and it echoed the IR's declaration rather than
@@ -44,17 +44,23 @@ from typing import Any, NamedTuple
 #: re-derive every certified Validate for a display key no gate reads.
 #: 3 (issue #582): the `coverage` and `metrics_basis_arrays` sections are gone with
 #: `raw/metrics_basis.json`, and each snapshot variable names its `source`.
-RAW_EXCERPT_POLICY_VERSION = 3
+#: 4 (issue #589 PR-1b): `source` is gone with its vocabulary, `step` is the driver's own column
+#: (an ordinary row with no declared shape), each case carries `history_samples` and `series`, and `required_evidence`
+#: looks for `state_history` / `step_series` where the driver writes them.
+RAW_EXCERPT_POLICY_VERSION = 4
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
 RAW_EVIDENCE_ALIASES = {
     "state_snapshots": "state_snapshots",
     "raw/state_snapshots": "state_snapshots",
     "raw/state_snapshots/": "state_snapshots",
-    # Issue #589 (PR-1a admits the two at Compile; the excerpt's reading of them is PR-1b's).
+    # Issue #589: the driver's samples and its per-step series (`_EVIDENCE_DIRS`).
     "state_history": "state_history",
     "step_series": "step_series",
 }
+
+#: Where under `raw/` a canonical artifact lives, when that is not its own name.
+_EVIDENCE_DIRS = {"state_history": "state_snapshots/history", "step_series": "state_snapshots/series"}
 
 #: How many distinct string values a non-numeric field is summarized by before the summary
 #: says "and more" — the excerpt is a summary, and an unbounded one is the thing it exists
@@ -94,26 +100,9 @@ def raw_evidence_excerpt(raw_dir: Path, io_contract: dict[str, Any]) -> dict[str
         "policy_version": RAW_EXCERPT_POLICY_VERSION,
         "raw_dir_present": raw_dir.is_dir(),
         "required_evidence": _required_evidence_rows(raw_dir, io_contract),
-        "state_snapshots": _state_snapshots(raw_dir, problems, _declared_sources(io_contract)),
+        "state_snapshots": _state_snapshots(raw_dir, problems),
         "problems": problems,
     }
-
-
-def _declared_sources(io_contract: Any) -> dict[str, str]:
-    """Each snapshot variable's `source`, from the IR's `state_snapshots` schema (the runner's
-    `snapshot_schema.json` does not carry it): an entry without the key is `operation`."""
-    raw_requirements = io_contract.get("raw_requirements") if isinstance(io_contract, dict) else None
-    entries = raw_requirements.get("required_evidence") if isinstance(raw_requirements, dict) else None
-    out: dict[str, str] = {}
-    for item in (entries if isinstance(entries, list) else []):
-        if not isinstance(item, dict) or item.get("artifact") != "state_snapshots":
-            continue
-        schema = item.get("schema")
-        variables = schema.get("variables") if isinstance(schema, dict) else None
-        for var in (variables if isinstance(variables, list) else []):
-            if isinstance(var, dict) and isinstance(var.get("name"), str):
-                out[var["name"].strip()] = str(var.get("source", "operation"))
-    return out
 
 
 def _read_json(path: Path, problems: list[str], label: str) -> Any:
@@ -129,8 +118,7 @@ def _read_json(path: Path, problems: list[str], label: str) -> Any:
     return None
 
 
-def _state_snapshots(raw_dir: Path, problems: list[str],
-                     sources: dict[str, str]) -> dict[str, Any]:
+def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
     """Each per-case snapshot summarized against `snapshot_schema.json`'s declaration.
 
     The declared shape travels with the summary so the judge can compare them: a snapshot
@@ -138,9 +126,11 @@ def _state_snapshots(raw_dir: Path, problems: list[str],
     invisible from the numbers alone.
 
     A case whose runner is host-rendered has TWO captures (Z6, issue #255): the final one at
-    `<case_id>.json` and the initial one at `initial/<case_id>.json`, taken right after
-    `case_setup`. The initial capture is summarized under the case's `initial` key by the same
-    summarizer, or `None` when the runner wrote none (a harness self-test's own runner).
+    `<case_id>.json` and the initial one at `initial/<case_id>.json`, taken before the first
+    call. The initial capture is summarized under the case's `initial` key by the same
+    summarizer, or `None` when the runner wrote none (a harness self-test's own runner). On a
+    `loop` node (issue #589) `history_samples` counts the case's `history/` files and `series` is
+    the summary of its `series/` file: each name's length, minimum and maximum, or `None`.
     """
     snapshots_dir = raw_dir / "state_snapshots"
     if not snapshots_dir.is_dir():
@@ -166,27 +156,51 @@ def _state_snapshots(raw_dir: Path, problems: list[str],
         files = []
     for path in files:
         case = _snapshot_case(path, f"raw/state_snapshots/{path.name}", declared,
-                              time_variable, problems, sources)
+                              time_variable, problems)
         initial_path = snapshots_dir / "initial" / path.name
         case["initial"] = (
             _snapshot_case(initial_path, f"raw/state_snapshots/initial/{path.name}",
-                           declared, time_variable, problems, sources)
+                           declared, time_variable, problems)
             if initial_path.is_file() else None)
+        case["history_samples"] = _history_count(snapshots_dir, path.stem)
+        case["series"] = _series_summary(snapshots_dir, path.name, problems)
         cases.append(case)
     return {
         "present": True,
         "schema": {
             "time_variable": time_variable,
             "declared_variables": [
-                {"name": n, "shape_expr": declared[n], "source": sources.get(n, "operation")}
-                for n in sorted(declared)],
+                {"name": n, "shape_expr": declared[n]} for n in sorted(declared)],
         },
         "cases": cases,
     }
 
 
+def _history_count(snapshots_dir: Path, case_id: str) -> int:
+    """How many `history/<case_id>__<k>.json` samples the case has (0: none, or no `history/`)."""
+    history = snapshots_dir / "history"
+    if not history.is_dir():
+        return 0
+    prefix = f"{case_id}__"
+    return sum(1 for p in history.iterdir()
+               if p.is_file() and p.name.startswith(prefix) and p.suffix == ".json"
+               and p.stem[len(prefix):].isdigit())
+
+
+def _series_summary(snapshots_dir: Path, name: str, problems: list[str]) -> dict[str, Any] | None:
+    """Each series name of the case summarized like a variable (a non-finite entry counted, none
+    inlined), or None when the case has no `series/` file."""
+    path = snapshots_dir / "series" / name
+    if not path.is_file():
+        return None
+    doc = _read_json(path, problems, f"raw/state_snapshots/series/{name}")
+    if not isinstance(doc, dict):
+        return None
+    return {key: _summarize(doc[key]) for key in sorted(doc)}
+
+
 def _snapshot_case(path: Path, label: str, declared: dict[str, Any], time_variable: Any,
-                   problems: list[str], sources: dict[str, str]) -> dict[str, Any]:
+                   problems: list[str]) -> dict[str, Any]:
     """One snapshot file summarized against the declaration (the per-case body of
     `_state_snapshots`, shared by the final and the initial capture of a case)."""
     doc = _read_json(path, problems, label)
@@ -203,8 +217,7 @@ def _snapshot_case(path: Path, label: str, declared: dict[str, Any], time_variab
         case["time_value"] = _summarize(doc.get(time_variable)) if (
             time_variable in doc) else None
     for name in sorted(k for k in doc if k != time_variable):
-        variable = {"name": name, "declared_shape_expr": declared.get(name),
-                    "source": sources.get(name, "operation")}
+        variable = {"name": name, "declared_shape_expr": declared.get(name)}
         variable.update(_summarize(doc[name]))
         case["variables"].append(variable)
     case["declared_variables_absent"] = sorted(
@@ -234,11 +247,13 @@ def _required_evidence_rows(raw_dir: Path, io_contract: Any) -> list[dict[str, A
         if not isinstance(spelling, str):
             continue
         artifact = normalize_raw_evidence_artifact(spelling)
-        target = raw_dir / artifact if artifact else None
+        target = raw_dir / _EVIDENCE_DIRS.get(artifact, artifact) if artifact else None
         rows.append({
             "declared_as": spelling,
             "artifact": artifact,
-            "required": item.get("required") is not False,
+            # `every: 0` is a legal stride, so an absent `history/` is no missing evidence: a
+            # predicate over `history.*` is what needs samples, and it answers `structural`.
+            "required": item.get("required") is not False and artifact != "state_history",
             "present": bool(target and (target.is_file() or target.is_dir())),
         })
     return rows

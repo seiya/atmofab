@@ -3,8 +3,7 @@
 
 The bundle is the typed output of target-specific code generation for one optimization
 unit: the generated source-file set with roles, the externally visible entrypoints, the
-target lowering plan, the harness capability requirements, and the primary-state
-bindings. Canonical prose: `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`. Declarative copy of
+target lowering plan, and the harness capability requirements. Canonical prose: `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`. Declarative copy of
 the field grammar: `spec/schema/generate/codegen_bundle.schema.json`.
 
 **No producer exists yet.** No workflow phase writes or reads a bundle; the producer
@@ -45,7 +44,7 @@ from tools.backends import registry as backend_registry
 # constants and never the file, so a missing or unreadable schema cannot fail-open a gate.
 # --------------------------------------------------------------------------------------
 
-CODEGEN_BUNDLE_SCHEMA_VERSION = "1.2.0"
+CODEGEN_BUNDLE_SCHEMA_VERSION = "2.0.0"
 
 BUNDLE_SCHEMA_PATH = "spec/schema/generate/codegen_bundle.schema.json"
 HARNESS_CAPABILITIES_SCHEMA_PATH = "spec/schema/generate/harness_capabilities.schema.json"
@@ -58,14 +57,14 @@ REQUIRED_BUNDLE_KEYS: tuple[str, ...] = (
     "target_lowering_plan",
     "capability_requirements",
 )
-OPTIONAL_BUNDLE_KEYS: tuple[str, ...] = ("state_bindings",)
+OPTIONAL_BUNDLE_KEYS: tuple[str, ...] = ()
 
-FILE_ROLES: tuple[str, ...] = ("model", "checks", "helper", "internal_module", "runner")
-# Only these roles may define an externally visible symbol. A helper / internal_module
+FILE_ROLES: tuple[str, ...] = ("model", "helper", "internal_module", "runner")
+# Only this role may define an externally visible symbol. A helper / internal_module
 # file is private BY ROLE — privacy is declared, not inferred from a Fortran `private`.
 # A `runner` file defines no entrypoint either, for the opposite reason: it is the unit's
 # executable entry, so nothing else in the unit may `use` it.
-ROLE_FOR_ENTRYPOINT_KIND: dict[str, str] = {"operation": "model", "checks_interface": "checks"}
+ROLE_FOR_ENTRYPOINT_KIND: dict[str, str] = {"operation": "model"}
 ENTRYPOINT_KINDS: tuple[str, ...] = tuple(ROLE_FOR_ENTRYPOINT_KIND)
 # A file shared by the whole unit (`member_node_key: null`) may only be private.
 UNIT_SHAREABLE_ROLES: frozenset[str] = frozenset({"helper", "internal_module"})
@@ -75,10 +74,10 @@ ENTRY_BEARING_ROLE = "runner"
 # Compile order derives from the role alone — no `use`-statement analysis of generated code.
 # The model comes first: it compiles alone against the dependency closure (the model-alone
 # probe, issue #389), so a private file is never something it `use`s — a private file serves
-# the checks / runner file and may `use` the model (its kinds, its types), which is why every
-# private role builds after it (issue #415).
+# the runner file and may `use` the model (its kinds, its types), which is why every private role
+# builds after it (issue #415).
 ROLE_BUILD_PRECEDENCE: tuple[str, ...] = (
-    "model", "internal_module", "helper", "checks", "runner")
+    "model", "internal_module", "helper", "runner")
 
 def _language_bundle(language: str) -> Any | None:
     """The language backend's `bundle_facts` module, or `None` when it declares none.
@@ -123,21 +122,6 @@ def _file_defines_module(entry: Mapping[str, Any], module: str) -> bool:
     key = _identifier_key(language, module)
     return any(isinstance(m, str) and _identifier_key(language, m) == key
                for m in (entry.get("modules") or []))
-
-
-def _binding_owner(files: Sequence[Mapping[str, Any]], node_key: Any,
-                   module: Any) -> Mapping[str, Any] | None:
-    """The checks-role file owned by member `node_key` that defines a binding's `module`, or None.
-
-    The owner a binding must name is "a checks-role file owned by THIS member", so the lookup
-    starts from the member rather than from the module: such a file is not unique (a bundle may
-    carry other checks-role files), and each is asked under its own language's case rule. A
-    `module` no such file defines resolves to None, which the caller reports."""
-    if not isinstance(module, str):
-        return None
-    return next((entry for entry in files
-                 if entry.get("role") == "checks" and entry.get("member_node_key") == node_key
-                 and _file_defines_module(entry, module)), None)
 
 
 #: The languages a bundle may declare: those with a language backend that declares
@@ -257,8 +241,7 @@ LOGICAL_PATH_SEGMENT_PATTERN = rf"^{_SEGMENT_BODY}{_END}"
 # and uniqueness rules are `logical_path_violations` (no draft-07 pattern can carry them).
 LOGICAL_PATH_PATTERN = rf"^{_SEGMENT_BODY}(?:/{_SEGMENT_BODY})*{_END}"
 _SEGMENT_RE = re.compile(LOGICAL_PATH_SEGMENT_PATTERN)
-# The identifier bound an entrypoint `symbol` / `module` and a `state_bindings`
-# `state_variable` / `storage_symbol` must satisfy. It is the LANGUAGE's rule, so it comes from
+# The identifier bound an entrypoint `symbol` / `module` must satisfy. It is the LANGUAGE's rule, so it comes from
 # the language backend (`tools/backends/language/<id>/bundle.py`) rather than being written
 # here: a symbol over the bound cannot pass the mandatory `Generate.gate` syntax check, and the
 # contract rejects it before assembly rather than deferring the failure to the build.
@@ -314,12 +297,6 @@ LOWERING_PLAN_OPTIONAL_KEYS: tuple[str, ...] = (
     "data_layout", "parallelization", "decomposition", "communication",
     "accelerator_mapping", "fusion",
 )
-
-# One capture since bundle 1.2.0 (Z6, issue #255): the former `checks_getter` — a value
-# read through a generated getter — is retired with the getters, so the enum can no longer
-# name it; a 1.1.0 document that does is rejected at the schema layer (fail-closed, no
-# backfill: `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md` §State bindings).
-STATE_CAPTURES: tuple[str, ...] = ("harness_registration",)
 
 # The declarative toolchain fields the derived build graph may echo (docs/IMPL_PLAN_SPEC.md) —
 # the host's `_read_toolchain`, read off the target profile since issue #284. The projection
@@ -417,7 +394,6 @@ CAPABILITY_VOCABULARY: frozenset[str] = frozenset({
     "batched_cases",           # A6 reserved
     "full_state_capture",      # A4 / Z6 reserved
     "trusted_reductions",      # A4 / Z6 reserved
-    "state_registration",      # Z6 reserved
 })
 # Every bundle states how it expects to be driven: exactly one of these.
 EXECUTION_MODEL_CAPABILITIES: frozenset[str] = frozenset(
@@ -427,25 +403,10 @@ RESIDENCY_REQUIRED_CAPABILITY: dict[str, str] = {
     "device": "async_device_resident",
     "distributed": "distributed_state",
 }
-# `harness_registration` capture requires the harness to expose state registration (Z6).
-CAPABILITY_FOR_CAPTURE: dict[str, str] = {"harness_registration": "state_registration"}
-#: The one capture token every M3c binding carries (`STATE_CAPTURES` has one member, and the
-#: pure contract below requires it by name so the message can say which).
-STATE_BINDING_CAPTURE = "harness_registration"
-#: The capability token an M3c binding carries: `state_registration` at the ABI generation
-#: this module implements. Defined by the render contract of the language backend that
-#: renders the runner (`docs/workflow/CHECKS_MODULE_CONTRACT.md` §1): the bound module-level
-#: variables of `<spec_id>_checks` are serialized by the rendered runner through the certified
-#: harness emitters right after `case_setup` and right after `case_run`.
-STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 
 # Tool-side manifest data, deliberately NOT a section of the harness `controlled_spec.md`:
 # adding it there would edit a certified artifact and force recertification for no change
-# in generated behavior. Z6 (issue #255) kept it here on the same ground: `state_registration@1`
-# is defined by the RENDER contract (what the host-rendered runner does with the bound storage),
-# not by any operation of the harness source, so a spec-side `§capabilities` section would be a
-# copy with no reader. The plan on the issue records this departure from
-# `docs/design/zero_base_architecture.md` §A4 as written.
+# in generated behavior.
 #
 # `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
 # version: at this writing the canonical interface block of `harness_fortran_cpu@0.10.0` §5.1
@@ -458,9 +419,8 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # generation. Until `0.9.0` (issue #582) the block also held the writers of the two documents
 # the runner no longer writes, and their types, which no consuming node's bundle code called,
 # and the host-rendered runner stopped calling them with the issue's PR-H. Its `__write_perf`, which no consuming
-# node's bundle code calls either (the host-rendered runner calls it,
-# `docs/workflow/CHECKS_MODULE_CONTRACT.md` §4, and so does the providing harness's own
-# self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
+# node's bundle code calls either (the host-rendered runner calls it, and so does the providing
+# harness's own self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
 # shared-memory runtime gives the program itself (issue #512); the distributed harness's §5.1
 # has the eight-argument writer instead.
 # The device harness's §5.1 likewise begins with the block with the eight-argument
@@ -468,28 +428,20 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # kernels (issue #512), which the CUDA C++ runner calls. Each runner's `assert_harness_pin` pins
 # its harness's §5.1 as that harness publishes it. Its mechanical enforcer remains
 # the language backend's `assert_harness_pin`; this contract names the ABI, it does not
-# re-check it. `state_registration@1` (`STATE_REGISTRATION_TOKEN`) is defined as: the rendered
-# runner reads every snapshot variable straight from the module-level storage of the bundle's
-# checks module and serializes it through `__emit_*` / `__write_snapshot` at the two capture
-# points, before any callback of that case — the harness source needs no new operation for it,
-# so the harness version is unchanged. `distributed_state@2` (issue #512; `@1` was issue #316's,
+# re-check it. `distributed_state@2` (issue #512; `@1` was issue #316's,
 # R4-c, over one dimension) is defined as the distributed-state operations of the providing
 # harness's §3.3 — the rank queries, the process grid the host imposes and its queries, the
 # block partition and the halo exchange along one grid dimension, the gather onto rank 0 of an
 # array partitioned along up to two grid dimensions with its tile check, and the global
 # reductions — which the harness publishes after the `sync_single_case@1` block, together with
-# the rule that the writers are called on rank 0 only. Unlike `state_registration@1` it names
-# operations of the harness source, so its mechanical enforcer is the one `sync_single_case@1`
-# has: the harness's own `Generate.static` pin of §5.1, and the language backend's
-# `assert_harness_pin` for the host-rendered runner built against that harness (PR-4 of the
-# issue: the runner gathers the partitioned state onto rank 0 and writes on rank 0 only).
+# the rule that the writers are called on rank 0 only. Its mechanical enforcer is the one
+# `sync_single_case@1` has: the harness's own `Generate.static` pin of §5.1, and the language
+# backend's `assert_harness_pin` for a physics source's operations on that harness.
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
-    "infrastructure/harness_fortran_cpu@0.10.0": frozenset(
-        {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
-    "infrastructure/harness_cpp_gpu@0.4.0": frozenset(
-        {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
+    "infrastructure/harness_fortran_cpu@0.10.0": frozenset({"sync_single_case@1"}),
+    "infrastructure/harness_cpp_gpu@0.4.0": frozenset({"sync_single_case@1"}),
     "infrastructure/harness_fortran_cpu_mpi@0.4.0": frozenset(
-        {"sync_single_case@1", STATE_REGISTRATION_TOKEN, "distributed_state@2"}),
+        {"sync_single_case@1", "distributed_state@2"}),
 }
 
 
@@ -721,7 +673,6 @@ def bundle_schema_violations(doc: Any) -> list[str]:
     violations += _lowering_plan_schema_violations(doc.get("target_lowering_plan", _MISSING))
     violations += _capability_requirements_schema_violations(
         doc.get("capability_requirements", _MISSING))
-    violations += _state_bindings_schema_violations(doc.get("state_bindings", _MISSING))
     return violations
 
 
@@ -902,38 +853,6 @@ def _capability_requirements_schema_violations(required: Any) -> list[str]:
     return violations
 
 
-def _state_bindings_schema_violations(bindings: Any) -> list[str]:
-    if bindings is _MISSING:
-        return []
-    if not isinstance(bindings, list):
-        return ["state_bindings must be an array"]
-    violations: list[str] = []
-    for index, entry in enumerate(bindings):
-        prefix = f"state_bindings[{index}]."
-        if not isinstance(entry, dict):
-            violations.append(f"state_bindings[{index}] must be an object")
-            continue
-        violations += _closed_object_violations(
-            entry,
-            required=("node_key", "state_variable", "storage_symbol", "module", "capture",
-                      "capability"),
-            optional=(), prefix=prefix)
-        if "node_key" in entry and not _is_node_key(entry.get("node_key")):
-            violations.append(f"{prefix}node_key must be a node_key")
-        # `module` publishes `storage_symbol`, so the host renders `use <module>, only:
-        # <storage_symbol>` mechanically — a member may have several checks files with freely
-        # chosen module names, and the host never parses the source to find the exporter.
-        for key in ("state_variable", "storage_symbol", "module"):
-            if key in entry and not _is_identifier(entry.get(key)):
-                violations.append(f"{prefix}{key} must be an identifier")
-        if "capture" in entry and entry.get("capture") not in STATE_CAPTURES:
-            violations.append(f"{prefix}capture must be one of {', '.join(STATE_CAPTURES)}")
-        capability = entry.get("capability")
-        if "capability" in entry and capability is not None and not _is_capability_token(capability):
-            violations.append(f"{prefix}capability must be a capability token or null")
-    return violations
-
-
 # --------------------------------------------------------------------------------------
 # Cross-field invariants
 # --------------------------------------------------------------------------------------
@@ -956,7 +875,6 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
     entrypoints: list[Mapping[str, Any]] = list(doc.get("entrypoints") or [])
     plan: Mapping[str, Any] = doc.get("target_lowering_plan") or {}
     required_tokens: list[str] = list(doc.get("capability_requirements") or [])
-    bindings: list[Mapping[str, Any]] = list(doc.get("state_bindings") or [])
 
     seen_members: set[str] = set()
     for member in members:
@@ -1044,10 +962,8 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                     f"files[{index}].compile_after {dep!r} does not name a files[] entry")
             elif _role_rank(files_by_path[dep].get("role")) > _role_rank(entry.get("role")):
                 # An edge may refine order WITHIN a role, or agree with role precedence — it
-                # must never REVERSE it. `model.compile_after = [checks]` would force checks
-                # before model, contradicting ROLE_BUILD_PRECEDENCE and breaking the M3c
-                # order (checks `use`s the model); `model.compile_after = [helper]` would
-                # make the model depend on a private file, which the model-alone rule forbids.
+                # must never REVERSE it: `model.compile_after = [helper]` would make the model
+                # depend on a private file, which the model-alone rule forbids.
                 violations.append(
                     f"files[{index}].compile_after {dep!r} has role "
                     f"{files_by_path[dep].get('role')!r}, which build precedence orders after "
@@ -1077,9 +993,7 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             continue
         # Uniqueness is scoped to `(module, symbol)`, both keyed by the case rule of the
         # language of the file that defines them (`_identifier_key`). A symbol is
-        # module-qualified, so each member's checks module legitimately exports the same fixed
-        # ABI name (`case_run`, `get_time`): `a_checks::case_run` and `b_checks::case_run` are
-        # distinct procedures. Only the SAME name in the SAME module is an unlinkable duplicate.
+        # module-qualified, so only the SAME name in the SAME module is an unlinkable duplicate.
         # An entrypoint whose `defined_in` does not resolve is reported above and keyed by
         # nothing: it has no language to compare under.
         symbol = entry.get("symbol")
@@ -1137,12 +1051,10 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             violations.append(
                 f"optimization_unit member {member!r} has {runner_count} files[] entries of role "
                 f"{ENTRY_BEARING_ROLE!r}; a member carries at most one executable entry")
-        # Operation cardinality is by node KIND. A `problem` node publishes exactly one
-        # operation — its single integration update path — so two would leave the host with no
-        # rule to pick THE update path. A `component` / `infrastructure` node publishes an API of
-        # one or more operations (the harness ABI is many).
-        # (Multiple `checks_interface` entrypoints are always fine — a fixed ABI, not the
-        # published operation.)
+        # A member publishes at least one operation. How many is its IR's to say, whatever its
+        # kind (the L1c pin below): a `problem` publishes `__step` and optionally `__init`, and the
+        # host's `drive` block says which one it calls, so no rule picks an update path here
+        # (issue #589 D3; a problem's one-operation rule went with the leaf-authored driver).
         operation_count = sum(
             1 for entry in entrypoints
             if entry.get("kind") == "operation" and entry.get("node_key") == member)
@@ -1161,10 +1073,6 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 f"(issue #175)")
         elif operation_count == 0:
             violations.append(f"optimization_unit member {member!r} has no operation entrypoint")
-        elif spec_kind == "problem" and operation_count > 1:
-            violations.append(
-                f"optimization_unit member {member!r} has {operation_count} operation "
-                "entrypoints; a problem node publishes exactly one (its integration update path)")
 
     # capability tokens: closed vocabulary, duplicate-free, exactly one execution model
     seen_tokens: set[str] = set()
@@ -1200,97 +1108,18 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             f"target_lowering_plan.state_residency {residency!r} requires a {needed}@N "
             "capability in capability_requirements")
 
-    # state bindings: the capture/capability coupling, in both directions
-    registration_tokens_bound: set[str] = set()
-    seen_binding_keys: set[tuple[Any, Any]] = set()
-    seen_registration_storage: dict[tuple[str, str], str] = {}
-    for index, entry in enumerate(bindings):
-        prefix = f"state_bindings[{index}]."
-        node_key = entry.get("node_key")
-        node_is_member = node_key in member_set
-        if not node_is_member:
-            violations.append(f"{prefix}node_key {node_key!r} is not a member of optimization_unit")
-        # `(node_key, state_variable)` is a member's primary-state identity. A second binding
-        # for the same pair leaves the mapping ambiguous — two consumers could register or
-        # read different storage for one declared state. Checked before the capture-specific
-        # coupling below.
-        binding_key = (node_key, entry.get("state_variable"))
-        if binding_key in seen_binding_keys:
-            violations.append(
-                f"{prefix}duplicate binding for state_variable {entry.get('state_variable')!r} "
-                f"of member {node_key!r}")
-        seen_binding_keys.add(binding_key)
-        # `module` publishes `storage_symbol`, so it must be defined by a `checks`-role file
-        # OWNED BY THIS MEMBER — for EITHER capture. Otherwise a binding for member A could name
-        # member B's checks module and capture/register B's storage as A's state, and the
-        # rendered `use <module>, only: <storage_symbol>` would either miscompile or bind the
-        # wrong member's state. (Reported only for a member node — a non-member node_key is
-        # already flagged above.)
-        module = entry.get("module")
-        owner = _binding_owner(files, node_key, module)
-        if node_is_member and owner is None:
-            violations.append(
-                f"{prefix}module {module!r} must be defined by a checks-role file owned by "
-                f"member {node_key!r} (it publishes {entry.get('storage_symbol')!r})")
-        capture = entry.get("capture")
-        capability = entry.get("capability")
-        if capture == "harness_registration":
-            # For harness_registration the `storage_symbol` is the ACTUAL registered storage
-            # (the module-level variable the runner reads), so two state variables sharing
-            # one `(module, storage_symbol)` would register the same storage for two semantic
-            # states — silently corrupt evidence. Reject the duplicate. (Bundle 1.1.0's
-            # `checks_getter` capture, which shared a rank getter across variables, is gone
-            # with the getters — Z6, issue #255.)
-            module_val = module if isinstance(module, str) else ""
-            storage = entry.get("storage_symbol")
-            storage_val = storage if isinstance(storage, str) else ""
-            # Keyed by the owning file's case rule; a binding with no owner is reported above,
-            # and is keyed case-folded so it still collides with every spelling any language
-            # would call the same storage.
-            if owner is not None:
-                storage_key = (_identifier_key(owner.get("language"), module_val),
-                               _identifier_key(owner.get("language"), storage_val))
-            else:
-                storage_key = (module_val.casefold(), storage_val.casefold())
-            if storage_key in seen_registration_storage:
-                violations.append(
-                    f"{prefix}storage target {module_val}::{storage_val} is already registered "
-                    f"by state_variable {seen_registration_storage[storage_key]!r} — one "
-                    "registered storage serves one state")
-            else:
-                seen_registration_storage[storage_key] = entry.get("state_variable")
-            expected = CAPABILITY_FOR_CAPTURE["harness_registration"]
-            if capability_name(capability) != expected:
-                violations.append(
-                    f"{prefix}capture 'harness_registration' requires a {expected}@N capability")
-            elif capability not in required_tokens:
-                violations.append(
-                    f"{prefix}capability {capability!r} is not declared in capability_requirements")
-            else:
-                registration_tokens_bound.add(capability)
-    # The reverse coupling is PER TOKEN: each declared state_registration@N must have a
-    # binding that uses that exact token. A single @1 binding does not license an unused
-    # @2 requirement — that would negotiate a wider ABI than the bundle uses.
-    for token in required_tokens:
-        if (capability_name(token) == "state_registration"
-                and token not in registration_tokens_bound):
-            violations.append(
-                f"capability_requirements declares {token} but no state_bindings[] entry "
-                "captures through 'harness_registration' with it")
-    violations += _identifier_language_violations(files, entrypoints, bindings)
+    violations += _identifier_language_violations(files, entrypoints)
     return violations
 
 
 def _identifier_language_violations(files: Sequence[Mapping[str, Any]],
-                                    entrypoints: Sequence[Mapping[str, Any]],
-                                    bindings: Sequence[Mapping[str, Any]]) -> list[str]:
+                                    entrypoints: Sequence[Mapping[str, Any]]) -> list[str]:
     """Each identifier held to the grammar of the language of the FILE that declares it.
 
     The schema layer admits the union of the bundle languages' grammars
     (`_bundle_identifier_pattern`) because it cannot know which file an entrypoint belongs to;
     this layer can. A file's `modules` are its own; an entrypoint's `symbol` / `module` belong
-    to its `defined_in` file; a binding's names belong to the checks-role file of its member
-    that defines its `module` (`_binding_owner`).
+    to its `defined_in` file.
     An identifier whose file does not resolve is left to the invariants that report the
     unresolved reference. It is what stops one language's identifiers being validated against
     another's grammar (issue #289, R4-b PR-2), and since the second language joined (R4-b PR-4)
@@ -1315,12 +1144,6 @@ def _identifier_language_violations(files: Sequence[Mapping[str, Any]],
             continue
         for key in ("symbol", "module"):
             out += check(entry.get(key), owner.get("language"), f"entrypoints[{index}].{key}")
-    for index, entry in enumerate(bindings):
-        owner = _binding_owner(files, entry.get("node_key"), entry.get("module"))
-        if owner is None:
-            continue
-        for key in ("state_variable", "storage_symbol", "module"):
-            out += check(entry.get(key), owner.get("language"), f"state_bindings[{index}].{key}")
     return out
 
 
@@ -1730,183 +1553,37 @@ def derive_build_graph(doc: Mapping[str, Any], *,
 
 def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str, *,
                                language: str) -> str | None:
-    """The M3c host-runner literal-name constraint on a bundle's model/checks files, or None.
+    """The M3c host-runner literal-name constraint on a bundle's model file, or None.
 
-    The host-rendered runner glue `use`s modules `<spec_id>_model` / `<spec_id>_checks`, so the
-    bundle MUST carry a `model`-role file named as `language` names a model source
-    (`bundle_facts.model_basename`) declaring module `<spec_id>_model`, and a `checks`-role file
-    named `bundle_facts.checks_basename` declaring `<spec_id>_checks`. `language` is the
-    TARGET's — the language the runner is rendered in — not a file's own declaration.
-    A different name leaves the runner's `use` unresolved at link — a defect only the host (which
-    owns the runner) can see, so it is caught here rather than at build."""
+    The host-rendered driver `use`s module `<spec_id>_model`, so the bundle MUST carry a
+    `model`-role file named as `language` names a model source (`bundle_facts.model_basename`)
+    declaring that module. `language` is the TARGET's — the language the runner is rendered in —
+    not a file's own declaration. A different name leaves the driver's `use` unresolved at link —
+    a defect only the host (which owns the runner) can see, so it is caught here rather than at
+    build."""
     facts = language_facts(language)
-    want = {
-        "model": (facts.model_basename(spec_id), f"{spec_id}_model"),
-        "checks": (facts.checks_basename(spec_id), f"{spec_id}_checks"),
-    }
-    files = [e for e in (doc.get("files") or []) if isinstance(e, dict)]
-    for role, (want_path, want_module) in want.items():
-        candidates = [e for e in files if e.get("role") == role]
-        if not candidates:
-            return (f"the host-rendered runner requires a {role}-role file named "
-                    f"{want_path!r} declaring module {want_module!r}; the bundle has none")
-        # EXACT, not casefold: `logical_path` becomes a filename, and the gate that ultimately
-        # demands it opens the checks source by that exact name on a case-sensitive filesystem
-        # (`_validate_checks_source_files`). Casefolding here accepted a mixed-case checks file
-        # — which lints and compiles fine where `use` resolves by module name and never by
-        # filename — and then `Generate.gate` static check rejected it on the name, reopening
-        # the phase. The module comparison below is under `language`'s case rule: the runner
-        # rendered in that language imports the module by that name.
-        match = next((e for e in candidates
-                      if str(e.get("logical_path", "")) == want_path), None)
-        if match is None:
-            return (f"the {role}-role file must be named {want_path!r} exactly (the host-rendered "
-                    f"runner imports module {want_module!r} by fixed name, and the deterministic "
-                    f"gate opens that filename verbatim); got "
-                    f"{[e.get('logical_path') for e in candidates]}")
-        modules = {facts.identifier_key(m) for m in (match.get("modules") or [])
-                   if isinstance(m, str)}
-        if facts.identifier_key(want_module) not in modules:
-            return (f"{want_path} must declare module {want_module!r} (the host-rendered "
-                    f"runner imports it); its modules are {sorted(match.get('modules') or [])}")
-    return None
-
-
-def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
-                             language: str, extra_bound: Sequence[str] = ()) -> str | None:
-    """The fixed-ABI constraint on the bundle's checks module, or None.
-
-    An M3c node's `<spec_id>_checks` module must publish the SAME fixed set of names for every
-    node — the checks ABI the language backend that renders the runner publishes
-    (`host_render.checks_public_names`, the authority) — each as a SUBROUTINE, because the
-    host-rendered runner `call`s them (its `checks_syms` imports and the per-case
-    call sites). Two later gates enforce
-    halves of that and this layer pre-empts both, turning what were phase reopens into one
-    bounded in-conversation repair (Z2 defect D: sw2d burned its whole retry budget re-guessing
-    an ABI it had never been shown):
-
-    - `Generate.gate` static check (`_validate_checks_source_files`) requires all of the names to be
-      PUBLISHED. It does not distinguish a subroutine from a function.
-    - `Generate.gate` syntax check rejects a name the runner imports but the module does not define
-      (`Symbol '<name>' not found in module`) or defines as a FUNCTION (`'<name>' ... has a type,
-      which is not consistent with the CALL`).
-
-    The required set is the FULL fixed ABI.
-
-    Conservative NECESSARY condition: every ABI name is published — defined in this module, or
-    named in one of its `public ::` statements — and none is defined HERE as a function. It does
-    not check dummy-argument agreement; `Generate.gate` syntax check stages the runner with the
-    source and owns call resolution.
-
-    "Published" is the `Generate.gate` static check's own notion, deliberately, not a better one. Fortran has
-    ways to export a callable name that neither gate models — a whole-module `use` re-export with
-    no `public ::`, a generic `interface`, an interface-only module implemented by a submodule —
-    and all of them compile and `call` fine while both gates report the ABI unpublished. That is a
-    shared false positive, and it stays shared ON PURPOSE: this layer exists to pre-empt
-    `Generate.gate` static check, so being more permissive than it would just move the rejection later and
-    recreate the disagreement this defect is about, in the other direction. The certified idiom
-    (a bare `private` plus an explicit `public ::` list, which authoring rule 1 mandates and all
-    16 certified modules use) is well inside what both accept. The parse is delegated to the language
-    backend's `source_reading.checks_module_abi_facts` —
-    the SAME parser `Generate.gate` static check uses, so the two gates cannot disagree about what a given
-    source publishes. (A second implementation is exactly how this layer came to accept output
-    `Generate.gate` static check rejected.)"""
-    from tools.host_render import (
-        bound_state_publication_violation,
-        checks_abi_publication_violation,
-        checks_public_names,
-        runner_render_refusal,
-    )
-    # `m3c_literal_name_violation` runs first and guarantees this file exists and declares this
-    # module. Scope to it: a bundle may legally carry OTHER checks-role files, and reading their
-    # text too would let a sibling module vouch for a name `use <spec_id>_checks` cannot resolve.
-    want_path = language_facts(language).checks_basename(spec_id)
-    match = next((e for e in (doc.get("files") or [])
-                  if isinstance(e, dict) and e.get("role") == "checks"
-                  and str(e.get("logical_path", "")) == want_path), None)
-    if match is None:  # unreachable via the ordered contract; fail-closed if ever called alone
-        return f"the bundle carries no checks-role file named {want_path!r}"
-    # The ABI belongs to whichever backend renders the runner that calls it, so ask the FILE's
-    # declared language — the same value `_files_schema_violations` already constrained to
-    # `LANGUAGES`. A language with no runner renderer has no checks ABI to hold a bundle to;
-    # that is a violation here rather than a pass, because this gate is what a leaf's output is
-    # accepted on and an unenforced ABI is the defect the whole layer exists to pre-empt.
-    try:
-        refusal = runner_render_refusal(match.get("language"))
-    except Exception as exc:  # noqa: BLE001
-        # The third caller of the seam, and it was the one left without this. A backend package
-        # that cannot be IMPORTED is a host fault; escaping from here reaches
-        # `_leaf_bundle_violations`, which has no handler at this call, so the acceptance layer
-        # crashes instead of rejecting — the failure this layer exists to avoid. The two
-        # deterministic gates convert it; so does this one now.
-        refusal = f"the backend for that language could not be loaded ({exc!r})"
-    if refusal is not None:
-        return (f"{want_path} declares language {match.get('language')!r}, whose checks ABI this "
-                f"repository cannot state: {refusal}")
-    # The publication facts are read by the language's own source reader — the SAME reader the
-    # `Generate.gate` static check asks (`source_reading.checks_module_abi_facts`), so the two
-    # gates cannot disagree about what a given source publishes.
-    if not backend_registry.provides("language", str(match.get("language") or ""),
-                                     "source_reading"):
-        return (f"{want_path} declares language {match.get('language')!r}, whose sources this "
-                "repository cannot read: "
-                f"{backend_registry.missing_capability_reason('language', str(match.get('language') or ''), 'source_reading')}")
-    try:
-        source_reading = backend_registry.capability_module(
-            "language", str(match.get("language")), "source_reading")
-    except Exception as exc:  # noqa: BLE001
-        # A declared reader whose package cannot be loaded is a host fault; like the runner seam
-        # above, it becomes a refusal rather than an exception that escapes the acceptance layer.
-        return (f"{want_path} declares language {match.get('language')!r}, whose source reader "
-                f"could not be loaded ({exc!r})")
-    checks_module_abi_facts = source_reading.checks_module_abi_facts
-    unpublished_bound_state = source_reading.unpublished_bound_state
-    CHECKS_PUBLIC_NAMES = checks_public_names(match.get("language"))
-    published, subroutines, defined = checks_module_abi_facts(
-        str(match.get("content") or ""), spec_id)
-    unpublished = [n for n in CHECKS_PUBLIC_NAMES if n not in published]
-    # Only POSITIVE evidence of the wrong kind rejects: the name is defined right here and is not
-    # a subroutine, so it is a function. A published name with NO local definition is not proof of
-    # anything — it can be `use`-associated, declared via an `interface`/generic block, or
-    # implemented in a submodule, all of which compile, link, and `call` fine. Rejecting those
-    # would fail a LEGAL module with findings telling the producer to write the subroutine it had
-    # already written: an unexitable repair loop, which is this defect's own failure mode.
-    # `Generate.gate` syntax check stages the runner with the source and is the authority on call resolution.
-    wrong_kind = [n for n in CHECKS_PUBLIC_NAMES
-                  if n not in unpublished and n in defined and n not in subroutines]
-    if unpublished or wrong_kind:
-        # The wording names the language's publication statements and procedure kinds, so the
-        # backend that renders the runner states it (issue #289, R4-b PR-4). A backend that
-        # raises while STATING it still refuses: the finding is decided above, and only its
-        # wording is the backend's.
-        try:
-            return checks_abi_publication_violation(
-                match.get("language"), spec_id, unpublished, wrong_kind)
-        except Exception as exc:  # noqa: BLE001
-            return (f"module {spec_id}_checks does not publish the fixed checks ABI "
-                    f"(unpublished: {unpublished}; wrong kind: {wrong_kind}), and the "
-                    f"language's remedy could not be stated ({exc!r})")
-    # The bound state (Z6, issue #255): every `state_bindings[].storage_symbol` is a
-    # module-level variable the host-rendered runner imports with `use <spec_id>_checks, only:
-    # sb_<var> => <var>`, so it must be PUBLISHED by this module under the same scan and the
-    # same notion of "published" as the ABI procedures (`unpublished_bound_state`). The
-    # state-binding layer ran before this one and pinned the set of bindings to the IR's
-    # snapshot variables, so reading them off the document here reads a set the host already
-    # accepted. Reported after the procedure clause so an ABI defect is named first.
-    # `extra_bound` is the partition metadata a distributed runner imports beside the bound
-    # arrays (`host_render.distributed_state_names`, issue #316), held to the same rule.
-    bound = [str(b.get("storage_symbol")) for b in (doc.get("state_bindings") or [])
-             if isinstance(b, dict) and isinstance(b.get("storage_symbol"), str)]
-    bound += [str(n) for n in extra_bound]
-    unpublished_state = unpublished_bound_state(str(match.get("content") or ""), spec_id, bound)
-    if unpublished_state:
-        try:
-            return bound_state_publication_violation(match.get("language"), spec_id,
-                                                     unpublished_state)
-        except Exception as exc:  # noqa: BLE001
-            return (f"module {spec_id}_checks does not publish the bound state variables "
-                    f"{unpublished_state}, and the language's remedy could not be stated "
-                    f"({exc!r})")
+    want_path, want_module = facts.model_basename(spec_id), f"{spec_id}_model"
+    candidates = [e for e in (doc.get("files") or [])
+                  if isinstance(e, dict) and e.get("role") == "model"]
+    if not candidates:
+        return (f"the host-rendered runner requires a model-role file named "
+                f"{want_path!r} declaring module {want_module!r}; the bundle has none")
+    # EXACT, not casefold: `logical_path` becomes a filename, and the gates open it by that exact
+    # name on a case-sensitive filesystem (`_model_files_in_src_dir`). The module comparison below
+    # is under `language`'s case rule: the runner rendered in that language imports the module by
+    # that name.
+    match = next((e for e in candidates
+                  if str(e.get("logical_path", "")) == want_path), None)
+    if match is None:
+        return (f"the model-role file must be named {want_path!r} exactly (the host-rendered "
+                f"runner imports module {want_module!r} by fixed name, and the deterministic "
+                f"gate opens that filename verbatim); got "
+                f"{[e.get('logical_path') for e in candidates]}")
+    modules = {facts.identifier_key(m) for m in (match.get("modules") or [])
+               if isinstance(m, str)}
+    if facts.identifier_key(want_module) not in modules:
+        return (f"{want_path} must declare module {want_module!r} (the host-rendered "
+                f"runner imports it); its modules are {sorted(match.get('modules') or [])}")
     return None
 
 
@@ -1915,14 +1592,13 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
     """The file-shape constraint on a HARNESS bundle (v1.1.0), or None.
 
     The harness shape is the second admissible pure-producer shape (issue #169). Unlike M3c —
-    where the host renders the runner glue and the leaf authors model + checks — a harness node
-    self-tests: the leaf authors the model AND the executable entry, and there is no checks
-    module at all (nothing drives per-case checks callbacks for it; its runner records the
+    where the host renders the driver and the leaf authors the model — a harness node
+    self-tests: the leaf authors the model AND the executable entry (its runner records the
     status of the plumbing check each case id names).
 
     So the shape is: EXACTLY ONE `model`-role file named `<spec_id>_model<ext>` and DECLARING
-    the module `<spec_id>_model`, EXACTLY ONE `runner`-role file named `runner_basename`, and NO
-    `checks`-role file. Every literal name comes from the caller's own spelling of them —
+    the module `<spec_id>_model`, and EXACTLY ONE `runner`-role file named `runner_basename`.
+    Every literal name comes from the caller's own spelling of them —
     `runner_basename` is passed in, the model basename takes its extension from it, and the
     module name is that basename's stem — so this layer adds no second place that says what a
     node's files are called (`docs/BACKEND_BOUNDARY.md`).
@@ -1935,19 +1611,13 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
     source by that filename. A differently-named model file therefore certifies a harness no
     consumer can link.
 
-    The MODULE pin is the half that is easy to drop with the checks file, and a round-1 review
-    found it dropped: `m3c_literal_name_violation` pins the model file's module as well as its
-    name, and nothing downstream re-checks it here — the only deterministic module-name gate in
-    the tree is the checks module's, and this shape has no checks module. The consequence is
-    entirely on the CONSUMER side, which is why the node's own gates cannot see it: a harness's
+    The MODULE pin is the half a round-1 review found dropped: `m3c_literal_name_violation` pins
+    the model file's module as well as its name, and nothing downstream re-checks it here. The
+    consequence is entirely on the CONSUMER side, which is why the node's own gates cannot see it: a harness's
     model and runner are both leaf-authored, so they agree with each other whatever the module
     is called, while every physics node that later links this harness has its module name
     DERIVED from the spec_id rather than read (`derive_build_graph`'s staged sources) and its
-    host-rendered glue imports it by that derived name.
-
-    `m3c_literal_name_violation` / `m3c_checks_abi_violation` are still deliberately NOT run for
-    this shape: the first requires a checks file this shape forbids, and the second an ABI it
-    has no module to publish."""
+    host-rendered glue imports it by that derived name."""
     ext = runner_basename[runner_basename.rfind("."):] if "." in runner_basename else ""
     model_stem = f"{spec_id}_model"
     model_basename = f"{model_stem}{ext}"
@@ -1974,10 +1644,6 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
             return (f"{want_path} must declare module {model_stem!r} — a consumer of this node "
                     f"imports it by that name, DERIVED from the spec_id rather than read from "
                     f"this bundle; its modules are {sorted(entries[0].get('modules') or [])}")
-    checks_paths = [str(e.get("logical_path", "")) for e in files if e.get("role") == "checks"]
-    if checks_paths:
-        return ("a harness bundle carries no checks-role file (nothing drives per-case checks "
-                f"callbacks for a self-testing node); got {checks_paths}")
     return None
 
 
@@ -2002,49 +1668,9 @@ def published_operations_from_ir(ir: Mapping[str, Any]) -> list[str] | None:
     ]
 
 
-def snapshot_variables_from_ir(ir: Mapping[str, Any]) -> list[str]:
-    """The IR's snapshot-variable names, in declaration order — the set an M3c bundle must bind
-    (`io_contract.raw_requirements.required_evidence[artifact == state_snapshots].schema.
-    variables[].name`). Single-sourced for the same reason as `published_operations_from_ir`:
-    the two callers of `pure_bundle_contract_violation` must extract it identically, and the
-    language backend's runner renderer reads the same section (`_snapshot_schema`), so the set
-    the gate requires bound is the set the runner imports from. A missing section yields `[]`,
-    which the M3c layer refuses (an M3c node always declares snapshots — the renderer fails
-    closed on the same absence)."""
-    return [entry["name"] for entry in snapshot_variable_entries_from_ir(ir)]
-
-
-def snapshot_variable_entries_from_ir(ir: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """`snapshot_variables_from_ir`'s variables as `{name, shape_expr}` — what the two callers of
-    `pure_bundle_contract_violation` pass, because the acceptance layer asks the ranks too: over a
-    harness that runs the program as several ranks, each bound ARRAY brings partition metadata
-    the checks module must publish (issue #316). A bare name list leaves that half with no array
-    to ask about, which is how it shipped at first (R4-c PR-4 round 1)."""
-    if not isinstance(ir, collections.abc.Mapping):
-        return []
-    io = ir.get("io_contract")
-    rr = io.get("raw_requirements") if isinstance(io, collections.abc.Mapping) else None
-    entries = rr.get("required_evidence") if isinstance(rr, collections.abc.Mapping) else None
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for e in (entries if isinstance(entries, list) else []):
-        if not isinstance(e, collections.abc.Mapping) or e.get("artifact") != "state_snapshots":
-            continue
-        schema = e.get("schema")
-        variables = schema.get("variables") if isinstance(schema, collections.abc.Mapping) else None
-        for v in (variables if isinstance(variables, list) else []):
-            if isinstance(v, collections.abc.Mapping) and isinstance(v.get("name"), str) \
-                    and v["name"].strip() and v["name"].strip() not in seen:
-                seen.add(v["name"].strip())
-                out.append({"name": v["name"].strip(), "shape_expr": v.get("shape_expr")})
-        break
-    return out
-
-
 #: The bundle SHAPES a pure producer may be asked to satisfy. `m3c` is a physics node (the host
-#: renders the runner glue, the leaf authors model + checks); `harness` is an `infrastructure`
-#: node's self-test (the leaf authors model + the executable entry, and there is no checks
-#: module). WHICH one a node has is the caller's question — `validate_bundle(doc)` sees a
+#: renders the driver, the leaf authors the model); `harness` is an `infrastructure` node's
+#: self-test (the leaf authors model + the executable entry). WHICH one a node has is the caller's question — `validate_bundle(doc)` sees a
 #: document and cannot know the node — and the two callers resolve it from the twin readers
 #: `Conductor._bundle_shape` / `validate_pipeline_semantics._ir_bundle_shape`.
 BUNDLE_SHAPES: tuple[str, ...] = ("m3c", "harness")
@@ -2054,106 +1680,8 @@ BUNDLE_SHAPES: tuple[str, ...] = ("m3c", "harness")
 #: `public_api` for (`workflow_conductor._LEAF_IR_PUBLIC_API_KINDS`); a kind absent here has no
 #: pinned surface to compare against, so the layer stays inert for it rather than fail-closing on
 #: an IR that was never asked for the section.
-L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
-
-
-def _m3c_state_binding_mismatch(
-    bindings: list[Mapping[str, Any]], snapshot_vars: list[str], spec_id: str, *,
-    language: str,
-) -> str | None:
-    """The `bundle_state_binding_mismatch` clause of an M3c bundle, or None.
-
-    The set of bound `state_variable`s must EQUAL the IR's snapshot-variable set (each
-    direction is a defect: an unbound snapshot variable is one the runner cannot capture — its
-    `use` would not resolve — and a binding of an undeclared name is an invented registration),
-    and each binding must state the convention the runner is rendered against. The schema
-    layer already guaranteed each entry's keys and identifier grammar, and the invariant layer
-    the capture/capability coupling and the module's ownership; what is left is the CONVENTION,
-    which only a caller holding the IR and the spec_id can check. Why each convention holds is
-    stated in `language`'s words by the backend that renders the runner (issue #289, R4-b
-    PR-4): the runner's import spelling is that backend's."""
-    if not bindings:
-        return (f"an M3c bundle must bind every snapshot variable: state_bindings is missing or "
-                f"empty, but the IR snapshot schema declares {snapshot_vars} — add one entry per "
-                f"variable with capture {STATE_BINDING_CAPTURE!r}, capability "
-                f"{STATE_REGISTRATION_TOKEN!r}, module {spec_id + '_checks'!r} and storage_symbol "
-                f"equal to the variable name")
-    declared = set(snapshot_vars)
-    bound = [str(b.get("state_variable")) for b in bindings]
-    unbound = [v for v in snapshot_vars if v not in bound]
-    invented = sorted(v for v in bound if v not in declared)
-    if unbound or invented:
-        parts = []
-        if unbound:
-            parts.append(f"snapshot variable(s) with no binding: {unbound}")
-        if invented:
-            parts.append(f"binding(s) of a name the IR snapshot schema does not declare: "
-                         f"{invented}")
-        return ("state_bindings must bind EXACTLY the IR snapshot variables "
-                f"(raw_requirements.required_evidence[state_snapshots].schema.variables[] = "
-                f"{snapshot_vars}) — " + "; ".join(parts))
-    from tools.host_render import state_binding_module_reason, state_binding_storage_reason
-
-    def reason(state: Callable[[str, str], str], value: str) -> str:
-        # The reason is prose; a backend that cannot be LOADED to state it must not turn a
-        # convention violation into an exception that escapes the acceptance layer (the same
-        # conversion `m3c_checks_abi_violation` makes at its seam entry).
-        try:
-            return state(language, value)
-        except Exception as exc:  # noqa: BLE001
-            return (f"the runner's reason cannot be stated for language {language!r} "
-                    f"({exc!r})")
-
-    want_module = f"{spec_id}_checks"
-
-    # The runner rendered in `language` imports the storage by name, so a binding's module and
-    # storage are compared under that language's case rule (`_identifier_key`).
-    def key(name: str) -> str:
-        return _identifier_key(language, name)
-
-    for idx, b in enumerate(bindings):
-        prefix = f"state_bindings[{idx}]"
-        sv = str(b.get("state_variable"))
-        if b.get("capture") != STATE_BINDING_CAPTURE:
-            return (f"{prefix}.capture must be {STATE_BINDING_CAPTURE!r} (the one capture the "
-                    f"host-rendered runner implements); got {b.get('capture')!r}")
-        if b.get("capability") != STATE_REGISTRATION_TOKEN:
-            return (f"{prefix}.capability must be {STATE_REGISTRATION_TOKEN!r}; got "
-                    f"{b.get('capability')!r}")
-        module = b.get("module")
-        if not isinstance(module, str) or key(module) != key(want_module):
-            return (f"{prefix}.module must be {want_module!r} — "
-                    f"{reason(state_binding_module_reason, want_module)}; got {module!r}")
-        storage = b.get("storage_symbol")
-        if not isinstance(storage, str) or key(storage) != key(sv):
-            return (f"{prefix}.storage_symbol must equal its state_variable {sv!r} — "
-                    f"{reason(state_binding_storage_reason, sv)}; got {storage!r}")
-    return None
-
-
-def _distributed_state_names(language: str, harness_node_key: str | None,
-                             shapes: Mapping[str, Any]) -> list[str]:
-    """The partition metadata the runner over the harness `harness_node_key` imports beside the
-    bound arrays among `shapes` (`host_render.distributed_state_names`): empty for a harness that
-    runs the program as one process, and for a variable whose shape is a scalar or does not parse
-    (the renderer refuses that IR itself). A backend that cannot state it yields nothing here —
-    the `Generate.gate` static check asks the same question and reports its failure."""
-    from tools import runner_ir
-    from tools.host_render import distributed_state_names
-    if not isinstance(harness_node_key, str) or "/" not in harness_node_key:
-        return []
-    harness_sid = harness_node_key.split("/", 1)[1].split("@", 1)[0]
-    arrays = []
-    for name, shape in shapes.items():
-        try:
-            if runner_ir.rank_of_shape(shape, name) >= 1:
-                arrays.append(name)
-        except Exception:  # noqa: BLE001, S112 - the renderer's own refusal
-            continue
-    try:
-        return distributed_state_names(language, harness_sid, arrays)
-    except Exception:  # noqa: BLE001
-        return []
+L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset(
+    {"problem", "component", "infrastructure"})
 
 
 def pure_bundle_contract_violation(
@@ -2164,7 +1692,6 @@ def pure_bundle_contract_violation(
     shape: str,
     language: str,
     runner_basename: str,
-    ir_snapshot_variables: Iterable[str],
     harness_provided: Iterable[str] | None,
     harness_label: str | None = None,
     build_graph: Callable[[Mapping[str, Any]], Any],
@@ -2188,23 +1715,10 @@ def pure_bundle_contract_violation(
     report AND a later layer never runs on a doc an earlier one already rejected): shape
     vocabulary -> schema (`validate_bundle`) -> single-node unit shape -> (m3c) no `runner`-role
     file -> harness capability negotiation (the manifest MUST exist — an undeclared harness
-    satisfies nothing) -> the state-binding layer (below) -> the file-shape layer
-    (m3c: the literal names the host-rendered runner `use`s, then the fixed checks-module ABI,
-    which also requires every bound variable published; harness: `harness_bundle_shape_violation`)
-    -> the L1c published surface -> `build_graph(doc)` (the caller's assembly derivation, which
-    raises RuntimeError on a cross-origin object/module collision or a straddle).
-
-    The state-binding layer (Z6, issue #255) is what makes snapshot capture host-owned: an
-    `m3c` bundle MUST carry one `state_bindings[]` entry per IR snapshot variable
-    (`ir_snapshot_variables`, the `raw_requirements.required_evidence[state_snapshots].schema.
-    variables[]` names — neither more nor fewer, `bundle_state_binding_mismatch`), each with
-    `capture: harness_registration`, `capability: state_registration@1`, `module: <spec_id>_checks`
-    and `storage_symbol == state_variable` — the convention the host-rendered runner renders
-    `use <spec_id>_checks, only: sb_<var> => <var>` from WITHOUT reading the bundle (the runner
-    is rendered from the IR alone, before the leaf runs, so the binding cannot be a free choice;
-    the entry declares that the module implements the convention, and this layer checks the
-    declaration). A `harness` bundle carries no binding (its runner is its own writer; there is
-    no checks module to bind), so a non-empty `state_bindings` is a shape violation there.
+    satisfies nothing) -> the file-shape layer (m3c: the literal names the host-rendered driver
+    `use`s; harness: `harness_bundle_shape_violation`) -> the L1c published surface ->
+    `build_graph(doc)` (the caller's assembly derivation, which raises RuntimeError on a
+    cross-origin object/module collision or a straddle).
 
     `harness_provided` is the caller-resolved harness capability set (`None` = undeclared harness
     = nothing provided, fail-closed); `harness_label` only names it in the findings text.
@@ -2246,34 +1760,6 @@ def pure_bundle_contract_violation(
         return ("bundle_capability_unsatisfied",
                 f"capability_requirements not satisfied by harness{label}: "
                 + ", ".join(unsatisfied))
-    # The IR's snapshot schema names come as OBJECTS (`{name, shape_expr}`) or, from a caller
-    # that already projected them, as strings. Accept both — a comprehension that kept only
-    # `str` entries would silently yield an EMPTY set on a canonical IR and reject every bundle.
-    snapshot_vars: list[str] = []
-    snapshot_shapes: dict[str, Any] = {}
-    for v in ir_snapshot_variables:
-        name = v if isinstance(v, str) else (
-            v.get("name") if isinstance(v, collections.abc.Mapping) else None)
-        if isinstance(name, str) and name.strip() and name.strip() not in snapshot_vars:
-            snapshot_vars.append(name.strip())
-            if isinstance(v, collections.abc.Mapping):
-                snapshot_shapes[name.strip()] = v.get("shape_expr")
-    bindings = [b for b in (doc.get("state_bindings") or []) if isinstance(b, dict)]
-    if shape == "harness":
-        # Backstop, not reached through the ordered contract today: `validate_bundle`'s
-        # ownership invariant already refuses any binding on a bundle with no checks-role file
-        # (which the harness shape has by definition), so this clause fires only if that
-        # invariant were ever loosened. Kept so the shape states its own rule and fails closed.
-        if bindings:
-            return ("bundle_shape_unsupported",
-                    "state_bindings must be omitted on the harness shape: the harness self-test "
-                    "authors its own runner and has no checks module to bind, so there is no "
-                    f"storage the host reads; got {len(bindings)} binding(s)")
-    else:
-        mismatch = _m3c_state_binding_mismatch(bindings, snapshot_vars, spec_id,
-                                               language=language)
-        if mismatch is not None:
-            return ("bundle_state_binding_mismatch", mismatch)
     if shape == "harness":
         shape_violation = harness_bundle_shape_violation(doc, spec_id, runner_basename,
                                                          language=language)
@@ -2283,11 +1769,6 @@ def pure_bundle_contract_violation(
         name_violation = m3c_literal_name_violation(doc, spec_id, language=language)
         if name_violation is not None:
             return ("bundle_assembly_collision", name_violation)
-        abi_violation = m3c_checks_abi_violation(
-            doc, spec_id, language=language,
-            extra_bound=_distributed_state_names(language, harness_label, snapshot_shapes))
-        if abi_violation is not None:
-            return ("bundle_checks_abi_violation", abi_violation)
     # L1c: a component's `operation` entrypoint symbols must equal its IR public_api published
     # surface (under the target language's case rule). Inert when `ir_published_operations` is None (legacy IR / non-component)
     # — the single-source pin against the certified IR, checked identically by both callers.

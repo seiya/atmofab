@@ -686,9 +686,8 @@ class GenerateVerifyTests(CompileVerifyTests):
 
     def test_the_warm_re_place_writes_the_contract_with_its_last_newline(self) -> None:
         """Issue #548 on the path that rewrites seeds into a tree the leaf may have edited:
-        the re-placed `CHECKS_MODULE_CONTRACT.md` ends in `\n`, so a line count reaches its
-        last line."""
-        name = "CHECKS_MODULE_CONTRACT.md"
+        the re-placed `SEVERITY_RUBRIC.md` ends in `\n`, so a line count reaches its last line."""
+        name = "SEVERITY_RUBRIC.md"
         seen: list[str] = []
 
         def edits_the_contract(c, tree, kwargs):
@@ -702,8 +701,8 @@ class GenerateVerifyTests(CompileVerifyTests):
         self.assertEqual(self.run_substep().status, "pass")
         self.assertTrue(self.c.spawns[1]["resume_session_id"])
         context = self.c._build_leaf_verify_context(self.refs)
-        self.assertFalse(context["checks_module_contract_document"].endswith("\n"))
-        self.assertEqual(seen, [context["checks_module_contract_document"] + "\n"])
+        self.assertFalse(context["severity_rubric_document"].endswith("\n"))
+        self.assertEqual(seen, [context["severity_rubric_document"] + "\n"])
 
 
 class ValidateJudgeTests(CompileVerifyTests):
@@ -1614,7 +1613,7 @@ class ReaderTemplateTests(unittest.TestCase):
 
 class HarnessSpecTests(unittest.TestCase):
     """The `harness` shape's reviewer carries its own seed table: its context has the
-    runner-output contract where the m3c reviewer's has the checks-module contract."""
+    runner-output contract, which the m3c reviewer's does not."""
 
     def test_the_harness_reviewer_seeds_its_own_context(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -1633,7 +1632,6 @@ class HarnessSpecTests(unittest.TestCase):
         seeds = c._workshop_seeds(refs, context, {}, spec)
         self.assertEqual(seeds["runner_output_contract.md"],
                          "TEXT-runner_output_contract_document\n")
-        self.assertNotIn("CHECKS_MODULE_CONTRACT.md", seeds)
         self.assertIn("bundle_manifest.yaml", seeds)
         for entry in _valid_bundle()["files"]:
             self.assertEqual(seeds[entry["logical_path"]], _terminated(entry["content"]))
@@ -1784,7 +1782,7 @@ class SeedNewlineTests(unittest.TestCase):
         rows = (
             (self.c, verify, self.c._build_leaf_verify_context(verify),
              self.c._leaf_reviewer_spec("generate", "verify"),
-             ("CHECKS_MODULE_CONTRACT.md", "SEVERITY_RUBRIC.md")),
+             ("SEVERITY_RUBRIC.md",)),
             (judge_c, judge, judge_c._build_leaf_judge_context(judge),
              judge_c._leaf_reviewer_spec("validate", "judge"),
              ("runner_output_contract.md",)))

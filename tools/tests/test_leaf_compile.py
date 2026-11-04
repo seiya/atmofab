@@ -55,8 +55,7 @@ _PROBLEM_SPEC_PATH = "spec/problem/dynamics/shallow_water/shallow_water2d"
 
 #: The repository documents `_build_leaf_compile_context` reads. Staged into the fixture repo by
 #: COPYING the real files, so the presence checks run against what production reads rather than
-#: against a stand-in a test author chose. (`CHECKS_MODULE_CONTRACT.md`, sliced to its ABI sections,
-#: was the fourth until issue #589 PR-1a took it out of the compile producer's context.)
+#: against a stand-in a test author chose.
 _REPO_DOCUMENTS = (
     "docs/examples/spec_ir_algorithm_section.example.yaml",
     "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
@@ -176,7 +175,7 @@ def _valid_ir(kind: str = "component") -> dict:
         "io_contract": {"inputs": [], "outputs": []},
         "dependency": {"node_key": _NODE, "direct_deps": []},
     }
-    if kind in ("component", "infrastructure"):
+    if kind in ("problem", "component", "infrastructure"):
         ir["public_api"] = {"published_operations": [{"operation_id": f"{_SPEC_ID}__apply"}]}
     return ir
 
@@ -849,7 +848,9 @@ class PureIrDocumentViolationTests(_Fixture):
                 self.assertIsNotNone(result, meta)
                 self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
 
-    def test_a_problem_node_is_not_asked_for_public_api(self) -> None:
+    def test_a_problem_node_is_asked_for_public_api(self) -> None:
+        """The host renders a problem's driver from its `public_api` signatures too (issue #589
+        PR-1b), so a problem's surface is pinned like a component's: both directions."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_compile_node(repo, kind="problem")
@@ -858,6 +859,13 @@ class PureIrDocumentViolationTests(_Fixture):
             ir["dependency"]["node_key"] = refs.node_key   # the node's own key, not the fixture's
             self.assertIsNone(c._leaf_ir_document_violations(refs, {"ir": ir,
                                                                     "compile_fail": None}))
+            del ir["public_api"]
+            found = c._leaf_ir_document_violations(refs, {"ir": ir, "compile_fail": None})
+            self.assertIsNotNone(found)
+            assert found is not None
+            self.assertEqual(found[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+            self.assertIn("public_api", found[1])
+            self.assertIn("'problem'", found[1])
 
     def test_an_impl_defaults_section_is_refused(self) -> None:
         """The IR is target-free (issue #284, R4-a PR-3): a document that still carries the

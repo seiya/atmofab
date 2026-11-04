@@ -612,7 +612,7 @@ class ProseCouplingTests(unittest.TestCase):
         # replaced went in issue #534 PR-J4-b), whose lint rules are the Fortran
         # fragment row below (and the whole file is in `_whole_file_scan` since issue #316), and
         # the `harness` shape's producer template states the same contract through the Fortran
-        # checks-ABI binding's §5 — also a row below. No site is lost.
+        # generate rules' §Legality and gate guards — also a row below. No site is lost.
         # Three lines, not one: the template's lint contract is rules (1)-(3), and line 7
         # already named a rule code OUTSIDE the one-line region — the same shape as the round-2
         # defect, one file over, found by the round-3 attack axis.
@@ -626,9 +626,10 @@ class ProseCouplingTests(unittest.TestCase):
         # a MANDATE for the abolished directive one line above the old anchor, outside every
         # region this class watched. Three axes reported it independently; none of them was this
         # test.
-        # Since issue #289 (R4-b PR-2) the gate-guard section is the Fortran checks-ABI binding's
-        # §5, moved verbatim, so the region moved with it.
-        ("docs/backends/language/fortran/CHECKS_ABI.md",
+        # Since issue #289 (R4-b PR-2) the gate-guard section was the Fortran checks-ABI binding's
+        # §5, and since issue #589 PR-1b it is §Legality and gate guards of the generate rules
+        # (the binding went with the checks module), each move carrying the region with it.
+        ("docs/backends/language/fortran/GENERATE_RULES.md",
          "- **`spec_id` \u2264 55 characters**", 19,
          "- **A dummy argument no interface fixes is deleted, not bound.**"),
     )

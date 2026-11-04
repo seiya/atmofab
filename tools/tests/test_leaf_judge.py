@@ -118,7 +118,7 @@ def _write_run_node(repo: Path, *, bundle: bool = False) -> wc.NodeRefs:
     if bundle:
         (source_dir / "codegen_bundle.json").write_text(json.dumps({"files": [
             {"role": "model", "logical_path": "declared_model.f90"},
-            {"role": "checks", "logical_path": "declared_checks.f90"},
+            {"role": "helper", "logical_path": "declared_helper.f90"},
         ]}), encoding="utf-8")
         (source_dir / "src" / "declared_model.f90").write_text("model\n", encoding="utf-8")
 

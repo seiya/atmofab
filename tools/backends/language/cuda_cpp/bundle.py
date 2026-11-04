@@ -33,7 +33,7 @@ IDENTIFIER_MAX = 1024
 IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,{IDENTIFIER_MAX - 1}}}(?![\s\S])"
 
 #: The bound on a spec_id, derived as the Fortran backend derives its own: the longest name
-#: generated from a spec_id appends a 7-character role suffix (`_runner` / `_checks`), plus one
+#: generated from a spec_id appends a 7-character role suffix (`_runner`), plus one
 #: character of margin. The neutral spec-input gate takes the minimum over declared languages.
 SPEC_ID_MAX = IDENTIFIER_MAX - len("_runner") - 1
 
@@ -64,11 +64,6 @@ HOST_SOURCE_EXTENSION = ".cu"
 def model_basename(spec_id: str) -> str:
     """The node's model source: the definitions of its published operations."""
     return f"{spec_id}_model{HOST_SOURCE_EXTENSION}"
-
-
-def checks_basename(spec_id: str) -> str:
-    """The node's checks source."""
-    return f"{spec_id}_checks{HOST_SOURCE_EXTENSION}"
 
 
 def runner_basename(spec_id: str) -> str:

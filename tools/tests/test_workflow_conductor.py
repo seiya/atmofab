@@ -194,13 +194,12 @@ _CAPTURED_WORKSHOP_VERSION_FORM = re.compile(r"^(pure|leaf|workshop)-\d+$")
 #: before step 2 added them) does not carry. Exempt on such a capture only: a later capture
 #: carries them and is held to them like any other field.
 _WORKSHOP_1_ABSENT_KEYS = {"workshop_provider"}
-#: `pure_context` keys a capture recorded that the host no longer inlines, per pair. Issue #589
-#: PR-1a took `checks_module_contract_document` out of the `compile.generate` producer's context;
-#: the tracked capture (`orch_20261023T233910Z_159fd6eb`) predates that, and `main` runs no
-#: workflow end to end until issue #589 PR-3, so no re-capture can replace it before then. Exempt
-#: on the capture only, and only while the contract table does not require the key: the first
-#: re-capture after PR-3 drops the key and this entry with it.
-_RETIRED_CAPTURED_CONTEXT_KEYS = {("compile", "generate"): {"checks_module_contract_document"}}
+#: `pure_context` keys a capture recorded that the host no longer inlines, per pair. Empty since
+#: issue #589 PR-1b removed `checks_module_contract_document` BY HAND from the `compile.generate`
+#: and `generate.verify` captures (`orch_20261023T233910Z_159fd6eb`, whose `_capture_source` row
+#: still names the file as it was captured): `main` runs no workflow end to end until PR-3, so no
+#: re-capture could. The tracked captures stay hand-edited until a real run re-captures them.
+_RETIRED_CAPTURED_CONTEXT_KEYS: dict[tuple[str, str], set[str]] = {}
 
 
 def _load_real_requests() -> dict[tuple[str, str | None, str], dict]:
@@ -359,7 +358,7 @@ def _fortran_named_bundle_facts(name: str):
     import types
     from tools.backends.language.fortran import bundle as fortran_bundle
     module = types.ModuleType(name)
-    for attr in ("model_basename", "checks_basename", "runner_basename", "DEFAULT_COMPILER",
+    for attr in ("model_basename", "runner_basename", "DEFAULT_COMPILER",
                  "MANDATORY_SYNTAX_COMPILER", "SOURCE_EXTENSIONS", "IDENTIFIER_MAX",
                  "IDENTIFIER_PATTERN", "COMPILER_SELECTOR_FAMILIES", "COMPILED",
                  "identifier_key"):
@@ -14952,8 +14951,8 @@ class SnapshotDeliverableGapTest(unittest.TestCase):
                 c._snapshot_deliverable_gap(sdir, [], ["state_snapshots"]), "")
 
     def test_initial_captures_required_only_for_a_host_rendered_runner(self) -> None:
-        # Z6 (issue #255): the host-rendered runner writes `initial/<case_id>.json` right
-        # after `case_setup`; a hand-authored harness runner does not, so the requirement is
+        # Z6 (issue #255): the host-rendered runner writes `initial/<case_id>.json` before the
+        # case's step; a hand-authored harness runner does not, so the requirement is
         # keyed on `initial_required` (the caller's `_conductor_authors_runner`).
         with tempfile.TemporaryDirectory() as tmp:
             sdir = Path(tmp) / "raw" / "state_snapshots"
@@ -15037,8 +15036,7 @@ class WriteMakefileTest(unittest.TestCase):
             # the test recipe invokes the runner with --cases (same argv as run_program)
             self.assertIn("$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)", text)
             self.assertIn("-std=f2008 -O2 -fopenmp -J$(OBJDIR) -I$(OBJDIR)", text)
-            # The fixture IR states no `meta.spec_kind`, so it is not M3c (the fail-safe) and
-            # no checks module sits between model and runner.
+            # The fixture IR states no `meta.spec_kind`, so it is not M3c (the fail-safe).
             self.assertIn("$(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ)", text)
             self.assertIn(
                 'test -x $(BINDIR)/$(BIN) || { echo "error: $(BINDIR)/$(BIN) not built',
@@ -16044,7 +16042,7 @@ def _runtime_makefile_host_authored(repo: Path, pipeline_ref: str) -> bool:
 class WriteRunnerTest(unittest.TestCase):
     """R1/M3c-β: the conductor host-renders `<spec_id>_runner.f90` for an M3c physics node
     (a non-infra node of a make+fortran target, over the TARGET's harness — issue #284), and
-    the Makefile compiles the leaf-authored `<spec_id>_checks.f90` between model and runner."""
+    the Makefile compiles the leaf-authored model and the runner over it."""
 
     SID = "boundary_x"
 
@@ -16176,12 +16174,9 @@ class WriteRunnerTest(unittest.TestCase):
 
         other = types.ModuleType("zz_write_runner_lang")
         runner = types.ModuleType("zz_write_runner_lang.runner")
-        runner.CHECKS_PUBLIC_NAMES = ("zz_abi",)
         runner.render_runner = lambda ir, spec_id, harness, target: f"! rendered by zz for {spec_id}\n"
         runner.assert_harness_pin = lambda *a, **k: None
         runner.ir_content_violations = lambda *a, **k: []
-        runner.render_checks_header = lambda ir, spec_id: (f"{spec_id}_checks.zzh",
-                                                            f"// declared for {spec_id}\n")
         other.runner = runner
         # The names the host gives this language's files are its `bundle_facts` (issue #289).
         other.bundle = _fortran_named_bundle_facts("zz_write_runner_lang.bundle")
@@ -16203,11 +16198,7 @@ class WriteRunnerTest(unittest.TestCase):
                 c._write_runner(refs)
             text = (repo / refs.source_dir() / "src"
                     / f"{self.SID}_runner.f90").read_text(encoding="utf-8")
-            # The checks header the backend renders is written beside the runner (R4-b PR-6).
-            header = (repo / refs.source_dir() / "src"
-                      / f"{self.SID}_checks.zzh").read_text(encoding="utf-8")
         self.assertEqual(f"! rendered by zz for {self.SID}\n", text)
-        self.assertEqual(f"// declared for {self.SID}\n", header)
 
     def test_write_runner_names_a_declaration_that_outruns_its_package(self) -> None:
         """The clauses added to fix the previous round, which were themselves unobserved.
@@ -16397,7 +16388,7 @@ class WriteRunnerTest(unittest.TestCase):
             self.assertEqual(outcome.decision.action, "fail_closed")
             self.assertEqual(outcome.decision.reason, "generate_runner_render_failed")
 
-    def test_makefile_has_checks_rule_for_m3c(self) -> None:
+    def test_makefile_of_a_host_rendered_runner_links_the_model_and_the_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -16409,16 +16400,12 @@ class WriteRunnerTest(unittest.TestCase):
                 ]}), encoding="utf-8")
             self._conductor(repo)._write_makefile(refs)
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
-            self.assertIn(f"CHECKS_SRC = {self.SID}_checks.f90", text)
-            self.assertIn(f"CHECKS_OBJ = $(OBJDIR)/{self.SID}_checks.o", text)
-            self.assertIn("$(CHECKS_OBJ): $(CHECKS_SRC) $(MODEL_OBJ) | $(OBJDIR)", text)
-            self.assertIn("$(RUNNER_OBJ): $(RUNNER_SRC) $(CHECKS_OBJ) $(MODEL_OBJ)", text)
-            self.assertIn(
-                "$(DEP_OBJS) $(MODEL_OBJ) $(CHECKS_OBJ) $(RUNNER_OBJ) -o $(BINDIR)/$(BIN)", text)
+            self.assertNotIn("CHECKS", text)
+            self.assertIn("$(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ) | $(OBJDIR)", text)
+            self.assertIn("$(DEP_OBJS) $(MODEL_OBJ) $(RUNNER_OBJ) -o $(BINDIR)/$(BIN)", text)
 
-    def test_makefile_no_checks_rule_for_non_checks_node(self) -> None:
-        # The no-CHECKS Makefile shape is live for the `infrastructure` harness node: it authors
-        # its own self-test runner (no fixed-ABI `<spec_id>_checks` module) and declares no
+    def test_makefile_of_a_harness_node_links_its_own_runner(self) -> None:
+        # The `infrastructure` harness node authors its own self-test runner and declares no
         # harness dependency of its own.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -16426,16 +16413,17 @@ class WriteRunnerTest(unittest.TestCase):
             self._write_consumer_ir(repo, refs, infra=0, spec_kind="infrastructure")
             self._conductor(repo)._write_makefile(refs)
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
-            self.assertNotIn("CHECKS_SRC", text)
             self.assertIn("$(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ)", text)
 
-    def test_makefile_test_recipe_pre_creates_initial_only_for_a_host_rendered_runner(
+    def test_makefile_test_recipe_pre_creates_the_captures_only_for_a_host_rendered_runner(
             self) -> None:
-        # Issue #368: the `test:` recipe pre-creates the capture point the host-rendered runner
-        # opens `initial/<case_id>.json` in, and never on a node whose runner is its own (a
-        # strict fan-out self-test refuses an entry it did not write). Both conductor writers:
-        # the IR-shaped one and the bundle-derived one.
-        initial = "\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial\n"
+        # Issue #368, issue #589: the `test:` recipe pre-creates the three directories the
+        # host-rendered runner opens a file in (`initial/`, `history/`, `series/`), and never on
+        # a node whose runner is its own (a strict fan-out self-test refuses an entry it did not
+        # write). Both conductor writers: the IR-shaped one and the bundle-derived one.
+        initial = ("\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial "
+                   "$(RUNDIR)/raw/state_snapshots/history "
+                   "$(RUNDIR)/raw/state_snapshots/series\n")
         bare = "\tmkdir -p $(RUNDIR)/raw/state_snapshots\n"
         graph = {"compile_units": [], "link": {"objects": []}}
         for spec_kind, authored in (("problem", True), ("infrastructure", False)):
@@ -16462,7 +16450,7 @@ class WriteRunnerTest(unittest.TestCase):
 
     def test_build_launch_request_lists_no_source_for_either_shape(self) -> None:
         # generate.generate is a pure leaf on every shape: it authors nothing, so neither the
-        # checks module (M3c) nor the runner (runner-authoring node) is in its output set. The
+        # model nor the runner (runner-authoring node) is in its output set. The
         # swap this row used to pin lived in a list no leaf read (issue #424 PR-2 deleted it);
         # which source is a Generate DELIVERABLE is `phase_required_outputs`' answer, pinned by
         # `test_phase_required_outputs_symmetry` below.
@@ -16474,7 +16462,7 @@ class WriteRunnerTest(unittest.TestCase):
                 agent_model="m", workflow_mode="prod", runner_host_authored=runner_host_authored)
             self.assertEqual(built["allowed_output_paths"], [], runner_host_authored)
         # generate.verify writes ONLY source_meta.json — it inspects the sources, never rewrites
-        # them — so no runner / checks / model appears in its output set at all.
+        # them — so no runner / model appears in its output set at all.
         ver = wc.build_launch_request(
             refs, step="generate", substep="verify", orchestration_id="o",
             orchestration_agent_run_id="ORCH", child_agent_run_id="c",
@@ -16484,20 +16472,13 @@ class WriteRunnerTest(unittest.TestCase):
     def test_phase_required_outputs_symmetry(self) -> None:
         """The phase's deliverables on both shapes (issue #250 made the host-rendered runner
         and the control file Generate deliverables — they are what Build compiles and what
-        the generate output hash must cover): an M3c node declares model + checks + runner +
-        Makefile, a runner-authoring node model + runner + Makefile. The checks module is
-        the one entry that follows the shape."""
+        the generate output hash must cover): model + runner + Makefile. Since the checks module
+        went (issue #589) no entry follows the shape, and the flag that selected it is gone."""
         refs = self._refs()
         src = refs.source_dir()
-        m3c = wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                          bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
-        self.assertEqual(m3c, [
-            f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_checks.f90",
-            f"{src}/src/{self.SID}_runner.f90", f"{src}/src/Makefile",
-            f"{src}/source_meta.json"])
-        # Runner-authoring node (the infrastructure self-test): no checks module.
-        leaf_authored = wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
-        self.assertEqual(leaf_authored, [
+        outs = wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS,
+                                         control_file_basename="Makefile")
+        self.assertEqual(outs, [
             f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_runner.f90",
             f"{src}/src/Makefile", f"{src}/source_meta.json"])
         # The names are the LANGUAGE's (issue #289, R4-b PR-3): another language's facts name
@@ -16505,14 +16486,12 @@ class WriteRunnerTest(unittest.TestCase):
         # language's names by default.
         from types import SimpleNamespace
         other = SimpleNamespace(model_basename=lambda s: f"{s}_model.zz",
-                                checks_basename=lambda s: f"{s}_checks.zz",
                                 runner_basename=lambda s: f"{s}_runner.zz")
         self.assertEqual(
-            wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                      bundle_facts=other, control_file_basename="Ctl.zz"),
-            [f"{src}/src/{self.SID}_model.zz", f"{src}/src/{self.SID}_checks.zz",
-             f"{src}/src/{self.SID}_runner.zz", f"{src}/src/Ctl.zz",
-             f"{src}/source_meta.json"])
+            wc.phase_required_outputs(refs, "generate", bundle_facts=other,
+                                      control_file_basename="Ctl.zz"),
+            [f"{src}/src/{self.SID}_model.zz", f"{src}/src/{self.SID}_runner.zz",
+             f"{src}/src/Ctl.zz", f"{src}/source_meta.json"])
         with self.assertRaises(ValueError):
             wc.phase_required_outputs(refs, "generate")
         # The control file's name is the BUILD SYSTEM's (issue #424 PR-2): a caller that hands
@@ -16831,12 +16810,12 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         refs = self._refs()
         sid, src = refs.spec_id, refs.source_dir()
         outs = wc.phase_required_outputs(
-            refs, "generate", runner_host_authored=True,
+            refs, "generate",
             bundle_sources=[f"{sid}_model.f90", "sw_private_helpers.f90",
-                            f"{sid}_checks.f90", "sw_private_helpers.f90", " ", ""],
+                            f"{sid}_runner.f90", "sw_private_helpers.f90", " ", ""],
             bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
         self.assertEqual(outs, [
-            f"{src}/src/{sid}_model.f90", f"{src}/src/{sid}_checks.f90",
+            f"{src}/src/{sid}_model.f90",
             f"{src}/src/{sid}_runner.f90", f"{src}/src/sw_private_helpers.f90",
             f"{src}/src/Makefile", f"{src}/source_meta.json"])
 
@@ -16865,8 +16844,6 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         refs = self._refs()
         mk = f"{refs.source_dir()}/src/Makefile"
         self.assertIn(mk, wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile"))
-        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                          bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile"))
 
 
 def _record_build_site(repo: Path, refs: wc.NodeRefs, site: str = "local") -> None:
@@ -18941,7 +18918,7 @@ class DeterministicBuildTest(unittest.TestCase):
         """The M3c snapshot-gap Compile reopen must reset the C2 counter exactly like the
         threshold branch does: it regenerates the IR and everything downstream, so the next
         execute failure is against fresh artifacts. With a stale count of 1, the next failure —
-        typically a leaf-repairable value defect in the regenerated checks module — would hit
+        typically a leaf-repairable value defect in the regenerated model — would hit
         the C2 threshold and take the findings-less Compile reopen instead of the warm Generate
         repair the routing table exists to provide."""
         import tempfile
@@ -18978,7 +18955,7 @@ class DeterministicBuildTest(unittest.TestCase):
     def test_value_categories_stay_on_generate_even_on_host_rendered_runner(self) -> None:
         """The renderer boxes each of a case's required variables unconditionally (the leaf
         registry's found-flag is discarded), so on an M3c node the snapshot key set and shapes
-        are host-fixed from the IR but every VALUE comes from the leaf's checks module. A
+        are host-fixed from the IR but every VALUE comes from the leaf's model. A
         trivial basis / NaN / wrong metric is exactly what the warm repair fixes, so these
         categories keep the Generate route.
 
@@ -19809,7 +19786,7 @@ class DeterministicLintTest(unittest.TestCase):
         src = repo / refs.source_dir() / "src"
         src.mkdir(parents=True, exist_ok=True)
         (src / "adv1d_model.f90").write_text("! model\n", encoding="utf-8")
-        (src / "adv1d_checks.f90").write_text("! checks\n", encoding="utf-8")
+        (src / "adv1d_helper.f90").write_text("! helper\n", encoding="utf-8")
         (src / "adv1d_runner.f90").write_text("! runner\n", encoding="utf-8")
         (src / "Makefile").write_text("all:\n", encoding="utf-8")
         (src / "command_log.jsonl").write_text("", encoding="utf-8")
@@ -19950,7 +19927,7 @@ class DeterministicLintTest(unittest.TestCase):
             seen["leaf"] | seen["host"],
             # `command_log.jsonl` is in there on purpose: the partition copies EVERY file, not
             # a filtered set, so no file-extension knowledge enters the neutral core.
-            {"adv1d_model.f90", "adv1d_checks.f90", "adv1d_runner.f90", "Makefile",
+            {"adv1d_model.f90", "adv1d_helper.f90", "adv1d_runner.f90", "Makefile",
              "command_log.jsonl", "sub/nested.f90"})
         # Both halves clean while the whole directory failed is the arm that must stay reachable
         # only when the partition genuinely reproduces nothing.
@@ -20577,7 +20554,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             encoding="utf-8")
         src = repo / refs.source_dir() / "src"
         src.mkdir(parents=True, exist_ok=True)
-        for name in ("adv1d_model.f90", "adv1d_checks.f90", "adv1d_runner.f90"):
+        for name in ("adv1d_model.f90", "adv1d_helper.f90", "adv1d_runner.f90"):
             (src / name).write_text(f"! {name}\n", encoding="utf-8")
 
     def _attributing_syntax(self, leaf_probe_ok: bool):
@@ -20630,8 +20607,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
 
         The leaf's files pass alone while the whole staged set fails, so the failure needs the
         host-rendered runner. That does NOT mean the host is at fault: the runner `use`s the
-        leaf-authored checks module, so the diagnostic can be the leaf having missed the fixed
-        ABI — repairable by exactly this warm retry. Unlike the lint checker, a compiler cannot
+        leaf-authored model, so the diagnostic can be the leaf having missed a published
+        signature — repairable by exactly this warm retry. Unlike the lint checker, a compiler cannot
         partition the files, so the gate records what it saw and keeps the retry.
 
         The excerpt must stay the WHOLE-RUN output: an interaction diagnostic is printed at a
@@ -20790,7 +20767,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._m3c_refs()
             self._seed_m3c(repo, refs)
             src = repo / refs.source_dir() / "src"
-            (src / "adv1d_checks.cuh").write_text("// host\n", encoding="utf-8")
+            (src / "adv1d_host.cuh").write_text("// host\n", encoding="utf-8")
             (src / "adv1d_leaf.cuh").write_text("// not host\n", encoding="utf-8")
             c = self._conductor(repo)
             c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
@@ -20808,11 +20785,11 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     fortran_syntax, "STAGED_SUFFIXES",
                     (*fortran_syntax.STAGED_SUFFIXES, ".cuh")), mock.patch.object(
                     wc.Conductor, "_host_rendered_src_names",
-                    return_value=frozenset({"adv1d_runner.f90", "adv1d_checks.cuh",
+                    return_value=frozenset({"adv1d_runner.f90", "adv1d_host.cuh",
                                             "Makefile"})):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["attribution"], "unattributed_interaction")
-        self.assertIn("adv1d_checks.cuh", seen["leaf"])
+        self.assertIn("adv1d_host.cuh", seen["leaf"])
         self.assertNotIn("adv1d_leaf.cuh", seen["leaf"])  # not host: the probe copies no more
         self.assertNotIn("adv1d_runner.f90", seen["leaf"])
         self.assertNotIn("Makefile", seen["leaf"])
@@ -21351,7 +21328,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         return {
             "spec_x_model.f90":
                 "module spec_x_model\n  use spec_x_private\nend module spec_x_model\n",
-            "spec_x_checks.f90": "module spec_x_checks\nend module spec_x_checks\n",
+            "spec_x_helper_a.f90": "module spec_x_helper_a\nend module spec_x_helper_a\n",
             "spec_x_private.f90": "module spec_x_private\nend module spec_x_private\n",
         }
 
@@ -21593,7 +21570,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             repo = Path(td)
             refs = self._refs()
             self._seed(repo, refs, sources={
-                "spec_x_checks.f90": "module spec_x_checks\nend module spec_x_checks\n"})
+                "spec_x_helper_a.f90": "module spec_x_helper_a\nend module spec_x_helper_a\n"})
             c = self._conductor(repo)
             kinds: list[str] = []
 
@@ -21607,13 +21584,13 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(kinds, ["stage"])
             self.assertEqual(out["status"], "pass")
 
-    def test_model_alone_probe_stages_the_interface_header_and_not_the_checks_header(
+    def test_model_alone_probe_stages_the_interface_header_and_no_other_host_header(
             self) -> None:
         """Decision 4 of issue #389's plan: a consumer is staged the model and its INTERFACE
-        header (`_interface_header_module`), never the checks header, which the wider
-        `_host_rendered_src_names` also names. A model that included the checks header would
-        pass a probe that carried it and still break every consumer. Driven on a real
-        `cuda_cpp` node so the header module is the language backend's own."""
+        header (`_interface_header_module`), never another host header the wider
+        `_host_rendered_src_names` names. A model that included one would pass a probe that
+        carried it and still break every consumer. Driven on a real `cuda_cpp` node so the
+        header module is the language backend's own."""
         import tempfile
         from unittest import mock
 
@@ -21624,7 +21601,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs, language="cuda_cpp", sources={
                 "spec_x_model.cu": "// model\n", "spec_x_model.cuh": "// interface\n",
-                "spec_x_checks.cu": "// checks\n", "spec_x_checks.cuh": "// checks header\n",
+                "spec_x_other.cu": "// other\n", "spec_x_other.cuh": "// other host header\n",
                 "spec_x_helper.cu": "// helper\n"})
             install_target_profile(repo, profile_with(toolchain={
                 "language": "cuda_cpp", "standard": "c++17"}))
@@ -21641,13 +21618,11 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 seen[d.name] = {p.name for p in d.iterdir() if p.is_file()}
                 return self._pass(args)
 
-            # What a physics node's oracle answers (`CudaCppPhysicsHostFilesTest`): the checks
-            # header is host-rendered too. This fixture's node renders no runner, so without
-            # the patch the wider set would equal the narrow one and the row could not tell
-            # the two selections apart.
-            host_names = frozenset({"spec_x_runner.cu", "spec_x_checks.cuh", "Makefile",
+            # A wider set than the narrow selection: this fixture's node renders no runner, so
+            # without the patch the two would be equal and the row could not tell them apart.
+            host_names = frozenset({"spec_x_runner.cu", "spec_x_other.cuh", "Makefile",
                                     "spec_x_model.cuh", "dep_model.cuh"})
-            self.assertIn("spec_x_checks.cuh", host_names)
+            self.assertIn("spec_x_other.cuh", host_names)
             with self._patch_syntax(fake), mock.patch.object(
                     wc.Conductor, "_host_rendered_src_names", return_value=host_names):
                 out = c._gate_syntax_check(refs, "child-1")
@@ -22427,6 +22402,9 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             meta = self._meta(repo, refs)
             self.assertEqual(meta["status"], "pass")
             self.assertIsNone(meta["failure_category"])
+            # The case files are Validate.execute's (issue #589 D2): Compile.static evaluates
+            # every case and writes none.
+            self.assertFalse((repo / refs.ir_ref / "case_inputs").exists())
 
     def test_compile_static_inproc_compile_stage_violation_is_content_fail(self) -> None:
         import tempfile
@@ -25265,6 +25243,43 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
 
     # --- site A: compile.static -----------------------------------------------------------
 
+    def test_the_real_compile_stage_evaluates_the_cases_and_writes_no_case_file(self) -> None:
+        # Issue #589 D2, through the real validator: its refusal of a case that cannot be
+        # evaluated is the reason a writer refusal at Validate.execute is the host's, and
+        # the evaluation leaves nothing behind in an IR directory every target's run shares.
+        from unittest import mock
+
+        from tools.tests.test_validate_pipeline_semantics import (
+            _FIXTURE_IR_REL,
+            _create_minimal_execution_tree,
+            _seed_shape_expr_schema_into,
+        )
+
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
+            node_key="problem/shallow_water2d@0.3.0",
+            spec_path="spec/problem/mock_domain/mock_family/mock_spec",
+            ir_id="shallow-water2d_20260415_001",
+            pipeline_id="shallow-water2d_20260415_001",
+            source_id="src_20260415_001",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _seed_shape_expr_schema_into(repo)
+            _create_minimal_execution_tree(
+                repo,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            self.assertTrue((repo / _FIXTURE_IR_REL).is_file())
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            with mock.patch.object(wc.subprocess, "run", self._shim(repo)):
+                c._compile_static_inproc(refs, "child-1")
+            self.assertTrue((repo / refs.ir_ref / "compile_static_meta.json").is_file())
+            self.assertFalse((repo / refs.ir_ref / "case_inputs").exists())
+
     def test_compile_static_inproc_real_stage_compile_refuses_a_non_mapping_ir(self) -> None:
         from unittest import mock
 
@@ -25644,9 +25659,9 @@ if __name__ == "__main__":  # pragma: no cover
 
 class CudaCppPhysicsHostFilesTest(unittest.TestCase):
     """The host files a `cuda_cpp` physics node's Generate carries beside the leaf's (issue #289,
-    R4-b PR-6): the checks header `_write_runner` renders, and each closure member's interface
+    R4-b PR-6): each closure member's interface
     header `_write_dependency_headers` copies into `src/` and `_stage_dependency_sources` stages
-    into the object directory — both from the BOUND file, sha-checked. And the gates attribute
+    into the object directory — from the BOUND file, sha-checked. And the gates attribute
     all of them to the host (`_host_rendered_src_names`)."""
 
     SID = "boundary_x"
@@ -25707,7 +25722,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
             with mock.patch.object(wc.Conductor, "_dependency_closure_nodes",
                                    return_value=[self.HARNESS, self.DEP]):
                 names = c._host_rendered_src_names(refs)
-            self.assertEqual({f"{self.SID}_runner.cu", f"{self.SID}_checks.cuh", "Makefile",
+            self.assertEqual({f"{self.SID}_runner.cu", "Makefile",
                               f"{self.SID}_model.cuh", "harness_cpp_gpu_model.cuh",
                               "dep_a_model.cuh"}, set(names))
 
@@ -25719,23 +25734,11 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
                                pipeline_id="p1", source_id="s1", binary_id="b1")
             self._seed(repo, refs)
             c = self._conductor(repo, "fortran_cpu")
-            self.assertIsNone(c._checks_header(refs))
             self.assertEqual({f"{self.SID}_runner.f90", "Makefile"},
                              set(c._host_rendered_src_names(refs)))
             c._phase_closure_bindings[(refs.node_key, "generate")] = [{"node_key": self.DEP}]
             c._write_dependency_headers(refs)  # no interface_header: a no-op
             self.assertFalse((repo / refs.source_dir() / "src").exists())
-
-    def test_the_checks_header_is_the_renderer_s(self) -> None:
-        from tools.backends.language.cuda_cpp import runner as cpp_runner
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._seed(repo, refs)
-            import yaml as _yaml
-            ir = _yaml.safe_load((repo / refs.ir_ref / "spec.ir.yaml").read_text())
-            self.assertEqual(cpp_runner.render_checks_header(ir, self.SID),
-                             self._conductor(repo)._checks_header(refs))
 
     def test_the_dependency_headers_are_the_bound_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -25808,57 +25811,60 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
 @skip_probes.skip_unless_installed("cuda_compiler_driver")
 class CudaCppLintAttributionTest(unittest.TestCase):
     """Decision 10 of issue #289's R4-b PR-6 plan: the lint attribution needs no new rule for a
-    host-rendered runner that includes the checks header and the harness header. Both headers are
-    host files of a suffix the linter is not handed, so they are copied to BOTH probes as
+    host-rendered runner that includes the harness header and the model's interface header. Both
+    are host files of a suffix the linter is not handed, so they are copied to BOTH probes as
     context (`_attribute_lint_findings`), and the runner compiles alone in the host probe — a
-    finding in the leaf's checks source is the leaf's, one in the runner is the host's. Measured
-    with the real linter over a real render."""
+    finding in the leaf's model is the leaf's, one in the runner is the host's. Measured with the
+    real linter over a real render of the driver (issue #589)."""
 
-    SID = "prob_rank"
+    SID = "drv_toy"
 
-    def _tree(self, src: Path, *, leaf_finding: bool, host_finding: bool) -> set[str]:
+    def _tree(self, src: Path, *, leaf_finding: bool, host_finding: bool,
+              ir: dict | None = None) -> set[str]:
         from tools.backends.language.cuda_cpp import header as cpp_header
         from tools.backends.language.cuda_cpp import runner as cpp_runner
-        from tools.tests import test_language_cuda_cpp_runner as fixtures
-        ir = fixtures._smoke_ir()
-        runner = cpp_runner.render_runner(ir, self.SID, "harness_cpp_gpu",
-                                          target=fixtures.GPU_TARGET)
+        from tools.tests import test_driver_render as fixtures
+        # The one shape the linter is clean over today: `test_the_driver_of_every_shape_...`.
+        ir = ir if ir is not None else fixtures.init_ir(1)
+        runner = cpp_runner.render_runner(ir, self.SID, "harness_cpp_gpu", target=fixtures.GPU)
         if host_finding:
+            self.assertIn("int main(int argc, char** argv) {", runner)
             runner = runner.replace("int main(int argc, char** argv) {",
                                     "int main(int argc, char** argv) {\n  int unused_host = 0;")
-        checks = fixtures._checks_stub(self.SID, cpp_runner._bound_state(ir))
+        model = (fixtures.DATA / f"{self.SID}_model.cu").read_text(encoding="utf-8")
         if leaf_finding:
-            checks = checks.replace("void get_time(double& t) { t = 0.5; }",
-                                    "void get_time(double& t) { int unused_leaf = 0; t = 0.5; }")
-        name, text = cpp_runner.render_checks_header(ir, self.SID)
+            anchor = f"void {self.SID}__apply("
+            self.assertIn(anchor, model)
+            head, _, tail = model.partition(anchor)
+            body_open = tail.index("{") + 1
+            model = (head + anchor + tail[:body_open] + "\n  int unused_leaf = 0;"
+                     + tail[body_open:])
         files = {
             f"{self.SID}_runner.cu": runner,
-            name: text,
             "harness_cpp_gpu_model.cuh": cpp_header.render(
                 "harness_cpp_gpu", fixtures._harness_public_api(), spec_kind="infrastructure"),
-            f"{self.SID}_model.cuh": cpp_header.render(self.SID, {}, spec_kind="problem"),
-            f"{self.SID}_checks.cu": checks,
-            f"{self.SID}_model.cu": f'#include "{self.SID}_model.cuh"\n'
-                                    f"namespace {self.SID}_model {{\n"
-                                    f"void {self.SID}__step(double& x) {{ x = 1.0; }}\n}}\n",
+            f"{self.SID}_model.cuh": cpp_header.render(
+                self.SID, ir["public_api"], spec_kind="component"),
+            f"{self.SID}_model.cu": model,
         }
         src.mkdir(parents=True, exist_ok=True)
         for rel, body in files.items():
             (src / rel).write_text(body, encoding="utf-8")
-        return {f"{self.SID}_runner.cu", name, "harness_cpp_gpu_model.cuh",
+        return {f"{self.SID}_runner.cu", "harness_cpp_gpu_model.cuh",
                 f"{self.SID}_model.cuh", "Makefile"}
 
-    def _attribute(self, *, leaf_finding: bool, host_finding: bool) -> tuple[str, str | None]:
+    def _attribute(self, *, leaf_finding: bool, host_finding: bool,
+                   ir: dict | None = None) -> tuple[str, str | None]:
         from unittest import mock
 
         from tools import target_profile as tp
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            refs = wc.NodeRefs(target_id="cpp_gpu", node_key=f"problem/{self.SID}@0.1.0",
-                               spec_path=f"spec/problem/{self.SID}", ir_id="i1",
+            refs = wc.NodeRefs(target_id="cpp_gpu", node_key=f"component/{self.SID}@0.1.0",
+                               spec_path=f"spec/component/{self.SID}", ir_id="i1",
                                pipeline_id="p1", source_id="s1", binary_id="b1")
             host = self._tree(repo / refs.source_dir() / "src", leaf_finding=leaf_finding,
-                              host_finding=host_finding)
+                              host_finding=host_finding, ir=ir)
             c = _FakeConductor(repo_root=repo, orchestration_id="o",
                                orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
                                env={}, target_profile=tp.load_target_profile(REPO_ROOT, "cpp_gpu"))
@@ -25866,11 +25872,22 @@ class CudaCppLintAttributionTest(unittest.TestCase):
                                    return_value=frozenset(host)):
                 return c._attribute_lint_findings(refs, "child-lint", "nvcc", [])
 
-    def test_a_finding_in_the_leaf_s_checks_source_is_the_leaf_s(self) -> None:
+    def test_a_finding_in_the_leaf_s_model_is_the_leaf_s(self) -> None:
         category, excerpt = self._attribute(leaf_finding=True, host_finding=False)
         self.assertEqual("lint_findings", category)
         self.assertIn("unused_leaf", excerpt or "")
         self.assertNotIn("unused_host", excerpt or "")
+
+    def test_the_driver_of_every_shape_is_clean_under_the_declared_lint_set(self) -> None:
+        """A finding the host renders is terminal (`host_rendered_lint_findings`), so a shape the
+        linter refuses fails every node of it at `Generate.gate` with no repair."""
+        from tools.tests import test_driver_render as fixtures
+        for label, ir in (("call", fixtures.call_ir(1)), ("loop", fixtures.loop_ir(1)),
+                          ("init", fixtures.init_ir(1)), ("procedure", fixtures.procedure_ir())):
+            with self.subTest(shape=label):
+                # The leaf's finding, so the attribution has something to say on a clean render.
+                category, excerpt = self._attribute(leaf_finding=True, host_finding=False, ir=ir)
+                self.assertEqual("lint_findings", category, excerpt)
 
     def test_a_finding_in_the_rendered_runner_is_the_host_s(self) -> None:
         category, excerpt = self._attribute(leaf_finding=False, host_finding=True)
