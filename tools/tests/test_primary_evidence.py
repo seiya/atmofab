@@ -4419,9 +4419,10 @@ class DriveViolationsTest(unittest.TestCase):
         ir = _toy()
         for case in ir["case"]["test_case_set"]:
             case["derived"]["arr"] = "x"
-        ir["drive"]["step"]["arguments"]["dt"] = "derived.arr"
+        self._sig(ir, "toy__step").append(_arg("g", "in", "real"))
+        ir["drive"]["step"]["arguments"]["g"] = "derived.arr"
         self.assertEqual(self._v(ir), [
-            f"(c) case {c!r}: drive.step.arguments.dt (derived.arr): an array bound to a rank-0 "
+            f"(c) case {c!r}: drive.step.arguments.g (derived.arr): an array bound to a rank-0 "
             "dummy" for c in ("a", "b")])
 
     def test_two_dummies_of_one_state_give_one_extent(self) -> None:   # (c)
@@ -4730,6 +4731,187 @@ def _all_gates(ir: dict) -> list[str]:
                 **ctx)
             + pe.quantity_violations(io["tests"], io["predicates"], ctx["reads"])
             + ([] if ctx["case_inputs"] is not None else ["case inputs did not evaluate"]))
+
+
+class LoopTimeArgumentsTest(unittest.TestCase):
+    """Review round 6, R6-2: on a `loop` node the step's `dt` and `t` are the driver's (gate (e)),
+    and the host's `dt > 0` and `t_end` checks ask only of a case some test other than an `xfail`
+    one targets, or none: a case only `xfail` tests target may carry the invalid dt the kernel's
+    refusal is the subject of."""
+
+    @staticmethod
+    def _dt_msg(got: str, want: str) -> str:
+        return (f"(e) drive.step.arguments.dt is bound to {got}: on a `loop` node a step dummy "
+                f"named `dt` is bound to {want}, the reference `loop.dt` names")
+
+    @staticmethod
+    def _t_msg(got: str) -> str:
+        return (f"(e) drive.step.arguments.t is bound to {got}: on a `loop` node a step dummy "
+                "named `t` is bound to time, the driver's t")
+
+    @staticmethod
+    def _swe() -> dict:
+        import yaml
+        return yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+
+    @staticmethod
+    def _guard_toy(dt: dict[str, float], outcome: str = "xfail", n_step: float = 1,
+                   t_end: float = 2.5) -> dict:
+        """`_toy` with one `xfail` test per case of ``dt`` (the rk4 guard shape: one call, judged
+        by the flag), each case starting at t = 2.5 and carrying ``dt`` as its `derived.dt`."""
+        ir = _toy()
+        io = ir["io_contract"]
+        for cid, value in dt.items():
+            case = _toy_case(cid, 4)
+            case["inputs"]["time"] = {"t_start": 2.5, "t_end": t_end}
+            case["derived"] = {"n_step": n_step, "dt": value}
+            ir["case"]["test_case_set"].append(case)
+            io["tests"].append({"test_id": f"t_{cid}", "expected_outcome": outcome,
+                                "target_cases": [cid], "quantities": ["ok"]})
+            io["predicates"].append(
+                {"test_id": f"t_{cid}", "quantity": "ok", "target_cases": [cid], "per_case": True,
+                 "expr": "final.ok", "op": "eq", "value": 0})
+        return ir
+
+    def test_the_converted_fixtures_bind_them(self) -> None:
+        self.assertEqual(pe.drive_violations(self._swe(), kind="problem"), [])
+        self.assertEqual(pe.drive_violations(_toy(), kind="problem"), [])
+        self.assertEqual(pe.drive_violations(_toyi(), kind="problem"), [])   # `state.dt`
+
+    def test_a_dt_the_loop_does_not_advance_by_is_refused(self) -> None:
+        """The reviewer's two repros, 0 findings before: the kernel integrates another dt while
+        the driver's `final.t` reaches t_end."""
+        ir = self._swe()
+        ir["drive"]["step"]["arguments"]["dt"] = 1e-6
+        self.assertEqual(pe.drive_violations(ir, kind="problem"),
+                         [self._dt_msg("1e-06", "derived.dt")])
+        ir = self._swe()
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["dt_half"] = "derived.dt * 0.5"
+        ir["drive"]["step"]["arguments"]["dt"] = "derived.dt_half"
+        self.assertEqual(pe.drive_violations(ir, kind="problem"),
+                         [self._dt_msg("derived.dt_half", "derived.dt")])
+        for got in ("time", "step", "inputs.time.t_end"):
+            with self.subTest(got=got):
+                ir = _toy()
+                ir["drive"]["step"]["arguments"]["dt"] = got
+                self.assertIn(self._dt_msg(got, "derived.dt"),
+                              pe.drive_violations(ir, kind="problem"))
+
+    def test_the_same_reference_as_loop_dt_is_admitted_whatever_its_root(self) -> None:
+        ir = _toyi()
+        self.assertEqual(ir["drive"]["step"]["arguments"]["dt"], "state.dt")
+        self.assertEqual(ir["drive"]["loop"]["dt"], "state.dt")
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        ir["drive"]["step"]["arguments"]["dt"] = "inputs.grid.nx"
+        self.assertIn(self._dt_msg("inputs.grid.nx", "state.dt"),
+                      pe.drive_violations(ir, kind="problem"))
+        ir = _toy()   # an input on both sides
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["time"]["dt"] = 0.1
+        ir["drive"]["step"]["arguments"]["dt"] = "inputs.time.dt"
+        ir["drive"]["loop"]["dt"] = "inputs.time.dt"
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+
+    def test_a_t_that_is_not_the_driver_s_is_refused(self) -> None:
+        for raw, got in ((0.0, "0.0"), ("step", "step"), ("derived.dt", "derived.dt"),
+                         ("inputs.time.t_start", "inputs.time.t_start")):
+            with self.subTest(got=got):
+                ir = _toy()
+                ir["drive"]["step"]["arguments"]["t"] = raw
+                self.assertIn(self._t_msg(got), pe.drive_violations(ir, kind="problem"))
+
+    def test_the_clause_asks_of_a_rank_0_dummy_on_a_loop_node_only(self) -> None:
+        """A `t` array (a temperature) is no driver time; a one-call node has no loop dt."""
+        ir = _toy()
+        args = ir["public_api"]["signatures"][0]["signature"]["args"]
+        args[2] = _arg("t", "in", "real", 1, ["nx"])
+        ir["drive"]["step"]["arguments"]["t"] = "state.temp"
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        schema["variables"].append({"name": "temp", "shape_expr": "[nx]"})
+        ir["io_contract"]["raw_requirements"]["required_evidence"][2]["names"] += [
+            "temp_min", "temp_max"]
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["temp"] = 280.0
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        rus = _rus()
+        rus["public_api"]["signatures"][0]["signature"]["args"].append(_arg("dt", "in", "real"))
+        rus["drive"]["step"]["arguments"]["dt"] = 0.5
+        self.assertEqual(pe.drive_violations(rus, kind="component"), [])
+
+    def test_a_dummy_the_spec_names_otherwise_is_not_this_clause_s(self) -> None:
+        """A differently-named spec dummy is V3 (iv)'s: the gate reads names, it does not guess."""
+        ir = _toy()
+        ir["public_api"]["signatures"][0]["signature"]["args"][1]["name"] = "del_t"
+        arguments = ir["drive"]["step"]["arguments"]
+        del arguments["dt"]
+        arguments["del_t"] = 1e-6
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+
+    def test_the_rk4_guard_cases_evaluate_and_pass_every_gate(self) -> None:
+        """`l0_invalid_dt_zero` (dt = 0.0) and `l0_invalid_dt_negative` (dt = -0.1), one call,
+        `xfail`: refused by the host's `dt > 0` before, which pushed a converter to a separate
+        loop dt."""
+        ir = self._guard_toy({"dz": 0.0, "dn": -0.1})
+        self.assertEqual(_all_gates(ir), [])
+        out = pe.evaluate_case_inputs(ir)
+        self.assertEqual((out["dz"]["derived.dt"], out["dn"]["derived.dt"]), (0.0, -0.1))
+        self.assertEqual(out["dn"]["derived.n_step"], 1)
+
+    def _refused_on_evaluation(self, ir: dict, case: str, message: str) -> None:
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    re.escape(f"case {case!r}: {message}")):
+            pe.evaluate_case_inputs(ir)
+        self.assertEqual([m for m in pe.drive_violations(ir, kind="problem")
+                          if m.startswith("(c)")], [f"(c) case {case!r}: {message}"])
+
+    def test_the_same_dt_on_a_case_a_pass_test_targets_is_refused(self) -> None:
+        msg = "drive.loop.dt (derived.dt) is {!r}, not > 0"
+        for value in (0.0, -0.1):
+            with self.subTest(value=value):
+                self._refused_on_evaluation(self._guard_toy({"dz": value}, outcome="pass"), "dz",
+                                            msg.format(value))
+                # a pass test beside the xfail one: not xfail-only
+                both = self._guard_toy({"dz": value})
+                both["io_contract"]["tests"][0]["target_cases"].append("dz")
+                self._refused_on_evaluation(both, "dz", msg.format(value))
+                # a case no test targets asks the check: nothing says its refusal is the subject
+                orphan = _toy()
+                case = _toy_case("dz", 4)
+                case["derived"] = {"n_step": 1, "dt": value}
+                orphan["case"]["test_case_set"].append(case)
+                self._refused_on_evaluation(orphan, "dz", msg.format(value))
+
+    def test_the_t_end_drift_both_ways(self) -> None:
+        self.assertEqual(_all_gates(self._guard_toy({"d": 0.1}, t_end=9.0)), [])
+        pe.evaluate_case_inputs(self._guard_toy({"d": 0.1}, t_end=9.0))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"case 'd': drive\.loop: t_start \+ n_step \* dt"):
+            pe.evaluate_case_inputs(self._guard_toy({"d": 0.1}, outcome="pass", t_end=9.0))
+
+    def test_the_checks_every_case_keeps(self) -> None:
+        """`n_step >= 1` and finiteness stay on an xfail-only case."""
+        for n_step in (0, 1.5):
+            with self.subTest(n_step=n_step):
+                self._refused_on_evaluation(
+                    self._guard_toy({"d": 0.0}, n_step=n_step), "d",
+                    f"drive.loop.n_step (derived.n_step) is {float(n_step)!r}, not an integer >= 1")
+        ir = self._guard_toy({"d": "1 / (derived.n_step - 1)"})
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"case 'd': derived\.dt: "):
+            pe.evaluate_case_inputs(ir)
+
+    def test_the_outcome_is_read_as_the_schema_and_the_verdict_read_it(self) -> None:
+        """R6-4's sibling: `XFAIL` is admitted by the schema gate and the verdict, so it is an
+        xfail test here too."""
+        ir = self._guard_toy({"dz": 0.0}, outcome=" XFAIL ")
+        self.assertEqual(pe._xfail_only_cases(ir), frozenset({"dz"}))
+        self.assertEqual(pe.evaluate_case_inputs(ir)["dz"]["derived.dt"], 0.0)
+        # a malformed outcome is no xfail, and a target list that is no list targets nothing
+        self.assertEqual(pe._xfail_only_cases(self._guard_toy({"dz": 0.0}, outcome="xfailed")),
+                         frozenset())
+        ir = self._guard_toy({"dz": 0.0})
+        ir["io_contract"]["tests"][-1]["target_cases"] = "dz"
+        self.assertEqual(pe._xfail_only_cases(ir), frozenset())
 
 
 class ListFormCasesTest(unittest.TestCase):

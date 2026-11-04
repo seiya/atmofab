@@ -30068,6 +30068,31 @@ class DriveGateStageTests(unittest.TestCase):
             "it. Read it with `per_case: true`, or through at('<case>').<initial|final>.<var> in "
             "the value; a flag predicate values a case only on an xfail test with `value: 0`"])
 
+    # --- the step's dt and t are the driver's (review round 6, R6-2) ----------------------------------
+    _DT = ("(e) drive.step.arguments.dt is bound to {}: on a `loop` node a step dummy named `dt` is "
+           "bound to derived.dt, the reference `loop.dt` names")
+
+    def test_a_step_dt_or_t_that_is_not_the_loop_s_is_refused_at_the_stage(self) -> None:
+        def half(ir: dict) -> None:
+            for case in ir["case"]["test_case_set"]:
+                case["derived"]["dt_half"] = "derived.dt * 0.5"
+            ir["drive"]["step"]["arguments"]["dt"] = "derived.dt_half"
+
+        def literal(ir: dict) -> None:
+            ir["drive"]["step"]["arguments"]["dt"] = 1e-6
+
+        def fixed_t(ir: dict) -> None:
+            ir["drive"]["step"]["arguments"]["t"] = 0.0
+
+        for mutate, fragment in (
+                (half, self._DT.format("derived.dt_half")), (literal, self._DT.format("1e-06")),
+                (fixed_t, "(e) drive.step.arguments.t is bound to 0.0: on a `loop` node a step "
+                          "dummy named `t` is bound to time, the driver's t")):
+            with self.subTest(fragment=fragment):
+                found = _drive_stage("swe", mutate)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(fragment, found[0])
+
     # --- the test's outcome is the tests.md definition's (review round 5, R5-1) -------------------
     def test_a_relabelled_outcome_is_refused_at_the_stage(self) -> None:
         """`expected_outcome` decides gate (l) and every flag predicate's value: a leaf that

@@ -2934,8 +2934,7 @@ def state_reads(ir: dict[str, Any]) -> StateReads:
         initial = model.init_written - model.logical
         context = {
             "flags": model.logical, "init_flags": model.init_written & model.logical,
-            "outcomes": {t["test_id"].strip(): str(t.get("expected_outcome") or "").strip()
-                         .lower() for t in tests},
+            "outcomes": {t["test_id"].strip(): _expected_outcome(t) for t in tests},
             "test_targets": {t["test_id"].strip(): frozenset(
                 str(c).strip() for c in (t.get("target_cases") or [])
                 if isinstance(c, str)) for t in tests}}
@@ -3159,8 +3158,11 @@ def _input_paths(block: DriveBlock, entries: list[DriveEntry]) -> list[str]:
 
 
 def _evaluate_case(model: DriveModel, schema: dict[str, Any],
-                   case: dict[str, Any]) -> CaseValues:
-    """SHAPE §4 steps 1-4 for one case; raises `PrimaryEvidenceError` naming the entry."""
+                   case: dict[str, Any], *, refusal_subject: bool = False) -> CaseValues:
+    """SHAPE §4 steps 1-4 for one case; raises `PrimaryEvidenceError` naming the entry.
+    ``refusal_subject``: only `xfail` tests target the case (`_xfail_only_cases`), so its loop may
+    carry the invalid `dt` the kernel's refusal is the subject of (review round 6, R6-2): the
+    `dt > 0` and `t_end` checks ask only of the other cases; `n_step` of every case."""
     block = model.block
     cid = str(case.get("case_id")).strip()
     inputs = case.get("inputs") if isinstance(case.get("inputs"), dict) else {}
@@ -3365,9 +3367,9 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                 raise PrimaryEvidenceError(f"{what} is {value!r}, not an integer >= 1")
             if binding.kind == _DERIVED:
                 ints.add(binding.ref)
-        if key == "dt" and not value > 0:
+        if key == "dt" and not refusal_subject and not value > 0:
             raise PrimaryEvidenceError(f"{what} is {value!r}, not > 0")
-    if len(host) == len(LOOP_KEYS):
+    if len(host) == len(LOOP_KEYS) and not refusal_subject:
         drift = abs(host["t_start"] + host["n_step"] * host["dt"] - host["t_end"])
         bound = 4 * float(np.spacing(abs(host["t_end"])))
         if not drift <= bound:
@@ -3404,10 +3406,11 @@ def _evaluate_cases(ir: dict[str, Any]) -> dict[str, CaseValues]:
         return {cid: CaseValues({}, {}, {}, {}, frozenset()) for cid in cases}
     model = drive_model(ir)
     schema = snapshot_schema(ir) or {}
+    subjects = _xfail_only_cases(ir)
     out: dict[str, CaseValues] = {}
     for cid, case in sorted(cases.items()):
         try:
-            out[cid] = _evaluate_case(model, schema, case)
+            out[cid] = _evaluate_case(model, schema, case, refusal_subject=cid in subjects)
         except PrimaryEvidenceError as exc:
             raise PrimaryEvidenceError(f"case {cid!r}: {exc}") from None
     return out
@@ -3485,8 +3488,9 @@ def evaluate_case_inputs(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
     one flat JSON object the driver reads (`write_case_inputs`). For an IR with `drive`: the
     state extents from the bound dummies' `dims` (gate (c)), every `initial_state` and
     `derived` entry evaluated with the predicate grammar (gate (g)'s names), the bound host
-    data's shapes, the loop scalars that are host data (`n_step` an integer >= 1, `dt` > 0, the
-    `t_end` check when all four are host data) and `history.every` (an integer >= 0); the
+    data's shapes, the loop scalars that are host data (`n_step` an integer >= 1; `dt` > 0 and
+    the `t_end` check when all four are host data, both but on a case only `xfail` tests target,
+    `_xfail_only_cases`) and `history.every` (an integer >= 0); the
     object holds `inputs.<path>` for every input the block references, `derived.<name>` for
     every derived entry and `<var>` for every `initial_state` entry. For an IR with none:
     every numeric `inputs.*` leaf. Raises `PrimaryEvidenceError` naming the case and the entry.
@@ -3592,6 +3596,25 @@ def _test_entries(ir: dict[str, Any]) -> list[dict[str, Any]]:
     tests = io.get("tests")
     return [t for t in (tests if isinstance(tests, list) else [])
             if isinstance(t, dict) and isinstance(t.get("test_id"), str)]
+
+
+def _expected_outcome(test: dict[str, Any]) -> str:
+    """A test's `expected_outcome` as the schema gate and the verdict read it (any case, padded)."""
+    return str(test.get("expected_outcome") or "").strip().lower()
+
+
+def _xfail_only_cases(ir: dict[str, Any]) -> frozenset[str]:
+    """The cases some test targets and every test targeting them is `xfail` (review round 6,
+    R6-2; the label is pinned to `tests.md`): the kernel's refusal of their inputs is the subject.
+    A case no test targets is not one, nor is one a malformed outcome targets."""
+    xfail: set[str] = set()
+    other: set[str] = set()
+    for test in _test_entries(ir):
+        targets = test.get("target_cases")
+        (xfail if _expected_outcome(test) == "xfail" else other).update(
+            c.strip() for c in (targets if isinstance(targets, list) else [])
+            if isinstance(c, str))
+    return frozenset(xfail - other)
 
 
 def _own_predicates(ir: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
@@ -3881,6 +3904,19 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                     derived = case.get("derived")
                     if not isinstance(derived, dict) or binding.ref not in derived:
                         v.append(f"{loc}: case {cid!r} has no derived.{binding.ref}")
+        # the step's time arguments are the driver's own (review round 6, R6-2): §5.1 names them
+        # (D3), so a kernel that integrates another dt than the one the loop's t advances by, or
+        # at another t, is refused here; a dummy the spec names otherwise is V3 (iv)'s
+        for entry in block.step:
+            for name, want in (("dt", block.loop["dt"]), ("t", Binding("time", None))):
+                dummy = entry.dummy(name)
+                got = entry.arguments.get(name)
+                if dummy is not None and _dummy_rank(dummy) == 0 and got != want:
+                    v.append(f"(e) {entry.loc}.arguments.{name} is bound to "
+                             f"{got.text() if got is not None else 'nothing'}: on a `loop` node "
+                             f"a step dummy named `{name}` is bound to {want.text()}, "
+                             + ("the reference `loop.dt` names" if name == "dt"
+                                else "the driver's t"))
         if block.history_every is None:
             v.append("(e) drive.history is required with loop: {every: inputs.<path>}")
     elif block.history_every is not None:
@@ -3962,9 +3998,10 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
 
     # (c) the per-case shapes (only once the bindings and names hold: no cascade)
     if not v:
+        subjects = _xfail_only_cases(ir)
         for cid, case in sorted(cases.items()):
             try:
-                _evaluate_case(model, schema, case)
+                _evaluate_case(model, schema, case, refusal_subject=cid in subjects)
             except PrimaryEvidenceError as exc:
                 v.append(f"(c) case {cid!r}: {exc}")
 
