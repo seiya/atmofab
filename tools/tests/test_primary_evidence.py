@@ -3071,8 +3071,8 @@ class ClosureExemptionTest(unittest.TestCase):
           "tests.md `quantities` line lists")),
         ("docs/TESTS.md", "9. A judged quantity is defined in §5", "\n",
          ("nor does a logical `out` state", "except in its flag predicate, which that rule exempts "
-          "under the flag's own name only", "So a `pass` test of a node without a time loop lists "
-          "the result's name in its `quantities` line", "a flag values a test's cases only on an "
+          "under the flag's own name only", "So a `pass` test of a `problem` or `component` node "
+          "without a time loop lists the result's name in its `quantities` line", "a flag values a test's cases only on an "
           "`xfail` test and with `value: 0`", "a flag under any other quantity reads nothing",
           "Nor does a flag's name: its entry is that flag predicate.")),
         ("docs/TESTS.md", "A `tests.md` whose node runs a time loop", "\n",
@@ -3086,7 +3086,8 @@ class ClosureExemptionTest(unittest.TestCase):
           "with `value: 0`; "
           "a flag under any other quantity reads nothing)")),
         ("skills/spec-input-check/SKILL.md", "**The names a gate requires on that line**", "\n",
-         ("lists the name of its operation's result flag", "lists `run.n_step`",
+         ("on a `problem` or `component` node (a harness has no `drive`",
+          "lists the name of its operation's result flag", "lists `run.n_step`",
           "the init result's name")),
     )
     #: The wordings the one rule replaced, absent from every statement above.
