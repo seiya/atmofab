@@ -166,23 +166,21 @@ def render_tuple() -> dict[str, str]:
         # so a `workshop leaf`'s tree can be seeded with the same text.
         "Conductor._interface_header_text":
             _source_digest(wc.Conductor._interface_header_text),
-        # The second language's RUNNER (issue #289, R4-b PR-6): its renderer and the checks
-        # header it renders beside the runner (the ABI table in `checks_abi`), the neutral IR
-        # readers both renderers share, the declaration reader its harness pin reads, the
-        # parallelism its perf line states (`host_execution.perf_parallelism` and the class's
-        # `perf_facts`), the dispatch row, and the conductor methods that write the checks header
-        # and copy each closure member's header into `src/`.
+        # The second language's RUNNER (issue #289, R4-b PR-6): its renderer, the neutral IR
+        # readers both renderers share (the drive plan among them since issue #589), the
+        # declaration reader its harness pin reads, the parallelism its perf line states
+        # (`host_execution.perf_parallelism` and the class's `perf_facts`), the dispatch row, and
+        # the conductor method that copies each closure member's header into `src/`. The checks
+        # header and its ABI table (`checks_abi.py`, `Conductor._checks_header`) went with the
+        # checks module in issue #589.
         "tools/backends/language/cuda_cpp/runner.py":
             _file_digest("tools/backends/language/cuda_cpp/runner.py"),
-        "tools/backends/language/cuda_cpp/checks_abi.py":
-            _file_digest("tools/backends/language/cuda_cpp/checks_abi.py"),
         "tools/backends/language/cuda_cpp/declarations.py":
             _file_digest("tools/backends/language/cuda_cpp/declarations.py"),
         "tools/runner_ir.py": _file_digest("tools/runner_ir.py"),
         "tools/host_execution.py": _file_digest("tools/host_execution.py"),
         "tools/backends/hardware/gpu/perf.py": _file_digest("tools/backends/hardware/gpu/perf.py"),
         "registry runner_render attr": registry_attr("runner_render"),
-        "Conductor._checks_header": _source_digest(wc.Conductor._checks_header),
         "Conductor._write_dependency_headers":
             _source_digest(wc.Conductor._write_dependency_headers),
         "Conductor._copy_bound_file": _source_digest(wc.Conductor._copy_bound_file),
@@ -296,6 +294,9 @@ def build_tuple() -> dict[str, str]:
         # The staged dependency's name is the language's `bundle_facts` since issue #289.
         "tools/backends/language/fortran/bundle.py":
             _file_digest("tools/backends/language/fortran/bundle.py"),
+        # ... and the second language's (issue #589 found it missing when it moved here).
+        "tools/backends/language/cuda_cpp/bundle.py":
+            _file_digest("tools/backends/language/cuda_cpp/bundle.py"),
         # The failed build's `failure_category` (a `binary_meta.json` field) is the build
         # system's classification since issue #289 (R4-b PR-3); it was a conductor staticmethod
         # `_build_inproc` called, which no member of this tuple digested.
@@ -377,8 +378,9 @@ def launch_declarations() -> dict[str, str]:
 
 
 def execute_tuple() -> dict[str, str]:
-    """The in-process execute: the library's two run tools, the conductor's execute body and
-    the evidence promotion / quality-check authoring it composes the run record from."""
+    """The in-process execute: the library's two run tools, the conductor's execute body, the
+    case files it writes, and the evidence promotion / quality-check authoring it composes the
+    run record from."""
     server = _build_runtime()
     return {
         "build_runtime.tool_run_program": _source_digest(server.tool_run_program),
@@ -386,6 +388,14 @@ def execute_tuple() -> dict[str, str]:
             _source_digest(server.tool_run_quality_checks),
         "build_runtime._run_command": _source_digest(server._run_command),
         "Conductor._execute_inproc": _source_digest(wc.Conductor._execute_inproc),
+        # The case files the rendered driver reads (issue #589): what a run computes is what
+        # `write_case_inputs` wrote. Its closure is most of this module (the input evaluator, the
+        # drive model, the expression grammar), so the file is the member, as it is the verdict's.
+        "tools/primary_evidence.py": _file_digest("tools/primary_evidence.py"),
+        # Which per-case files a run owes, the `series/` one among them since issue #589, read off
+        # by the method that fails the run when one is absent.
+        "Conductor._snapshot_deliverable_gap":
+            _source_digest(wc.Conductor._snapshot_deliverable_gap),
         # The capture directories the run is given (issue #534 moved them into a helper the
         # workshop wrapper reads too).
         "Conductor._run_raw_dirs": _source_digest(wc.Conductor._run_raw_dirs),
@@ -807,6 +817,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-25 (issue #589, PR-1a): the phase contract and both IR examples describe the
     # `drive` block, per-case `initial_state` / `derived`, history and series, and grammar 6.
     "compile-docs-25": "b152166156eb9954af32853b269980720520fc0d7ab94f04be30840844fded17",
+    # compile-docs-26 (issue #589, PR-1b): `phase_01_compile.md` follows the rendered driver and the
+    # checks module's deletion.
+    # Measured against origin/main a55f7390: that row and no other.
+    "compile-docs-26": "0a222df5e899e051f32b8076202d1fa6b0977b678ce30476d436042fe171fed8",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1091,6 +1105,14 @@ PINNED_RENDER: dict[str, str] = {
     # symbols a runner uses, so a runner rendered from the same IR is byte-identical. A bump,
     # because the harness every runner links against moves with the catalog.
     "render-14": "8a81ae875cf65a18714bd92be8ee3415e80fab113924d6e228916a2c02420e24",
+    # render-15 (issue #589, PR-1b): both languages render the driver from the IR's `drive` block
+    # (`tools/runner_ir.py`, the two `runner.py`); the checks header goes. Rows out with what they
+    # hash: `cuda_cpp/checks_abi.py`, `Conductor._checks_header`. Rows moved, measured against
+    # origin/main a55f7390: the two runners and packages, the two `bundle.py`, `runner_ir`,
+    # `host_render`, `host_execution`, `fortran/lines.py`, `fortran/signatures.py`,
+    # `make/control_file.py`, `ROLE_BUILD_PRECEDENCE`, `_write_runner`, `_write_makefile`,
+    # `_render_leaf_makefile_from_graph`.
+    "render-15": "a79ec5f3e7f0cb883f21ecdc7f211112f56cef9cea842a64b3d2aac520f31f22",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source
@@ -1381,6 +1403,11 @@ PINNED_BUILD: dict[str, str] = {
     # records' `checked_flags` declarations and modules, `Conductor._control_file_rules`,
     # `Conductor._builds_checked`.
     "build-3": "95b062f0a5d7b9978a194bf614b97b9513b066e16907f59e86d975d9dccdce43",
+    # build-4 (issue #589, PR-1b): the control file links the driver and a model with no checks
+    # object. Rows moved, measured against origin/main a55f7390: `make/control_file.py`,
+    # `fortran/bundle.py`, `tools/host_execution.py`. Row added: `cuda_cpp/bundle.py`, which names
+    # a staged dependency on that language as `fortran/bundle.py` does on its own.
+    "build-4": "8adbe5c7d5d49843dd0d75e5695e40868dbc6961f7e65e1f30f46b89a4ff9bff",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1679,6 +1706,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # it refuses a binary with no checked binary when the compiler declares flags. New rows:
     # the checked-build members (`checked_build_members`).
     "execute-14": "65e04c39018bc3db7314446fbb65d3cef614ef95afb5e8268b8d4f2adec1ca5b",
+    # execute-15 (issue #589, PR-1b): `Validate.execute` writes the case files the driver reads,
+    # creates and promotes three raw directories (`initial`, `history`, `series`) and clears an
+    # earlier attempt's samples. Rows moved, measured against origin/main a55f7390:
+    # `_execute_inproc`, `_promote_run_evidence`, `_run_raw_dirs`, `tools/host_execution.py`. Rows
+    # added: `tools/primary_evidence.py` (`write_case_inputs`), `_snapshot_deliverable_gap`. The
+    # wrapper's `_write_case_files` is no member: no row of this tuple is a wrapper's, and a
+    # workshop run certifies nothing.
+    "execute-15": "0a13ee153162f7533b95b52b64ab52463b0c1b0d167b8ca9dc5e890e31303262",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -1860,6 +1895,11 @@ PINNED_VERDICT: dict[str, str] = {
     # the step capture), the drive model and the case-input evaluator, D7 re-checked on the
     # records; the source / reported / reference classes deleted.
     "verdict-13": "107181f60aaeeb09b035afa064e319cb64afb64b3d705548c78a4421a2d46991",
+    # verdict-14 (issue #589, PR-1b): `primary_evidence` reads the driver's series and samples
+    # (`_input_paths`, the series loader, the procedure gate, gate (h)). Rows moved, measured
+    # against origin/main a55f7390: `tools/primary_evidence.py`, and `tools/verdict_evaluator.py`
+    # (its docstring alone).
+    "verdict-14": "6561e2d833071c37238117318d4554109437579e14e682b5de8a5b571105037d",
 }
 
 
@@ -1965,7 +2005,6 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "phase_contract_document": "compile-docs",
     "ir_algorithm_example_document": "compile-docs",
     "ir_algorithm_2d_example_document": "compile-docs",
-    "checks_module_contract_document": "contract",
     "severity_rubric_document": "contract",
     "runner_output_contract_document": "contract",
     "gate_guards_document": "contract",
@@ -1997,10 +2036,9 @@ class InlinedDocumentCensusTests(unittest.TestCase):
         from tools.tests import test_leaf_prompt_contract_drift as drift
         tuple_source = inspect.getsource(drift._contract_tuple)
         expected_member = {
-            "checks_module_contract_document": "checks_contract_abi_sections",
             "severity_rubric_document": "generate_verify_severity_rubric_section",
             "runner_output_contract_document": "runner_output_contract_document",
-            "gate_guards_document": "checks_contract_gate_guards_section",
+            "gate_guards_document": "gate_guards_section",
             "lint_rules_document": "lint_rules_document",
         }
         contract_keys = {k for k, v in INLINED_DOCUMENT_CLASS.items() if v == "contract"}
@@ -2014,7 +2052,6 @@ class InlinedDocumentCensusTests(unittest.TestCase):
         digest of its phase holds the member, read off the launch tables (issue #574)."""
         from tools.tests import test_leaf_prompt_contract_drift as drift
         member = {
-            "checks_module_contract_document": "checks_contract_abi_sections",
             "severity_rubric_document": "generate_verify_severity_rubric_section",
             "runner_output_contract_document": {"generate": "runner_output_contract_document",
                                                 "validate": "runner_output_contract_sections"},
