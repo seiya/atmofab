@@ -30437,26 +30437,14 @@ class DriveGateStageTests(unittest.TestCase):
                 if p["expr"] == "final.guard_pass" and p["test_id"] == "l0_pointwise_formula_pass":
                     p["value"] = 0.0
         v = _drive_stage("coriolis", one_call)
-        flag_at = next(i for i, p in enumerate(_drive_fixture("coriolis")["io_contract"][
-            "predicates"]) if p["expr"] == "final.guard_pass"
-            and p["test_id"] == "l0_pointwise_formula_pass")
-        # the flag in no fixed form reads nothing (review round 4, R4-3: a result is no state
-        # read), so the reads-a-capture rule refuses it beside gate (l)
+        # `eq 0` on a pass test is a flag predicate (review round 5, R5-2: the value is free), so
+        # only gate (l), which asks `value: 1`, refuses it
         self.assertEqual(v, ["<ir>:(l) test 'l0_pointwise_formula_pass' (pass) carries no "
                              "predicate `expr: \"final.guard_pass\"`, `op: eq`, `value: 1`, "
                              "`per_case: true` over all its target cases under `quantity: "
                              "guard_pass`, the result's own name its tests.md `quantities` line "
                              "lists (the call's result, the zero-step closure of a one-call "
-                             "node)",
-                             f"<ir>:predicates[{flag_at}]: reads no captured state the kernel "
-                             "produced (final.<v> of a variable an operation writes, "
-                             "initial.<v> of one init writes, history.<v> / series.<v>_min|_max "
-                             "of a written v) in expr or a bind expr reaches: a predicate values "
-                             "the state the kernel produced (the host's own initial_state read "
-                             "back, a derived.* value, final.step / final.t, the driver's "
-                             "history.t / history.step / series.t / series.step, and a "
-                             "comparand.<point>.<var> — another target's state — are not this "
-                             "run's kernel state)"])
+                             "node)"])
 
     # --- (m), the tests.md `history:` line --------------------------------------------------------
     # The fixture states a per-case stride (`ceil(n_step / 2)`, CONVERSION.md); the one-number
