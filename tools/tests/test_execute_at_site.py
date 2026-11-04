@@ -40,16 +40,32 @@ from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConduct
 _RUNNER = textwrap.dedent('''\
     #!/usr/bin/env python3
     import json, os, sys
+    spec = sys.argv[sys.argv.index("--cases") + 1]
     cases = sys.argv[sys.argv.index("--cases") + 2:]
+    # What the host laid out for this run, read before the runner writes anything of its own:
+    # the case files beside the IR it was handed, and the directories below its snapshots.
+    seen_inputs = {}
+    for c in cases:
+        path = os.path.join(os.path.dirname(spec), "case_inputs", c + ".json")
+        seen_inputs[c] = open(path).read() if os.path.exists(path) else None
+    seen_dirs = sorted(os.listdir("raw/state_snapshots")) if os.path.isdir(
+        "raw/state_snapshots") else []
     os.makedirs("raw/state_snapshots", exist_ok=True)
     for c in cases:
         json.dump({"v": 0.0, "t": 1.0}, open("raw/state_snapshots/" + c + ".json", "w"))
+        # The host-rendered driver's other captures (issue #589), when a row asks for them.
+        if os.environ.get("DRIVER_FILES"):
+            for name in os.environ["DRIVER_FILES"].split(","):
+                sub, _, stem = name.partition(":")
+                json.dump({"v": 0.0, "t": 1.0},
+                          open("raw/state_snapshots/" + sub + "/" + c + stem + ".json", "w"))
     # An honest harness reports the thread count the run was launched with (issue #512).
     threads = os.environ.get("OMP_NUM_THREADS")
     json.dump({} if threads is None else {"parallelism": {"threads_per_rank": int(threads)}},
               open("perf.json", "w"))
     json.dump({"argv": sys.argv, "cwd": os.getcwd(),
-               "omp_num_threads": os.environ.get("OMP_NUM_THREADS")}, open("argv.json", "w"))
+               "omp_num_threads": os.environ.get("OMP_NUM_THREADS"),
+               "case_inputs": seen_inputs, "snapshot_dirs": seen_dirs}, open("argv.json", "w"))
     print("runner out")
     print("runner err", file=sys.stderr)
     if os.environ.get("FAIL_THREADS") and \
@@ -260,14 +276,16 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual((n.node_dir / "stdout.log").read_text(), "runner out\n")
         self.assertEqual((n.node_dir / "stderr.log").read_text(), "runner err\n")
 
-        # Shipped: the binary, the IR and the build control file — nothing else of src/.
+        # Shipped: the binary, the IR, its case files and the build control file — nothing else
+        # of src/.
         shipped = {str(p.relative_to(n.root / "repo" / "workspace" / "tmp" / "arid-1" / "site"
                                      / "stage")) for p in
                    (n.repo / "workspace" / "tmp" / "arid-1" / "site" / "stage").rglob("*")
                    if p.is_file()}
         # ... and the bounds-checked binary beside the certified one (issue #589 PR-0).
         self.assertEqual(shipped, {"bin/spec_x_runner", "bin_checked/spec_x_runner",
-                                   "ir/spec.ir.yaml", "src/Makefile"})
+                                   "ir/spec.ir.yaml", "ir/case_inputs/c_alpha.json",
+                                   "ir/case_inputs/c_beta.json", "src/Makefile"})
         # And the job directory is gone from the site.
         self.assertFalse(Path(job).exists())
 
@@ -407,16 +425,74 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                                      if ln.startswith("    ")))
                 self.assertNotIn("serial reference re-run failed", trial["failure_excerpt"])
 
-    def test_the_job_pre_creates_the_initial_capture_dir_only_for_a_host_rendered_runner(
-            self) -> None:
+    def _job_request(self, n: _Node, **knobs: str):
+        """Execute, and hand back the `JobRequest` the job really ran from."""
+        from tools import remote_execution
+        requests = []
+        real = remote_execution.execute_job
+
+        def spy(request, *args, **kwargs):
+            requests.append(request)
+            return real(request, *args, **kwargs)
+
+        with mock.patch.object(remote_execution, "execute_job", side_effect=spy):
+            n.execute(**knobs)
+        self.assertEqual(len(requests), 1)
+        return requests[0]
+
+    def test_the_job_pre_creates_each_capture_dir_only_for_a_host_rendered_runner(self) -> None:
         # What is on disk is what the job script's `mkdir -p` made at the site: the collected
-        # run directory comes home as is. The host-rendered runner opens
-        # `initial/<case_id>.json` relatively, so its job directory carries it (issue #368).
+        # run directory comes home as is. The host-rendered runner opens a file in each of
+        # `initial/`, `history/`, `series/` relatively, so its job directory carries them, for the
+        # run, every sweep shape and the checked one (issue #368, issue #589).
         n = self.n
+        subs = ("initial", "history", "series")
         with mock.patch.object(wc.Conductor, "_conductor_authors_runner", return_value=True):
-            n.execute()
-        run_tmp = n.repo / "workspace" / "tmp" / "arid-1" / "run"
-        self.assertTrue((run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
+            request = self._job_request(n)
+        tmp = n.repo / "workspace" / "tmp" / "arid-1"
+        shapes = [*(s.label for s in n.target.sweep_shapes), "checked"]
+        self.assertGreater(len(shapes), 1)
+        for prefix in ("run", *(f"sweep/{label}" for label in shapes)):
+            for sub in subs:
+                with self.subTest(prefix=prefix, sub=sub):
+                    self.assertIn(f"{prefix}/raw/state_snapshots/{sub}", request.dirs)
+                    self.assertTrue((tmp / prefix / "raw" / "state_snapshots" / sub).is_dir())
+            # ...before the binary started, which is what the host-rendered runner relies on.
+            self.assertEqual(json.loads((tmp / prefix / "argv.json").read_text())["snapshot_dirs"],
+                             sorted(subs), prefix)
+        self.assertEqual(len(request.dirs), 2 + (1 + len(shapes)) * len(subs))
+
+    def test_a_harness_s_own_job_pre_creates_none_of_them(self) -> None:
+        n = self.n
+        request = self._job_request(n)
+        tmp = n.repo / "workspace" / "tmp" / "arid-1"
+        shapes = [*(s.label for s in n.target.sweep_shapes), "checked"]
+        self.assertEqual(
+            sorted(request.dirs),
+            sorted(["run/raw/state_snapshots", "qc_run", "build",
+                    *(f"sweep/{label}/raw/state_snapshots" for label in shapes)]))
+        for prefix in ("run", *(f"sweep/{label}" for label in shapes)):
+            self.assertEqual(json.loads((tmp / prefix / "argv.json").read_text())["snapshot_dirs"],
+                             [], prefix)
+
+    def test_the_job_ships_each_case_file_the_run_then_reads(self) -> None:
+        n = self.n
+        ir_path = n.repo / n.refs.ir_ref / "spec.ir.yaml"
+        ir_path.write_text(_IR.replace("- case_id: c_alpha\n",
+                                       "- case_id: c_alpha\n      inputs: {mode: 3}\n"),
+                           encoding="utf-8")
+        request = self._job_request(n)
+        written = n.repo / n.refs.ir_ref / "case_inputs"
+        self.assertEqual({k: v for k, v in request.ship.items() if "case_inputs" in k},
+                         {f"ir/case_inputs/{c}.json": written / f"{c}.json"
+                          for c in ("c_alpha", "c_beta")})
+        tmp = n.repo / "workspace" / "tmp" / "arid-1"
+        for prefix in ("run", *(f"sweep/{s.label}" for s in n.target.sweep_shapes),
+                       "sweep/checked", "qc_run"):
+            with self.subTest(prefix=prefix):
+                seen = json.loads((tmp / prefix / "argv.json").read_text())["case_inputs"]
+                self.assertEqual(seen["c_alpha"], '{"inputs.mode":3}\n')
+                self.assertEqual(seen["c_beta"], (written / "c_beta.json").read_text())
 
     def test_a_failing_runner_is_the_kernels_failure_and_the_check_does_not_run(self) -> None:
         n = self.n
@@ -670,6 +746,203 @@ class ExecuteAtTheLocalSiteTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result)
             self.assertIn(f"was built at site box and target {TARGET_ID} now runs at site "
                           f"{LOCAL_SITE}", result.stderr)
+
+
+class CaseFilesAtExecuteTests(unittest.TestCase):
+    """Issue #589 D2: `Validate.execute` rewrites `<ir>/case_inputs/` at every run, for every node,
+    before any command, one file at a time, because one IR directory serves every target's
+    pipeline and they run in parallel. Driven through `_execute_inproc` at the local site."""
+
+    def _node(self, tmp: str) -> _Node:
+        return _Node(tmp, site=Site(LOCAL_SITE, ("cpu",)))
+
+    def _ir(self, n: _Node, mode: int) -> None:
+        (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(
+            _IR.replace("- case_id: c_alpha\n",
+                        f"- case_id: c_alpha\n      inputs: {{mode: {mode}}}\n"),
+            encoding="utf-8")
+
+    def _seen(self, n: _Node) -> dict:
+        return json.loads((n.repo / "workspace" / "tmp" / "arid-1" / "run" / "argv.json")
+                          .read_text())["case_inputs"]
+
+    def test_a_stale_file_is_replaced_through_a_temporary_name_and_a_sibling_is_left(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self._ir(n, 3)
+            directory = n.repo / n.refs.ir_ref / "case_inputs"
+            directory.mkdir()
+            stale = directory / "c_alpha.json"
+            stale.write_text('{"inputs.mode":0}\n', encoding="utf-8")
+            sibling = directory / "other_target_case.json"
+            sibling.write_text("sibling\n", encoding="utf-8")
+            inode = directory.stat().st_ino
+            replaced: list[tuple[str, str]] = []
+            real_replace = os.replace
+
+            def spy(src, dst, **kwargs):
+                replaced.append((str(src), str(dst)))
+                return real_replace(src, dst, **kwargs)
+
+            with mock.patch.object(os, "replace", side_effect=spy):
+                n.execute()
+            self.assertEqual(stale.read_text(encoding="utf-8"), '{"inputs.mode":3}\n')
+            # The replacement is the writer's own: from a temporary name beside the file.
+            to_case = [(Path(src), Path(dst)) for src, dst in replaced
+                       if Path(dst).parent == directory]
+            self.assertEqual({dst.name for _src, dst in to_case},
+                             {"c_alpha.json", "c_beta.json"})
+            for src, dst in to_case:
+                self.assertEqual(src.parent, directory)
+                self.assertTrue(src.name.startswith(f".{dst.stem}."), src)
+                self.assertNotEqual(src, dst)
+            # A sibling keeps its bytes, the directory is the one that was there, nothing is left.
+            self.assertEqual(sibling.read_text(encoding="utf-8"), "sibling\n")
+            self.assertEqual(directory.stat().st_ino, inode)
+            self.assertEqual(sorted(p.name for p in directory.iterdir()),
+                             ["c_alpha.json", "c_beta.json", "other_target_case.json"])
+            # And the run read the new bytes: the file was in place before the binary started.
+            self.assertEqual(self._seen(n)["c_alpha"], '{"inputs.mode":3}\n')
+
+    def test_a_repaired_ir_s_values_reach_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            for mode in (3, 8):
+                with self.subTest(mode=mode):
+                    self._ir(n, mode)
+                    n.execute()
+                    text = f'{{"inputs.mode":{mode}}}\n'
+                    self.assertEqual(
+                        (n.repo / n.refs.ir_ref / "case_inputs" / "c_alpha.json").read_text(),
+                        text)
+                    self.assertEqual(self._seen(n)["c_alpha"], text)
+
+    def test_every_node_gets_its_files_whatever_authors_its_runner(self) -> None:
+        for authored in (True, False):
+            with self.subTest(authored=authored), tempfile.TemporaryDirectory() as tmp:
+                n = self._node(tmp)
+                with mock.patch.object(wc.Conductor, "_conductor_authors_runner",
+                                       return_value=authored):
+                    n.execute()
+                self.assertTrue((n.repo / n.refs.ir_ref / "case_inputs" / "c_beta.json").is_file())
+
+    def test_a_writer_refusal_raises_and_runs_nothing(self) -> None:
+        # A real refusal, the writer's own: a case id no file may carry.
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(
+                _IR.replace("c_alpha", "bad..id"), encoding="utf-8")
+            with mock.patch.object(_build_runtime(), "tool_run_program",
+                                   side_effect=AssertionError("nothing runs")), \
+                    mock.patch.object(_build_runtime(), "tool_run_quality_checks",
+                                      side_effect=AssertionError("nothing runs")), \
+                    self.assertRaises(RuntimeError) as caught:
+                n.execute()
+            self.assertIn("could not be written at Validate.execute", str(caught.exception))
+            self.assertIn("bad..id", str(caught.exception))
+            self.assertFalse((n.repo / n.refs.ir_ref / "case_inputs").exists())
+
+    def test_the_refusal_routes_as_a_deterministic_failure(self) -> None:
+        # Through the substep: the raise is the host's inconsistency, not the kernel's.
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(
+                _IR.replace("c_alpha", "bad..id"), encoding="utf-8")
+            result = n.substep()
+            self.assertEqual(result.returncode, 1, result)
+            self.assertIn("could not be written at Validate.execute", result.stderr)
+
+
+class DriverEvidencePromotionTests(unittest.TestCase):
+    """Issue #589: what the host-rendered driver writes under `raw/state_snapshots/` comes home to
+    the canonical node directory flat, and is recorded. Through `_execute_inproc` at the local
+    site, with the runner writing what a driver does; the driver is exercised for real in
+    `tools/tests/test_driver_render.py`."""
+
+    def _node(self, tmp: str, *, step_series: bool) -> _Node:
+        n = _Node(tmp, site=Site(LOCAL_SITE, ("cpu",)))
+        if step_series:
+            text = _IR.replace("      - artifact: state_snapshots\n",
+                               "      - artifact: step_series\n        required: true\n"
+                               "        names: [step]\n"
+                               "      - artifact: state_snapshots\n")
+            assert text != _IR
+            (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(text, encoding="utf-8")
+        return n
+
+    def _driver(self, n: _Node, files: str):
+        with mock.patch.object(wc.Conductor, "_conductor_authors_runner", return_value=True):
+            return n.execute(DRIVER_FILES=files)
+
+    def test_history_and_series_are_promoted_flat_and_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, step_series=True)
+            out = self._driver(n, "initial:,history:__1,history:__3,series:")
+            self.assertEqual(out["returncode"], 0, out)
+            snapshots = n.node_dir / "raw" / "state_snapshots"
+            expected = ["initial/c_alpha.json", "history/c_alpha__1.json",
+                        "history/c_alpha__3.json", "series/c_alpha.json",
+                        "initial/c_beta.json", "history/c_beta__1.json",
+                        "history/c_beta__3.json", "series/c_beta.json"]
+            for rel in expected:
+                with self.subTest(rel=rel):
+                    self.assertTrue((snapshots / rel).is_file())
+            refs = json.loads((n.node_dir / "trial_meta.json").read_text())["raw_artifact_refs"]
+            node_ref = n.refs.run_node_dir()
+            for rel in expected:
+                self.assertIn(f"{node_ref}/raw/state_snapshots/{rel}", refs)
+
+    def test_a_harness_s_own_runner_leaves_no_empty_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, step_series=False)
+            out = n.execute()
+            self.assertEqual(out["returncode"], 0, out)
+            snapshots = n.node_dir / "raw" / "state_snapshots"
+            for tree in (snapshots, n.repo / "workspace" / "tmp" / "arid-1" / "run" / "raw"
+                         / "state_snapshots"):
+                self.assertEqual([p.name for p in tree.iterdir() if p.is_dir()], [], tree)
+
+    def test_a_driver_that_wrote_no_sample_leaves_no_empty_directory_in_the_node(self) -> None:
+        # The run directory carries all three (the runner needs them); promotion copies files.
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, step_series=False)
+            self._driver(n, "initial:")
+            snapshots = n.node_dir / "raw" / "state_snapshots"
+            self.assertEqual([p.name for p in snapshots.iterdir() if p.is_dir()], ["initial"])
+
+    def test_the_deliverable_gap_names_a_missing_series_on_a_step_series_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, step_series=True)
+            out = self._driver(n, "initial:")
+            self.assertIn("snapshot deliverable mismatch", out["stderr"])
+            self.assertIn("series/c_alpha.json", out["stderr"])
+            self.assertIn("series/c_beta.json", out["stderr"])
+            self.assertIn("one raw/state_snapshots/series/<case_id>.json", out["stderr"])
+
+    def test_the_deliverable_gap_does_not_ask_for_a_series_on_a_node_without_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, step_series=False)
+            out = self._driver(n, "initial:")
+            self.assertEqual(out["returncode"], 0, out)
+            self.assertNotIn("snapshot deliverable mismatch", out["stderr"])
+            self.assertNotIn("series/", out["stderr"])
+
+    def test_one_case_s_missing_series_is_named_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, step_series=True)
+
+            def after(snapshots: Path) -> None:
+                (snapshots / "series" / "c_beta.json").unlink()
+
+            real = wc.Conductor._promote_run_evidence
+
+            def drop(self_, run_tmp, node_dir, artifacts):
+                after(run_tmp / "raw" / "state_snapshots")
+                return real(self_, run_tmp, node_dir, artifacts)
+
+            with mock.patch.object(wc.Conductor, "_promote_run_evidence", drop):
+                out = self._driver(n, "initial:,series:")
+            self.assertIn("missing=['series/c_beta.json']", out["stderr"])
 
 
 if __name__ == "__main__":
