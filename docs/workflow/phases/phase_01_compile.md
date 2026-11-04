@@ -380,8 +380,7 @@ drive:
   #   entry on the mapping form; the entry whose `cases` lists `c` on the list form). A predicate reads
   #   kernel state in `c` only through a variable an entry running `c` writes (`final.<v>`, its history and
   #   series), or `init` writes (`initial.<v>`); it must read some in EVERY case its scope evaluates, and every
-  #   target case of a test must be valued by a read that is kernel state in THAT case. On a node whose
-  #   `__dens2qsat_liq` cases only read `temp`, `final.temp` there is the host's own `initial_state`.
+  #   target case of a test must be valued by a read that is kernel state in THAT case.
   # GATES (Compile.static, primary_evidence.drive_violations; each a `Compile fail`): (a) a `problem`
   #   publishes `<spec_id>__step` and every `step` entry names it; (b) the intent rules above; (c) each array
   #   dummy's `dims` (a dims-less one: its state's `shape_expr`) EVALUATE PER CASE under the entry's bindings
