@@ -885,9 +885,11 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                 (src / "c_model.cu").write_text(model)
                 (src / "c_helper.cu").write_text(helper)
                 out: list[str] = []
-                vps._validate_parallel_presence_floor(
-                    repo, vps._stub_execution(pipe, "component/c@0.1.0"), src,
-                    [src / "c_model.cu", src / "c_helper.cu"], out)
+                # The set production resolves: `_validate_generate_outputs` takes it from here.
+                execution = vps._stub_execution(pipe, "component/c@0.1.0")
+                models, _name = vps._model_files_in_src_dir(src, execution, cpp_bundle)
+                self.assertEqual([src / "c_model.cu"], models)
+                vps._validate_parallel_presence_floor(repo, execution, src, models, out)
                 return out
 
         good = "__global__ void k(double* d, long n) {}\nvoid f(double* d, long n) {\n" \
@@ -900,6 +902,9 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                 found = gate(bad, "void c() {}\n", plan_model)
                 self.assertTrue(any("c_model.cu" in v and "launch_block_size" in v
                                     for v in found), found)
+        # A bundle's private file launches too. RED: the floor reads the model file alone, so a
+        # literal block in a `helper` clears it (reported, issue #589 PR-1b; the checks module
+        # was the one other file it read).
         found = gate(good, "void c(double* d, long n) {\n" + literal + "}\n", "cuda")
         self.assertTrue(any("c_helper.cu" in v for v in found), found)
         # A parallel backend that states no launch floor is not asked.
