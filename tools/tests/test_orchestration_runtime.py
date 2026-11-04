@@ -28646,7 +28646,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/workshop_compile_generate.txt:7b9d546a2b41c198":
+        "tools/prompt_templates/workshop_compile_generate.txt:43aca60944dcc560":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "

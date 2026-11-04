@@ -1129,7 +1129,7 @@ PINNED: dict[str, str] = {
     "leaf-88": "9f5c0041fe0b3e74229d0c267744fb2c780083440b9e89d79fd6206fa11811b6",
     # leaf-89 (issue #589, PR-1a): the compile templates author `drive`, `initial_state` and
     # `derived`, and the compile producer no longer receives the checks-module contract.
-    "leaf-89": "0cd9f0f0c7823223cb3886fc76d0ff8909a4ce20431ff0e225631ec8a5711e33",
+    "leaf-89": "23c0d873b195ef3d0b64fbeb24156a2ebe417e3b104a0c1b5bd0c83240baed2e",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1140,7 +1140,7 @@ PINNED_READER: dict[str, str] = {
     "compile-verify-2": "fc767692fbcd05d9c620296e60405834ffdbb96ccc3c5fbe303e78d2d4e3850b",
     # compile-verify-3 (issue #589, PR-1a): V3 (iv) judges each `initial_state` / `derived`
     # entry and the history stride against tests.md.
-    "compile-verify-3": "0dd9fa2d49c80ba4bbb964e09657a42ed10428fc8f1152e31cfec97ff58e5181",
+    "compile-verify-3": "a17e90f9f3a50e55da26f365e3a6d59d33dd928b9d1fc13aca8d7903159c80e3",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
