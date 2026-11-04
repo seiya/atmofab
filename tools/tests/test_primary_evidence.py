@@ -3879,6 +3879,16 @@ class LazyLoaderTest(unittest.TestCase):
                 rec = self._eval(f"{fn}(series.h_min)")[0]
                 self.assertEqual(rec["kind"], "structural")
 
+    def test_a_series_file_holds_the_writer_s_scalar_time(self) -> None:
+        for doc in ({"step": [1], "h_min": [1.0], "h_max": [1.0]},
+                    {"t": [0.1], "step": [1], "h_min": [1.0], "h_max": [1.0]},
+                    {"t": True, "step": [1], "h_min": [1.0], "h_max": [1.0]}):
+            with self.subTest(doc=doc):
+                self._series("a", doc)
+                rec = self._eval("min(series.h_max)")[0]
+                self.assertEqual(rec["kind"], "structural")
+                self.assertIn("not the number the writer adds", rec["evaluated"][0]["error"])
+
     def test_a_non_finite_series_entry_is_refused(self) -> None:
         self._series("a", {"t": 0.1, "step": [1], "h_min": [float("nan")], "h_max": [1.0]})
         rec = self._eval("min(series.h_max)")[0]

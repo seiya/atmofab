@@ -392,6 +392,18 @@ class _DriverBehaviour:
         run = self._run(init_ir(0, 5))
         self.assertEqual(run.snapshot("initial/m5")["u"], [1.0] * 3)
 
+    def test_an_init_written_array_takes_each_case_s_extents(self) -> None:
+        ir = init_ir(0, 5)
+        ir["case"]["test_case_set"][1]["inputs"]["grid"]["nx"] = 5
+        run = self._run(ir)
+        self.assertEqual(len(run.snapshot("m0")["u"]), 3)
+        self.assertEqual(len(run.snapshot("m5")["u"]), 5)
+
+    def test_an_integer_input_authored_as_a_whole_float_runs(self) -> None:
+        ir = call_ir(0)
+        ir["case"]["test_case_set"][0]["inputs"]["grid"]["nx"] = 3.0
+        self.assertEqual(self._run(ir).snapshot("m0")["b"], [2.0, 4.0, 6.0])
+
     def test_the_list_form_runs_each_case_through_its_entry(self) -> None:
         run = self._run(list_ir(0, 1))
         self.assertEqual(run.snapshot("m0")["ok"], 1.0)

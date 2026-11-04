@@ -3189,6 +3189,9 @@ class CaseValues(NamedTuple):
     derived: dict[str, Any]
     inputs: dict[str, Any]
     derived_ints: frozenset[str]
+    #: The `inputs.*` paths an integer dummy reads: the case file spells them as integers, since
+    #: the driver's getter refuses `4.0` and nothing else could answer an IR that authored it.
+    input_ints: frozenset[str] = frozenset()
 
 
 def _input_paths(block: DriveBlock, entries: list[DriveEntry]) -> list[str]:
@@ -3338,6 +3341,7 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
     # 3. derived, in mapping order
     derived: dict[str, Any] = {}
     ints: set[str] = set()
+    input_ints: set[str] = set()
     derived_env = CaseEnv(case_id=cid, initial=initial, final={}, inputs=inputs,
                           coordinates=coords, derived=derived)
     for name, raw in derived_raw.items():
@@ -3401,6 +3405,8 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                 _integral_array(value, what)
                 if binding.kind == _DERIVED:
                     ints.add(binding.ref)
+                elif binding.kind == "inputs":
+                    input_ints.add(binding.ref)
 
     # 4. the loop and history refusals
     host: dict[str, float] = {}
@@ -3448,7 +3454,7 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                             f"{entry.loc}.arguments.{name}: inputs.{ref.name} is an array: a "
                             "procedure expression reads scalar inputs")
     return CaseValues(shapes=shapes, initial=initial, derived=derived, inputs=used,
-                      derived_ints=frozenset(ints))
+                      derived_ints=frozenset(ints), input_ints=frozenset(input_ints))
 
 
 def _integral_array(value: Any, what: str) -> None:
@@ -3562,7 +3568,9 @@ def evaluate_case_inputs(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for cid, values in _evaluate_cases(ir).items():
         payload: dict[str, Any] = {}
         for path, value in values.inputs.items():
-            payload[f"inputs.{path}"] = _authored_json(value, f"case {cid!r}: inputs.{path}")
+            authored = _authored_json(value, f"case {cid!r}: inputs.{path}")
+            payload[f"inputs.{path}"] = (int(authored) if path in values.input_ints
+                                         and not isinstance(authored, list) else authored)
         for name, value in values.derived.items():
             payload[f"{_DERIVED}.{name}"] = _json_number(value, name in values.derived_ints)
         for var, value in values.initial.items():

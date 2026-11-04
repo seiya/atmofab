@@ -1713,7 +1713,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # added: `tools/primary_evidence.py` (`write_case_inputs`), `_snapshot_deliverable_gap`. The
     # wrapper's `_write_case_files` is no member: no row of this tuple is a wrapper's, and a
     # workshop run certifies nothing.
-    "execute-15": "0a13ee153162f7533b95b52b64ab52463b0c1b0d167b8ca9dc5e890e31303262",
+    "execute-15": "4f68805600577b99bbac3d4640cde317f8337726ae3e1a1bc57b77dffc3e14bb",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -1899,7 +1899,7 @@ PINNED_VERDICT: dict[str, str] = {
     # (`_input_paths`, the series loader, the procedure gate, gate (h)). Rows moved, measured
     # against origin/main a55f7390: `tools/primary_evidence.py`, and `tools/verdict_evaluator.py`
     # (its docstring alone).
-    "verdict-14": "6561e2d833071c37238117318d4554109437579e14e682b5de8a5b571105037d",
+    "verdict-14": "6cb03ad825ada03b6ace831882eb6bce4a6c27563e78160bb93a8f7b124323e3",
 }
 
 

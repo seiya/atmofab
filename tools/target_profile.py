@@ -838,7 +838,8 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
         out.insert(0, f"{DRIVER_DISTRIBUTED_PENDING}: parallel backend "
                       f"{profile.parallel_backend} declares a launcher, and the host-rendered "
                       "driver of a physics node is serial until the distributed driver lands "
-                      "(issue #589, Plan B); only its harness runs on this target")
+                      "(issue #589, Plan B). Run the node on a target whose backend declares no "
+                      "launcher; only the harness itself runs on this one")
     out += [f"toolchain: {r}" for r in toolchain_servable_reasons(
         tc["language"], tc["build_system"], infrastructure=infrastructure)]
     reason = backend_registry.unimplemented_reason("parallel", profile.parallel_backend)

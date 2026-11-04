@@ -874,6 +874,17 @@ class DriverEvidencePromotionTests(unittest.TestCase):
         with mock.patch.object(wc.Conductor, "_conductor_authors_runner", return_value=True):
             return n.execute(DRIVER_FILES=files)
 
+    def test_a_sample_of_an_earlier_attempt_is_not_promoted_as_this_run_s(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, step_series=True)
+            stale = n.node_dir / "raw" / "state_snapshots" / "history" / "c_alpha__9.json"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("{}", encoding="utf-8")
+            out = self._driver(n, "initial:,history:__1,series:")
+            self.assertEqual(out["returncode"], 0, out)
+            self.assertFalse(stale.exists())
+            self.assertTrue((stale.parent / "c_alpha__1.json").is_file())
+
     def test_history_and_series_are_promoted_flat_and_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp, step_series=True)

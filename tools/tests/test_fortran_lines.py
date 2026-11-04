@@ -584,6 +584,32 @@ class ModelHarnessIsolationScanTests(unittest.TestCase):
                     for v in fortran_source.model_harness_isolation_violations(
                         src, [model], "p", **kwargs)]
 
+    def test_a_conditional_line_is_read_as_the_code_it_compiles_to(self) -> None:
+        """`!$` is a comment to the reader and a statement under the shared-memory runtime."""
+        for body, needle in (
+                ("!$ call execute_command_line('x')", "must not start a program"),
+                ("!$  call system( &\n!$    'x')", "must not start a program"),
+                ("!$ open(newunit=n, file='x')", "must not do file I/O"),
+                ("  !$ x = 1; open(7)", "must not do file I/O"),
+                ("!$ print *, 'verdict.json'", "forbidden judge-artifact")):
+            with self.subTest(body=body):
+                self.assertTrue(any(needle in v for v in self._scan(
+                    body, forbidden_outputs=("verdict.json",))), body)
+        for body in ("!$omp parallel do\ndo i = 1, 2\nx = 1\nend do\n!$omp end parallel do",
+                     "!$OMP parallel do\ndo i = 1, 2\nx = 1\nend do\n!$OMP END PARALLEL DO",
+                     "!$ x = omp_get_max_threads()", "x = 1 ! !$ call system('x')"):
+            with self.subTest(admitted=body):
+                self.assertEqual(self._scan(body, forbidden_outputs=("verdict.json",)), [])
+
+    def test_a_use_of_the_harness_on_a_conditional_line_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            model = src / "p_model.f90"
+            model.write_text("module p_model\n!$ use harness_fortran_cpu_model, only: dp\n"
+                             "end module p_model\n", encoding="utf-8")
+            found = fortran_source.model_harness_isolation_violations(src, [model], "p")
+        self.assertTrue(any(self._USE in v for v in found), found)
+
     def test_a_model_declares_no_bind_c(self) -> None:
         for body in ("interface\n  subroutine c_sys() bind(c, name='system')\n  end subroutine"
                      "\nend interface", "interface\n  subroutine q() BIND ( C )\n  end subroutine"

@@ -2649,6 +2649,16 @@ _COMMAND_CALL_RE = re.compile(r"\bcall\s+(?:execute_command_line|system)\b")
 #: review). No §5.1 asks for one (0 occurrences over the certified models), and the C++ backend
 #: refuses `extern "C"` likewise.
 _BIND_C_RE = re.compile(r"\bbind\s*\(\s*c\b")
+_CONDITIONAL_LINE_RE = re.compile(r"(?im)^([ \t]*)!\$(?!omp)")
+
+
+def _conditional_lines_as_code(text: str) -> str:
+    """`text` with each conditional-compilation line's `!$` sentinel blanked: the statement reader
+    takes such a line for a comment, and a build with the shared-memory runtime enabled compiles
+    it, so every refusal of this gate would be one sentinel away (measured in review: a model
+    whose `!$ call execute_command_line(...)` rewrote the captures certified a guard it did not
+    implement). A directive (`!$omp`) stays a comment."""
+    return _CONDITIONAL_LINE_RE.sub(lambda m: m.group(1) + "  ", text)
 
 
 def _leaf_sources(src_dir: Path, model_files: list[Path], spec_id: str) -> list[Path]:
@@ -2700,7 +2710,8 @@ def model_harness_isolation_violations(
     # staged for `Generate.syntax` and the bundle contract has no isolation layer.
     use_harness_re = re.compile(r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?harness_")
     for f in _leaf_sources(src_dir, model_files, spec_id):
-        stmts = statements(f.read_text(encoding="utf-8", errors="ignore"))
+        stmts = statements(_conditional_lines_as_code(
+            f.read_text(encoding="utf-8", errors="ignore")))
         uses = [stmt.strip() for stmt in stmts if use_harness_re.match(stmt.strip())]
         refused = [u for u in uses if _harness_use_refusal(u, allowed) is not None]
         if refused and not allowed:

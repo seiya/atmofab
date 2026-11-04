@@ -94,8 +94,7 @@ resolves to, how to install it, and where else it must be found are the backend 
 
 A compiler wrapper and a launcher must come from one installation whose language binding is built
 for the target's compiler; the startup probe checks the pair and refuses the run
-(`parallel_toolchain_unusable`, below) otherwise. A `component` or `problem` node of
-`fortran_cpu_mpi` runs over the target's harness like any other ([issue #316](https://github.com/seiya/atmofab/issues/316) PR-4): its kernel is distributed over the ranks through the harness (`docs/backends/parallel/mpi/GENERATE_RULES.md`), and the host-rendered runner gathers its state onto rank 0.
+(`parallel_toolchain_unusable`, below) otherwise. Only the harness runs on `fortran_cpu_mpi` for now: a `component` or `problem` node is refused at startup (`driver_distributed_pending`, [issue #589](https://github.com/seiya/atmofab/issues/589)) until the distributed driver lands.
 
 ### Refused at startup — `unsupported_required_host_tool_versions`
 
