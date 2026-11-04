@@ -30055,6 +30055,19 @@ class DriveGateStageTests(unittest.TestCase):
                     self.assertEqual(sorted(p.name for p in ir_dir.iterdir()),
                                      ["dependency_graph.json", "ir_meta.json", "spec.ir.yaml"])
 
+    # --- what a flag values (review round 6, R6-1) ---------------------------------------------------
+    def test_a_value_1_flag_on_a_refusal_test_is_the_coverage_refusal(self) -> None:
+        tid = "l0_invalid_ncomp_xfail"
+
+        def mutate(ir: dict) -> None:
+            next(p for p in ir["io_contract"]["predicates"] if p["test_id"] == tid)["value"] = 1
+
+        self.assertEqual(_drive_stage("coriolis", mutate), [
+            f"<ir>:io_contract.predicates: test {tid!r}: no predicate values the captured state of target "
+            "case(s) ['l0_ncomp2']: a test certified without reading a case says nothing about "
+            "it. Read it with `per_case: true`, or through at('<case>').<initial|final>.<var> in "
+            "the value; a flag predicate values a case only on an xfail test with `value: 0`"])
+
     # --- the test's outcome is the tests.md definition's (review round 5, R5-1) -------------------
     def test_a_relabelled_outcome_is_refused_at_the_stage(self) -> None:
         """`expected_outcome` decides gate (l) and every flag predicate's value: a leaf that
