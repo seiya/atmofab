@@ -6897,7 +6897,8 @@ class Conductor:
     #: target is the host's profile now and the knobs are the Generate producer's lowering plan,
     #: so an IR carrying the section would record a target choice nothing reads.
     _LEAF_IR_FORBIDDEN_SECTIONS: tuple[str, ...] = ("impl_defaults",)
-    _LEAF_IR_PUBLIC_API_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
+    _LEAF_IR_PUBLIC_API_KINDS: frozenset[str] = frozenset(
+        {"problem", "component", "infrastructure"})
 
     def _leaf_ir_document_violations(self, refs: NodeRefs,
                                      doc: Any) -> tuple[str, str] | None:

@@ -1591,7 +1591,7 @@ class StaticRankTest(unittest.TestCase):
         # grammar 6
         "final.step", "initial.step", "history.h", "history.v", "history.s", "history.t",
         "history.step", "series.h_max", "derived.dt", "derived.f", "derived.w",
-        "smax(history.h)", "smin(history.v)", "ssum(history.h)", "smax(series.t)",
+        "smax(history.h)", "smin(history.v)", "ssum(history.h)", "smax(series.step)",
         "smax(history.s)", "max(smax(history.h * derived.dt))", "x * history.h",
         "history.h - x", "at('a').x + history.h", "sum(history.h)", "final.h - derived.f",
     )
@@ -2451,7 +2451,7 @@ def _evidence(variables: list[dict], *, loop: bool, coords: bool = True) -> list
         arrays = [v["name"] for v in variables if v["shape_expr"] != "scalar"]
         out += [{"artifact": "state_history"},
                 {"artifact": "step_series",
-                 "names": ["t", "step"] + [f"{a}_{m}" for a in arrays for m in ("min", "max")]}]
+                 "names": ["step"] + [f"{a}_{m}" for a in arrays for m in ("min", "max")]}]
     return out
 
 
@@ -2597,8 +2597,8 @@ class Grammar6Test(unittest.TestCase):
              pe.NameRef("series", "h_min"), pe.NameRef("derived", "dt"),
              pe.NameRef("capture", "step", point="final")])
         for src in ("history", "series", "derived", "history.h.x", "series.a.b",
-                    "at('a').history.h", "at('a').series.t", "at('a').derived.dt",
-                    "comparand.history.h", "comparand.series.t", "history.h(1)"):
+                    "at('a').history.h", "at('a').series.step", "at('a').derived.dt",
+                    "comparand.history.h", "comparand.series.step", "history.h(1)"):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
                 pe.parse_expr(src)
 
@@ -2835,12 +2835,12 @@ def _toy_with_input_state() -> dict:
 
 
 class DriverCounterReadsTest(unittest.TestCase):
-    """R2-1: the driver's counters `history.t`, `history.step`, `series.t` and `series.step`
+    """R2-1: the driver's counters `history.t`, `history.step` and `series.step`
     are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
     `cases_read` — and neither are the history and the series folds of a variable nothing
     writes; those of a written variable are."""
 
-    _COUNTERS = ("max(history.t)", "max(history.step)", "max(series.t)", "max(series.step)")
+    _COUNTERS = ("max(history.t)", "max(history.step)", "max(series.step)")
     _MSG = "predicates[0]: reads no captured state the kernel produced"
 
     def _pred(self, expr: str) -> dict:
@@ -2852,7 +2852,7 @@ class DriverCounterReadsTest(unittest.TestCase):
         self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
         reads = pe.state_reads(ir)
         for kind, name, want in (("history", "t", False), ("history", "step", False),
-                                 ("series", "t", False), ("series", "step", False),
+                                 ("series", "step", False),
                                  ("history", "h", True), ("series", "h_min", True),
                                  ("series", "h_max", True), ("history", "b", False),
                                  ("series", "b_min", False), ("series", "b_max", False),
@@ -2874,7 +2874,7 @@ class DriverCounterReadsTest(unittest.TestCase):
                 v = pe.validate_primary_predicate_schema([self._pred(expr)], **kw)
                 self.assertEqual(len(v), 1, v)
                 self.assertTrue(v[0].startswith(self._MSG), v)
-                self.assertIn("history.t / history.step / series.t / series.step", v[0])
+                self.assertIn("history.t / history.step / series.step", v[0])
                 self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), set())
         for expr in ("max(smax(history.h))", "min(series.h_min)"):
             with self.subTest(expr=expr):
@@ -3869,7 +3869,7 @@ class LazyLoaderTest(unittest.TestCase):
 
     def test_an_empty_series_loads_and_a_reduction_over_it_is_structural_alone(self) -> None:
         for cid in "ab":
-            self._series(cid, {"t": [], "step": [], "h_min": [], "h_max": []})
+            self._series(cid, {"t": 0.0, "step": [], "h_min": [], "h_max": []})
         recs = self._eval("min(series.h_min)")
         self.assertEqual(recs[0]["kind"], "structural")
         self.assertIn("reduction over an empty array", recs[0]["evaluated"][0]["error"])
@@ -3880,14 +3880,14 @@ class LazyLoaderTest(unittest.TestCase):
                 self.assertEqual(rec["kind"], "structural")
 
     def test_a_non_finite_series_entry_is_refused(self) -> None:
-        self._series("a", {"t": [0.1], "step": [1], "h_min": [float("nan")], "h_max": [1.0]})
+        self._series("a", {"t": 0.1, "step": [1], "h_min": [float("nan")], "h_max": [1.0]})
         rec = self._eval("min(series.h_max)")[0]
         self.assertEqual(rec["kind"], "structural")
         self.assertIn("'h_min' holds a non-finite value", rec["evaluated"][0]["error"])
 
     def test_series_entries_of_unequal_length_are_refused(self) -> None:
-        self._series("a", {"t": [0.1, 0.2], "h_min": [1.0]})
-        self.assertIn("not of one length", self._eval("min(series.h_min) + min(series.t)")[0]["evaluated"][0]["error"])
+        self._series("a", {"t": 0.2, "step": [1, 2], "h_min": [1.0]})
+        self.assertIn("not of one length", self._eval("min(series.h_min) + min(series.step)")[0]["evaluated"][0]["error"])
 
     def test_history_stacks_samples_by_numeric_step(self) -> None:
         hdir = self.run.sdir / "history"
@@ -4250,7 +4250,7 @@ class DriveViolationsTest(unittest.TestCase):
         self._refused(ir, "(f) case 'a': initial_state.zz is not a snapshot schema variable")
         ir = _toy()
         ir["case"]["test_case_set"][0]["initial_state"]["ok"] = 0
-        self._refused(ir, "(f) case 'a': initial_state.ok — a variable init writes, or a logical")
+        self._refused(ir, "(f) case 'a': initial_state.ok — a variable init writes, a logical")
         ir = _toyi()
         ir["case"]["test_case_set"][0]["initial_state"] = {"dt": 0.1}
         self._refused(ir, "(f) case 'a': initial_state.dt — a variable init writes")
@@ -4308,9 +4308,9 @@ class DriveViolationsTest(unittest.TestCase):
     def test_the_history_artifacts(self) -> None:   # (h)
         ir = _toy()
         ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
-        ev[2]["names"] = ["t", "step", "h_min"]
-        self._refused(ir, "(h) step_series.names must be exactly ['h_max', 'h_min', 'step', 't']")
-        ev[2]["names"] = ["t", "step", "h_min", "h_max", "h_max"]
+        ev[2]["names"] = ["step", "h_min"]
+        self._refused(ir, "(h) step_series.names must be exactly ['h_max', 'h_min', 'step']")
+        ev[2]["names"] = ["step", "h_min", "h_max", "h_max"]
         self._refused(ir, "(h) step_series.names must be exactly")
         del ev[2]
         self._refused(ir, "(h) the step_series evidence entry is declared iff drive.loop is")
@@ -4318,7 +4318,7 @@ class DriveViolationsTest(unittest.TestCase):
         self._refused(ir, "(h) the state_history evidence entry is declared iff drive.history")
         rus = _rus()
         rus["io_contract"]["raw_requirements"]["required_evidence"].append(
-            {"artifact": "step_series", "names": ["t", "step"]})
+            {"artifact": "step_series", "names": ["step"]})
         self._refused(rus, "(h) the step_series evidence entry is declared iff drive.loop is")
 
     def test_d7_is_clause_i(self) -> None:   # (i)
@@ -5087,7 +5087,7 @@ class ListFormCasesTest(unittest.TestCase):
         ir["case"]["test_case_set"][2]["initial_state"]["converged"] = -1.0
         self.assertEqual(pe.drive_violations(ir, kind="component"),
                          ["(f) case 's_a': initial_state.converged — a variable init writes, "
-                          "or a logical result the driver writes, takes no initial_state "
+                          "a logical result or a call record the driver writes, takes no initial_state "
                           "entry"])
         # vterm_r: host data on adj_a (an expression admitted, adj_a's `0 * x` vterm_c is one),
         # an output the operation only writes on tv_a (a number literal)

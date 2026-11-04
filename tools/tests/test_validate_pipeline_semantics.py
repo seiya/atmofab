@@ -30340,8 +30340,8 @@ class DriveGateStageTests(unittest.TestCase):
              "a number literal"),
             ("the logical result takes none",
              lambda c: c["initial_state"].update(guard_pass=0),
-             f"(f) case '{first}': initial_state.guard_pass — a variable init writes, or a "
-             "logical result the driver writes, takes no initial_state entry"),
+             f"(f) case '{first}': initial_state.guard_pass — a variable init writes, a "
+             "logical result or a call record the driver writes, takes no initial_state entry"),
         ]
         for label, edit, fragment in rows:
             with self.subTest(label):
@@ -30390,7 +30390,7 @@ class DriveGateStageTests(unittest.TestCase):
         self.assertEqual(len(self._hits(v, "(h) the state_history evidence entry is declared "
                                            "iff drive.history is")), 1, v)
         v = _drive_stage("coriolis", lambda ir: ir["io_contract"]["raw_requirements"][
-            "required_evidence"].append({"artifact": "step_series", "names": ["t", "step"]}))
+            "required_evidence"].append({"artifact": "step_series", "names": ["step"]}))
         self.assertEqual(len(self._hits(v, "(h) the step_series evidence entry is declared "
                                            "iff drive.loop is")), 1, v)
 

@@ -1051,10 +1051,10 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             violations.append(
                 f"optimization_unit member {member!r} has {runner_count} files[] entries of role "
                 f"{ENTRY_BEARING_ROLE!r}; a member carries at most one executable entry")
-        # Operation cardinality is by node KIND. A `problem` node publishes exactly one
-        # operation — its single integration update path — so two would leave the host with no
-        # rule to pick THE update path. A `component` / `infrastructure` node publishes an API of
-        # one or more operations (the harness ABI is many).
+        # A member publishes at least one operation. How many is its IR's to say, whatever its
+        # kind (the L1c pin below): a `problem` publishes `__step` and optionally `__init`, and the
+        # host's `drive` block says which one it calls, so no rule picks an update path here
+        # (issue #589 D3; a problem's one-operation rule went with the leaf-authored driver).
         operation_count = sum(
             1 for entry in entrypoints
             if entry.get("kind") == "operation" and entry.get("node_key") == member)
@@ -1073,10 +1073,6 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 f"(issue #175)")
         elif operation_count == 0:
             violations.append(f"optimization_unit member {member!r} has no operation entrypoint")
-        elif spec_kind == "problem" and operation_count > 1:
-            violations.append(
-                f"optimization_unit member {member!r} has {operation_count} operation "
-                "entrypoints; a problem node publishes exactly one (its integration update path)")
 
     # capability tokens: closed vocabulary, duplicate-free, exactly one execution model
     seen_tokens: set[str] = set()
@@ -1684,7 +1680,8 @@ BUNDLE_SHAPES: tuple[str, ...] = ("m3c", "harness")
 #: `public_api` for (`workflow_conductor._LEAF_IR_PUBLIC_API_KINDS`); a kind absent here has no
 #: pinned surface to compare against, so the layer stays inert for it rather than fail-closing on
 #: an IR that was never asked for the section.
-L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
+L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset(
+    {"problem", "component", "infrastructure"})
 
 
 def pure_bundle_contract_violation(
