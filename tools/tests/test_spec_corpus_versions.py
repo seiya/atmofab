@@ -19,6 +19,7 @@ import yaml
 
 from tools.validate_pipeline_semantics import (
     TEST_HISTORY_LINE,
+    _parse_test_expected_outcomes_from_tests_md,
     _parse_test_quantities_from_tests_md,
     _tests_md_reported_lines,
 )
@@ -165,6 +166,9 @@ def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
         if not stated and not problems:
             out.append(f"{sid}: tests.md defines no test")
         out.extend(f"{sid}: {problem}" for problem in problems)
+        outcomes = _parse_test_expected_outcomes_from_tests_md(root / tp)
+        out.extend(f"{sid}: {problem}" for problem in (outcomes[1] if outcomes else
+                                                       ["tests.md is unreadable"]))
         out.extend(f"{sid}: tests.md line {n} is a retired `reported:` line"
                    for n, _line in _tests_md_reported_lines(root / tp) or [])
         if e.get("spec_kind") == "problem" and not any(
@@ -323,21 +327,26 @@ class SpecCorpusVersionTest(unittest.TestCase):
                 (root / "t.md").write_text(text)
                 return suites_unmigrated([entry], root)
 
-            good = "- `test_id`: `a`\n  - `quantities`: `q`\n- `test_id`: `b`\n  - `quantities`: `r`\n"
+            outcome = "  - `expected_outcome`: `pass`\n"
+            good = (f"- `test_id`: `a`\n{outcome}  - `quantities`: `q`\n"
+                    f"- `test_id`: `b`\n{outcome}  - `quantities`: `r`\n")
             self.assertEqual(run(good), [])
-            self.assertEqual(run("## 6. T\n### 6-1. `a`\n- `quantities`: `q`\n"), [])
+            self.assertEqual(run(f"## 6. T\n### 6-1. `a`\n{outcome}- `quantities`: `q`\n"), [])
+            self.assertIn("'b' has no `expected_outcome:` line", run(
+                f"- `test_id`: `a`\n{outcome}  - `quantities`: `q`\n"
+                "- `test_id`: `b`\n  - `quantities`: `r`\n")[0])
             for token in _RETIRED_TEST_TOKENS:
                 with self.subTest(token=token):
                     self.assertIn(f"retired {token}", run(good + token + "\n")[0])
-            self.assertIn("'b' has no", run("- `test_id`: `a`\n  - `quantities`: `q`\n"
-                                            "- `test_id`: `b`\n  - `judgment`: x\n")[0])
-            self.assertIn("'a' has 2", run("- `test_id`: `a`\n  - `quantities`: `q`\n"
+            self.assertIn("'b' has no", run(f"- `test_id`: `a`\n{outcome}  - `quantities`: `q`\n"
+                                            f"- `test_id`: `b`\n{outcome}  - `judgment`: x\n")[0])
+            self.assertIn("'a' has 2", run(f"- `test_id`: `a`\n{outcome}  - `quantities`: `q`\n"
                                            "  - `quantities`: `r`\n")[0])
             self.assertIn("retired checks.<id>", run(good + "checks.cfl.status\n")[0])
             self.assertEqual(run(good + "the host checks.\n"), [])
             for spelling in ("checks.<id>", "checks.Zero.status"):
                 self.assertIn("retired checks.<id>", run(good + spelling + "\n")[0])
-            self.assertEqual(len(run("- `test_id`: `a`\n- `test_id`: `b`\n")), 2)
+            self.assertEqual(len(run(f"- `test_id`: `a`\n{outcome}- `test_id`: `b`\n{outcome}")), 2)
             # a `reported:` line is retired (issue #589), once per line, either spelling
             self.assertEqual(len(run(good + "  - `reported`: `x`\nreported: y\n")), 2)
             self.assertIn("retired `reported:` line", run(good + "  - `reported`: `x`\n")[0])

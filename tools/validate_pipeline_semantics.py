@@ -240,6 +240,11 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     )
 
 
+#: A `tests.md` test definition's `expected_outcome` line (review round 5, R5-1), read like the
+#: `quantities` line: it pins the IR's label, which decides gate (l) and what a flag predicate
+#: values.
+TEST_EXPECTED_OUTCOME_LINE = re.compile(r"^[-*]?\s*`?expected_outcome`?\s*:\s*(.*)$")
+
 TEST_ID_HEADING_PATTERN = re.compile(r"^###\s+\d+-\d+\.\s+`([^`]+)`\s*$")
 # tests.md test-id declarations come in two forms: the problem-spec heading form
 # (`### 6-1. `<id>``, matched above) and the component/profile bullet form
@@ -3777,6 +3782,38 @@ def _parse_test_quantities_from_tests_md(
             problems.append(f"test {tid!r} `quantities:` line holds {bad}, not quantity names")
             continue
         out[tid] = names
+    return out, problems
+
+
+def _parse_test_expected_outcomes_from_tests_md(
+    tests_path: Path,
+) -> tuple[dict[str, str], list[str]] | None:
+    """Each `tests.md` test's `expected_outcome` line (`TEST_EXPECTED_OUTCOME_LINE`) as its value,
+    and the problems found: a definition with no such line, with two, or with a value outside
+    the enum. None when the file cannot be read."""
+    from tools.verdict_evaluator import _EXPECTED_OUTCOMES
+
+    blocks = _tests_md_definition_blocks(tests_path)
+    if blocks is None:
+        return None
+    out: dict[str, str] = {}
+    problems: list[str] = []
+    for tid, lines in blocks.items():
+        found = [m for m in (TEST_EXPECTED_OUTCOME_LINE.match(line) for line in lines) if m]
+        if not found:
+            problems.append(f"test {tid!r} has no `expected_outcome:` line in its definition "
+                            "(docs/TESTS.md §Description format)")
+            continue
+        if len(found) > 1:
+            problems.append(f"test {tid!r} has {len(found)} `expected_outcome:` lines in its "
+                            "definition")
+            continue
+        value = found[0].group(1).strip().strip("`")
+        if value not in _EXPECTED_OUTCOMES:
+            problems.append(f"test {tid!r} `expected_outcome:` line holds {value!r}, not one of "
+                            f"{sorted(_EXPECTED_OUTCOMES)}")
+            continue
+        out[tid] = value
     return out, problems
 
 
@@ -10339,6 +10376,24 @@ def _validate_tests_and_predicates(
                     f"{derived_path}:io_contract.tests entry '{tid}': quantities "
                     f"{sorted(listed)} must equal the `quantities:` line of its tests.md "
                     f"definition ({sorted(stated[tid])})")
+
+    # R5-1: the outcome is the definition's, not a label the IR's author picks.
+    parsed_outcomes = _parse_test_expected_outcomes_from_tests_md(tests_path)
+    if parsed_outcomes is not None:
+        outcomes, problems = parsed_outcomes
+        for problem in problems:
+            violations.append(f"{derived_path}:tests.md ({tests_path}): {problem}")
+        for test in (tests if isinstance(tests, list) else []):
+            if not isinstance(test, dict) or not isinstance(test.get("test_id"), str) \
+                    or test["test_id"].strip() not in outcomes:
+                continue
+            tid = test["test_id"].strip()
+            label = str(test.get("expected_outcome") or "").strip().lower()
+            if label != outcomes[tid]:
+                violations.append(
+                    f"{derived_path}:io_contract.tests entry '{tid}': expected_outcome {label!r} "
+                    "must equal the `expected_outcome:` line of its tests.md definition "
+                    f"({outcomes[tid]!r})")
 
     # Issue #589: the `reported` class is retired, so its line is refused wherever it stands.
     for lineno, line in _tests_md_reported_lines(tests_path) or []:

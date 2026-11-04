@@ -145,6 +145,20 @@ from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 MOCK_SPEC_DIR = "spec/problem/mock_domain/mock_family/mock_spec"
 MOCK_TESTS_REF = f"{MOCK_SPEC_DIR}/tests.md"
 
+
+def _with_outcome_lines(body: str, outcome: str = "pass") -> str:
+    """A planted tests.md body with the `expected_outcome` line each definition carries (review
+    round 5, R5-1: the stage pins the IR's label to it), after each test id declaration."""
+    out: list[str] = []
+    for line in body.splitlines(keepends=True):
+        out.append(line)
+        stripped = line.strip()
+        if vps.TEST_ID_HEADING_PATTERN.match(stripped) or vps.TEST_ID_BULLET_PATTERN.match(stripped):
+            out.append(("" if line.endswith("\n") else "\n")
+                       + f"- `expected_outcome`: `{outcome}`\n")
+    return "".join(out)
+
+
 # A real full-fidelity IR in the issue #589 shape: the certified IR of
 # `problem/shallow_water2d@0.4.7` hand-converted (`drive`, `initial_state`, `derived`, gate (l)'s
 # closure, `state_history` / `step_series`; every decision in `CONVERSION.md` beside it). Until
@@ -10605,8 +10619,8 @@ end program shallow_water2d_runner
         tests_md.parent.mkdir(parents=True, exist_ok=True)
         line = ", ".join(f"`{q}`" for q in quantities)
         tests_md.write_text(
-            "".join(f"### 1-{i}. `{t}`\n- `quantities`: {line}\n"
-                    for i, t in enumerate(test_ids, start=1)),
+            _with_outcome_lines("".join(f"### 1-{i}. `{t}`\n- `quantities`: {line}\n"
+                                        for i, t in enumerate(test_ids, start=1))),
             encoding="utf-8",
         )
 
@@ -11306,7 +11320,7 @@ end program shallow_water2d_runner
             [*([self._primary_predicate()] if primary else []), *cross])
         tests_md = repo_root / MOCK_TESTS_REF
         tests_md.parent.mkdir(parents=True, exist_ok=True)
-        tests_md.write_text(body, encoding="utf-8")
+        tests_md.write_text(_with_outcome_lines(body), encoding="utf-8")
         return self._compile_with_io_contract(repo_root, io, plant_tests_md=False)
 
     def test_compile_gate_pins_the_cross_target_transcription_set(self) -> None:
@@ -11523,11 +11537,11 @@ end program shallow_water2d_runner
         per line, naming the line; the same tests.md without it is clean."""
         plain = "### 1-1. `t1`\n- `quantities`: `mass_drift_rel`\n"
         for label, extra, lines in (
-                ("bullet", "- `reported`: `cfl`\n", [3]),
-                ("plain", "reported: cfl, h_min_run\n", [3]),
-                ("star bullet, empty", "* reported:\n", [3]),
-                ("outside a definition", "## 7. Notes\nreported: cfl\n", [4]),
-                ("two", "- `reported`: `cfl`\nreported: h\n", [3, 4])):
+                ("bullet", "- `reported`: `cfl`\n", [4]),   # (after the planted outcome line)
+                ("plain", "reported: cfl, h_min_run\n", [4]),
+                ("star bullet, empty", "* reported:\n", [4]),
+                ("outside a definition", "## 7. Notes\nreported: cfl\n", [5]),
+                ("two", "- `reported`: `cfl`\nreported: h\n", [4, 5])):
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
                 v = self._stage_with_tests_md(Path(tmp), plain + extra,
                                               self._io_contract_with_predicates())
@@ -11604,7 +11618,7 @@ end program shallow_water2d_runner
                              case_ids: tuple[str, ...] = ("c1",)) -> list[str]:
         tests_md = repo_root / MOCK_TESTS_REF
         tests_md.parent.mkdir(parents=True, exist_ok=True)
-        tests_md.write_text(body, encoding="utf-8")
+        tests_md.write_text(_with_outcome_lines(body), encoding="utf-8")
         return self._compile_with_io_contract(repo_root, io, plant_tests_md=False,
                                               case_ids=case_ids)
 
@@ -11768,7 +11782,7 @@ end program shallow_water2d_runner
             body = "### 1-1. `t1`\n- `quantities`: `cfl_max`\n"
             tests_md = Path(tmp) / MOCK_TESTS_REF
             tests_md.parent.mkdir(parents=True, exist_ok=True)
-            tests_md.write_text(body, encoding="utf-8")
+            tests_md.write_text(_with_outcome_lines(body), encoding="utf-8")
             return self._compile_with_io_contract(
                 Path(tmp), io, plant_tests_md=False, case_ids=cases,
                 step_args=(self._SCALAR_OUT, *step_args),
@@ -11835,8 +11849,9 @@ end program shallow_water2d_runner
         with tempfile.TemporaryDirectory() as tmp:
             tests_md = Path(tmp) / MOCK_TESTS_REF
             tests_md.parent.mkdir(parents=True, exist_ok=True)
-            tests_md.write_text("### 1-1. `t1`\n- quantities: cfl_max\n### 1-2. `t2`\n"
-                                "- quantities: cfl_max\n", encoding="utf-8")
+            tests_md.write_text(_with_outcome_lines(
+                "### 1-1. `t1`\n- quantities: cfl_max\n### 1-2. `t2`\n"
+                "- quantities: cfl_max\n"), encoding="utf-8")
             v = self._compile_with_io_contract(
                 Path(tmp), io, plant_tests_md=False, step_args=(self._SCALAR_OUT,),
                 extra_initial={"cfl_run_max": -999.0})
@@ -26113,11 +26128,12 @@ class IrFixtureShapeTests(unittest.TestCase):
         tests_md = repo_root / MOCK_TESTS_REF
         tests_md.parent.mkdir(parents=True, exist_ok=True)
         tests_md.write_text(
-            tests_md_body
-            if tests_md_body is not None
-            else "".join(f"### 1-{i}. `{t}`\n- `quantities`: `mass_drift_rel`, "
-                         f"`{_MOCK_RESULT_QUANTITY}`\n"
-                         for i, t in enumerate(test_ids, start=1)),
+            _with_outcome_lines(
+                tests_md_body
+                if tests_md_body is not None
+                else "".join(f"### 1-{i}. `{t}`\n- `quantities`: `mass_drift_rel`, "
+                             f"`{_MOCK_RESULT_QUANTITY}`\n"
+                             for i, t in enumerate(test_ids, start=1))),
             encoding="utf-8",
         )
 
@@ -29974,6 +29990,12 @@ def _coriolis_spec_with_init() -> str:
             + text[match.end(1):])
 
 
+def _coriolis_tests_md() -> str:
+    """The coriolis fixture's real tests.md, the text its stage rows mutate."""
+    return (Path(__file__).resolve().parents[2]
+            / _drive_fixture("coriolis")["meta"]["source_refs"]["tests"]).read_text(encoding="utf-8")
+
+
 def _coriolis_tests_md_with_init() -> str:
     """The real coriolis tests.md whose first test (`_coriolis_with_init`'s) lists `init_ok`."""
     repo_real = Path(__file__).resolve().parents[2]
@@ -30032,6 +30054,79 @@ class DriveGateStageTests(unittest.TestCase):
                     self.assertFalse((ir_dir / "case_inputs").exists())
                     self.assertEqual(sorted(p.name for p in ir_dir.iterdir()),
                                      ["dependency_graph.json", "ir_meta.json", "spec.ir.yaml"])
+
+    # --- the test's outcome is the tests.md definition's (review round 5, R5-1) -------------------
+    def test_a_relabelled_outcome_is_refused_at_the_stage(self) -> None:
+        """`expected_outcome` decides gate (l) and every flag predicate's value: a leaf that
+        relabels a test `xfail` is asked no closure, and `final.guard_pass eq 0` beside any state
+        read then certifies a kernel that refused valid input."""
+        tid = "l0_zero_f_gives_zero_source_pass"
+
+        def relabel(ir):
+            io = ir["io_contract"]
+            next(t for t in io["tests"] if t["test_id"] == tid)["expected_outcome"] = "xfail"
+            for pred in io["predicates"]:
+                if pred["test_id"] == tid and pred["quantity"] == "guard_pass":
+                    pred["value"] = 0
+                elif pred["test_id"] == tid and pred["quantity"] == "max_abs_s":
+                    pred.update(op="ge", value=0)
+        self.assertEqual(_drive_stage("coriolis", relabel),
+                         [f"<ir>:io_contract.tests entry '{tid}': expected_outcome 'xfail' must "
+                          "equal the `expected_outcome:` line of its tests.md definition "
+                          "('pass')"])
+
+        def relabel_swe(ir):
+            first = ir["io_contract"]["tests"][0]
+            self.assertEqual(first["expected_outcome"], "pass")
+            first["expected_outcome"] = "XFAIL "
+        v = _drive_stage("swe", relabel_swe)
+        tid_swe = _drive_fixture("swe")["io_contract"]["tests"][0]["test_id"]
+        self.assertIn(f"<ir>:io_contract.tests entry '{tid_swe}': expected_outcome 'xfail' must "
+                      "equal the `expected_outcome:` line of its tests.md definition ('pass')", v)
+
+    def test_a_definition_s_outcome_line_is_required_once_and_in_the_enum(self) -> None:
+        real = _coriolis_tests_md()
+        line = "- `expected_outcome`: `pass`"
+        self.assertIn(line, real)
+        with_two = real.replace(line, f"{line}\n  {line}", 1)
+        with_none = real.replace(line, "- `note`: none", 1)
+        with_bad = real.replace(line, "- `expected_outcome`: `maybe`", 1)
+        self.assertEqual(_drive_stage("coriolis"), [])
+        for label, md, want in (
+                ("two", with_two, "has 2 `expected_outcome:` lines in its definition"),
+                ("none", with_none, "has no `expected_outcome:` line in its definition "
+                                    "(docs/TESTS.md §Description format)"),
+                ("bad", with_bad, "`expected_outcome:` line holds 'maybe', not one of "
+                                  "['pass', 'xfail']")):
+            with self.subTest(label):
+                v = _drive_stage("coriolis", tests_md=md)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(want, v[0])
+                self.assertIn("<ir>:tests.md (", v[0])
+
+    def test_the_outcome_parser_reads_each_spelling_and_an_unreadable_file_is_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text("- `test_id`: `a`\n  - `expected_outcome`: `xfail`\n"
+                            "### 1-2. `b`\nexpected_outcome: pass\n"
+                            "- `test_id`: `c`\n* expected_outcome: `Pass`\n"
+                            "- `test_id`: `d`\n- note: the `expected_outcome`: `pass` is "
+                            "mentioned, no line\n", encoding="utf-8")
+            stated, problems = vps._parse_test_expected_outcomes_from_tests_md(path)
+            self.assertEqual(stated, {"a": "xfail", "b": "pass"})
+            self.assertEqual(problems, [
+                "test 'c' `expected_outcome:` line holds 'Pass', not one of ['pass', 'xfail']",
+                "test 'd' has no `expected_outcome:` line in its definition "
+                "(docs/TESTS.md §Description format)"])
+            self.assertIsNone(
+                vps._parse_test_expected_outcomes_from_tests_md(Path(tmp) / "absent.md"))
+
+    def test_an_outcome_agreeing_in_case_only_is_clean(self) -> None:
+        """The IR's value is read normalised everywhere (`verdict_evaluator`), so the comparison
+        normalises it too; the definition's line itself is exact."""
+        def spaced(ir):
+            ir["io_contract"]["tests"][0]["expected_outcome"] = " PASS"
+        self.assertEqual(_drive_stage("coriolis", spaced), [])
 
     # --- the kind is the catalog's ---------------------------------------------------------------
     def test_the_kind_is_read_from_the_catalog_by_spec_id(self) -> None:
