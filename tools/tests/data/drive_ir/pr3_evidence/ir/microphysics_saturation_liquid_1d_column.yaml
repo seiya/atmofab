@@ -1,0 +1,4476 @@
+schema_version: '1.0'
+meta:
+  node_key: component/microphysics_saturation_liquid_1d_column@0.1.0
+  spec_kind: component
+  spec_id: microphysics_saturation_liquid_1d_column
+  spec_version: 0.1.0
+  source_refs:
+    controlled_spec: spec/component/microphysics/saturation/microphysics_saturation_liquid_1d_column/controlled_spec.md
+    tests: spec/component/microphysics/saturation/microphysics_saturation_liquid_1d_column/tests.md
+    deps: spec/component/microphysics/saturation/microphysics_saturation_liquid_1d_column/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_qsat_ref
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 273.15
+        - 273.15
+        - 273.15
+        - 273.15
+        - 273.15
+        - 273.15
+        - 222.0
+        dens:
+        - 0.77
+        - 1.2
+        - 1.1
+        - 1.0
+        - 0.9
+        - 0.8
+        - 0.7
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_qsat_temp_ramp
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 250.0
+        - 260.0
+        - 270.0
+        - 280.0
+        - 290.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_qsat_dens_ramp
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 222.0
+        dens:
+        - 0.77
+        - 0.6
+        - 0.7
+        - 0.8
+        - 0.9
+        - 1.0
+        - 1.1
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_satadj_dry
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 284.0
+        - 288.0
+        - 292.0
+        - 296.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0022
+        - 0.0024
+        - 0.0026
+        - 0.0028
+        - 0.003
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_subsat
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_supersat
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 283.0
+        - 286.0
+        - 289.0
+        - 292.0
+        - 295.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.009
+        - 0.012
+        - 0.015
+        - 0.018
+        - 0.021
+        - 0.024
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.001
+        - 0.0012
+        - 0.0014
+        - 0.0016
+        - 0.0018
+        - 0.002
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_dens_nonpositive
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 284.0
+        - 288.0
+        - 292.0
+        - 296.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 0.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_temp_nonpositive
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 284.0
+        - -1.0
+        - 292.0
+        - 296.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_bad_range
+    inputs:
+      grid:
+        ka: 8
+        ks: 7
+        ke: 2
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 284.0
+        - 288.0
+        - 292.0
+        - 296.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_satadj_dens_nonpositive
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.0
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_temp_nonpositive
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - -1.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_cvtot_nonpositive
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - max(0, 1 - abs(floor(xc) - 3))) * ((1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0
+        + min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry
+        - inputs.air.rdry) + (inputs.constants.cpvap - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc))
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_bad_range
+    inputs:
+      grid:
+        ka: 8
+        ks: 7
+        ke: 2
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_nonconverged
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 277.8
+        - 277.8
+        - 277.8
+        - 277.8
+        - 277.8
+        - 277.8
+        - 222.0
+        dens:
+        - 0.77
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.001
+        - 0.001
+        - 0.6635770613325421
+        - 0.009
+        - 0.001
+        - 0.012
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0
+        - 0.0005
+        - 0.0
+        - 0.001
+        - 0.0005
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_branch
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 285.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.0095
+        - 0.0095
+        - 0.0095
+        - 0.01
+        - 0.0102
+        - 0.0104
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0015
+        - 0.0015
+        - 0.0015
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_slow
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 243.8
+        - 243.8
+        - 243.8
+        - 294.848
+        - 289.937
+        - 290.097
+        - 222.0
+        dens:
+        - 0.77
+        - 0.799
+        - 0.799
+        - 0.799
+        - 1.148
+        - 1.224
+        - 1.039
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.0185
+        - 0.0185
+        - 0.0185
+        - 0.62658
+        - 0.45295
+        - 0.54852
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.006
+        - 0.006
+        - 0.006
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_limit
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 280.0
+        - 279.2327
+        - 280.0
+        - 280.0
+        - 280.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.0
+        - 1.0
+        - 0.88584
+        - 1.0
+        - 1.0
+        - 1.0
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.001
+        - 0.001
+        - 0.45708
+        - 0.001
+        - 0.001
+        - 0.001
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_cptot_nonpositive
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - max(0, 1 - abs(floor(xc) - 3))) * ((1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0
+        + min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry
+        + inputs.constants.cpvap * inputs.column.qv + inputs.constants.cl * inputs.column.qc))
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_ks_below_one
+    inputs:
+      grid:
+        ka: 8
+        ks: 0
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 284.0
+        - 288.0
+        - 292.0
+        - 296.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_ke_above_ka
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 9
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 284.0
+        - 288.0
+        - 292.0
+        - 296.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_satadj_ks_below_one
+    inputs:
+      grid:
+        ka: 8
+        ks: 0
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_ke_above_ka
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 9
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_qsat_alt
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 480.0
+        cpvap: 1900.0
+        cl: 4100.0
+        lhv0: 2400000.0
+        psat0: 600.0
+        tem00: 270.0
+      column:
+        temp:
+        - 222.0
+        - 260.0
+        - 268.0
+        - 276.0
+        - 284.0
+        - 292.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.2
+        - 1.1
+        - 1.0
+        - 0.9
+        - 0.8
+        - 0.7
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_satadj_alt_subsat
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 480.0
+        cpvap: 1900.0
+        cl: 4100.0
+        lhv0: 2400000.0
+        psat0: 600.0
+        tem00: 270.0
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 291.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_alt_supersat
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 480.0
+        cpvap: 1900.0
+        cl: 4100.0
+        lhv0: 2400000.0
+        psat0: 600.0
+        tem00: 270.0
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 283.0
+        - 286.0
+        - 289.0
+        - 292.0
+        - 295.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.012
+        - 0.016
+        - 0.02
+        - 0.024
+        - 0.028
+        - 0.032
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.001
+        - 0.0012
+        - 0.0014
+        - 0.0016
+        - 0.0018
+        - 0.002
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_qsat_range
+    inputs:
+      grid:
+        ka: 8
+        ks: 3
+        ke: 6
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 250.0
+        - 260.0
+        - 270.0
+        - 280.0
+        - 290.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - -1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - 1.0
+        - -1.0
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_qsat_one_cell
+    inputs:
+      grid:
+        ka: 8
+        ks: 4
+        ke: 4
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 250.0
+        - 260.0
+        - 270.0
+        - 280.0
+        - 290.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.0
+        - -1.0
+        - 1.0
+        - -1.0
+        - 1.0
+        - 1.0
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_satadj_range
+    inputs:
+      grid:
+        ka: 8
+        ks: 3
+        ke: 6
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 283.0
+        - 286.0
+        - 289.0
+        - 292.0
+        - 295.0
+        - 222.0
+        dens:
+        - 0.77
+        - -1.0
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - -1.0
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.009
+        - 0.012
+        - 0.015
+        - 0.018
+        - 0.021
+        - 0.024
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.001
+        - 0.0012
+        - 0.0014
+        - 0.0016
+        - 0.0018
+        - 0.002
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_satadj_one_cell
+    inputs:
+      grid:
+        ka: 8
+        ks: 4
+        ke: 4
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 283.0
+        - 286.0
+        - 289.0
+        - 292.0
+        - 295.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - -1.0
+        - 1.0
+        - -1.0
+        - 0.9
+        - 0.85
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.009
+        - 0.012
+        - 0.015
+        - 0.018
+        - 0.021
+        - 0.024
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.001
+        - 0.0012
+        - 0.0014
+        - 0.0016
+        - 0.0018
+        - 0.002
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+  - case_id: l0_temp_zero
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      column:
+        temp:
+        - 222.0
+        - 280.0
+        - 284.0
+        - 0.0
+        - 292.0
+        - 296.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.1
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.77
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: 0.0123
+      qc: 0.0321
+      cptot: 1111.0
+      cvtot: 777.0
+      qsat: -999.0
+      rhoe_d: -999.0
+      converged: 0.0
+  - case_id: l0_satadj_temp_zero
+    inputs:
+      grid:
+        ka: 8
+        ks: 2
+        ke: 7
+      constants:
+        rvap: 461.5
+        cpvap: 1846.0
+        cl: 4218.0
+        lhv0: 2501000.0
+        psat0: 610.78
+        tem00: 273.15
+      air:
+        cpdry: 1004.64
+        rdry: 287.04
+      column:
+        temp:
+        - 222.0
+        - 285.0
+        - 288.0
+        - 0.0
+        - 294.0
+        - 297.0
+        - 300.0
+        - 222.0
+        dens:
+        - 0.77
+        - 1.05
+        - 1.0
+        - 0.95
+        - 0.9
+        - 0.85
+        - 0.8
+        - 0.77
+        qv:
+        - 0.0123
+        - 0.002
+        - 0.0023
+        - 0.0026
+        - 0.0029
+        - 0.0032
+        - 0.0035
+        - 0.0123
+        qc:
+        - 0.0321
+        - 0.0005
+        - 0.0006
+        - 0.0007
+        - 0.0008
+        - 0.0009
+        - 0.001
+        - 0.0321
+      test_profile_id: microphysics_saturation_liquid_1d_column_l0
+      test_profile_version: 0.3.0
+    initial_state:
+      temp: inputs.column.temp
+      dens: inputs.column.dens
+      qv: inputs.column.qv
+      qc: inputs.column.qc
+      cptot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 1111.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * inputs.air.cpdry + inputs.constants.cpvap *
+        inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      cvtot: (1 - min(1, max(0, floor(xc))) * min(1, max(0, 7 - floor(xc)))) * 777.0 + min(1, max(0, floor(xc))) * min(1,
+        max(0, 7 - floor(xc))) * ((1 - inputs.column.qv - inputs.column.qc) * (inputs.air.cpdry - inputs.air.rdry) + (inputs.constants.cpvap
+        - inputs.constants.rvap) * inputs.column.qv + inputs.constants.cl * inputs.column.qc)
+      qsat: -999.0
+      rhoe_d: -999.0
+algorithm:
+  algorithm_id: microphysics_saturation_liquid_1d_column
+  execution_mode: conditional
+  steps:
+  - step_id: step_01_dens2qsat_guard
+    step_kind: diagnostic
+    operation_ref: dens2qsat_input_guard
+    inputs:
+    - ka
+    - ks
+    - ke
+    - temp
+    - dens
+    outputs:
+    - guard_pass
+    description: 'First step of microphysics_saturation_liquid_1d_column__dens2qsat_liq, run on the cases of its drive.step
+      entry; ka, ks, ke are inputs.grid.ka/ks/ke. guard_pass = false when ks < 1, or ke > ka, or ks > ke (checked first, before
+      any array access), or temp(k) <= 0 or dens(k) <= 0 at some interior cell k = ks..ke; otherwise true. On guard_pass =
+      false the operation returns immediately: qsat is not defined, and nothing is terminated or silently completed.'
+  - step_id: step_02_dens2qsat_eval
+    step_kind: pointwise_process
+    operation_ref: dens2qsat_liq_eval
+    inputs:
+    - ka
+    - ks
+    - ke
+    - temp
+    - dens
+    - rvap
+    - cpvap
+    - cl
+    - lhv0
+    - psat0
+    - tem00
+    - L00
+    - qs_func
+    outputs:
+    - qsat
+    description: 'For k = ks..ke: qsat(k) = qs_func(temp(k), dens(k)) with the case''s constants (inputs.constants: rvap,
+      cpvap, cl, lhv0, psat0, tem00 passed as arguments, no default, never read from module state). For every halo cell (k
+      < ks or k > ke): qsat(k) = 0. Pointwise: each cell depends only on its own inputs.'
+  - step_id: step_03_satadj_guard
+    step_kind: diagnostic
+    operation_ref: satadj_input_guard
+    inputs:
+    - ka
+    - ks
+    - ke
+    - dens
+    - temp
+    - cptot
+    - cvtot
+    outputs:
+    - guard_pass
+    description: First step of microphysics_saturation_liquid_1d_column__saturation_adjustment, run on the cases of its drive.step
+      entry. guard_pass = false when ks < 1, or ke > ka, or ks > ke (checked before any array access), or at some interior
+      cell k = ks..ke dens(k) <= 0, temp(k) <= 0, cptot(k) <= 0 or cvtot(k) <= 0; otherwise true. No check on the sign of
+      qv or qc (values of order -1e-19 are legal and the definition stays finite on them). On guard_pass = false the operation
+      returns immediately with temp, qv, qc, cptot, cvtot unchanged at EVERY cell; rhoe_d and converged are not defined.
+  - step_id: step_04_satadj_virtual_evaporation
+    step_kind: pointwise_process
+    operation_ref: satadj_virtual_evaporation
+    inputs:
+    - ks
+    - ke
+    - dens
+    - temp
+    - qv
+    - qc
+    - cptot
+    - cvtot
+    - rvap
+    - cpvap
+    - cl
+    - lhv0
+    - psat0
+    - tem00
+    - cvv
+    - L00
+    - qs_func
+    outputs:
+    - T0
+    - qv0
+    - qc0
+    - cp0
+    - cv0
+    - qsum
+    - E0
+    - T_virt
+    - cp_virt
+    - cv_virt
+    - virtual_branch
+    - cell_converged
+    description: 'Per interior cell k = ks..ke (pointwise): T0 = temp(k), qv0 = qv(k), qc0 = qc(k), cp0 = cptot(k), cv0 =
+      cvtot(k), rho = dens(k), qsum = qv0 + qc0, E0 = T0*cv0 + qv0*L00. Virtual evaporation: cp_virt = cp0 + qc0*(cpvap -
+      cl); cv_virt = cv0 + qc0*(cvv - cl); T_virt = (E0 - L00*qsum)/cv_virt. virtual_branch = (qsum <= qs_func(T_virt, rho)).
+      If virtual_branch: the cell''s result is qv = qsum, qc = 0, temp = T_virt, cptot = cp_virt, cvtot = cv_virt (temp is
+      rewritten by this formula even when qc0 = 0), cell_converged = true, and the cell continues at step 07 (energy); the
+      Newton steps 05/06 are skipped for it. Otherwise the cell goes to step 05.'
+  - step_id: step_05_satadj_newton
+    step_kind: iterative_solve
+    operation_ref: satadj_newton_iteration
+    inputs:
+    - dens
+    - T0
+    - qv0
+    - cv0
+    - qsum
+    - E0
+    - cvv
+    - L00
+    - qs_func
+    - dqs_func
+    - virtual_branch
+    outputs:
+    - T_it
+    - qs_it
+    - qc_it
+    - cv_it
+    - newton_converged
+    - cell_converged
+    description: 'Only for interior cells with virtual_branch false. Restart from T_it = T0 and cv_it = cv0 (NOT from the
+      virtual state). Repeat at most 100 times, each iteration in exactly this order: (a) qs_it = qs_func(T_it, rho), dqs_it
+      = dqs_func(T_it, rho); (b) ET = T_it*(cvv - cl)*dqs_it + cv_it + L00*dqs_it, with cv_it still the value from the PREVIOUS
+      iteration (cv0 on the first); (c) qc_it = qsum - qs_it; (d) cv_it = cv0 + (cvv - cl)*(qs_it - qv0); (e) E = T_it*cv_it
+      + qs_it*L00; (f) delta = (E - E0)/ET; T_it = T_it - delta; (g) if |delta| < 1.0e-6: newton_converged = true, stop; else
+      if T_it is not finite (NaN or Inf): newton_converged = false, stop. A cell that completes the 100th iteration without
+      |delta| < 1.0e-6 (with finite T_it) is newton_converged = false. cell_converged = newton_converged. The iteration limit
+      100 and the threshold 1.0e-6 are fixed; no other iteration, relaxation, damping, bracketing, clipping or fallback scheme
+      is allowed, and the program is never terminated on non-convergence. Non-convergence is reachable and chaotic in the
+      input (e.g. temp=277.8, dens=1, qc=0, qv=0.66357706133254214 ends with a non-finite T_it). The convergence test and
+      the iteration count are non-differentiable operations (AD).'
+  - step_id: step_06_satadj_newton_result
+    step_kind: pointwise_process
+    operation_ref: satadj_newton_result
+    inputs:
+    - T_it
+    - qs_it
+    - qc_it
+    - cv_it
+    - cp0
+    - qv0
+    - cpvap
+    - cl
+    - newton_converged
+    outputs:
+    - temp
+    - qv
+    - qc
+    - cptot
+    - cvtot
+    description: 'For an interior Newton-branch cell with newton_converged true: cptot = cp0 + (cpvap - cl)*(qs_it - qv0),
+      qv = qs_it, qc = qc_it, cvtot = cv_it, temp = T_it. temp is the LAST update (after the final delta), while qv, qc, cvtot,
+      cptot belong to the iterate BEFORE it (qs evaluated at the temperature the last iteration started from). Evaluating
+      qs at the final temperature instead is forbidden. qc is NOT clipped: it is whatever this gives, of either sign (a non-physical
+      root with qc < 0 and temp near 5425 K is a legitimate result).'
+  - step_id: step_07_satadj_energy
+    step_kind: pointwise_process
+    operation_ref: satadj_energy_release
+    inputs:
+    - qv
+    - qv0
+    - dens
+    - L00
+    - cell_converged
+    outputs:
+    - rhoe_d
+    description: 'For every interior converged cell (either branch): rhoe_d(k) = -L00*(qv(k) - qv0)*dens(k), with qv the cell''s
+      result of step 04 or 06.'
+  - step_id: step_08_satadj_refusal_halo_flag
+    step_kind: reduction
+    operation_ref: satadj_refusal_and_converged_flag
+    inputs:
+    - ks
+    - ke
+    - cell_converged
+    - T0
+    - qv0
+    - qc0
+    - cp0
+    - cv0
+    outputs:
+    - temp
+    - qv
+    - qc
+    - cptot
+    - cvtot
+    - rhoe_d
+    - converged
+    description: 'For an interior cell with cell_converged false (non-converged Newton): the refusal state replaces steps
+      06/07 at that cell: temp = T0, qv = qv0, qc = qc0, cptot = cp0, cvtot = cv0, rhoe_d = 0; guard_pass stays true; every
+      other cell follows steps 04-07, so the returned state is finite on every path (publishing a non-finite value is forbidden).
+      Halo cells (k < ks or k > ke): temp, qv, qc, cptot, cvtot keep their input values (never read or written) and rhoe_d
+      = 0. converged = true iff every interior cell has cell_converged true (independent of evaluation order).'
+  ordering:
+  - step_01_dens2qsat_guard
+  - step_02_dens2qsat_eval
+  - step_03_satadj_guard
+  - step_04_satadj_virtual_evaporation
+  - step_05_satadj_newton
+  - step_06_satadj_newton_result
+  - step_07_satadj_energy
+  - step_08_satadj_refusal_halo_flag
+  control_condition:
+  - 'Dispatch per case by the drive.step entry whose cases list it: dens2qsat_liq runs step_01 then step_02 (if guard_pass);
+    saturation_adjustment runs step_03 then, if guard_pass, steps 04-08.'
+  - 'Inside saturation_adjustment, per interior cell: if qsum <= qs_func(T_virt, rho) the virtual-evaporation result is final
+    (step 04 then 07); otherwise the Newton branch (steps 05, 06, 07) runs; a Newton cell that does not converge takes the
+    refusal state of step 08.'
+  - Either operation returns at once when its input guard (step 01 / step 03) is false, leaving every in-place array unchanged.
+  iteration_contract:
+    applies: false
+    rationale: Each published operation is a single evaluation of one column with no time stepping. The only loop is the per-cell
+      Newton solve, an internal iterative_solve whose limit (100 iterations), tolerance (|delta| < 1.0e-6) and non-finite
+      stop are stated in step_05_satadj_newton.
+  update_semantics:
+    target_variables:
+    - qsat
+    - temp
+    - qv
+    - qc
+    - cptot
+    - cvtot
+    - rhoe_d
+    - guard_pass
+    - converged
+    update_order: sequential
+    description: 'dens2qsat_liq writes qsat (out). saturation_adjustment updates temp, qv, qc, cptot, cvtot in place (inout)
+      and writes rhoe_d (out); both write guard_pass, saturation_adjustment also converged. dens is intent in for both. Halo
+      cells: in-place arrays keep their input; out arrays are 0 (on an accepted call).'
+  temporaries:
+  - name: T0
+    shape_expr: '[ka]'
+  - name: qv0
+    shape_expr: '[ka]'
+  - name: qc0
+    shape_expr: '[ka]'
+  - name: cp0
+    shape_expr: '[ka]'
+  - name: cv0
+    shape_expr: '[ka]'
+  - name: qsum
+    shape_expr: '[ka]'
+  - name: E0
+    shape_expr: '[ka]'
+  - name: T_virt
+    shape_expr: scalar
+  - name: cp_virt
+    shape_expr: scalar
+  - name: cv_virt
+    shape_expr: scalar
+  - name: virtual_branch
+    shape_expr: '[ka]'
+  - name: T_it
+    shape_expr: scalar
+  - name: qs_it
+    shape_expr: scalar
+  - name: qc_it
+    shape_expr: scalar
+  - name: cv_it
+    shape_expr: scalar
+  - name: newton_converged
+    shape_expr: scalar
+  - name: cell_converged
+    shape_expr: '[ka]'
+  derived_field_rules:
+  - name: cvv
+    expression: cvv = cpvap - rvap
+    description: Specific heat of water vapour at constant volume, from the constant arguments.
+  - name: L00
+    expression: L00 = lhv0 - (cpvap - cl)*tem00
+    description: Latent-heat offset at 0 K, from the constant arguments.
+  - name: L_of_T
+    expression: L(T) = lhv0 + (cpvap - cl)*(T - tem00)
+    description: Latent heat of vaporization at temperature T.
+  - name: qs_func
+    expression: qs_func(T, rho) = psat0/(rho*rvap*T) * exp( log(T/tem00)*(cpvap - cl)/rvap + (L00/rvap)*(1/tem00 - 1/T) )
+    description: Saturation mixing ratio over liquid water at temperature T and density rho (source scale_atmos_saturation
+      dens2qsat_liq, EXACT thermodynamics, double precision). At T = tem00 it is exactly psat0/(rho*rvap*tem00).
+  - name: dqs_func
+    expression: dqs_func(T, rho) = qs_func(T, rho)/T * ( L(T)/(rvap*T) - 1 )
+    description: Temperature derivative of qs_func at fixed density (source dqs_dtem_dens_liq).
+  invariants:
+  - 'Both operations are pointwise in k: a cell''s result depends on that cell''s inputs alone; cells k < ks or k > ke are
+    never read.'
+  - Every constant (rvap, cpvap, cl, lhv0, psat0, tem00) is an argument with no default value and is never read from module
+    state; there is no setup step.
+  - saturation_adjustment conserves qv + qc exactly (to rounding) on both branches at every converged cell.
+  - The virtual-evaporation branch conserves T*cvtot + qv*L00; on the Newton branch the drift (T*Cv + qv*L00) - E0 = delta*(ET
+    - Cv) = delta*(dqs*(L00 + T_it*(cvv - cl)) + Cv_prev - Cv), bounded by |delta| < 1.0e-6.
+  - No clipping of qc to non-negative; no automatic switch to another scheme; no change of the 100-iteration limit or of the
+    1.0e-6 threshold.
+  - 'On an accepted call every published array is defined at every cell: in-place arrays keep their input at halo cells, out
+    arrays (qsat, rhoe_d) are 0 at halo cells.'
+  - A non-converged cell keeps its input temp, qv, qc, cptot, cvtot and gets rhoe_d = 0; guard_pass stays true, converged
+    is false; no value published is non-finite and the program never terminates on it.
+  - On invalid input guard_pass is false, every in-place array holds its input value at every cell, and qsat / rhoe_d / converged
+    are not defined.
+  - 'AD readiness: the step-04 branch, the step-05 convergence test and iteration count, and the input-guard refusal are explicit
+    non-differentiable operations.'
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: ka
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Column extent, inputs.grid.ka; fixes every array's extent and the halo/interior split.
+  - name: ks
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: First interior cell passed to the operation, inputs.grid.ks; checked by the guard (ks >= 1, ks <= ke).
+  - name: ke
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Last interior cell passed to the operation, inputs.grid.ke; checked by the guard (ke <= ka).
+  - name: rvap
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.rvap, gas constant of vapour (J/kg/K).
+  - name: cpvap
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.cpvap (J/kg/K).
+  - name: cl
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.cl (J/kg/K).
+  - name: lhv0
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.lhv0 (J/kg).
+  - name: psat0
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.psat0 (Pa).
+  - name: tem00
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.tem00 (K).
+  - name: temp
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: dens
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: qv
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: qc
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: cptot
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  - name: cvtot
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+  outputs:
+  - name: qsat
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - qsat
+  - name: temp
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - temp
+  - name: qv
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - qv
+  - name: qc
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - qc
+  - name: cptot
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - cptot
+  - name: cvtot
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - cvtot
+  - name: rhoe_d
+    shape_expr: '[ka]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - rhoe_d
+  - name: guard_pass
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - guard_pass
+  - name: converged
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - converged
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: temp
+          shape_expr: '[ka]'
+        - name: dens
+          shape_expr: '[ka]'
+        - name: qv
+          shape_expr: '[ka]'
+        - name: qc
+          shape_expr: '[ka]'
+        - name: cptot
+          shape_expr: '[ka]'
+        - name: cvtot
+          shape_expr: '[ka]'
+        - name: qsat
+          shape_expr: '[ka]'
+        - name: rhoe_d
+          shape_expr: '[ka]'
+        - name: guard_pass
+          shape_expr: scalar
+        - name: converged
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: xc
+          axis: 0
+          count: inputs.grid.ka
+          length: inputs.grid.ka
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - temp
+    - dens
+    - qv
+    - qc
+    - cptot
+    - cvtot
+    - rvap
+    - cpvap
+    - cl
+    - lhv0
+    - psat0
+    - tem00
+    - ka
+    - ks
+    - ke
+  tests:
+  - test_id: l0_qsat_reference_point_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_qsat_ref
+    quantities:
+    - guard_pass
+    - qsat_reference
+  - test_id: l0_qsat_clausius_clapeyron_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    quantities:
+    - guard_pass
+    - qsat_formula
+  - test_id: l0_qsat_monotone_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    quantities:
+    - guard_pass
+    - qsat_monotone
+  - test_id: l0_qsat_halo_untouched_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    quantities:
+    - guard_pass
+    - halo_untouched
+  - test_id: l0_satadj_dry_noop_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_satadj_dry
+    quantities:
+    - converged
+    - guard_pass
+    - satadj_dry_noop
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    quantities:
+    - converged
+    - guard_pass
+    - satadj_evaporates_all
+  - test_id: l0_satadj_conservation_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    quantities:
+    - converged
+    - guard_pass
+    - satadj_conservation
+  - test_id: l0_satadj_saturated_state_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    quantities:
+    - converged
+    - guard_pass
+    - satadj_saturated
+  - test_id: l0_satadj_halo_untouched_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    quantities:
+    - converged
+    - guard_pass
+    - halo_untouched
+  - test_id: l0_dens_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_dens_nonpositive
+    quantities:
+    - guard_pass
+  - test_id: l0_temp_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_temp_nonpositive
+    quantities:
+    - guard_pass
+  - test_id: l0_bad_range_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_bad_range
+    quantities:
+    - guard_pass
+  - test_id: l0_satadj_dens_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_dens_nonpositive
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  - test_id: l0_satadj_temp_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_temp_nonpositive
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  - test_id: l0_satadj_cvtot_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_cvtot_nonpositive
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  - test_id: l0_satadj_bad_range_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_bad_range
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  - test_id: l0_satadj_nonconverged_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_nonconverged
+    quantities:
+    - converged
+    - guard_pass
+    - nonconverged_cell_held
+    - nonconverged_neighbours
+  - test_id: l0_satadj_limit_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_limit
+    quantities:
+    - converged
+    - guard_pass
+    - nonconverged_cell_held
+  - test_id: l0_satadj_cptot_nonpositive_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_cptot_nonpositive
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  - test_id: l0_ks_below_one_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_ks_below_one
+    quantities:
+    - guard_pass
+  - test_id: l0_ke_above_ka_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_ke_above_ka
+    quantities:
+    - guard_pass
+  - test_id: l0_satadj_ks_below_one_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_ks_below_one
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  - test_id: l0_satadj_ke_above_ka_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_ke_above_ka
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  - test_id: l0_temp_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_temp_zero
+    quantities:
+    - guard_pass
+  - test_id: l0_satadj_temp_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_satadj_temp_zero
+    quantities:
+    - guard_pass
+    - refused_inputs_held
+  predicates:
+  - test_id: l0_qsat_reference_point_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_qsat_ref
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_qsat_reference_point_pass
+    quantity: qsat_reference
+    target_cases:
+    - l0_qsat_ref
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      ref: inputs.constants.psat0 / (final.dens * inputs.constants.rvap * inputs.constants.tem00)
+    expr: maxabs(interior * (final.qsat - ref)) / maxabs(interior * ref)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_qsat_reference_point_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_qsat_ref
+    per_case: true
+    expr: maxabs(final.qsat - comparand.final.qsat) / max(maxabs(final.qsat), maxabs(comparand.final.qsat), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_qsat_clausius_clapeyron_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_qsat_clausius_clapeyron_pass
+    quantity: qsat_formula
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      qs: inputs.constants.psat0 * exp(log(initial.temp / inputs.constants.tem00) * (inputs.constants.cpvap - inputs.constants.cl)
+        / inputs.constants.rvap + L00 / inputs.constants.rvap * (1 / inputs.constants.tem00 - 1 / initial.temp)) / (initial.dens
+        * inputs.constants.rvap * initial.temp)
+    expr: maxabs(interior * (final.qsat - qs)) / maxabs(interior * qs)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_qsat_clausius_clapeyron_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    per_case: true
+    expr: maxabs(final.qsat - comparand.final.qsat) / max(maxabs(final.qsat), maxabs(comparand.final.qsat), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_qsat_monotone_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_qsat_monotone_pass
+    quantity: qsat_monotone
+    target_cases:
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    case: l0_qsat_temp_ramp
+    bind:
+      pairs: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(xc)))
+      d: roll(final.qsat, -1) - final.qsat
+    expr: min(pairs * d + (1 - pairs))
+    op: gt
+    value: 0
+  - test_id: l0_qsat_monotone_pass
+    quantity: qsat_monotone
+    target_cases:
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    case: l0_qsat_dens_ramp
+    bind:
+      pairs: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(xc)))
+      d: roll(final.qsat, -1) - final.qsat
+    expr: max(pairs * d - (1 - pairs))
+    op: lt
+    value: 0
+  - test_id: l0_qsat_monotone_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    per_case: true
+    expr: maxabs(final.qsat - comparand.final.qsat) / max(maxabs(final.qsat), maxabs(comparand.final.qsat), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_qsat_halo_untouched_pass
+    quantity: halo_untouched
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      halo: 1 - interior
+    expr: maxabs(halo * final.qsat)
+    op: eq
+    value: 0
+  - test_id: l0_qsat_halo_untouched_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_qsat_halo_untouched_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    per_case: true
+    expr: maxabs(final.qsat - comparand.final.qsat) / max(maxabs(final.qsat), maxabs(comparand.final.qsat), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: converged
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: final.converged
+    op: eq
+    value: 1
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: satadj_dry_noop
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: satadj_dry_noop
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: satadj_dry_noop
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: satadj_dry_noop
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: satadj_dry_noop
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+    expr: maxabs(interior * final.rhoe_d)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: satadj_dry_noop
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: le
+    value: 2.0e-13
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.temp - comparand.final.temp) / max(maxabs(final.temp), maxabs(comparand.final.temp), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.qv - comparand.final.qv) / max(maxabs(final.qv), maxabs(comparand.final.qv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.qc - comparand.final.qc) / max(maxabs(final.qc), maxabs(comparand.final.qc), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.cptot - comparand.final.cptot) / max(maxabs(final.cptot), maxabs(comparand.final.cptot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.cvtot - comparand.final.cvtot) / max(maxabs(final.cvtot), maxabs(comparand.final.cvtot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_dry_noop_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    per_case: true
+    expr: maxabs(final.rhoe_d - comparand.final.rhoe_d) / max(maxabs(final.rhoe_d), maxabs(comparand.final.rhoe_d), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: converged
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: final.converged
+    op: eq
+    value: 1
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: satadj_evaporates_all
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+    expr: maxabs(interior * final.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: satadj_evaporates_all
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      qsum: initial.qv + initial.qc
+    expr: maxabs(interior * (final.qv - qsum)) / maxabs(interior * qsum)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: satadj_evaporates_all
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      cvv: inputs.constants.cpvap - inputs.constants.rvap
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      qsum: initial.qv + initial.qc
+      cvnew: initial.cvtot + initial.qc * (cvv - inputs.constants.cl)
+      tstar: (initial.temp * initial.cvtot + initial.qv * L00 - L00 * qsum) / cvnew
+    expr: maxabs(interior * (final.temp - tstar)) / maxabs(interior * tstar)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: satadj_evaporates_all
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      cpnew: initial.cptot + initial.qc * (inputs.constants.cpvap - inputs.constants.cl)
+    expr: maxabs(interior * (final.cptot - cpnew)) / maxabs(interior * cpnew)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: satadj_evaporates_all
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      cvv: inputs.constants.cpvap - inputs.constants.rvap
+      cvnew: initial.cvtot + initial.qc * (cvv - inputs.constants.cl)
+    expr: maxabs(interior * (final.cvtot - cvnew)) / maxabs(interior * cvnew)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: satadj_evaporates_all
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      ref: -L00 * (final.qv - initial.qv) * final.dens
+    expr: maxabs(interior * (final.rhoe_d - ref)) / maxabs(interior * ref)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: maxabs(final.temp - comparand.final.temp) / max(maxabs(final.temp), maxabs(comparand.final.temp), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: maxabs(final.qv - comparand.final.qv) / max(maxabs(final.qv), maxabs(comparand.final.qv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: maxabs(final.qc - comparand.final.qc) / max(maxabs(final.qc), maxabs(comparand.final.qc), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: maxabs(final.cptot - comparand.final.cptot) / max(maxabs(final.cptot), maxabs(comparand.final.cptot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: maxabs(final.cvtot - comparand.final.cvtot) / max(maxabs(final.cvtot), maxabs(comparand.final.cvtot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_subsaturated_evaporates_all_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_subsat
+    - l0_satadj_alt_subsat
+    per_case: true
+    expr: maxabs(final.rhoe_d - comparand.final.rhoe_d) / max(maxabs(final.rhoe_d), maxabs(comparand.final.rhoe_d), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_conservation_pass
+    quantity: converged
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: final.converged
+    op: eq
+    value: 1
+  - test_id: l0_satadj_conservation_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_satadj_conservation_pass
+    quantity: satadj_conservation
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+    expr: maxabs(interior * ((final.qv + final.qc) - (initial.qv + initial.qc)))
+    op: le
+    value: 1.0e-15
+  - test_id: l0_satadj_conservation_pass
+    quantity: satadj_conservation
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      cvv: inputs.constants.cpvap - inputs.constants.rvap
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      qs_final: inputs.constants.psat0 * exp(log(final.temp / inputs.constants.tem00) * (inputs.constants.cpvap - inputs.constants.cl)
+        / inputs.constants.rvap + L00 / inputs.constants.rvap * (1 / inputs.constants.tem00 - 1 / final.temp)) / (final.dens
+        * inputs.constants.rvap * final.temp)
+      dqs_final: qs_final / final.temp * ((inputs.constants.lhv0 + (inputs.constants.cpvap - inputs.constants.cl) * (final.temp
+        - inputs.constants.tem00)) / (inputs.constants.rvap * final.temp) - 1)
+      em: final.temp * final.cvtot + final.qv * L00
+      em0: initial.temp * initial.cvtot + initial.qv * L00
+    expr: max(interior * abs(em - em0) / abs(2e-6 * dqs_final * (L00 + final.temp * (cvv - inputs.constants.cl))))
+    op: le
+    value: 1
+  - test_id: l0_satadj_conservation_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.qv - comparand.final.qv) / max(maxabs(final.qv), maxabs(comparand.final.qv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_conservation_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.qc - comparand.final.qc) / max(maxabs(final.qc), maxabs(comparand.final.qc), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: converged
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: final.converged
+    op: eq
+    value: 1
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      qs_final: inputs.constants.psat0 * exp(log(final.temp / inputs.constants.tem00) * (inputs.constants.cpvap - inputs.constants.cl)
+        / inputs.constants.rvap + L00 / inputs.constants.rvap * (1 / inputs.constants.tem00 - 1 / final.temp)) / (final.dens
+        * inputs.constants.rvap * final.temp)
+      dqs_final: qs_final / final.temp * ((inputs.constants.lhv0 + (inputs.constants.cpvap - inputs.constants.cl) * (final.temp
+        - inputs.constants.tem00)) / (inputs.constants.rvap * final.temp) - 1)
+    expr: max(interior * abs(final.qv - qs_final) / (2e-6 * abs(dqs_final)))
+    op: le
+    value: 1
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    case: l0_satadj_supersat
+    bind:
+      pairs: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - 1 - floor(xc)))
+      cvv: inputs.constants.cpvap - inputs.constants.rvap
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      qs_final: inputs.constants.psat0 * exp(log(final.temp / inputs.constants.tem00) * (inputs.constants.cpvap - inputs.constants.cl)
+        / inputs.constants.rvap + L00 / inputs.constants.rvap * (1 / inputs.constants.tem00 - 1 / final.temp)) / (final.dens
+        * inputs.constants.rvap * final.temp)
+      em: final.temp * final.cvtot + final.qv * L00
+      em0: initial.temp * initial.cvtot + initial.qv * L00
+      drift_ratio: (em - em0) / ((final.qv - qs_final) * (L00 + final.temp * (cvv - inputs.constants.cl)))
+    expr: max(pairs * abs(drift_ratio - 1))
+    op: le
+    value: 0.001
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    case: l0_satadj_supersat
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+    expr: min(interior * final.qc)
+    op: ge
+    value: 0
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    case: l0_satadj_supersat
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+    expr: min(interior * final.qc + (1 - interior))
+    op: gt
+    value: 0
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    case: l0_satadj_branch
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+    expr: min(interior * final.qc)
+    op: ge
+    value: 0
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    case: l0_satadj_branch
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+    expr: min(interior * final.qc + (1 - interior))
+    op: gt
+    value: 0
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      dqv: final.qv - initial.qv
+      right: -L00 * dqv * final.dens
+    expr: maxabs(interior * (final.rhoe_d - right)) / maxabs(interior * right)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      dqv: final.qv - initial.qv
+      left: final.cptot - initial.cptot
+      right: (inputs.constants.cpvap - inputs.constants.cl) * dqv
+    expr: maxabs(interior * (left - right)) / maxabs(interior * right)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: satadj_saturated
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      cvv: inputs.constants.cpvap - inputs.constants.rvap
+      dqv: final.qv - initial.qv
+      left: final.cvtot - initial.cvtot
+      right: (cvv - inputs.constants.cl) * dqv
+    expr: maxabs(interior * (left - right)) / maxabs(interior * right)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.temp - comparand.final.temp) / max(maxabs(final.temp), maxabs(comparand.final.temp), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.qv - comparand.final.qv) / max(maxabs(final.qv), maxabs(comparand.final.qv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.qc - comparand.final.qc) / max(maxabs(final.qc), maxabs(comparand.final.qc), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.cptot - comparand.final.cptot) / max(maxabs(final.cptot), maxabs(comparand.final.cptot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.cvtot - comparand.final.cvtot) / max(maxabs(final.cvtot), maxabs(comparand.final.cvtot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_saturated_state_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.rhoe_d - comparand.final.rhoe_d) / max(maxabs(final.rhoe_d), maxabs(comparand.final.rhoe_d), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: converged
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: final.converged
+    op: eq
+    value: 1
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: halo_untouched
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      halo: 1 - interior
+    expr: maxabs(halo * (final.temp - initial.temp))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: halo_untouched
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      halo: 1 - interior
+    expr: maxabs(halo * (final.qv - initial.qv))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: halo_untouched
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      halo: 1 - interior
+    expr: maxabs(halo * (final.qc - initial.qc))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: halo_untouched
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      halo: 1 - interior
+    expr: maxabs(halo * (final.cptot - initial.cptot))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: halo_untouched
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      halo: 1 - interior
+    expr: maxabs(halo * (final.cvtot - initial.cvtot))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: halo_untouched
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      halo: 1 - interior
+    expr: maxabs(halo * final.rhoe_d)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.temp - comparand.final.temp) / max(maxabs(final.temp), maxabs(comparand.final.temp), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.qv - comparand.final.qv) / max(maxabs(final.qv), maxabs(comparand.final.qv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.qc - comparand.final.qc) / max(maxabs(final.qc), maxabs(comparand.final.qc), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.cptot - comparand.final.cptot) / max(maxabs(final.cptot), maxabs(comparand.final.cptot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.cvtot - comparand.final.cvtot) / max(maxabs(final.cvtot), maxabs(comparand.final.cvtot), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_satadj_halo_untouched_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    per_case: true
+    expr: maxabs(final.rhoe_d - comparand.final.rhoe_d) / max(maxabs(final.rhoe_d), maxabs(comparand.final.rhoe_d), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_dens_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_dens_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_temp_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_temp_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_bad_range_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_bad_range
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dens_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_dens_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dens_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_dens_nonpositive
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dens_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_dens_nonpositive
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dens_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_dens_nonpositive
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dens_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_dens_nonpositive
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_dens_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_dens_nonpositive
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_temp_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_nonpositive
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_nonpositive
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_nonpositive
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_nonpositive
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_nonpositive
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cvtot_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_cvtot_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cvtot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cvtot_nonpositive
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cvtot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cvtot_nonpositive
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cvtot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cvtot_nonpositive
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cvtot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cvtot_nonpositive
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cvtot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cvtot_nonpositive
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_bad_range_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_bad_range
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_bad_range_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_bad_range
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_bad_range_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_bad_range
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_bad_range_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_bad_range
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_bad_range_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_bad_range
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_bad_range_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_bad_range
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: converged
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    expr: final.converged
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.temp - initial.temp))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.qv - initial.qv))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.qc - initial.qc))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.cptot - initial.cptot))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.cvtot - initial.cvtot))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * final.rhoe_d)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_neighbours
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      m36: max(0, 1 - abs(floor(xc) - 2)) + max(0, 1 - abs(floor(xc) - 5))
+    expr: maxabs(m36 * final.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_neighbours
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      m57: max(0, 1 - abs(floor(xc) - 4)) + max(0, 1 - abs(floor(xc) - 6))
+      L00: inputs.constants.lhv0 - (inputs.constants.cpvap - inputs.constants.cl) * inputs.constants.tem00
+      qs_final: inputs.constants.psat0 * exp(log(final.temp / inputs.constants.tem00) * (inputs.constants.cpvap - inputs.constants.cl)
+        / inputs.constants.rvap + L00 / inputs.constants.rvap * (1 / inputs.constants.tem00 - 1 / final.temp)) / (final.dens
+        * inputs.constants.rvap * final.temp)
+      dqs_final: qs_final / final.temp * ((inputs.constants.lhv0 + (inputs.constants.cpvap - inputs.constants.cl) * (final.temp
+        - inputs.constants.tem00)) / (inputs.constants.rvap * final.temp) - 1)
+    expr: max(m57 * abs(final.qv - qs_final) / (2e-6 * abs(dqs_final)))
+    op: le
+    value: 1
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_neighbours
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      m57: max(0, 1 - abs(floor(xc) - 4)) + max(0, 1 - abs(floor(xc) - 6))
+    expr: min(m57 * final.qc + (1 - m57))
+    op: gt
+    value: 0
+  - test_id: l0_satadj_nonconverged_xfail
+    quantity: nonconverged_neighbours
+    target_cases:
+    - l0_satadj_nonconverged
+    per_case: true
+    bind:
+      interior: min(1, max(0, floor(xc) - (inputs.grid.ks - 2))) * min(1, max(0, inputs.grid.ke - floor(xc)))
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(interior * (1 - at4) * ((final.qv + final.qc) - (initial.qv + initial.qc)))
+    op: le
+    value: 1.0e-15
+  - test_id: l0_satadj_limit_xfail
+    quantity: converged
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    expr: final.converged
+    op: eq
+    value: 0
+  - test_id: l0_satadj_limit_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_satadj_limit_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.temp - initial.temp))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_limit_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.qv - initial.qv))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_limit_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.qc - initial.qc))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_limit_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.cptot - initial.cptot))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_limit_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * (final.cvtot - initial.cvtot))
+    op: eq
+    value: 0
+  - test_id: l0_satadj_limit_xfail
+    quantity: nonconverged_cell_held
+    target_cases:
+    - l0_satadj_limit
+    per_case: true
+    bind:
+      at4: max(0, 1 - abs(floor(xc) - 3))
+    expr: maxabs(at4 * final.rhoe_d)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cptot_nonpositive_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_cptot_nonpositive
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cptot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cptot_nonpositive
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cptot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cptot_nonpositive
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cptot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cptot_nonpositive
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cptot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cptot_nonpositive
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_cptot_nonpositive_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_cptot_nonpositive
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_ks_below_one_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_ks_below_one
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_ke_above_ka_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_ke_above_ka
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ks_below_one_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_ks_below_one
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ks_below_one_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ks_below_one
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ks_below_one_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ks_below_one
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ks_below_one_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ks_below_one
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ks_below_one_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ks_below_one
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ks_below_one_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ks_below_one
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ke_above_ka_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_ke_above_ka
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ke_above_ka_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ke_above_ka
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ke_above_ka_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ke_above_ka
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ke_above_ka_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ke_above_ka
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ke_above_ka_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ke_above_ka
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_ke_above_ka_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_ke_above_ka
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+  - test_id: l0_temp_zero_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_temp_zero
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_zero_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_satadj_temp_zero
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_zero_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_zero
+    per_case: true
+    expr: maxabs(final.temp - initial.temp)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_zero_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_zero
+    per_case: true
+    expr: maxabs(final.qv - initial.qv)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_zero_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_zero
+    per_case: true
+    expr: maxabs(final.qc - initial.qc)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_zero_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_zero
+    per_case: true
+    expr: maxabs(final.cptot - initial.cptot)
+    op: eq
+    value: 0
+  - test_id: l0_satadj_temp_zero_xfail
+    quantity: refused_inputs_held
+    target_cases:
+    - l0_satadj_temp_zero
+    per_case: true
+    expr: maxabs(final.cvtot - initial.cvtot)
+    op: eq
+    value: 0
+dependency:
+  node_key: component/microphysics_saturation_liquid_1d_column@0.1.0
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: microphysics_saturation_liquid_1d_column__dens2qsat_liq
+    exercised_by:
+    - l0_qsat_reference_point_pass
+    - l0_qsat_clausius_clapeyron_pass
+    - l0_qsat_monotone_pass
+    - l0_qsat_halo_untouched_pass
+    - l0_dens_nonpositive_xfail
+    - l0_temp_nonpositive_xfail
+    - l0_bad_range_xfail
+    - l0_ks_below_one_xfail
+    - l0_ke_above_ka_xfail
+    - l0_temp_zero_xfail
+  - operation_id: microphysics_saturation_liquid_1d_column__saturation_adjustment
+    exercised_by:
+    - l0_satadj_dry_noop_pass
+    - l0_satadj_subsaturated_evaporates_all_pass
+    - l0_satadj_conservation_pass
+    - l0_satadj_saturated_state_pass
+    - l0_satadj_halo_untouched_pass
+    - l0_satadj_dens_nonpositive_xfail
+    - l0_satadj_temp_nonpositive_xfail
+    - l0_satadj_cvtot_nonpositive_xfail
+    - l0_satadj_bad_range_xfail
+    - l0_satadj_nonconverged_xfail
+    - l0_satadj_limit_xfail
+    - l0_satadj_cptot_nonpositive_xfail
+    - l0_satadj_ks_below_one_xfail
+    - l0_satadj_ke_above_ka_xfail
+    - l0_satadj_temp_zero_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: microphysics_saturation_liquid_1d_column__dens2qsat_liq
+    signature:
+      kind: subroutine
+      name: microphysics_saturation_liquid_1d_column__dens2qsat_liq
+      args:
+      - name: ka
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ks
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ke
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: temp
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: dens
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: rvap
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: cpvap
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: cl
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: lhv0
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: psat0
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: tem00
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: qsat
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: guard_pass
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+  - symbol: microphysics_saturation_liquid_1d_column__saturation_adjustment
+    signature:
+      kind: subroutine
+      name: microphysics_saturation_liquid_1d_column__saturation_adjustment
+      args:
+      - name: ka
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ks
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ke
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: dens
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: temp
+        rank: 1
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: qv
+        rank: 1
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: qc
+        rank: 1
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: cptot
+        rank: 1
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: cvtot
+        rank: 1
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: rvap
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: cpvap
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: cl
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: lhv0
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: psat0
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: tem00
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: rhoe_d
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ka
+      - name: converged
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+      - name: guard_pass
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+  - operation: microphysics_saturation_liquid_1d_column__dens2qsat_liq
+    result: guard_pass
+    cases:
+    - l0_qsat_ref
+    - l0_qsat_temp_ramp
+    - l0_qsat_dens_ramp
+    - l0_dens_nonpositive
+    - l0_temp_nonpositive
+    - l0_bad_range
+    - l0_ks_below_one
+    - l0_ke_above_ka
+    - l0_qsat_alt
+    - l0_qsat_range
+    - l0_qsat_one_cell
+    - l0_temp_zero
+    arguments:
+      ka: inputs.grid.ka
+      ks: inputs.grid.ks
+      ke: inputs.grid.ke
+      temp: state.temp
+      dens: state.dens
+      rvap: inputs.constants.rvap
+      cpvap: inputs.constants.cpvap
+      cl: inputs.constants.cl
+      lhv0: inputs.constants.lhv0
+      psat0: inputs.constants.psat0
+      tem00: inputs.constants.tem00
+      qsat: state.qsat
+      guard_pass: state.guard_pass
+  - operation: microphysics_saturation_liquid_1d_column__saturation_adjustment
+    result: guard_pass
+    cases:
+    - l0_satadj_dry
+    - l0_satadj_subsat
+    - l0_satadj_supersat
+    - l0_satadj_dens_nonpositive
+    - l0_satadj_temp_nonpositive
+    - l0_satadj_cvtot_nonpositive
+    - l0_satadj_bad_range
+    - l0_satadj_nonconverged
+    - l0_satadj_branch
+    - l0_satadj_slow
+    - l0_satadj_limit
+    - l0_satadj_cptot_nonpositive
+    - l0_satadj_ks_below_one
+    - l0_satadj_ke_above_ka
+    - l0_satadj_alt_subsat
+    - l0_satadj_alt_supersat
+    - l0_satadj_range
+    - l0_satadj_one_cell
+    - l0_satadj_temp_zero
+    arguments:
+      ka: inputs.grid.ka
+      ks: inputs.grid.ks
+      ke: inputs.grid.ke
+      dens: state.dens
+      temp: state.temp
+      qv: state.qv
+      qc: state.qc
+      cptot: state.cptot
+      cvtot: state.cvtot
+      rvap: inputs.constants.rvap
+      cpvap: inputs.constants.cpvap
+      cl: inputs.constants.cl
+      lhv0: inputs.constants.lhv0
+      psat0: inputs.constants.psat0
+      tem00: inputs.constants.tem00
+      rhoe_d: state.rhoe_d
+      converged: state.converged
+      guard_pass: state.guard_pass

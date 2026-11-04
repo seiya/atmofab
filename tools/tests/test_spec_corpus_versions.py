@@ -352,6 +352,38 @@ class SpecCorpusVersionTest(unittest.TestCase):
         self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 20)
         self.assertEqual(suites_unmigrated(entries, REPO), [])
 
+    def test_each_physics_tests_md_has_a_transcription_compile_static_accepts(self) -> None:
+        """Issue #589 PR-3: `data/drive_ir/pr3_evidence/ir/` holds one hand-written IR per physics
+        node, and `Compile.static` reads it against the real `tests.md` (the quantities and
+        outcome lines, the history line, the host's case evaluation). A `tests.md` change that
+        moves those reddens this row: update the transcription, or a billed `Compile` finds out
+        instead. This says the document can be transcribed, not that a leaf will."""
+        import json
+        import tempfile
+
+        from tools.validate_pipeline_semantics import validate_compile_ir_dir
+        evidence = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
+        physics = {e["spec_id"] for e in self._entries()
+                   if e.get("spec_kind") in ("problem", "component")}
+        self.assertEqual({p.stem for p in evidence.glob("*.yaml")}, physics)
+        for spec_id in sorted(physics):
+            with self.subTest(spec_id=spec_id), tempfile.TemporaryDirectory() as tmp:
+                text = (evidence / f"{spec_id}.yaml").read_text(encoding="utf-8")
+                ir = yaml.safe_load(text)
+                ir_dir = Path(tmp)
+                (ir_dir / "spec.ir.yaml").write_text(text, encoding="utf-8")
+                key = ir["meta"]["node_key"]
+                deps = [d["node_key"] for d in (ir.get("dependency") or {}).get("direct_deps") or []]
+                (ir_dir / "dependency_graph.json").write_text(json.dumps({
+                    "node_key": key, "direct_deps": deps, "transitive_deps": [],
+                    "all_nodes": [{"node_key": k, "topo_level": 0} for k in deps]
+                    + [{"node_key": key, "topo_level": 1 if deps else 0}],
+                    "profiles": (ir.get("dependency") or {}).get("profiles") or []}))
+                (ir_dir / "ir_meta.json").write_text(json.dumps({
+                    "attempt_count": 1, "verification_status": "pass",
+                    "last_fail_reason": None, "debug_mode": False, "context_isolated": True}))
+                self.assertEqual(validate_compile_ir_dir(REPO, ir_dir), [])
+
     def test_the_flag_rule_is_driven_both_ways(self) -> None:
         """Synthetic: a `pass` test missing its operation's result, a time-marching one missing
         `run.n_step` or the `__init` result, and `input_guard` are each reported; each satisfied

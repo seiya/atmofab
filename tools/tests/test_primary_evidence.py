@@ -4603,6 +4603,19 @@ class DriveViolationsTest(unittest.TestCase):
         self.assertTrue(cases)
         self.assertEqual([v for v in self._v(ir) if "extent" in v or "count" in v], [])
 
+    def test_a_zero_extent_on_any_axis_of_a_pass_case_is_refused(self) -> None:   # (c)
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml").read_text())
+        for axis in ("nx", "ny"):
+            with self.subTest(axis=axis):
+                changed = copy.deepcopy(ir)
+                case = next(c for c in changed["case"]["test_case_set"] if c["case_id"] == "l0_zero_f")
+                case["inputs"]["grid"][axis] = 0
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError, "an extent of 0"):
+                    pe.evaluate_case_inputs(changed)
+        self.assertEqual(sorted(pe.evaluate_case_inputs(ir)),
+                         sorted(c["case_id"] for c in ir["case"]["test_case_set"]))
+
     def test_a_negative_extent_is_refused(self) -> None:   # (c)
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "not an extent >= 0"):
             pe._extent_by("nx", lambda _name: -1, "w")

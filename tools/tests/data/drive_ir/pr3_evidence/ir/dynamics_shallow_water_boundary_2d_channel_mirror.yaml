@@ -1,0 +1,1814 @@
+schema_version: '1.0'
+meta:
+  node_key: component/dynamics_shallow_water_boundary_2d_channel_mirror@0.2.0
+  spec_kind: component
+  spec_id: dynamics_shallow_water_boundary_2d_channel_mirror
+  spec_version: 0.2.0
+  source_refs:
+    controlled_spec: spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/controlled_spec.md
+    tests: spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/tests.md
+    deps: spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_channel_mirror/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_ng1_even
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 1
+        nx_total: 6
+        ny_total: 5
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng1_odd
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 1
+        nx_total: 6
+        ny_total: 5
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng2_even
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 2
+        nx_total: 8
+        ny_total: 7
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng2_odd
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 2
+        nx_total: 8
+        ny_total: 7
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqny_even
+    inputs:
+      grid:
+        nx: 4
+        ny: 2
+        ng: 2
+        nx_total: 8
+        ny_total: 6
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqny_odd
+    inputs:
+      grid:
+        nx: 4
+        ny: 2
+        ng: 2
+        nx_total: 8
+        ny_total: 6
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqnx_even
+    inputs:
+      grid:
+        nx: 2
+        ny: 3
+        ng: 2
+        nx_total: 6
+        ny_total: 7
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqnx_odd
+    inputs:
+      grid:
+        nx: 2
+        ny: 3
+        ng: 2
+        nx_total: 6
+        ny_total: 7
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng1_even_axis
+    inputs:
+      grid:
+        nx: 3
+        ny: 4
+        ng: 1
+        nx_total: 5
+        ny_total: 6
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng1_odd_axis
+    inputs:
+      grid:
+        nx: 3
+        ny: 4
+        ng: 1
+        nx_total: 5
+        ny_total: 6
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng2_even_axis
+    inputs:
+      grid:
+        nx: 3
+        ny: 4
+        ng: 2
+        nx_total: 7
+        ny_total: 8
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng2_odd_axis
+    inputs:
+      grid:
+        nx: 3
+        ny: 4
+        ng: 2
+        nx_total: 7
+        ny_total: 8
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqny_even_axis
+    inputs:
+      grid:
+        nx: 2
+        ny: 4
+        ng: 2
+        nx_total: 6
+        ny_total: 8
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqny_odd_axis
+    inputs:
+      grid:
+        nx: 2
+        ny: 4
+        ng: 2
+        nx_total: 6
+        ny_total: 8
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqnx_even_axis
+    inputs:
+      grid:
+        nx: 3
+        ny: 2
+        ng: 2
+        nx_total: 7
+        ny_total: 6
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ngeqnx_odd_axis
+    inputs:
+      grid:
+        nx: 3
+        ny: 2
+        ng: 2
+        nx_total: 7
+        ny_total: 6
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng2_odd_xmir
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 2
+        nx_total: 8
+        ny_total: 7
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(9 - (x + 0.5)) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_ng2_odd_ymir
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 2
+        nx_total: 8
+        ny_total: 7
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (8 - (y + 0.5))) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ny
+    inputs:
+      grid:
+        nx: 4
+        ny: 1
+        ng: 1
+        nx_total: 6
+        ny_total: 3
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_nx
+    inputs:
+      grid:
+        nx: 1
+        ny: 4
+        ng: 1
+        nx_total: 3
+        ny_total: 6
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ng_zero
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 0
+        nx_total: 4
+        ny_total: 3
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ng_over_ny
+    inputs:
+      grid:
+        nx: 4
+        ny: 2
+        ng: 3
+        nx_total: 10
+        ny_total: 8
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ng_over_nx
+    inputs:
+      grid:
+        nx: 2
+        ny: 4
+        ng: 3
+        nx_total: 8
+        ny_total: 10
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_wall_axis_0
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 1
+        nx_total: 6
+        ny_total: 5
+      boundary:
+        wall_axis: 0
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_wall_axis_3
+    inputs:
+      grid:
+        nx: 4
+        ny: 3
+        ng: 1
+        nx_total: 6
+        ny_total: 5
+      boundary:
+        wall_axis: 3
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (10*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ny_axis
+    inputs:
+      grid:
+        nx: 1
+        ny: 4
+        ng: 1
+        nx_total: 3
+        ny_total: 6
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_nx_axis
+    inputs:
+      grid:
+        nx: 4
+        ny: 1
+        ng: 1
+        nx_total: 6
+        ny_total: 3
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ng_zero_axis
+    inputs:
+      grid:
+        nx: 3
+        ny: 4
+        ng: 0
+        nx_total: 3
+        ny_total: 4
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ng_over_ny_axis
+    inputs:
+      grid:
+        nx: 2
+        ny: 4
+        ng: 3
+        nx_total: 8
+        ny_total: 10
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_invalid_ng_over_nx_axis
+    inputs:
+      grid:
+        nx: 4
+        ny: 2
+        ng: 3
+        nx_total: 10
+        ny_total: 8
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * ((x + 0.5) + 10*(y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0,
+        min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_large_even
+    inputs:
+      grid:
+        nx: 256
+        ny: 256
+        ng: 2
+        nx_total: 260
+        ny_total: 260
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (1000*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_large_odd
+    inputs:
+      grid:
+        nx: 256
+        ny: 256
+        ng: 2
+        nx_total: 260
+        ny_total: 260
+      boundary:
+        wall_axis: 2
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (1000*(x + 0.5) + (y + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_large_even_axis
+    inputs:
+      grid:
+        nx: 256
+        ny: 256
+        ng: 2
+        nx_total: 260
+        ny_total: 260
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 0
+        wall_sign: 1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (1000*(y + 0.5) + (x + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+  - case_id: l0_large_odd_axis
+    inputs:
+      grid:
+        nx: 256
+        ny: 256
+        ng: 2
+        nx_total: 260
+        ny_total: 260
+      boundary:
+        wall_axis: 1
+        odd_at_wall: 1
+        wall_sign: -1
+      test_profile_id: dynamics_shallow_water_boundary_2d_channel_mirror_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.ny +
+        1 - (y + 0.5))) * (1000*(y + 0.5) + (x + 0.5)) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) *
+        max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x + 0.5))) * max(0, min(1, (y + 0.5) - inputs.grid.ng))
+        * max(0, min(1, inputs.grid.ng + inputs.grid.ny + 1 - (y + 0.5))))
+      U_out: -999.0
+algorithm:
+  algorithm_id: channel_mirror_ghost_mapping
+  execution_mode: conditional
+  steps:
+  - step_id: step_01_input_guard
+    step_kind: diagnostic
+    operation_ref: input_guard
+    inputs:
+    - nx
+    - ny
+    - ng
+    - wall_axis
+    outputs:
+    - grid_valid_op
+    description: First action of dynamics_shallow_water_boundary_2d_channel_mirror__apply (controlled spec section
+      4). grid_valid_op = (nx >= 2) and (ny >= 2) and (ng >= 1) and (ng <= nx) and (ng <= ny) and (wall_axis ==
+      1 or wall_axis == 2). Every clause is checked independently of wall_axis, so ng>nx and ng>ny are refused in
+      either orientation. If grid_valid_op is false the operation returns immediately with grid_valid = false, performs
+      no index access into U_in, and U_out is not a valid mapping (it must still be assigned, e.g. left as a copy-free
+      defined value such as zeros; no test reads it). No fallback to another boundary treatment.
+  - step_id: step_02_periodic_wrap
+    step_kind: boundary_apply
+    operation_ref: periodic_wrap
+    inputs:
+    - U_in
+    - nx
+    - ny
+    - ng
+    - nx_total
+    - ny_total
+    - wall_axis
+    outputs:
+    - U_out
+    description: 'Step 1 of __apply, only when grid_valid_op is true: the periodic mapping along the axis that is
+      NOT wall_axis, reading interior cells of U_in only (ghost cells of U_in are never read). wall_axis = 2 (periodic
+      in i): for every interior row j = ng+1..ng+ny: U_out(i,j) = U_in(i,j) for i = ng+1..ng+nx; U_out(k,j) = U_in(k+nx,j)
+      for k = 1..ng; U_out(ng+nx+k,j) = U_in(ng+k,j) for k = 1..ng. wall_axis = 1 (periodic in j): for every interior
+      column i = ng+1..ng+nx: U_out(i,j) = U_in(i,j) for j = ng+1..ng+ny; U_out(i,k) = U_in(i,k+ny) for k = 1..ng;
+      U_out(i,ng+ny+k) = U_in(i,ng+k) for k = 1..ng. Each orientation is computed along its own axes; realising
+      one through the other (transpose, map at the other wall_axis, transpose back) is forbidden. The axis is chosen
+      from wall_axis alone.'
+  - step_id: step_03_wall_mirror
+    step_kind: boundary_apply
+    operation_ref: wall_mirror
+    inputs:
+    - U_out
+    - nx
+    - ny
+    - ng
+    - nx_total
+    - ny_total
+    - wall_axis
+    - odd_at_wall
+    - s
+    outputs:
+    - U_out
+    description: 'Step 2 of __apply, after step_02 and only when grid_valid_op is true: the mirror (free-slip wall)
+      mapping along wall_axis, READ FROM U_out as completed by step_02 (never from U_in), with s = -1 when odd_at_wall
+      is true and s = +1 when false. wall_axis = 2 (walls at the ends of j): for every column i = 1..nx_total and
+      k = 1..ng: U_out(i, ng-k+1) = s*U_out(i, ng+k); U_out(i, ng+ny+k) = s*U_out(i, ng+ny-k+1). wall_axis = 1 (walls
+      at the ends of i): for every row j = 1..ny_total and k = 1..ng: U_out(ng-k+1, j) = s*U_out(ng+k, j); U_out(ng+nx+k,
+      j) = s*U_out(ng+nx-k+1, j). Because the mirror runs over every line including the periodic ghost lines of
+      step_02, the corner ghost cells are the (signed) mirror of the periodic images and every cell of U_out is
+      defined. Interior cells are never sign-reversed. Then grid_valid = true is returned. No periodic fallback
+      on the wall axis, no extrapolated ghost, no direct wall flux.'
+  ordering:
+  - step_01_input_guard
+  - step_02_periodic_wrap
+  - step_03_wall_mirror
+  control_condition:
+  - 'step_01_input_guard: if grid_valid_op is false, skip step_02 and step_03 and return grid_valid = false'
+  - 'step_02 and step_03 dispatch on wall_axis: wall_axis == 2 selects the periodic-in-i / mirror-in-j formulas,
+    wall_axis == 1 the periodic-in-j / mirror-in-i formulas'
+  - the sign s of step_03 is selected by odd_at_wall alone
+  iteration_contract:
+    applies: false
+    rationale: the operation maps one field once; there is no time loop or iteration in this component
+  update_semantics:
+    target_variables:
+    - U_out
+    - grid_valid
+    update_order: sequential
+    notes: U_out is intent(out), separate from U_in (intent(in)); no in-place mapping and no aliasing of the two
+  temporaries:
+  - name: grid_valid_op
+    shape_expr: scalar
+  derived_field_rules:
+  - name: s
+    rule: s = -1 when odd_at_wall is true, s = +1 when odd_at_wall is false (odd reflection for the wall-normal
+      momentum, even for h and the wall-tangential momentum). The case's boundary.wall_sign carries the same number
+      for the host's predicates only; the kernel must decide the sign from odd_at_wall alone.
+  - name: nx_total
+    rule: padded extent along the first array axis, nx_total = nx + 2*ng, passed by the caller (case grid.nx_total);
+      the padded index range is i = 1..nx_total, interior i = ng+1..ng+nx
+  - name: ny_total
+    rule: padded extent along the second array axis, ny_total = ny + 2*ng, passed by the caller (case grid.ny_total);
+      the padded index range is j = 1..ny_total, interior j = ng+1..ng+ny
+  invariants:
+  - the ghost cells of U_in are never read by dynamics_shallow_water_boundary_2d_channel_mirror__apply
+  - 'on a valid grid every cell of U_out is defined: interior cells equal U_in, periodic ghosts are copies of interior
+    cells, wall ghosts and corners are s times copies of step-1 results'
+  - "the mapping at wall_axis=1 of V with extents (nx, ny) equals the transpose of the mapping at wall_axis=2 of\
+    \ V^T with extents (ny, nx), cell by cell; it also commutes with reversal of either array axis \u2014 properties\
+    \ checked by tests, not an implementation route"
+  - 'the mapping is linear in U_in and AD-ready: index wrap and sign reversal are explicit discrete operations'
+  - grid_valid is false for nx<2, ny<2, ng<1, ng>nx, ng>ny, or wall_axis not in {1,2}, in either orientation
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: nx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: interior extent along the first axis (case grid.nx)
+  - name: ny
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: interior extent along the second axis (case grid.ny)
+  - name: ng
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: ghost width (case grid.ng)
+  - name: nx_total
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: padded first-axis extent (case grid.nx_total)
+  - name: ny_total
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: padded second-axis extent (case grid.ny_total)
+  - name: wall_axis
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'array axis carrying the walls (case boundary.wall_axis): 2 = walls in j, periodic in i; 1 = walls
+      in i, periodic in j; anything else is invalid'
+  - name: odd_at_wall
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: sign rule (case boundary.odd_at_wall, 1 = true, 0 = false); fixes s in step_03
+  - name: U_in
+    shape_expr: '[nx_total, ny_total]'
+    evidence_ref: raw/state_snapshots
+    description: ghost-extended input field, the case's initial_state.U_in
+  outputs:
+  - name: U_out
+    shape_expr: '[nx_total, ny_total]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - U_out
+    description: the field after the channel ghost mapping; pre-call content -999
+  - name: grid_valid
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - grid_valid
+    description: the operation's logical result, written by the driver as 1 / 0 after the call (0 before it)
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: U_in
+          shape_expr: '[nx_total, ny_total]'
+        - name: U_out
+          shape_expr: '[nx_total, ny_total]'
+        - name: grid_valid
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: x
+          axis: 0
+          count: inputs.grid.nx_total
+          length: inputs.grid.nx_total
+          placement: cell_center
+        - name: y
+          axis: 1
+          count: inputs.grid.ny_total
+          length: inputs.grid.ny_total
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - U_in
+    - U_out
+    - grid_valid
+    - nx
+    - ny
+    - ng
+    - nx_total
+    - ny_total
+    - wall_axis
+    - odd_at_wall
+  tests:
+  - test_id: l0_periodic_x_wrap_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    quantities:
+    - grid_valid
+    - x_wrap
+  - test_id: l0_wall_even_mirror_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_ng1_even
+    - l0_ng2_even
+    - l0_ngeqny_even
+    - l0_ngeqnx_even
+    - l0_large_even
+    quantities:
+    - grid_valid
+    - y_even_mirror
+  - test_id: l0_wall_odd_mirror_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_ng1_odd
+    - l0_ng2_odd
+    - l0_ngeqny_odd
+    - l0_ngeqnx_odd
+    - l0_large_odd
+    quantities:
+    - grid_valid
+    - y_odd_mirror
+  - test_id: l0_corner_defined_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    quantities:
+    - corner
+    - grid_valid
+  - test_id: l0_axis_exchange_pair_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    quantities:
+    - axis_exchange_pair_residual
+    - grid_valid
+  - test_id: l0_mirror_pairs_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_ng2_odd
+    - l0_ng2_odd_xmir
+    - l0_ng2_odd_ymir
+    quantities:
+    - grid_valid
+    - mirror_pair_residual
+  - test_id: l0_invalid_ny_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ny
+    - l0_invalid_nx_axis
+    quantities:
+    - grid_valid
+  - test_id: l0_invalid_nx_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_nx
+    - l0_invalid_ny_axis
+    quantities:
+    - grid_valid
+  - test_id: l0_invalid_ng_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ng_zero
+    - l0_invalid_ng_zero_axis
+    quantities:
+    - grid_valid
+  - test_id: l0_invalid_ng_over_ny_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ng_over_ny
+    - l0_invalid_ng_over_nx_axis
+    quantities:
+    - grid_valid
+  - test_id: l0_invalid_ng_over_nx_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ng_over_nx
+    - l0_invalid_ng_over_ny_axis
+    quantities:
+    - grid_valid
+  - test_id: l0_invalid_wall_axis_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_wall_axis_0
+    quantities:
+    - grid_valid
+  - test_id: l0_invalid_wall_axis_three_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_wall_axis_3
+    quantities:
+    - grid_valid
+  predicates:
+  - test_id: l0_periodic_x_wrap_pass
+    quantity: grid_valid
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 1.0
+  - test_id: l0_periodic_x_wrap_pass
+    quantity: x_wrap
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    per_case: true
+    bind:
+      ci: x + 0.5
+      cj: y + 0.5
+      mL: max(0, min(1, inputs.grid.ng + 1 - ci))
+      mR: max(0, min(1, ci - inputs.grid.ng - inputs.grid.nx))
+      mXi: 1 - mL - mR
+      mB: max(0, min(1, inputs.grid.ng + 1 - cj))
+      mT: max(0, min(1, cj - inputs.grid.ng - inputs.grid.ny))
+      mYi: 1 - mB - mT
+      W: mL * roll(initial.U_in, -inputs.grid.nx, 0) + mR * roll(initial.U_in, inputs.grid.nx, 0) + mXi * initial.U_in
+    expr: max(mYi * abs(final.U_out - W))
+    op: eq
+    value: 0.0
+  - test_id: l0_periodic_x_wrap_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    per_case: true
+    expr: maxabs(final.U_out - comparand.final.U_out) / max(maxabs(final.U_out), maxabs(comparand.final.U_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_wall_even_mirror_pass
+    quantity: grid_valid
+    target_cases:
+    - l0_ng1_even
+    - l0_ng2_even
+    - l0_ngeqny_even
+    - l0_ngeqnx_even
+    - l0_large_even
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 1.0
+  - test_id: l0_wall_even_mirror_pass
+    quantity: y_even_mirror
+    target_cases:
+    - l0_ng1_even
+    - l0_ng2_even
+    - l0_ngeqny_even
+    - l0_ngeqnx_even
+    - l0_large_even
+    per_case: true
+    bind:
+      ci: x + 0.5
+      cj: y + 0.5
+      mL: max(0, min(1, inputs.grid.ng + 1 - ci))
+      mR: max(0, min(1, ci - inputs.grid.ng - inputs.grid.nx))
+      mXi: 1 - mL - mR
+      mB: max(0, min(1, inputs.grid.ng + 1 - cj))
+      mT: max(0, min(1, cj - inputs.grid.ng - inputs.grid.ny))
+      mYi: 1 - mB - mT
+      Fy: flip(initial.U_in, 1)
+      devB: abs(final.U_out - roll(Fy, 0, -inputs.grid.ny))
+      devT: abs(final.U_out - roll(Fy, 0, inputs.grid.ny))
+      devI: abs(final.U_out - initial.U_in)
+    expr: max(mXi * (mB * devB + mT * devT + mYi * devI))
+    op: eq
+    value: 0.0
+  - test_id: l0_wall_even_mirror_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_ng1_even
+    - l0_ng2_even
+    - l0_ngeqny_even
+    - l0_ngeqnx_even
+    - l0_large_even
+    per_case: true
+    expr: maxabs(final.U_out - comparand.final.U_out) / max(maxabs(final.U_out), maxabs(comparand.final.U_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_wall_odd_mirror_pass
+    quantity: grid_valid
+    target_cases:
+    - l0_ng1_odd
+    - l0_ng2_odd
+    - l0_ngeqny_odd
+    - l0_ngeqnx_odd
+    - l0_large_odd
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 1.0
+  - test_id: l0_wall_odd_mirror_pass
+    quantity: y_odd_mirror
+    target_cases:
+    - l0_ng1_odd
+    - l0_ng2_odd
+    - l0_ngeqny_odd
+    - l0_ngeqnx_odd
+    - l0_large_odd
+    per_case: true
+    bind:
+      ci: x + 0.5
+      cj: y + 0.5
+      mL: max(0, min(1, inputs.grid.ng + 1 - ci))
+      mR: max(0, min(1, ci - inputs.grid.ng - inputs.grid.nx))
+      mXi: 1 - mL - mR
+      mB: max(0, min(1, inputs.grid.ng + 1 - cj))
+      mT: max(0, min(1, cj - inputs.grid.ng - inputs.grid.ny))
+      mYi: 1 - mB - mT
+      Fy: flip(initial.U_in, 1)
+      devB: abs(final.U_out + roll(Fy, 0, -inputs.grid.ny))
+      devT: abs(final.U_out + roll(Fy, 0, inputs.grid.ny))
+      devI: abs(final.U_out - initial.U_in)
+    expr: max(mXi * (mB * devB + mT * devT + mYi * devI))
+    op: eq
+    value: 0.0
+  - test_id: l0_wall_odd_mirror_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_ng1_odd
+    - l0_ng2_odd
+    - l0_ngeqny_odd
+    - l0_ngeqnx_odd
+    - l0_large_odd
+    per_case: true
+    expr: maxabs(final.U_out - comparand.final.U_out) / max(maxabs(final.U_out), maxabs(comparand.final.U_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_corner_defined_pass
+    quantity: corner
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    per_case: true
+    bind:
+      ci: x + 0.5
+      cj: y + 0.5
+      mL: max(0, min(1, inputs.grid.ng + 1 - ci))
+      mR: max(0, min(1, ci - inputs.grid.ng - inputs.grid.nx))
+      mXi: 1 - mL - mR
+      mB: max(0, min(1, inputs.grid.ng + 1 - cj))
+      mT: max(0, min(1, cj - inputs.grid.ng - inputs.grid.ny))
+      W: mL * roll(initial.U_in, -inputs.grid.nx, 0) + mR * roll(initial.U_in, inputs.grid.nx, 0) + mXi * initial.U_in
+      Fw: flip(W, 1)
+      C: mB * roll(Fw, 0, -inputs.grid.ny) + mT * roll(Fw, 0, inputs.grid.ny)
+    expr: max((mL + mR) * (mB + mT) * abs(final.U_out - inputs.boundary.wall_sign * C))
+    op: eq
+    value: 0.0
+  - test_id: l0_corner_defined_pass
+    quantity: grid_valid
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 1.0
+  - test_id: l0_corner_defined_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_large_even
+    - l0_large_odd
+    per_case: true
+    expr: maxabs(final.U_out - comparand.final.U_out) / max(maxabs(final.U_out), maxabs(comparand.final.U_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ng1_even_axis
+    expr: norm2(final.U_out - transpose(at('l0_ng1_even').final.U_out)) / norm2(at('l0_ng1_even').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ng1_odd_axis
+    expr: norm2(final.U_out - transpose(at('l0_ng1_odd').final.U_out)) / norm2(at('l0_ng1_odd').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ng2_even_axis
+    expr: norm2(final.U_out - transpose(at('l0_ng2_even').final.U_out)) / norm2(at('l0_ng2_even').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ng2_odd_axis
+    expr: norm2(final.U_out - transpose(at('l0_ng2_odd').final.U_out)) / norm2(at('l0_ng2_odd').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ngeqny_even_axis
+    expr: norm2(final.U_out - transpose(at('l0_ngeqny_even').final.U_out)) / norm2(at('l0_ngeqny_even').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ngeqny_odd_axis
+    expr: norm2(final.U_out - transpose(at('l0_ngeqny_odd').final.U_out)) / norm2(at('l0_ngeqny_odd').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ngeqnx_even_axis
+    expr: norm2(final.U_out - transpose(at('l0_ngeqnx_even').final.U_out)) / norm2(at('l0_ngeqnx_even').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_ngeqnx_odd_axis
+    expr: norm2(final.U_out - transpose(at('l0_ngeqnx_odd').final.U_out)) / norm2(at('l0_ngeqnx_odd').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: grid_valid
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 1.0
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    per_case: true
+    expr: maxabs(final.U_out - comparand.final.U_out) / max(maxabs(final.U_out), maxabs(comparand.final.U_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: grid_valid
+    target_cases:
+    - l0_ng2_odd
+    - l0_ng2_odd_xmir
+    - l0_ng2_odd_ymir
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 1.0
+  - test_id: l0_mirror_pairs_pass
+    quantity: mirror_pair_residual
+    target_cases:
+    - l0_ng2_odd
+    - l0_ng2_odd_xmir
+    - l0_ng2_odd_ymir
+    case: l0_ng2_odd_xmir
+    expr: norm2(final.U_out - flip(at('l0_ng2_odd').final.U_out, 0)) / norm2(at('l0_ng2_odd').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: mirror_pair_residual
+    target_cases:
+    - l0_ng2_odd
+    - l0_ng2_odd_xmir
+    - l0_ng2_odd_ymir
+    case: l0_ng2_odd_ymir
+    expr: norm2(final.U_out - flip(at('l0_ng2_odd').final.U_out, 1)) / norm2(at('l0_ng2_odd').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_ng2_odd
+    - l0_ng2_odd_xmir
+    - l0_ng2_odd_ymir
+    per_case: true
+    expr: maxabs(final.U_out - comparand.final.U_out) / max(maxabs(final.U_out), maxabs(comparand.final.U_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_ny_xfail
+    quantity: grid_valid
+    target_cases:
+    - l0_invalid_ny
+    - l0_invalid_nx_axis
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_nx_xfail
+    quantity: grid_valid
+    target_cases:
+    - l0_invalid_nx
+    - l0_invalid_ny_axis
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_ng_zero_xfail
+    quantity: grid_valid
+    target_cases:
+    - l0_invalid_ng_zero
+    - l0_invalid_ng_zero_axis
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_ng_over_ny_xfail
+    quantity: grid_valid
+    target_cases:
+    - l0_invalid_ng_over_ny
+    - l0_invalid_ng_over_nx_axis
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_ng_over_nx_xfail
+    quantity: grid_valid
+    target_cases:
+    - l0_invalid_ng_over_nx
+    - l0_invalid_ng_over_ny_axis
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_wall_axis_zero_xfail
+    quantity: grid_valid
+    target_cases:
+    - l0_invalid_wall_axis_0
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_wall_axis_three_xfail
+    quantity: grid_valid
+    target_cases:
+    - l0_invalid_wall_axis_3
+    per_case: true
+    expr: final.grid_valid
+    op: eq
+    value: 0.0
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_large_even_axis
+    expr: norm2(final.U_out - transpose(at('l0_large_even').final.U_out)) / norm2(at('l0_large_even').final.U_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pair_pass
+    quantity: axis_exchange_pair_residual
+    target_cases:
+    - l0_ng1_even
+    - l0_ng1_odd
+    - l0_ng2_even
+    - l0_ng2_odd
+    - l0_ngeqny_even
+    - l0_ngeqny_odd
+    - l0_ngeqnx_even
+    - l0_ngeqnx_odd
+    - l0_ng1_even_axis
+    - l0_ng1_odd_axis
+    - l0_ng2_even_axis
+    - l0_ng2_odd_axis
+    - l0_ngeqny_even_axis
+    - l0_ngeqny_odd_axis
+    - l0_ngeqnx_even_axis
+    - l0_ngeqnx_odd_axis
+    - l0_large_even
+    - l0_large_odd
+    - l0_large_even_axis
+    - l0_large_odd_axis
+    case: l0_large_odd_axis
+    expr: norm2(final.U_out - transpose(at('l0_large_odd').final.U_out)) / norm2(at('l0_large_odd').final.U_out)
+    op: le
+    value: 1.0e-12
+dependency:
+  node_key: component/dynamics_shallow_water_boundary_2d_channel_mirror@0.2.0
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: dynamics_shallow_water_boundary_2d_channel_mirror__apply
+    exercised_by:
+    - l0_periodic_x_wrap_pass
+    - l0_wall_even_mirror_pass
+    - l0_wall_odd_mirror_pass
+    - l0_corner_defined_pass
+    - l0_axis_exchange_pair_pass
+    - l0_mirror_pairs_pass
+    - l0_invalid_ny_xfail
+    - l0_invalid_nx_xfail
+    - l0_invalid_ng_zero_xfail
+    - l0_invalid_ng_over_ny_xfail
+    - l0_invalid_ng_over_nx_xfail
+    - l0_invalid_wall_axis_zero_xfail
+    - l0_invalid_wall_axis_three_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: dynamics_shallow_water_boundary_2d_channel_mirror__apply
+    signature:
+      kind: subroutine
+      name: dynamics_shallow_water_boundary_2d_channel_mirror__apply
+      args:
+      - name: nx
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ny
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ng
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: nx_total
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ny_total
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: wall_axis
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: odd_at_wall
+        rank: 0
+        intent: in
+        spec:
+          type: logical
+      - name: U_in
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx_total
+        - ny_total
+      - name: U_out
+        rank: 2
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx_total
+        - ny_total
+      - name: grid_valid
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+    operation: dynamics_shallow_water_boundary_2d_channel_mirror__apply
+    result: grid_valid
+    arguments:
+      nx: inputs.grid.nx
+      ny: inputs.grid.ny
+      ng: inputs.grid.ng
+      nx_total: inputs.grid.nx_total
+      ny_total: inputs.grid.ny_total
+      wall_axis: inputs.boundary.wall_axis
+      odd_at_wall: inputs.boundary.odd_at_wall
+      U_in: state.U_in
+      U_out: state.U_out
+      grid_valid: state.grid_valid

@@ -1,0 +1,1484 @@
+schema_version: '1.0'
+meta:
+  node_key: component/dynamics_shallow_water_flux_2d_rusanov_p0@0.2.1
+  spec_kind: component
+  spec_id: dynamics_shallow_water_flux_2d_rusanov_p0
+  spec_version: 0.2.1
+  source_refs:
+    controlled_spec: spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov_p0/controlled_spec.md
+    tests: spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov_p0/tests.md
+    deps: spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov_p0/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_distinct
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - 1.5
+        - -0.3
+        - 0.45
+        U_B:
+        - 1.2
+        - 0.24
+        - 0.36
+        U_T:
+        - 1.8
+        - 0.9
+        - -0.18
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+      expected:
+        F_star:
+        - 0.732144976956
+        - 14.732838013826
+        - -1.994646460826
+        G_star:
+        - -1.200395937791
+        - -1.42843553157
+        - 12.697563544012
+        a_x: 4.728579907826
+        a_y: 4.301319792637
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_distinct_axis
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 1.2
+        - 0.36
+        - 0.24
+        U_R:
+        - 1.8
+        - -0.18
+        - 0.9
+        U_B:
+        - 2.0
+        - -0.4
+        - -0.6
+        U_T:
+        - 1.5
+        - 0.45
+        - -0.3
+      pair_sign_F:
+      - 1
+      - 1
+      - 1
+      pair_sign_G:
+      - 1
+      - 1
+      - 1
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_distinct_xmir
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 1.5
+        - 0.3
+        - 0.45
+        U_R:
+        - 2.0
+        - 0.6
+        - -0.4
+        U_B:
+        - 1.2
+        - -0.24
+        - 0.36
+        U_T:
+        - 1.8
+        - -0.9
+        - -0.18
+      pair_sign_F:
+      - -1
+      - 1
+      - -1
+      pair_sign_G:
+      - 1
+      - -1
+      - 1
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_distinct_ymir
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - 0.4
+        U_R:
+        - 1.5
+        - -0.3
+        - -0.45
+        U_B:
+        - 1.8
+        - 0.9
+        - 0.18
+        U_T:
+        - 1.2
+        - 0.24
+        - -0.36
+      pair_sign_F:
+      - 1
+      - 1
+      - -1
+      pair_sign_G:
+      - -1
+      - -1
+      - 1
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_equal_state
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 1.0
+        - 0.2
+        - 0.1
+        U_R:
+        - 1.0
+        - 0.2
+        - 0.1
+        U_B:
+        - 1.5
+        - 0.3
+        - 0.45
+        U_T:
+        - 1.5
+        - 0.3
+        - 0.45
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 0.0
+        - 0.0
+        - 0.0
+        U_R:
+        - 1.0
+        - 0.0
+        - 0.0
+        U_B:
+        - 1.0
+        - 0.0
+        - 0.0
+        U_T:
+        - 1.0
+        - 0.0
+        - 0.0
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_distinct_g981
+    inputs:
+      constants:
+        g: 9.81
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - 1.5
+        - -0.3
+        - 0.45
+        U_B:
+        - 1.2
+        - 0.24
+        - 0.36
+        U_T:
+        - 1.8
+        - 0.9
+        - -0.18
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+      expected:
+        F_star:
+        - 0.732361729518
+        - 14.738707962289
+        - -1.99501494018
+        G_star:
+        - -1.200642693232
+        - -1.428706962556
+        - 12.702278423909
+        a_x: 4.72944691807
+        a_y: 4.302142310774
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry_l_negative
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - -0.5
+        - 0.0
+        - 0.0
+        U_R:
+        - 1.5
+        - -0.3
+        - 0.45
+        U_B:
+        - 1.2
+        - 0.24
+        - 0.36
+        U_T:
+        - 1.8
+        - 0.9
+        - -0.18
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry_r_zero
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - 0.0
+        - 0.0
+        - 0.0
+        U_B:
+        - 1.2
+        - 0.24
+        - 0.36
+        U_T:
+        - 1.8
+        - 0.9
+        - -0.18
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry_r_negative
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - -0.5
+        - 0.0
+        - 0.0
+        U_B:
+        - 1.2
+        - 0.24
+        - 0.36
+        U_T:
+        - 1.8
+        - 0.9
+        - -0.18
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry_b_zero
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - 1.5
+        - -0.3
+        - 0.45
+        U_B:
+        - 0.0
+        - 0.0
+        - 0.0
+        U_T:
+        - 1.8
+        - 0.9
+        - -0.18
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry_b_negative
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - 1.5
+        - -0.3
+        - 0.45
+        U_B:
+        - -0.5
+        - 0.0
+        - 0.0
+        U_T:
+        - 1.8
+        - 0.9
+        - -0.18
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry_t_zero
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - 1.5
+        - -0.3
+        - 0.45
+        U_B:
+        - 1.2
+        - 0.24
+        - 0.36
+        U_T:
+        - 0.0
+        - 0.0
+        - 0.0
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+  - case_id: l0_invalid_dry_t_negative
+    inputs:
+      constants:
+        g: 9.80616
+      initial:
+        U_L:
+        - 2.0
+        - -0.6
+        - -0.4
+        U_R:
+        - 1.5
+        - -0.3
+        - 0.45
+        U_B:
+        - 1.2
+        - 0.24
+        - 0.36
+        U_T:
+        - -0.5
+        - 0.0
+        - 0.0
+      test_profile_id: dynamics_shallow_water_flux_2d_rusanov_p0_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      U_L: inputs.initial.U_L
+      U_R: inputs.initial.U_R
+      U_B: inputs.initial.U_B
+      U_T: inputs.initial.U_T
+      F_star: -999.0
+      G_star: -999.0
+      a_x: -999.0
+      a_y: -999.0
+algorithm:
+  algorithm_id: rusanov_p0_interface_flux
+  execution_mode: sequence
+  description: 'One pointwise call of the published operation dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux per
+    interface pair: given the x-interface left/right states U_L, U_R, the y-interface bottom/top states U_B, U_T (each U =
+    [h, hu, hv], first-order p0 reconstruction already done by the caller) and g, it returns the Rusanov fluxes F_star (x)
+    and G_star (y), each ordered [h, hu, hv], the wave speeds a_x, a_y, and the input guard guard_ok. No time stepping, no
+    boundary handling, no grid loop (vectorisation over a grid is the caller''s).'
+  steps:
+  - step_id: step_01_input_guard
+    step_kind: pointwise_process
+    operation_ref: input_guard
+    inputs:
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    outputs:
+    - guard_ok
+    description: "guard_ok = (U_L(1) > 0) and (U_R(1) > 0) and (U_B(1) > 0) and (U_T(1) > 0), i.e. every one of the four depths\
+      \ h (component 1 of each state, 1-based) is strictly positive. h <= 0 in any state is invalid input and an error (controlled_spec\
+      \ \xA74): guard_ok = false and steps 02-04 are NOT executed (no sqrt of a non-positive depth, no division by h). The\
+      \ values of F_star, G_star, a_x, a_y on a rejected input are not defined by the spec; the implementation still assigns\
+      \ every out argument a defined finite value (zero) on that path so no undefined memory is returned. Per case the four\
+      \ states are the case inputs initial.U_L/U_R/U_B/U_T; in l0_invalid_dry U_L has h = 0, so the guard rejects it."
+  - step_id: step_02_wave_speed
+    step_kind: pointwise_process
+    operation_ref: rusanov_wave_speed
+    inputs:
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    - g
+    outputs:
+    - u_L
+    - u_R
+    - v_B
+    - v_T
+    - c_L
+    - c_R
+    - c_B
+    - c_T
+    - a_x
+    - a_y
+    description: 'Normal velocities and gravity-wave speeds per derived_field_rules: u_L = hu_L/h_L, u_R = hu_R/h_R (x interface,
+      normal component hu), v_B = hv_B/h_B, v_T = hv_T/h_T (y interface, normal component hv), c_S = sqrt(g*h_S) for each
+      side S in {L, R, B, T} with g the case input constants.g. a_x = max(|u_L| + c_L, |u_R| + c_R), a_y = max(|v_B| + c_B,
+      |v_T| + c_T). The absolute value is required (a = u + c without abs is wrong); max and abs are explicit non-differentiable
+      operations (AD readiness).'
+  - step_id: step_03_physical_flux
+    step_kind: flux_compute
+    operation_ref: physical_flux_xy
+    inputs:
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    - g
+    outputs:
+    - F_L
+    - F_R
+    - G_B
+    - G_T
+    description: 'Physical shallow-water fluxes from each interface''s own two states: x flux F(U) = [hu, hu*hu/h + g*h*h/2,
+      hu*hv/h] evaluated at U_L (-> F_L) and U_R (-> F_R); y flux G(U) = [hv, hu*hv/h, hv*hv/h + g*h*h/2] evaluated at U_B
+      (-> G_B) and U_T (-> G_T); g is the case input constants.g.'
+  - step_id: step_04_rusanov_flux
+    step_kind: flux_compute
+    operation_ref: rusanov_flux_2d
+    inputs:
+    - F_L
+    - F_R
+    - G_B
+    - G_T
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    - a_x
+    - a_y
+    outputs:
+    - F_star
+    - G_star
+    description: 'Rusanov (local Lax-Friedrichs) numerical flux, component-wise over [h, hu, hv]: F_star = 0.5*(F_L + F_R)
+      - 0.5*a_x*(U_R - U_L); G_star = 0.5*(G_B + G_T) - 0.5*a_y*(U_T - U_B). The x flux is dissipated with a_x and the y flux
+      with a_y (never swapped). Output order is [h, hu, hv], aligned with U.'
+  ordering:
+  - step_01_input_guard
+  - step_02_wave_speed
+  - step_03_physical_flux
+  - step_04_rusanov_flux
+  control_condition: step_01_input_guard always runs; steps 02, 03 and 04 run only when guard_ok is true (all four depths
+    h > 0). When guard_ok is false the operation returns immediately with guard_ok = false and every other out argument assigned
+    zero.
+  iteration_contract:
+    applies: false
+    rationale: Single pointwise call per interface pair; no loop counter and no stop condition. Time marching belongs to the
+      caller.
+  update_semantics:
+    target_variables:
+    - F_star
+    - G_star
+    - a_x
+    - a_y
+    - guard_ok
+    update_order: sequential
+    notes: All outputs are intent(out) arguments written once per call; the input states are never modified.
+  temporaries:
+  - name: u_L
+    shape_expr: scalar
+  - name: u_R
+    shape_expr: scalar
+  - name: v_B
+    shape_expr: scalar
+  - name: v_T
+    shape_expr: scalar
+  - name: c_L
+    shape_expr: scalar
+  - name: c_R
+    shape_expr: scalar
+  - name: c_B
+    shape_expr: scalar
+  - name: c_T
+    shape_expr: scalar
+  - name: F_L
+    shape_expr: '[3]'
+  - name: F_R
+    shape_expr: '[3]'
+  - name: G_B
+    shape_expr: '[3]'
+  - name: G_T
+    shape_expr: '[3]'
+  derived_field_rules:
+  - name: u_L
+    rule: u_L = U_L(2) / U_L(1)
+    description: x-normal velocity of the left state (hu/h); consumed by step_02_wave_speed.
+  - name: u_R
+    rule: u_R = U_R(2) / U_R(1)
+    description: x-normal velocity of the right state (hu/h).
+  - name: v_B
+    rule: v_B = U_B(3) / U_B(1)
+    description: y-normal velocity of the bottom state (hv/h).
+  - name: v_T
+    rule: v_T = U_T(3) / U_T(1)
+    description: y-normal velocity of the top state (hv/h).
+  - name: c_L
+    rule: c_S = sqrt(g * U_S(1)) for S in {L, R, B, T} (c_L, c_R, c_B, c_T)
+    description: Gravity-wave speed of each side; g is the operation's g argument (case input constants.g).
+  - name: a_x
+    rule: a_x = max(abs(u_L) + c_L, abs(u_R) + c_R)
+    description: Rusanov wave speed of the x interface (published output).
+  - name: a_y
+    rule: a_y = max(abs(v_B) + c_B, abs(v_T) + c_T)
+    description: Rusanov wave speed of the y interface (published output).
+  - name: F_L
+    rule: F(U) = [U(2), U(2)*U(2)/U(1) + g*U(1)*U(1)/2, U(2)*U(3)/U(1)]; F_L = F(U_L), F_R = F(U_R)
+    description: Physical x flux of each side of the x interface.
+  - name: G_B
+    rule: G(U) = [U(3), U(2)*U(3)/U(1), U(3)*U(3)/U(1) + g*U(1)*U(1)/2]; G_B = G(U_B), G_T = G(U_T)
+    description: Physical y flux of each side of the y interface.
+  - name: F_star
+    rule: F_star = 0.5*(F_L + F_R) - 0.5*a_x*(U_R - U_L)
+    description: Rusanov x-interface numerical flux, ordered [h, hu, hv].
+  - name: G_star
+    rule: G_star = 0.5*(G_B + G_T) - 0.5*a_y*(U_T - U_B)
+    description: Rusanov y-interface numerical flux, ordered [h, hu, hv].
+  invariants:
+  - 'Reconstruction is fixed to first-order p0: the supplied interface states are used as-is; no automatic switching of the
+    reconstruction order and no limiter, implicit or explicit.'
+  - Each flux is evaluated from its own interface's two states exactly as defined; a call is never computed through another
+    call (no detection of exchanged/mirrored/side-swapped inputs followed by transforming another configuration's fluxes back).
+  - 'Evaluating both the x and y flux with one routine written in normal/tangential momentum (states passed as [h, normal,
+    tangential], results put back as [h, hu, hv]) is permitted: each flux is still evaluated from its own two states.'
+  - With U_L == U_R the dissipation term vanishes and F_star == F(U_L); with U_B == U_T, G_star == G(U_B).
+  - a_x >= 0 and a_y >= 0 whenever guard_ok is true.
+  - guard_ok is false iff some depth h <= 0 among U_L, U_R, U_B, U_T; then no flux is computed.
+  - No boundary conditions are applied; the operation is pointwise per interface and independent of its position.
+  - 'AD readiness: ad_readiness.enabled = true; max and abs are explicit non-differentiable operations.'
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: U_L
+    shape_expr: '[3]'
+    evidence_ref: raw/state_snapshots
+    description: Interface state [h, hu, hv]; before the call the case input initial.U_L.
+  - name: U_R
+    shape_expr: '[3]'
+    evidence_ref: raw/state_snapshots
+    description: Interface state [h, hu, hv]; before the call the case input initial.U_R.
+  - name: U_B
+    shape_expr: '[3]'
+    evidence_ref: raw/state_snapshots
+    description: Interface state [h, hu, hv]; before the call the case input initial.U_B.
+  - name: U_T
+    shape_expr: '[3]'
+    evidence_ref: raw/state_snapshots
+    description: Interface state [h, hu, hv]; before the call the case input initial.U_T.
+  - name: g
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Gravitational acceleration (m s-2), the case input constants.g; fixes c = sqrt(g*h) in step_02 and the pressure
+      term g*h*h/2 in step_03.
+  outputs:
+  - name: F_star
+    shape_expr: '[3]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - F_star
+  - name: G_star
+    shape_expr: '[3]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - G_star
+  - name: a_x
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - a_x
+  - name: a_y
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - a_y
+  - name: guard_ok
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - guard_ok
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: U_L
+          shape_expr: '[3]'
+        - name: U_R
+          shape_expr: '[3]'
+        - name: U_B
+          shape_expr: '[3]'
+        - name: U_T
+          shape_expr: '[3]'
+        - name: F_star
+          shape_expr: '[3]'
+        - name: G_star
+          shape_expr: '[3]'
+        - name: a_x
+          shape_expr: scalar
+        - name: a_y
+          shape_expr: scalar
+        - name: guard_ok
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: k
+          axis: 0
+          count: 3
+          length: 3
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    - g
+  tests:
+  - test_id: l0_equal_state_consistency_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_equal_state
+    quantities:
+    - guard_ok
+    - equal_state_consistency
+  - test_id: l0_distinct_state_closed_form_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    quantities:
+    - guard_ok
+    - distinct_state_closed_form
+  - test_id: l0_wave_speed_nonnegative_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_equal_state
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    quantities:
+    - guard_ok
+    - wave_speed_nonnegative
+  - test_id: l0_symmetry_pairs_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    quantities:
+    - guard_ok
+    - pair_residual
+  - test_id: l0_invalid_dry_state_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry
+    quantities:
+    - guard_ok
+  - test_id: l0_invalid_dry_state_l_negative_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry_l_negative
+    quantities:
+    - guard_ok
+  - test_id: l0_invalid_dry_state_r_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry_r_zero
+    quantities:
+    - guard_ok
+  - test_id: l0_invalid_dry_state_r_negative_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry_r_negative
+    quantities:
+    - guard_ok
+  - test_id: l0_invalid_dry_state_b_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry_b_zero
+    quantities:
+    - guard_ok
+  - test_id: l0_invalid_dry_state_b_negative_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry_b_negative
+    quantities:
+    - guard_ok
+  - test_id: l0_invalid_dry_state_t_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry_t_zero
+    quantities:
+    - guard_ok
+  - test_id: l0_invalid_dry_state_t_negative_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dry_t_negative
+    quantities:
+    - guard_ok
+  predicates:
+  - test_id: l0_equal_state_consistency_pass
+    quantity: guard_ok
+    target_cases:
+    - l0_equal_state
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 1
+  - test_id: l0_equal_state_consistency_pass
+    quantity: equal_state_consistency
+    target_cases:
+    - l0_equal_state
+    per_case: true
+    bind:
+      m0: (k - 1.5) * (k - 2.5) / 2
+      m1: (k - 0.5) * (2.5 - k)
+      m2: (k - 0.5) * (k - 1.5) / 2
+      hh: sum(m0 * final.U_L)
+      hu: sum(m1 * final.U_L)
+      hv: sum(m2 * final.U_L)
+      F_ref: m0 * hu + m1 * (hu * hu / hh + inputs.constants.g * hh * hh / 2) + m2 * (hu * hv / hh)
+    expr: maxabs(final.F_star - F_ref)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_equal_state_consistency_pass
+    quantity: equal_state_consistency
+    target_cases:
+    - l0_equal_state
+    per_case: true
+    bind:
+      m0: (k - 1.5) * (k - 2.5) / 2
+      m1: (k - 0.5) * (2.5 - k)
+      m2: (k - 0.5) * (k - 1.5) / 2
+      hh: sum(m0 * final.U_B)
+      hu: sum(m1 * final.U_B)
+      hv: sum(m2 * final.U_B)
+      G_ref: m0 * hv + m1 * (hu * hv / hh) + m2 * (hv * hv / hh + inputs.constants.g * hh * hh / 2)
+    expr: maxabs(final.G_star - G_ref)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_equal_state_consistency_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_equal_state
+    per_case: true
+    expr: maxabs(final.F_star - comparand.final.F_star) / max(maxabs(final.F_star), maxabs(comparand.final.F_star), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_equal_state_consistency_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_equal_state
+    per_case: true
+    expr: maxabs(final.G_star - comparand.final.G_star) / max(maxabs(final.G_star), maxabs(comparand.final.G_star), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_equal_state_consistency_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_equal_state
+    per_case: true
+    expr: maxabs(final.a_x - comparand.final.a_x) / max(maxabs(final.a_x), maxabs(comparand.final.a_x), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_equal_state_consistency_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_equal_state
+    per_case: true
+    expr: maxabs(final.a_y - comparand.final.a_y) / max(maxabs(final.a_y), maxabs(comparand.final.a_y), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: guard_ok
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 1
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: distinct_state_closed_form
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: maxabs(final.F_star - inputs.expected.F_star) + abs(final.a_x - inputs.expected.a_x)
+    op: le
+    value: 1.0e-09
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: distinct_state_closed_form
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: maxabs(final.G_star - inputs.expected.G_star) + abs(final.a_y - inputs.expected.a_y)
+    op: le
+    value: 1.0e-09
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: distinct_state_closed_form
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: abs(final.a_x - inputs.expected.a_x)
+    op: le
+    value: 1.0e-09
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: distinct_state_closed_form
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: abs(final.a_y - inputs.expected.a_y)
+    op: le
+    value: 1.0e-09
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: maxabs(final.F_star - comparand.final.F_star) / max(maxabs(final.F_star), maxabs(comparand.final.F_star), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: maxabs(final.G_star - comparand.final.G_star) / max(maxabs(final.G_star), maxabs(comparand.final.G_star), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: maxabs(final.a_x - comparand.final.a_x) / max(maxabs(final.a_x), maxabs(comparand.final.a_x), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_distinct_state_closed_form_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_g981
+    per_case: true
+    expr: maxabs(final.a_y - comparand.final.a_y) / max(maxabs(final.a_y), maxabs(comparand.final.a_y), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_wave_speed_nonnegative_pass
+    quantity: guard_ok
+    target_cases:
+    - l0_equal_state
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 1
+  - test_id: l0_wave_speed_nonnegative_pass
+    quantity: wave_speed_nonnegative
+    target_cases:
+    - l0_equal_state
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: min(final.a_x, final.a_y)
+    op: ge
+    value: 0
+  - test_id: l0_wave_speed_nonnegative_pass
+    quantity: wave_speed_nonnegative
+    target_cases:
+    - l0_equal_state
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    bind:
+      m0: (k - 1.5) * (k - 2.5) / 2
+      m1: (k - 0.5) * (2.5 - k)
+      m2: (k - 0.5) * (k - 1.5) / 2
+      h_L: sum(m0 * final.U_L)
+      hu_L: sum(m1 * final.U_L)
+      hv_L: sum(m2 * final.U_L)
+      F_L: m0 * hu_L + m1 * (hu_L * hu_L / h_L + inputs.constants.g * h_L * h_L / 2) + m2 * (hu_L * hv_L / h_L)
+      h_R: sum(m0 * final.U_R)
+      hu_R: sum(m1 * final.U_R)
+      hv_R: sum(m2 * final.U_R)
+      F_R: m0 * hu_R + m1 * (hu_R * hu_R / h_R + inputs.constants.g * h_R * h_R / 2) + m2 * (hu_R * hv_R / h_R)
+    expr: maxabs(final.F_star - (0.5 * (F_L + F_R) - 0.5 * final.a_x * (final.U_R - final.U_L)))
+    op: le
+    value: 1.0e-12
+  - test_id: l0_wave_speed_nonnegative_pass
+    quantity: wave_speed_nonnegative
+    target_cases:
+    - l0_equal_state
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    bind:
+      m0: (k - 1.5) * (k - 2.5) / 2
+      m1: (k - 0.5) * (2.5 - k)
+      m2: (k - 0.5) * (k - 1.5) / 2
+      h_B: sum(m0 * final.U_B)
+      hu_B: sum(m1 * final.U_B)
+      hv_B: sum(m2 * final.U_B)
+      G_B: m0 * hv_B + m1 * (hu_B * hv_B / h_B) + m2 * (hv_B * hv_B / h_B + inputs.constants.g * h_B * h_B / 2)
+      h_T: sum(m0 * final.U_T)
+      hu_T: sum(m1 * final.U_T)
+      hv_T: sum(m2 * final.U_T)
+      G_T: m0 * hv_T + m1 * (hu_T * hv_T / h_T) + m2 * (hv_T * hv_T / h_T + inputs.constants.g * h_T * h_T / 2)
+    expr: maxabs(final.G_star - (0.5 * (G_B + G_T) - 0.5 * final.a_y * (final.U_T - final.U_B)))
+    op: le
+    value: 1.0e-12
+  - test_id: l0_wave_speed_nonnegative_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_equal_state
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: maxabs(final.a_x - comparand.final.a_x) / max(maxabs(final.a_x), maxabs(comparand.final.a_x), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_wave_speed_nonnegative_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_equal_state
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: maxabs(final.a_y - comparand.final.a_y) / max(maxabs(final.a_y), maxabs(comparand.final.a_y), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: guard_ok
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 1
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_axis
+    expr: norm2(final.F_star - roll(flip(at('l0_distinct').final.G_star, 0), 1)) / norm2(roll(flip(at('l0_distinct').final.G_star,
+      0), 1)) + norm2(final.a_x - at('l0_distinct').final.a_y) / norm2(at('l0_distinct').final.a_y)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_axis
+    expr: norm2(final.G_star - roll(flip(at('l0_distinct').final.F_star, 0), 1)) / norm2(roll(flip(at('l0_distinct').final.F_star,
+      0), 1)) + norm2(final.a_y - at('l0_distinct').final.a_x) / norm2(at('l0_distinct').final.a_x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_axis
+    expr: norm2(final.a_x - at('l0_distinct').final.a_y) / norm2(at('l0_distinct').final.a_y)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_axis
+    expr: norm2(final.a_y - at('l0_distinct').final.a_x) / norm2(at('l0_distinct').final.a_x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_xmir
+    expr: norm2(final.F_star - inputs.pair_sign_F * at('l0_distinct').final.F_star) / norm2(inputs.pair_sign_F * at('l0_distinct').final.F_star)
+      + norm2(final.a_x - at('l0_distinct').final.a_x) / norm2(at('l0_distinct').final.a_x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_xmir
+    expr: norm2(final.G_star - inputs.pair_sign_G * at('l0_distinct').final.G_star) / norm2(inputs.pair_sign_G * at('l0_distinct').final.G_star)
+      + norm2(final.a_y - at('l0_distinct').final.a_y) / norm2(at('l0_distinct').final.a_y)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_xmir
+    expr: norm2(final.a_x - at('l0_distinct').final.a_x) / norm2(at('l0_distinct').final.a_x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_xmir
+    expr: norm2(final.a_y - at('l0_distinct').final.a_y) / norm2(at('l0_distinct').final.a_y)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_ymir
+    expr: norm2(final.F_star - inputs.pair_sign_F * at('l0_distinct').final.F_star) / norm2(inputs.pair_sign_F * at('l0_distinct').final.F_star)
+      + norm2(final.a_x - at('l0_distinct').final.a_x) / norm2(at('l0_distinct').final.a_x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_ymir
+    expr: norm2(final.G_star - inputs.pair_sign_G * at('l0_distinct').final.G_star) / norm2(inputs.pair_sign_G * at('l0_distinct').final.G_star)
+      + norm2(final.a_y - at('l0_distinct').final.a_y) / norm2(at('l0_distinct').final.a_y)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_ymir
+    expr: norm2(final.a_x - at('l0_distinct').final.a_x) / norm2(at('l0_distinct').final.a_x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    case: l0_distinct_ymir
+    expr: norm2(final.a_y - at('l0_distinct').final.a_y) / norm2(at('l0_distinct').final.a_y)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: maxabs(final.F_star - comparand.final.F_star) / max(maxabs(final.F_star), maxabs(comparand.final.F_star), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: maxabs(final.G_star - comparand.final.G_star) / max(maxabs(final.G_star), maxabs(comparand.final.G_star), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: maxabs(final.a_x - comparand.final.a_x) / max(maxabs(final.a_x), maxabs(comparand.final.a_x), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_symmetry_pairs_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_distinct
+    - l0_distinct_axis
+    - l0_distinct_xmir
+    - l0_distinct_ymir
+    per_case: true
+    expr: maxabs(final.a_y - comparand.final.a_y) / max(maxabs(final.a_y), maxabs(comparand.final.a_y), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_dry_state_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dry_state_l_negative_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry_l_negative
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dry_state_r_zero_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry_r_zero
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dry_state_r_negative_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry_r_negative
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dry_state_b_zero_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry_b_zero
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dry_state_b_negative_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry_b_negative
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dry_state_t_zero_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry_t_zero
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dry_state_t_negative_xfail
+    quantity: guard_ok
+    target_cases:
+    - l0_invalid_dry_t_negative
+    per_case: true
+    expr: final.guard_ok
+    op: eq
+    value: 0
+dependency:
+  node_key: component/dynamics_shallow_water_flux_2d_rusanov_p0@0.2.1
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
+    exercised_by:
+    - l0_equal_state_consistency_pass
+    - l0_distinct_state_closed_form_pass
+    - l0_wave_speed_nonnegative_pass
+    - l0_symmetry_pairs_pass
+    - l0_invalid_dry_state_xfail
+    - l0_invalid_dry_state_l_negative_xfail
+    - l0_invalid_dry_state_r_zero_xfail
+    - l0_invalid_dry_state_r_negative_xfail
+    - l0_invalid_dry_state_b_zero_xfail
+    - l0_invalid_dry_state_b_negative_xfail
+    - l0_invalid_dry_state_t_zero_xfail
+    - l0_invalid_dry_state_t_negative_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
+    signature:
+      kind: subroutine
+      name: dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
+      args:
+      - name: U_L
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - '3'
+      - name: U_R
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - '3'
+      - name: U_B
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - '3'
+      - name: U_T
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - '3'
+      - name: g
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: F_star
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - '3'
+      - name: G_star
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - '3'
+      - name: a_x
+        rank: 0
+        intent: out
+        spec:
+          type: real
+          kind: dp
+      - name: a_y
+        rank: 0
+        intent: out
+        spec:
+          type: real
+          kind: dp
+      - name: guard_ok
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+    operation: dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
+    result: guard_ok
+    arguments:
+      U_L: state.U_L
+      U_R: state.U_R
+      U_B: state.U_B
+      U_T: state.U_T
+      g: inputs.constants.g
+      F_star: state.F_star
+      G_star: state.G_star
+      a_x: state.a_x
+      a_y: state.a_y
+      guard_ok: state.guard_ok

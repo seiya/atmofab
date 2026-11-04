@@ -1,0 +1,5115 @@
+schema_version: '1.0'
+meta:
+  node_key: component/dynamics_shallow_water_source_2d_tc4_forcing@0.2.0
+  spec_kind: component
+  spec_id: dynamics_shallow_water_source_2d_tc4_forcing
+  spec_version: 0.2.0
+  source_refs:
+    controlled_spec: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/controlled_spec.md
+    tests: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/tests.md
+    deps: spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_reference_values
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 3
+        ny: 3
+        x:
+        - 500000.0
+        - 3500000.0
+        - 5500000.0
+        y:
+        - 2000000.0
+        - 3500000.0
+        - 5500000.0
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        f:
+        - - 7.0752488739e-05
+          - 9.50314619109e-05
+          - 0.00012740342614
+        - - 7.0752488739e-05
+          - 9.50314619109e-05
+          - 0.00012740342614
+        - - 7.0752488739e-05
+          - 9.50314619109e-05
+          - 0.00012740342614
+        dfdr:
+        - - 1.61859821146e-11
+          - 1.61859821146e-11
+          - 1.61859821146e-11
+        - - 1.61859821146e-11
+          - 1.61859821146e-11
+          - 1.61859821146e-11
+        - - 1.61859821146e-11
+          - 1.61859821146e-11
+          - 1.61859821146e-11
+        ubar:
+        - - 20.0
+          - 38.4775906502
+          - 27.6536686473
+        - - 20.0
+          - 38.4775906502
+          - 27.6536686473
+        - - 20.0
+          - 38.4775906502
+          - 27.6536686473
+        dubar:
+        - - 1.57079632679e-05
+          - 6.01117729884e-06
+          - -1.45122657607e-05
+        - - 1.57079632679e-05
+          - 6.01117729884e-06
+          - -1.45122657607e-05
+        - - 1.57079632679e-05
+          - 6.01117729884e-06
+          - -1.45122657607e-05
+        hbar:
+        - - 10105.3054966
+          - 9712.97798835
+          - 8888.17989701
+        - - 10105.3054966
+          - 9712.97798835
+          - 8888.17989701
+        - - 10105.3054966
+          - 9712.97798835
+          - 8888.17989701
+      expected_S:
+      - - - 2.07076849205e-07
+          - 1.18296981454e-05
+          - 2.14582504133e-06
+        - - 8.30660437744e-05
+          - 0.00523216536385
+          - 0.000867094839494
+        - - -3.45885341571e-05
+          - -0.00201068048463
+          - -0.000358873632824
+      - - - -0.000496688715314
+          - 0.00224538485829
+          - 0.000911289200366
+        - - -0.194966484055
+          - 6.80898501816
+          - 0.455993894103
+        - - 0.0826581315973
+          - -0.802271006614
+          - -0.158692603742
+      - - - 7.34530782137e-05
+          - -0.0192583286369
+          - -0.000766326727261
+        - - -0.0864540543592
+          - 4.24630440729
+          - -0.639232235064
+        - - 0.0171255378033
+          - -1.866172301
+          - -0.052353315734
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f: inputs.background.f
+      dfdr: inputs.background.dfdr
+      ubar: inputs.background.ubar
+      dubar: inputs.background.dubar
+      hbar: inputs.background.hbar
+    initial_state:
+      S: -999.0
+  - case_id: l0_reference_values_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 3
+        ny: 3
+        x:
+        - 2000000.0
+        - 3500000.0
+        - 5500000.0
+        y:
+        - 500000.0
+        - 3500000.0
+        - 5500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        f:
+        - - -7.0752488739e-05
+          - -7.0752488739e-05
+          - -7.0752488739e-05
+        - - -9.50314619109e-05
+          - -9.50314619109e-05
+          - -9.50314619109e-05
+        - - -0.00012740342614
+          - -0.00012740342614
+          - -0.00012740342614
+        dfdr:
+        - - -1.61859821146e-11
+          - -1.61859821146e-11
+          - -1.61859821146e-11
+        - - -1.61859821146e-11
+          - -1.61859821146e-11
+          - -1.61859821146e-11
+        - - -1.61859821146e-11
+          - -1.61859821146e-11
+          - -1.61859821146e-11
+        ubar:
+        - - 20.0
+          - 20.0
+          - 20.0
+        - - 38.4775906502
+          - 38.4775906502
+          - 38.4775906502
+        - - 27.6536686473
+          - 27.6536686473
+          - 27.6536686473
+        dubar:
+        - - 1.57079632679e-05
+          - 1.57079632679e-05
+          - 1.57079632679e-05
+        - - 6.01117729884e-06
+          - 6.01117729884e-06
+          - 6.01117729884e-06
+        - - -1.45122657607e-05
+          - -1.45122657607e-05
+          - -1.45122657607e-05
+        hbar:
+        - - 10105.3054966
+          - 10105.3054966
+          - 10105.3054966
+        - - 9712.97798835
+          - 9712.97798835
+          - 9712.97798835
+        - - 8888.17989701
+          - 8888.17989701
+          - 8888.17989701
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f: inputs.background.f
+      dfdr: inputs.background.dfdr
+      ubar: inputs.background.ubar
+      dubar: inputs.background.dubar
+      hbar: inputs.background.hbar
+    initial_state:
+      S: -999.0
+  - case_id: l0_reference_values_quiescent
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 3
+        ny: 3
+        x:
+        - 1000000.0
+        - 3000000.0
+        - 5000000.0
+        y:
+        - 1000000.0
+        - 3000000.0
+        - 6000000.0
+      along_axis: 1
+      time:
+        t: 40000.0
+      constants:
+        g: 9.81
+        L_along: 6000000.0
+      low:
+        psi0: -20000000.0
+        R_low: 1500000.0
+        c_tr: 15.0
+        s_c0: 2000000.0
+        r_c: 3000000.0
+      background:
+        f:
+        - - 6.8e-05
+          - 0.0001
+          - 0.000178
+        - - 6.8e-05
+          - 0.0001
+          - 0.000178
+        - - 6.8e-05
+          - 0.0001
+          - 0.000178
+        dfdr:
+        - - 1.2e-11
+          - 2.0e-11
+          - 3.2e-11
+        - - 1.2e-11
+          - 2.0e-11
+          - 3.2e-11
+        - - 1.2e-11
+          - 2.0e-11
+          - 3.2e-11
+        ubar:
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        dubar:
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        hbar:
+        - - 9000.0
+          - 9000.0
+          - 9000.0
+        - - 9000.0
+          - 9000.0
+          - 9000.0
+        - - 9000.0
+          - 9000.0
+          - 9000.0
+      expected_S:
+      - - - 0.000123166040031
+          - 0.00116941022912
+          - 3.44415836315e-05
+        - - -0.000117325054768
+          - -0.00122907999236
+          - -3.22230205131e-05
+        - - -4.08381749016e-05
+          - -0.00037377036453
+          - -1.14908169149e-05
+      - - - -0.266289617677
+          - 0.446581461954
+          - 0.0455979183816
+        - - 0.23247553711
+          - -0.940033508212
+          - -0.0427108919761
+        - - 0.0908668294775
+          - -0.0845804113497
+          - -0.0152068216074
+      - - - -0.00194185216967
+          - -0.584779946197
+          - -0.0267683439777
+        - - -0.504990433705
+          - -5.00062513594
+          - -0.132487612635
+        - - 0.0106739100849
+          - -0.227268145334
+          - -0.0131731649058
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f: inputs.background.f
+      dfdr: inputs.background.dfdr
+      ubar: inputs.background.ubar
+      dubar: inputs.background.dubar
+      hbar: inputs.background.hbar
+    initial_state:
+      S: -999.0
+  - case_id: l0_reference_values_quiescent_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 3
+        ny: 3
+        x:
+        - 1000000.0
+        - 3000000.0
+        - 6000000.0
+        y:
+        - 1000000.0
+        - 3000000.0
+        - 5000000.0
+      along_axis: 2
+      time:
+        t: 40000.0
+      constants:
+        g: 9.81
+        L_along: 6000000.0
+      low:
+        psi0: 20000000.0
+        R_low: 1500000.0
+        c_tr: 15.0
+        s_c0: 2000000.0
+        r_c: 3000000.0
+      background:
+        f:
+        - - -6.8e-05
+          - -6.8e-05
+          - -6.8e-05
+        - - -0.0001
+          - -0.0001
+          - -0.0001
+        - - -0.000178
+          - -0.000178
+          - -0.000178
+        dfdr:
+        - - -1.2e-11
+          - -1.2e-11
+          - -1.2e-11
+        - - -2.0e-11
+          - -2.0e-11
+          - -2.0e-11
+        - - -3.2e-11
+          - -3.2e-11
+          - -3.2e-11
+        ubar:
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        dubar:
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        - - 0.0
+          - 0.0
+          - 0.0
+        hbar:
+        - - 9000.0
+          - 9000.0
+          - 9000.0
+        - - 9000.0
+          - 9000.0
+          - 9000.0
+        - - 9000.0
+          - 9000.0
+          - 9000.0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f: inputs.background.f
+      dfdr: inputs.background.dfdr
+      ubar: inputs.background.ubar
+      dubar: inputs.background.dubar
+      hbar: inputs.background.hbar
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t0
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t0_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t3e4
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 30000.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t3e4_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 30000.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t3e4_xmir
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 30000.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: -28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: -1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t3e4_ymir
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 30000.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 1
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t3e4_axis_xmir
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 30000.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 1
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_fd_t3e4_axis_ymir
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 30000.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: -28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: -1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_zero_low
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 0.0
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_zero_low_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 0.0
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_translation
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_translation_tau
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 106066.017177982
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_translation_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_translation_tau_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 106066.017177982
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_ncomp_2
+    inputs:
+      grid:
+        ncomp: 2
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_ncomp_2_axis
+    inputs:
+      grid:
+        ncomp: 2
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_ncomp_4
+    inputs:
+      grid:
+        ncomp: 4
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_ncomp_4_axis
+    inputs:
+      grid:
+        ncomp: 4
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_along_axis_0
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 0
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_along_axis_3
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 3
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_r_low_zero
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 0.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_r_low_zero_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 0.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_r_low_negative
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: -1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_r_low_negative_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: -1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_l_along_zero
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 0.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_l_along_zero_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 0.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_l_along_negative
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: -8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: yc * inputs.grid.L_y / inputs.grid.ny
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_l_along_negative_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: -8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      r: xc * inputs.grid.L_x / inputs.grid.nx
+      q: inputs.background.cross_reversed * inputs.background.L_r + (1 - 2 * inputs.background.cross_reversed)
+        * derived.r
+      f: inputs.background.rotation_sign * (derived.f0 + derived.beta * (derived.q
+        - inputs.background.L_r / 2))
+      dfdr: inputs.background.rotation_sign * derived.beta * (1 - 2 * inputs.background.cross_reversed)
+      ubar: inputs.background.jet_sign * inputs.background.u0 * sin(derived.k_y *
+        derived.q) ** 2
+      dubar: inputs.background.jet_sign * inputs.background.u0 * derived.k_y * sin(2
+        * derived.k_y * derived.q) * (1 - 2 * inputs.background.cross_reversed)
+      hbar: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (derived.f0 * (derived.q / 2 - sin(2 * derived.k_y * derived.q) / (4 * derived.k_y))
+        + derived.beta * (derived.q ** 2 / 4 - inputs.background.L_r * derived.q /
+        4 - (derived.q - inputs.background.L_r / 2) * sin(2 * derived.k_y * derived.q)
+        / (4 * derived.k_y) - (cos(2 * derived.k_y * derived.q) - 1) / (8 * derived.k_y
+        ** 2)))
+    initial_state:
+      S: -999.0
+  - case_id: l0_min_extent
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 1
+        ny: 1
+        x:
+        - 3500000.0
+        y:
+        - 3500000.0
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        f:
+        - - 9.50314619109e-05
+        dfdr:
+        - - 1.61859821146e-11
+        ubar:
+        - - 38.4775906502
+        dubar:
+        - - 6.01117729884e-06
+        hbar:
+        - - 9712.97798835
+      expected_S:
+      - - - 0.00523216536385
+      - - - 6.80898501816
+      - - - 4.24630440729
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f: inputs.background.f
+      dfdr: inputs.background.dfdr
+      ubar: inputs.background.ubar
+      dubar: inputs.background.dubar
+      hbar: inputs.background.hbar
+    initial_state:
+      S: -999.0
+  - case_id: l0_min_extent_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 1
+        ny: 1
+        x:
+        - 3500000.0
+        y:
+        - 3500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        f:
+        - - -9.50314619109e-05
+        dfdr:
+        - - -1.61859821146e-11
+        ubar:
+        - - 38.4775906502
+        dubar:
+        - - 6.01117729884e-06
+        hbar:
+        - - 9712.97798835
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: inputs.grid.y
+      f: inputs.background.f
+      dfdr: inputs.background.dfdr
+      ubar: inputs.background.ubar
+      dubar: inputs.background.dubar
+      hbar: inputs.background.hbar
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_nx_zero
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 0
+        ny: 6
+        L_x: 8000000.0
+        L_y: 8000000.0
+        y:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: 0.0
+      y: inputs.grid.y
+      f: 0.0
+      dfdr: 0.0
+      ubar: 0.0
+      dubar: 0.0
+      hbar: 0.0
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_nx_zero_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 0
+        ny: 8
+        L_x: 8000000.0
+        L_y: 8000000.0
+        y:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: 0.0
+      y: inputs.grid.y
+      f: 0.0
+      dfdr: 0.0
+      ubar: 0.0
+      dubar: 0.0
+      hbar: 0.0
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_ny_zero
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 8
+        ny: 0
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 500000.0
+        - 1500000.0
+        - 2500000.0
+        - 3500000.0
+        - 4500000.0
+        - 5500000.0
+        - 6500000.0
+        - 7500000.0
+      along_axis: 1
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: -29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: 1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: 0.0
+      f: 0.0
+      dfdr: 0.0
+      ubar: 0.0
+      dubar: 0.0
+      hbar: 0.0
+    initial_state:
+      S: -999.0
+  - case_id: l0_invalid_ny_zero_axis
+    inputs:
+      grid:
+        ncomp: 3
+        nx: 6
+        ny: 0
+        L_x: 8000000.0
+        L_y: 8000000.0
+        x:
+        - 666666.6666666666
+        - 2000000.0
+        - 3333333.3333333335
+        - 4666666.666666667
+        - 6000000.0
+        - 7333333.333333333
+      along_axis: 2
+      time:
+        t: 0.0
+      constants:
+        g: 9.80616
+        L_along: 8000000.0
+      low:
+        psi0: 29091063.405919403
+        R_low: 1000000.0
+        c_tr: 28.284271247461902
+        s_c0: 4000000.0
+        r_c: 4000000.0
+      background:
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+        u0: 40.0
+        gh0: 100000.0
+        L_r: 8000000.0
+        rotation_sign: -1
+        jet_sign: 1
+        cross_reversed: 0
+      test_profile_id: dynamics_shallow_water_source_2d_tc4_forcing_l0
+      test_profile_version: 0.5.0
+    derived:
+      x: inputs.grid.x
+      y: 0.0
+      f: 0.0
+      dfdr: 0.0
+      ubar: 0.0
+      dubar: 0.0
+      hbar: 0.0
+    initial_state:
+      S: -999.0
+algorithm:
+  algorithm_id: tc4_manufactured_forcing_apply
+  execution_mode: conditional
+  steps:
+  - step_id: step_01_input_guard
+    step_kind: pointwise_process
+    operation_ref: tc4_forcing_input_guard
+    inputs:
+    - ncomp
+    - nx
+    - ny
+    - along_axis
+    - R_low
+    - L_along
+    outputs:
+    - guard_pass
+    - S
+    description: Evaluated first, before any input array is read. The input is rejected
+      when ncomp /= 3, nx < 1, ny < 1, along_axis is neither 1 nor 2 (0 and 3 are
+      both rejected; no value is mapped onto 1 or 2), R_low <= 0 (zero AND negative
+      are rejected), or L_along <= 0 (zero AND negative are rejected). On a rejected
+      input guard_pass = false, every element of S (all ncomp x nx x ny elements,
+      whatever ncomp is) is set to exactly 0.0, no element of x, y, f, dfdr, ubar,
+      dubar, hbar is read, and the operation returns without evaluating steps 02-05.
+      Otherwise guard_pass = true and steps 02-05 run. h <= 0 is not checked (the
+      state does not enter the forcing).
+  - step_id: step_02_low_streamfunction
+    step_kind: pointwise_process
+    operation_ref: tc4_low_streamfunction_derivatives
+    inputs:
+    - nx
+    - ny
+    - along_axis
+    - x
+    - y
+    - t
+    - L_along
+    - psi0
+    - R_low
+    - c_tr
+    - s_c0
+    - r_c
+    outputs:
+    - s_coord
+    - r_coord
+    - s_c
+    - xi
+    - rho2
+    - k_psi
+    - psi
+    - psi_s
+    - psi_r
+    - psi_ss
+    - psi_sr
+    - psi_rr
+    - psi_x
+    - psi_y
+    - psi_xx
+    - psi_xy
+    - psi_yy
+    description: 'For every interior cell (i,j), i=1..nx, j=1..ny, at the supplied
+      time t only. along_axis selects the orientation: along_axis=1 gives s_coord=x(i),
+      r_coord=y(j); along_axis=2 gives s_coord=y(j), r_coord=x(i). Then s_c = s_c0
+      + c_tr*t; xi = pi*(s_coord - s_c)/L_along; rho2 = (L_along/pi)**2 * sin(xi)**2
+      + (r_coord - r_c)**2; psi = psi0*exp(-rho2/R_low**2); k_psi = L_along/(pi*R_low**2);
+      psi_s = -k_psi*sin(2*xi)*psi; psi_r = -2*(r_coord - r_c)/R_low**2*psi; psi_ss
+      = (-2/R_low**2*cos(2*xi) + k_psi**2*sin(2*xi)**2)*psi; psi_sr = 2*(r_coord -
+      r_c)*L_along/(pi*R_low**4)*sin(2*xi)*psi; psi_rr = (-2/R_low**2 + 4*(r_coord
+      - r_c)**2/R_low**4)*psi. Assignment to x/y derivatives: along_axis=1: psi_x=psi_s,
+      psi_y=psi_r, psi_xx=psi_ss, psi_xy=psi_sr, psi_yy=psi_rr; along_axis=2: psi_x=psi_r,
+      psi_y=psi_s, psi_xx=psi_rr, psi_xy=psi_sr, psi_yy=psi_ss. The periodic argument
+      xi is used as written (sin of the unfolded argument); the Gaussian shape, the
+      periodic argument and the translation at the constant signed speed c_tr must
+      not be changed.'
+  - step_id: step_03_prescribed_flow
+    step_kind: pointwise_process
+    operation_ref: tc4_prescribed_flow_and_derivatives
+    inputs:
+    - along_axis
+    - c_tr
+    - g
+    - f
+    - dfdr
+    - ubar
+    - dubar
+    - hbar
+    - psi
+    - psi_x
+    - psi_y
+    - psi_xx
+    - psi_xy
+    - psi_yy
+    outputs:
+    - u_p
+    - v_p
+    - h_p
+    - u_x
+    - u_y
+    - u_t
+    - v_x
+    - v_y
+    - v_t
+    - h_x
+    - h_y
+    - h_t
+    description: 'Per cell (i,j), with ub=ubar(i,j), dub=dubar(i,j), fc=f(i,j), dfc=dfdr(i,j),
+      hb=hbar(i,j) read at the cell''s own (i,j) (no differencing of any array, no
+      re-derivation of the background). along_axis=1: u_p = ub - psi_y; v_p = psi_x;
+      h_p = hb + fc*psi/g; u_x = -psi_xy; u_y = dub - psi_yy; u_t = c_tr*psi_xy; v_x
+      = psi_xx; v_y = psi_xy; v_t = -c_tr*psi_xx; h_x = fc*psi_x/g; h_y = -fc*ub/g
+      + (dfc*psi + fc*psi_y)/g; h_t = -c_tr*fc*psi_x/g. along_axis=2: u_p = -psi_y;
+      v_p = ub + psi_x; h_p = hb + fc*psi/g; u_x = -psi_xy; u_y = -psi_yy; u_t = c_tr*psi_yy;
+      v_x = dub + psi_xx; v_y = psi_xy; v_t = -c_tr*psi_xy; h_x = fc*ub/g + (dfc*psi
+      + fc*psi_x)/g; h_y = fc*psi_y/g; h_t = -c_tr*fc*psi_y/g. The first term of the
+      cross-channel derivative of h_p (-fc*ub/g at along_axis=1, +fc*ub/g at along_axis=2)
+      is the geostrophic relation of the background; hbar is never differenced. Each
+      orientation evaluates its own branch; one orientation must not be realised by
+      exchanging arguments to the other orientation''s form and exchanging the result
+      back.'
+  - step_id: step_04_advective_residuals
+    step_kind: source_term
+    operation_ref: tc4_advective_residuals
+    inputs:
+    - g
+    - f
+    - u_p
+    - v_p
+    - h_p
+    - u_x
+    - u_y
+    - u_t
+    - v_x
+    - v_y
+    - v_t
+    - h_x
+    - h_y
+    - h_t
+    outputs:
+    - F_u
+    - F_v
+    - F_h
+    description: 'Per cell, in either orientation, with fc=f(i,j): F_u = u_t + u_p*u_x
+      + v_p*u_y + g*h_x - fc*v_p; F_v = v_t + u_p*v_x + v_p*v_y + g*h_y + fc*u_p;
+      F_h = h_t + u_p*h_x + v_p*h_y + h_p*(u_x + v_y). Each residual is evaluated
+      as written, term by term in this order, and is NOT reduced by any cancellation
+      the prescribed flow satisfies (g*h_x - fc*v_p and g*h_y + fc*u_p are evaluated
+      as written, and the divergence term h_p*(u_x + v_y) is kept although it is zero
+      for this flow).'
+  - step_id: step_05_conservation_forcing
+    step_kind: source_term
+    operation_ref: tc4_conservation_form_forcing
+    inputs:
+    - F_u
+    - F_v
+    - F_h
+    - h_p
+    - u_p
+    - v_p
+    outputs:
+    - S
+    description: 'Per cell (i,j): S(1,i,j) = F_h; S(2,i,j) = h_p*F_u + u_p*F_h; S(3,i,j)
+      = h_p*F_v + v_p*F_h. S is the only array written; it is intent out and never
+      read, interior cells only, no ghost cells, component order [h, hu, hv] along
+      the first extent.'
+  ordering:
+  - step_01_input_guard
+  - step_02_low_streamfunction
+  - step_03_prescribed_flow
+  - step_04_advective_residuals
+  - step_05_conservation_forcing
+  control_condition: step_01_input_guard runs first. If the input is rejected (ncomp
+    /= 3, nx < 1, ny < 1, along_axis not in {1, 2}, R_low <= 0 or L_along <= 0), guard_pass
+    = false, S = 0 everywhere, and the operation returns. Otherwise guard_pass = true
+    and steps 02-05 run once over every interior cell; within them the branch along_axis
+    = 1 / along_axis = 2 selects the orientation assignments of steps 02 and 03.
+  iteration_contract:
+    applies: false
+    rationale: The operation evaluates a pointwise forcing once per call at the supplied
+      time; no loop carries state forward. The translation case's two calls are made
+      by the checks module, not by the operation.
+  update_semantics:
+    target_variables:
+    - S
+    - guard_pass
+    update_order: sequential
+    write_policy: S is fully overwritten on every call (zeros on a rejected input,
+      the forcing otherwise); guard_pass is always assigned.
+  temporaries:
+  - name: s_coord
+    shape_expr: scalar
+  - name: r_coord
+    shape_expr: scalar
+  - name: s_c
+    shape_expr: scalar
+  - name: xi
+    shape_expr: scalar
+  - name: rho2
+    shape_expr: scalar
+  - name: k_psi
+    shape_expr: scalar
+  - name: psi
+    shape_expr: scalar
+  - name: psi_s
+    shape_expr: scalar
+  - name: psi_r
+    shape_expr: scalar
+  - name: psi_ss
+    shape_expr: scalar
+  - name: psi_sr
+    shape_expr: scalar
+  - name: psi_rr
+    shape_expr: scalar
+  - name: psi_x
+    shape_expr: scalar
+  - name: psi_y
+    shape_expr: scalar
+  - name: psi_xx
+    shape_expr: scalar
+  - name: psi_xy
+    shape_expr: scalar
+  - name: psi_yy
+    shape_expr: scalar
+  - name: u_p
+    shape_expr: scalar
+  - name: v_p
+    shape_expr: scalar
+  - name: h_p
+    shape_expr: scalar
+  - name: u_x
+    shape_expr: scalar
+  - name: u_y
+    shape_expr: scalar
+  - name: u_t
+    shape_expr: scalar
+  - name: v_x
+    shape_expr: scalar
+  - name: v_y
+    shape_expr: scalar
+  - name: v_t
+    shape_expr: scalar
+  - name: h_x
+    shape_expr: scalar
+  - name: h_y
+    shape_expr: scalar
+  - name: h_t
+    shape_expr: scalar
+  - name: F_u
+    shape_expr: scalar
+  - name: F_v
+    shape_expr: scalar
+  - name: F_h
+    shape_expr: scalar
+  derived_field_rules:
+  - name: s_coord
+    rule: 'Along-channel coordinate of cell (i,j): x(i) when along_axis=1, y(j) when
+      along_axis=2. Per-cell value of the current cell.'
+  - name: r_coord
+    rule: 'Cross-channel coordinate of cell (i,j): y(j) when along_axis=1, x(i) when
+      along_axis=2.'
+  - name: s_c
+    rule: s_c = s_c0 + c_tr*t, the along-channel centre of the low at the supplied
+      time t (no other time is used).
+  - name: xi
+    rule: xi = pi*(s_coord - s_c)/L_along (periodic argument; period L_along along
+      the channel).
+  - name: rho2
+    rule: rho2 = (L_along/pi)**2 * sin(xi)**2 + (r_coord - r_c)**2.
+  - name: k_psi
+    rule: k_psi = L_along/(pi*R_low**2).
+  - name: psi
+    rule: psi = psi0*exp(-rho2/R_low**2), the streamfunction of the low.
+  - name: psi_s
+    rule: psi_s = -k_psi*sin(2*xi)*psi.
+  - name: psi_r
+    rule: psi_r = -2*(r_coord - r_c)/R_low**2*psi.
+  - name: psi_ss
+    rule: psi_ss = (-2/R_low**2*cos(2*xi) + k_psi**2*sin(2*xi)**2)*psi.
+  - name: psi_sr
+    rule: psi_sr = 2*(r_coord - r_c)*L_along/(pi*R_low**4)*sin(2*xi)*psi.
+  - name: psi_rr
+    rule: psi_rr = (-2/R_low**2 + 4*(r_coord - r_c)**2/R_low**4)*psi.
+  - name: psi_x
+    rule: psi_s when along_axis=1, psi_r when along_axis=2.
+  - name: psi_y
+    rule: psi_r when along_axis=1, psi_s when along_axis=2.
+  - name: psi_xx
+    rule: psi_ss when along_axis=1, psi_rr when along_axis=2.
+  - name: psi_xy
+    rule: psi_sr in both orientations.
+  - name: psi_yy
+    rule: psi_rr when along_axis=1, psi_ss when along_axis=2.
+  - name: u_p
+    rule: 'Prescribed x-velocity: ubar(i,j) - psi_y when along_axis=1; -psi_y when
+      along_axis=2.'
+  - name: v_p
+    rule: 'Prescribed y-velocity: psi_x when along_axis=1; ubar(i,j) + psi_x when
+      along_axis=2.'
+  - name: h_p
+    rule: 'Prescribed depth: hbar(i,j) + f(i,j)*psi/g in both orientations.'
+  - name: u_x
+    rule: -psi_xy in both orientations.
+  - name: u_y
+    rule: dubar(i,j) - psi_yy when along_axis=1; -psi_yy when along_axis=2.
+  - name: u_t
+    rule: c_tr*psi_xy when along_axis=1; c_tr*psi_yy when along_axis=2.
+  - name: v_x
+    rule: psi_xx when along_axis=1; dubar(i,j) + psi_xx when along_axis=2.
+  - name: v_y
+    rule: psi_xy in both orientations.
+  - name: v_t
+    rule: -c_tr*psi_xx when along_axis=1; -c_tr*psi_xy when along_axis=2.
+  - name: h_x
+    rule: f(i,j)*psi_x/g when along_axis=1; f(i,j)*ubar(i,j)/g + (dfdr(i,j)*psi +
+      f(i,j)*psi_x)/g when along_axis=2.
+  - name: h_y
+    rule: -f(i,j)*ubar(i,j)/g + (dfdr(i,j)*psi + f(i,j)*psi_y)/g when along_axis=1;
+      f(i,j)*psi_y/g when along_axis=2.
+  - name: h_t
+    rule: -c_tr*f(i,j)*psi_x/g when along_axis=1; -c_tr*f(i,j)*psi_y/g when along_axis=2.
+  - name: F_u
+    rule: F_u = u_t + u_p*u_x + v_p*u_y + g*h_x - f(i,j)*v_p, evaluated as written
+      (no cancellation).
+  - name: F_v
+    rule: F_v = v_t + u_p*v_x + v_p*v_y + g*h_y + f(i,j)*u_p, evaluated as written
+      (no cancellation).
+  - name: F_h
+    rule: F_h = h_t + u_p*h_x + v_p*h_y + h_p*(u_x + v_y), evaluated as written; the
+      divergence term is kept.
+  - name: S
+    rule: 'Operation output: S(1,i,j) = F_h, S(2,i,j) = h_p*F_u + u_p*F_h, S(3,i,j)
+      = h_p*F_v + v_p*F_h on an accepted input; S = 0.0 at every element on a rejected
+      input. Checks-module bound state: case_setup allocates S with shape [ncomp,
+      nx, ny] from inputs.grid (so the ncomp=2 / ncomp=4 cases allocate two / four
+      components) and fills every element with inputs.sentinel (-999.0); case_run
+      passes the bound S itself as the operation''s S argument (every case except
+      l0_translation and l0_translation_axis, where S keeps the sentinel).'
+  - name: S_t0
+    rule: Checks-module bound state [3, nx, ny], set to inputs.sentinel at setup in
+      every case. On l0_translation and l0_translation_axis only, case_run calls the
+      operation with t = inputs.time.t_first (0.0) passing S_t0 as the S argument,
+      then calls it again with t = inputs.time.t_second (the literal 106066.017177982,
+      used as given and never re-derived as 3*dx/c_tr) passing S_tau as the S argument;
+      all other arguments are the case's. In every other case S_t0 keeps the sentinel.
+  - name: S_tau
+    rule: 'Checks-module bound state [3, nx, ny]: inputs.sentinel at setup; the S
+      argument of the second call of the translation cases (see S_t0); the sentinel
+      elsewhere.'
+  - name: guard_pass_record
+    rule: The bound scalar guard_pass of the checks module (source record) is -1.0
+      at setup, before any call; after each call of the operation it is set to 1.0
+      if the returned logical guard_pass is true and 0.0 if false (on the translation
+      cases it holds the result of the last call). steps = number of operation calls
+      (1, or 2 on the translation cases); cells_updated = nx*ny per call.
+  - name: x
+    rule: Operation argument x (nx values). When inputs.grid.x is declared (the four
+      reference-values cases) it is that list. Otherwise x(i) = (i - 0.5)*inputs.grid.L_x/inputs.grid.nx,
+      i = 1..nx (cell centres; L_x is the grid length and is independent of the L_along
+      argument, which abnormal cases override).
+  - name: y
+    rule: 'Operation argument y (ny values): inputs.grid.y when declared; otherwise
+      y(j) = (j - 0.5)*inputs.grid.L_y/inputs.grid.ny, j = 1..ny.'
+  - name: t
+    rule: 'Operation argument t: inputs.time.t; on the translation cases inputs.time.t_first
+      for the first call and inputs.time.t_second for the second.'
+  - name: background_profile
+    rule: 'How the checks module forms f, dfdr, ubar, dubar, hbar (nx x ny each, element
+      (i,j)) from inputs.background. When profile = explicit, each is the declared
+      nested list, outer index i, inner index j. When profile = tc4_beta_channel:
+      f0 = 2*Omega*sin(theta0), beta = 2*Omega*cos(theta0)/a, h0 = gh0/g (g = inputs.constants.g),
+      k = pi/L_r; r = y(j) when along_axis = 2 is false (along_axis 1, 0 or 3) and
+      r = x(i) when along_axis = 2; q = r and dq = +1 when cross_reversed = 0, q =
+      L_r - r and dq = -1 when cross_reversed = 1. fprof(q) = f0 + beta*(q - L_r/2);
+      ubprof(q) = u0*sin(k*q)**2; dubprof(q) = u0*k*sin(2*k*q); hbprof(q) = h0 - (u0/g)*(
+      f0*(q/2 - sin(2*k*q)/(4*k)) + beta*( q**2/4 - L_r*q/4 - (q - L_r/2)*sin(2*k*q)/(4*k)
+      - (cos(2*k*q) - 1)/(8*k**2) ) ). Then f = rotation_sign*fprof(q), dfdr = rotation_sign*beta*dq,
+      ubar = jet_sign*ubprof(q), dubar = jet_sign*dubprof(q)*dq, hbar = hbprof(q),
+      each the same along the channel. Omega, a, theta0, u0, gh0 are never changed;
+      the three numbers rotation_sign, jet_sign, cross_reversed declare the transformation.
+      psi0, R_low, c_tr, s_c0, r_c are inputs.low; g, L_along are inputs.constants;
+      ncomp, nx, ny are inputs.grid; along_axis is inputs.along_axis.'
+  - name: S_fd
+    rule: 'Checks-module reference field [3, nx, ny] (source reference), set to inputs.sentinel
+      at setup in every case except l0_fd_t0, l0_fd_t0_axis, l0_fd_t3e4, l0_fd_t3e4_axis,
+      where it is computed at setup, before the operation is called, never from an
+      output of the operation, and not written again. It uses the checks module''s
+      own closed forms of the prescribed flow, evaluated at continuous positions:
+      psi as in step_02 with the case''s low and the along-channel coordinate x (along_axis=1)
+      or y (along_axis=2), and fprof/ubprof/hbprof of background_profile (rotation_sign
+      applied to f). along_axis=1: h = hbar(y) + f(y)*psi/g, u = ubar(y) - psi_y,
+      v = psi_x; along_axis=2: h = hbar(x) + f(x)*psi/g, u = -psi_y, v = ubar(x) +
+      psi_x. With U = [h, h*u, h*v], Fx = [h*u, h*u*u + g*h*h/2, h*u*v], Fy = [h*v,
+      h*u*v, h*v*v + g*h*h/2], S_cor = [0, f*h*v, -f*h*u] at the cell centre, d =
+      50.0 m and dt = 1.0 s, at cell (i,j) and the case time t: S_fd = (U(t+dt) -
+      U(t-dt))/(2*dt) + (Fx(x+d) - Fx(x-d))/(2*d) + (Fy(y+d) - Fy(y-d))/(2*d) - S_cor,
+      every shifted value evaluated from the closed forms (no grid array, no boundary).'
+  invariants:
+  - 'The forcing is pointwise: S(:,i,j) depends only on x(i), y(j), t, the background
+    at (i,j) and the scalar arguments, and on no element of S.'
+  - No state of the run (h, hu, hv) is read; the forcing is evaluated at the supplied
+    t only.
+  - The background arrays are received, never re-derived from a profile, and no received
+    array is differenced in place of a supplied derivative (dfdr, dubar are used as
+    given).
+  - The orientation is decided by along_axis alone; each orientation evaluates its
+    own branch of steps 02-03, never by exchanging arguments to the other orientation.
+  - No residual of step_04 is reduced by a cancellation the prescribed flow satisfies.
+  - With psi0 = 0 the prescribed flow is the geostrophic background and S = 0 at every
+    cell up to round-off.
+  - The divergence u_x + v_y of the prescribed flow is zero; the term h_p*(u_x + v_y)
+    is still evaluated.
+  - On a rejected input guard_pass = false and S = 0 exactly at every element, and
+    no input array element is read.
+  - 'Axis exchange: the forcing at along_axis=2 for (nx, ny, x, y, f, dfdr, ubar,
+    dubar, hbar, psi0) equals, up to the floating-point order, the forcing at along_axis=1
+    for (ny, nx, y, x, -f^T, -dfdr^T, ubar^T, dubar^T, hbar^T, -psi0) transposed with
+    its 2nd and 3rd components exchanged (a property, not an implementation route).'
+  - No procedure prefix beyond the published signature (e.g. no pure / side-effect-free
+    marker) is added to the operation header; dp is bound exactly once as the float64
+    kind parameter.
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: ncomp
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.grid.ncomp; number of forcing components (must be 3).
+  - name: nx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.grid.nx; interior cells along x.
+  - name: ny
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.grid.ny; interior cells along y.
+  - name: along_axis
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.along_axis; 1 = channel along x, 2 = channel along y; fixes
+      the (s, r) assignment and the prescribed-flow branch.
+  - name: x
+    shape_expr: '[nx]'
+    evidence_ref: spec.ir.yaml
+    description: Interior cell-centre x coordinates (derived rule x).
+  - name: y
+    shape_expr: '[ny]'
+    evidence_ref: spec.ir.yaml
+    description: Interior cell-centre y coordinates (derived rule y).
+  - name: t
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Evaluation time (derived rule t).
+  - name: f
+    shape_expr: '[nx, ny]'
+    evidence_ref: spec.ir.yaml
+    description: Coriolis parameter per cell (derived rule background_profile).
+  - name: dfdr
+    shape_expr: '[nx, ny]'
+    evidence_ref: spec.ir.yaml
+    description: Cross-channel derivative of f per cell (background_profile).
+  - name: ubar
+    shape_expr: '[nx, ny]'
+    evidence_ref: spec.ir.yaml
+    description: Background along-channel velocity per cell (background_profile).
+  - name: dubar
+    shape_expr: '[nx, ny]'
+    evidence_ref: spec.ir.yaml
+    description: Cross-channel derivative of ubar per cell (background_profile).
+  - name: hbar
+    shape_expr: '[nx, ny]'
+    evidence_ref: spec.ir.yaml
+    description: Background depth per cell (background_profile).
+  - name: g
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.g, gravitational acceleration.
+  - name: L_along
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.constants.L_along, channel period along the channel (guarded
+      > 0).
+  - name: psi0
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.low.psi0, streamfunction amplitude.
+  - name: R_low
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.low.R_low, radius of the low (guarded > 0).
+  - name: c_tr
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.low.c_tr, signed translation speed.
+  - name: s_c0
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.low.s_c0, along-channel centre at t=0.
+  - name: r_c
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: inputs.low.r_c, cross-channel centre.
+  outputs:
+  - name: S
+    shape_expr: '[ncomp, nx, ny]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - S
+    description: Forcing [h, hu, hv] at interior cells, captured after the run.
+  - name: guard_pass
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - guard_pass
+    description: The operation's logical result, written by the driver as 1 (true)
+      / 0 (false); 0 before the call.
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: S
+          shape_expr: '[ncomp, nx, ny]'
+        - name: guard_pass
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: comp
+          axis: 0
+          count: inputs.grid.ncomp
+          length: inputs.grid.ncomp
+          placement: cell_center
+        - name: xc
+          axis: 1
+          count: inputs.grid.nx
+          length: inputs.grid.nx
+          placement: cell_center
+        - name: yc
+          axis: 2
+          count: inputs.grid.ny
+          length: inputs.grid.ny
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - ncomp
+    - nx
+    - ny
+    - along_axis
+    - x
+    - y
+    - t
+    - f
+    - dfdr
+    - ubar
+    - dubar
+    - hbar
+    - g
+    - L_along
+    - psi0
+    - R_low
+    - c_tr
+    - s_c0
+    - r_c
+  tests:
+  - test_id: l0_reference_values_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_reference_values
+    quantities:
+    - guard_pass
+    - reference_values
+  - test_id: l0_reference_values_quiescent_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_reference_values_quiescent
+    quantities:
+    - guard_pass
+    - reference_values
+  - test_id: l0_min_extent_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_min_extent
+    quantities:
+    - guard_pass
+    - reference_values
+  - test_id: l0_forcing_matches_fd_residual_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    quantities:
+    - guard_pass
+    - fd_residual
+  - test_id: l0_forcing_matches_fd_residual_late_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    quantities:
+    - guard_pass
+    - fd_residual
+  - test_id: l0_zero_low_gives_zero_forcing_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_zero_low
+    - l0_zero_low_axis
+    quantities:
+    - guard_pass
+    - zero_low
+  - test_id: l0_translation_covariance_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    quantities:
+    - guard_pass
+    - translation
+  - test_id: l0_axis_exchange_pairs_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    quantities:
+    - guard_pass
+    - axis_exchange
+  - test_id: l0_mirror_pairs_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_fd_t3e4_axis_xmir
+    - l0_fd_t3e4_axis_ymir
+    - l0_fd_t3e4_xmir
+    - l0_fd_t3e4_ymir
+    quantities:
+    - guard_pass
+    - mirror
+  - test_id: l0_invalid_ncomp_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ncomp_2
+    - l0_invalid_ncomp_2_axis
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_ncomp_above_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ncomp_4
+    - l0_invalid_ncomp_4_axis
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_along_axis_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_along_axis_0
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_along_axis_three_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_along_axis_3
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_r_low_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_r_low_zero
+    - l0_invalid_r_low_zero_axis
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_r_low_negative_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_r_low_negative
+    - l0_invalid_r_low_negative_axis
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_l_along_zero_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_l_along_zero
+    - l0_invalid_l_along_zero_axis
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_l_along_negative_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_l_along_negative
+    - l0_invalid_l_along_negative_axis
+    quantities:
+    - guard_pass
+    - rejected_outputs_zero
+  - test_id: l0_invalid_nx_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_nx_zero
+    - l0_invalid_nx_zero_axis
+    quantities:
+    - guard_pass
+  - test_id: l0_invalid_ny_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ny_zero
+    - l0_invalid_ny_zero_axis
+    quantities:
+    - guard_pass
+  predicates:
+  - test_id: l0_reference_values_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_reference_values
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_reference_values_pass
+    quantity: reference_values
+    target_cases:
+    - l0_reference_values
+    per_case: true
+    expr: maxabs(final.S - inputs.expected_S)
+    op: le
+    value: 1.0e-08
+  - test_id: l0_reference_values_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_reference_values
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_reference_values_quiescent_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_reference_values_quiescent
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_reference_values_quiescent_pass
+    quantity: reference_values
+    target_cases:
+    - l0_reference_values_quiescent
+    per_case: true
+    expr: maxabs(final.S - inputs.expected_S)
+    op: le
+    value: 1.0e-08
+  - test_id: l0_reference_values_quiescent_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_reference_values_quiescent
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_min_extent_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_min_extent
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_min_extent_pass
+    quantity: reference_values
+    target_cases:
+    - l0_min_extent
+    per_case: true
+    expr: maxabs(final.S - inputs.expected_S)
+    op: le
+    value: 1.0e-08
+  - test_id: l0_min_extent_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_min_extent
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_forcing_matches_fd_residual_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_forcing_matches_fd_residual_pass
+    quantity: fd_residual
+    target_cases:
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    per_case: true
+    bind:
+      ax: 2 - inputs.along_axis
+      d: '50.0'
+      dt: '1.0'
+      xcell: xc * inputs.grid.L_x / inputs.grid.nx
+      ycell: yc * inputs.grid.L_y / inputs.grid.ny
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      x_c: xcell
+      y_c: ycell
+      s_c: ax * x_c + (1 - ax) * y_c
+      r_c: ax * y_c + (1 - ax) * x_c
+      xi_c: pi * (s_c - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_c: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_c)
+        ** 2 + (r_c - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_c: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 * xi_c)
+        * psi_c
+      pr_c: -2 * (r_c - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_c
+      f_c: inputs.background.rotation_sign * (f0 + beta * (r_c - inputs.background.L_r
+        / 2))
+      ub_c: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_c) **
+        2
+      hb_c: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (f0 * (r_c / 2 - sin(2 * k_y * r_c) / (4 * k_y)) + beta * (r_c ** 2 / 4
+        - inputs.background.L_r * r_c / 4 - (r_c - inputs.background.L_r / 2) * sin(2
+        * k_y * r_c) / (4 * k_y) - (cos(2 * k_y * r_c) - 1) / (8 * k_y ** 2)))
+      h_c: hb_c + f_c * psi_c / inputs.constants.g
+      u_c: ax * ub_c - (ax * pr_c + (1 - ax) * ps_c)
+      v_c: (1 - ax) * ub_c + ax * ps_c + (1 - ax) * pr_c
+      x_tp: xcell
+      y_tp: ycell
+      s_tp: ax * x_tp + (1 - ax) * y_tp
+      r_tp: ax * y_tp + (1 - ax) * x_tp
+      xi_tp: pi * (s_tp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t + dt))
+        / inputs.constants.L_along
+      psi_tp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tp)
+        ** 2 + (r_tp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tp) * psi_tp
+      pr_tp: -2 * (r_tp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tp
+      f_tp: inputs.background.rotation_sign * (f0 + beta * (r_tp - inputs.background.L_r
+        / 2))
+      ub_tp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tp) **
+        2
+      hb_tp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tp / 2 - sin(2 * k_y * r_tp) / (4 * k_y)) +
+        beta * (r_tp ** 2 / 4 - inputs.background.L_r * r_tp / 4 - (r_tp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tp) / (4 * k_y) - (cos(2 * k_y * r_tp) - 1) / (8 *
+        k_y ** 2)))
+      h_tp: hb_tp + f_tp * psi_tp / inputs.constants.g
+      u_tp: ax * ub_tp - (ax * pr_tp + (1 - ax) * ps_tp)
+      v_tp: (1 - ax) * ub_tp + ax * ps_tp + (1 - ax) * pr_tp
+      x_tm: xcell
+      y_tm: ycell
+      s_tm: ax * x_tm + (1 - ax) * y_tm
+      r_tm: ax * y_tm + (1 - ax) * x_tm
+      xi_tm: pi * (s_tm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t - dt))
+        / inputs.constants.L_along
+      psi_tm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tm)
+        ** 2 + (r_tm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tm) * psi_tm
+      pr_tm: -2 * (r_tm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tm
+      f_tm: inputs.background.rotation_sign * (f0 + beta * (r_tm - inputs.background.L_r
+        / 2))
+      ub_tm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tm) **
+        2
+      hb_tm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tm / 2 - sin(2 * k_y * r_tm) / (4 * k_y)) +
+        beta * (r_tm ** 2 / 4 - inputs.background.L_r * r_tm / 4 - (r_tm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tm) / (4 * k_y) - (cos(2 * k_y * r_tm) - 1) / (8 *
+        k_y ** 2)))
+      h_tm: hb_tm + f_tm * psi_tm / inputs.constants.g
+      u_tm: ax * ub_tm - (ax * pr_tm + (1 - ax) * ps_tm)
+      v_tm: (1 - ax) * ub_tm + ax * ps_tm + (1 - ax) * pr_tm
+      x_xp: xcell + d
+      y_xp: ycell
+      s_xp: ax * x_xp + (1 - ax) * y_xp
+      r_xp: ax * y_xp + (1 - ax) * x_xp
+      xi_xp: pi * (s_xp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xp)
+        ** 2 + (r_xp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xp) * psi_xp
+      pr_xp: -2 * (r_xp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xp
+      f_xp: inputs.background.rotation_sign * (f0 + beta * (r_xp - inputs.background.L_r
+        / 2))
+      ub_xp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xp) **
+        2
+      hb_xp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xp / 2 - sin(2 * k_y * r_xp) / (4 * k_y)) +
+        beta * (r_xp ** 2 / 4 - inputs.background.L_r * r_xp / 4 - (r_xp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xp) / (4 * k_y) - (cos(2 * k_y * r_xp) - 1) / (8 *
+        k_y ** 2)))
+      h_xp: hb_xp + f_xp * psi_xp / inputs.constants.g
+      u_xp: ax * ub_xp - (ax * pr_xp + (1 - ax) * ps_xp)
+      v_xp: (1 - ax) * ub_xp + ax * ps_xp + (1 - ax) * pr_xp
+      x_xm: xcell - d
+      y_xm: ycell
+      s_xm: ax * x_xm + (1 - ax) * y_xm
+      r_xm: ax * y_xm + (1 - ax) * x_xm
+      xi_xm: pi * (s_xm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xm)
+        ** 2 + (r_xm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xm) * psi_xm
+      pr_xm: -2 * (r_xm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xm
+      f_xm: inputs.background.rotation_sign * (f0 + beta * (r_xm - inputs.background.L_r
+        / 2))
+      ub_xm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xm) **
+        2
+      hb_xm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xm / 2 - sin(2 * k_y * r_xm) / (4 * k_y)) +
+        beta * (r_xm ** 2 / 4 - inputs.background.L_r * r_xm / 4 - (r_xm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xm) / (4 * k_y) - (cos(2 * k_y * r_xm) - 1) / (8 *
+        k_y ** 2)))
+      h_xm: hb_xm + f_xm * psi_xm / inputs.constants.g
+      u_xm: ax * ub_xm - (ax * pr_xm + (1 - ax) * ps_xm)
+      v_xm: (1 - ax) * ub_xm + ax * ps_xm + (1 - ax) * pr_xm
+      x_yp: xcell
+      y_yp: ycell + d
+      s_yp: ax * x_yp + (1 - ax) * y_yp
+      r_yp: ax * y_yp + (1 - ax) * x_yp
+      xi_yp: pi * (s_yp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_yp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_yp)
+        ** 2 + (r_yp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_yp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_yp) * psi_yp
+      pr_yp: -2 * (r_yp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_yp
+      f_yp: inputs.background.rotation_sign * (f0 + beta * (r_yp - inputs.background.L_r
+        / 2))
+      ub_yp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_yp) **
+        2
+      hb_yp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_yp / 2 - sin(2 * k_y * r_yp) / (4 * k_y)) +
+        beta * (r_yp ** 2 / 4 - inputs.background.L_r * r_yp / 4 - (r_yp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_yp) / (4 * k_y) - (cos(2 * k_y * r_yp) - 1) / (8 *
+        k_y ** 2)))
+      h_yp: hb_yp + f_yp * psi_yp / inputs.constants.g
+      u_yp: ax * ub_yp - (ax * pr_yp + (1 - ax) * ps_yp)
+      v_yp: (1 - ax) * ub_yp + ax * ps_yp + (1 - ax) * pr_yp
+      x_ym: xcell
+      y_ym: ycell - d
+      s_ym: ax * x_ym + (1 - ax) * y_ym
+      r_ym: ax * y_ym + (1 - ax) * x_ym
+      xi_ym: pi * (s_ym - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_ym: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_ym)
+        ** 2 + (r_ym - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_ym: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_ym) * psi_ym
+      pr_ym: -2 * (r_ym - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_ym
+      f_ym: inputs.background.rotation_sign * (f0 + beta * (r_ym - inputs.background.L_r
+        / 2))
+      ub_ym: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_ym) **
+        2
+      hb_ym: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_ym / 2 - sin(2 * k_y * r_ym) / (4 * k_y)) +
+        beta * (r_ym ** 2 / 4 - inputs.background.L_r * r_ym / 4 - (r_ym - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_ym) / (4 * k_y) - (cos(2 * k_y * r_ym) - 1) / (8 *
+        k_y ** 2)))
+      h_ym: hb_ym + f_ym * psi_ym / inputs.constants.g
+      u_ym: ax * ub_ym - (ax * pr_ym + (1 - ax) * ps_ym)
+      v_ym: (1 - ax) * ub_ym + ax * ps_ym + (1 - ax) * pr_ym
+      F_h: (h_tp - h_tm) / (2 * dt) + (h_xp * u_xp - h_xm * u_xm) / (2 * d) + (h_yp
+        * v_yp - h_ym * v_ym) / (2 * d)
+      F_hu: (h_tp * u_tp - h_tm * u_tm) / (2 * dt) + (h_xp * u_xp ** 2 + inputs.constants.g
+        * h_xp ** 2 / 2 - h_xm * u_xm ** 2 - inputs.constants.g * h_xm ** 2 / 2) /
+        (2 * d) + (h_yp * u_yp * v_yp - h_ym * u_ym * v_ym) / (2 * d) - f_c * h_c
+        * v_c
+      F_hv: (h_tp * v_tp - h_tm * v_tm) / (2 * dt) + (h_xp * u_xp * v_xp - h_xm *
+        u_xm * v_xm) / (2 * d) + (h_yp * v_yp ** 2 + inputs.constants.g * h_yp **
+        2 / 2 - h_ym * v_ym ** 2 - inputs.constants.g * h_ym ** 2 / 2) / (2 * d) +
+        f_c * h_c * u_c
+      S_fd: (comp - 1.5) * (comp - 2.5) / 2 * F_h + (comp - 0.5) * (2.5 - comp) *
+        F_hu + (comp - 0.5) * (comp - 1.5) / 2 * F_hv
+    expr: maxabs(final.S - S_fd)
+    op: ge
+    value: 1.0e-09
+  - test_id: l0_forcing_matches_fd_residual_pass
+    quantity: fd_residual
+    target_cases:
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    per_case: true
+    bind:
+      ax: 2 - inputs.along_axis
+      d: '50.0'
+      dt: '1.0'
+      xcell: xc * inputs.grid.L_x / inputs.grid.nx
+      ycell: yc * inputs.grid.L_y / inputs.grid.ny
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      x_c: xcell
+      y_c: ycell
+      s_c: ax * x_c + (1 - ax) * y_c
+      r_c: ax * y_c + (1 - ax) * x_c
+      xi_c: pi * (s_c - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_c: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_c)
+        ** 2 + (r_c - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_c: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 * xi_c)
+        * psi_c
+      pr_c: -2 * (r_c - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_c
+      f_c: inputs.background.rotation_sign * (f0 + beta * (r_c - inputs.background.L_r
+        / 2))
+      ub_c: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_c) **
+        2
+      hb_c: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (f0 * (r_c / 2 - sin(2 * k_y * r_c) / (4 * k_y)) + beta * (r_c ** 2 / 4
+        - inputs.background.L_r * r_c / 4 - (r_c - inputs.background.L_r / 2) * sin(2
+        * k_y * r_c) / (4 * k_y) - (cos(2 * k_y * r_c) - 1) / (8 * k_y ** 2)))
+      h_c: hb_c + f_c * psi_c / inputs.constants.g
+      u_c: ax * ub_c - (ax * pr_c + (1 - ax) * ps_c)
+      v_c: (1 - ax) * ub_c + ax * ps_c + (1 - ax) * pr_c
+      x_tp: xcell
+      y_tp: ycell
+      s_tp: ax * x_tp + (1 - ax) * y_tp
+      r_tp: ax * y_tp + (1 - ax) * x_tp
+      xi_tp: pi * (s_tp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t + dt))
+        / inputs.constants.L_along
+      psi_tp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tp)
+        ** 2 + (r_tp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tp) * psi_tp
+      pr_tp: -2 * (r_tp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tp
+      f_tp: inputs.background.rotation_sign * (f0 + beta * (r_tp - inputs.background.L_r
+        / 2))
+      ub_tp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tp) **
+        2
+      hb_tp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tp / 2 - sin(2 * k_y * r_tp) / (4 * k_y)) +
+        beta * (r_tp ** 2 / 4 - inputs.background.L_r * r_tp / 4 - (r_tp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tp) / (4 * k_y) - (cos(2 * k_y * r_tp) - 1) / (8 *
+        k_y ** 2)))
+      h_tp: hb_tp + f_tp * psi_tp / inputs.constants.g
+      u_tp: ax * ub_tp - (ax * pr_tp + (1 - ax) * ps_tp)
+      v_tp: (1 - ax) * ub_tp + ax * ps_tp + (1 - ax) * pr_tp
+      x_tm: xcell
+      y_tm: ycell
+      s_tm: ax * x_tm + (1 - ax) * y_tm
+      r_tm: ax * y_tm + (1 - ax) * x_tm
+      xi_tm: pi * (s_tm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t - dt))
+        / inputs.constants.L_along
+      psi_tm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tm)
+        ** 2 + (r_tm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tm) * psi_tm
+      pr_tm: -2 * (r_tm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tm
+      f_tm: inputs.background.rotation_sign * (f0 + beta * (r_tm - inputs.background.L_r
+        / 2))
+      ub_tm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tm) **
+        2
+      hb_tm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tm / 2 - sin(2 * k_y * r_tm) / (4 * k_y)) +
+        beta * (r_tm ** 2 / 4 - inputs.background.L_r * r_tm / 4 - (r_tm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tm) / (4 * k_y) - (cos(2 * k_y * r_tm) - 1) / (8 *
+        k_y ** 2)))
+      h_tm: hb_tm + f_tm * psi_tm / inputs.constants.g
+      u_tm: ax * ub_tm - (ax * pr_tm + (1 - ax) * ps_tm)
+      v_tm: (1 - ax) * ub_tm + ax * ps_tm + (1 - ax) * pr_tm
+      x_xp: xcell + d
+      y_xp: ycell
+      s_xp: ax * x_xp + (1 - ax) * y_xp
+      r_xp: ax * y_xp + (1 - ax) * x_xp
+      xi_xp: pi * (s_xp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xp)
+        ** 2 + (r_xp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xp) * psi_xp
+      pr_xp: -2 * (r_xp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xp
+      f_xp: inputs.background.rotation_sign * (f0 + beta * (r_xp - inputs.background.L_r
+        / 2))
+      ub_xp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xp) **
+        2
+      hb_xp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xp / 2 - sin(2 * k_y * r_xp) / (4 * k_y)) +
+        beta * (r_xp ** 2 / 4 - inputs.background.L_r * r_xp / 4 - (r_xp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xp) / (4 * k_y) - (cos(2 * k_y * r_xp) - 1) / (8 *
+        k_y ** 2)))
+      h_xp: hb_xp + f_xp * psi_xp / inputs.constants.g
+      u_xp: ax * ub_xp - (ax * pr_xp + (1 - ax) * ps_xp)
+      v_xp: (1 - ax) * ub_xp + ax * ps_xp + (1 - ax) * pr_xp
+      x_xm: xcell - d
+      y_xm: ycell
+      s_xm: ax * x_xm + (1 - ax) * y_xm
+      r_xm: ax * y_xm + (1 - ax) * x_xm
+      xi_xm: pi * (s_xm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xm)
+        ** 2 + (r_xm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xm) * psi_xm
+      pr_xm: -2 * (r_xm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xm
+      f_xm: inputs.background.rotation_sign * (f0 + beta * (r_xm - inputs.background.L_r
+        / 2))
+      ub_xm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xm) **
+        2
+      hb_xm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xm / 2 - sin(2 * k_y * r_xm) / (4 * k_y)) +
+        beta * (r_xm ** 2 / 4 - inputs.background.L_r * r_xm / 4 - (r_xm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xm) / (4 * k_y) - (cos(2 * k_y * r_xm) - 1) / (8 *
+        k_y ** 2)))
+      h_xm: hb_xm + f_xm * psi_xm / inputs.constants.g
+      u_xm: ax * ub_xm - (ax * pr_xm + (1 - ax) * ps_xm)
+      v_xm: (1 - ax) * ub_xm + ax * ps_xm + (1 - ax) * pr_xm
+      x_yp: xcell
+      y_yp: ycell + d
+      s_yp: ax * x_yp + (1 - ax) * y_yp
+      r_yp: ax * y_yp + (1 - ax) * x_yp
+      xi_yp: pi * (s_yp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_yp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_yp)
+        ** 2 + (r_yp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_yp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_yp) * psi_yp
+      pr_yp: -2 * (r_yp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_yp
+      f_yp: inputs.background.rotation_sign * (f0 + beta * (r_yp - inputs.background.L_r
+        / 2))
+      ub_yp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_yp) **
+        2
+      hb_yp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_yp / 2 - sin(2 * k_y * r_yp) / (4 * k_y)) +
+        beta * (r_yp ** 2 / 4 - inputs.background.L_r * r_yp / 4 - (r_yp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_yp) / (4 * k_y) - (cos(2 * k_y * r_yp) - 1) / (8 *
+        k_y ** 2)))
+      h_yp: hb_yp + f_yp * psi_yp / inputs.constants.g
+      u_yp: ax * ub_yp - (ax * pr_yp + (1 - ax) * ps_yp)
+      v_yp: (1 - ax) * ub_yp + ax * ps_yp + (1 - ax) * pr_yp
+      x_ym: xcell
+      y_ym: ycell - d
+      s_ym: ax * x_ym + (1 - ax) * y_ym
+      r_ym: ax * y_ym + (1 - ax) * x_ym
+      xi_ym: pi * (s_ym - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_ym: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_ym)
+        ** 2 + (r_ym - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_ym: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_ym) * psi_ym
+      pr_ym: -2 * (r_ym - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_ym
+      f_ym: inputs.background.rotation_sign * (f0 + beta * (r_ym - inputs.background.L_r
+        / 2))
+      ub_ym: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_ym) **
+        2
+      hb_ym: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_ym / 2 - sin(2 * k_y * r_ym) / (4 * k_y)) +
+        beta * (r_ym ** 2 / 4 - inputs.background.L_r * r_ym / 4 - (r_ym - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_ym) / (4 * k_y) - (cos(2 * k_y * r_ym) - 1) / (8 *
+        k_y ** 2)))
+      h_ym: hb_ym + f_ym * psi_ym / inputs.constants.g
+      u_ym: ax * ub_ym - (ax * pr_ym + (1 - ax) * ps_ym)
+      v_ym: (1 - ax) * ub_ym + ax * ps_ym + (1 - ax) * pr_ym
+      F_h: (h_tp - h_tm) / (2 * dt) + (h_xp * u_xp - h_xm * u_xm) / (2 * d) + (h_yp
+        * v_yp - h_ym * v_ym) / (2 * d)
+      F_hu: (h_tp * u_tp - h_tm * u_tm) / (2 * dt) + (h_xp * u_xp ** 2 + inputs.constants.g
+        * h_xp ** 2 / 2 - h_xm * u_xm ** 2 - inputs.constants.g * h_xm ** 2 / 2) /
+        (2 * d) + (h_yp * u_yp * v_yp - h_ym * u_ym * v_ym) / (2 * d) - f_c * h_c
+        * v_c
+      F_hv: (h_tp * v_tp - h_tm * v_tm) / (2 * dt) + (h_xp * u_xp * v_xp - h_xm *
+        u_xm * v_xm) / (2 * d) + (h_yp * v_yp ** 2 + inputs.constants.g * h_yp **
+        2 / 2 - h_ym * v_ym ** 2 - inputs.constants.g * h_ym ** 2 / 2) / (2 * d) +
+        f_c * h_c * u_c
+      S_fd: (comp - 1.5) * (comp - 2.5) / 2 * F_h + (comp - 0.5) * (2.5 - comp) *
+        F_hu + (comp - 0.5) * (comp - 1.5) / 2 * F_hv
+    expr: maxabs(final.S - S_fd)
+    op: le
+    value: 1.0e-06
+  - test_id: l0_forcing_matches_fd_residual_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_forcing_matches_fd_residual_late_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_forcing_matches_fd_residual_late_pass
+    quantity: fd_residual
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    per_case: true
+    bind:
+      ax: 2 - inputs.along_axis
+      d: '50.0'
+      dt: '1.0'
+      xcell: xc * inputs.grid.L_x / inputs.grid.nx
+      ycell: yc * inputs.grid.L_y / inputs.grid.ny
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      x_c: xcell
+      y_c: ycell
+      s_c: ax * x_c + (1 - ax) * y_c
+      r_c: ax * y_c + (1 - ax) * x_c
+      xi_c: pi * (s_c - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_c: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_c)
+        ** 2 + (r_c - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_c: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 * xi_c)
+        * psi_c
+      pr_c: -2 * (r_c - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_c
+      f_c: inputs.background.rotation_sign * (f0 + beta * (r_c - inputs.background.L_r
+        / 2))
+      ub_c: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_c) **
+        2
+      hb_c: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (f0 * (r_c / 2 - sin(2 * k_y * r_c) / (4 * k_y)) + beta * (r_c ** 2 / 4
+        - inputs.background.L_r * r_c / 4 - (r_c - inputs.background.L_r / 2) * sin(2
+        * k_y * r_c) / (4 * k_y) - (cos(2 * k_y * r_c) - 1) / (8 * k_y ** 2)))
+      h_c: hb_c + f_c * psi_c / inputs.constants.g
+      u_c: ax * ub_c - (ax * pr_c + (1 - ax) * ps_c)
+      v_c: (1 - ax) * ub_c + ax * ps_c + (1 - ax) * pr_c
+      x_tp: xcell
+      y_tp: ycell
+      s_tp: ax * x_tp + (1 - ax) * y_tp
+      r_tp: ax * y_tp + (1 - ax) * x_tp
+      xi_tp: pi * (s_tp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t + dt))
+        / inputs.constants.L_along
+      psi_tp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tp)
+        ** 2 + (r_tp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tp) * psi_tp
+      pr_tp: -2 * (r_tp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tp
+      f_tp: inputs.background.rotation_sign * (f0 + beta * (r_tp - inputs.background.L_r
+        / 2))
+      ub_tp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tp) **
+        2
+      hb_tp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tp / 2 - sin(2 * k_y * r_tp) / (4 * k_y)) +
+        beta * (r_tp ** 2 / 4 - inputs.background.L_r * r_tp / 4 - (r_tp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tp) / (4 * k_y) - (cos(2 * k_y * r_tp) - 1) / (8 *
+        k_y ** 2)))
+      h_tp: hb_tp + f_tp * psi_tp / inputs.constants.g
+      u_tp: ax * ub_tp - (ax * pr_tp + (1 - ax) * ps_tp)
+      v_tp: (1 - ax) * ub_tp + ax * ps_tp + (1 - ax) * pr_tp
+      x_tm: xcell
+      y_tm: ycell
+      s_tm: ax * x_tm + (1 - ax) * y_tm
+      r_tm: ax * y_tm + (1 - ax) * x_tm
+      xi_tm: pi * (s_tm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t - dt))
+        / inputs.constants.L_along
+      psi_tm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tm)
+        ** 2 + (r_tm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tm) * psi_tm
+      pr_tm: -2 * (r_tm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tm
+      f_tm: inputs.background.rotation_sign * (f0 + beta * (r_tm - inputs.background.L_r
+        / 2))
+      ub_tm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tm) **
+        2
+      hb_tm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tm / 2 - sin(2 * k_y * r_tm) / (4 * k_y)) +
+        beta * (r_tm ** 2 / 4 - inputs.background.L_r * r_tm / 4 - (r_tm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tm) / (4 * k_y) - (cos(2 * k_y * r_tm) - 1) / (8 *
+        k_y ** 2)))
+      h_tm: hb_tm + f_tm * psi_tm / inputs.constants.g
+      u_tm: ax * ub_tm - (ax * pr_tm + (1 - ax) * ps_tm)
+      v_tm: (1 - ax) * ub_tm + ax * ps_tm + (1 - ax) * pr_tm
+      x_xp: xcell + d
+      y_xp: ycell
+      s_xp: ax * x_xp + (1 - ax) * y_xp
+      r_xp: ax * y_xp + (1 - ax) * x_xp
+      xi_xp: pi * (s_xp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xp)
+        ** 2 + (r_xp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xp) * psi_xp
+      pr_xp: -2 * (r_xp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xp
+      f_xp: inputs.background.rotation_sign * (f0 + beta * (r_xp - inputs.background.L_r
+        / 2))
+      ub_xp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xp) **
+        2
+      hb_xp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xp / 2 - sin(2 * k_y * r_xp) / (4 * k_y)) +
+        beta * (r_xp ** 2 / 4 - inputs.background.L_r * r_xp / 4 - (r_xp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xp) / (4 * k_y) - (cos(2 * k_y * r_xp) - 1) / (8 *
+        k_y ** 2)))
+      h_xp: hb_xp + f_xp * psi_xp / inputs.constants.g
+      u_xp: ax * ub_xp - (ax * pr_xp + (1 - ax) * ps_xp)
+      v_xp: (1 - ax) * ub_xp + ax * ps_xp + (1 - ax) * pr_xp
+      x_xm: xcell - d
+      y_xm: ycell
+      s_xm: ax * x_xm + (1 - ax) * y_xm
+      r_xm: ax * y_xm + (1 - ax) * x_xm
+      xi_xm: pi * (s_xm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xm)
+        ** 2 + (r_xm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xm) * psi_xm
+      pr_xm: -2 * (r_xm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xm
+      f_xm: inputs.background.rotation_sign * (f0 + beta * (r_xm - inputs.background.L_r
+        / 2))
+      ub_xm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xm) **
+        2
+      hb_xm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xm / 2 - sin(2 * k_y * r_xm) / (4 * k_y)) +
+        beta * (r_xm ** 2 / 4 - inputs.background.L_r * r_xm / 4 - (r_xm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xm) / (4 * k_y) - (cos(2 * k_y * r_xm) - 1) / (8 *
+        k_y ** 2)))
+      h_xm: hb_xm + f_xm * psi_xm / inputs.constants.g
+      u_xm: ax * ub_xm - (ax * pr_xm + (1 - ax) * ps_xm)
+      v_xm: (1 - ax) * ub_xm + ax * ps_xm + (1 - ax) * pr_xm
+      x_yp: xcell
+      y_yp: ycell + d
+      s_yp: ax * x_yp + (1 - ax) * y_yp
+      r_yp: ax * y_yp + (1 - ax) * x_yp
+      xi_yp: pi * (s_yp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_yp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_yp)
+        ** 2 + (r_yp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_yp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_yp) * psi_yp
+      pr_yp: -2 * (r_yp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_yp
+      f_yp: inputs.background.rotation_sign * (f0 + beta * (r_yp - inputs.background.L_r
+        / 2))
+      ub_yp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_yp) **
+        2
+      hb_yp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_yp / 2 - sin(2 * k_y * r_yp) / (4 * k_y)) +
+        beta * (r_yp ** 2 / 4 - inputs.background.L_r * r_yp / 4 - (r_yp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_yp) / (4 * k_y) - (cos(2 * k_y * r_yp) - 1) / (8 *
+        k_y ** 2)))
+      h_yp: hb_yp + f_yp * psi_yp / inputs.constants.g
+      u_yp: ax * ub_yp - (ax * pr_yp + (1 - ax) * ps_yp)
+      v_yp: (1 - ax) * ub_yp + ax * ps_yp + (1 - ax) * pr_yp
+      x_ym: xcell
+      y_ym: ycell - d
+      s_ym: ax * x_ym + (1 - ax) * y_ym
+      r_ym: ax * y_ym + (1 - ax) * x_ym
+      xi_ym: pi * (s_ym - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_ym: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_ym)
+        ** 2 + (r_ym - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_ym: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_ym) * psi_ym
+      pr_ym: -2 * (r_ym - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_ym
+      f_ym: inputs.background.rotation_sign * (f0 + beta * (r_ym - inputs.background.L_r
+        / 2))
+      ub_ym: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_ym) **
+        2
+      hb_ym: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_ym / 2 - sin(2 * k_y * r_ym) / (4 * k_y)) +
+        beta * (r_ym ** 2 / 4 - inputs.background.L_r * r_ym / 4 - (r_ym - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_ym) / (4 * k_y) - (cos(2 * k_y * r_ym) - 1) / (8 *
+        k_y ** 2)))
+      h_ym: hb_ym + f_ym * psi_ym / inputs.constants.g
+      u_ym: ax * ub_ym - (ax * pr_ym + (1 - ax) * ps_ym)
+      v_ym: (1 - ax) * ub_ym + ax * ps_ym + (1 - ax) * pr_ym
+      F_h: (h_tp - h_tm) / (2 * dt) + (h_xp * u_xp - h_xm * u_xm) / (2 * d) + (h_yp
+        * v_yp - h_ym * v_ym) / (2 * d)
+      F_hu: (h_tp * u_tp - h_tm * u_tm) / (2 * dt) + (h_xp * u_xp ** 2 + inputs.constants.g
+        * h_xp ** 2 / 2 - h_xm * u_xm ** 2 - inputs.constants.g * h_xm ** 2 / 2) /
+        (2 * d) + (h_yp * u_yp * v_yp - h_ym * u_ym * v_ym) / (2 * d) - f_c * h_c
+        * v_c
+      F_hv: (h_tp * v_tp - h_tm * v_tm) / (2 * dt) + (h_xp * u_xp * v_xp - h_xm *
+        u_xm * v_xm) / (2 * d) + (h_yp * v_yp ** 2 + inputs.constants.g * h_yp **
+        2 / 2 - h_ym * v_ym ** 2 - inputs.constants.g * h_ym ** 2 / 2) / (2 * d) +
+        f_c * h_c * u_c
+      S_fd: (comp - 1.5) * (comp - 2.5) / 2 * F_h + (comp - 0.5) * (2.5 - comp) *
+        F_hu + (comp - 0.5) * (comp - 1.5) / 2 * F_hv
+    expr: maxabs(final.S - S_fd)
+    op: ge
+    value: 1.0e-09
+  - test_id: l0_forcing_matches_fd_residual_late_pass
+    quantity: fd_residual
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    per_case: true
+    bind:
+      ax: 2 - inputs.along_axis
+      d: '50.0'
+      dt: '1.0'
+      xcell: xc * inputs.grid.L_x / inputs.grid.nx
+      ycell: yc * inputs.grid.L_y / inputs.grid.ny
+      f0: 2 * inputs.background.Omega * sin(inputs.background.theta0)
+      beta: 2 * inputs.background.Omega * cos(inputs.background.theta0) / inputs.background.a
+      k_y: pi / inputs.background.L_r
+      x_c: xcell
+      y_c: ycell
+      s_c: ax * x_c + (1 - ax) * y_c
+      r_c: ax * y_c + (1 - ax) * x_c
+      xi_c: pi * (s_c - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_c: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_c)
+        ** 2 + (r_c - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_c: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 * xi_c)
+        * psi_c
+      pr_c: -2 * (r_c - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_c
+      f_c: inputs.background.rotation_sign * (f0 + beta * (r_c - inputs.background.L_r
+        / 2))
+      ub_c: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_c) **
+        2
+      hb_c: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 / inputs.constants.g)
+        * (f0 * (r_c / 2 - sin(2 * k_y * r_c) / (4 * k_y)) + beta * (r_c ** 2 / 4
+        - inputs.background.L_r * r_c / 4 - (r_c - inputs.background.L_r / 2) * sin(2
+        * k_y * r_c) / (4 * k_y) - (cos(2 * k_y * r_c) - 1) / (8 * k_y ** 2)))
+      h_c: hb_c + f_c * psi_c / inputs.constants.g
+      u_c: ax * ub_c - (ax * pr_c + (1 - ax) * ps_c)
+      v_c: (1 - ax) * ub_c + ax * ps_c + (1 - ax) * pr_c
+      x_tp: xcell
+      y_tp: ycell
+      s_tp: ax * x_tp + (1 - ax) * y_tp
+      r_tp: ax * y_tp + (1 - ax) * x_tp
+      xi_tp: pi * (s_tp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t + dt))
+        / inputs.constants.L_along
+      psi_tp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tp)
+        ** 2 + (r_tp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tp) * psi_tp
+      pr_tp: -2 * (r_tp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tp
+      f_tp: inputs.background.rotation_sign * (f0 + beta * (r_tp - inputs.background.L_r
+        / 2))
+      ub_tp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tp) **
+        2
+      hb_tp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tp / 2 - sin(2 * k_y * r_tp) / (4 * k_y)) +
+        beta * (r_tp ** 2 / 4 - inputs.background.L_r * r_tp / 4 - (r_tp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tp) / (4 * k_y) - (cos(2 * k_y * r_tp) - 1) / (8 *
+        k_y ** 2)))
+      h_tp: hb_tp + f_tp * psi_tp / inputs.constants.g
+      u_tp: ax * ub_tp - (ax * pr_tp + (1 - ax) * ps_tp)
+      v_tp: (1 - ax) * ub_tp + ax * ps_tp + (1 - ax) * pr_tp
+      x_tm: xcell
+      y_tm: ycell
+      s_tm: ax * x_tm + (1 - ax) * y_tm
+      r_tm: ax * y_tm + (1 - ax) * x_tm
+      xi_tm: pi * (s_tm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t - dt))
+        / inputs.constants.L_along
+      psi_tm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_tm)
+        ** 2 + (r_tm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_tm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_tm) * psi_tm
+      pr_tm: -2 * (r_tm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_tm
+      f_tm: inputs.background.rotation_sign * (f0 + beta * (r_tm - inputs.background.L_r
+        / 2))
+      ub_tm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_tm) **
+        2
+      hb_tm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_tm / 2 - sin(2 * k_y * r_tm) / (4 * k_y)) +
+        beta * (r_tm ** 2 / 4 - inputs.background.L_r * r_tm / 4 - (r_tm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_tm) / (4 * k_y) - (cos(2 * k_y * r_tm) - 1) / (8 *
+        k_y ** 2)))
+      h_tm: hb_tm + f_tm * psi_tm / inputs.constants.g
+      u_tm: ax * ub_tm - (ax * pr_tm + (1 - ax) * ps_tm)
+      v_tm: (1 - ax) * ub_tm + ax * ps_tm + (1 - ax) * pr_tm
+      x_xp: xcell + d
+      y_xp: ycell
+      s_xp: ax * x_xp + (1 - ax) * y_xp
+      r_xp: ax * y_xp + (1 - ax) * x_xp
+      xi_xp: pi * (s_xp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xp)
+        ** 2 + (r_xp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xp) * psi_xp
+      pr_xp: -2 * (r_xp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xp
+      f_xp: inputs.background.rotation_sign * (f0 + beta * (r_xp - inputs.background.L_r
+        / 2))
+      ub_xp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xp) **
+        2
+      hb_xp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xp / 2 - sin(2 * k_y * r_xp) / (4 * k_y)) +
+        beta * (r_xp ** 2 / 4 - inputs.background.L_r * r_xp / 4 - (r_xp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xp) / (4 * k_y) - (cos(2 * k_y * r_xp) - 1) / (8 *
+        k_y ** 2)))
+      h_xp: hb_xp + f_xp * psi_xp / inputs.constants.g
+      u_xp: ax * ub_xp - (ax * pr_xp + (1 - ax) * ps_xp)
+      v_xp: (1 - ax) * ub_xp + ax * ps_xp + (1 - ax) * pr_xp
+      x_xm: xcell - d
+      y_xm: ycell
+      s_xm: ax * x_xm + (1 - ax) * y_xm
+      r_xm: ax * y_xm + (1 - ax) * x_xm
+      xi_xm: pi * (s_xm - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_xm: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_xm)
+        ** 2 + (r_xm - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_xm: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_xm) * psi_xm
+      pr_xm: -2 * (r_xm - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_xm
+      f_xm: inputs.background.rotation_sign * (f0 + beta * (r_xm - inputs.background.L_r
+        / 2))
+      ub_xm: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_xm) **
+        2
+      hb_xm: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_xm / 2 - sin(2 * k_y * r_xm) / (4 * k_y)) +
+        beta * (r_xm ** 2 / 4 - inputs.background.L_r * r_xm / 4 - (r_xm - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_xm) / (4 * k_y) - (cos(2 * k_y * r_xm) - 1) / (8 *
+        k_y ** 2)))
+      h_xm: hb_xm + f_xm * psi_xm / inputs.constants.g
+      u_xm: ax * ub_xm - (ax * pr_xm + (1 - ax) * ps_xm)
+      v_xm: (1 - ax) * ub_xm + ax * ps_xm + (1 - ax) * pr_xm
+      x_yp: xcell
+      y_yp: ycell + d
+      s_yp: ax * x_yp + (1 - ax) * y_yp
+      r_yp: ax * y_yp + (1 - ax) * x_yp
+      xi_yp: pi * (s_yp - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_yp: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_yp)
+        ** 2 + (r_yp - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_yp: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_yp) * psi_yp
+      pr_yp: -2 * (r_yp - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_yp
+      f_yp: inputs.background.rotation_sign * (f0 + beta * (r_yp - inputs.background.L_r
+        / 2))
+      ub_yp: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_yp) **
+        2
+      hb_yp: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_yp / 2 - sin(2 * k_y * r_yp) / (4 * k_y)) +
+        beta * (r_yp ** 2 / 4 - inputs.background.L_r * r_yp / 4 - (r_yp - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_yp) / (4 * k_y) - (cos(2 * k_y * r_yp) - 1) / (8 *
+        k_y ** 2)))
+      h_yp: hb_yp + f_yp * psi_yp / inputs.constants.g
+      u_yp: ax * ub_yp - (ax * pr_yp + (1 - ax) * ps_yp)
+      v_yp: (1 - ax) * ub_yp + ax * ps_yp + (1 - ax) * pr_yp
+      x_ym: xcell
+      y_ym: ycell - d
+      s_ym: ax * x_ym + (1 - ax) * y_ym
+      r_ym: ax * y_ym + (1 - ax) * x_ym
+      xi_ym: pi * (s_ym - inputs.low.s_c0 - inputs.low.c_tr * (inputs.time.t)) / inputs.constants.L_along
+      psi_ym: inputs.low.psi0 * exp(-((inputs.constants.L_along / pi) ** 2 * sin(xi_ym)
+        ** 2 + (r_ym - inputs.low.r_c) ** 2) / inputs.low.R_low ** 2)
+      ps_ym: -(inputs.constants.L_along / (pi * inputs.low.R_low ** 2)) * sin(2 *
+        xi_ym) * psi_ym
+      pr_ym: -2 * (r_ym - inputs.low.r_c) / inputs.low.R_low ** 2 * psi_ym
+      f_ym: inputs.background.rotation_sign * (f0 + beta * (r_ym - inputs.background.L_r
+        / 2))
+      ub_ym: inputs.background.jet_sign * inputs.background.u0 * sin(k_y * r_ym) **
+        2
+      hb_ym: inputs.background.gh0 / inputs.constants.g - (inputs.background.u0 /
+        inputs.constants.g) * (f0 * (r_ym / 2 - sin(2 * k_y * r_ym) / (4 * k_y)) +
+        beta * (r_ym ** 2 / 4 - inputs.background.L_r * r_ym / 4 - (r_ym - inputs.background.L_r
+        / 2) * sin(2 * k_y * r_ym) / (4 * k_y) - (cos(2 * k_y * r_ym) - 1) / (8 *
+        k_y ** 2)))
+      h_ym: hb_ym + f_ym * psi_ym / inputs.constants.g
+      u_ym: ax * ub_ym - (ax * pr_ym + (1 - ax) * ps_ym)
+      v_ym: (1 - ax) * ub_ym + ax * ps_ym + (1 - ax) * pr_ym
+      F_h: (h_tp - h_tm) / (2 * dt) + (h_xp * u_xp - h_xm * u_xm) / (2 * d) + (h_yp
+        * v_yp - h_ym * v_ym) / (2 * d)
+      F_hu: (h_tp * u_tp - h_tm * u_tm) / (2 * dt) + (h_xp * u_xp ** 2 + inputs.constants.g
+        * h_xp ** 2 / 2 - h_xm * u_xm ** 2 - inputs.constants.g * h_xm ** 2 / 2) /
+        (2 * d) + (h_yp * u_yp * v_yp - h_ym * u_ym * v_ym) / (2 * d) - f_c * h_c
+        * v_c
+      F_hv: (h_tp * v_tp - h_tm * v_tm) / (2 * dt) + (h_xp * u_xp * v_xp - h_xm *
+        u_xm * v_xm) / (2 * d) + (h_yp * v_yp ** 2 + inputs.constants.g * h_yp **
+        2 / 2 - h_ym * v_ym ** 2 - inputs.constants.g * h_ym ** 2 / 2) / (2 * d) +
+        f_c * h_c * u_c
+      S_fd: (comp - 1.5) * (comp - 2.5) / 2 * F_h + (comp - 0.5) * (2.5 - comp) *
+        F_hu + (comp - 0.5) * (comp - 1.5) / 2 * F_hv
+    expr: maxabs(final.S - S_fd)
+    op: le
+    value: 1.0e-06
+  - test_id: l0_forcing_matches_fd_residual_late_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_zero_low_gives_zero_forcing_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_zero_low
+    - l0_zero_low_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_zero_low_gives_zero_forcing_pass
+    quantity: zero_low
+    target_cases:
+    - l0_zero_low
+    - l0_zero_low_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: le
+    value: 1.0e-08
+  - test_id: l0_zero_low_gives_zero_forcing_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_zero_low
+    - l0_zero_low_axis
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_translation_covariance_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_translation_covariance_pass
+    quantity: translation
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    case: l0_translation_tau
+    expr: maxabs(final.S - roll(at('l0_translation').final.S, 0, 3, 0)) / maxabs(at('l0_translation').final.S)
+    op: ge
+    value: 1.0e-18
+  - test_id: l0_translation_covariance_pass
+    quantity: translation
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    case: l0_translation_tau
+    expr: maxabs(final.S - roll(at('l0_translation').final.S, 0, 3, 0)) / maxabs(at('l0_translation').final.S)
+    op: le
+    value: 1.0e-09
+  - test_id: l0_translation_covariance_pass
+    quantity: translation
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    case: l0_translation_tau_axis
+    expr: maxabs(final.S - roll(at('l0_translation_axis').final.S, 0, 0, 3)) / maxabs(at('l0_translation_axis').final.S)
+    op: ge
+    value: 1.0e-18
+  - test_id: l0_translation_covariance_pass
+    quantity: translation
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    case: l0_translation_tau_axis
+    expr: maxabs(final.S - roll(at('l0_translation_axis').final.S, 0, 0, 3)) / maxabs(at('l0_translation_axis').final.S)
+    op: le
+    value: 1.0e-09
+  - test_id: l0_translation_covariance_pass
+    quantity: translation
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: ge
+    value: 5.0
+  - test_id: l0_translation_covariance_pass
+    quantity: translation
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: le
+    value: 7.0
+  - test_id: l0_translation_covariance_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: axis_exchange
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    case: l0_reference_values_axis
+    bind:
+      B: at('l0_reference_values').final.S
+      P: transpose(B, 1, 2)
+      TP: (comp - 1.5) * (comp - 2.5) / 2 * P + (comp - 0.5) * (2.5 - comp) * roll(P,
+        -1, 0, 0) + (comp - 0.5) * (comp - 1.5) / 2 * roll(P, 1, 0, 0)
+    expr: norm2(final.S - TP) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: axis_exchange
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    case: l0_reference_values_quiescent_axis
+    bind:
+      B: at('l0_reference_values_quiescent').final.S
+      P: transpose(B, 1, 2)
+      TP: (comp - 1.5) * (comp - 2.5) / 2 * P + (comp - 0.5) * (2.5 - comp) * roll(P,
+        -1, 0, 0) + (comp - 0.5) * (comp - 1.5) / 2 * roll(P, 1, 0, 0)
+    expr: norm2(final.S - TP) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: axis_exchange
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    case: l0_fd_t0_axis
+    bind:
+      B: at('l0_fd_t0').final.S
+      P: transpose(B, 1, 2)
+      TP: (comp - 1.5) * (comp - 2.5) / 2 * P + (comp - 0.5) * (2.5 - comp) * roll(P,
+        -1, 0, 0) + (comp - 0.5) * (comp - 1.5) / 2 * roll(P, 1, 0, 0)
+    expr: norm2(final.S - TP) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: axis_exchange
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    case: l0_fd_t3e4_axis
+    bind:
+      B: at('l0_fd_t3e4').final.S
+      P: transpose(B, 1, 2)
+      TP: (comp - 1.5) * (comp - 2.5) / 2 * P + (comp - 0.5) * (2.5 - comp) * roll(P,
+        -1, 0, 0) + (comp - 0.5) * (comp - 1.5) / 2 * roll(P, 1, 0, 0)
+    expr: norm2(final.S - TP) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: axis_exchange
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    case: l0_translation_axis
+    bind:
+      B: at('l0_translation').final.S
+      P: transpose(B, 1, 2)
+      TP: (comp - 1.5) * (comp - 2.5) / 2 * P + (comp - 0.5) * (2.5 - comp) * roll(P,
+        -1, 0, 0) + (comp - 0.5) * (comp - 1.5) / 2 * roll(P, 1, 0, 0)
+    expr: norm2(final.S - TP) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: axis_exchange
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    case: l0_translation_tau_axis
+    bind:
+      B: at('l0_translation_tau').final.S
+      P: transpose(B, 1, 2)
+      TP: (comp - 1.5) * (comp - 2.5) / 2 * P + (comp - 0.5) * (2.5 - comp) * roll(P,
+        -1, 0, 0) + (comp - 0.5) * (comp - 1.5) / 2 * roll(P, 1, 0, 0)
+    expr: norm2(final.S - TP) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: axis_exchange
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    case: l0_min_extent_axis
+    bind:
+      B: at('l0_min_extent').final.S
+      P: transpose(B, 1, 2)
+      TP: (comp - 1.5) * (comp - 2.5) / 2 * P + (comp - 0.5) * (2.5 - comp) * roll(P,
+        -1, 0, 0) + (comp - 0.5) * (comp - 1.5) / 2 * roll(P, 1, 0, 0)
+    expr: norm2(final.S - TP) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_axis_exchange_pairs_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_reference_values
+    - l0_reference_values_axis
+    - l0_reference_values_quiescent
+    - l0_reference_values_quiescent_axis
+    - l0_fd_t0
+    - l0_fd_t0_axis
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_translation
+    - l0_translation_axis
+    - l0_translation_tau
+    - l0_translation_tau_axis
+    - l0_min_extent
+    - l0_min_extent_axis
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_fd_t3e4_axis_xmir
+    - l0_fd_t3e4_axis_ymir
+    - l0_fd_t3e4_xmir
+    - l0_fd_t3e4_ymir
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_mirror_pairs_pass
+    quantity: mirror
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_fd_t3e4_axis_xmir
+    - l0_fd_t3e4_axis_ymir
+    - l0_fd_t3e4_xmir
+    - l0_fd_t3e4_ymir
+    case: l0_fd_t3e4_xmir
+    bind:
+      B: at('l0_fd_t3e4').final.S
+      TB: (1 - 2 * (comp - 0.5) * (2.5 - comp)) * flip(B, 1)
+    expr: norm2(final.S - TB) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: mirror
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_fd_t3e4_axis_xmir
+    - l0_fd_t3e4_axis_ymir
+    - l0_fd_t3e4_xmir
+    - l0_fd_t3e4_ymir
+    case: l0_fd_t3e4_ymir
+    bind:
+      B: at('l0_fd_t3e4').final.S
+      TB: (1 - 2 * (comp - 0.5) * (comp - 1.5) / 2) * flip(B, 2)
+    expr: norm2(final.S - TB) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: mirror
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_fd_t3e4_axis_xmir
+    - l0_fd_t3e4_axis_ymir
+    - l0_fd_t3e4_xmir
+    - l0_fd_t3e4_ymir
+    case: l0_fd_t3e4_axis_xmir
+    bind:
+      B: at('l0_fd_t3e4_axis').final.S
+      TB: (1 - 2 * (comp - 0.5) * (2.5 - comp)) * flip(B, 1)
+    expr: norm2(final.S - TB) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: mirror
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_fd_t3e4_axis_xmir
+    - l0_fd_t3e4_axis_ymir
+    - l0_fd_t3e4_xmir
+    - l0_fd_t3e4_ymir
+    case: l0_fd_t3e4_axis_ymir
+    bind:
+      B: at('l0_fd_t3e4_axis').final.S
+      TB: (1 - 2 * (comp - 0.5) * (comp - 1.5) / 2) * flip(B, 2)
+    expr: norm2(final.S - TB) / norm2(B)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pairs_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_fd_t3e4
+    - l0_fd_t3e4_axis
+    - l0_fd_t3e4_axis_xmir
+    - l0_fd_t3e4_axis_ymir
+    - l0_fd_t3e4_xmir
+    - l0_fd_t3e4_ymir
+    per_case: true
+    expr: maxabs(final.S - comparand.final.S) / max(maxabs(final.S), maxabs(comparand.final.S),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_ncomp_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_ncomp_2
+    - l0_invalid_ncomp_2_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_ncomp_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_ncomp_2
+    - l0_invalid_ncomp_2_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_ncomp_above_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_ncomp_4
+    - l0_invalid_ncomp_4_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_ncomp_above_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_ncomp_4
+    - l0_invalid_ncomp_4_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_along_axis_zero_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_along_axis_0
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_along_axis_zero_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_along_axis_0
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_along_axis_three_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_along_axis_3
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_along_axis_three_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_along_axis_3
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_r_low_zero_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_r_low_zero
+    - l0_invalid_r_low_zero_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_r_low_zero_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_r_low_zero
+    - l0_invalid_r_low_zero_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_r_low_negative_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_r_low_negative
+    - l0_invalid_r_low_negative_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_r_low_negative_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_r_low_negative
+    - l0_invalid_r_low_negative_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_l_along_zero_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_l_along_zero
+    - l0_invalid_l_along_zero_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_l_along_zero_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_l_along_zero
+    - l0_invalid_l_along_zero_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_l_along_negative_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_l_along_negative
+    - l0_invalid_l_along_negative_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_l_along_negative_xfail
+    quantity: rejected_outputs_zero
+    target_cases:
+    - l0_invalid_l_along_negative
+    - l0_invalid_l_along_negative_axis
+    per_case: true
+    expr: maxabs(final.S)
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_nx_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_nx_zero
+    - l0_invalid_nx_zero_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_ny_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_ny_zero
+    - l0_invalid_ny_zero_axis
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+dependency:
+  node_key: component/dynamics_shallow_water_source_2d_tc4_forcing@0.2.0
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: dynamics_shallow_water_source_2d_tc4_forcing__apply
+    exercised_by:
+    - l0_reference_values_pass
+    - l0_reference_values_quiescent_pass
+    - l0_min_extent_pass
+    - l0_forcing_matches_fd_residual_pass
+    - l0_forcing_matches_fd_residual_late_pass
+    - l0_zero_low_gives_zero_forcing_pass
+    - l0_translation_covariance_pass
+    - l0_axis_exchange_pairs_pass
+    - l0_mirror_pairs_pass
+    - l0_invalid_ncomp_xfail
+    - l0_invalid_ncomp_above_xfail
+    - l0_invalid_along_axis_zero_xfail
+    - l0_invalid_along_axis_three_xfail
+    - l0_invalid_r_low_zero_xfail
+    - l0_invalid_r_low_negative_xfail
+    - l0_invalid_l_along_zero_xfail
+    - l0_invalid_l_along_negative_xfail
+    - l0_invalid_nx_xfail
+    - l0_invalid_ny_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: dynamics_shallow_water_source_2d_tc4_forcing__apply
+    signature:
+      kind: subroutine
+      name: dynamics_shallow_water_source_2d_tc4_forcing__apply
+      args:
+      - name: ncomp
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: nx
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ny
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: along_axis
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: x
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+      - name: y
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ny
+      - name: t
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: f
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: dfdr
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: ubar
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: dubar
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: hbar
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: g
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: L_along
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: psi0
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: R_low
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: c_tr
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: s_c0
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: r_c
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: S
+        rank: 3
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - ncomp
+        - nx
+        - ny
+      - name: guard_pass
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+    operation: dynamics_shallow_water_source_2d_tc4_forcing__apply
+    result: guard_pass
+    arguments:
+      ncomp: inputs.grid.ncomp
+      nx: inputs.grid.nx
+      ny: inputs.grid.ny
+      along_axis: inputs.along_axis
+      x: derived.x
+      y: derived.y
+      t: inputs.time.t
+      f: derived.f
+      dfdr: derived.dfdr
+      ubar: derived.ubar
+      dubar: derived.dubar
+      hbar: derived.hbar
+      g: inputs.constants.g
+      L_along: inputs.constants.L_along
+      psi0: inputs.low.psi0
+      R_low: inputs.low.R_low
+      c_tr: inputs.low.c_tr
+      s_c0: inputs.low.s_c0
+      r_c: inputs.low.r_c
+      S: state.S
+      guard_pass: state.guard_pass
