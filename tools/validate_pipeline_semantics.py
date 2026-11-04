@@ -1995,14 +1995,18 @@ def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_
             violations.append(f"{path}: must be json object")
             continue
         got = set(data) - {"t"}
-        if "t" not in data or got != expected:
+        if isinstance(data.get("t"), bool) or not isinstance(data.get("t"), (int, float)) \
+                or got != expected:
             violations.append(
                 f"{path}: holds {sorted(data)}; a series file holds t (the writer's scalar) and "
                 f"exactly the step_series names {sorted(expected)}")
             continue
-        lengths = {len(v) for v in data.values() if isinstance(v, list)}
-        if any(not isinstance(data[n], list) for n in got) or len(lengths) > 1:
-            violations.append(f"{path}: every series name is a list, all of one length")
+        columns = [data[n] for n in got]
+        if any(not isinstance(c, list) or any(
+                isinstance(x, bool) or not isinstance(x, (int, float)) for x in c)
+               for c in columns) or len({len(c) for c in columns}) > 1:
+            violations.append(f"{path}: every series name is a list of numbers, all of one "
+                              "length")
 
 
 def _validate_execution_json_outputs(execution: NodeExecution, violations: list[str]) -> None:

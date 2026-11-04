@@ -12692,6 +12692,10 @@ class Conductor:
                 for sub in ("initial", "history", "series"):
                     source = run_tmp / "raw" / "state_snapshots" / sub
                     files = sorted(source.glob("*.json")) if source.is_dir() else []
+                    # An earlier attempt's sample or series must not be read as this run's: the
+                    # final captures are overwritten by name, and a sample of another step is not.
+                    for stale in (sdst / sub).glob("*.json") if (sdst / sub).is_dir() else ():
+                        stale.unlink()
                     if files:
                         (sdst / sub).mkdir(exist_ok=True)
                     for f in files:
