@@ -18001,6 +18001,19 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             self.assertTrue(any("source_refs.controlled_spec missing" in v for v in violations),
                             violations)
 
+    def test_a_catalog_entry_without_controlled_spec_path_fails_closed(self) -> None:
+        """Issue #589: the registry answered the kind, but its entry names no
+        controlled_spec_path, so the identity half of the pin cannot be asked; the IR is refused
+        rather than pinned against whatever document its own ref names."""
+        with tempfile.TemporaryDirectory() as tmp:
+            ir_dir = self._seed(Path(tmp), public_api=self._full_api())
+            _seed_catalog(Path(tmp), "infrastructure", self._SPEC_ID)   # the path dropped
+            violations: list[str] = []
+            _validate_published_surface(Path(tmp), ir_dir, violations)
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("the spec catalog's entry for infrastructure `hx` records no "
+                          "controlled_spec_path", violations[0])
+
     def test_missing_spec_id_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _ir = _seed_surface_tree(Path(tmp), self._controlled_spec())
