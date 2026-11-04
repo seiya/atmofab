@@ -400,9 +400,9 @@ drive:
   #   predicate over `initial.<v>`, and for a scalar that `loop.n_step` / `loop.dt` references, that predicate also
   #   reads `initial.<a>` of an ARRAY `init` writes; (l) THE ZERO-STEP CLOSURE, matched by its TEXT after
   #   whitespace normalisation, not inferred: on a `loop` node every `expected_outcome: pass` test carries
-  #   `quantity: run.n_step` (exactly that name: the closure is exempt from the reads-a-capture rule, so
-  #   under a physics quantity it would value that judgment by the step count alone; each such test
-  #   therefore lists `run.n_step` in its tests.md `quantities` line, docs/TESTS.md §Description format),
+  #   `quantity: run.n_step` (exactly: exempt from the reads-a-capture rule, under a physics quantity it
+  #   would value that judgment by the step count alone; so each such test lists `run.n_step` in its
+  #   tests.md `quantities` line),
   #   `expr: "final.step - <ref>"`, `op: eq`, `value: 0`, <ref> being the counterpart of `loop.n_step`'s
   #   binding and nothing else: that `derived.<n>` / `inputs.<path>` verbatim, or, for `n_step: state.<n>`
   #   (a scalar `init` writes), `initial.<n>` or `final.<n>` — and then also `expr: "initial.<init result
