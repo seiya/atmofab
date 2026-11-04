@@ -139,4 +139,23 @@ to this document wherever this document is seeded whole.
   by `run_program` directly and by the `make test`/`check` target (which forwards
   the same argv, so the re-run writes the same captures as `run_program`'s). It
   may treat a missing `--cases` as a hard error (no no-argv mode needed); it takes
-  the spec path positionally and need not read the spec file.
+  the spec path positionally and need not read the spec file. The directory of that
+  path is where the case files are (§6).
+
+## 6. The case file
+
+- The host evaluates each case's inputs and writes the result to
+  `case_inputs/<case_id>.json` beside `spec.ir.yaml`, before the program runs, for every
+  case of the IR. The `runner` opens this file through the certified harness's `__read_case`
+  and reads each value through the typed getters; it parses neither the file nor
+  `spec.ir.yaml` itself.
+- The file is one flat JSON object on one line of any length, with sorted keys. A key is
+  a name: `inputs.<path>` for an input, `derived.<name>` for a host-evaluated derived value,
+  a state variable's name for its initial content. On an `infrastructure` node it holds every
+  numeric `inputs.*` leaf of the case, a boolean written as `1` or `0`.
+- Each value is an RFC 8259 number or a rectangular nested array of numbers of depth 1 to 4
+  (the leading array index outermost, as the emitters write it), an empty array admitted. This
+  grammar is not §4's: a number is spelled as the host's serializer spells it (`3`, `0.1`,
+  `1e-30`), and no non-finite token occurs, because the host refuses a non-finite input.
+- The harness's reading operations are the only reader. `controlled_spec.md` §3.2 of the harness
+  states what `__read_case` refuses and when a getter stops the program.

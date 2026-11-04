@@ -229,7 +229,7 @@ def _threads(target: dict[str, Any]) -> int:
     variant's perf record writes it (a launcher target runs one thread per rank, so every
     shape's count is 1); the single-process harness's `__write_perf` takes no thread count and
     writes the one the run's shared-memory runtime gives the program, obtained at run time
-    (`harness_fortran_cpu@0.9.0` §3.2, issue #512)."""
+    (`harness_fortran_cpu@0.10.0` §3.2, issue #512)."""
     return int(target["execution"]["threads_per_rank"])
 
 
@@ -414,7 +414,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # `__write_perf` obtains the count the shared-memory runtime gives the run itself, because
     # Validate runs one binary at several thread counts and compares each run's record with its
     # own, and the harness's own Validate run then checks the code every consumer records it
-    # through (`harness_fortran_cpu@0.9.0` §3.2, issue #512).
+    # through (`harness_fortran_cpu@0.10.0` §3.2, issue #512).
     _, _, devices = perf_parallelism(target)
     distributed = _is_distributed_harness(harness_spec_id)
 
@@ -894,6 +894,46 @@ subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated
   integer, intent(in) :: threads_per_rank
   integer, intent(in) :: gpu_devices
 end subroutine harness_fortran_cpu__write_perf
+
+subroutine harness_fortran_cpu__read_case(case_id, ok)
+  character(len=*), intent(in) :: case_id
+  logical, intent(out) :: ok
+end subroutine harness_fortran_cpu__read_case
+
+function harness_fortran_cpu__get_real(name) result(x)
+  character(len=*), intent(in) :: name
+  real(dp) :: x
+end function harness_fortran_cpu__get_real
+
+function harness_fortran_cpu__get_int(name) result(i)
+  character(len=*), intent(in) :: name
+  integer :: i
+end function harness_fortran_cpu__get_int
+
+function harness_fortran_cpu__get_bool(name) result(b)
+  character(len=*), intent(in) :: name
+  logical :: b
+end function harness_fortran_cpu__get_bool
+
+subroutine harness_fortran_cpu__get_array_r1(name, a)
+  character(len=*), intent(in) :: name
+  real(dp), allocatable, intent(out) :: a(:)
+end subroutine harness_fortran_cpu__get_array_r1
+
+subroutine harness_fortran_cpu__get_array_r2(name, a)
+  character(len=*), intent(in) :: name
+  real(dp), allocatable, intent(out) :: a(:,:)
+end subroutine harness_fortran_cpu__get_array_r2
+
+subroutine harness_fortran_cpu__get_array_r3(name, a)
+  character(len=*), intent(in) :: name
+  real(dp), allocatable, intent(out) :: a(:,:,:)
+end subroutine harness_fortran_cpu__get_array_r3
+
+subroutine harness_fortran_cpu__get_array_r4(name, a)
+  character(len=*), intent(in) :: name
+  real(dp), allocatable, intent(out) :: a(:,:,:,:)
+end subroutine harness_fortran_cpu__get_array_r4
 """
 
 # The §5.1 module-level `parameter` declarations. They are part of the published ABI but are not
@@ -908,7 +948,7 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
     f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
 )
 
-# Verbatim copy of `harness_fortran_cpu_mpi@0.3.0` §5.1's distributed-state operations (§3.3),
+# Verbatim copy of `harness_fortran_cpu_mpi@0.4.0` §5.1's distributed-state operations (§3.3),
 # as the language backend renders them. That harness's §5.1 is `_HARNESS_V3_INTERFACE` under its
 # own `<spec_id>__` names followed by this block (its §5 says so), so its pinned interface is
 # composed below rather than copied twice.
@@ -1033,7 +1073,7 @@ end function harness_fortran_cpu_mpi__reduce_sum_int
 """
 
 
-# `harness_fortran_cpu@0.9.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
+# `harness_fortran_cpu@0.10.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
 # renders it: the stanza of `_HARNESS_V3_INTERFACE` without the `threads_per_rank` argument,
 # because that harness's writer obtains the thread count itself, at run time. Its §5.1 is
 # `_HARNESS_V3_INTERFACE` with this stanza in place of that one; the distributed harness keeps

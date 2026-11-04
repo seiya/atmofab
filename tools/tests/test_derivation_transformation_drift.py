@@ -1085,6 +1085,12 @@ PINNED_RENDER: dict[str, str] = {
     "render-13": "475440522ccb133915439cddd932871e2c39319864ea1b92e046474dd4e9f7ff",
     "render-13@41026a47": "8d8f0e6f30346dfb6ff134014e9e533a5d3b3af961edfbb9635a5b2543338295",
     "render-13@bb06b9ef": "f09b4e3e6428b1f3e9282940d3de9396f90d9087cfbefc6c421b21b222989559",
+    # render-14 (issue #589, PR-2): both renderers' pins carry the reading operations
+    # `harness_fortran_cpu@0.10.0`, `harness_cpp_gpu@0.4.0` and `harness_fortran_cpu_mpi@0.4.0`
+    # publish. No rendered runner calls them yet, and `assert_harness_pin` compares only the
+    # symbols a runner uses, so a runner rendered from the same IR is byte-identical. A bump,
+    # because the harness every runner links against moves with the catalog.
+    "render-14": "8a81ae875cf65a18714bd92be8ee3415e80fab113924d6e228916a2c02420e24",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

@@ -2,15 +2,15 @@
 
 ## 0. Meta information
 - `test_profile_id`: `harness_cpp_gpu_l0`
-- `test_profile_version`: `0.7.0`
+- `test_profile_version`: `0.8.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `infrastructure`
 - `spec_ref.spec_id`: `harness_cpp_gpu`
-- `spec_ref.spec_version`: `0.3.0`
+- `spec_ref.spec_version`: `0.4.0`
 - `spec_ref.controlled_spec_path`: `spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies the published runner-plumbing operations of `harness_cpp_gpu` at `L0`: numeric / boolean / rank-1..4 array JSON emission round-trips, the literal tokens a non-finite real is emitted as, the case-set fan-out (one `<case_id>.json` snapshot per case), the derived `perf` throughput, the block size the host imposes on the program's kernels, and the `--cases` input guard. The self-test runner exercises each operation and writes what the host judges into that case's snapshot; because the writers use the emitters, a faithful emitter is a precondition for a correct output.
+This suite verifies the published runner-plumbing operations of `harness_cpp_gpu` at `L0`: numeric / boolean / rank-1..4 array JSON emission round-trips, the literal tokens a non-finite real is emitted as, the case-set fan-out (one `<case_id>.json` snapshot per case), the derived `perf` throughput, the reading of the host-written case file with its refusal of an absent one, the block size the host imposes on the program's kernels, and the `--cases` input guard. The self-test runner exercises each operation and writes what the host judges into that case's snapshot; because the writers use the emitters, a faithful emitter is a precondition for a correct output.
 
 ## 2. Input-defaulting rules
 - Each normal case supplies a small fixed set of sentinel values to the emitter under test. **The sentinel values are DECLARED in the IR as that case's inputs** (`case.test_case_set[].inputs.initial`), and the self-test emits exactly the declared values, so the host can compare what the emitter wrote against what the case declares (§6, the host-evaluated `predicate` of each test):
@@ -19,13 +19,15 @@ This suite verifies the published runner-plumbing operations of `harness_cpp_gpu
   - `l0_boolean_literal_pass`: `inputs.initial.bool_in_true = true`, `bool_in_false = false`.
 - The non-finite case (`l0_nonfinite_token_pass`) declares no sentinel input: the IR carries no non-finite number, so the four values it emits — a quiet NaN with the sign bit clear, a quiet NaN with the sign bit set, `+inf` and `-inf` — are produced at run time from the language's IEEE facility, never from a literal division a compiler may refuse to fold. It carries the same `grid` / `time` / `boundary` inputs as every other case; the plumbing aspect it verifies, `harness_cpp_gpu__emit_real` on a non-finite value, is selected by its `case_id`.
 - The block-size case (`l0_block_size_pass`) declares no sentinel input: the value it captures is the one the host imposed on the run (`ATMOFAB_CUDA_BLOCK`, spec §3.3), which differs between the runs of the target's execution shapes, so it is not declared in the IR. **Every case passes whatever block size the host imposes**: the case judges only that the value is admitted and stable within the run, and the Validate phase compares the captured `block_size` with the block size the run was launched with (spec §2).
+- `l0_read_case_roundtrip_pass` declares the sentinels the host writes into its case file and the self-test reads back through `harness_cpp_gpu__read_case` and the getters: `inputs.initial.rc_real = 0.1`, `rc_whole = 2` (an integer token read as a real), `rc_int = -12`, `rc_true = true`, `rc_false = false` (written `1` and `0`), `rc_empty = []`, `rc_r1 = [-1.5, 1.0e-30, 1.0e+30]`, `rc_r2 = [[1, 2, 3], [4, 5, 6]]`, `rc_r3` of extents `[2,2,3]` holding `1..12` and `rc_r4` of extents `[2,2,2,3]` holding `1..24`, each in the JSON nesting order the emitters produce (the leading array index outermost). The extents differ so that a transposed or flattened read is a shape-pairing error.
+- `l0_missing_case_file_xfail` declares no sentinel input: it calls `harness_cpp_gpu__read_case` with the id `l0_no_such_case_file`, which names no case, so no case file exists for it.
 - The abnormal case (`l0_missing_cases_xfail`) synthesizes an empty argv-token list (no `--cases`) and drives `harness_cpp_gpu__parse_cases` to exercise the guard.
 
 ## 3. Execution-control rules
 `N/A`: the harness self-test defines no time-stepping. Each case runs its named plumbing check once (`steps = 1`).
 
 ## 4. Case-expansion rules
-The suite defines eight `case`s and eight `test_id`s (no sweep). The self-test's own runner writes each case's snapshot once, after the case ran; it writes no `raw/state_snapshots/initial/<case_id>.json` (that capture is the host-rendered runner's), so every host-evaluated `predicate` of §6 reads `final.<var>` and the case's declared `inputs` only. Every test is **single-target**: it names exactly one case, and that case's `case_id` equals the `test_id` — the eight `case.test_case_set[].case_id` are exactly those eight `test_id`s. Each `case_id` selects the plumbing aspect that case verifies. The multi-case run itself is the fan-out evidence: each case writes exactly one `raw/state_snapshots/<case_id>.json`.
+The suite defines ten `case`s and ten `test_id`s (no sweep). The self-test's own runner writes each case's snapshot once, after the case ran; it writes no `raw/state_snapshots/initial/<case_id>.json` (that capture is the host-rendered runner's), so every host-evaluated `predicate` of §6 reads `final.<var>` and the case's declared `inputs` only. Every test is **single-target**: it names exactly one case, and that case's `case_id` equals the `test_id` — the ten `case.test_case_set[].case_id` are exactly those ten `test_id`s. Each `case_id` selects the plumbing aspect that case verifies. The multi-case run itself is the fan-out evidence: each case writes exactly one `raw/state_snapshots/<case_id>.json`.
 
 **Every snapshot holds every variable `controlled_spec.md` §2 declares**, plus the scalar time variable `t` (value `0.0`; a single `steps=1` step). A variable §2 lists under the case holds what the case computed; any other variable holds a shape-valid placeholder, `0.0` or an array of zeros of its declared shape, which no predicate of that case reads; a test's own predicates fail on a placeholder, so a case that does not fill its variables fails its test. `block_size` is the exception: every case captures what `__block_size` returns, because the Validate phase compares the block size of every snapshot of the certified run with the block the run was launched with.
 
@@ -58,9 +60,9 @@ Each test of §6 judges one quantity, named by its `quantities` line and defined
   - `level`: `L0`
   - `operation_id`: `harness_cpp_gpu__write_snapshot`
   - `expected_outcome`: `pass`
-  - `judgment`: the case loop writes exactly one `raw/state_snapshots/<case_id>.json` per case (runtime-built name), each carrying every declared variable; `case_index` is this case's 1-based position in the case loop, so `1 <= case_index <= 8`.
+  - `judgment`: the case loop writes exactly one `raw/state_snapshots/<case_id>.json` per case (runtime-built name), each carrying every declared variable; `case_index` is this case's 1-based position in the case loop, so `1 <= case_index <= 10`.
   - `quantities`: `case_fanout`
-  - `predicate` (quantity `case_fanout`, `per_case: true`, two entries): `final.case_index >= 1.0` and `final.case_index <= 8.0`.
+  - `predicate` (quantity `case_fanout`, `per_case: true`, two entries): `final.case_index >= 1.0` and `final.case_index <= 10.0`.
 - `test_id`: `l0_perf_derived_pass`
   - `level`: `L0`
   - `operation_id`: `harness_cpp_gpu__write_perf`
@@ -90,10 +92,26 @@ Each test of §6 judges one quantity, named by its `quantities` line and defined
   - `judgment`: calling `__parse_cases` on a length-0 token array returns `ok = false`, so `guard_fired == 1.0`.
   - `quantities`: `input_guard`
   - `predicate` (quantity `input_guard`, `per_case: true`): `final.guard_fired == 1.0` (op `eq`) — the state fact the guard leaves behind, in the failure direction; the test certifies `xfail` when it holds.
+- `test_id`: `l0_read_case_roundtrip_pass`
+  - `level`: `L0`
+  - `operation_id`: `harness_cpp_gpu__read_case`
+  - `expected_outcome`: `pass`
+  - `judgment`: the sentinels of §2, read from the case file the host wrote through `harness_cpp_gpu__read_case` and the getters and emitted back, equal the declared inputs exactly (the emitters are lossless, so the comparison has no tolerance), in value and in shape; the two booleans read as true and false; the empty array reads with size 0.
+  - `quantities`: `read_case_roundtrip`
+  - `predicate` (quantity `read_case_roundtrip`, `per_case: true`, four entries): `max(abs(final.rc_real - inputs.initial.rc_real), abs(final.rc_whole - inputs.initial.rc_whole), abs(final.rc_int - inputs.initial.rc_int), maxabs(final.rc_r1 - inputs.initial.rc_r1), maxabs(final.rc_r2 - inputs.initial.rc_r2), maxabs(final.rc_r3 - inputs.initial.rc_r3), maxabs(final.rc_r4 - inputs.initial.rc_r4)) == 0.0`, `final.rc_true == 1.0`, `final.rc_false == 1.0` and `final.rc_empty_len == 0.0` (op `eq`).
+- `test_id`: `l0_missing_case_file_xfail`
+  - `level`: `L0`
+  - `operation_id`: `harness_cpp_gpu__read_case`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: the case file `harness_cpp_gpu__read_case` is asked for does not exist
+  - `judgment`: calling `__read_case` with an id no case file exists for returns `ok = false`, so `read_refused == 1.0`.
+  - `quantities`: `read_case_guard`
+  - `predicate` (quantity `read_case_guard`, `per_case: true`): `final.read_refused == 1.0` (op `eq`) — the state fact the refusal leaves behind, in the failure direction; the test certifies `xfail` when it holds.
+
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when every predicate of the test holds.
-- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and every predicate of the test holds (the input guard fires on a missing `--cases`).
+- `per_test.xfail_rule`: `xfail` when `xfail_condition` is true and every predicate of the test holds (the input guard fires on a missing `--cases`, the read guard on an absent case file).
 - `suite.pass_rule`: `pass` when all `test_id` are `pass` or `xfail`.
 
 ## 8. Traceability

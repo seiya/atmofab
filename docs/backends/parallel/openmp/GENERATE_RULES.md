@@ -99,7 +99,7 @@ region ran at — the producer is told not to and the `openmp` reviewer fragment
 A run's `perf.json#parallelism.threads_per_rank` on an `openmp` target is the count the OpenMP
 runtime gives the program, read when it runs: the single-process Fortran harness's
 `harness_fortran_cpu__write_perf` takes no thread count and obtains it itself
-(`harness_fortran_cpu@0.9.0` §3.2), so its self-test and the host-rendered runner of every node
+(`harness_fortran_cpu@0.10.0` §3.2), so its self-test and the host-rendered runner of every node
 built on it (`tools/backends/language/fortran/runner.py`) record it through the same writer. The
 quality check compares it with each execution shape's thread count (`thread_match`,
 `docs/workflow/phases/phase_04_validate.md` §4-2), so a writer that records a constant fails on
