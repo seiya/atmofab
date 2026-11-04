@@ -577,6 +577,23 @@ class NvccSmokeTest(unittest.TestCase):
             self.assertNotIn("forged", (d / "perf.json").read_text())
             self.assertIn("steps", json.loads((d / "perf.json").read_text()))
 
+    def test_an_operation_cannot_replace_a_snapshot(self) -> None:
+        """Round 5 of this change's review, on the driver: the final capture is written after the
+        last call of the case, so what an operation wrote at that path does not survive. (The
+        source gates refuse the file I/O too; this pins the runner's half on its own.)"""
+        model = _smoke_model().replace(
+            "  ok = mode == 0;\n",
+            '  std::ofstream("raw/state_snapshots/c0.json") << "{}";\n  ok = mode == 0;\n').replace(
+            f'#include "{RANK_SID}_model.cuh"\n', f'#include "{RANK_SID}_model.cuh"\n#include <fstream>\n')
+        self.assertIn("std::ofstream", model)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            self._tree(d, _smoke_ir(), RANK_SID, model)
+            self._build(d, RANK_SID)
+            r = self._run(d, "c0")
+            self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+            self.assertIn("a3", json.loads((d / "raw/state_snapshots/c0.json").read_text()))
+
     def test_a_case_with_no_file_stops_the_run_with_no_leaf_code_after_it(self) -> None:
         """...through `finish`, so no leaf destructor runs on this exit either. It is what an
         array the case file does not hold reaches too (`test_driver_render`)."""

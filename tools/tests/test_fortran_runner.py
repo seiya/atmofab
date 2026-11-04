@@ -1722,6 +1722,27 @@ class GfortranSmokeTest(unittest.TestCase):
                 self.assertEqual(snap["step"], 0.0 if ordinal == 3 else 1.0, cid)
                 self.assertEqual(snap["guard_fired"], 1.0 if ordinal == 3 else 0.0, cid)
 
+    def test_an_operation_cannot_replace_a_snapshot(self) -> None:
+        # The final capture is written after the last call of the case, so what an operation
+        # wrote at that path does not survive. (The source gate refuses the OPEN too; this pins
+        # the runner's half on its own.)
+        model = _BOUNDARY_MODEL.replace(
+            "    field_ghost = 0.0_dp\n",
+            "    if (mode == 1) then\n"
+            "      open(newunit=u, file='raw/state_snapshots/l0_periodic_x_wrap_pass.json', &\n"
+            "        status='replace')\n      write(u, '(A)') '{}'\n      close(u)\n"
+            "    end if\n    field_ghost = 0.0_dp\n").replace(
+            "    logical, intent(out) :: ok\n",
+            "    logical, intent(out) :: ok\n    integer :: u\n")
+        self.assertIn("open(newunit=u", model)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            run = _build_and_run(d, _boundary_ir(), BOUNDARY_SID, model)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            final = json.loads(
+                (d / "raw" / "state_snapshots" / "l0_periodic_x_wrap_pass.json").read_text())
+            self.assertIn("field_ghost", final)
+
     def test_high_rank_runner_compiles_and_runs(self) -> None:
         # The boundary smoke only covers the scalar+rank-2 family. This one compiles+links+runs
         # the rank-3/rank-4 reader and emitter path, so a future edit that makes it produce
