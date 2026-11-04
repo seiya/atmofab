@@ -107,6 +107,10 @@ def wrapper_base_env(host_env: Mapping[str, str] | None = None) -> dict[str, str
     }
 
 
+#: The seed of a `generate.generate` lineage that holds the IR the case files are written from.
+SEEDED_IR_NAME = "spec.ir.yaml"
+
+
 @dataclass(frozen=True)
 class WrapperContext:
     """Everything an operation reads, frozen before the launch.
@@ -161,8 +165,8 @@ class WrapperContext:
     launch_env: tuple[tuple[str, str], ...] = ()
     run_unavailable: str | None = None
     #: The directories `Validate.execute` creates under the run's working directory before it
-    #: runs the binary (`Conductor._run_raw_dirs`), as one nested path.
-    run_raw_dirs: tuple[str, ...] = ()
+    #: runs the binary (`Conductor._run_raw_dirs`), each as its path parts.
+    run_raw_dirs: tuple[tuple[str, ...], ...] = ()
     base_env: tuple[tuple[str, str], ...] = ()
     toolchain_ro_roots: tuple[str, ...] = ()
     # --- an IR lineage (`IR_CHECK_OPS`) -----------------------------------------------------
@@ -579,6 +583,25 @@ def _every_case_id(ctx: WrapperContext, name: str) -> tuple[list[str], str | Non
         return [], f"the case file {name}: {exc}"
 
 
+def _write_case_files(ctx: WrapperContext) -> str | None:
+    """Write `case_inputs/` beside the tree's IR, as `Validate.execute` writes it beside the
+    certified one (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §6), from the IR the host SEEDED: a
+    `cases_file` the leaf names selects cases, never what a case holds. None, or why it could
+    not be written: the IR came through `Compile.static`, which evaluated every case, so that is
+    the host's inconsistency and no repair of the bundle would answer it."""
+    from tools.primary_evidence import PrimaryEvidenceError, write_case_inputs
+
+    seeded = dict(ctx.seed_texts).get(SEEDED_IR_NAME)
+    if seeded is None:
+        return f"the lineage was seeded no {SEEDED_IR_NAME}, so no case file can be written"
+    try:
+        document = yaml.safe_load(seeded)
+        write_case_inputs(document, ctx.paths.tree)
+    except (yaml.YAMLError, OSError, PrimaryEvidenceError) as exc:
+        return f"the case files could not be written from the seeded IR: {exc}"
+    return None
+
+
 def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:
     """Run a binary the leaf's `compile` built, on a case file of its tree."""
     from tools.build_runtime import tool_run_program
@@ -616,16 +639,19 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         case_ids, why = _every_case_id(ctx, cases_name)
         if not case_ids:
             return _result(False, category=CATEGORY_BAD_ARGUMENTS, findings=why)
-    if ctx.run_raw_dirs:
+    for raw_dir in ctx.run_raw_dirs:
         current = ctx.paths.tree
-        for part in ctx.run_raw_dirs:
+        for part in raw_dir:
             current = current / part
             if current.is_symlink() or (current.exists() and not current.is_dir()):
                 return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                                findings=f"{current.relative_to(ctx.paths.tree)} must be a "
                                         f"directory of the tree (the run writes its captures "
                                         f"there)")
-        ctx.paths.tree.joinpath(*ctx.run_raw_dirs).mkdir(parents=True, exist_ok=True)
+        ctx.paths.tree.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
+    why = _write_case_files(ctx)
+    if why is not None:
+        return _result(False, category=CATEGORY_RUN_UNAVAILABLE, findings=why)
     env = dict(ctx.base_env) | dict(ctx.launch_env)
     command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(cases_path), *case_ids]
     result = tool_run_program({

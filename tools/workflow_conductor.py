@@ -6210,11 +6210,11 @@ class Conductor:
         # R1/M3c-β: a harness-backed physics node also compiles a leaf-authored checks module
         # (which `use`s the model kernel) between the model and the host-rendered runner.
         authors_runner = self._conductor_authors_runner(refs)
-        # CASES default baked from the IR so a local `make all test` runs the full case set
-        # standalone; Validate.execute overrides CASES/SPEC via the env so `make test` invokes
-        # the runner identically to run_program (`--cases <spec> <case_id>...`). The runner
-        # takes the spec path positionally but does not read it, so the `SPEC ?=` default is a
-        # harmless placeholder.
+        # CASES default baked from the IR; Validate.execute overrides CASES/SPEC via the env so
+        # `make test` invokes the runner identically to run_program (`--cases <spec>
+        # <case_id>...`). The runner does not read the spec, and it reads `case_inputs/` beside the
+        # spec path it is given, so a local `make test` needs SPEC pointed at an IR directory the
+        # host has written the case files into: the `SPEC ?=` default finds none and stops.
         template = self._control_file_module(build_system).render_node(
             rules=self._control_file_rules(tc, self._target_architecture()),
             compiler=compiler,
@@ -12796,15 +12796,17 @@ class Conductor:
                 for f in sorted((run_tmp / "raw" / "state_snapshots").glob("*.json")):
                     shutil.copy2(f, sdst / f.name)
                     raw_refs.append(f"{node_ref}/raw/state_snapshots/{f.name}")
-                # The initial captures a host-rendered runner writes (Z6, issue #255): the
-                # same per-case files one directory down, promoted with the final ones.
-                initial = run_tmp / "raw" / "state_snapshots" / "initial"
-                initial_files = sorted(initial.glob("*.json")) if initial.is_dir() else []
-                if initial_files:  # a harness node's own runner writes none: no empty dir
-                    (sdst / "initial").mkdir(exist_ok=True)
-                for f in initial_files:
-                    shutil.copy2(f, sdst / "initial" / f.name)
-                    raw_refs.append(f"{node_ref}/raw/state_snapshots/initial/{f.name}")
+                # What the host-rendered driver writes beside the final captures (issue #255,
+                # issue #589): the initial capture, the samples and the series, flat files one
+                # directory down. A harness node's own runner writes none of them: no empty dir.
+                for sub in ("initial", "history", "series"):
+                    source = run_tmp / "raw" / "state_snapshots" / sub
+                    files = sorted(source.glob("*.json")) if source.is_dir() else []
+                    if files:
+                        (sdst / sub).mkdir(exist_ok=True)
+                    for f in files:
+                        shutil.copy2(f, sdst / sub / f.name)
+                        raw_refs.append(f"{node_ref}/raw/state_snapshots/{sub}/{f.name}")
         return raw_refs
 
     def _author_snapshot_schema(self, ir: dict[str, Any], node_dir: Path) -> str | None:
@@ -12844,7 +12846,8 @@ class Conductor:
 
     def _snapshot_deliverable_gap(self, snapshots_dir: Path, case_ids: list[str],
                                   artifacts: list[str], *,
-                                  initial_required: bool = False) -> str:
+                                  initial_required: bool = False,
+                                  series_required: bool = False) -> str:
         """Diagnostic for a per-case snapshot deliverable mismatch, else "".
 
         Validate.execute's deliverable gate (build_launch_request) requires one
@@ -12875,13 +12878,21 @@ class Conductor:
                                if initial_dir.exists() else set())
             missing += [f"initial/{name}" for name in sorted(expected - present_initial)]
             present |= {f"initial/{name}" for name in present_initial}
+        if series_required:
+            # The driver's per-step series (issue #589), which a refused first step still writes.
+            series_dir = snapshots_dir / "series"
+            present_series = ({f.name for f in series_dir.glob("*.json")}
+                              if series_dir.exists() else set())
+            missing += [f"series/{name}" for name in sorted(expected - present_series)]
+            present |= {f"series/{name}" for name in present_series}
         if not missing:
             return ""
         return (
             "[execute fail: snapshot deliverable mismatch] Validate.execute requires "
             "one raw/state_snapshots/<case_id>.json per case"
             + (" (and one raw/state_snapshots/initial/<case_id>.json, the host-rendered "
-               "runner's capture right after case_setup)" if initial_required else "")
+               "runner's capture before the first call)" if initial_required else "")
+            + (" and one raw/state_snapshots/series/<case_id>.json" if series_required else "")
             + f". expected={sorted(expected)}; runner wrote={sorted(present)}; "
             f"missing={missing}. Name each snapshot exactly <case_id>.json, built "
             "from the case_id passed via --cases (e.g. trim(case_id)//'.json'). "
@@ -13177,13 +13188,16 @@ class Conductor:
         """repo-root-relative POSIX path for canonical refs."""
         return str(path.relative_to(self.repo_root)).replace("\\", "/")
 
-    def _run_raw_dirs(self, refs: NodeRefs) -> tuple[str, ...]:
-        """The directories created under a run's working directory before the binary runs, as
-        one nested path: `raw/state_snapshots/` for every runner, and `initial/` below it only
-        for the runner the host renders (see `_execute_inproc`). One answer, read by
-        `Validate.execute` and by a `workshop leaf`'s wrapper `run`."""
-        authors_runner = self._conductor_authors_runner(refs)
-        return ("raw", "state_snapshots", *(("initial",) if authors_runner else ()))
+    def _run_raw_dirs(self, refs: NodeRefs) -> tuple[tuple[str, ...], ...]:
+        """The directories created under a run's working directory before the binary runs, each
+        as its path parts: `raw/state_snapshots/` for every runner, and `initial/`, `history/` and
+        `series/` below it only for the runner the host renders (see `_execute_inproc`). One
+        answer, read by `Validate.execute`, its remote job and a `workshop leaf`'s wrapper
+        `run`."""
+        base = ("raw", "state_snapshots")
+        if not self._conductor_authors_runner(refs):
+            return (base,)
+        return tuple((*base, sub) for sub in ("initial", "history", "series"))
 
     def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
@@ -13343,14 +13357,31 @@ class Conductor:
         # decides nothing from them (the capability gate went with issue #171).
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
 
+        # The case files, rewritten at EVERY execute (issue #589 D2): a repaired attempt rewrites
+        # the IR in place and a writer fix must reach a reused IR. Each file is replaced through a
+        # temporary name of its own and the directory is never removed, since one IR directory
+        # serves every target's pipeline and they run in parallel. Compile.static evaluated every
+        # case, so a refusal here is the host's inconsistency, not the kernel's.
+        from tools.primary_evidence import (
+            CASE_INPUTS_DIRNAME,
+            PrimaryEvidenceError,
+            write_case_inputs,
+        )
+
+        try:
+            case_files = write_case_inputs(_read_yaml(ir_spec) or {}, ir_spec.parent)
+        except PrimaryEvidenceError as exc:
+            raise RuntimeError(
+                f"the case files of {refs.ir_ref} could not be written at Validate.execute: "
+                f"{exc}") from exc
+
         # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries the
         # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3): `raw/state_snapshots/` for
-        # every runner, and `initial/` only for the runner the host renders, which opens
-        # `initial/<case_id>.json` for its post-`case_setup` capture and fails with rc 2 without
-        # it. A hand-authored runner writes no `initial/`, and its strict fan-out self-test
-        # (`case_fanout`) refuses an entry it did not write (issue #368). The build control
-        # file's quality-check recipe pre-creates the same set (`initial_capture_dir`), so the
-        # run and the quality check see one directory set.
+        # every runner, and `initial/`, `history/`, `series/` only for the runner the host renders,
+        # which opens a file there and fails without it. A hand-authored runner writes none of
+        # them, and its strict fan-out self-test (`case_fanout`) refuses an entry it did not write
+        # (issue #368). The build control file's quality-check recipe pre-creates the same set
+        # (`initial_capture_dir`), so the run and the quality check see one directory set.
         authors_runner = self._conductor_authors_runner(refs)
         run_raw_dirs = self._run_raw_dirs(refs)
 
@@ -13377,7 +13408,8 @@ class Conductor:
 
         res_qc: dict[str, Any] | None
         if site is None or site.is_local:
-            run_tmp.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
+            for raw_dir in run_raw_dirs:
+                run_tmp.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
             qc_tmp.mkdir(parents=True, exist_ok=True)
             run_argv, qc_env, sweep_argvs, checked_argv = commands(
                 str(binary), str(ir_spec), str(bin_dir), str(qc_tmp), str(obj_tmp),
@@ -13422,7 +13454,8 @@ class Conductor:
                     res_sweep.append(None)
                     continue
                 shape_dir = sweep_tmp / shape.label
-                shape_dir.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
+                for raw_dir in run_raw_dirs:
+                    shape_dir.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
                 res_sweep.append(tool_run_program({
                     "project_dir": str(shape_dir),
                     "command": argv,
@@ -13437,7 +13470,8 @@ class Conductor:
             if checked is not None and res_qc is not None and res_qc.get("ok") and all(
                     r is not None and r.get("ok") for r in res_sweep):
                 checked_dir = sweep_tmp / checked.label
-                checked_dir.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
+                for raw_dir in run_raw_dirs:
+                    checked_dir.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
                 res_checked = tool_run_program({
                     "project_dir": str(checked_dir),
                     "command": checked_argv,
@@ -13487,6 +13521,7 @@ class Conductor:
             result = execute_job(JobRequest(
                 site=site, job_dir=jdir,
                 ship={f"bin/{exe}": binary, "ir/spec.ir.yaml": ir_spec,
+                      **{f"ir/{CASE_INPUTS_DIRNAME}/{path.name}": path for path in case_files},
                       f"src/{control_file}": src_dir / control_file,
                       **({f"bin_checked/{exe}": checked_binary} if checked is not None else {})},
                 commands=(
@@ -13512,10 +13547,12 @@ class Conductor:
                       for (shape, shape_launch), argv in zip(sweep, sweep_argvs)),
                     *checked_commands,
                 ),
-                dirs=("/".join(("run", *run_raw_dirs)), "qc_run", "build",
-                      *("/".join(("sweep", shape.label, *run_raw_dirs)) for shape, _l in sweep),
-                      *(("/".join(("sweep", checked.label, *run_raw_dirs)),)
-                        if checked is not None else ())),
+                dirs=(*("/".join(("run", *raw_dir)) for raw_dir in run_raw_dirs),
+                      "qc_run", "build",
+                      *("/".join(("sweep", shape.label, *raw_dir))
+                        for shape, _l in sweep for raw_dir in run_raw_dirs),
+                      *(("/".join(("sweep", checked.label, *raw_dir))
+                         for raw_dir in run_raw_dirs) if checked is not None else ())),
                 platform_probe=launch.platform_probe,
                 attribution=attribution,
                 machine=built_machine,
@@ -13591,7 +13628,8 @@ class Conductor:
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
         snapshot_gap = self._snapshot_deliverable_gap(
             run_tmp / "raw" / "state_snapshots", case_ids, artifacts,
-            initial_required=authors_runner)
+            initial_required=authors_runner,
+            series_required="step_series" in artifacts)
 
         def _captured(run_dir: Path) -> bool:
             return any(p.name != "snapshot_schema.json"

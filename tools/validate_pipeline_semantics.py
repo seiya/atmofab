@@ -1743,7 +1743,15 @@ def _validate_raw_evidence(
             violations.append(f"{snapshots_dir}: empty directory")
         else:
             schema_path = snapshots_dir / SNAPSHOT_SCHEMA_FILE
-            snapshot_data_files = [p for p in files if p != schema_path]
+            # Per artifact (issue #589 D8): a capture — a final one, `initial/`, or a `history/`
+            # sample — holds every declared variable; a `series/` file holds exactly the names
+            # the IR's `step_series` entry declares, which `_validate_series_files` reads.
+            series_dir = snapshots_dir / "series"
+            snapshot_data_files = [p for p in files
+                                   if p != schema_path and p.parent != series_dir]
+            _validate_series_files(repo_root, execution, snapshots_dir, violations)
+            if _ir_drives_the_runner(repo_root, execution):
+                _validate_driver_step_key(snapshot_data_files, violations)
             for snapshot in files:
                 text = snapshot.read_text(encoding="utf-8", errors="ignore")
                 compact = text.replace(" ", "").replace("\n", "")
@@ -1932,6 +1940,69 @@ def _validate_raw_evidence(
                 )
         if quality.get("status") != "pass":
             violations.append(f"{quality_path}:status must be pass")
+
+
+def _ir_drives_the_runner(repo_root: Path, execution: NodeExecution) -> bool:
+    """Whether the host-rendered driver ran: only it writes `initial/`; a harness self-test does
+    not (`RUNNER_OUTPUT_CONTRACT.md` §3)."""
+    initial = execution.node_dir / "raw" / "state_snapshots" / "initial"
+    return initial.is_dir() and any(initial.glob("*.json"))
+
+
+def _validate_driver_step_key(captures: list[Path], violations: list[str]) -> None:
+    """Every capture of the driver carries `step`, the count it committed (issue #589 D8)."""
+    for capture in captures:
+        if capture.suffix.lower() != ".json":
+            continue
+        try:
+            data = _read_json(capture)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "step" not in data:
+            violations.append(f"{capture}: the driver's capture carries no 'step'")
+
+
+def _validate_series_files(repo_root: Path, execution: NodeExecution, snapshots_dir: Path,
+                           violations: list[str]) -> None:
+    """`series/<case_id>.json` (issue #589 D8): exactly the `step_series` names and the writer's
+    scalar `t`, each name a list of numbers of one length, and one file per final capture. A
+    file on a node that declares no series is refused too. `step_series` is declared iff
+    `drive.loop` is (`primary_evidence.drive_violations` (h))."""
+    raw_requirements = _raw_requirements_for_execution(repo_root, execution)
+    entries = raw_requirements.get("required_evidence") if isinstance(
+        raw_requirements, dict) else None
+    entry = next((e for e in (entries if isinstance(entries, list) else [])
+                  if isinstance(e, dict) and e.get("artifact") == "step_series"), None)
+    series_dir = snapshots_dir / "series"
+    files = sorted(series_dir.glob("*.json")) if series_dir.is_dir() else []
+    if entry is None:
+        for path in files:
+            violations.append(f"{path}: a series file on a node that declares no step_series")
+        return
+    names = entry.get("names")
+    expected = {n for n in (names if isinstance(names, list) else []) if isinstance(n, str)}
+    finals = {p.name for p in snapshots_dir.glob("*.json") if p.name != SNAPSHOT_SCHEMA_FILE}
+    for name in sorted(finals - {p.name for p in files}):
+        violations.append(f"{series_dir / name}: missing: the case has a final capture, and "
+                          "step_series is declared")
+    for path in files:
+        try:
+            data = _read_json(path)
+        except json.JSONDecodeError:
+            violations.append(f"{path}: invalid json")
+            continue
+        if not isinstance(data, dict):
+            violations.append(f"{path}: must be json object")
+            continue
+        got = set(data) - {"t"}
+        if "t" not in data or got != expected:
+            violations.append(
+                f"{path}: holds {sorted(data)}; a series file holds t (the writer's scalar) and "
+                f"exactly the step_series names {sorted(expected)}")
+            continue
+        lengths = {len(v) for v in data.values() if isinstance(v, list)}
+        if any(not isinstance(data[n], list) for n in got) or len(lengths) > 1:
+            violations.append(f"{path}: every series name is a list, all of one length")
 
 
 def _validate_execution_json_outputs(execution: NodeExecution, violations: list[str]) -> None:

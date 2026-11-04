@@ -82,14 +82,15 @@ def _padded(variable: str) -> str:
 
 
 def _snapshot_dir(initial_capture_dir: bool) -> str:
-    """The directory the `test` recipe pre-creates in the run directory before the runner runs:
-    `raw/state_snapshots/`, plus its `initial/` capture point only when the host renders the
-    runner (`initial_capture_dir`), which opens `initial/<case_id>.json` relatively
-    (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3). A hand-authored runner writes no `initial/`,
+    """The directories the `test` recipe pre-creates in the run directory before the runner
+    runs: `raw/state_snapshots/`, plus its `initial/`, `history/` and `series/` capture points only
+    when the host renders the runner (`initial_capture_dir`), which opens each file relatively
+    (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3). A hand-authored runner writes none of them,
     so its `raw/state_snapshots/` holds only what it wrote and a strict fan-out self-test may
     refuse any other entry (issue #368). ONE helper so the two renderers cannot drift."""
-    return ("$(RUNDIR)/raw/state_snapshots/initial" if initial_capture_dir
-            else "$(RUNDIR)/raw/state_snapshots")
+    if not initial_capture_dir:
+        return "$(RUNDIR)/raw/state_snapshots"
+    return " ".join(f"$(RUNDIR)/raw/state_snapshots/{d}" for d in ("initial", "history", "series"))
 
 
 def render_node(

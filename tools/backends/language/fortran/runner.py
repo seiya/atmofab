@@ -63,7 +63,7 @@ from typing import Any
 # language question).
 from tools import runner_ir
 from tools.backends.language.fortran import bundle
-from tools.host_execution import perf_parallelism
+from tools.host_execution import DRIVER_DISTRIBUTED_PENDING, perf_parallelism
 from tools.host_render import RenderError
 
 # The fixed ABI of the leaf-authored `<spec_id>_checks` module (see
@@ -129,9 +129,6 @@ _HARNESS_TYPES = (
 _HARNESS_CORE_OPS = (
     "parse_cases", "box", "write_snapshot", "write_perf", "read_case", "get_array_r4",
 )
-
-#: The refusal reason of a physics node on a harness that runs the program as several ranks.
-DRIVER_DISTRIBUTED_PENDING = "driver_distributed_pending"
 
 #: The width of one command-line token of the rendered driver: the spec path is one, and a longer
 #: argument stops the run rather than truncating (the longest real spec path measured is 186).
