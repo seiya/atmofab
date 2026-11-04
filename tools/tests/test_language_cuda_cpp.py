@@ -20,7 +20,6 @@ from typing import ClassVar
 from tools.backends import registry
 from tools.backends.compiler.nvcc import syntax as nvcc_syntax
 from tools.backends.language.cuda_cpp import bundle as cpp_bundle
-from tools.backends.language.cuda_cpp import checks_abi as cpp_checks_abi
 from tools.backends.language.cuda_cpp import declarations as cpp_decls
 from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import lines as cpp_lines
@@ -819,8 +818,8 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
 
     def test_every_launch_reads_the_imposed_block_and_none_writes_it(self) -> None:
         """Issue #512 (PR-4c, round 2): a leaf source that launches a kernel must read
-        `atmofab::launch_block_size` somewhere in its code, and no leaf source may write it — the
-        model sources and the checks source, under any plan and any loop count. The shape it
+        `atmofab::launch_block_size` somewhere in its code, and no leaf source may write it — every
+        model source, under any plan and any loop count. The shape it
         refuses is the real corpus's: every `cpp_gpu` problem model certified before the block
         was imposed launched with a literal block of its own. Reads in every operator form pass,
         and so does a local, a parameter or a member that merely shares the name (round 3: only a
@@ -870,7 +869,7 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
             with self.subTest(admitted=name):
                 self.assertEqual([], cd.launch_violations({Path("m.cu"): text}))
 
-        def gate(model: str, checks: str, plan_model: str, backend: str = "cuda") -> list[str]:
+        def gate(model: str, helper: str, plan_model: str, backend: str = "cuda") -> list[str]:
             with tempfile.TemporaryDirectory() as t:
                 repo = Path(t)
                 install_target_profile(repo, profile_with(
@@ -884,11 +883,11 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                     "target_lowering_plan": {"precision": {}, "state_residency": "host",
                                              "parallelization": {"model": plan_model}}}))
                 (src / "c_model.cu").write_text(model)
-                (src / "c_checks.cu").write_text(checks)
+                (src / "c_helper.cu").write_text(helper)
                 out: list[str] = []
                 vps._validate_parallel_presence_floor(
                     repo, vps._stub_execution(pipe, "component/c@0.1.0"), src,
-                    [src / "c_model.cu"], out)
+                    [src / "c_model.cu", src / "c_helper.cu"], out)
                 return out
 
         good = "__global__ void k(double* d, long n) {}\nvoid f(double* d, long n) {\n" \
@@ -902,7 +901,7 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                 self.assertTrue(any("c_model.cu" in v and "launch_block_size" in v
                                     for v in found), found)
         found = gate(good, "void c(double* d, long n) {\n" + literal + "}\n", "cuda")
-        self.assertTrue(any("c_checks.cu" in v for v in found), found)
+        self.assertTrue(any("c_helper.cu" in v for v in found), found)
         # A parallel backend that states no launch floor is not asked.
         self.assertEqual([], gate(bad, bad, "none", backend="none"))
 
@@ -1105,21 +1104,6 @@ class SourceGateTests(unittest.TestCase):
                          cpp_source.published_subroutines(_GOOD_MODEL, "h"))
 
 
-_CHECKS_SOURCE = """#include "p_checks.cuh"
-
-namespace p_checks {
-double s = 0.0;
-std::vector<double> u{};
-atmofab::Array<double, 2> a2;
-
-void case_setup(const std::string& case_id, bool& ok) { (void)case_id; ok = true; }
-void case_run(const std::string& case_id, int& steps, int& cells_updated, bool& ok) {
-  (void)case_id; steps = 1; cells_updated = 1; ok = true;
-}
-void get_time(double& t) { t = 0.0; }
-}  // namespace p_checks
-"""
-
 _DEP_HEADER = """namespace dep_model {
 void dep__flux(atmofab::View<const double, 1> u, atmofab::View<double, 1> f, double dt);
 double dep__norm(const std::vector<double>& u);
@@ -1127,375 +1111,62 @@ double dep__norm(const std::vector<double>& u);
 """
 
 
-#: Issue #314: the model a reaching checks source calls, and that checks source — the problem
-#: idiom (the checks source DECLARES the operation in the model's namespace).
-_P_MODEL = """namespace p_model {
-void p__step(std::vector<double>& u, double& s) { u[0] = s; }
-}
-"""
-_REACHING_CHECKS = _CHECKS_SOURCE.replace(
-    "namespace p_checks {",
-    "namespace p_model {\nvoid p__step(std::vector<double>& u, double& s);\n}\n\nnamespace p_checks {",
-    1).replace("  (void)case_id; steps = 1;", "  p_model::p__step(u, s);\n  (void)case_id; steps = 1;")
-_REACH = "case_run reaches no published operation of the model"
-
-
-class ChecksReachGateTests(unittest.TestCase):
-    """Issue #314: `checks_model_reach_violations`, the C++ reading. Each row is named for the
-    mutant it kills; the handler rows live in `test_validate_pipeline_semantics`."""
-
-    def _run(self, checks: str, model: str | None = _P_MODEL) -> list[str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            models = []
-            if model is not None:
-                (Path(tmp) / "p_model.cu").write_text(model)
-                models = [Path(tmp) / "p_model.cu"]
-            return cpp_source.checks_model_reach_violations(
-                Path(tmp) / "p_checks.cu", checks, models, "p")
-
-    def _with_run_body(self, body: str, extra: str = "") -> str:
-        return _REACHING_CHECKS.replace("  p_model::p__step(u, s);\n", body).replace(
-            "}  // namespace p_checks", extra + "}  // namespace p_checks")
-
-    def test_the_reaching_idiom_passes_every_checks_gate(self) -> None:
-        self.assertEqual([], self._run(_REACHING_CHECKS))
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
-            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"]))
-
-    def test_m1_a_case_run_computing_the_state_inline_is_refused(self) -> None:
-        v = self._run(self._with_run_body("  u[0] = s;\n"))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn(_REACH, v[0])
-        self.assertIn("(one of: p__step)", v[0])
-
-    def test_m2_a_model_defining_no_operation_is_refused(self) -> None:
-        for label, model in (("none", None),
-                             ("outside the namespace", ("void p__step(std::vector<double>& u, "
-                                                        "double& s) { u[0] = s; }\n")),
-                             ("without the prefix", _P_MODEL.replace("p__step", "step")),
-                             ("declared only", "namespace p_model {\nvoid p__step(int);\n}\n")):
-            with self.subTest(label):
-                v = self._run(_REACHING_CHECKS, model)
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("the model source defines no `p__<op>` in `namespace p_model`", v[0])
-
-    def test_m3_only_the_checks_namespace_case_run_is_the_root(self) -> None:
-        for label, checks in (
-                ("from case_setup", self._with_run_body("").replace(
-                    "(void)case_id; ok = true; }", "(void)case_id; p_model::p__step(u, s); ok = true; }")),
-                ("from an orphan helper", self._with_run_body(
-                    "", "void orphan() { p_model::p__step(u, s); }\n")),
-                ("from a case_run in another namespace", self._with_run_body("") + (
-                    "namespace other {\nvoid case_run(const std::string& c, int& a, int& b, bool& o) "
-                    "{ p_model::p__step(p_checks::u, p_checks::s); }\n}\n"))):
-            with self.subTest(label):
-                v = self._run(checks)
-                self.assertEqual([_REACH in x for x in v], [True], v)
-
-    def test_m4_a_helper_case_run_reaches_is_followed(self) -> None:
-        for label, body, extra in (
-                ("helper", "  advance();\n", "void advance() { p_model::p__step(u, s); }\n"),
-                ("unnamed namespace", "  advance();\n",
-                 "namespace {\nvoid advance() { p_model::p__step(u, s); }\n}\n"),
-                ("two levels", "  outer();\n",
-                 "void inner() { p_model::p__step(u, s); }\nvoid outer() { inner(); }\n"),
-                ("template arguments at the call", "  advance<atmofab::View<double, 1>>(u);\n",
-                 "void advance(std::vector<double>& v) { p_model::p__step(v, s); }\n"),
-                ("value-returning helper", "  const double r = norm_after(u);\n  (void)r;\n",
-                 ("double norm_after(std::vector<double>& v) { p_model::p__step(v, s); "
-                  "return v[0]; }\n"))):
-            with self.subTest(label):
-                self.assertEqual([], self._run(self._with_run_body(body, extra)))
-                v = self._run(self._with_run_body("", extra))
-                self.assertEqual([_REACH in x for x in v], [True], v)
-
-    def test_m6_a_checks_definition_of_an_operation_is_a_shadow(self) -> None:
-        for label, extra in (
-                ("overload in the model namespace",
-                 ("}  // namespace p_checks\nnamespace p_model {\nvoid p__step(int n) { (void)n; }\n"
-                  "}\nnamespace p_checks {\n")),
-                ("in the checks namespace", "void p__step(int n) { (void)n; }\n")):
-            with self.subTest(label):
-                v = self._run(self._with_run_body("  p_model::p__step(u, s);\n", extra))
-                self.assertTrue(any("defines `p__step`, a published operation of the model" in x
-                                    for x in v), v)
-        v = self._run(self._with_run_body("  dep_model::dep__flux(u);\n"))
-        self.assertEqual([_REACH in x for x in v], [True], v)
-
-    def test_m7_a_comment_or_a_literal_is_not_a_reach(self) -> None:
-        for label, body in (("comment", "  // p_model::p__step(u, s);\n"),
-                            ("block comment", "  /* p__step(u, s); */\n"),
-                            ("literal", '  const char* note = "p__step(u, s)";\n  (void)note;\n'),
-                            ("using only", "  using p_model::p__step;\n")):
-            with self.subTest(label):
-                v = self._run(self._with_run_body(body))
-                self.assertEqual([_REACH in x for x in v], [True], v)
-
-    def test_a_checks_namespace_without_case_run_is_refused(self) -> None:
-        v = self._run(_REACHING_CHECKS.replace("void case_run(", "void case_go("))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("namespace p_checks defines no `case_run`", v[0])
-
-    def test_m9_an_unbalanced_source_is_refused_not_passed(self) -> None:
-        v = self._run(_REACHING_CHECKS + "void broken() {\n")
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("the checks-reach gate cannot read this source's declarations", v[0])
-
-    def test_m10_every_spelling_of_a_reach_is_followed(self) -> None:
-        for label, body in (
-                ("qualified", "  p_model::p__step(u, s);\n"),
-                ("split over lines", "  p_model::\n      p__step(\n u, s);\n"),
-                ("taken by address", ("  void (*op)(std::vector<double>&, double&) = "
-                                      "&p_model::p__step;\n  op(u, s);\n")),
-                ("inside a lambda", "  auto go = [&]() { p_model::p__step(u, s); };\n  go();\n")):
-            with self.subTest(label):
-                self.assertEqual([], self._run(self._with_run_body(body)))
-
-    def test_a_namespace_alias_of_the_model_qualifies(self) -> None:
-        """Certified sources call through `namespace md = <spec_id>_model;`."""
-        alias = _REACHING_CHECKS.replace("namespace p_checks {",
-                                         "namespace md = p_model;\nnamespace p_checks {", 1)
-        self.assertEqual([], self._run(alias.replace("p_model::p__step(u, s);",
-                                                     "md::p__step(u, s);")))
-
-    def test_a_local_entity_named_as_the_operation_is_refused(self) -> None:
-        """Round 1 (issue #314): a lambda, functor, variable, member or template carrying the
-        operation's name, and an unqualified call that may reach one, look like a call to the
-        model and run the checks source's own update. The name appears only qualified by the
-        model's namespace, or as the checks source's declaration in it."""
-        fake = "[&](std::vector<double>& v, double& x) { v[0] = x; }"
-        for label, body, extra in (
-                ("local lambda", f"  auto p__step = {fake};\n  p__step(u, s);\n", ""),
-                ("namespace-scope lambda", "  p__step(u, s);\n",
-                 f"auto p__step = {fake.replace('[&]', '[]')};\n"),
-                ("local functor", ("  struct F { void operator()(std::vector<double>& v, double& x)"
-                                   " { v[0] = x; } } p__step;\n  p__step(u, s);\n"), ""),
-                ("local variable", "  int p__step = 1;\n  (void)p__step;\n", ""),
-                ("local struct static member",
-                 ("  struct W { static void p__step(std::vector<double>& v, double& x) "
-                  "{ v[0] = x; } };\n  W::p__step(u, s);\n"), ""),
-                ("alias-named local struct",
-                 ("  struct p_model { static void p__step(std::vector<double>& v, double& x) "
-                  "{ v[0] = x; } };\n  p_model::p__step(u, s);\n"), ""),
-                ("after a using-declaration", "  using p_model::p__step;\n  p__step(u, s);\n", ""),
-                ("after a using-directive", "  using namespace p_model;\n  p__step(u, s);\n", ""),
-                ("template in the model namespace", "  p_model::p__step(u, s);\n",
-                 ("}  // namespace p_checks\nnamespace p_model {\ntemplate <typename T = int>\n"
-                  "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n"
-                  "namespace p_checks {\n"))):
-            with self.subTest(label):
-                v = self._run(self._with_run_body(body, extra))
-                self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
-                if label in ("local lambda", "local functor", "local struct static member"):
-                    # ...and the call to it is no reach either.
-                    self.assertTrue(any(_REACH in x for x in v), v)
-
-    def test_only_the_models_namespace_qualifies(self) -> None:
-        v = self._run(self._with_run_body("  other::p__step(u, s);\n"))
-        self.assertTrue(any(_REACH in x for x in v), v)
-        self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
-        # A declaration of the name outside the model's namespace is not the problem idiom.
-        v = self._run(self._with_run_body(
-            "  p_model::p__step(u, s);\n", "void p__step(std::vector<double>& u, double& s);\n"))
-        self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
-
-    def test_the_host_rendered_runner_is_not_read(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
-            (Path(tmp) / "p_runner.cu").write_text("void p__step(int);\n")
-            v = cpp_source.checks_model_reach_violations(
-                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
-            self.assertEqual(v, [])
-            # ...but a leaf file of the runner's NAME in a subdirectory is read (round 3).
-            (Path(tmp) / "sub").mkdir()
-            (Path(tmp) / "sub" / "p_runner.cu").write_text("void p__step(int);\n")
-            v = cpp_source.checks_model_reach_violations(
-                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("sub/p_runner.cu: names a published operation", v[0])
-
-    def test_a_helper_source_naming_the_operation_is_refused(self) -> None:
-        """A helper `.cu` the checks source includes is read by the same rule."""
-        helper = ("namespace p_model {\ntemplate <typename T = int>\n"
-                  "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n")
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
-            (Path(tmp) / "fake.cu").write_text(helper)
-            v = cpp_source.checks_model_reach_violations(
-                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("fake.cu: names a published operation of the model", v[0])
-
-    def test_forms_not_followed_are_refused(self) -> None:
-        """Documented refusals (GENERATE_RULES.md §5): a struct member function, a namespace-scope
-        lambda variable and a template function are not read as functions, so an operation
-        reached only through one is no reach — over-refusal, never a pass."""
-        for label, body, extra in (
-                ("struct member", "  Stepper{}.go();\n",
-                 "struct Stepper { void go() { p_model::p__step(u, s); } };\n"),
-                ("namespace-scope lambda", "  run_step();\n",
-                 "auto run_step = [] { p_model::p__step(u, s); };\n"),
-                ("template function", "  advance<int>();\n",
-                 "template <typename T> void advance() { p_model::p__step(u, s); }\n")):
-            with self.subTest(label):
-                v = self._run(self._with_run_body(body, extra))
-                self.assertEqual([_REACH in x for x in v], [True], v)
-
-
 class PhysicsGateTests(unittest.TestCase):
-    """The checks-source, dependency-use and `problem` model gates a physics node reaches
+    """The isolation, dependency-use and `problem` model gates a physics node reaches
     (R4-b PR-6): each passes the certified idiom and names each defect it exists for."""
 
-    def test_a_clean_checks_source_passes_every_checks_gate(self) -> None:
-        path = Path("p_checks.cu")
-        self.assertEqual([], cpp_source.checks_module_declaration_violations(
-            path, _CHECKS_SOURCE, "p"))
-        published, subroutines, defined = cpp_source.checks_module_abi_facts(_CHECKS_SOURCE, "p")
-        abi = set(cpp_checks_abi.CHECKS_PUBLIC_NAMES)
-        self.assertEqual((abi, abi, abi), (published, subroutines, defined))
-        self.assertEqual([], cpp_source.unpublished_bound_state(_CHECKS_SOURCE, "p",
-                                                                ["s", "u", "a2"]))
+    @staticmethod
+    def _isolation(src: Path, body: str | None = None, *, name: str = "p_model.cu",
+                   **kwargs) -> list[str]:
+        """`model_harness_isolation_violations` over `src`, its model `p_model.cu` written from
+        `body` when given (a helper source, `name`, is read as a leaf source too)."""
+        if body is not None:
+            (src / name).write_text(body)
+        return cpp_source.model_harness_isolation_violations(
+            src, [src / "p_model.cu"] if (src / "p_model.cu").exists() else [], "p", **kwargs)
+
+    def test_a_clean_model_passes_and_no_harness_use_is_admitted(self) -> None:
+        clean = '#include "p_model.cuh"\nnamespace p_model {\nvoid p__step(double& x) { x = 0.0; }\n}\n'
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                Path(tmp) / path.name, _CHECKS_SOURCE, []))
+            self.assertEqual([], self._isolation(Path(tmp), clean))
             # The neutral caller passes what the renderer admits (issue #316): nothing, here.
-            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                Path(tmp) / path.name, _CHECKS_SOURCE, [], allowed_harness_uses={}))
+            self.assertEqual([], self._isolation(Path(tmp), allowed_harness_uses={}))
             with self.assertRaises(ValueError):
-                cpp_source.checks_harness_isolation_violations(
-                    Path(tmp) / path.name, _CHECKS_SOURCE, [],
-                    allowed_harness_uses={"harness_cpp_gpu_model": {"x"}})
+                self._isolation(Path(tmp), allowed_harness_uses={"harness_cpp_gpu_model": {"x"}})
 
-    def test_the_abi_facts_are_the_three_callbacks(self) -> None:
-        """Issue #582: a checks source without the two retired callbacks is the whole ABI, and one
-        without `get_time` is short of it; one that still defines a retired name adds nothing the
-        gate reads."""
-        abi = {"case_setup", "case_run", "get_time"}
-        self.assertEqual(abi, set(cpp_checks_abi.CHECKS_PUBLIC_NAMES))
-        self.assertNotIn("metric_compute", _CHECKS_SOURCE)
-        _published, _subroutines, defined = cpp_source.checks_module_abi_facts(_CHECKS_SOURCE, "p")
-        self.assertEqual(abi, defined)
-        missing = _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }\n", "")
-        self.assertNotEqual(missing, _CHECKS_SOURCE)
-        published, _subroutines, defined = cpp_source.checks_module_abi_facts(missing, "p")
-        self.assertEqual(abi - {"get_time"}, defined)
-        self.assertEqual(abi - {"get_time"}, published)
-
-    def test_the_renderer_admits_no_physics_harness_use_and_no_distributed_state(
-            self) -> None:
-        """Issue #316: the two seam questions a distributed harness raises, answered for this
-        language's one harness — the checks-source gate asks them of every host-rendered node."""
+    def test_the_renderer_admits_no_physics_harness_use(self) -> None:
+        """Issue #316: the seam question a distributed harness raises, answered for this
+        language's one harness — the isolation gate asks it of every host-rendered node."""
         from tools import host_render
         self.assertEqual(host_render.physics_harness_uses("cuda_cpp", "harness_cpp_gpu"), {})
-        self.assertEqual(host_render.distributed_state_names("cuda_cpp", "harness_cpp_gpu",
-                                                             ["u"]), [])
 
-    def test_the_header_include_and_the_namespace_are_required(self) -> None:
-        no_include = _CHECKS_SOURCE.replace('#include "p_checks.cuh"', "// #include \"p_checks.cuh\"")
-        out = cpp_source.checks_module_declaration_violations(Path("c.cu"), no_include, "p")
-        self.assertTrue(any('must `#include "p_checks.cuh"`' in v for v in out), out)
-        other_ns = _CHECKS_SOURCE.replace("namespace p_checks {", "namespace q_checks {")
-        out = cpp_source.checks_module_declaration_violations(Path("c.cu"), other_ns, "p")
-        self.assertTrue(any("namespace p_checks" in v for v in out), out)
-        unbalanced = _CHECKS_SOURCE + "void broken() {\n"
-        out = cpp_source.checks_module_declaration_violations(Path("c.cu"), unbalanced, "p")
-        self.assertTrue(any("cannot read this source's declarations" in v for v in out), out)
-        self.assertEqual((set(), set(), set()),
-                         cpp_source.checks_module_abi_facts(unbalanced, "p"))
-        self.assertEqual(["s"], cpp_source.unpublished_bound_state(unbalanced, "p", ["s"]))
-
-    def test_a_callback_is_published_only_as_the_header_declares_it(self) -> None:
-        """Each way a definition misses the runner's call reads as unpublished: another
-        parameter type (an overload), another return type, internal linkage, a device function,
-        an unnamed namespace. A qualified definition outside the namespace block counts."""
-        variants = {
-            "float": _CHECKS_SOURCE.replace("void get_time(double& t)", "void get_time(float& t)"),
-            "value": _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
-                                            "void get_time(double t) { (void)t; }"),
-            "return": _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
-                                             "int get_time(double& t) { t = 0.0; return 0; }"),
-            "static": _CHECKS_SOURCE.replace("void get_time(", "static void get_time("),
-            "inline": _CHECKS_SOURCE.replace("void get_time(", "inline void get_time("),
-            "device": _CHECKS_SOURCE.replace("void get_time(", "__device__ void get_time("),
-            "unnamed": _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
-                                              "namespace { void get_time(double& t) { t = 0.0; } }"),
-        }
-        for label, text in variants.items():
-            with self.subTest(label):
-                published, _subs, _defined = cpp_source.checks_module_abi_facts(text, "p")
-                self.assertNotIn("get_time", published)
-                self.assertIn("case_setup", published)
-        # Round 1 of this change's review: an east `const` is the same parameter type.
-        east = _CHECKS_SOURCE.replace("void case_setup(const std::string& case_id",
-                                      "void case_setup(std::string const& case_id")
-        self.assertIn("case_setup", cpp_source.checks_module_abi_facts(east, "p")[0])
-        # A declaration without a body defines nothing (the runner's call would not link).
-        declared = _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }",
-                                          "void get_time(double& t);")
-        facts = cpp_source.checks_module_abi_facts(declared, "p")
-        self.assertNotIn("get_time", facts[0])
-        self.assertNotIn("get_time", facts[2])
-        qualified = _CHECKS_SOURCE.replace("void get_time(double& t) { t = 0.0; }", "") + (
-            "void p_checks::get_time(double& when) { when = 0.0; }\n")
-        self.assertIn("get_time", cpp_source.checks_module_abi_facts(qualified, "p")[0])
-
-    def test_a_checks_declaration_of_the_node_s_operation_must_match_its_definition(self) -> None:
-        """Round 3 of this change's review: a `problem` node's header declares nothing of its
-        operation, so its checks source declares it itself; a declaration with other types than
-        the model's definition is refused before Build, where it is a link error."""
+    def test_isolation_refuses_the_harness(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            model = Path(tmp) / "p_model.cu"
-            model.write_text("namespace p_model {\nvoid p__step(atmofab::View<double, 1> u, "
-                             "int nx) { (void)u; (void)nx; }\n}\n")
-            declared = _CHECKS_SOURCE + ("namespace p_model {\nvoid p__step("
-                                         "atmofab::View<double, 1> u, int {t});\n}\n")
-            for label, text, refused in (
-                    ("same types, other name", declared.replace("{t}", "n"), False),
-                    ("another type", declared.replace("int {t}", "long n"), True),
-                    ("no such operation", declared.replace("p__step", "p__other").replace(
-                        "{t}", "n"), True)):
-                with self.subTest(label):
-                    out = cpp_source.checks_harness_isolation_violations(
-                        Path(tmp) / "p_checks.cu", text, [model])
-                    self.assertEqual(refused, any("declares `p_model::" in v for v in out), out)
-
-    def test_bound_state_must_be_defined_with_external_linkage(self) -> None:
-        for label, text in {
-            "static": _CHECKS_SOURCE.replace("double s = 0.0;", "static double s = 0.0;"),
-            "const": _CHECKS_SOURCE.replace("double s = 0.0;", "const double s = 0.0;"),
-            "extern": _CHECKS_SOURCE.replace("double s = 0.0;", "extern double s;"),
-            "unnamed": _CHECKS_SOURCE.replace("double s = 0.0;", "namespace { double s = 0.0; }"),
-            "absent": _CHECKS_SOURCE.replace("double s = 0.0;", ""),
-        }.items():
-            with self.subTest(label):
-                self.assertEqual(["s"], cpp_source.unpublished_bound_state(text, "p", ["s", "u"]))
-        direct = _CHECKS_SOURCE.replace("std::vector<double> u{};", "std::vector<double> u(3);")
-        self.assertEqual([], cpp_source.unpublished_bound_state(direct, "p", ["u"]))
-        # Round 1 of this change's review: every declarator of one statement is defined.
-        several = _CHECKS_SOURCE.replace("double s = 0.0;", "double t0 = 1.0, s = 0.0;").replace(
-            "std::vector<double> u{};", "std::vector<double> w, u;")
-        self.assertEqual([], cpp_source.unpublished_bound_state(several, "p", ["s", "u", "a2"]))
-
-    def test_isolation_refuses_the_harness_and_file_io(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            checks = Path(tmp) / "p_checks.cu"
-            model = Path(tmp) / "p_model.cu"
-            model.write_text('#include "harness_cpp_gpu_model.cuh"\nint x;\n')
-            out = cpp_source.checks_harness_isolation_violations(checks, _CHECKS_SOURCE, [model])
+            src = Path(tmp)
+            model = src / "p_model.cu"
+            out = self._isolation(src, '#include "harness_cpp_gpu_model.cuh"\nint x;\n')
             self.assertTrue(any(str(model) in v and "harness" in v for v in out), out)
             for reference in ("void f() { harness_cpp_gpu_model::harness_cpp_gpu__emit_real(1.0); }",
                               "namespace h = harness_cpp_gpu_model;",
                               "void f() { harness_cpp_gpu__box(a, b); }"):
-                model.write_text(reference + "\n")
-                out = cpp_source.checks_harness_isolation_violations(checks, _CHECKS_SOURCE,
-                                                                     [model])
+                out = self._isolation(src, reference + "\n")
                 self.assertTrue(any(str(model) in v for v in out), (reference, out))
-            model.write_text('// #include "harness_cpp_gpu_model.cuh"\n'
-                             'const char* m = "harness_cpp_gpu_model::";\n')
-            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                checks, _CHECKS_SOURCE, [model]))
+            self.assertEqual([], self._isolation(
+                src, '// #include "harness_cpp_gpu_model.cuh"\n'
+                     'const char* m = "harness_cpp_gpu_model::";\n'))
+
+    def test_a_forbidden_output_name_is_refused_in_a_literal_and_only_there(self) -> None:
+        forbidden = ("perf.json", "verdict.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            out = self._isolation(src, 'const char* m = "run/perf.json";\n',
+                                  forbidden_outputs=forbidden)
+            self.assertEqual(
+                [f"{src / 'p_model.cu'}: forbidden judge-artifact filename detected (perf.json)"],
+                out)
+            self.assertEqual([], self._isolation(
+                src, '// perf.json\nconst char* m = "perf";\n', forbidden_outputs=forbidden))
+            self.assertEqual([], self._isolation(src, 'const char* m = "run/perf.json";\n'))
 
     _IO_SPELLINGS = (
         "std::ofstream out(\"x\");", "FILE* f = fopen(\"x\", \"w\");",
@@ -1528,49 +1199,35 @@ class PhysicsGateTests(unittest.TestCase):
         for name, spellings in forms.items():
             for spelling in spellings:
                 with self.subTest(spelling), tempfile.TemporaryDirectory() as tmp:
-                    (Path(tmp) / "p_model.cu").write_text(
-                        f"namespace {{ void w() {{ {spelling} }} }}\n")
-                    out = cpp_source.checks_harness_isolation_violations(
-                        Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, [])
+                    out = self._isolation(Path(tmp), f"namespace {{ void w() {{ {spelling} }} }}\n")
                     self.assertTrue(any("p_model.cu" in v and "must not do file I/O" in v
                                         for v in out), out)
         # Round 5: a self-declared C symbol reached a system call past every name.
         for spelling in ('extern "C" long syscall(long, ...);', 'extern "C" { int f(int); }'):
             with self.subTest(spelling), tempfile.TemporaryDirectory() as tmp:
-                (Path(tmp) / "p_model.cu").write_text(spelling + "\n")
-                out = cpp_source.checks_harness_isolation_violations(
-                    Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, [])
+                out = self._isolation(Path(tmp), spelling + "\n")
                 self.assertTrue(any("language linkage" in v for v in out), out)
         for clean in ("double system_size = 1.0;", "double rename_count = 0.0;",
                       "extern double shared_total;", "double linkage = 0.0;",
                       "void g(double& x) { x = other::open; }"):
             with self.subTest(clean), tempfile.TemporaryDirectory() as tmp:
-                (Path(tmp) / "p_model.cu").write_text(clean + "\n")
-                self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                    Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, []))
+                self.assertEqual([], self._isolation(Path(tmp), clean + "\n"))
 
     def test_no_leaf_source_does_file_io_or_runs_after_main(self) -> None:
         """Round 2 of this change's review: a MODEL source's namespace-scope destructor rewrote
         `diagnostics.json` after the harness wrote it, and every gate passed. Every leaf `.cu`
-        of the node is read, the checks source and a helper included; the host-rendered runner
-        is not."""
+        of the node is read, a helper included; the host-rendered runner is not."""
         for io in self._IO_SPELLINGS:
-            for victim in ("p_checks.cu", "p_model.cu", "p_helper.cu"):
+            for victim in ("p_model.cu", "p_helper.cu"):
                 with self.subTest(io=io, file=victim), tempfile.TemporaryDirectory() as tmp:
-                    checks = Path(tmp) / "p_checks.cu"
-                    text = _CHECKS_SOURCE
-                    body = f"namespace {{ void w() {{ {io} }} }}\n"
-                    if victim == "p_checks.cu":
-                        text = _CHECKS_SOURCE + body
-                    else:
-                        (Path(tmp) / victim).write_text(body)
-                    out = cpp_source.checks_harness_isolation_violations(checks, text, [])
+                    src = Path(tmp)
+                    (src / "p_model.cu").write_text("int x;\n")
+                    out = self._isolation(src, f"namespace {{ void w() {{ {io} }} }}\n", name=victim)
                     self.assertTrue(any(victim in v and "must not do file I/O" in v
                                         for v in out), out)
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "p_runner.cu").write_text("std::ofstream host_rendered;\n")
-            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                Path(tmp) / "p_checks.cu", _CHECKS_SOURCE, []))
+            self.assertEqual([], self._isolation(Path(tmp), "int x;\n"))
         # Over-refusal probes: a name, a literal, the `<algorithm>` remove, a physics helper.
         for clean in ("double opened = 0.0;", "const char* m = \"std::system(x)\";",
                       "double removed_mass = 1.0;",
@@ -1578,8 +1235,7 @@ class PhysicsGateTests(unittest.TestCase):
                       "v.end()); }", "void apply_open_boundary(double& x) { x = 0.0; }",
                       "bool is_open = false;"):
             with self.subTest(clean), tempfile.TemporaryDirectory() as tmp:
-                self.assertEqual([], cpp_source.checks_harness_isolation_violations(
-                    Path(tmp) / "p_checks.cu", _CHECKS_SOURCE + clean + "\n", []))
+                self.assertEqual([], self._isolation(Path(tmp), clean + "\n"))
 
     def _model(self, tmp: str, body: str, *, header: bool = True) -> Path:
         if header:
@@ -2921,8 +2577,8 @@ class ToolAdapterTests(unittest.TestCase):
     def test_the_leaf_is_told_the_device_callable_binding(self) -> None:
         """Issue #380 (B1): what a `cuda_cpp` leaf reads about a pointwise operation agrees with
         what the header and the pin do — the producer's rule 6a, the reviewer's dependency-call
-        item, the checks-ABI binding's §5 and the lint flags it is shown. A literal guard on the
-        removed phrasing ("a HOST function: no `__device__`") as much as on the new one: a
+        item, the language's legality section and the lint flags it is shown. A literal guard on
+        the removed phrasing ("a HOST function: no `__device__`") as much as on the new one: a
         leaf told both would be told to define the operation in a way the pin refuses."""
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         rule = prompts.fragments("generate_generate")["authoring_rule_6"]
@@ -2931,11 +2587,12 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertNotIn("A published operation is a HOST function", rule)
         verify = prompts.fragments("generate_verify")["dependency_call_consistency"]
         self.assertIn("`__host__ __device__` may be called from inside a kernel", verify)
-        section5 = registry.capability_module("language", "cuda_cpp", "checks_abi").document()
-        section5 = section5[section5.index("## 5. "):]
-        self.assertIn("`__host__ __device__` as its header declares", section5)
-        self.assertNotIn("Published operations are host functions", section5)
-        self.assertNotIn("a kernel over the shared-memory limit)", section5)
+        legality = (REPO_ROOT / "docs/backends/language/cuda_cpp/GENERATE_RULES.md").read_text(
+            encoding="utf-8")
+        legality = legality[legality.index("## Legality and gate guards"):]
+        self.assertIn("`__host__ __device__` as its header declares", legality)
+        self.assertNotIn("Published operations are host functions", legality)
+        self.assertNotIn("a kernel over the shared-memory limit)", legality)
         self.assertIn("-rdc=true", nvcc_lint.lint_rules_document())
         # Round 1 of #380 PR-1's review: what the producer and reviewer read beside the binding.
         # The lint argv rule (1) quotes is the declared one, derived from the code; the syntax
@@ -2944,7 +2601,7 @@ class ToolAdapterTests(unittest.TestCase):
         rules = prompts.fragments("generate_generate")["authoring_rules_1_to_4"]
         self.assertIn(f"`{' '.join(nvcc_lint.check_argv())}`", rules)
         self.assertIn("-Xcompiler -fsyntax-only -rdc=true -c`", rules)
-        self.assertIn("-Xcompiler -fsyntax-only -rdc=true -c`", section5)
+        self.assertIn("-Xcompiler -fsyntax-only -rdc=true -c`", legality)
         self.assertIn('declares `"model": "none"`', rule)
         g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
         self.assertIn('its plan declares `"model": "none"`', g6)
@@ -2988,35 +2645,20 @@ class ToolAdapterTests(unittest.TestCase):
             self.assertNotRegex(text, r"(?i)default[^.]*\b(refused|forbidden|is a fail)\b")
 
     def test_a_reopened_model_namespace_is_not_listed_in_modules(self) -> None:
-        """Issue #384: on a `problem` node the checks source reopens `<spec_id>_model` to declare
-        the operation (rule 6a), and "the C++ namespaces that file defines" let the producer list
-        that namespace in the checks file's `modules` too — `validate_bundle` refused the first
-        `cpp_gpu` bundle of orch_20261002T140410Z_20f43acc for it and one repair turn was spent.
-        The field's meaning now names the owner, and rule (6a) points back at it. Whole clauses
-        are pinned, not words: with single-phrase pins, two reversals stayed green (round 1 of the
-        review) — the meaning rewritten to "lists `<spec_id>_checks` and also `<spec_id>_model`
-        (never `<spec_id>_model` without `<spec_id>_checks`)", which keeps the pinned phrase in
-        its parenthetical, and rule (6a) rewritten to "adds nothing to the checks file's
-        `modules` beyond `<spec_id>_model` itself". Not caught here: an ADDED sentence contradicting them (only the
-        contract digest moves for that)."""
+        """Issue #384: `validate_bundle` refused a `cpp_gpu` bundle whose two files both listed
+        one namespace, and one repair turn was spent; the field's meaning names the rule, so a
+        leaf is told before the refusal. Whole clauses are pinned, not words."""
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
-        frag = prompts.fragments("generate_generate")
-        meaning = frag["file_modules_meaning"]
+        meaning = prompts.fragments("generate_generate")["file_modules_meaning"]
         for clause in ("the C++ namespaces whose DEFINITIONS that file provides, each listed by "
                        "exactly one file",
-                       "reopens only to DECLARE the operation (6a) belongs to the model file "
-                       "alone, so the checks file lists `<spec_id>_checks` and never "
-                       "`<spec_id>_model`;",
                        "a name two files list is REJECTED (`is already defined by another file`)"):
             self.assertIn(clause, meaning)
         self.assertNotIn("that file defines", meaning)
-        self.assertNotIn("also `<spec_id>_model`", meaning)
-        self.assertIn("— and that reopening adds nothing to the checks file's `modules`: the "
-                      "namespace is the model file's (see `modules` in the output contract).",
-                      frag["authoring_rule_6"])
+        self.assertNotIn("_checks", meaning)
 
     def test_the_registry_serves_every_declared_capability(self) -> None:
-        for capability in ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",
+        for capability in ("bundle_facts", "syntax_promotions", "prompt_fragments",
                            "source_reading", "signatures"):
             with self.subTest(capability=capability):
                 registry.capability_module("language", "cuda_cpp", capability)
@@ -3040,8 +2682,10 @@ class ToolAdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prompts.fragments("no_such_template")
         self.assertTrue(prompts.runner_output_document().startswith("# Runner output"))
-        abi = registry.capability_module("language", "cuda_cpp", "checks_abi").document()
-        self.assertIn("## 5. CUDA C++ legality and gate guards", abi)
+        # The capability the checks module's contract was served through went with the module.
+        for language in ("cuda_cpp", "fortran"):
+            with self.subTest(language=language), self.assertRaises(registry.UnsupportedBackend):
+                registry.capability_module("language", language, "checks_abi")
 
 
 class DeviceTraceTests(unittest.TestCase):
