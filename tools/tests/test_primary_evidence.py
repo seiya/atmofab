@@ -3324,6 +3324,26 @@ class ResultFlagFormTest(unittest.TestCase):
                                         "\"final.tv_ok\"`"), v)
         self.assertTrue(v[1].startswith(f"predicates[{i}]: {self._NO_STATE} (final.<v>"), v)
 
+    def test_a_one_call_test_over_entries_with_different_results_is_refused(self) -> None:
+        """Gate (l): the one-call closure names ONE result state, so a `pass` test whose target
+        cases run entries with different results (the `tv_ok` re-binding above, the test over
+        an adjustment case and a terminal-velocity case) is refused by name."""
+        ir = _kessler()
+        entry = ir["drive"]["step"][1]
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": "tv_ok", "shape_expr": "scalar"})
+        entry["arguments"]["guard_pass"] = "state.tv_ok"
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["guard_pass" if case["case_id"] == "tv_a" else "tv_ok"] = 0.0
+        io = ir["io_contract"]
+        for item in [*io["tests"], *io["predicates"]]:
+            if item["test_id"] == "t_tv":
+                item["target_cases"] = ["adj_a", "tv_a"]
+        self.assertIn("(l) test 't_tv' (pass): its target cases run entries whose results "
+                      "differ (['guard_pass', 'tv_ok']): the one-call closure names ONE result "
+                      "state, so a test's cases run entries that share it",
+                      pe.drive_violations(ir, kind="component"))
+
     def test_a_logical_out_that_is_no_result_still_counts(self) -> None:
         reads = pe.state_reads(_saturation())
         for name, want in (("converged", True), ("guard_pass", False)):
