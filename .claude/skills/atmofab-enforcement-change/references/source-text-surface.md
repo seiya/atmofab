@@ -43,3 +43,23 @@ identifier names, in both skills, and `atmofab-review-loop` carries some while h
 at all. The development-documentation entry, now [a comment on PR #90](https://github.com/seiya/atmofab/pull/90#issuecomment-5559633234), holds the measurement and the command that
 reproduces it — do not quote a figure from here, because every edit to these files moves it.
 
+## What the reader drops and the build compiles (issue #589 PR-1b)
+
+A gate that reads a comment-free view is judging a different text from the one the compiler reads
+whenever the two disagree about what a comment is. Fortran's `!$` is that case: a comment to the
+statement reader, a statement under `-fopenmp`, which is how `fortran_cpu` builds. A blank-slate
+reviewer put `!$ call execute_command_line("sed ...")` in a coriolis model with no `ncomp` guard:
+it rewrote the guard captures and went through `Generate.gate`, Build and Validate to `self_verdict:
+pass`, both guard tests `xfail`. Every scan of the isolation gate (`open`, `use`, the file names,
+and the two the previous round had just added) was one sentinel away.
+
+**Rule: list what your reader discards (comments, masked strings, dead code, preprocessor
+branches), then ask of each what the compiler does with it UNDER THE FLAGS THE HOST REALLY USES.**
+Read the build's flags, not the language's defaults. `model_harness_isolation_violations` now blanks
+the sentinel of a non-directive `!$` line before reading.
+
+**A scan by NAME also refuses less than it looks.** `call execute_command_line` and `call system`
+were refused by name, and `bind(c, name='system')` under a local name passed, with an `atexit`
+handler rewriting a capture after the driver wrote it (round 1, measured `guard_pass` 0 to 1, every
+gate green). Refuse the MECHANISM a name is reached through (`bind(c)`, as the C++ scan refuses
+`extern "C"`). The plan had classified this route as "no working route found", without running one.

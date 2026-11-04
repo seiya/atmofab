@@ -735,3 +735,16 @@ loopback stand-in agreed with it, because the stand-in was written from it. A ro
 fetched the page. `ac2faf54` replays it when a server returned one (a server that returns none is
 sent none).
 
+## Rule 1-d: a reset the compiler is entitled to delete (issue #589 PR-1b / PR #594, 2026-11-04)
+
+Plan A's driver sets every logical `out` to `.false.` before the call, so a kernel that never
+assigns its result reads `0` and fails. A row was written for it, and went red on the first run:
+`1.0 != 0.0`. gfortran 11.4 emits a `{CLOBBER}` on an `intent(out)` scalar actual at the call
+(`-fdump-tree-original`), which makes the store before it dead at `-O2`. A kernel that never assigned
+`ok` then read whatever the register held, `true` included, and on a `loop` node every step
+committed. `volatile` keeps the store.
+
+Two things outlast the fix. The premise "the driver's reset holds" read as a fact about the driver
+and was a fact about the compiler and its flags, so it took a run. And the first rows pinning the fix
+did not pin it, because at the flags they built with the defect did not show: `-O2` alone read `0` by
+register luck, while `-O2 -fcheck=bounds` and `-O3` read `1`. `atmofab-review-loop` carries that half.

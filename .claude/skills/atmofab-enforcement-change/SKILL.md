@@ -199,6 +199,14 @@ to **one unbilled observation**).
   each target's type system separately** (a fixed-width string re-pads an unpadded supply, a
   dynamic one does not). Surface 11 asks this of a gate's switch; this is the same question asked
   of its stimulus (`references/judgment-episodes.md` §Rule 1-d, issue #437)
+- **A premise that the host's own generated code keeps its meaning is a claim about the COMPILER
+  and the flags it runs under.** Issue #589 PR-1b's driver reset a logical before an `intent(out)`
+  call; gfortran clobbers that actual at the call, so at `-O2` the reset was a dead store and a
+  kernel that never assigned its result read `true`. **Rule: for each thing rendered code relies
+  on across a call or a language rule (a reset, an aliasing assumption, an evaluation order), run it
+  under every flag set the host builds with** (`references/judgment-episodes.md` §Rule 1-d, issue
+  #589 PR-1b). The source-text twin, a line the gate reads as a comment and the build compiles,
+  is in `references/source-text-surface.md`
 - **A premise of the form "no rule can read X" is a claim about every READER, and it is
   executed by driving X through each one.** It reads as a fact about X — what X's characters
   are — so it gets checked against X and never against the readers. Issue #501's plan made a
