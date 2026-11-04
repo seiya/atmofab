@@ -94,7 +94,7 @@ Names, and where each resolves:
   state a rank-2 `[nx, ny]` capture never pairs with one). The state's shape is the
   one shape every captured array of the state's rank has; when those disagree the
   coordinate keeps extent 1 on the other axes, and a reduction over such a field is refused
-  until it is paired with a state array.
+  until it is paired with a state array, unless the case captured an array of that very shape.
 - ``at('<case_id>').initial.<var>`` / ``at('<case_id>').final.<var>``,
   ``at('<case_id>').inputs.<a>.<b>``, ``at('<case_id>').<coordinate name>`` — the same three
   kinds of value read in another case of the SAME predicate's `target_cases` (a cross-case
@@ -911,7 +911,9 @@ class CaseEnv(NamedTuple):
     writes none), is an evaluation error of the predicate that names it. ``history`` /
     ``series`` / ``derived`` (grammar 6) are a mapping or a `Lazy` of one, None when nothing
     can answer them; ``state_rank`` is the state's rank (the coordinates' rank), None when not
-    known, and lets a reduction tell a sampled field's leading axis from a state axis."""
+    known, and lets a reduction tell a sampled field's leading axis from a state axis;
+    ``captured_shapes`` are the shapes of the case's captured arrays, and let a reduction tell a
+    state with an axis of extent 1 from a field the coordinates did not expand."""
     case_id: str
     initial: dict[str, Any] | None   # variable -> float | ndarray (the time variable included)
     final: dict[str, Any]
@@ -921,6 +923,7 @@ class CaseEnv(NamedTuple):
     series: Any = None
     derived: Any = None
     state_rank: int | None = None
+    captured_shapes: frozenset[tuple[int, ...]] = frozenset()
 
 
 def _shape_dims(shape_expr: Any) -> list[str]:
@@ -1055,14 +1058,17 @@ def coordinate_arrays(schema: dict[str, Any], inputs: Any,
                 f"{sorted(COORDINATE_PLACEMENTS)}; got {placement!r}")
         count = _coordinate_param(spec, "count", inputs)
         length = _coordinate_param(spec, "length", inputs)
-        if not (count.is_integer() and count >= 1):
+        # A count of 0 is a zero-extent guard case's (issue #589 PR-3): `_evaluate_case` admits
+        # the zero extent only on a case only `xfail` tests target, and a coordinate of 0 cells
+        # beside a state with cells fails the shape comparison below.
+        if not (count.is_integer() and count >= 0):
             raise PrimaryEvidenceError(f"coordinates[{name!r}].count resolved to {count!r}, "
-                                       "not a positive integer")
-        if not (math.isfinite(length) and length > 0):
+                                       "not a non-negative integer")
+        if count > 0 and not (math.isfinite(length) and length > 0):
             raise PrimaryEvidenceError(f"coordinates[{name!r}].length resolved to {length!r}, "
                                        "not a positive number")
         n = int(count)
-        positions = (np.arange(n, dtype=np.float64) + 0.5) * (length / n)
+        positions = (np.arange(n, dtype=np.float64) + 0.5) * (length / max(n, 1))
         shape = [1] * rank
         shape[axis] = n
         arr = positions.reshape(shape)
@@ -1084,7 +1090,7 @@ def state_shape_of(captures: dict[str, Any], rank: int) -> tuple[int, ...] | Non
 
 
 def _load_capture(path: Path, variables: dict[str, list[str]],
-                  time_variable: str | None) -> dict[str, Any]:
+                  time_variable: str | None, *, empty_state: bool = False) -> dict[str, Any]:
     """One capture file as `variable -> float | float64 ndarray`, each checked against its
     declared rank (and equal extents for a repeated dimension token) and for finiteness."""
     if not path.is_file():
@@ -1116,6 +1122,13 @@ def _load_capture(path: Path, variables: dict[str, list[str]],
                 f"({exc})") from None
         if _contains_non_number(raw):
             raise PrimaryEvidenceError(f"{path.name}: variable {name!r} holds a non-numeric value")
+        if arr.size == 0 and empty_state:
+            # A zero-extent guard case's state, written by the host-rendered driver
+            # (`_evaluate_case` admits one only on a case only `xfail` tests target): nested
+            # lists cannot spell the extents after the zero, so the rank is not asked. A
+            # predicate reducing over it is refused (`_reducible`).
+            out[name] = arr
+            continue
         if arr.ndim != len(dims):
             raise PrimaryEvidenceError(
                 f"{path.name}: variable {name!r} has rank {arr.ndim}, declared "
@@ -1231,11 +1244,12 @@ def _load_series(sdir: Path, case_id: str) -> dict[str, np.ndarray]:
 
 
 def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
-                  derived: Any = None) -> CaseEnv:
+                  derived: Any = None, *, empty_state: bool = False) -> CaseEnv:
     """The environment of one case: both captures under ``run_dir/raw/state_snapshots``, the
     case's inputs and its coordinate arrays; `history/` and `series/` as `Lazy` loaders,
     read only when a predicate names them; ``derived`` (a mapping or a `Lazy` of one) as
-    given."""
+    given. ``empty_state``: the host-rendered driver wrote the captures, so a state with no
+    elements is a zero-extent case's; a harness self-test's own runner has no such case."""
     case_id = str(case.get("case_id") or "").strip()
     if not case_id:
         raise PrimaryEvidenceError("case has no case_id")
@@ -1250,8 +1264,9 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
     # capture; the host-rendered runner always does, and the conductor's
     # `_snapshot_deliverable_gap(initial_required=True)` refuses a run without one before any
     # verdict is authored (the `--stage post_execute` validator only shape-checks the file).
-    initial = _load_capture(initial_path, variables, tv) if initial_path.is_file() else None
-    final = _load_capture(sdir / f"{case_id}.json", variables, tv)
+    initial = (_load_capture(initial_path, variables, tv, empty_state=empty_state)
+               if initial_path.is_file() else None)
+    final = _load_capture(sdir / f"{case_id}.json", variables, tv, empty_state=empty_state)
     rank = state_rank(schema)
     shape = state_shape_of(final, rank)
     if shape is not None and initial is not None and state_shape_of(initial, rank) != shape:
@@ -1261,7 +1276,8 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
                    coordinates=coordinate_arrays(schema, inputs, shape),
                    history=Lazy(lambda: _load_history(sdir, case_id, variables, tv, final)),
                    series=Lazy(lambda: _load_series(sdir, case_id)),
-                   derived=derived, state_rank=rank)
+                   derived=derived, state_rank=rank,
+                   captured_shapes=frozenset(np.shape(v) for v in final.values()))
 
 
 # ------------------------------------------------------------------------------ evaluation
@@ -1291,11 +1307,14 @@ def _shape_compatible(a: Any, b: Any, what: str) -> None:
             "equal, or 1 on one side)")
 
 
-def _reducible(name: str, value: Any, srank: int | None = None) -> Any:
+def _reducible(name: str, value: Any, srank: int | None = None,
+               captured_shapes: frozenset[tuple[int, ...]] = frozenset()) -> Any:
     """A reduction over an array with an extent-1 axis (a coordinate the host could not
     expand to the state's shape) would count one cell where the state has a whole row; it is
-    refused rather than valued. The leading axis of a field one rank above the state
-    (``srank``: a `history.*` field's samples) is not a state axis and may have extent 1. A
+    refused rather than valued, unless those are the extents of an array the case captured
+    (``captured_shapes``: a case at the smallest valid grid, issue #589 PR-3). The leading axis of a field one rank
+    above the state (``srank``: a `history.*` field's samples) is not a state axis and may have
+    extent 1. A
     reduction over an EMPTY array — an empty history or series — is refused too: `sum` would
     value it 0 and `max` has no value at all."""
     shape = np.shape(value)
@@ -1304,11 +1323,11 @@ def _reducible(name: str, value: Any, srank: int | None = None) -> Any:
             f"{name}(): reduction over an empty array of shape {list(shape)} (an empty "
             "history or series: no sample was written, or no step was committed)")
     state_axes = shape[1:] if srank and len(shape) == srank + 1 else shape
-    if len(shape) >= 2 and 1 in state_axes:
+    if len(shape) >= 2 and 1 in state_axes and tuple(state_axes) not in captured_shapes:
         raise PrimaryEvidenceError(
             f"{name}(): reduction over a field of shape {list(shape)} with an extent-1 axis "
-            "(a coordinate the host could not expand to the state's shape, or a state with "
-            "an axis of extent 1); pair it with a state array first")
+            "(a coordinate the host could not expand to the state's shape, or an array of "
+            "another case read through at()); pair it with a state array first")
     return value
 
 
@@ -1383,17 +1402,18 @@ def _array_first(name: str, args: list[Any]) -> Any:
     return blocked.mean(axis=tuple(range(1, 2 * arr.ndim, 2)))
 
 
-def _call(name: str, args: list[Any], srank: int | None = None) -> Any:
+def _call(name: str, args: list[Any], srank: int | None = None,
+          captured_shapes: frozenset[tuple[int, ...]] = frozenset()) -> Any:
     with np.errstate(all="ignore"):
         if name == "sum":
-            return np.sum(_reducible(name, args[0], srank))
+            return np.sum(_reducible(name, args[0], srank, captured_shapes))
         if name == "mean":
-            return np.mean(_reducible(name, args[0], srank))
+            return np.mean(_reducible(name, args[0], srank, captured_shapes))
         if name in ("smax", "smin", "ssum"):
             return _sample_reduce(name, args[0])
         if name in ("min", "max"):
             if len(args) == 1:
-                _reducible(name, args[0], srank)
+                _reducible(name, args[0], srank, captured_shapes)
                 return np.min(args[0]) if name == "min" else np.max(args[0])
             acc = args[0]
             for other in args[1:]:
@@ -1416,9 +1436,9 @@ def _call(name: str, args: list[Any], srank: int | None = None) -> Any:
             return np.cos(args[0])
         if name == "norm2":
             return np.sqrt(np.sum(
-                np.asarray(_reducible(name, args[0], srank), dtype=np.float64) ** 2))
+                np.asarray(_reducible(name, args[0], srank, captured_shapes), dtype=np.float64) ** 2))
         if name == "maxabs":
-            return np.max(np.abs(_reducible(name, args[0], srank)))
+            return np.max(np.abs(_reducible(name, args[0], srank, captured_shapes)))
         if name == "ceil":
             return np.ceil(args[0])
         if name == "floor":
@@ -1508,7 +1528,8 @@ def _eval_node(node: ast.AST, env: CaseEnv, at_envs: dict[str, CaseEnv],
     if isinstance(node, ast.Call):
         assert isinstance(node.func, ast.Name)
         args = [_eval_node(a, env, at_envs, binds, cenv) for a in node.args]
-        return _finite(_call(node.func.id, args, env.state_rank), f"{node.func.id}()")
+        return _finite(_call(node.func.id, args, env.state_rank, env.captured_shapes),
+                       f"{node.func.id}()")
     raise PrimaryEvidenceError(f"{type(node).__name__} is not admitted")  # unreachable past parse
 
 
@@ -1730,7 +1751,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
             if cid not in cases:
                 raise PrimaryEvidenceError(f"case {cid!r} is not in case.test_case_set")
             derived = Lazy(lambda: all_derived.get().get(cid, {}))
-            env_cache[(key, cid)] = load_case_env(where, cases[cid], schema, derived)
+            env_cache[(key, cid)] = load_case_env(where, cases[cid], schema, derived,
+                                                   empty_state=_has_drive(ir))
         return env_cache[(key, cid)]
 
     out: list[dict[str, Any]] = []
@@ -3037,16 +3059,22 @@ def _rank0_extent(entry: DriveEntry, name: str, token: str, inputs: Any,
 
 
 def _extent(token: str, entry: DriveEntry, inputs: Any, derived: dict[str, Any],
-            what: str) -> int:
+            what: str, *, shape_expr: bool = False) -> int:
     """One dimension token evaluated under ``entry``'s bindings (gate (c)): an integer
-    literal, a rank-0 dummy of the operation bound to `inputs.*`, `derived.*` or a number,
-    and `+ - *` / unary minus between them. The extent is an integer >= 1."""
+    literal, a rank-0 dummy of the operation bound to `inputs.*`, `derived.*` or a number, and
+    `+ - *` / unary minus between them; in a ``shape_expr`` token also a scalar `derived.<name>`
+    (the extent of a dims-less dummy with a ghost width, which a `shape_expr` cannot spell as
+    `nx + 2*ng`: `spec/schema/ir/shape_expr.schema.json`). §5.1's `dims` name dummies alone. The
+    extent is an integer >= 0."""
     def name_value(name: str) -> int:
         dummy = entry.dummy(name)
+        if shape_expr and dummy is None and name in derived and np.ndim(derived[name]) == 0:
+            return _integral(float(derived[name]), f"{what}: derived.{name}")
         if dummy is None or _dummy_rank(dummy) != 0:
+            also = " nor a scalar derived value" if shape_expr else ""
             raise PrimaryEvidenceError(
                 f"{what}: dims token {token!r} names {name!r}, which is not a rank-0 "
-                f"dummy of {entry.operation}")
+                f"dummy of {entry.operation}{also}")
         return _rank0_extent(entry, name, token, inputs, derived, what)
 
     return _extent_by(token, name_value, what)
@@ -3081,7 +3109,7 @@ def _unbound_extent(token: str, entries: list[DriveEntry], inputs: Any,
 
 def _extent_by(token: str, name_value: Callable[[str], int], what: str) -> int:
     """A dims / `shape_expr` token: an integer literal, a name ``name_value`` resolves, and
-    `+ - *` / unary minus between them; an integer >= 1."""
+    `+ - *` / unary minus between them; an integer >= 0 (`_evaluate_case` admits a 0 only on a case only `xfail` tests target)."""
     try:
         tree = ast.parse(token.strip(), mode="eval")
     except SyntaxError:
@@ -3103,9 +3131,9 @@ def _extent_by(token: str, name_value: Callable[[str], int], what: str) -> int:
             f"{what}: dims token {token!r} is not an integer, a dummy name, or + - * of them")
 
     extent = ev(tree.body)
-    if extent < 1:
+    if extent < 0:
         raise PrimaryEvidenceError(f"{what}: dims token {token!r} evaluates to {extent}, "
-                                   "not an extent >= 1")
+                                   "not an extent >= 0")
     return extent
 
 
@@ -3120,7 +3148,8 @@ def _dummy_extents(entry: DriveEntry, dummy: dict[str, Any], tokens: list[str] |
             raise PrimaryEvidenceError(
                 f"{what}: the array dummy has no dims, and what it is bound to has no "
                 "shape_expr to evaluate instead")
-        dims = tokens
+        return tuple(_extent(str(t), entry, inputs, derived, what, shape_expr=True)
+                     for t in tokens)
     return tuple(_extent(str(t), entry, inputs, derived, what) for t in dims)
 
 
@@ -3274,6 +3303,12 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                 raise PrimaryEvidenceError(
                     f"state.{var}: shape_expr extent {token} on axis {axis} disagrees with the "
                     f"bound dummies' {shapes[var][axis]}")
+    empty = sorted(v for v, shape in shapes.items() if 0 in shape)
+    if empty and not refusal_subject:
+        # A zero extent is what an extent guard refuses, so it is a refusal case's input alone:
+        # on a case a `pass` test targets every reduction over the state would read nothing.
+        raise PrimaryEvidenceError(
+            f"state {empty}: an extent of 0 on a case a test other than an `xfail` one targets")
     rank = state_rank(schema)
     largest = {shapes[v] for v, d in model.variables.items() if len(d) == rank and rank > 0}
     for spec in (schema.get("coordinates") or []):

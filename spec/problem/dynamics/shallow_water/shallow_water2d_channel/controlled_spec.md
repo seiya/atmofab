@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d_channel`
-- `spec_version`: `0.2.5`
+- `spec_version`: `0.3.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -81,12 +81,12 @@ $$
 
 The stage time `t` is the time at which the forcing is evaluated; it enters no other term.
 
-One time step is `dynamics_shallow_water_time_update_2d_rk4__advance(3, nx, ny, U_n, rhs, t, dt, U_np1, guard_pass)`, with `t` $=t_{start}+n\,dt$ at step $n=0..\mathrm{n\_step}-1$ (the time at the start of the step; `tests.md` §3), evaluated from $n$ and not accumulated. The four stage evaluations, their states and times are the time-update `component`'s (its §3); this `problem` does not evaluate a stage itself.
+One time step is `dynamics_shallow_water_time_update_2d_rk4__advance(3, nx, ny, U_n, rhs, t, dt, U_np1, guard_pass)`, with `t` the time at the start of the step: the argument `t` of `shallow_water2d_channel__step`, which the driver passes as $t_{start}+n\,dt$ at step $n=0..\mathrm{n\_step}-1$ (`tests.md` §3), evaluated from $n$ and not accumulated. The four stage evaluations, their states and times are the time-update `component`'s (its §3); this `problem` does not evaluate a stage itself.
 
 Every operation of steps 1 to 7 is written for the array axes `x` and `y` and acts on each of them by the same rule: the orientation enters only through `wall_axis`, the `odd_at_wall` assignment, `along_axis`, the per-cell `f` and the background arrays. A case with `channel_axis=y` is computed in that orientation.
 
 The discretization holds the following invariants.
-- **Wet domain.** $h>0$ in every interior cell at every stage and every step of the run. The domain of validity of this `problem spec` is the non-drying regime; drying and wetting are out of scope. A cell reaching $h\le0$ is a runtime error, and the run stops with an error before the value reaches the flux `component`, whose contract treats `h<=0` as an error; it must not be handled by clipping or flooring the state.
+- **Wet domain.** $h>0$ in every interior cell at every stage and every step of the run. The domain of validity of this `problem spec` is the non-drying regime; drying and wetting are out of scope. A cell reaching $h\le0$ is a runtime error: the step returns a `false` result before the value reaches the flux `component`, whose contract treats `h<=0` as an error, and the run ends on the last committed state; it must not be handled by clipping or flooring the state.
 - **Mass conservation.** The mass flux through each wall interface is exactly zero (the two reconstructed states have equal `h` and opposite wall-normal momentum: §3), the along-channel interfaces are periodic, and the Coriolis source has no `h` component, so for every `flow_profile` but `tc4_translating_low` $\sum_{i,j}h_{i,j}$ is conserved up to round-off. For `tc4_translating_low` the change of $\sum_{i,j}h_{i,j}$ over a step is $dt\sum_{i,j}Q_{h,i,j}$ up to round-off; $\int Q_h\,ds$ over one period is zero at every $r$ and `t`, and the discrete $\sum_{i,j}Q_{h,i,j}$ is below $10^{-15}\sum_{i,j}|Q_{h,i,j}|$ on every grid of `tests.md`.
 - **Uniformity along the channel.** For `tc2_zonal_uniform` and `tc3_compact_jet`, an initial state uniform along the channel stays uniform along the channel up to round-off: every along-channel interface-flux difference vanishes identically and every remaining operation acts line by line across the channel. It does not apply to `tc4_translating_low`, whose state and forcing depend on $s$.
 - **Translation equivariance along the channel.** For every `flow_profile` but `tc4_translating_low`, `f` depends on $r$ alone, $Q=0$ and the channel is periodic along $s$, so shifting the initial state by a whole number of cells along the channel shifts the solution by the same number of cells, up to round-off. It does not apply to `tc4_translating_low`, whose forcing is not shifted with the state.
@@ -102,6 +102,244 @@ $$
 \mathrm{cfl}=dt\cdot\max_{i,j}\left(\frac{|u_{i,j}|+c_{i,j}}{dx}+\frac{|v_{i,j}|+c_{i,j}}{dy}\right)
 $$
 For the threshold, refer to the judgment conditions of `tests.md`.
+
+The published `operation_id`s are exactly `shallow_water2d_channel__init` and `shallow_water2d_channel__step`. The time loop is not the operation's: the host-rendered driver calls `shallow_water2d_channel__init` once per case and `shallow_water2d_channel__step` once per step (`tests.md` §3).
+
+`shallow_water2d_channel__init` is the setup of this `problem`. It exists because the discrete initial state of `tc3_compact_jet` is the composite Simpson quadrature of §6, which is part of its definition and no closed form `tests.md` can state over the inputs. It validates the inputs (§6), writes the discrete initial state `h`, `hu`, `hv`, evaluates the procedure of `tests.md` §3 over that state and writes its results `dt` and `n_step_plan`, and returns its result `init_ok`. A refusal of §6 writes `init_ok` as `false`; the case then runs no step.
+
+`shallow_water2d_channel__step` advances `h`, `hu`, `hv` by the one time step above, at the time `t` with the time step `dt`. Its result `ok` is `false` on the wet-domain error above or on a `false` result of a `component` it calls, and the driver commits the state only on a `true` result.
+
+The model holds data between `shallow_water2d_channel__init` and `shallow_water2d_channel__step`: the run-fixed data `rhs` is bound to (§5), such as `dx`, `dy`, `g` and the setup-time arrays of §6. It is no state variable and is in no capture, and the driver does not reset it between cases, so `shallow_water2d_channel__init` establishes every field of it that `shallow_water2d_channel__step` reads, in every case.
+
+A change breaking compatibility of a published signature — the argument names, their order, their types, their ranks, or their `intent`s — is a breaking change released under a new `spec_version`.
+
+### 5.1 Canonical interface block
+The exact published surface, as a machine-readable language-neutral signature block, under the rules of `docs/CONTROLLED_SPEC.md` §5.1. `dims` gives the bound expressions of an explicit-shape array. The generated model publishes both symbols with the signatures this block describes.
+
+```yaml
+module_parameters:
+- name: dp
+  value: float64
+types: []
+procedures:
+- kind: subroutine
+  name: shallow_water2d_channel__init
+  args:
+  - name: nx
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: ny
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: L_x
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: L_y
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: ng
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: t_start
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: t_end
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: cfl_target
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: dt_scale
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: g
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: Omega
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: a
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: theta0
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: along_axis
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: flow_profile_id
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: zonal_sign
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: gh0
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: eta0
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: shift_x_fraction
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: u_jet
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: h
+    rank: 2
+    intent: out
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hu
+    rank: 2
+    intent: out
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hv
+    rank: 2
+    intent: out
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: dt
+    rank: 0
+    intent: out
+    spec:
+      type: real
+      kind: dp
+  - name: n_step_plan
+    rank: 0
+    intent: out
+    spec:
+      type: integer
+  - name: init_ok
+    rank: 0
+    intent: out
+    spec:
+      type: logical
+- kind: subroutine
+  name: shallow_water2d_channel__step
+  args:
+  - name: nx
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: ny
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: dt
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: t
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: h
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hu
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hv
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: ok
+    rank: 0
+    intent: out
+    spec:
+      type: logical
+```
 
 ## 6. Model parameters and the runtime input contract
 The physical constants are those of Williamson et al. (1992), in SI units, with the signs that make the transformed configurations of §1 cases of this `problem`:
@@ -177,17 +415,19 @@ $$
 which the discrete initial state reproduces at every line beyond $r_e$ to round-off: the integrand is smooth with compact support inside $[0,r_j]$ for those lines, so the composite rule's error on the complete integral is below round-off. The depth before the jet ($r<r_b$) is $h_0$ exactly, since the integral is zero there. Inside the jet the rule's error against the exact partial integral is below $2\times10^{-12}$ relative at every grid of `tests.md`. $C$ has no closed form; its value is defined by the digits given. The branch-free form $b(\zeta)=\exp\left(-1/\max(\zeta,\varepsilon)\right)$ with $\varepsilon=10^{-300}$ is equal to $b(\zeta)$ at every cell centre in double precision (for $\zeta\le0$ the exponent is $-10^{300}$ and the exponential underflows to exactly $0$; no cell centre has $\zeta=0$, because $r_b$ and $r_e$ lie on cell edges when the cross-channel extent is a multiple of 8, and the sweep of `tests.md` uses such extents), and either form may be used.
 
 The runtime input requires the following.
-- `L_x`, `L_y`, `nx`, `ny`
+- `L_x`, `L_y`, `nx`, `ny`, `ng`
 - `channel_axis`
 - `coriolis_profile`, and the constants `g`, `Omega`, `a`, `theta0`
 - `flow_profile`, `zonal_sign`, and for `tc2_zonal_perturbed` its parameters `eta0`, `shift_x_fraction`, and for `tc4_translating_low` its parameter `u_jet`
 - `gh0` (default: the value of the case's `flow_profile`, above)
 - `t_start`, `t_end`
-- `dt_rule`
+- `dt_rule`, with its `cfl_target` and `dt_scale`
 
-`channel_axis` other than `x` or `y`, `zonal_sign` other than `+1` or `-1`, `Omega = 0`, and `theta0` outside $0<|\theta_0|<\pi/2$ are errors at setup.
+The arguments of §5.1 are numbers, so two of these inputs reach `shallow_water2d_channel__init` by number: `channel_axis` as `along_axis`, the array axis along the channel of §5 step 6 (`1` for `x`, `2` for `y`), and `flow_profile` as `flow_profile_id` (`1` for `tc2_zonal_uniform`, `2` for `tc3_compact_jet`, `3` for `tc2_zonal_perturbed`, `4` for `tc4_translating_low`). `coriolis_profile` and `dt_rule` each have one allowed value and are no argument. `eta0`, `shift_x_fraction` and `u_jet` are arguments in every case, and a `flow_profile` that does not define one does not read it.
 
-In the initial state, `h>0` in all cells is required. The depth of each profile is extremal at a wall, and the transformations of §5 map the channel onto itself with the depth field reflected or exchanged, so they leave its minimum unchanged; the values below are those of `channel_axis=x` with every sign positive. For `tc2_zonal_uniform` this bounds the channel width: $h$ is smallest at the wall $r=L_r$, $h(L_r)=h_0-\dfrac{u_0}{g}\left[\dfrac{f_0 L_r}{2}+\dfrac{\beta L_r^2}{8}\right]$, which is positive for $L_r<1.046\times10^7\ \mathrm{m}$ with the constants above ($h(L_r)=1493\ \mathrm{m}$ at $L_r=6\times10^6\ \mathrm{m}$); for `tc2_zonal_perturbed` the bound is $h(L_r)>\eta_0$. For `tc4_translating_low`, $\bar h$ is smallest at the wall $r=L_r$, $\bar h(L_r)=h_0-\dfrac{u_{jet}}{g}\left[\dfrac{f_0L_r}{4}+\beta L_r^2\left(\dfrac1{16}-\dfrac1{4\pi^2}\right)\right]$ ($9199\ \mathrm{m}$ at $u_{jet}=40\ \mathrm{m/s}$, $L_r=8\times10^6\ \mathrm{m}$), and the low lowers the depth at its centre by $|f(r_c)\,\psi_0|/g=0.03\,h_0$ ($306\ \mathrm{m}$ at $gh_0=1.0\times10^5$). A channel outside the bound is an error at setup, not a value to clip. An undefined parameter is an error without implicit completion.
+`along_axis` other than `1` or `2`, `flow_profile_id` outside `1` to `4`, `ng` other than `2`, `zonal_sign` other than `+1` or `-1`, `Omega = 0`, and `theta0` outside $0<|\theta_0|<\pi/2$ are errors at setup: `shallow_water2d_channel__init` writes `init_ok` as `false`.
+
+In the initial state, `h>0` in all cells is required. The depth of each profile is extremal at a wall, and the transformations of §5 map the channel onto itself with the depth field reflected or exchanged, so they leave its minimum unchanged; the values below are those of `channel_axis=x` with every sign positive. For `tc2_zonal_uniform` this bounds the channel width: $h$ is smallest at the wall $r=L_r$, $h(L_r)=h_0-\dfrac{u_0}{g}\left[\dfrac{f_0 L_r}{2}+\dfrac{\beta L_r^2}{8}\right]$, which is positive for $L_r<1.046\times10^7\ \mathrm{m}$ with the constants above ($h(L_r)=1493\ \mathrm{m}$ at $L_r=6\times10^6\ \mathrm{m}$); for `tc2_zonal_perturbed` the bound is $h(L_r)>\eta_0$. For `tc4_translating_low`, $\bar h$ is smallest at the wall $r=L_r$, $\bar h(L_r)=h_0-\dfrac{u_{jet}}{g}\left[\dfrac{f_0L_r}{4}+\beta L_r^2\left(\dfrac1{16}-\dfrac1{4\pi^2}\right)\right]$ ($9199\ \mathrm{m}$ at $u_{jet}=40\ \mathrm{m/s}$, $L_r=8\times10^6\ \mathrm{m}$), and the low lowers the depth at its centre by $|f(r_c)\,\psi_0|/g=0.03\,h_0$ ($306\ \mathrm{m}$ at $gh_0=1.0\times10^5$). A channel outside the bound is an error at setup, not a value to clip: an initial state with `h<=0` in a cell writes `init_ok` as `false`. An undefined parameter is an error without implicit completion.
 
 ## 7. Prohibitions
 Forbid a boundary treatment other than the channel of §3 in the orientation `channel_axis` names — a periodic boundary across the channel, a wall along it, or a wall realized by anything but the mirror ghost — the introduction of a bottom topography, the introduction of a forcing term other than the Coriolis source and the forcing $Q$ of `tc4_translating_low`, a non-zero $Q$ for any other `flow_profile`, the evaluation of $Q$ at a time other than the stage time `t` received by `rhs` or from the state, a background or a low other than those of §6, a reconstruction other than the `p1` `MC` reconstruction of §5 or its runtime switching, a Coriolis profile or a flow profile other than the allowed values, automatic switching of `flow_profile` or `coriolis_profile`, and the runtime automatic switching of the discretization scheme. Forbid `clip` / `limiter` / `filter` on the state `h`; the `MC` limiter of the reconstruction `component` acts on the slopes that build the interface states (§5 step 2), not on the state, and is part of the discretization. Forbid passing anything other than the tendency procedure of §5 as the `rhs` argument of the time-update `component`: a dependency operation passed directly is not the tendency of §5.
@@ -200,7 +440,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is Williamson et al. (1992, JCP 102, 211–224, DOI:10.1016/S0021-9991(05)80016-6) — Test Cases 2 and 3, equations (95) and (101)–(103), and the balance condition (114) reduced to the channel; Test Case 4, equations (116)–(130), mapped to the channel by replacing $\tan^2(d/2a)$ with $\rho^2/R_{low}^2$, the jet $\sin^{14}(2\theta)$ with $\sin^2(\pi r/L_r)$, and the translation rate $u_0/a$ of the centre's longitude with the speed $c_{tr}=U_j\cos\theta_0$ of its position — LeVeque (2002), Toro (2009), and van Leer (1977) for the `MC` limiter. The orientation and sign inputs, the reference of the `tc4_translating_low` depth to the channel centre and the equivariances of §5 are those of [issue #514](https://github.com/seiya/atmofab/issues/514).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md`, with `test_profile_version` of `0.6.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md`, with `test_profile_version` of `0.7.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, `ceil`, `exp` (in $b(\zeta)$, with its branch at $\zeta=0$), the periodic-index wrap, the sign reversal at the wall, and the limiter of the reconstruction `component` (the branch on the sign of the product of the two one-sided differences, the `min` over the three slope candidates, and `sign`; that `component`'s §9) are made explicit as non-differentiable operations. `sin`, `cos` and `exp` in the prescribed flow of `tc4_translating_low` and its forcing are differentiable. `channel_axis` and the signs of `Omega`, `theta0` and `zonal_sign` are selections fixed at setup; they introduce no non-differentiable operation into the state update.

@@ -1,0 +1,1269 @@
+schema_version: '1.0'
+meta:
+  node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.4.0
+  spec_kind: component
+  spec_id: dynamics_advdiff_flux_1d_upwind_center2
+  spec_version: 0.4.0
+  source_refs:
+    controlled_spec: spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/controlled_spec.md
+    tests: spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/tests.md
+    deps: spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/deps.yaml
+case:
+  description: Fixed single-stencil L0 cases (no sweep, no refinement). Keys under
+    `expected` and `seam` are comparison values only the predicates read.
+  test_case_set:
+  - case_id: l0_constant_state
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 1.5
+        nu: 0.1
+      initial:
+        u:
+        - 2.0
+        - 2.0
+        - 2.0
+        - 2.0
+        - 2.0
+        - 2.0
+        u_const: 2.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_linear_state
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 0.5
+        - 1.0
+        - 1.5
+        - 2.0
+        - 2.5
+        - 3.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_face_formula
+    inputs:
+      grid:
+        nx: 4
+        ng: 2
+        dx: 0.5
+      time:
+        dt: 0.1
+      constants:
+        a: 2.0
+        nu: 0.3
+      initial:
+        u:
+        - 0.3
+        - 1.7
+        - 0.2
+        - 2.9
+        - 1.1
+        - 0.4
+        - 3.6
+        - 2.2
+      expected:
+        flux_adv:
+        - 3.4
+        - 0.4
+        - 5.8
+        - 2.2
+        - 0.8
+        flux_dif:
+        - 0.9
+        - -1.62
+        - 1.08
+        - 0.42
+        - -1.92
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_face_formula_amir
+    inputs:
+      grid:
+        nx: 4
+        ng: 2
+        dx: 0.5
+      time:
+        dt: 0.1
+      constants:
+        a: -2.0
+        nu: 0.3
+      initial:
+        u:
+        - 2.2
+        - 3.6
+        - 0.4
+        - 1.1
+        - 2.9
+        - 0.2
+        - 1.7
+        - 0.3
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_face_formula_aneg
+    inputs:
+      grid:
+        nx: 5
+        ng: 2
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: -1.5
+        nu: 0.2
+      initial:
+        u:
+        - 2.7
+        - 0.6
+        - -1.3
+        - 2.4
+        - 0.9
+        - -0.7
+        - 3.1
+        - 1.8
+        - -2.2
+      expected:
+        flux_adv:
+        - 1.95
+        - -3.6
+        - -1.35
+        - 1.05
+        - -4.65
+        - -2.7
+        flux_dif:
+        - 1.52
+        - -2.96
+        - 1.2
+        - 1.28
+        - -3.04
+        - 1.04
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_face_formula_aneg_amir
+    inputs:
+      grid:
+        nx: 5
+        ng: 2
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 1.5
+        nu: 0.2
+      initial:
+        u:
+        - -2.2
+        - 1.8
+        - 3.1
+        - -0.7
+        - 0.9
+        - 2.4
+        - -1.3
+        - 0.6
+        - 2.7
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_periodic_seam
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 0.5
+        - 1.0
+        - 3.0
+        - 2.0
+        - 0.5
+        - 1.0
+      seam:
+        left_select:
+        - 1.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        right_select:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 1.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_a
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 0.0
+        nu: 0.1
+      initial:
+        u:
+        - 1.0
+        - 2.0
+        - 3.0
+        - 4.0
+        - 5.0
+        - 6.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_ng
+    inputs:
+      grid:
+        nx: 4
+        ng: 0
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 1.0
+        - 2.0
+        - 3.0
+        - 4.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_nx
+    inputs:
+      grid:
+        nx: 1
+        ng: 1
+        dx: 0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 1.0
+        - 2.0
+        - 3.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_min_extent
+    inputs:
+      grid:
+        nx: 2
+        ng: 1
+        dx: 0.5
+      time:
+        dt: 0.1
+      constants:
+        a: 2.0
+        nu: 0.3
+      initial:
+        u:
+        - 0.3
+        - 1.7
+        - 0.2
+        - 2.9
+      expected:
+        flux_adv:
+        - 0.6
+        - 3.4
+        - 0.4
+        flux_dif:
+        - -0.84
+        - 0.9
+        - -1.62
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_dx_zero
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: 0.0
+      time:
+        dt: 0.1
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 1.0
+        - 2.0
+        - 3.0
+        - 4.0
+        - 5.0
+        - 6.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_dx_negative
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: -0.25
+      time:
+        dt: 0.1
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 1.0
+        - 2.0
+        - 3.0
+        - 4.0
+        - 5.0
+        - 6.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_dt_zero
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: 0.25
+      time:
+        dt: 0.0
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 1.0
+        - 2.0
+        - 3.0
+        - 4.0
+        - 5.0
+        - 6.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_dt_negative
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        dx: 0.25
+      time:
+        dt: -0.1
+      constants:
+        a: 1.0
+        nu: 0.1
+      initial:
+        u:
+        - 1.0
+        - 2.0
+        - 3.0
+        - 4.0
+        - 5.0
+        - 6.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_constant_state_large
+    inputs:
+      grid:
+        nx: 64
+        ng: 1
+        dx: 0.015625
+      time:
+        dt: 0.0061
+      constants:
+        a: 1.5
+        nu: 0.1
+      initial:
+        u_const: 2.0
+      test_profile_id: dynamics_advdiff_flux_1d_upwind_center2_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u: inputs.initial.u_const
+      flux_adv: -999.0
+      flux_dif: -999.0
+    derived:
+      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+algorithm:
+  algorithm_id: advdiff_flux_1d_upwind_center2
+  execution_mode: sequence
+  description: 'One call of the published operation dynamics_advdiff_flux_1d_upwind_center2__compute_flux:
+    an input guard evaluated before any element of u is read, then (only when the
+    guard passes) the first-order upwind advective flux and the second-order central
+    diffusive flux at every one of the nx + 1 faces j+1/2, j = -1..nx-1, the two end
+    faces included. The component does not fill ghost cells (u arrives with its ghost
+    cells already filled) and does not update the state.'
+  steps:
+  - step_id: step_01_input_guard
+    step_kind: pointwise_process
+    operation_ref: input_guard
+    description: 'guard_pass = NOT (a == 0 OR dx <= 0 OR dt <= 0 OR nx < 2 OR ng <
+      1). Evaluated from the scalars alone, before any element of u is read. When
+      any condition holds, set guard_pass = false and RETURN immediately: u is not
+      read and no face flux is computed (flux_adv / flux_dif are then undefined and
+      must not be used). Otherwise guard_pass = true. dt fixes nothing but this guard
+      (dt <= 0 is refused); a fixes the a == 0 refusal (case l0_invalid_a), ng the
+      ng < 1 refusal (l0_invalid_ng, ng = 0, nx = 4), nx the nx < 2 refusal (l0_invalid_nx,
+      nx = 1, ng = 1). Every other case is valid.'
+    inputs:
+    - nx
+    - ng
+    - a
+    - dx
+    - dt
+    outputs:
+    - guard_pass
+  - step_id: step_02_upwind_advective_flux
+    step_kind: flux_compute
+    operation_ref: upwind_advective_flux
+    description: 'For every face j+1/2, j = -1..nx-1 (flux element f = j + 2, f =
+      1..nx+1): F_adv(j+1/2) = a * u_j when a > 0, and a * u_{j+1} when a < 0, where
+      u_j is element j + ng + 1 of u (so for a > 0 flux_adv(f) = a * u(f + ng - 1),
+      for a < 0 flux_adv(f) = a * u(f + ng)). The upwind side is chosen by the sign
+      of a ALONE (never by the sign or magnitude of u, nor of a*u). a sets the flux
+      magnitude and the side; ng sets the offset of the interior cells in u; nx sets
+      the face count nx + 1. Cells read are u_{-1} .. u_{nx} for either sign.'
+    inputs:
+    - guard_pass
+    - nx
+    - ng
+    - u
+    - a
+    outputs:
+    - flux_adv
+  - step_id: step_03_central_diffusive_flux
+    step_kind: flux_compute
+    operation_ref: central_diffusive_flux
+    description: 'For every face j+1/2, j = -1..nx-1 (flux element f = j + 2): F_dif(j+1/2)
+      = -nu * (u_{j+1} - u_j) / dx, i.e. flux_dif(f) = -nu * (u(f + ng) - u(f + ng
+      - 1)) / dx. nu is the diffusion coefficient (nu >= 0), dx the cell width dividing
+      the difference, ng the offset of the interior cells, nx the face count.'
+    inputs:
+    - guard_pass
+    - nx
+    - ng
+    - u
+    - nu
+    - dx
+    outputs:
+    - flux_dif
+  ordering:
+  - step_01_input_guard
+  - step_02_upwind_advective_flux
+  - step_03_central_diffusive_flux
+  control_condition: step_02 and step_03 run only when step_01 set guard_pass = true;
+    when guard_pass = false the operation returns without reading u and without writing
+    any face flux.
+  iteration_contract: {}
+  update_semantics:
+    target_variables:
+    - flux_adv
+    - flux_dif
+    - guard_pass
+    update_order: sequential
+    description: flux_adv and flux_dif are written in full (all nx + 1 faces) on a
+      passing guard; u is intent(in) and never modified.
+  temporaries: []
+  derived_field_rules:
+  - name: n_u
+    rule: n_u = nx + 2*ng
+    description: 'Extent of the ghost-extended input u: interior cells u_0..u_{nx-1}
+      plus ng ghost cells at each end, indexed u_{-ng}..u_{nx-1+ng}; u_j is element
+      j + ng + 1 (rank-1, no lower bound of its own, first element at position 1).'
+  - name: n_face
+    rule: n_face = nx + 1
+    description: 'Extent of flux_adv and flux_dif: faces j+1/2 for j = -1..nx-1; F_{j+1/2}
+      is element j + 2, so the left end face F_{-1/2} is element 1 and the right end
+      face F_{nx-1/2} is element nx + 1.'
+  invariants:
+  - The guard (a == 0, dx <= 0, dt <= 0, nx < 2, ng < 1 refused) is evaluated before
+    any element of u is read; on refusal guard_pass = false and no flux is computed.
+  - 'The upwind side is chosen from the sign of a alone: left cell u_j for a > 0,
+    right cell u_{j+1} for a < 0.'
+  - Each sign of a is evaluated on the field as supplied; an a < 0 input must NOT
+    be mapped onto the a > 0 path on the reversed field with the result reversed.
+  - The discretization order (first-order upwind advection, second-order central diffusion)
+    is fixed and must not be changed automatically.
+  - No implicit completion of undefined input.
+  - All nx + 1 faces, both end faces included, are computed by the same expressions.
+  - The operation contains no non-differentiable operation beyond the sign-of-a branch
+    (ad_readiness enabled).
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: nx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Interior cell count; case.test_case_set[].inputs.grid.nx.
+  - name: ng
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Ghost width at each end; inputs.grid.ng.
+  - name: dx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Cell width; inputs.grid.dx.
+  - name: dt
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Time step, used only by the guard; inputs.time.dt.
+  - name: a
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Advection velocity; inputs.constants.a.
+  - name: nu
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Diffusion coefficient; inputs.constants.nu.
+  - name: u
+    shape_expr: '[n_u]'
+    evidence_ref: raw/state_snapshots
+    description: Ghost-extended field, the host-evaluated initial_state.u from inputs.initial.u.
+  outputs:
+  - name: flux_adv
+    shape_expr: '[n_face]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - flux_adv
+  - name: flux_dif
+    shape_expr: '[n_face]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - flux_dif
+  - name: guard_pass
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - guard_pass
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: u
+          shape_expr: '[n_u]'
+        - name: flux_adv
+          shape_expr: '[n_face]'
+        - name: flux_dif
+          shape_expr: '[n_face]'
+        - name: guard_pass
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+  semantic_dependency:
+    required_sources:
+    - u
+    - a
+    - nu
+    - dx
+    - dt
+    - nx
+    - ng
+  tests:
+  - test_id: l0_constant_state_flux_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_constant_state
+    - l0_constant_state_large
+    quantities:
+    - flux_adv_maxdev
+    - flux_dif_maxdev
+    - guard_pass
+  - test_id: l0_linear_state_diff_flux_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_linear_state
+    quantities:
+    - flux_dif_spread
+    - guard_pass
+  - test_id: l0_face_formula_flux_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_face_formula
+    quantities:
+    - flux_adv_maxdev
+    - flux_dif_maxdev
+    - guard_pass
+  - test_id: l0_face_formula_negative_a_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_face_formula_aneg
+    quantities:
+    - flux_adv_maxdev
+    - flux_dif_maxdev
+    - guard_pass
+  - expected_outcome: pass
+    quantities:
+    - flux_adv_maxdev
+    - flux_dif_maxdev
+    - guard_pass
+    target_cases:
+    - l0_min_extent
+    test_id: l0_min_extent_flux_pass
+  - test_id: l0_periodic_seam_flux_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_periodic_seam
+    quantities:
+    - guard_pass
+    - seam_adv_diff
+    - seam_dif_diff
+  - test_id: l0_mirror_pair_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    quantities:
+    - guard_pass
+    - pair_residual_adv
+    - pair_residual_dif
+  - test_id: l0_invalid_a_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_a
+    quantities:
+    - guard_pass
+  - expected_outcome: xfail
+    quantities:
+    - guard_pass
+    target_cases:
+    - l0_invalid_dx_zero
+    test_id: l0_invalid_dx_zero_xfail
+  - expected_outcome: xfail
+    quantities:
+    - guard_pass
+    target_cases:
+    - l0_invalid_dx_negative
+    test_id: l0_invalid_dx_negative_xfail
+  - expected_outcome: xfail
+    quantities:
+    - guard_pass
+    target_cases:
+    - l0_invalid_dt_zero
+    test_id: l0_invalid_dt_zero_xfail
+  - expected_outcome: xfail
+    quantities:
+    - guard_pass
+    target_cases:
+    - l0_invalid_dt_negative
+    test_id: l0_invalid_dt_negative_xfail
+  - test_id: l0_invalid_ng_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ng
+    quantities:
+    - guard_pass
+  - test_id: l0_invalid_nx_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_nx
+    quantities:
+    - guard_pass
+  predicates:
+  - test_id: l0_constant_state_flux_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_constant_state
+    - l0_constant_state_large
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_constant_state_flux_pass
+    quantity: flux_adv_maxdev
+    target_cases:
+    - l0_constant_state
+    - l0_constant_state_large
+    per_case: true
+    expr: maxabs(final.flux_adv - inputs.constants.a * inputs.initial.u_const)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_constant_state_flux_pass
+    quantity: flux_dif_maxdev
+    target_cases:
+    - l0_constant_state
+    - l0_constant_state_large
+    per_case: true
+    expr: maxabs(final.flux_dif)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_constant_state_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_constant_state
+    - l0_constant_state_large
+    per_case: true
+    expr: maxabs(final.flux_adv - comparand.final.flux_adv) / max(maxabs(final.flux_adv),
+      maxabs(comparand.final.flux_adv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_constant_state_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_constant_state
+    - l0_constant_state_large
+    per_case: true
+    expr: maxabs(final.flux_dif - comparand.final.flux_dif) / max(maxabs(final.flux_dif),
+      maxabs(comparand.final.flux_dif), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_linear_state_diff_flux_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_linear_state
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_linear_state_diff_flux_pass
+    quantity: flux_dif_spread
+    target_cases:
+    - l0_linear_state
+    per_case: true
+    expr: max(final.flux_dif) - min(final.flux_dif)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_linear_state_diff_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_linear_state
+    per_case: true
+    expr: maxabs(final.flux_adv - comparand.final.flux_adv) / max(maxabs(final.flux_adv),
+      maxabs(comparand.final.flux_adv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_linear_state_diff_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_linear_state
+    per_case: true
+    expr: maxabs(final.flux_dif - comparand.final.flux_dif) / max(maxabs(final.flux_dif),
+      maxabs(comparand.final.flux_dif), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_flux_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_face_formula
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_face_formula_flux_pass
+    quantity: flux_adv_maxdev
+    target_cases:
+    - l0_face_formula
+    per_case: true
+    expr: maxabs(final.flux_adv - inputs.expected.flux_adv)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_flux_pass
+    quantity: flux_dif_maxdev
+    target_cases:
+    - l0_face_formula
+    per_case: true
+    expr: maxabs(final.flux_dif - inputs.expected.flux_dif)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_face_formula
+    per_case: true
+    expr: maxabs(final.flux_adv - comparand.final.flux_adv) / max(maxabs(final.flux_adv),
+      maxabs(comparand.final.flux_adv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_face_formula
+    per_case: true
+    expr: maxabs(final.flux_dif - comparand.final.flux_dif) / max(maxabs(final.flux_dif),
+      maxabs(comparand.final.flux_dif), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_negative_a_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_face_formula_aneg
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_face_formula_negative_a_pass
+    quantity: flux_adv_maxdev
+    target_cases:
+    - l0_face_formula_aneg
+    per_case: true
+    expr: maxabs(final.flux_adv - inputs.expected.flux_adv)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_negative_a_pass
+    quantity: flux_dif_maxdev
+    target_cases:
+    - l0_face_formula_aneg
+    per_case: true
+    expr: maxabs(final.flux_dif - inputs.expected.flux_dif)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_negative_a_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_face_formula_aneg
+    per_case: true
+    expr: maxabs(final.flux_adv - comparand.final.flux_adv) / max(maxabs(final.flux_adv),
+      maxabs(comparand.final.flux_adv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_face_formula_negative_a_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_face_formula_aneg
+    per_case: true
+    expr: maxabs(final.flux_dif - comparand.final.flux_dif) / max(maxabs(final.flux_dif),
+      maxabs(comparand.final.flux_dif), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_periodic_seam_flux_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_periodic_seam
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_periodic_seam_flux_pass
+    quantity: seam_adv_diff
+    target_cases:
+    - l0_periodic_seam
+    per_case: true
+    expr: abs(sum(inputs.seam.left_select * final.flux_adv) - sum(inputs.seam.right_select
+      * final.flux_adv))
+    op: eq
+    value: 0.0
+  - test_id: l0_periodic_seam_flux_pass
+    quantity: seam_dif_diff
+    target_cases:
+    - l0_periodic_seam
+    per_case: true
+    expr: abs(sum(inputs.seam.left_select * final.flux_dif) - sum(inputs.seam.right_select
+      * final.flux_dif))
+    op: eq
+    value: 0.0
+  - test_id: l0_periodic_seam_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_periodic_seam
+    per_case: true
+    expr: maxabs(final.flux_adv - comparand.final.flux_adv) / max(maxabs(final.flux_adv),
+      maxabs(comparand.final.flux_adv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_periodic_seam_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_periodic_seam
+    per_case: true
+    expr: maxabs(final.flux_dif - comparand.final.flux_dif) / max(maxabs(final.flux_dif),
+      maxabs(comparand.final.flux_dif), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_mirror_pair_pass
+    quantity: pair_residual_adv
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    case: l0_face_formula_amir
+    expr: norm2(final.flux_adv - (-flip(at('l0_face_formula').final.flux_adv, 0)))
+      / norm2(at('l0_face_formula').final.flux_adv)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: pair_residual_adv
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    case: l0_face_formula_aneg_amir
+    expr: norm2(final.flux_adv - (-flip(at('l0_face_formula_aneg').final.flux_adv,
+      0))) / norm2(at('l0_face_formula_aneg').final.flux_adv)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: pair_residual_dif
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    case: l0_face_formula_amir
+    expr: norm2(final.flux_dif - (-flip(at('l0_face_formula').final.flux_dif, 0)))
+      / norm2(at('l0_face_formula').final.flux_dif)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: pair_residual_dif
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    case: l0_face_formula_aneg_amir
+    expr: norm2(final.flux_dif - (-flip(at('l0_face_formula_aneg').final.flux_dif,
+      0))) / norm2(at('l0_face_formula_aneg').final.flux_dif)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    per_case: true
+    expr: maxabs(final.flux_adv - comparand.final.flux_adv) / max(maxabs(final.flux_adv),
+      maxabs(comparand.final.flux_adv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_face_formula
+    - l0_face_formula_amir
+    - l0_face_formula_aneg
+    - l0_face_formula_aneg_amir
+    per_case: true
+    expr: maxabs(final.flux_dif - comparand.final.flux_dif) / max(maxabs(final.flux_dif),
+      maxabs(comparand.final.flux_dif), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_a_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_a
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_ng_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_ng
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_nx_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_nx
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_min_extent_flux_pass
+    quantity: guard_pass
+    target_cases: &id001
+    - l0_min_extent
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_min_extent_flux_pass
+    quantity: flux_adv_maxdev
+    target_cases: *id001
+    per_case: true
+    expr: maxabs(final.flux_adv - inputs.expected.flux_adv)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_min_extent_flux_pass
+    quantity: flux_dif_maxdev
+    target_cases: *id001
+    per_case: true
+    expr: maxabs(final.flux_dif - inputs.expected.flux_dif)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_min_extent_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    expr: maxabs(final.flux_adv - comparand.final.flux_adv) / max(maxabs(final.flux_adv),
+      maxabs(comparand.final.flux_adv), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_min_extent_flux_pass
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    per_case: true
+    expr: maxabs(final.flux_dif - comparand.final.flux_dif) / max(maxabs(final.flux_dif),
+      maxabs(comparand.final.flux_dif), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_dx_zero_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_dx_zero
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dx_negative_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_dx_negative
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dt_zero_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_dt_zero
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - test_id: l0_invalid_dt_negative_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_dt_negative
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+dependency:
+  node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.4.0
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: dynamics_advdiff_flux_1d_upwind_center2__compute_flux
+    exercised_by:
+    - l0_constant_state_flux_pass
+    - l0_linear_state_diff_flux_pass
+    - l0_face_formula_flux_pass
+    - l0_face_formula_negative_a_pass
+    - l0_periodic_seam_flux_pass
+    - l0_mirror_pair_pass
+    - l0_invalid_a_xfail
+    - l0_invalid_ng_xfail
+    - l0_invalid_nx_xfail
+    - l0_min_extent_flux_pass
+    - l0_invalid_dx_zero_xfail
+    - l0_invalid_dx_negative_xfail
+    - l0_invalid_dt_zero_xfail
+    - l0_invalid_dt_negative_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: dynamics_advdiff_flux_1d_upwind_center2__compute_flux
+    signature:
+      kind: subroutine
+      name: dynamics_advdiff_flux_1d_upwind_center2__compute_flux
+      args:
+      - name: nx
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ng
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: u
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: a
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: nu
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: dx
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: dt
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: flux_adv
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx + 1
+      - name: flux_dif
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx + 1
+      - name: guard_pass
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+    operation: dynamics_advdiff_flux_1d_upwind_center2__compute_flux
+    result: guard_pass
+    arguments:
+      nx: inputs.grid.nx
+      ng: inputs.grid.ng
+      u: state.u
+      a: inputs.constants.a
+      nu: inputs.constants.nu
+      dx: inputs.grid.dx
+      dt: inputs.time.dt
+      flux_adv: state.flux_adv
+      flux_dif: state.flux_dif
+      guard_pass: state.guard_pass

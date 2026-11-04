@@ -384,12 +384,16 @@ const CaseEntry& scalar_entry(const std::string& name) {
 template <int R>
 void array_entry(const std::string& name, std::vector<dp>& out, long* extent) {
     const CaseEntry& e = lookup(name);
-    if (static_cast<int>(e.extent.size()) != R) {
+    // An empty array gives extent 0 at its level and every level below it.
+    const bool stops_empty = !e.extent.empty() && e.extent.back() == 0;
+    if (static_cast<int>(e.extent.size()) > R
+        || (static_cast<int>(e.extent.size()) < R && !stops_empty)) {
         refuse_read(name, "a value of another nesting depth");
     }
     long total = 1;
     for (int k = 0; k < R; ++k) {
-        extent[k] = e.extent[static_cast<std::size_t>(k)];
+        extent[k] = k < static_cast<int>(e.extent.size())
+                        ? e.extent[static_cast<std::size_t>(k)] : 0;
         total *= extent[k];
     }
     out.assign(static_cast<std::size_t>(total), 0.0);

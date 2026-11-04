@@ -1,0 +1,495 @@
+schema_version: '1.0'
+meta:
+  node_key: component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1
+  spec_kind: component
+  spec_id: dynamics_advection_diffusion_boundary_1d_periodic_copy
+  spec_version: 0.2.1
+  source_refs:
+    controlled_spec: spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/controlled_spec.md
+    tests: spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/tests.md
+    deps: spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_periodic
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        nx_total: 6
+      test_profile_id: dynamics_advection_diffusion_boundary_1d_periodic_copy_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      u_in:
+      - -999.0
+      - 0.3
+      - 1.7
+      - 0.2
+      - 2.9
+      - -999.0
+      u_out: -999.0
+    derived:
+      nx_total: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_periodic_xmir
+    inputs:
+      grid:
+        nx: 4
+        ng: 1
+        nx_total: 6
+      test_profile_id: dynamics_advection_diffusion_boundary_1d_periodic_copy_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      u_in:
+      - -999.0
+      - 2.9
+      - 0.2
+      - 1.7
+      - 0.3
+      - -999.0
+      u_out: -999.0
+    derived:
+      nx_total: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_periodic_ng2
+    inputs:
+      grid:
+        nx: 4
+        ng: 2
+        nx_total: 8
+      test_profile_id: dynamics_advection_diffusion_boundary_1d_periodic_copy_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      u_in:
+      - -999.0
+      - -999.0
+      - 0.3
+      - 1.7
+      - 0.2
+      - 2.9
+      - -999.0
+      - -999.0
+      u_out: -999.0
+    derived:
+      nx_total: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_min_nx
+    inputs:
+      grid:
+        nx: 2
+        ng: 1
+        nx_total: 4
+      test_profile_id: dynamics_advection_diffusion_boundary_1d_periodic_copy_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      u_in:
+      - -999.0
+      - 0.3
+      - 1.7
+      - -999.0
+      u_out: -999.0
+    derived:
+      nx_total: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_large_nx
+    inputs:
+      grid:
+        nx: 256
+        ng: 1
+        nx_total: 258
+      test_profile_id: dynamics_advection_diffusion_boundary_1d_periodic_copy_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      u_in: max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng + inputs.grid.nx + 1 - (x
+        + 0.5))) * (x + 0.5) - 999 * (1 - max(0, min(1, (x + 0.5) - inputs.grid.ng)) * max(0, min(1, inputs.grid.ng
+        + inputs.grid.nx + 1 - (x + 0.5))))
+      u_out: -999.0
+    derived:
+      nx_total: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_nx
+    inputs:
+      grid:
+        nx: 1
+        ng: 1
+        nx_total: 3
+      test_profile_id: dynamics_advection_diffusion_boundary_1d_periodic_copy_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      u_in:
+      - -999.0
+      - 0.5
+      - -999.0
+      u_out: -999.0
+    derived:
+      nx_total: inputs.grid.nx + 2 * inputs.grid.ng
+  - case_id: l0_invalid_ng
+    inputs:
+      grid:
+        nx: 4
+        ng: 0
+        nx_total: 4
+      test_profile_id: dynamics_advection_diffusion_boundary_1d_periodic_copy_l0
+      test_profile_version: 0.5.0
+    initial_state:
+      u_in:
+      - 0.3
+      - 1.7
+      - 0.2
+      - 2.9
+      u_out: -999.0
+    derived:
+      nx_total: inputs.grid.nx + 2 * inputs.grid.ng
+algorithm:
+  algorithm_id: periodic_ghost_copy_1d
+  description: 'One call of the published operation dynamics_advection_diffusion_boundary_1d_periodic_copy__apply(nx,
+    ng, u_in, u_out, guard_pass). Index convention: the field is u_{-ng} ... u_{nx-1+ng}, interior u_0 ... u_{nx-1};
+    the published arrays u_in / u_out are rank-1 with no declared lower bound (callee sees position 1 first), and
+    u_j is array element j + ng + 1 (1-based). So u_{-1} is element ng, u_0 is element ng + 1, u_{nx-1} is element
+    nx + ng, u_{nx} is element nx + ng + 1. Both arrays hold nx_total = nx + 2*ng elements. The operation first
+    validates (nx, ng); only when valid does it copy the interior and fill the ghost cells with their periodic images.
+    It runs once per call (no time stepping; the caller marches it).'
+  execution_mode: conditional
+  steps:
+  - step_id: step_01_input_guard
+    step_kind: diagnostic
+    operation_ref: input_guard
+    inputs:
+    - nx
+    - ng
+    outputs:
+    - guard_pass
+    description: "guard_pass = (nx >= 2) .and. (ng >= 1). nx < 2 or ng < 1 is invalid input and an error (controlled\
+      \ spec \xA74): guard_pass is set .false. and the operation returns without performing steps 02 and 03 (u_out\
+      \ is then not defined by the spec; no fallback to a non-periodic or any other boundary is applied). Otherwise\
+      \ guard_pass = .true. nx fixes the interior extent and ng the ghost width in every case (l0_periodic / l0_periodic_xmir:\
+      \ nx=4, ng=1 -> valid; l0_invalid_nx: nx=1, ng=1 -> rejected, guard_pass false)."
+  - step_id: step_02_interior_copy
+    step_kind: pointwise_process
+    operation_ref: interior_copy
+    inputs:
+    - nx
+    - ng
+    - u_in
+    outputs:
+    - u_out
+    description: 'For every interior cell j = 0 .. nx-1 (array elements ng+1 .. ng+nx): u_out(j + ng + 1) = u_in(j
+      + ng + 1), copied unchanged. u_out is a separate intent(out) array, so every interior element must be written
+      explicitly; an unwritten interior element is undefined, not unchanged. u_out holds its initial_state pre-call
+      content -999 before the call, so any element the operation fails to write is visible in the capture.'
+  - step_id: step_03_periodic_ghost_map
+    step_kind: boundary_apply
+    operation_ref: periodic_ghost_wrap
+    inputs:
+    - nx
+    - ng
+    - u_in
+    outputs:
+    - u_out
+    description: "Fill each ghost cell of u_out with the periodic image of the interior of u_in (period nx). For\
+      \ ng = 1 (controlled spec \xA73, the ng = 1 instance): u_{-1} = u_{nx-1}, i.e. u_out(1) = u_in(nx + 1) (element\
+      \ ng of u_out takes element nx + ng of u_in), and u_{nx} = u_0, i.e. u_out(nx + 2) = u_in(2) (element nx +\
+      \ ng + 1 of u_out takes element ng + 1 of u_in). For every ghost width (controlled spec \xA73; l0_periodic_ng2\
+      \ has ng = 2) u_out of ghost j reads (j = -ng..-1 and j = nx..nx-1+ng) = u_in of interior cell modulo(j, nx),\
+      \ which reduces to \xA73 at ng = 1. Values are read only from interior cells of u_in (never from a ghost cell\
+      \ of u_in, which holds a sentinel) and written only into u_out (no in-place update, no aliasing of input and\
+      \ output). The field is mapped as supplied: the mapping must not be realized by reversing the field, mapping\
+      \ and reversing back."
+  ordering:
+  - step_01_input_guard
+  - step_02_interior_copy
+  - step_03_periodic_ghost_map
+  control_condition:
+  - step_01_input_guard always runs
+  - step_02_interior_copy and step_03_periodic_ghost_map run only when guard_pass is true (nx >= 2 and ng >= 1)
+  - when guard_pass is false the operation returns immediately after step_01 with guard_pass = false
+  iteration_contract: {}
+  update_semantics:
+    target_variables:
+    - u_out
+    - guard_pass
+    update_order: sequential
+    notes: u_out is written out-of-place from u_in; u_in is intent(in) and never modified.
+  temporaries: []
+  derived_field_rules:
+  - name: nx_total
+    expression: nx_total = nx + 2*ng
+    description: The extent of u_in and u_out (interior nx plus ng ghost cells at each end); the case's grid.nx_total
+      equals it.
+  - name: element_index
+    expression: element(u_j) = j + ng + 1
+    description: Positional correspondence between field index j (interior 0..nx-1) and the 1-based array element
+      of u_in / u_out.
+  invariants:
+  - guard_pass is .true. iff nx >= 2 and ng >= 1; on .false. no mapping is performed and no fallback boundary is
+    applied
+  - 'when guard_pass is true every element of u_out is written: interior u_out(j+ng+1) = u_in(j+ng+1) for j = 0..nx-1,
+    ghosts per periodic_ghost_wrap'
+  - 'ng = 1: u_out(1) = u_in(nx+1) and u_out(nx+2) = u_in(2), exactly (pure copies, no arithmetic)'
+  - u_in is never modified; input and output are separate arrays (no intent(inout) aliasing)
+  - no automatic fallback to a non-periodic boundary
+  - the mapping of a field is never computed through the mapping of its reversal
+  - "the published procedure header carries no prefix \xA75.1 does not declare (e.g. no pure/side-effect-free marker)"
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: nx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Interior cell count (case grid.nx); fixes the interior range and the periodic period in steps 01-03.
+  - name: ng
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Ghost width (case grid.ng); fixes the ghost range and the element offset in steps 01-03.
+  - name: nx_total
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Array extent nx + 2*ng (case grid.nx_total).
+  - name: u_in
+    shape_expr: '[nx_total]'
+    evidence_ref: raw/state_snapshots
+    description: Ghost-extended input field, the case's initial_state.u_in; consumed by steps 02 and 03.
+  outputs:
+  - name: u_out
+    shape_expr: '[nx_total]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - u_out
+    description: Field after the periodic ghost mapping, captured after the run.
+  - name: guard_pass
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - guard_pass
+    description: The operation's logical result, written by the driver as 1 / 0 after the call (0 before it).
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: u_in
+          shape_expr: '[nx_total]'
+        - name: u_out
+          shape_expr: '[nx_total]'
+        - name: guard_pass
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: x
+          axis: 0
+          count: inputs.grid.nx_total
+          length: inputs.grid.nx_total
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - nx
+    - ng
+    - u_in
+  tests:
+  - test_id: l0_periodic_left_wrap_pass
+    expected_outcome: pass
+    target_cases: &id001
+    - l0_periodic
+    - l0_periodic_ng2
+    - l0_min_nx
+    - l0_large_nx
+    quantities:
+    - guard_pass
+    - left_wrap
+  - test_id: l0_periodic_right_wrap_pass
+    expected_outcome: pass
+    target_cases: *id001
+    quantities:
+    - guard_pass
+    - right_wrap
+  - test_id: l0_mirror_pair_pass
+    expected_outcome: pass
+    target_cases: &id002
+    - l0_periodic
+    - l0_periodic_xmir
+    quantities:
+    - guard_pass
+    - pair_residual
+  - test_id: l0_invalid_nx_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_nx
+    quantities:
+    - guard_pass
+  - test_id: l0_invalid_ng_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_ng
+    quantities:
+    - guard_pass
+  predicates:
+  - test_id: l0_periodic_left_wrap_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_periodic
+    - l0_periodic_ng2
+    - l0_min_nx
+    - l0_large_nx
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1.0
+  - test_id: l0_periodic_left_wrap_pass
+    quantity: left_wrap
+    target_cases: *id001
+    per_case: true
+    bind:
+      i: x + 0.5
+      mL: max(0, min(1, inputs.grid.ng + 1 - i))
+      mR: max(0, min(1, i - inputs.grid.ng - inputs.grid.nx))
+      mI: 1 - mL - mR
+    expr: maxabs(mL * (final.u_out - roll(initial.u_in, -inputs.grid.nx))) + maxabs(mI * (final.u_out - initial.u_in))
+    op: eq
+    value: 0.0
+  - test_id: l0_periodic_left_wrap_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_periodic
+    - l0_periodic_ng2
+    - l0_min_nx
+    - l0_large_nx
+    per_case: true
+    expr: maxabs(final.u_out - comparand.final.u_out) / max(maxabs(final.u_out), maxabs(comparand.final.u_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_periodic_right_wrap_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_periodic
+    - l0_periodic_ng2
+    - l0_min_nx
+    - l0_large_nx
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1.0
+  - test_id: l0_periodic_right_wrap_pass
+    quantity: right_wrap
+    target_cases: *id001
+    per_case: true
+    bind:
+      i: x + 0.5
+      mL: max(0, min(1, inputs.grid.ng + 1 - i))
+      mR: max(0, min(1, i - inputs.grid.ng - inputs.grid.nx))
+      mI: 1 - mL - mR
+    expr: maxabs(mR * (final.u_out - roll(initial.u_in, inputs.grid.nx))) + maxabs(mI * (final.u_out - initial.u_in))
+    op: eq
+    value: 0.0
+  - test_id: l0_periodic_right_wrap_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_periodic
+    - l0_periodic_ng2
+    - l0_min_nx
+    - l0_large_nx
+    per_case: true
+    expr: maxabs(final.u_out - comparand.final.u_out) / max(maxabs(final.u_out), maxabs(comparand.final.u_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_periodic
+    - l0_periodic_xmir
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1.0
+  - test_id: l0_mirror_pair_pass
+    quantity: pair_residual
+    target_cases: *id002
+    case: l0_periodic_xmir
+    expr: norm2(final.u_out - flip(at('l0_periodic').final.u_out, 0)) / norm2(at('l0_periodic').final.u_out)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_mirror_pair_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_periodic
+    - l0_periodic_xmir
+    per_case: true
+    expr: maxabs(final.u_out - comparand.final.u_out) / max(maxabs(final.u_out), maxabs(comparand.final.u_out),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_nx_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_nx
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0.0
+  - test_id: l0_invalid_ng_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_ng
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0.0
+dependency:
+  node_key: component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: dynamics_advection_diffusion_boundary_1d_periodic_copy__apply
+    exercised_by:
+    - l0_periodic_left_wrap_pass
+    - l0_periodic_right_wrap_pass
+    - l0_mirror_pair_pass
+    - l0_invalid_nx_xfail
+    - l0_invalid_ng_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: dynamics_advection_diffusion_boundary_1d_periodic_copy__apply
+    signature:
+      kind: subroutine
+      name: dynamics_advection_diffusion_boundary_1d_periodic_copy__apply
+      args:
+      - name: nx
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ng
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: u_in
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: u_out
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+      - name: guard_pass
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+    operation: dynamics_advection_diffusion_boundary_1d_periodic_copy__apply
+    result: guard_pass
+    arguments:
+      nx: inputs.grid.nx
+      ng: inputs.grid.ng
+      u_in: state.u_in
+      u_out: state.u_out
+      guard_pass: state.guard_pass

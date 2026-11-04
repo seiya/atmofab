@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `advdiff1d_linear`
-- `spec_version`: `0.4.5`
+- `spec_version`: `0.5.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -48,7 +48,7 @@ $$
 In the flux arrays, $F_{i+1/2}$ is element `i + 2` and $F_{i-1/2}$ is element `i + 1`; $L_i$ is element `i + 1` of the tendency array.
 4. Execute the forward Euler update with `dynamics_advection_diffusion_time_update_1d_euler1__advance`, passing `nx`, this `node`'s own interior state $u^n$ (`nx` values) as its `u_n`, the $L$ of step 3 as its `L_flux`, and the `dt` of the current step. Its `u_np1` is $u^{n+1}$.
 
-The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule. The inputs §6 admits satisfy every `component` guard (`ng = 1`, `nx>=2`, `a\ne0`, `dt>0`). A caller treats the other outputs of a `component` that returns `guard_pass` false as undefined, and no later step consumes them.
+The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule. The inputs §6 admits satisfy every `component` guard (`ng = 1`, `nx>=2`, `a\ne0`, `dt>0`). A caller treats the other outputs of a `component` that returns `guard_pass` false as undefined, and no later step consumes them: the update step then returns `ok = false` (§5.1).
 
 The flux `component` takes the upwind cell from the side the flow comes from, so the composition is equivalent to the discrete update
 $$
@@ -70,6 +70,72 @@ $$
 $$
 For the threshold, refer to the judgment conditions of `tests.md`.
 
+The only published `operation_id` is `advdiff1d_linear__step`. One call advances the interior state `u` (`inout`, `nx` values) by ONE update step, steps 1–4 above, with `nx`, the grid width `dx`, the advection velocity `a`, the constant `nu`, the step `dt` and the time `t` at the start of the step (all `in`), and returns the logical `ok`: `true` when the step completed, `false` when the `guard_pass` of a `component` is false, in which case the content of `u` is undefined. A failure is that `false` result, never a stop of the program. A stability index above `1` is not a failure. The initial state, the step count and `dt` are the host's (`tests.md` §2, §3); the host's driver calls the operation once per step and commits the state only on `ok = true`.
+
+A change breaking compatibility of the published signature — the argument names, their order, their types, their ranks, or their `intent`s — is a **breaking change released under a new `spec_version`**.
+
+### 5.1 Canonical interface block
+The exact published surface, as a machine-readable **language-neutral** signature block (`module_parameters` / `types` / `procedures`), in the form of a `component`'s §5.1.
+
+```yaml
+module_parameters:
+- name: dp
+  value: float64
+types: []
+procedures:
+- kind: subroutine
+  name: advdiff1d_linear__step
+  args:
+  - name: nx
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: dx
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: a
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: nu
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: dt
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: t
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: u
+    rank: 1
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+  - name: ok
+    rank: 0
+    intent: out
+    spec:
+      type: logical
+```
+
 ## 6. Model parameters and the runtime input contract
 The physical constant is `nu=1.0e-2 m2/s`. The advection velocity `a` (`m/s`) is a runtime input whose default is `1.0`; its sign is the direction of the flow.
 
@@ -79,6 +145,9 @@ The runtime input requires the following.
 - `initial_condition`
 - `t_start`, `t_end`
 - `dt_rule`
+- `history.every`
+
+`dt_rule` decides the step count and `dt`. The host evaluates it for each case and passes `dt` to each call, and the operation of §5.1 does not compute either. `history.every` is the number of committed steps between two state samples of the host's driver; `tests.md` §3 fixes its value.
 
 `a=0` and `nx<2` are not allowed. An undefined parameter is an error without implicit completion.
 
@@ -91,7 +160,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is LeVeque (2002). The signed advection velocity and the equivariance of §5 are those of [issue #513](https://github.com/seiya/atmofab/issues/513).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.6.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.7.0`.
 
 ## 10. AD preparation information
-`ad_readiness.enabled` is `true`. The state update is expressed in the form $u_{next}=F(u_{now}, params)$, and `ceil` and the periodic-index wrap are made explicit as non-differentiable operations.
+`ad_readiness.enabled` is `true`. The state update is expressed in the form $u_{next}=F(u_{now}, params)$, and the periodic-index wrap is made explicit as a non-differentiable operation. The `ceil` of the step rule is the host's (`tests.md` §3), outside the operation of §5.1.

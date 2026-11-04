@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d`
-- `spec_version`: `0.4.7`
+- `spec_version`: `0.5.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -62,7 +62,7 @@ The reconstruction is first-order (`p0`): the in-cell reconstruction stays piece
 
 The analytic gradient $\partial z_b/\partial x$, $\partial z_b/\partial y$ is not an input of the discretization. The bottom-topography source term is the discrete difference form of step 4.
 
-`z_b` is time-invariant. This `problem` `node` evaluates it once, at setup, on the halo-extended grid with its periodic image, so that the interface reconstruction of step 2 is defined at the domain seam. The boundary `component` maps `U` only; its input/output contract is unchanged and `z_b` is not passed to it.
+`z_b` is time-invariant state the step reads: `shallow_water2d__step` takes it as an `in` argument over the interior cells and evaluates its halo-extended image, with the periodic image in the ghost layer, inside each call, so that the interface reconstruction of step 2 is defined at the domain seam. The boundary `component` maps `U` only; its input/output contract is unchanged and `z_b` is not passed to it.
 
 The update step is fixed to the following order.
 1. Update the ghost region of `U` with `dynamics_shallow_water_boundary_2d_periodic_copy__apply`.
@@ -117,13 +117,112 @@ The discretization holds the following invariants.
 
 The round-off of the three equivariances is not zero in general: an initial state given by a closed form is reflected only to the rounding of its argument, and a contracted multiply-add or a vector remainder loop changes the last bit under a reordering.
 
-The $\max(0,\cdot)$ of step 2 is the definitional positivity guard of the reconstruction, and it does not activate while the wet-domain invariant holds. An interface at which the reconstruction yields $h^{*}\le 0$ is a violation of that invariant: it is a runtime error, and the run stops with an error before the value reaches the flux `component`, whose contract treats `h<=0` as an error. It must not be handled by clipping or flooring the state, by substituting a positive replacement depth, or by continuing with a zero-depth interface flux. Section 6 states the initial condition that establishes the invariant at $t=0$.
+The $\max(0,\cdot)$ of step 2 is the definitional positivity guard of the reconstruction, and it does not activate while the wet-domain invariant holds. An interface at which the reconstruction yields $h^{*}\le 0$ is a violation of that invariant: it is a failure of the step, which returns `ok = false` (§5.1) before the value reaches the flux `component`, whose contract treats `h<=0` as a failure of its own. The failure is that `false` result and never a stop of the program: the host commits no state for that step and the run ends on the last committed state. It must not be handled by clipping or flooring the state, by substituting a positive replacement depth, or by continuing with a zero-depth interface flux. Section 6 states the initial condition that establishes the invariant at $t=0$.
 
 The stability index is defined as
 $$
 \mathrm{cfl}=\Delta t\cdot\max_{i,j}\left(\frac{|u_{i,j}|+c_{i,j}}{\Delta x}+\frac{|v_{i,j}|+c_{i,j}}{\Delta y}\right)
 $$
 For the threshold, refer to the judgment conditions of `tests.md`.
+
+The published `operation_id`s are exactly: `shallow_water2d__step`. One call advances the state `h`, `hu`, `hv` (`inout`) by ONE `SSPRK2` step of step 5, over the time-invariant `z_b` (`in`), with the grid `nx`, `ny`, the spacings `dx`, `dy`, the gravitational acceleration `g`, the step `dt` and the time `t` at the start of the step (all `in`), and returns the logical `ok`: `true` when the step completed, `false` on a failure of this section (a guard of a dependency `component` false, or a reconstructed depth $h^{*}\le 0$), in which case the content of `h`, `hu`, `hv` is undefined. A failure is that `false` result, never a stop of the program. A stability index above `1` is not a failure. The initial state, the step count and `dt` are the host's (`tests.md` §2, §3); the host's driver calls the operation once per step and commits the state only on `ok = true`.
+
+A change breaking compatibility of the published signature — the argument names, their order, their types, their ranks, or their `intent`s — is a **breaking change released under a new `spec_version`**.
+
+### 5.1 Canonical interface block
+The exact published surface, as a machine-readable **language-neutral** signature block (`module_parameters` / `types` / `procedures`), in the form of a `component`'s §5.1.
+
+```yaml
+module_parameters:
+- name: dp
+  value: float64
+types: []
+procedures:
+- kind: subroutine
+  name: shallow_water2d__step
+  args:
+  - name: nx
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: ny
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: dx
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: dy
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: g
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: dt
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: t
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: z_b
+    rank: 2
+    intent: in
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: h
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hu
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hv
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: ok
+    rank: 0
+    intent: out
+    spec:
+      type: logical
+```
 
 ## 6. Model parameters and the runtime input contract
 The physical constants are `g=9.81 m/s2` and `H_0=1.0 m`. The bottom-topography profile is specified by `topography_profile`, and only the 2 values `williamson_tc5_cone` and `flat` are allowed. When `topography_profile=williamson_tc5_cone`, the bottom topography `z_b` follows Williamson et al. (1992) and is fixed to an isolated cone-mountain shape as follows.
@@ -137,20 +236,23 @@ $$
 $$
 z_b(x,y)=h_s\max\left(0,1-\frac{r(x,y)}{r_0}\right)
 $$
-The centre is $x_c=\mathrm{x\_c\_fraction}\cdot L_x$, $y_c=\mathrm{y\_c\_fraction}\cdot L_y$, with the runtime inputs `x_c_fraction` and `y_c_fraction` in $[0,1)$, whose defaults are `3/4` and `2/3`. The parameters are `r_0=min(L_x,L_y)/6` and `h_s=0.2H_0`. The default centre and the radius are the value of Williamson et al. (1992) `Test Case 5` `(\lambda_c,\theta_c,R_0)=(3\pi/2,\pi/6,\pi/9)` mapped to the periodic orthogonal coordinates; a centre other than the default is the position of the cone in a transformed case of §5. After discretization, `z_b` must satisfy `z_b>0` in at least 1 cell. When `topography_profile=flat`, `z_b=0` in all cells.
+The centre is $x_c=\mathrm{x\_c\_fraction}\cdot L_x$, $y_c=\mathrm{y\_c\_fraction}\cdot L_y$, with the case inputs `x_c_fraction` and `y_c_fraction` in $[0,1)$, whose defaults are `3/4` and `2/3`. The parameters are `r_0=min(L_x,L_y)/6` and `h_s=0.2H_0`. The default centre and the radius are the value of Williamson et al. (1992) `Test Case 5` `(\lambda_c,\theta_c,R_0)=(3\pi/2,\pi/6,\pi/9)` mapped to the periodic orthogonal coordinates; a centre other than the default is the position of the cone in a transformed case of §5. After discretization, `z_b` must satisfy `z_b>0` in at least 1 cell. When `topography_profile=flat`, `z_b=0` in all cells. The topography and the initial state are host data: `tests.md` states each as a closed form over the inputs, and the host evaluates it per case and hands it to the driver as the state before the first step.
 
-The runtime input requires the following.
+The case input requires the following.
 - `L_x`, `L_y`, `nx`, `ny`
-- `topography_profile`, and for `williamson_tc5_cone` its centre `x_c_fraction`, `y_c_fraction` (defaults `3/4`, `2/3`; a value outside $[0,1)$ is an error at setup)
+- `topography_profile`, and for `williamson_tc5_cone` its centre `x_c_fraction`, `y_c_fraction` (defaults `3/4`, `2/3`; a value outside $[0,1)$ is not a valid case)
 - `initial_condition` (`h`, `hu`, `hv`)
 - `t_start`, `t_end`
 - `dt_rule`
+- `history.every`, the number of committed steps between two samples of the state the driver writes
+
+The `dt` rule is host data: the host evaluates the procedure of `tests.md` §3 from `dt_rule`, `t_start`, `t_end` and the initial state, and it computes `n_step` and `dt`. `shallow_water2d__step` receives `dt` and computes neither.
 
 In the initial state, `h>0` and `h+z_b>0` in all cells are required. The hydrostatic reconstruction of section 5 additionally requires the initial free surface of every cell to lie above the bottom topography of its 4 face neighbours,
 $$
 \eta_{i,j}(0)>\max\left(z_{b,i,j},\;z_{b,i\pm1,j},\;z_{b,i,j\pm1}\right)
 $$
-so that the reconstructed interface depth satisfies $h^{*}>0$ in the initial state. This condition is stronger than `h+z_b>0`, which constrains the cell's own bottom only. It establishes the wet-domain invariant of section 5 at $t=0$; the invariant is required to hold at every step thereafter, and its violation during the run is a runtime error as defined in section 5. An undefined parameter is an error without implicit completion.
+so that the reconstructed interface depth satisfies $h^{*}>0$ in the initial state. This condition is stronger than `h+z_b>0`, which constrains the cell's own bottom only. It establishes the wet-domain invariant of section 5 at $t=0$; the invariant is required to hold at every step thereafter, and its violation during the run is the failure of section 5, a `false` result. An undefined parameter is an error without implicit completion.
 
 ## 7. Prohibitions
 Forbid non-periodic boundary, automatic switching of `topography_profile`, the introduction of a bottom-topography function or parameter other than the allowed values, the introduction of a forcing term other than the bottom-topography source term, and the runtime automatic switching of the discretization scheme. Forbid `clip` / `limiter` / `filter` on `h`. The $\max(0,\cdot)$ of the hydrostatic reconstruction of section 5 is applied to the reconstructed interface depth $h^{*}$, a derived quantity of the reconstruction of step 2, and never to the cell-centered state `h`; it is not a `clip` on `h`.
@@ -163,7 +265,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009). The centre of the cone as an input and the equivariances of §5 are those of [issue #513](https://github.com/seiya/atmofab/issues/513).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.7.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.8.0`.
 
 ## 10. AD preparation information
-`ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, `ceil`, and the periodic-index wrap are made explicit as non-differentiable operations.
+`ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, and the periodic-index wrap are made explicit as non-differentiable operations.

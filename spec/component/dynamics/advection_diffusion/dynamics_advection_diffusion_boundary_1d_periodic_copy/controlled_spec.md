@@ -21,7 +21,11 @@ The inputs are `nx`, `ng`, and the ghost-extended field `u_in` (rank 1, holding 
 Input and output are SEPARATE arrays, not one field mapped in place. That is the same shape the 2D sibling `dynamics_shallow_water_boundary_2d_periodic_copy` publishes, and it keeps the operation free of the aliasing an `intent(inout)` argument would allow — a caller passing the same array for both would otherwise read cells the mapping had already overwritten. §5.1 is the pin; this paragraph describes it and must move with it.
 
 ## 3. Operation definition
-The published `operation` is `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`. When `ng=1`, apply
+The published `operation` is `dynamics_advection_diffusion_boundary_1d_periodic_copy__apply`. Every ghost cell takes the interior cell of `u_in` that is its periodic image with period `nx`: for the ghost indices $j=-ng..-1$ and $j=nx..nx-1+ng$, apply
+$$
+u_j=u_{j \bmod nx}
+$$
+When `ng=1` this is
 $$
 u_{-1}=u_{nx-1},\quad u_{nx}=u_0
 $$
@@ -84,7 +88,7 @@ Forbid automatic fallback to a non-periodic boundary. Forbid realising the mappi
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/tests.md`, with `test_profile_version` of `0.4.0`.
+The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/tests.md`, with `test_profile_version` of `0.5.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The periodic-index wrap is made explicit as a discrete operation.

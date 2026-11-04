@@ -166,11 +166,11 @@ class SpecSurfaceTests(unittest.TestCase):
             with self.subTest(spec_id=spec_id):
                 sentinels = _sentinels(spec_id, "l0_read_case_roundtrip_pass")
                 self.assertEqual(set(sentinels), {
-                    "rc_real", "rc_whole", "rc_int", "rc_true", "rc_false", "rc_empty",
+                    "rc_real", "rc_whole", "rc_int", "rc_true", "rc_false", "rc_empty", "rc_empty2",
                     "rc_r1", "rc_r2", "rc_r3", "rc_r4"})
                 predicates = " ; ".join(_predicates(spec_id, "l0_read_case_roundtrip_pass"))
                 for name in sentinels:
-                    if name == "rc_empty":
+                    if name in ("rc_empty", "rc_empty2"):
                         self.assertIn("final.rc_empty_read == 1.0", predicates)
                     elif name in ("rc_true", "rc_false"):
                         self.assertIn(f"final.{name} == 1.0", predicates)
@@ -199,6 +199,8 @@ class SpecSurfaceTests(unittest.TestCase):
                 self.assertIs(s["rc_true"], True)
                 self.assertIs(s["rc_false"], False)
                 self.assertEqual(s["rc_empty"], [])
+                # a zero-extent case's arrays: nesting cannot spell the extents after a zero
+                self.assertEqual(s["rc_empty2"], [[], []])
                 self.assertEqual(s["rc_r1"], [-1.5, 1.0e-30, 1.0e+30], "both exponent signs")
                 self.assertTrue(all(isinstance(v, int) for v in s["rc_r2"][0]), "integer tokens")
 
@@ -310,7 +312,8 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
         K = "inputs.initial."
         res = self._run("read:c1", f"real:{K}rc_real", f"real:{K}rc_whole", f"int:{K}rc_int",
                         f"bool:{K}rc_true", f"bool:{K}rc_false", f"r1:{K}rc_empty", f"r1:{K}rc_r1",
-                        f"r2:{K}rc_r2", f"r3:{K}rc_r3", f"r4:{K}rc_r4")
+                        f"r2:{K}rc_r2", f"r3:{K}rc_r3", f"r4:{K}rc_r4",
+                        f"r3:{K}rc_empty", f"r2:{K}rc_empty2", f"r3:{K}rc_empty2")
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         lines = res.stdout.splitlines()
         self.assertEqual(lines[0].split(), ["read", "T"])
@@ -329,6 +332,9 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
             flat = np.array([float(t) for t in lines[at + 1].split()])
             arrays[name] = flat.reshape(extents, order="F")   # printed in array element order
             at += 2
+        # `[]` at rank 3, `[[], []]` at ranks 2 and 3: a zero-extent case's array
+        self.assertEqual([lines[at + 2 * k].split()[1:] for k in range(3)],
+                         [["0", "0", "0"], ["2", "0"], ["2", "0", "0"]])
         final = {**scalar, **arrays, "rc_empty_read": 1.0, "rc_e2": float(arrays["rc_r2"][0, 1]),
                  "rc_e3": float(arrays["rc_r3"][0, 0, 1]),
                  "rc_e4": float(arrays["rc_r4"][0, 0, 0, 1])}

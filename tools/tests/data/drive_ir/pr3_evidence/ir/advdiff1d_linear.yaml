@@ -1,0 +1,1644 @@
+schema_version: '1.0'
+meta:
+  node_key: problem/advdiff1d_linear@0.5.0
+  spec_kind: problem
+  spec_id: advdiff1d_linear
+  spec_version: 0.5.0
+  source_refs:
+    controlled_spec: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md
+    tests: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md
+    deps: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml
+case:
+  test_case_set:
+  - case_id: advdiff1d_ref_nx064_shift000_dts100
+    inputs:
+      grid:
+        L: 1.0
+        nx: 64
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 41
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx064_shift000_dts100_a200
+    inputs:
+      grid:
+        L: 1.0
+        nx: 64
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 54
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 2.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx128_shift000_dts100
+    inputs:
+      grid:
+        L: 1.0
+        nx: 128
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 164
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx256_shift000_dts100
+    inputs:
+      grid:
+        L: 1.0
+        nx: 256
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 656
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_sym_nx128_shift025_dts100
+    inputs:
+      grid:
+        L: 1.0
+        nx: 128
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 164
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.25
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_guard_nx064_shift000_dts120
+    inputs:
+      grid:
+        L: 1.0
+        nx: 64
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 35
+      dt_rule:
+        dt_scale: 1.2
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx128_shift000_dts100_tend200
+    inputs:
+      grid:
+        L: 1.0
+        nx: 128
+      time:
+        t_start: 0.0
+        t_end: 2.0
+      history:
+        every: 656
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx128_shift000_dts100_amir
+    inputs:
+      grid:
+        L: 1.0
+        nx: 128
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 164
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: -1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.7.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  sweeps:
+    advdiff1d_ref:
+      purpose: refinement_for_accuracy
+      sweep:
+        nx:
+        - 64
+        - 128
+        - 256
+      fixed:
+        a: 1.0
+        shift_fraction: 0.0
+        dt_scale: 1.0
+    advdiff1d_sym:
+      purpose: translation_symmetry
+      sweep:
+        nx:
+        - 128
+        shift_fraction:
+        - 0.25
+      fixed:
+        a: 1.0
+        dt_scale: 1.0
+    advdiff1d_guard:
+      purpose: expected_failure_for_cfl
+      sweep:
+        nx:
+        - 64
+        dt_scale:
+        - 1.2
+      fixed:
+        a: 1.0
+        shift_fraction: 0.0
+    explicit_overrides:
+    - case_id: advdiff1d_ref_nx128_shift000_dts100_tend200
+      base_case_id: advdiff1d_ref_nx128_shift000_dts100
+      override:
+        t_end: 2.0
+    - case_id: advdiff1d_ref_nx128_shift000_dts100_amir
+      base_case_id: advdiff1d_ref_nx128_shift000_dts100
+      override:
+        a: -1.0
+    - case_id: advdiff1d_ref_nx064_shift000_dts100_a200
+      base_case_id: advdiff1d_ref_nx064_shift000_dts100
+      override:
+        a: 2.0
+    case_id_template: '{family_id}_nx{nx:03d}_shift{shift_pct:03d}_dts{dts_pct:03d}'
+  refinements:
+    advdiff1d_ref:
+      axis: nx
+      levels:
+      - 64
+      - 128
+      - 256
+      ratio: 2
+      pairs:
+      - coarse: advdiff1d_ref_nx064_shift000_dts100
+        fine: advdiff1d_ref_nx128_shift000_dts100
+        label: nx64_to_nx128
+      - coarse: advdiff1d_ref_nx128_shift000_dts100
+        fine: advdiff1d_ref_nx256_shift000_dts100
+        label: nx128_to_nx256
+algorithm:
+  algorithm_id: advdiff1d_linear_upwind_center2_euler1
+  execution_mode: sequence
+  steps:
+  - step_id: step_01_pack_ghost
+    step_kind: pointwise_process
+    operation_ref: advdiff1d_linear_pack_ghost_extended
+    description: 'Local operation. Builds the ghost-extended array u_ext_in of nx_ext = nx + 2*ng elements (ng = 1, 1-based
+      elements): u_ext_in(ng + 1 .. ng + nx) = u(1 .. nx) (the interior of u^n), the ghost elements u_ext_in(1) and u_ext_in(nx_ext)
+      set to 0 as a defined placeholder that step_02 overwrites.'
+    inputs:
+    - u
+    - nx
+    - ng
+    outputs:
+    - u_ext_in
+  - step_id: step_02_boundary_apply
+    step_kind: boundary_apply
+    operation_ref: dynamics_advection_diffusion_boundary_1d_periodic_copy__apply
+    description: 'Dependency call dynamics_advection_diffusion_boundary_1d_periodic_copy__apply(nx, ng, u_in = u_ext_in, u_out
+      = u_ext, guard_pass = guard_pass_bc) with ng = 1. It realizes boundary.kind = periodic (the only boundary admitted):
+      u_ext is the ghost-extended field u^n_{-1} .. u^n_{nx} with the periodic images u^n_{-1} = u^n_{nx-1} and u^n_{nx} =
+      u^n_0. If guard_pass_bc is false the call returns ok = false and u_ext is not consumed.'
+    inputs:
+    - nx
+    - ng
+    - u_ext_in
+    outputs:
+    - u_ext
+    - guard_pass_bc
+  - step_id: step_03_flux_compute
+    step_kind: flux_compute
+    operation_ref: dynamics_advdiff_flux_1d_upwind_center2__compute_flux
+    description: 'Dependency call dynamics_advdiff_flux_1d_upwind_center2__compute_flux(nx, ng, u = u_ext, a, nu, dx, dt,
+      flux_adv, flux_dif, guard_pass = guard_pass_flux): a is the case''s signed advection velocity physics.a, passed as given
+      (the component chooses the upwind side by its sign; never reflect an a < 0 case onto a > 0), nu the constant constants.nu,
+      dx = L/nx, dt the step of the dt rule. Returns flux_adv and flux_dif at all nx + 1 faces j + 1/2, j = -1 .. nx-1 (element
+      j + 2, 1-based). If guard_pass_flux is false the call returns ok = false and the fluxes are not consumed.'
+    inputs:
+    - nx
+    - ng
+    - u_ext
+    - a
+    - nu
+    - dx
+    - dt
+    outputs:
+    - flux_adv
+    - flux_dif
+    - guard_pass_flux
+  - step_id: step_04_tendency
+    step_kind: pointwise_process
+    operation_ref: advdiff1d_linear_flux_divergence
+    description: Local operation. Total face flux F(k) = flux_adv(k) + flux_dif(k), k = 1 .. nx + 1 (F_{j+1/2} is element
+      j + 2). Tendency L_i = -(F_{i+1/2} - F_{i-1/2}) / dx for i = 0 .. nx-1, i.e. in 1-based elements L_tend(i + 1) = -(F(i
+      + 2) - F(i + 1)) / dx. No limiter, clip or filter is applied.
+    inputs:
+    - flux_adv
+    - flux_dif
+    - dx
+    - nx
+    outputs:
+    - F_face
+    - L_tend
+  - step_id: step_05_time_integrate
+    step_kind: time_integrate
+    operation_ref: dynamics_advection_diffusion_time_update_1d_euler1__advance
+    description: 'Dependency call dynamics_advection_diffusion_time_update_1d_euler1__advance(nx, u_n = u (the nx interior
+      values of u^n, not the ghost-extended array), L_flux = L_tend, dt, u_np1, guard_pass = guard_pass_time): forward Euler
+      u^{n+1} = u^n + dt * L. If guard_pass_time is false the call returns ok = false and u_np1 is not consumed.'
+    inputs:
+    - nx
+    - u
+    - L_tend
+    - dt
+    outputs:
+    - u_np1
+    - guard_pass_time
+  - step_id: step_06_commit
+    step_kind: pointwise_process
+    operation_ref: advdiff1d_linear_commit_state
+    description: Local operation. u = u_np1 (all nx cells), ok = true; the driver commits the work copy and advances its step
+      and time.
+    inputs:
+    - u_np1
+    outputs:
+    - u
+    - ok
+  ordering:
+  - step_01_pack_ghost
+  - step_02_boundary_apply
+  - step_03_flux_compute
+  - step_04_tendency
+  - step_05_time_integrate
+  - step_06_commit
+  control_condition: 'One call of advdiff1d_linear__step runs step_01 .. step_06 once, advancing u by ONE update step of length
+    dt. A false guard_pass of a component is the call''s false ok, no later step consumes that component''s other outputs,
+    and the driver commits no step then (the inputs the tests declare satisfy every guard: ng = 1, nx >= 2, a != 0, dt > 0).
+    The time loop, n_step, dt and the stop rule are the driver''s (drive.loop, derived); the initial condition and the dt
+    rule are host data (initial_state, derived; rule n_step, dt). No runtime switching of the scheme.'
+  iteration_contract: {}
+  update_semantics:
+    target_variables:
+    - u
+    - ok
+    update_order: sequential
+    description: 'u^{n+1} = F(u^n; a, nu, dx, dt): the composition is equivalent to u^{n+1}_i = u^n_i - C (u^n_i - u^n_{i-1})
+      + D (u^n_{i+1} - 2 u^n_i + u^n_{i-1}) for a > 0 and u^{n+1}_i = u^n_i - C (u^n_{i+1} - u^n_i) + D (u^n_{i+1} - 2 u^n_i
+      + u^n_{i-1}) for a < 0, with C = a dt/dx, D = nu dt/dx**2 and the periodic images u_{-1} = u_{nx-1}, u_{nx} = u_0.'
+  temporaries:
+  - name: u_ext_in
+    shape_expr: '[nx_ext]'
+  - name: u_ext
+    shape_expr: '[nx_ext]'
+  - name: flux_adv
+    shape_expr: '[nx_faces]'
+  - name: flux_dif
+    shape_expr: '[nx_faces]'
+  - name: F_face
+    shape_expr: '[nx_faces]'
+  - name: L_tend
+    shape_expr: '[nx]'
+  - name: u_np1
+    shape_expr: '[nx]'
+  - name: guard_pass_bc
+    shape_expr: scalar
+  - name: guard_pass_flux
+    shape_expr: scalar
+  - name: guard_pass_time
+    shape_expr: scalar
+  derived_field_rules:
+  - name: ng
+    rule: ng = 1, the ghost width (a fixed constant of this node, not a case input).
+  - name: nx_ext
+    rule: nx_ext = nx + 2 * ng, the extent of the ghost-extended arrays u_ext_in / u_ext.
+  - name: nx_faces
+    rule: nx_faces = nx + 1, the number of faces j + 1/2, j = -1 .. nx-1, of flux_adv / flux_dif / F_face.
+  - name: dx
+    rule: 'dx = L / nx (grid.L, grid.nx): the uniform cell width of the cell-centred grid on [0, L); cell centres x_i = (i
+      + 1/2) dx. derived.dx, passed as dx; consumed by step_03 and step_04.'
+  - name: n_step
+    rule: dt_raw = dt_scale * min(cfl_adv * dx / abs(a), cfl_dif * dx**2 / nu) (dt_rule.dt_scale, dt_rule.cfl_adv, dt_rule.cfl_dif,
+      physics.a, constants.nu); n_step = ceil(t_end / dt_raw) (time.t_end). dt_scale enters only here (1.0 in every case but
+      advdiff1d_guard_nx064_shift000_dts120, where it is 1.2). Host data (derived.n_step); the driver stops at n = n_step.
+  - name: dt
+    rule: dt = t_end / n_step, constant over the run, so the integration lands exactly on t_end (t_start = 0.0 in every case).
+      Host data (derived.dt).
+  invariants:
+  - 'Mass conservation: sum_i L_i dx = -(F_{nx-1/2} - F_{-1/2}) = 0 under the periodic ghost cells, so sum_i u_i is conserved
+    up to round-off.'
+  - 'Max-norm boundedness: with D >= 0 and |C| + 2D <= 1 the update is a convex combination of three values of u^n, so max_i
+    |u_i| does not increase (up to round-off).'
+  - 'Mirror equivariance: the case with a -> -a and initial state u''_i = u_{nx-1-i} has u''^n_i = u^n_{nx-1-i} up to round-off;
+    for the odd initial state of the tests (u_{nx-1-i} = -u_i) the case with a -> -a alone has u''^n_i = -u^n_{nx-1-i}.'
+  - 'Forbidden: a non-periodic boundary; any limiter / clip / filter; runtime switching of the discretization; computing an
+    a < 0 case by reflecting it to a > 0 and back (the kernel evaluates a as given).'
+  - The fields u_ext (step_02), flux_adv / flux_dif (step_03) and L_tend (step_04) are each consumed by the next step; guard_pass
+    outputs are input guards, not fields.
+  - Stability index cfl_combined = |C| + 2D with C = a dt/dx, D = nu dt/dx**2; its threshold is the tests' judgment, not a
+    kernel action.
+  - 'AD readiness: the update has the form u_next = F(u_now, params); the periodic-index wrap (step_02) is the explicit non-differentiable
+    operation; ceil of the step rule is the host''s.'
+  - 'Predicate note (errors.mode_scheme_fidelity): with signed C, Re G_num(m) = 1 - (|C| + 2D)(1 - cos theta_m) and Im G_num(m)
+    = -C sin theta_m reproduce exactly both sign branches of tests.md 5-4 (a > 0: 1 - C(1 - e^{-i theta}) + D(e^{i theta}
+    - 2 + e^{-i theta}); a < 0: 1 - C(e^{i theta} - 1) + D(...)), and G^n_step is formed by modulus |G|^n_step and argument
+    n_step * atan2(Im G, Re G).'
+  splitting_policy:
+    kind: none
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: L
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.grid.L, the domain length; fixes dx = L/nx and the cell centres.
+  - name: nx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.grid.nx, the cell count (>= 2); fixes dx, the array extents and the components' nx argument.
+  - name: a
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.physics.a, the signed advection velocity (m/s, != 0); passed as given to the flux component and
+      enters the dt rule as abs(a).
+  - name: nu
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.constants.nu = 1.0e-2 m2/s, the diffusion constant; passed to the flux component and enters the
+      dt rule.
+  - name: t_start
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.time.t_start, the initial clock value t (0.0).
+  - name: t_end
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.time.t_end, the end time; fixes n_step and dt.
+  - name: dt_scale
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.dt_rule.dt_scale; scales dt_raw in the n_step rule only.
+  - name: cfl_adv
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.dt_rule.cfl_adv; the advective factor of dt_raw.
+  - name: cfl_dif
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.dt_rule.cfl_dif; the diffusive factor of dt_raw.
+  - name: shift_fraction
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: case inputs.initial.shift_fraction; translates the initial two-mode sine by +shift_fraction*L.
+  - name: every
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: "case inputs.history.every: the driver writes a state_history sample every `every` committed steps (tests.md\
+      \ \xA73 history line)"
+  outputs:
+  - name: u
+    shape_expr: '[nx]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - u
+    description: The cell-centred interior state u_i, captured before the first step (t = t_start) and after the last committed
+      step.
+  - name: t
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - t
+    description: The driver's time t at each capture.
+  - name: ok
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - ok
+    description: the result logical of advdiff1d_linear__step, written by the driver as 1 / 0
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: u
+          shape_expr: '[nx]'
+        - name: ok
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: x
+          axis: 0
+          count: inputs.grid.nx
+          length: inputs.grid.L
+          placement: cell_center
+    - artifact: state_history
+    - artifact: step_series
+      names:
+      - step
+      - u_min
+      - u_max
+  semantic_dependency:
+    required_sources:
+    - u
+    - t
+    - L
+    - nx
+    - a
+    - nu
+    - t_start
+    - t_end
+    - dt_scale
+    - cfl_adv
+    - cfl_dif
+    - shift_fraction
+    - every
+  tests:
+  - test_id: l1_refinement_against_analytic
+    expected_outcome: pass
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    quantities:
+    - cfl.combined_max
+    - convergence.nx128_to_nx256.l1_order
+    - convergence.nx128_to_nx256.l2_order
+    - convergence.nx128_to_nx256.linf_order
+    - convergence.nx64_to_nx128.l1_order
+    - convergence.nx64_to_nx128.l2_order
+    - convergence.nx64_to_nx128.linf_order
+    - errors.analytic.l1_rel_tend.lower
+    - errors.analytic.l1_rel_tend.upper
+    - errors.analytic.l2_rel_tend.lower
+    - errors.analytic.l2_rel_tend.upper
+    - errors.analytic.linf_rel_tend.lower
+    - errors.analytic.linf_rel_tend.upper
+    - errors.mode_scheme_fidelity
+    - metrics.mass_drift_rel
+    - run.n_step
+  - test_id: l2_mass_conservation_long_run
+    expected_outcome: pass
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100_tend200
+    quantities:
+    - cfl.combined_max
+    - errors.analytic.l2_rel_tend
+    - metrics.mass_drift_rel
+    - run.n_step
+  - test_id: l3_translation_equivariance
+    expected_outcome: pass
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_sym_nx128_shift025_dts100
+    quantities:
+    - cfl.combined_max
+    - errors.analytic.l2_rel_tend
+    - errors.symmetry_l2_rel
+    - metrics.mass_drift_rel
+    - run.n_step
+  - test_id: l0_cfl_guard_xfail
+    expected_outcome: xfail
+    target_cases:
+    - advdiff1d_guard_nx064_shift000_dts120
+    quantities:
+    - cfl.combined_max
+  - test_id: l3_mirror_pair
+    expected_outcome: pass
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100_amir
+    quantities:
+    - cfl.combined_max
+    - errors.mirror.l2_rel
+    - errors.mode_scheme_fidelity
+    - metrics.mass_drift_rel
+    - run.n_step
+  - test_id: l1_advection_limited_bands
+    expected_outcome: pass
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    quantities:
+    - cfl.combined_max
+    - errors.analytic.l1_rel_tend.lower
+    - errors.analytic.l1_rel_tend.upper
+    - errors.analytic.l2_rel_tend.lower
+    - errors.analytic.l2_rel_tend.upper
+    - errors.analytic.linf_rel_tend.lower
+    - errors.analytic.linf_rel_tend.upper
+    - errors.mode_scheme_fidelity
+    - metrics.mass_drift_rel
+    - run.n_step
+  predicates:
+  - test_id: l1_refinement_against_analytic
+    quantity: cfl.combined_max
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      C: inputs.physics.a * derived.dt / derived.dx
+      D: inputs.constants.nu * derived.dt / (derived.dx * derived.dx)
+      input_term: abs(C) + 2 * D
+      state_term: maxabs(final.u) / maxabs(initial.u)
+    expr: max(input_term, state_term)
+    op: le
+    value: 1.0
+  - test_id: l1_refinement_against_analytic
+    quantity: metrics.mass_drift_rel
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      dx: inputs.grid.L / inputs.grid.nx
+      M0: sum(initial.u) * dx
+      M_end: sum(final.u) * dx
+      M0_abs: sum(abs(initial.u)) * dx
+    expr: abs(M_end - M0) / max(M0_abs, 1.0e-14)
+    op: le
+    value: 1.0e-12
+  - test_id: l1_refinement_against_analytic
+    quantity: errors.analytic.l1_rel_tend.lower
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+    op: ge
+    value:
+      per_case:
+        advdiff1d_ref_nx064_shift000_dts100: 0.1
+        advdiff1d_ref_nx128_shift000_dts100: 0.068
+        advdiff1d_ref_nx256_shift000_dts100: 0.039
+  - test_id: l1_refinement_against_analytic
+    quantity: errors.analytic.l1_rel_tend.upper
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+    op: le
+    value:
+      per_case:
+        advdiff1d_ref_nx064_shift000_dts100: 0.13
+        advdiff1d_ref_nx128_shift000_dts100: 0.084
+        advdiff1d_ref_nx256_shift000_dts100: 0.049
+  - test_id: l1_refinement_against_analytic
+    quantity: errors.analytic.l2_rel_tend.lower
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: norm2(final.u - u_ex) / norm2(u_ex)
+    op: ge
+    value:
+      per_case:
+        advdiff1d_ref_nx064_shift000_dts100: 0.1
+        advdiff1d_ref_nx128_shift000_dts100: 0.074
+        advdiff1d_ref_nx256_shift000_dts100: 0.043
+  - test_id: l1_refinement_against_analytic
+    quantity: errors.analytic.l2_rel_tend.upper
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: norm2(final.u - u_ex) / norm2(u_ex)
+    op: le
+    value:
+      per_case:
+        advdiff1d_ref_nx064_shift000_dts100: 0.14
+        advdiff1d_ref_nx128_shift000_dts100: 0.091
+        advdiff1d_ref_nx256_shift000_dts100: 0.053
+  - test_id: l1_refinement_against_analytic
+    quantity: errors.analytic.linf_rel_tend.lower
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: maxabs(final.u - u_ex) / maxabs(u_ex)
+    op: ge
+    value:
+      per_case:
+        advdiff1d_ref_nx064_shift000_dts100: 0.12
+        advdiff1d_ref_nx128_shift000_dts100: 0.085
+        advdiff1d_ref_nx256_shift000_dts100: 0.049
+  - test_id: l1_refinement_against_analytic
+    quantity: errors.analytic.linf_rel_tend.upper
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: maxabs(final.u - u_ex) / maxabs(u_ex)
+    op: le
+    value:
+      per_case:
+        advdiff1d_ref_nx064_shift000_dts100: 0.16
+        advdiff1d_ref_nx128_shift000_dts100: 0.11
+        advdiff1d_ref_nx256_shift000_dts100: 0.061
+  - test_id: l1_refinement_against_analytic
+    quantity: convergence.nx64_to_nx128.l1_order
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    case: advdiff1d_ref_nx128_shift000_dts100
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+      Tc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.time.t_end
+      k1c: 2 * pi / at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      k2c: 4 * pi / at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      sc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.initial.shift_fraction * at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      ac: at('advdiff1d_ref_nx064_shift000_dts100').inputs.physics.a
+      nuc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.constants.nu
+      uc_ex: exp(-nuc * k1c ** 2 * Tc) * sin(k1c * (at('advdiff1d_ref_nx064_shift000_dts100').x - ac * Tc - sc)) + 0.5 * exp(-nuc
+        * k2c ** 2 * Tc) * sin(k2c * (at('advdiff1d_ref_nx064_shift000_dts100').x - ac * Tc - sc))
+      ec_l1: sum(abs(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex)) / sum(abs(uc_ex))
+      ef_l1: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+      ec_l2: norm2(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex) / norm2(uc_ex)
+      ef_l2: norm2(final.u - u_ex) / norm2(u_ex)
+      ec_linf: maxabs(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex) / maxabs(uc_ex)
+      ef_linf: maxabs(final.u - u_ex) / maxabs(u_ex)
+    expr: log(ec_l1 / ef_l1) / log(2)
+    op: ge
+    value: 0.5
+  - test_id: l1_refinement_against_analytic
+    quantity: convergence.nx64_to_nx128.l2_order
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    case: advdiff1d_ref_nx128_shift000_dts100
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+      Tc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.time.t_end
+      k1c: 2 * pi / at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      k2c: 4 * pi / at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      sc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.initial.shift_fraction * at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      ac: at('advdiff1d_ref_nx064_shift000_dts100').inputs.physics.a
+      nuc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.constants.nu
+      uc_ex: exp(-nuc * k1c ** 2 * Tc) * sin(k1c * (at('advdiff1d_ref_nx064_shift000_dts100').x - ac * Tc - sc)) + 0.5 * exp(-nuc
+        * k2c ** 2 * Tc) * sin(k2c * (at('advdiff1d_ref_nx064_shift000_dts100').x - ac * Tc - sc))
+      ec_l1: sum(abs(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex)) / sum(abs(uc_ex))
+      ef_l1: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+      ec_l2: norm2(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex) / norm2(uc_ex)
+      ef_l2: norm2(final.u - u_ex) / norm2(u_ex)
+      ec_linf: maxabs(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex) / maxabs(uc_ex)
+      ef_linf: maxabs(final.u - u_ex) / maxabs(u_ex)
+    expr: log(ec_l2 / ef_l2) / log(2)
+    op: ge
+    value: 0.5
+  - test_id: l1_refinement_against_analytic
+    quantity: convergence.nx64_to_nx128.linf_order
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    case: advdiff1d_ref_nx128_shift000_dts100
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+      Tc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.time.t_end
+      k1c: 2 * pi / at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      k2c: 4 * pi / at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      sc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.initial.shift_fraction * at('advdiff1d_ref_nx064_shift000_dts100').inputs.grid.L
+      ac: at('advdiff1d_ref_nx064_shift000_dts100').inputs.physics.a
+      nuc: at('advdiff1d_ref_nx064_shift000_dts100').inputs.constants.nu
+      uc_ex: exp(-nuc * k1c ** 2 * Tc) * sin(k1c * (at('advdiff1d_ref_nx064_shift000_dts100').x - ac * Tc - sc)) + 0.5 * exp(-nuc
+        * k2c ** 2 * Tc) * sin(k2c * (at('advdiff1d_ref_nx064_shift000_dts100').x - ac * Tc - sc))
+      ec_l1: sum(abs(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex)) / sum(abs(uc_ex))
+      ef_l1: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+      ec_l2: norm2(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex) / norm2(uc_ex)
+      ef_l2: norm2(final.u - u_ex) / norm2(u_ex)
+      ec_linf: maxabs(at('advdiff1d_ref_nx064_shift000_dts100').final.u - uc_ex) / maxabs(uc_ex)
+      ef_linf: maxabs(final.u - u_ex) / maxabs(u_ex)
+    expr: log(ec_linf / ef_linf) / log(2)
+    op: ge
+    value: 0.5
+  - test_id: l1_refinement_against_analytic
+    quantity: convergence.nx128_to_nx256.l1_order
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    case: advdiff1d_ref_nx256_shift000_dts100
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+      Tc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.time.t_end
+      k1c: 2 * pi / at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      k2c: 4 * pi / at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      sc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.initial.shift_fraction * at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      ac: at('advdiff1d_ref_nx128_shift000_dts100').inputs.physics.a
+      nuc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.constants.nu
+      uc_ex: exp(-nuc * k1c ** 2 * Tc) * sin(k1c * (at('advdiff1d_ref_nx128_shift000_dts100').x - ac * Tc - sc)) + 0.5 * exp(-nuc
+        * k2c ** 2 * Tc) * sin(k2c * (at('advdiff1d_ref_nx128_shift000_dts100').x - ac * Tc - sc))
+      ec_l1: sum(abs(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex)) / sum(abs(uc_ex))
+      ef_l1: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+      ec_l2: norm2(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex) / norm2(uc_ex)
+      ef_l2: norm2(final.u - u_ex) / norm2(u_ex)
+      ec_linf: maxabs(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex) / maxabs(uc_ex)
+      ef_linf: maxabs(final.u - u_ex) / maxabs(u_ex)
+    expr: log(ec_l1 / ef_l1) / log(2)
+    op: ge
+    value: 0.5
+  - test_id: l1_refinement_against_analytic
+    quantity: convergence.nx128_to_nx256.l2_order
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    case: advdiff1d_ref_nx256_shift000_dts100
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+      Tc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.time.t_end
+      k1c: 2 * pi / at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      k2c: 4 * pi / at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      sc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.initial.shift_fraction * at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      ac: at('advdiff1d_ref_nx128_shift000_dts100').inputs.physics.a
+      nuc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.constants.nu
+      uc_ex: exp(-nuc * k1c ** 2 * Tc) * sin(k1c * (at('advdiff1d_ref_nx128_shift000_dts100').x - ac * Tc - sc)) + 0.5 * exp(-nuc
+        * k2c ** 2 * Tc) * sin(k2c * (at('advdiff1d_ref_nx128_shift000_dts100').x - ac * Tc - sc))
+      ec_l1: sum(abs(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex)) / sum(abs(uc_ex))
+      ef_l1: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+      ec_l2: norm2(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex) / norm2(uc_ex)
+      ef_l2: norm2(final.u - u_ex) / norm2(u_ex)
+      ec_linf: maxabs(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex) / maxabs(uc_ex)
+      ef_linf: maxabs(final.u - u_ex) / maxabs(u_ex)
+    expr: log(ec_l2 / ef_l2) / log(2)
+    op: ge
+    value: 0.5
+  - test_id: l1_refinement_against_analytic
+    quantity: convergence.nx128_to_nx256.linf_order
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    case: advdiff1d_ref_nx256_shift000_dts100
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+      Tc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.time.t_end
+      k1c: 2 * pi / at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      k2c: 4 * pi / at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      sc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.initial.shift_fraction * at('advdiff1d_ref_nx128_shift000_dts100').inputs.grid.L
+      ac: at('advdiff1d_ref_nx128_shift000_dts100').inputs.physics.a
+      nuc: at('advdiff1d_ref_nx128_shift000_dts100').inputs.constants.nu
+      uc_ex: exp(-nuc * k1c ** 2 * Tc) * sin(k1c * (at('advdiff1d_ref_nx128_shift000_dts100').x - ac * Tc - sc)) + 0.5 * exp(-nuc
+        * k2c ** 2 * Tc) * sin(k2c * (at('advdiff1d_ref_nx128_shift000_dts100').x - ac * Tc - sc))
+      ec_l1: sum(abs(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex)) / sum(abs(uc_ex))
+      ef_l1: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+      ec_l2: norm2(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex) / norm2(uc_ex)
+      ef_l2: norm2(final.u - u_ex) / norm2(u_ex)
+      ec_linf: maxabs(at('advdiff1d_ref_nx128_shift000_dts100').final.u - uc_ex) / maxabs(uc_ex)
+      ef_linf: maxabs(final.u - u_ex) / maxabs(u_ex)
+    expr: log(ec_linf / ef_linf) / log(2)
+    op: ge
+    value: 0.5
+  - test_id: l1_refinement_against_analytic
+    quantity: errors.mode_scheme_fidelity
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    bind:
+      dx: derived.dx
+      n_step: derived.n_step
+      dt: derived.dt
+      C: inputs.physics.a * dt / dx
+      D: inputs.constants.nu * dt / dx ** 2
+      th1: 2 * pi * 1 / inputs.grid.nx
+      km1: 2 * pi * 1 / inputs.grid.L
+      ReG1: 1 - (abs(C) + 2 * D) * (1 - cos(th1))
+      ImG1: -C * sin(th1)
+      rG1: sqrt(ReG1 ** 2 + ImG1 ** 2)
+      phG1: atan2(ImG1, ReG1)
+      Pr1: rG1 ** n_step * cos(n_step * phG1)
+      Pi1: rG1 ** n_step * sin(n_step * phG1)
+      A0r1: sum(initial.u * cos(km1 * x))
+      A0i1: -sum(initial.u * sin(km1 * x))
+      A1r1: sum(final.u * cos(km1 * x))
+      A1i1: -sum(final.u * sin(km1 * x))
+      err1: sqrt((A1r1 - (Pr1 * A0r1 - Pi1 * A0i1)) ** 2 + (A1i1 - (Pr1 * A0i1 + Pi1 * A0r1)) ** 2) / sqrt(A0r1 ** 2 + A0i1
+        ** 2)
+      th2: 2 * pi * 2 / inputs.grid.nx
+      km2: 2 * pi * 2 / inputs.grid.L
+      ReG2: 1 - (abs(C) + 2 * D) * (1 - cos(th2))
+      ImG2: -C * sin(th2)
+      rG2: sqrt(ReG2 ** 2 + ImG2 ** 2)
+      phG2: atan2(ImG2, ReG2)
+      Pr2: rG2 ** n_step * cos(n_step * phG2)
+      Pi2: rG2 ** n_step * sin(n_step * phG2)
+      A0r2: sum(initial.u * cos(km2 * x))
+      A0i2: -sum(initial.u * sin(km2 * x))
+      A1r2: sum(final.u * cos(km2 * x))
+      A1i2: -sum(final.u * sin(km2 * x))
+      err2: sqrt((A1r2 - (Pr2 * A0r2 - Pi2 * A0i2)) ** 2 + (A1i2 - (Pr2 * A0i2 + Pi2 * A0r2)) ** 2) / sqrt(A0r2 ** 2 + A0i2
+        ** 2)
+    expr: max(err1, err2)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_refinement_against_analytic
+    quantity: cross_target_state_agreement
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    expr: maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l2_mass_conservation_long_run
+    quantity: cfl.combined_max
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100_tend200
+    per_case: true
+    bind:
+      C: inputs.physics.a * derived.dt / derived.dx
+      D: inputs.constants.nu * derived.dt / (derived.dx * derived.dx)
+      input_term: abs(C) + 2 * D
+      state_term: maxabs(final.u) / maxabs(initial.u)
+    expr: max(input_term, state_term)
+    op: le
+    value: 1.0
+  - test_id: l2_mass_conservation_long_run
+    quantity: metrics.mass_drift_rel
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100_tend200
+    per_case: true
+    bind:
+      dx: inputs.grid.L / inputs.grid.nx
+      M0: sum(initial.u) * dx
+      M_end: sum(final.u) * dx
+      M0_abs: sum(abs(initial.u)) * dx
+    expr: abs(M_end - M0) / max(M0_abs, 1.0e-14)
+    op: le
+    value: 3.0e-12
+  - test_id: l2_mass_conservation_long_run
+    quantity: errors.analytic.l2_rel_tend
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100_tend200
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: norm2(final.u - u_ex) / norm2(u_ex)
+    op: le
+    value: 0.23
+  - test_id: l2_mass_conservation_long_run
+    quantity: cross_target_state_agreement
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100_tend200
+    per_case: true
+    expr: maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_translation_equivariance
+    quantity: cfl.combined_max
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_sym_nx128_shift025_dts100
+    per_case: true
+    bind:
+      C: inputs.physics.a * derived.dt / derived.dx
+      D: inputs.constants.nu * derived.dt / (derived.dx * derived.dx)
+      input_term: abs(C) + 2 * D
+      state_term: maxabs(final.u) / maxabs(initial.u)
+    expr: max(input_term, state_term)
+    op: le
+    value: 1.0
+  - test_id: l3_translation_equivariance
+    quantity: metrics.mass_drift_rel
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_sym_nx128_shift025_dts100
+    per_case: true
+    bind:
+      dx: inputs.grid.L / inputs.grid.nx
+      M0: sum(initial.u) * dx
+      M_end: sum(final.u) * dx
+      M0_abs: sum(abs(initial.u)) * dx
+    expr: abs(M_end - M0) / max(M0_abs, 1.0e-14)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_translation_equivariance
+    quantity: errors.symmetry_l2_rel
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_sym_nx128_shift025_dts100
+    case: advdiff1d_sym_nx128_shift025_dts100
+    bind:
+      dx: inputs.grid.L / inputs.grid.nx
+      delta_s: inputs.initial.shift_fraction * inputs.grid.L
+      shift_cells: delta_s / dx
+      u_ref: at('advdiff1d_ref_nx128_shift000_dts100').final.u
+    expr: norm2(final.u - roll(u_ref, shift_cells)) / norm2(u_ref)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_translation_equivariance
+    quantity: errors.analytic.l2_rel_tend
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_sym_nx128_shift025_dts100
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: norm2(final.u - u_ex) / norm2(u_ex)
+    op: le
+    value: 0.11
+  - test_id: l3_translation_equivariance
+    quantity: cross_target_state_agreement
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_sym_nx128_shift025_dts100
+    per_case: true
+    expr: maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_cfl_guard_xfail
+    quantity: cfl.combined_max
+    target_cases:
+    - advdiff1d_guard_nx064_shift000_dts120
+    per_case: true
+    bind:
+      C: inputs.physics.a * derived.dt / derived.dx
+      D: inputs.constants.nu * derived.dt / (derived.dx * derived.dx)
+      input_term: abs(C) + 2 * D
+      state_term: maxabs(final.u) / maxabs(initial.u)
+    expr: max(input_term, state_term)
+    op: gt
+    value: 1.0
+  - test_id: l3_mirror_pair
+    quantity: cfl.combined_max
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100_amir
+    per_case: true
+    bind:
+      C: inputs.physics.a * derived.dt / derived.dx
+      D: inputs.constants.nu * derived.dt / (derived.dx * derived.dx)
+      input_term: abs(C) + 2 * D
+      state_term: maxabs(final.u) / maxabs(initial.u)
+    expr: max(input_term, state_term)
+    op: le
+    value: 1.0
+  - test_id: l3_mirror_pair
+    quantity: metrics.mass_drift_rel
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100_amir
+    per_case: true
+    bind:
+      dx: inputs.grid.L / inputs.grid.nx
+      M0: sum(initial.u) * dx
+      M_end: sum(final.u) * dx
+      M0_abs: sum(abs(initial.u)) * dx
+    expr: abs(M_end - M0) / max(M0_abs, 1.0e-14)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_mirror_pair
+    quantity: errors.mirror.l2_rel
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100_amir
+    case: advdiff1d_ref_nx128_shift000_dts100_amir
+    bind:
+      u_base: at('advdiff1d_ref_nx128_shift000_dts100').final.u
+    expr: norm2(final.u + flip(u_base, 0)) / norm2(u_base)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_mirror_pair
+    quantity: errors.mode_scheme_fidelity
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100_amir
+    case: advdiff1d_ref_nx128_shift000_dts100_amir
+    bind:
+      dx: derived.dx
+      n_step: derived.n_step
+      dt: derived.dt
+      C: inputs.physics.a * dt / dx
+      D: inputs.constants.nu * dt / dx ** 2
+      th1: 2 * pi * 1 / inputs.grid.nx
+      km1: 2 * pi * 1 / inputs.grid.L
+      ReG1: 1 - (abs(C) + 2 * D) * (1 - cos(th1))
+      ImG1: -C * sin(th1)
+      rG1: sqrt(ReG1 ** 2 + ImG1 ** 2)
+      phG1: atan2(ImG1, ReG1)
+      Pr1: rG1 ** n_step * cos(n_step * phG1)
+      Pi1: rG1 ** n_step * sin(n_step * phG1)
+      A0r1: sum(initial.u * cos(km1 * x))
+      A0i1: -sum(initial.u * sin(km1 * x))
+      A1r1: sum(final.u * cos(km1 * x))
+      A1i1: -sum(final.u * sin(km1 * x))
+      err1: sqrt((A1r1 - (Pr1 * A0r1 - Pi1 * A0i1)) ** 2 + (A1i1 - (Pr1 * A0i1 + Pi1 * A0r1)) ** 2) / sqrt(A0r1 ** 2 + A0i1
+        ** 2)
+      th2: 2 * pi * 2 / inputs.grid.nx
+      km2: 2 * pi * 2 / inputs.grid.L
+      ReG2: 1 - (abs(C) + 2 * D) * (1 - cos(th2))
+      ImG2: -C * sin(th2)
+      rG2: sqrt(ReG2 ** 2 + ImG2 ** 2)
+      phG2: atan2(ImG2, ReG2)
+      Pr2: rG2 ** n_step * cos(n_step * phG2)
+      Pi2: rG2 ** n_step * sin(n_step * phG2)
+      A0r2: sum(initial.u * cos(km2 * x))
+      A0i2: -sum(initial.u * sin(km2 * x))
+      A1r2: sum(final.u * cos(km2 * x))
+      A1i2: -sum(final.u * sin(km2 * x))
+      err2: sqrt((A1r2 - (Pr2 * A0r2 - Pi2 * A0i2)) ** 2 + (A1i2 - (Pr2 * A0i2 + Pi2 * A0r2)) ** 2) / sqrt(A0r2 ** 2 + A0i2
+        ** 2)
+    expr: max(err1, err2)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_mirror_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100_amir
+    per_case: true
+    expr: maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l1_advection_limited_bands
+    quantity: cfl.combined_max
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      C: inputs.physics.a * derived.dt / derived.dx
+      D: inputs.constants.nu * derived.dt / (derived.dx * derived.dx)
+      input_term: abs(C) + 2 * D
+      state_term: maxabs(final.u) / maxabs(initial.u)
+    expr: max(input_term, state_term)
+    op: le
+    value: 1.0
+  - test_id: l1_advection_limited_bands
+    quantity: metrics.mass_drift_rel
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      dx: inputs.grid.L / inputs.grid.nx
+      M0: sum(initial.u) * dx
+      M_end: sum(final.u) * dx
+      M0_abs: sum(abs(initial.u)) * dx
+    expr: abs(M_end - M0) / max(M0_abs, 1.0e-14)
+    op: le
+    value: 1.0e-12
+  - test_id: l1_advection_limited_bands
+    quantity: errors.analytic.l1_rel_tend.lower
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+    op: ge
+    value: 0.12
+  - test_id: l1_advection_limited_bands
+    quantity: errors.analytic.l1_rel_tend.upper
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: sum(abs(final.u - u_ex)) / sum(abs(u_ex))
+    op: le
+    value: 0.16
+  - test_id: l1_advection_limited_bands
+    quantity: errors.analytic.l2_rel_tend.lower
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: norm2(final.u - u_ex) / norm2(u_ex)
+    op: ge
+    value: 0.13
+  - test_id: l1_advection_limited_bands
+    quantity: errors.analytic.l2_rel_tend.upper
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: norm2(final.u - u_ex) / norm2(u_ex)
+    op: le
+    value: 0.18
+  - test_id: l1_advection_limited_bands
+    quantity: errors.analytic.linf_rel_tend.lower
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: maxabs(final.u - u_ex) / maxabs(u_ex)
+    op: ge
+    value: 0.16
+  - test_id: l1_advection_limited_bands
+    quantity: errors.analytic.linf_rel_tend.upper
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      T: inputs.time.t_end
+      k1: 2 * pi / inputs.grid.L
+      k2: 4 * pi / inputs.grid.L
+      s: inputs.initial.shift_fraction * inputs.grid.L
+      u_ex: exp(-inputs.constants.nu * k1 ** 2 * T) * sin(k1 * (x - inputs.physics.a * T - s)) + 0.5 * exp(-inputs.constants.nu
+        * k2 ** 2 * T) * sin(k2 * (x - inputs.physics.a * T - s))
+    expr: maxabs(final.u - u_ex) / maxabs(u_ex)
+    op: le
+    value: 0.2
+  - test_id: l1_advection_limited_bands
+    quantity: errors.mode_scheme_fidelity
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    bind:
+      dx: derived.dx
+      n_step: derived.n_step
+      dt: derived.dt
+      C: inputs.physics.a * dt / dx
+      D: inputs.constants.nu * dt / dx ** 2
+      th1: 2 * pi * 1 / inputs.grid.nx
+      km1: 2 * pi * 1 / inputs.grid.L
+      ReG1: 1 - (abs(C) + 2 * D) * (1 - cos(th1))
+      ImG1: -C * sin(th1)
+      rG1: sqrt(ReG1 ** 2 + ImG1 ** 2)
+      phG1: atan2(ImG1, ReG1)
+      Pr1: rG1 ** n_step * cos(n_step * phG1)
+      Pi1: rG1 ** n_step * sin(n_step * phG1)
+      A0r1: sum(initial.u * cos(km1 * x))
+      A0i1: -sum(initial.u * sin(km1 * x))
+      A1r1: sum(final.u * cos(km1 * x))
+      A1i1: -sum(final.u * sin(km1 * x))
+      err1: sqrt((A1r1 - (Pr1 * A0r1 - Pi1 * A0i1)) ** 2 + (A1i1 - (Pr1 * A0i1 + Pi1 * A0r1)) ** 2) / sqrt(A0r1 ** 2 + A0i1
+        ** 2)
+      th2: 2 * pi * 2 / inputs.grid.nx
+      km2: 2 * pi * 2 / inputs.grid.L
+      ReG2: 1 - (abs(C) + 2 * D) * (1 - cos(th2))
+      ImG2: -C * sin(th2)
+      rG2: sqrt(ReG2 ** 2 + ImG2 ** 2)
+      phG2: atan2(ImG2, ReG2)
+      Pr2: rG2 ** n_step * cos(n_step * phG2)
+      Pi2: rG2 ** n_step * sin(n_step * phG2)
+      A0r2: sum(initial.u * cos(km2 * x))
+      A0i2: -sum(initial.u * sin(km2 * x))
+      A1r2: sum(final.u * cos(km2 * x))
+      A1i2: -sum(final.u * sin(km2 * x))
+      err2: sqrt((A1r2 - (Pr2 * A0r2 - Pi2 * A0i2)) ** 2 + (A1i2 - (Pr2 * A0i2 + Pi2 * A0r2)) ** 2) / sqrt(A0r2 ** 2 + A0i2
+        ** 2)
+    expr: max(err1, err2)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_advection_limited_bands
+    quantity: cross_target_state_agreement
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    expr: maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l1_refinement_against_analytic
+    quantity: run.n_step
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx256_shift000_dts100
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l2_mass_conservation_long_run
+    quantity: run.n_step
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100_tend200
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_translation_equivariance
+    quantity: run.n_step
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_sym_nx128_shift025_dts100
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_mirror_pair
+    quantity: run.n_step
+    target_cases:
+    - advdiff1d_ref_nx128_shift000_dts100
+    - advdiff1d_ref_nx128_shift000_dts100_amir
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l1_advection_limited_bands
+    quantity: run.n_step
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a200
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+dependency:
+  node_key: problem/advdiff1d_linear@0.5.0
+  direct_deps:
+  - node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.4.0
+    kind: component
+    operations:
+    - dynamics_advdiff_flux_1d_upwind_center2__compute_flux
+  - node_key: component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1
+    kind: component
+    operations:
+    - dynamics_advection_diffusion_boundary_1d_periodic_copy__apply
+  - node_key: component/dynamics_advection_diffusion_time_update_1d_euler1@0.3.1
+    kind: component
+    operations:
+    - dynamics_advection_diffusion_time_update_1d_euler1__advance
+public_api:
+  published_operations:
+  - operation_id: advdiff1d_linear__step
+    exercised_by:
+    - l1_refinement_against_analytic
+    - l2_mass_conservation_long_run
+    - l3_translation_equivariance
+    - l0_cfl_guard_xfail
+    - l3_mirror_pair
+    - l1_advection_limited_bands
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: advdiff1d_linear__step
+    signature:
+      kind: subroutine
+      name: advdiff1d_linear__step
+      args:
+      - name: nx
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: dx
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: a
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: nu
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: dt
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: t
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: u
+        rank: 1
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+      - name: ok
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+    operation: advdiff1d_linear__step
+    result: ok
+    arguments:
+      nx: inputs.grid.nx
+      dx: derived.dx
+      a: inputs.physics.a
+      nu: inputs.constants.nu
+      dt: derived.dt
+      t: time
+      u: state.u
+      ok: state.ok
+  loop:
+    n_step: derived.n_step
+    dt: derived.dt
+    t_start: inputs.time.t_start
+    t_end: inputs.time.t_end
+  history:
+    every: inputs.history.every

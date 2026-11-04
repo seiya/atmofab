@@ -648,7 +648,7 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
     def test_coriolis_one_call(self) -> None:
         perf = self._verdict(DRIVE_IR / "coriolis_0.2.0.spec.ir.yaml",
                              "dynamics_shallow_water_source_2d_coriolis", ())
-        self.assertEqual(perf["steps"], 6)
+        self.assertEqual(perf["steps"], 7)
 
     def test_shallow_water2d_loop(self) -> None:
         perf = self._verdict(DRIVE_IR / "shallow_water2d_0.4.7" / "spec.ir.yaml",

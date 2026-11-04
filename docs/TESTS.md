@@ -26,7 +26,8 @@ The evaluation result of `tests.md` is mapped to the relevant `node`'s `self_ver
   - When there is a non-applicable item in the validity judgment, define `N/A` and the reason.
 
 - `component`
-  - For each published `operation`, define at least one normal case and one guard case (`fail` or `xfail`) each.
+  - For each published `operation`, define at least one normal case and one guard case (`fail` or `xfail`) each. An extent guard is judged at its boundary: a `pass` case at the smallest valid extent, and an `xfail` case at the exact invalid one. An extent of `0` is admitted only on a case that only `xfail` tests target; its state has no cell, so its test judges the flag alone.
+  - An `operation` that takes a procedure-typed argument is driven with a host-rendered tendency: §2 states the elementwise expression the procedure assigns and §5 the state variables that hold its call count and the arguments of its first calls (`docs/workflow/phases/phase_01_compile.md`, the procedure binding).
   - Add `L1`-and-above accuracy / conservation / equivalence tests as needed.
 
 - `infrastructure` (R1 harness)

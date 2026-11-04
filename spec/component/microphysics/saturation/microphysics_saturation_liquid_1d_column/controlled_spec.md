@@ -324,7 +324,7 @@ Forbid a default value for a constant, and forbid reading a constant from anythi
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`). The constants the suite fixes fall into the `case` section of `spec.ir.yaml` as case inputs.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/microphysics/saturation/microphysics_saturation_liquid_1d_column/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/microphysics/saturation/microphysics_saturation_liquid_1d_column/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The branch of §3 step 1, the convergence test and the iteration count of step 2, and the refusal of §4 are made explicit as non-differentiable operations.

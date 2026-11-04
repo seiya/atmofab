@@ -821,6 +821,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # checks module's deletion.
     # Measured against origin/main a55f7390: that row and no other.
     "compile-docs-26": "0ca0000e09f751fb15af5d99d84ce361ee75eee9417db683e85b6798922b8cc0",
+    # compile-docs-27 (issue #589, PR-3): `phase_01_compile.md` states the zero extent of a guard
+    # case, a dims token naming a scalar `derived` value and the one-cell reduction, and
+    # `docs/TESTS.md` the extent guards and the host-rendered tendency.
+    "compile-docs-27": "e2f6af75c30ef32ce2a57293ef55abe728b2f7613efd528c7bde25980a068390",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1714,6 +1718,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # wrapper's `_write_case_files` is no member: no row of this tuple is a wrapper's, and a
     # workshop run certifies nothing.
     "execute-15": "4f68805600577b99bbac3d4640cde317f8337726ae3e1a1bc57b77dffc3e14bb",
+    # execute-16 (issue #589, PR-3): `write_case_inputs` admits a zero extent on a case only `xfail`
+    # tests target, and a dims token naming a scalar `derived` value.
+    "execute-16": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -1900,6 +1907,9 @@ PINNED_VERDICT: dict[str, str] = {
     # against origin/main a55f7390: `tools/primary_evidence.py`, and `tools/verdict_evaluator.py`
     # (its docstring alone).
     "verdict-14": "6cb03ad825ada03b6ace831882eb6bce4a6c27563e78160bb93a8f7b124323e3",
+    # verdict-15 (issue #589, PR-3): a one-cell state reduces, and a driver capture with no cell
+    # loads; the post-execute gate admits the same capture.
+    "verdict-15": "1929577324c3948284fae07a3568ecf1814f88bbb18c2f4c25caf4f74af80d36",
 }
 
 

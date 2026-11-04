@@ -1,0 +1,460 @@
+schema_version: '1.0'
+meta:
+  node_key: component/dynamics_advection_diffusion_time_update_1d_euler1@0.3.1
+  spec_kind: component
+  spec_id: dynamics_advection_diffusion_time_update_1d_euler1
+  spec_version: 0.3.1
+  source_refs:
+    controlled_spec: spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/controlled_spec.md
+    tests: spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/tests.md
+    deps: spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_time_update_1d_euler1/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_zero_tendency
+    inputs:
+      grid:
+        nx: 4
+      time:
+        dt: 0.1
+      initial:
+        u_n:
+        - 0.5
+        - 1.3
+        - -0.7
+        - 2.1
+        L_flux:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+      test_profile_id: dynamics_advection_diffusion_time_update_1d_euler1_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u_n: inputs.initial.u_n
+      L_flux: inputs.initial.L_flux
+      u_np1: -999.0
+  - case_id: l0_single_step_formula
+    inputs:
+      grid:
+        nx: 4
+      time:
+        dt: 0.1
+      initial:
+        u_n:
+        - 0.3
+        - 1.7
+        - 0.2
+        - 2.9
+        L_flux:
+        - 1.1
+        - -0.4
+        - 3.6
+        - -2.2
+      expected:
+        u_np1:
+        - 0.41
+        - 1.66
+        - 0.56
+        - 2.68
+      test_profile_id: dynamics_advection_diffusion_time_update_1d_euler1_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u_n: inputs.initial.u_n
+      L_flux: inputs.initial.L_flux
+      u_np1: -999.0
+  - case_id: l0_invalid_dt
+    inputs:
+      grid:
+        nx: 4
+      time:
+        dt: -0.1
+      initial:
+        u_n:
+        - 0.3
+        - 1.7
+        - 0.2
+        - 2.9
+        L_flux:
+        - 1.1
+        - -0.4
+        - 3.6
+        - -2.2
+      test_profile_id: dynamics_advection_diffusion_time_update_1d_euler1_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u_n: inputs.initial.u_n
+      L_flux: inputs.initial.L_flux
+      u_np1: -999.0
+  - case_id: l0_large_step
+    inputs:
+      grid:
+        nx: 64
+      time:
+        dt: 0.0061
+      test_profile_id: dynamics_advection_diffusion_time_update_1d_euler1_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u_n: 1 + 0.5 * sin(2 * pi * xc / inputs.grid.nx)
+      L_flux: cos(2 * pi * xc / inputs.grid.nx)
+      u_np1: -999.0
+  - case_id: l0_invalid_dt_zero
+    inputs:
+      grid:
+        nx: 4
+      time:
+        dt: 0.0
+      initial:
+        u_n:
+        - 0.3
+        - 1.7
+        - 0.2
+        - 2.9
+        L_flux:
+        - 1.1
+        - -0.4
+        - 3.6
+        - -2.2
+      test_profile_id: dynamics_advection_diffusion_time_update_1d_euler1_l0
+      test_profile_version: 0.6.0
+    initial_state:
+      u_n: inputs.initial.u_n
+      L_flux: inputs.initial.L_flux
+      u_np1: -999.0
+algorithm:
+  algorithm_id: forward_euler_single_step_1d
+  execution_mode: sequence
+  steps:
+  - step_id: step_01_dt_guard
+    step_kind: diagnostic
+    operation_ref: dt_input_guard
+    inputs:
+    - dt
+    outputs:
+    - guard_pass
+    description: 'Input guard of dynamics_advection_diffusion_time_update_1d_euler1__advance,
+      evaluated FIRST, before any element of u_n or L_flux is read: guard_pass = (dt
+      > 0). dt <= 0 (zero or negative) is invalid input and an error: the operation
+      sets guard_pass = false and returns immediately, without reading u_n / L_flux
+      and without writing u_np1 (u_np1 is then undefined and the caller must not use
+      it). When dt > 0, guard_pass = true and step_02 runs. dt is the case input inputs.time.dt
+      (0.1 in l0_zero_tendency and l0_single_step_formula, -0.1 in l0_invalid_dt,
+      which therefore takes the rejection branch).'
+  - step_id: step_02_euler_update
+    step_kind: time_integrate
+    operation_ref: forward_euler_cellwise_update
+    inputs:
+    - nx
+    - u_n
+    - L_flux
+    - dt
+    - guard_pass
+    outputs:
+    - u_np1
+    description: 'Runs only when guard_pass is true. One forward Euler step, for every
+      interior cell i = 0 .. nx-1 (nx = inputs.grid.nx, the extent of u_n, L_flux
+      and u_np1; no ghost cells): u_np1(i) = u_n(i) + dt * L_flux(i), where L_flux(i)
+      is the caller-supplied tendency L_i = -(F_{i+1/2} - F_{i-1/2}) / dx taken as
+      a FIXED field (element i+1 of L_flux in 1-based numbering, i.e. the same cell
+      as u_n(i)); this component never recomputes it and holds no stencil, flux or
+      boundary treatment. Each cell''s update reads only that cell''s own u_n and
+      L_flux values (no neighbour, no shift). Every one of the nx cells is written.'
+  ordering:
+  - step_01_dt_guard
+  - step_02_euler_update
+  control_condition: if dt > 0 then guard_pass = true and step_02_euler_update runs;
+    otherwise guard_pass = false and the operation returns before reading u_n or L_flux,
+    leaving u_np1 undefined
+  iteration_contract: {}
+  update_semantics:
+    target_variables:
+    - u_np1
+    - guard_pass
+    update_order: sequential
+    notes: u_n and L_flux are intent(in) and are never modified; u_np1 is intent(out)
+      and fully overwritten on the guard-pass path; guard_pass is intent(out) and
+      assigned on every path.
+  temporaries: []
+  derived_field_rules:
+  - name: nx
+    rule: number of interior cells, the case input inputs.grid.nx; the first published
+      argument, it fixes the extent [nx] of u_n, L_flux and u_np1.
+  - name: dt
+    rule: time step, the case input inputs.time.dt, passed as the dt argument; it
+      fixes the guard (dt > 0) of step_01 and the step length of step_02.
+  - name: u_n
+    rule: state at time level n, the host-evaluated initial_state.u_n; passed unchanged
+      as the u_n argument (intent in).
+  - name: L_flux
+    rule: tendency field, the host-evaluated initial_state.L_flux; passed unchanged
+      as the L_flux argument (intent in).
+  - name: u_np1
+    rule: its initial_state pre-call content -999 at every cell; the operation then
+      writes u_np1(i) = u_n(i) + dt * L_flux(i) for i = 0..nx-1 when guard_pass is
+      true; when the guard fails the operation does not define it.
+  - name: guard_pass
+    rule: the operation's logical output, written by the driver into the scalar state
+      guard_pass as 1 / 0 after the call (0 before it).
+  invariants:
+  - u_np1(i) = u_n(i) + dt * L_flux(i) for every i = 0..nx-1 whenever guard_pass is
+    true (explicit forward Euler, first order, single stage)
+  - with L_flux identically zero, u_np1 equals u_n exactly (u + dt*0 is u)
+  - the guard dt > 0 is evaluated before any element of u_n or L_flux is read; dt
+    <= 0 yields guard_pass = false and u_np1 undefined
+  - 'the update is cellwise: cell i reads only u_n(i) and L_flux(i)'
+  - the time-integration method is fixed to forward Euler; automatic switching of
+    the time-integration method is forbidden
+  - 'AD readiness is enabled: the update u_n + dt * L_flux contains no non-differentiable
+    operation'
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: nx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+  - name: dt
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+  - name: u_n
+    shape_expr: '[nx]'
+    evidence_ref: raw/state_snapshots
+  - name: L_flux
+    shape_expr: '[nx]'
+    evidence_ref: raw/state_snapshots
+  outputs:
+  - name: u_np1
+    shape_expr: '[nx]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - u_np1
+  - name: guard_pass
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - guard_pass
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: u_n
+          shape_expr: '[nx]'
+        - name: L_flux
+          shape_expr: '[nx]'
+        - name: u_np1
+          shape_expr: '[nx]'
+        - name: guard_pass
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - axis: 0
+          count: inputs.grid.nx
+          length: inputs.grid.nx
+          name: xc
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - u_n
+    - L_flux
+    - dt
+    - nx
+  tests:
+  - test_id: l0_zero_tendency_invariance_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_zero_tendency
+    quantities:
+    - guard_pass
+    - zero_tendency_difference
+  - test_id: l0_single_step_formula_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_single_step_formula
+    quantities:
+    - formula_max_deviation
+    - guard_pass
+  - test_id: l0_invalid_dt_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_invalid_dt
+    quantities:
+    - guard_pass
+  - expected_outcome: pass
+    quantities:
+    - formula_max_deviation
+    - guard_pass
+    target_cases: &id001
+    - l0_large_step
+    test_id: l0_large_step_formula_pass
+  - expected_outcome: xfail
+    quantities:
+    - guard_pass
+    target_cases:
+    - l0_invalid_dt_zero
+    test_id: l0_invalid_dt_zero_xfail
+  predicates:
+  - test_id: l0_zero_tendency_invariance_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_zero_tendency
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_zero_tendency_invariance_pass
+    quantity: zero_tendency_difference
+    target_cases:
+    - l0_zero_tendency
+    per_case: true
+    expr: maxabs(final.u_np1 - final.u_n)
+    op: eq
+    value: 0
+  - test_id: l0_zero_tendency_invariance_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_zero_tendency
+    per_case: true
+    expr: maxabs(final.u_np1 - comparand.final.u_np1) / max(maxabs(final.u_np1), maxabs(comparand.final.u_np1),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_single_step_formula_pass
+    quantity: formula_max_deviation
+    target_cases:
+    - l0_single_step_formula
+    per_case: true
+    expr: maxabs(final.u_np1 - inputs.expected.u_np1)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_single_step_formula_pass
+    quantity: guard_pass
+    target_cases:
+    - l0_single_step_formula
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 1
+  - test_id: l0_single_step_formula_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_single_step_formula
+    per_case: true
+    expr: maxabs(final.u_np1 - comparand.final.u_np1) / max(maxabs(final.u_np1), maxabs(comparand.final.u_np1),
+      1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_dt_xfail
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_dt
+    per_case: true
+    expr: final.guard_pass
+    op: eq
+    value: 0
+  - expr: final.guard_pass
+    op: eq
+    per_case: true
+    quantity: guard_pass
+    target_cases: *id001
+    test_id: l0_large_step_formula_pass
+    value: 1
+  - expr: maxabs(final.u_np1 - (final.u_n + inputs.time.dt * final.L_flux))
+    op: le
+    per_case: true
+    quantity: formula_max_deviation
+    target_cases: *id001
+    test_id: l0_large_step_formula_pass
+    value: 1.0e-12
+  - expr: maxabs(final.u_np1 - comparand.final.u_np1) / max(maxabs(final.u_np1), maxabs(comparand.final.u_np1),
+      1.0)
+    op: le
+    per_case: true
+    quantity: cross_target_state_agreement
+    target_cases: *id001
+    test_id: l0_large_step_formula_pass
+    value: 1.0e-12
+  - expr: final.guard_pass
+    op: eq
+    per_case: true
+    quantity: guard_pass
+    target_cases:
+    - l0_invalid_dt_zero
+    test_id: l0_invalid_dt_zero_xfail
+    value: 0
+dependency:
+  node_key: component/dynamics_advection_diffusion_time_update_1d_euler1@0.3.1
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: dynamics_advection_diffusion_time_update_1d_euler1__advance
+    exercised_by:
+    - l0_zero_tendency_invariance_pass
+    - l0_single_step_formula_pass
+    - l0_invalid_dt_xfail
+    - l0_large_step_formula_pass
+    - l0_invalid_dt_zero_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: dynamics_advection_diffusion_time_update_1d_euler1__advance
+    signature:
+      kind: subroutine
+      name: dynamics_advection_diffusion_time_update_1d_euler1__advance
+      args:
+      - name: nx
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: u_n
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+      - name: L_flux
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+      - name: dt
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: u_np1
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+      - name: guard_pass
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  step:
+    operation: dynamics_advection_diffusion_time_update_1d_euler1__advance
+    result: guard_pass
+    arguments:
+      nx: inputs.grid.nx
+      u_n: state.u_n
+      L_flux: state.L_flux
+      dt: inputs.time.dt
+      u_np1: state.u_np1
+      guard_pass: state.guard_pass

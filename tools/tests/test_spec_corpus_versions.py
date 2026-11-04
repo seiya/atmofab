@@ -19,6 +19,7 @@ import yaml
 
 from tools.validate_pipeline_semantics import (
     TEST_HISTORY_LINE,
+    _tests_md_definition_blocks,
     _parse_test_expected_outcomes_from_tests_md,
     _parse_test_quantities_from_tests_md,
     _tests_md_reported_lines,
@@ -135,11 +136,58 @@ _RETIRED_TEST_TOKENS = ("pass_when", "required_raw_variables", "diagnostics.json
                         "metrics_basis", "primary_predicate", "verdict.overall", "failed_checks",
                         "`quantity`")
 _RETIRED_CHECK_REF = re.compile(r"\bchecks\.\S")
-#: The suites the Compile gate of issue #589 PR-1a refuses until PR-3 rewrites them: the two
-#: shallow-water problems still carry `reported:` lines, and none of the three problems carries
-#: the `history:` line its time loop needs. Asserted EXACTLY by `test_every_suite_is_migrated`
-#: (no skip), so a suite migrated early, or a new one left behind, reddens it; PR-3 empties it.
-TRANSITIONAL_SUITES = frozenset({"shallow_water2d_channel", "shallow_water2d", "advdiff1d_linear"})
+_OPERATION_ID_LINE = re.compile(r"^\s*-\s*`?operation_id`?\s*:\s*`?([A-Za-z0-9_]+)`?")
+#: A logical `out` of a procedure that is state a test judges, never the guard result: the
+#: saturation adjustment's `converged` (`docs/workflow/phases/phase_01_compile.md`, gate (d)).
+_NON_RESULT_FLAGS = frozenset({"converged"})
+
+
+def _section_51_results(controlled_spec: str) -> dict[str, list[str]]:
+    """The published procedures of a Controlled Spec's §5.1 fence -> their logical `out` names
+    other than `_NON_RESULT_FLAGS`. Empty when the document has no such fence."""
+    tail = controlled_spec.split("### 5.1", 1)
+    if len(tail) != 2 or "```yaml" not in tail[1]:
+        return {}
+    block = yaml.safe_load(tail[1].split("```yaml", 1)[1].split("```", 1)[0]) or {}
+    out: dict[str, list[str]] = {}
+    for proc in block.get("procedures") or []:
+        out[proc["name"]] = [
+            a["name"] for a in proc.get("args") or []
+            if a.get("intent") == "out" and (a.get("spec") or {}).get("type") == "logical"
+            and a["name"] not in _NON_RESULT_FLAGS]
+    return out
+
+
+def flag_rule_findings(sid: str, controlled_spec: str, tests_path: Path) -> list[str]:
+    """`docs/TESTS.md` requirement 9 and §Description format, the names the Compile gate requires
+    on a `quantities` line, over a physics node's own documents (a harness has no `drive`): a
+    `pass` test of a node with no time loop lists the result of its `operation_id`; a `pass` test
+    of a time-marching node lists `run.n_step`, and the `__init` result when one is published;
+    no test lists the retired `input_guard`. The gate refuses these only after a billed
+    `Compile.generate`. This reads names, not what the prose judges."""
+    results = _section_51_results(controlled_spec)
+    tests = tests_path.read_text(encoding="utf-8")
+    parsed = _parse_test_quantities_from_tests_md(tests_path)
+    outcomes = _parse_test_expected_outcomes_from_tests_md(tests_path)
+    blocks = _tests_md_definition_blocks(tests_path) or {}
+    if parsed is None or outcomes is None:
+        return [f"{sid}: tests.md is unreadable"]
+    looping = any(TEST_HISTORY_LINE.match(line.strip()) for line in tests.splitlines())
+    init = next((names for name, names in results.items() if name.endswith("__init")), None)
+    out: list[str] = []
+    for tid, names in parsed[0].items():
+        if "input_guard" in names:
+            out.append(f"{sid}: {tid} lists the retired `input_guard`")
+        if outcomes[0].get(tid) != "pass":
+            continue
+        if looping:
+            need = ["run.n_step", *(init or [])]
+        else:
+            operation = next((m.group(1) for m in map(_OPERATION_ID_LINE.match, blocks.get(tid, []))
+                              if m), None)
+            need = results.get(operation or "", ["<no §5.1 procedure named by operation_id>"])
+        out.extend(f"{sid}: pass test {tid} does not list {n!r}" for n in need if n not in names)
+    return out
 
 
 def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
@@ -174,6 +222,9 @@ def suites_unmigrated(entries: list[dict], root: Path) -> list[str]:
         if e.get("spec_kind") == "problem" and not any(
                 TEST_HISTORY_LINE.match(line.strip()) for line in tests.splitlines()):
             out.append(f"{sid}: a problem's tests.md carries no `history:` line")
+        if e.get("spec_kind") in ("problem", "component") and e.get("controlled_spec_path"):
+            out.extend(flag_rule_findings(
+                sid, (root / e["controlled_spec_path"]).read_text(encoding="utf-8"), root / tp))
     return out
 
 
@@ -299,20 +350,76 @@ class SpecCorpusVersionTest(unittest.TestCase):
         # a tests.md of every kind that has one: the three harnesses and the 17 physics nodes
         self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 3)
         self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 20)
-        findings = suites_unmigrated(entries, REPO)
-        # Issue #589 PR-1a: exactly the transitional suites are unmigrated, each for its stated
-        # reason, and every other suite is clean.
-        self.assertEqual({f.split(":", 1)[0] for f in findings}, set(TRANSITIONAL_SUITES),
-                         findings)
-        self.assertTrue(any(f.startswith("shallow_water2d:") and "`reported:`" in f
-                            for f in findings), findings)
-        self.assertTrue(any(f.startswith("shallow_water2d_channel:") and "`reported:`" in f
-                            for f in findings), findings)
-        for sid in TRANSITIONAL_SUITES:
-            self.assertIn(f"{sid}: a problem's tests.md carries no `history:` line", findings)
-        self.assertEqual(
-            suites_unmigrated([e for e in entries if e["spec_id"] not in TRANSITIONAL_SUITES],
-                              REPO), [])
+        self.assertEqual(suites_unmigrated(entries, REPO), [])
+
+    def test_each_physics_tests_md_has_a_transcription_compile_static_accepts(self) -> None:
+        """Issue #589 PR-3: `data/drive_ir/pr3_evidence/ir/` holds one hand-written IR per physics
+        node, and `Compile.static` reads it against the real `tests.md` (the quantities and
+        outcome lines, the history line, the host's case evaluation). A `tests.md` change that
+        moves those reddens this row: update the transcription, or a billed `Compile` finds out
+        instead. This says the document can be transcribed, not that a leaf will."""
+        import json
+        import tempfile
+
+        from tools.validate_pipeline_semantics import validate_compile_ir_dir
+        evidence = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
+        physics = {e["spec_id"] for e in self._entries()
+                   if e.get("spec_kind") in ("problem", "component")}
+        self.assertEqual({p.stem for p in evidence.glob("*.yaml")}, physics)
+        for spec_id in sorted(physics):
+            with self.subTest(spec_id=spec_id), tempfile.TemporaryDirectory() as tmp:
+                text = (evidence / f"{spec_id}.yaml").read_text(encoding="utf-8")
+                ir = yaml.safe_load(text)
+                ir_dir = Path(tmp)
+                (ir_dir / "spec.ir.yaml").write_text(text, encoding="utf-8")
+                key = ir["meta"]["node_key"]
+                deps = [d["node_key"] for d in (ir.get("dependency") or {}).get("direct_deps") or []]
+                (ir_dir / "dependency_graph.json").write_text(json.dumps({
+                    "node_key": key, "direct_deps": deps, "transitive_deps": [],
+                    "all_nodes": [{"node_key": k, "topo_level": 0} for k in deps]
+                    + [{"node_key": key, "topo_level": 1 if deps else 0}],
+                    "profiles": (ir.get("dependency") or {}).get("profiles") or []}))
+                (ir_dir / "ir_meta.json").write_text(json.dumps({
+                    "attempt_count": 1, "verification_status": "pass",
+                    "last_fail_reason": None, "debug_mode": False, "context_isolated": True}))
+                self.assertEqual(validate_compile_ir_dir(REPO, ir_dir), [])
+
+    def test_the_flag_rule_is_driven_both_ways(self) -> None:
+        """Synthetic: a `pass` test missing its operation's result, a time-marching one missing
+        `run.n_step` or the `__init` result, and `input_guard` are each reported; each satisfied
+        form, and an `xfail` test without a result, is not; `converged` is no result."""
+        import tempfile
+        spec = ("### 5.1\n```yaml\nprocedures:\n"
+                "- {name: s__op, args: [{name: guard_pass, intent: out, spec: {type: logical}},"
+                " {name: converged, intent: out, spec: {type: logical}},"
+                " {name: x, intent: out, spec: {type: real}}]}\n```\n")
+        loop_spec = ("### 5.1\n```yaml\nprocedures:\n"
+                     "- {name: s__step, args: [{name: ok, intent: out, spec: {type: logical}}]}\n"
+                     "- {name: s__init, args: [{name: init_ok, intent: out, spec: {type: logical}}]}\n"
+                     "```\n")
+
+        def run(spec_text: str, outcome: str, quantities: str, op: str = "s__op",
+                history: bool = False) -> list[str]:
+            head = "## 3. Execution\nhistory: every = 1 (every)\n" if history else ""
+            body = (f"{head}## 6. Test definitions\n- `test_id`: `t_a`\n  - `level`: `L0`\n"
+                    f"  - `operation_id`: `{op}`\n  - `expected_outcome`: `{outcome}`\n"
+                    f"  - `quantities`: {quantities}\n  - `judgment`: x\n## 7. Pass/fail\n")
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "tests.md"
+                path.write_text(body, encoding="utf-8")
+                return flag_rule_findings("s", spec_text, path)
+
+        self.assertEqual(run(spec, "pass", "`guard_pass`, `q`"), [])
+        self.assertEqual(run(spec, "xfail", "`q`"), [])
+        self.assertEqual(run(spec, "pass", "`q`"), ["s: pass test t_a does not list 'guard_pass'"])
+        self.assertEqual(run(spec, "pass", "`q`", op="s__other"),
+                         ["s: pass test t_a does not list '<no §5.1 procedure named by operation_id>'"])
+        self.assertIn("s: t_a lists the retired `input_guard`", run(spec, "xfail", "`input_guard`"))
+        self.assertEqual(run(loop_spec, "pass", "`run.n_step`, `init_ok`", "s__step", True), [])
+        self.assertEqual(run(loop_spec, "pass", "`init_ok`", "s__step", True),
+                         ["s: pass test t_a does not list 'run.n_step'"])
+        self.assertEqual(run(loop_spec, "pass", "`run.n_step`", "s__step", True),
+                         ["s: pass test t_a does not list 'init_ok'"])
 
     def test_the_migration_rule_is_driven_both_ways(self) -> None:
         """Synthetic: a migrated suite in either id form passes; a retired token, a missing or a
