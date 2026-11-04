@@ -23483,7 +23483,10 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
              spec_kind: str = "component",
              node_key: str = "component/dep_base@0.1.0",
              source_reading: object = None,
-             identifier_key: object = None) -> list[str]:
+             identifier_key: object = None,
+             catalog_kind: object = None) -> list[str]:
+        """``catalog_kind`` is what the registry records for `dep_base` (default: the IR's
+        ``spec_kind``); `_OMIT` seeds a registry with no entry for it (only another spec's)."""
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
@@ -23494,7 +23497,12 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             if public_api is not _OMIT:
                 ir["public_api"] = public_api
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
-            _seed_catalog(repo_root, spec_kind.strip(), "dep_base")
+            if catalog_kind is None:
+                catalog_kind = spec_kind.strip()
+            if catalog_kind is _OMIT:
+                _seed_catalog(repo_root, "component", "dep_other")
+            else:
+                _seed_catalog(repo_root, str(catalog_kind), "dep_base")
             install_target_profile(repo_root)
             pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
                             / _TARGET_ID / "p1")
@@ -23709,6 +23717,41 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         # The control: the SAME input on the kind the gate does cover fires, so the `[]` above
         # is the kind carve-out and not an input nothing objects to.
         self.assertTrue(self._run(public_api=api, model_text=model))
+
+    def test_the_kind_is_the_catalog_s_not_the_ir_s(self) -> None:
+        """Issue #589: the gate keys on the registry's kind for the node_key's spec_id, never
+        on the IR's `meta.spec_kind` (the leaf's label). Input: an extra `dep_base__` procedure,
+        which a live gate flags, so `[]` is the kind deciding and not a matching surface."""
+        model = (
+            "module dep_base_model\ncontains\n"
+            "  subroutine dep_base__scale(x)\n  end subroutine\n"
+            "  subroutine dep_base__extra(y)\n  end subroutine\n"
+            "end module\n")
+        api = {"published_operations": [{"operation_id": "dep_base__scale"}]}
+        # The leaf labels a catalog component `problem`: the pin still runs.
+        v = self._run(public_api=api, model_text=model, spec_kind="problem",
+                      catalog_kind="component")
+        self.assertTrue(any("'dep_base__extra'" in x and "NOT in the IR public_api" in x
+                            for x in v), v)
+        # The leaf labels a catalog problem `component`: the pin is off, as for any problem.
+        self.assertEqual(self._run(public_api=api, model_text=model, spec_kind="component",
+                                   catalog_kind="problem"), [])
+
+    def test_a_component_the_catalog_cannot_answer_for_fails_closed(self) -> None:
+        """Issue #589: a `component/` node_key whose spec_id the registry has no entry for is
+        refused, not skipped — on a surface that would otherwise pass, so the violation is the
+        silent registry and nothing else."""
+        api = {"published_operations": [{"operation_id": "dep_base__scale"}]}
+        v = self._run(public_api=api, model_text=self._GOOD_MODEL, catalog_kind=_OMIT)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("published operation names cannot be pinned at Generate.static", v[0])
+        self.assertIn("has no entry for spec_id 'dep_base'", v[0])
+        # Control: the same tree with the entry seeded passes.
+        self.assertEqual(self._run(public_api=api, model_text=self._GOOD_MODEL), [])
+        # A non-component node_key the registry cannot answer for is no L1b subject.
+        self.assertEqual(self._run(public_api=api, model_text=self._GOOD_MODEL,
+                                   spec_kind="problem", node_key="problem/dep_base@0.1.0",
+                                   catalog_kind=_OMIT), [])
 
     def test_cross_scanner_parity_with_runtime(self) -> None:
         # Drift guard: the validator's published-surface scanner must agree with the dependency-
