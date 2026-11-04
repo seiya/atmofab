@@ -3112,6 +3112,23 @@ class ClosureExemptionTest(unittest.TestCase):
                 for retired in self._RETIRED_FLAG_WORDINGS:
                     self.assertNotIn(retired, text)
 
+    def test_the_coverage_rule_states_the_flag_exception_at_each_statement(self) -> None:
+        """R6-3 (b): every statement that every target case must be valued says what else values
+        one, with R6-1's value, so no document says a guard test's flag fails the rule."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, clause in (
+                ("docs/workflow/phases/phase_01_compile.md",
+                 "kernel state in THAT case, or on an\n  #   `xfail` test by a flag predicate with "
+                 "`value: 0`."),
+                ("docs/workflow/phases/phase_01_compile.md",
+                 "some predicate of that test, or on an `xfail` test a flag predicate with `value: "
+                 "0` values it (per test"),
+                ("tools/prompt_templates/workshop_compile_generate.txt",
+                 "some predicate of that test, or on an `xfail` test a flag predicate with `value: "
+                 "0` values it (a read of")):
+            with self.subTest(surface=rel, clause=clause):
+                self.assertEqual((root / rel).read_text(encoding="utf-8").count(clause), 1)
+
     def test_the_outcome_line_is_stated_where_the_quantities_line_is(self) -> None:
         """R5-1's rule at each statement a leaf or an operator reads."""
         root = Path(__file__).resolve().parents[2]
