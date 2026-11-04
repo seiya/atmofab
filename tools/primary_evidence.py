@@ -22,11 +22,12 @@ nothing writes (and its history), `final.step` / `final.t` and `history.t` / `hi
 per case: a flag, so under a physics quantity it would value that judgment alone — review round
 5, R5-2), `derived.*` and `inputs.*` are not (`predicate_reads_state`); a flag stands only as a
 flag predicate (`fixed_form`). An IR with no `drive` (an
-`infrastructure` node) counts every schema variable at both capture points, as grammar 5 did. One
-class of kernel-written scalar remains judged at all — the scalar a rank-0 real / integer `out` of
-a one-call operation writes — and a predicate reading it stands beside one that reads it TOGETHER
-with an array state the same operation writes (`scalar_pairing_violations`, D7; each record carries
-`scalar_pairing`, which `verdict_evaluator.evaluate_verdict` re-checks).
+`infrastructure` node) counts every schema variable at both capture points, as grammar 5 did. Two
+classes of kernel-written scalar are judged: a logical `out`, through its flag predicate, and the
+scalar a rank-0 real / integer `out` of a one-call operation writes, where a predicate reading it
+stands beside one that reads it TOGETHER with an array state the same operation writes
+(`scalar_pairing_violations`, D7; each record carries `scalar_pairing`, which
+`verdict_evaluator.evaluate_verdict` re-checks).
 
 The host also EVALUATES each case's inputs (`evaluate_case_inputs` / `write_case_inputs`, issue
 #589 D2): the state extents from the bound dummies' `dims`, every `initial_state` entry and every
