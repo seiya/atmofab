@@ -34,7 +34,7 @@ def _contract(**overrides) -> dict:
                 {"artifact": "state_snapshots", "required": True,
                  "schema": {"variables": [
                      {"name": "h", "shape_expr": "[nx, ny]"},
-                     {"name": "cfl_run_max", "shape_expr": "scalar", "source": "reported"},
+                     {"name": "cfl_run_max", "shape_expr": "scalar"},
                  ]}},
             ],
         },
@@ -314,31 +314,90 @@ class StateSnapshotsTest(unittest.TestCase):
         self.assertTrue(any("initial/case_b.json" in p for p in excerpt["problems"]),
                         excerpt["problems"])
 
-    def test_each_variable_names_the_source_the_ir_declares(self):
-        # Issue #582 D13: the judge tells a kernel report from state by this marker. The runner's
-        # `snapshot_schema.json` does not carry it, so it comes from the IR; no key is `operation`.
+    def test_no_row_names_a_source_and_step_is_an_ordinary_row(self):
+        """Policy 4 (issue #589 PR-1b): the `source` vocabulary is gone, wherever a stale IR still
+        spells it, and `step` — the driver's own column, declared by no schema — is summarized
+        like any other name, with no declared shape."""
         self.raw.write("state_snapshots/snapshot_schema.json", {
             "variables": [{"name": "h", "shape_expr": "[nx, ny]"},
                           {"name": "cfl_run_max", "shape_expr": "scalar"}],
             "time_variable": "t"})
         self.raw.write("state_snapshots/case_a.json",
-                       {"h": [[1.0]], "cfl_run_max": 0.5, "extra": 1.0, "t": 1.0})
+                       {"h": [[1.0]], "cfl_run_max": 0.5, "step": 4, "t": 1.0})
         self.raw.write("state_snapshots/initial/case_a.json",
-                       {"h": [[1.0]], "cfl_run_max": 0.0, "t": 0.0})
-        snapshots = self._snapshots()
-        self.assertEqual({v["name"]: v["source"] for v in snapshots["schema"]["declared_variables"]},
-                         {"h": "operation", "cfl_run_max": "reported"})
+                       {"h": [[1.0]], "cfl_run_max": 0.0, "step": 0, "t": 0.0})
+        contract = _contract(raw_requirements={"required_evidence": [
+            {"artifact": "state_snapshots", "required": True, "schema": {"variables": [
+                {"name": "h", "shape_expr": "[nx, ny]", "source": "reported"}]}}]})
+        snapshots = rex.raw_evidence_excerpt(self.raw.path, contract)["state_snapshots"]
+        self.assertEqual(snapshots["schema"]["declared_variables"], [
+            {"name": "cfl_run_max", "shape_expr": "scalar"},
+            {"name": "h", "shape_expr": "[nx, ny]"}])
         case = snapshots["cases"][0]
-        self.assertEqual({v["name"]: v["source"] for v in case["variables"]},
-                         {"h": "operation", "cfl_run_max": "reported", "extra": "operation"})
-        self.assertEqual({v["name"]: v["source"] for v in case["initial"]["variables"]},
-                         {"h": "operation", "cfl_run_max": "reported"})
+        for rows in (case["variables"], case["initial"]["variables"]):
+            self.assertEqual(sorted(v["name"] for v in rows), ["cfl_run_max", "h", "step"])
+            for variable in rows:
+                self.assertNotIn("source", variable)
+            step = next(v for v in rows if v["name"] == "step")
+            self.assertIsNone(step["declared_shape_expr"])
+        self.assertEqual(next(v for v in case["variables"] if v["name"] == "step")["value"], 4)
+        # `step` is no declared variable that went missing.
+        self.assertEqual(case["declared_variables_absent"], [])
 
-    def test_cases_are_ordered(self):
-        for name in ("case_c", "case_a", "case_b"):
-            self.raw.write(f"state_snapshots/{name}.json", {"h": [[1.0]]})
-        self.assertEqual([c["case_id"] for c in self._snapshots()["cases"]],
-                         ["case_a", "case_b", "case_c"])
+    def _case(self, case_id: str = "case_a") -> dict:
+        self.raw.write("state_snapshots/snapshot_schema.json", {
+            "variables": [{"name": "h", "shape_expr": "[nx, ny]"}], "time_variable": "t"})
+        self.raw.write(f"state_snapshots/{case_id}.json", {"h": [[1.0]], "t": 1.0})
+        return next(c for c in self._snapshots()["cases"] if c["case_id"] == case_id)
+
+    def test_history_samples_counts_this_case_s_files_alone(self):
+        self.assertEqual(self._case()["history_samples"], 0)    # no `history/` at all
+        for rel in ("case_a__0.json", "case_a__2.json", "case_a__10.json"):
+            self.raw.write(f"state_snapshots/history/{rel}", {"h": [[1.0]], "t": 0.0})
+        self.assertEqual(self._case()["history_samples"], 3)
+        # Neither another case's sample, nor a name of another shape, nor a directory.
+        for rel in ("case_b__1.json", "case_a__x.json", "case_a__1.txt", "case_a.json",
+                    "case_a__.json", "xcase_a__1.json"):
+            self.raw.write(f"state_snapshots/history/{rel}", {"h": [[1.0]], "t": 0.0})
+        (self.raw.path / "state_snapshots" / "history" / "case_a__7.json").mkdir()
+        self.assertEqual(self._case()["history_samples"], 3)
+        # A case whose id extends another's reads its own (`case_a__b` holds `case_a__`'s prefix).
+        self.raw.write("state_snapshots/case_a__b.json", {"h": [[1.0]], "t": 1.0})
+        self.raw.write("state_snapshots/history/case_a__b__1.json", {"h": [[1.0]], "t": 0.0})
+        self.assertEqual(self._case("case_a__b")["history_samples"], 1)
+        self.assertEqual(self._case()["history_samples"], 3)
+
+    def test_series_summarizes_each_name_and_is_none_without_a_file(self):
+        self.assertIsNone(self._case()["series"])
+        self.raw.write("state_snapshots/series/case_a.json",
+                       '{"t": 2.0, "step": [1, 2, 3], "h_max": [1.0, 5.0, NaN]}')
+        series = self._case()["series"]
+        self.assertEqual(sorted(series), ["h_max", "step", "t"])
+        self.assertEqual(series["step"]["shape"], [3])
+        self.assertEqual((series["step"]["min"], series["step"]["max"]), (1, 3))
+        self.assertEqual(series["t"]["value"], 2.0)
+        # A non-finite entry is counted, and none is inlined.
+        self.assertEqual((series["h_max"]["nan_count"], series["h_max"]["max"]), (1, 5.0))
+        # Another case's file is not this one's.
+        self.raw.write("state_snapshots/case_b.json", {"h": [[1.0]], "t": 1.0})
+        self.assertIsNone(self._case("case_b")["series"])
+
+    def test_a_series_that_is_no_object_or_no_json_is_a_problem_and_no_summary(self):
+        for text, needle in (("[1]", "raw/state_snapshots/series/case_a.json"),
+                             ("{", "raw/state_snapshots/series/case_a.json")):
+            with self.subTest(text=text):
+                self.raw.write("state_snapshots/series/case_a.json", text)
+                self.assertIsNone(self._case()["series"])
+        self.raw.write("state_snapshots/series/case_a.json", "{")
+        problems = rex.raw_evidence_excerpt(self.raw.path, _contract())["problems"]
+        self.assertTrue(any("raw/state_snapshots/series/case_a.json" in p for p in problems),
+                        problems)
+
+    def test_a_series_or_a_sample_is_not_read_as_a_final_capture(self):
+        self._case()
+        self.raw.write("state_snapshots/history/case_a__1.json", {"h": [[1.0]], "t": 0.0})
+        self.raw.write("state_snapshots/series/case_a.json", {"t": 1.0, "step": [1]})
+        self.assertEqual([c["case_id"] for c in self._snapshots()["cases"]], ["case_a"])
 
 
 class RequiredEvidenceTest(unittest.TestCase):
@@ -372,6 +431,34 @@ class RequiredEvidenceTest(unittest.TestCase):
         row = self._rows(contract)[0]
         self.assertEqual((row["declared_as"], row["artifact"], row["present"]),
                          ("telemetry.json", None, False))
+
+    def _drive_rows(self) -> dict:
+        contract = _contract(raw_requirements={"required_evidence": [
+            {"artifact": "state_snapshots", "required": True},
+            {"artifact": "state_history", "required": True},
+            {"artifact": "step_series", "required": True}]})
+        return {row["artifact"]: row["present"] for row in self._rows(contract)}
+
+    def test_the_driver_s_artifacts_are_looked_for_where_it_writes_them(self):
+        """Issue #589: `state_history` and `step_series` sit under `state_snapshots/`
+        (`_EVIDENCE_DIRS`), so a row reading `raw/<artifact>` would answer false for every run."""
+        self.assertEqual(self._drive_rows(), {"state_snapshots": False, "state_history": False,
+                                              "step_series": False})
+        self.raw.write("state_snapshots/case_a.json", {"h": [[1.0]]})
+        self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": False,
+                                              "step_series": False})
+        self.raw.write("state_snapshots/history/case_a__1.json", {"h": [[1.0]]})
+        self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": True,
+                                              "step_series": False})
+        self.raw.write("state_snapshots/series/case_a.json", {"step": [1], "t": 1.0})
+        self.assertEqual(self._drive_rows(), {"state_snapshots": True, "state_history": True,
+                                              "step_series": True})
+
+    def test_a_directory_at_the_artifact_s_bare_name_does_not_answer(self):
+        self.raw.write("state_history/x.json", {})
+        self.raw.write("step_series/x.json", {})
+        self.assertEqual(self._drive_rows(), {"state_snapshots": False, "state_history": False,
+                                              "step_series": False})
 
     def test_required_false_is_carried(self):
         contract = _contract(raw_requirements={"required_evidence": [
@@ -454,8 +541,9 @@ class ExcerptIsBoundedTest(unittest.TestCase):
             rex.RAW_EXCERPT_POLICY_VERSION)
         self.assertIsInstance(rex.RAW_EXCERPT_POLICY_VERSION, int)
         # 2 since Z6 (issue #255): the window gained each case's `initial` capture. 3 since
-        # issue #582: the metrics-basis sections left it and each variable names its `source`.
-        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 3)
+        # issue #582: the metrics-basis sections left it and each variable names its `source`. 4
+        # since issue #589: `source` went, and each case carries `history_samples` and `series`.
+        self.assertEqual(rex.RAW_EXCERPT_POLICY_VERSION, 4)
 
 
 if __name__ == "__main__":

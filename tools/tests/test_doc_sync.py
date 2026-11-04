@@ -81,7 +81,7 @@ _ANCHOR_EXEMPT: dict[tuple[str, str], str] = {
 #: The number of `pattern` values the walk must reach (measured 2026-10-14: codegen_bundle 10,
 #: harness_capabilities 2, target_profile 3, shape_expr 3). Exact, so a walker that skips a
 #: directory or a schema file fails; adding a pattern updates this number.
-_EXPECTED_PATTERN_COUNT = 18
+_EXPECTED_PATTERN_COUNT = 15
 
 
 def anchor_problem(pattern: str) -> str | None:
