@@ -27,11 +27,11 @@ from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import runner as cpp_runner
 from tools.backends.language.fortran import runner as f_runner
 from tools.host_render import RenderError
+from tools.tests import skip_probes
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA = Path(__file__).parent / "data" / "driver_e2e"
 DRIVE_IR = Path(__file__).parent / "data" / "drive_ir"
-NVCC = shutil.which("nvcc")
 CPU = {"hardware": {"class": "cpu"}, "execution": {"threads_per_rank": 1}}
 GPU = {"hardware": {"class": "gpu"}, "execution": {"threads_per_rank": 1}}
 REAL = {"type": "real", "kind": "dp"}
@@ -573,7 +573,7 @@ class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_fortran)
 
 
-@unittest.skipUnless(NVCC, "nvcc is not on PATH")
+@skip_probes.skip_unless_installed("cuda_compiler_driver")
 class CppDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_cpp)
 
@@ -660,7 +660,7 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
         self.assertEqual((perf["steps"], perf["cells_updated"]), (9546, 89930752))
 
 
-@unittest.skipUnless(NVCC, "nvcc is not on PATH")
+@skip_probes.skip_unless_installed("cuda_compiler_driver")
 class CppGpuPackageCompilesTest(unittest.TestCase):
     """The package the `cpp_gpu` end to end runs at a site (`data/driver_e2e/package_cpp_gpu.py`)
     compiles here. Compiled for the device with no device: the run itself is the site's, recorded
