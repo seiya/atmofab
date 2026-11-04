@@ -19,6 +19,7 @@ The suite carries no symmetry pair (`docs/TESTS.md` §Symmetry pairs). The updat
 - The normal cases use `nx>=1`, `dt>0`, and a finite `L_flux`:
   - `l0_zero_tendency`: `nx=4`, `dt=0.1`, `u_n = [0.5, 1.3, -0.7, 2.1]`, `L_flux = 0` at every cell.
   - `l0_single_step_formula`: `nx=4`, `dt=0.1`, `u_n = [0.3, 1.7, 0.2, 2.9]`, `L_flux = [1.1, -0.4, 3.6, -2.2]`.
+  - `l0_large_step`: `nx=64`, `dt=6.1e-3`, `u_n(i) = 1 + 0.5*sin(2*pi*(i-0.5)/nx)`, `L_flux(i) = cos(2*pi*(i-0.5)/nx)` for `i=1..nx`: the extent and `dt` differ from those of every other normal case, so a kernel that fixes `nx` or `dt`, or refuses either value, fails it.
 - The abnormal cases `l0_invalid_dt` (`dt=-0.1`) and `l0_invalid_dt_zero` (`dt=0`, the clause's boundary) use the `nx`, `u_n` and `L_flux` of `l0_single_step_formula`.
 - Before the call the state holds `u_n` and `L_flux` as above, and `u_np1` holds the literal `-999` at every cell, its pre-call content: `u_np1` is an operation-only output, so a cell the `operation` does not write is captured as `-999` and fails every judgment of §6 over `u_np1`.
 
@@ -35,7 +36,7 @@ The host-rendered driver calls the `operation` once per case on the case's state
 
 - `guard_pass`: the captured flag. It is `== 1` on the cases of a `pass` test and `== 0` on the cases of an `xfail` test.
 - `zero_tendency_difference`: `max|u_np1 - u_n|` over every cell, with `u_n` the captured input.
-- `formula_max_deviation`: `max|u_np1 - u_np1_expected|` over every cell, where `u_np1_expected` is the output the case's judgment of §6 states (`u_n + dt*L_flux` on the case's inputs).
+- `formula_max_deviation`: `max|u_np1 - u_np1_expected|` over every cell, where `u_np1_expected` is the output the case's judgment of §6 states (`u_n + dt*L_flux` on the case's inputs; on `l0_large_step` the host evaluates that expression over the captured `u_n` and `L_flux`).
 - `cross_target_state_agreement`: this target's run compared with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; on a target with no other certified variant it holds vacuously. It is outside the `quantities` line.
 
 ## 6. Test definitions
@@ -51,6 +52,12 @@ The host-rendered driver calls the `operation` once per case on the case's state
   - `expected_outcome`: `pass`
   - `quantities`: `formula_max_deviation`, `guard_pass`
   - `judgment`: on `l0_single_step_formula`, with the fixed inputs `nx=4`, `u_n = [0.3, 1.7, 0.2, 2.9]`, `L_flux = [1.1, -0.4, 3.6, -2.2]`, `dt=0.1`, `guard_pass == 1` and the output equals `u_np1 = [0.41, 1.66, 0.56, 2.68]` (`u_n + dt*L_flux`) within an absolute tolerance of `1e-12` (`formula_max_deviation <= 1e-12`). On these values an update that drops `dt`, reverses the sign of `L_flux`, uses `dt^2`, ignores `L_flux`, or reads `L_flux` or `u_n` one cell shifted deviates by at least `0.3` at some cell. The cross-target judgment is applied: `cross_target_state_agreement` over `u_np1` is `<= 1e-12`.
+- `test_id`: `l0_large_step_formula_pass`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`
+  - `expected_outcome`: `pass`
+  - `quantities`: `formula_max_deviation`, `guard_pass`
+  - `judgment`: on `l0_large_step`, `guard_pass == 1` and `u_np1 = u_n + dt*L_flux` at every cell within an absolute tolerance of `1e-12` (`formula_max_deviation <= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `u_np1` is `<= 1e-12`.
 - `test_id`: `l0_invalid_dt_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_advection_diffusion_time_update_1d_euler1__advance`

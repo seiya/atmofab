@@ -18,6 +18,7 @@ The operation admits three transformations (`docs/TESTS.md` §Symmetry pairs): t
 - Every case declares `nx`, `ng`, `a`, `nu`, `dx`, `dt` as inputs, and the `operation` receives each as the argument of that name.
 - The normal cases use `nx>=2`, `ng=1` (unless a case states another `ng`), `a/=0` (`a>0` unless a case states another `a`), `nu>=0`, `dx>0`, `dt>0`:
   - `l0_constant_state`: `nx=4`, `ng=1`, `a=1.5`, `nu=0.1`, `dx=0.25`, `dt=0.1`, `u = u_const = 2.0` at every element, ghost cells included; the case declares `u_const` as an input.
+  - `l0_constant_state_large`: `nx=64`, `ng=1`, `a=1.5`, `nu=0.1`, `dx=0.015625`, `dt=6.1e-3`, `u = u_const = 2.0` at every element, ghost cells included: the extent, `dx` and `dt` differ from those of every other normal case, so a kernel that fixes `nx` or refuses this `dt` fails it.
   - `l0_linear_state`: `nx=4`, `ng=1`, `a=1.0`, `nu=0.1`, `dx=0.25`, `dt=0.1`, `u = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]`.
   - `l0_periodic_seam`: `nx=4`, `ng=1`, `a=1.0`, `nu=0.1`, `dx=0.25`, `dt=0.1`, `u = [0.5, 1.0, 3.0, 2.0, 0.5, 1.0]`. The case declares the selectors `seam.left_select = [1, 0, 0, 0, 0]` and `seam.right_select = [0, 0, 0, 0, 1]` as inputs, the two end faces of §5.
   - `l0_min_extent`: the smallest valid grid, `nx=2`, `ng=1`, with `a=2.0`, `nu=0.3`, `dx=0.5`, `dt=0.1`, `u = [0.3, 1.7, 0.2, 2.9]`: a guard written `nx<3` or `ng<2` refuses it.
@@ -46,8 +47,8 @@ A test is judged by the host's predicates over the captures alone (`docs/TESTS.m
 The host-rendered driver calls the `operation` once per case on the case's state, and the state captured before and after that call consists of `u` (`nx + 2*ng` values, the ghost-extended input of §2), `flux_adv` and `flux_dif` (`nx + 1` values each, the pre-call content `-999` of §2 before the call) and `guard_pass`. All four are arguments of the `operation`. `guard_pass` is its logical result, which the driver writes into the state after the call as `1` when the call returned true and `0` when it returned false; it starts at `0`, so a result the `operation` never assigned captures `0`. An output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed operation.
 
 - `guard_pass`: the captured flag. It is `== 1` on the cases of a `pass` test and `== 0` on the cases of an `xfail` test.
-- `flux_adv_maxdev`: `max|flux_adv - flux_adv_expected|` over the `nx + 1` faces, where `flux_adv_expected` is the value the case's judgment of §6 states: `a*u_const` at every face on `l0_constant_state`, the listed values on `l0_face_formula`, `l0_face_formula_aneg` and `l0_min_extent`.
-- `flux_dif_maxdev`: `max|flux_dif - flux_dif_expected|` over the `nx + 1` faces, where `flux_dif_expected` is the value the case's judgment of §6 states: `0` at every face on `l0_constant_state`, the listed values on `l0_face_formula`, `l0_face_formula_aneg` and `l0_min_extent`.
+- `flux_adv_maxdev`: `max|flux_adv - flux_adv_expected|` over the `nx + 1` faces, where `flux_adv_expected` is the value the case's judgment of §6 states: `a*u_const` at every face on `l0_constant_state` and `l0_constant_state_large`, the listed values on `l0_face_formula`, `l0_face_formula_aneg` and `l0_min_extent`.
+- `flux_dif_maxdev`: `max|flux_dif - flux_dif_expected|` over the `nx + 1` faces, where `flux_dif_expected` is the value the case's judgment of §6 states: `0` at every face on `l0_constant_state` and `l0_constant_state_large`, the listed values on `l0_face_formula`, `l0_face_formula_aneg` and `l0_min_extent`.
 - `flux_dif_spread`: `max(flux_dif) - min(flux_dif)` over the `nx + 1` faces.
 - `seam_adv_diff`: `|flux_adv(1) - flux_adv(nx+1)|`, the difference of the left and right seam faces, which the host evaluates as `|sum(seam.left_select * flux_adv) - sum(seam.right_select * flux_adv)|` with the selectors of §2.
 - `seam_dif_diff`: `|flux_dif(1) - flux_dif(nx+1)|`, the difference of the left and right seam faces, evaluated the same way over `flux_dif`.
@@ -61,7 +62,7 @@ The host-rendered driver calls the `operation` once per case on the case's state
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
   - `expected_outcome`: `pass`
   - `quantities`: `flux_adv_maxdev`, `flux_dif_maxdev`, `guard_pass`
-  - `judgment`: on `l0_constant_state`, a constant-field input (ghost cells included), `guard_pass == 1` and `flux_dif=0` and `flux_adv=a*u_const` at all `nx + 1` faces, each within an absolute tolerance of `1e-12` (`flux_adv_maxdev <= 1e-12` and `flux_dif_maxdev <= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `flux_adv` and `flux_dif` is `<= 1e-12`.
+  - `judgment`: on `l0_constant_state` and `l0_constant_state_large`, each a constant-field input (ghost cells included), `guard_pass == 1` and `flux_dif=0` and `flux_adv=a*u_const` at all `nx + 1` faces, each within an absolute tolerance of `1e-12` (`flux_adv_maxdev <= 1e-12` and `flux_dif_maxdev <= 1e-12`). The cross-target judgment is applied: `cross_target_state_agreement` over `flux_adv` and `flux_dif` is `<= 1e-12`.
 - `test_id`: `l0_linear_state_diff_flux_pass`
   - `level`: `L0`
   - `operation_id`: `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`
