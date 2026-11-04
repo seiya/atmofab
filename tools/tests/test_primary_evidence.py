@@ -3051,41 +3051,54 @@ class ClosureExemptionTest(unittest.TestCase):
          ("except in gate (l)'s zero-step closure, which that rule exempts under the quantity "
           "`run.n_step` only", "Nor does `run.n_step`")),
     )
-    #: (surface, opens, closes, the clauses that must stand inside) — review round 4, R4-3: each
-    #: statement says a result is no state read, its flag is exempt only under the result's own
-    #: name, and what that asks of an author.
-    _RESULT_FLAG_SITES = (
+    #: (surface, opens, closes, the clauses that must stand inside) — review round 5, R5-2: each
+    #: statement says a logical `out` is no state read, a flag predicate is exempt only under the
+    #: flag's own name, it values its cases only on an xfail test, and what that asks of an
+    #: author.
+    _FLAG_SITES = (
         ("docs/workflow/phases/phase_01_compile.md", "Every entry READS STATE",
          "whether the value depends on the state",
-         ("a RESULT `<r>` (the state a `result:` binds; another\n    # logical `out` counts)",
-          "a result's FLAG under `quantity: <r>`",
-          "either eq 0 on an `xfail` test (whose cases it values); under another quantity, value "
-          "or\n    # outcome it reads nothing")),
+         ("a logical `out` state `<f>` of `step` or `init`\n    # (a flag, `result:` or not)",
+          "a FLAG PREDICATE, one per point and `<f>` per test: `expr` exactly `final.<f>`",
+          "`op: eq`, `value` 0 or 1, no `bind`, `quantity: <f>`. It values its cases only on an "
+          "`xfail` test.")),
         ("docs/workflow/phases/phase_01_compile.md", "Four things are NOT such a quantity",
          "An xfail test that judges such a",
-         ("Nor is a result `<r>`: its entry is the flag, exempt above.",)),
+         ("Nor is a flag: its predicate is exempt above.",)),
         ("docs/workflow/phases/phase_01_compile.md", "(l) THE ZERO-STEP CLOSURE", "; (m)",
-         ("result's FLAG eq 1", "under its fixed quantity (`run.n_step`, the result's name), "
-          "which\n  #   the test's tests.md `quantities` line lists")),
+         ("result's flag eq 1 (a refused", "`step` result's flag eq 1",
+          "under its fixed quantity (`run.n_step`, the result's name), which\n  #   the test's "
+          "tests.md `quantities` line lists")),
         ("docs/TESTS.md", "9. A judged quantity is defined in §5", "\n",
-         ("except in its fixed flag form, which that rule exempts under the result's own name "
-          "only", "So a `pass` test of a node without a time loop lists the result's name in its "
-          "`quantities` line", "an `xfail` guard test judges the flag under that name, and a "
-          "flag predicate under any other quantity reads nothing",
-          "Nor does a result's name: its entry is that flag form.")),
+         ("nor does a logical `out` state", "except in its flag predicate, which that rule exempts "
+          "under the flag's own name only", "So a `pass` test of a node without a time loop lists "
+          "the result's name in its `quantities` line", "a flag values a test's cases only on an "
+          "`xfail` test", "a flag under any other quantity reads nothing",
+          "Nor does a flag's name: its entry is that flag predicate.")),
+        ("docs/TESTS.md", "A `tests.md` whose node runs a time loop", "\n",
+         ("every `pass` test also lists the init result's name",)),
         ("tools/prompt_templates/workshop_compile_generate.txt",
          "every `pass` test carries the zero-step closure", "Four things the gate cannot see",
-         ("the result's own name for a result flag",
-          "(the result flag eq 0 under the result's own name; a flag under any other quantity "
-          "reads nothing)")),
+         ("the result's own name for a result flag predicate",
+          "(a logical `out` is no state read: it is judged only by a flag predicate, `expr: "
+          "final.<f>` or `initial.<f>`, `op: eq`, `value` 0 or 1, `per_case: true` over all "
+          "target cases, under `quantity: <f>`, which values its cases only on an `xfail` test; "
+          "a flag under any other quantity reads nothing)")),
+        ("skills/spec-input-check/SKILL.md", "**The names a gate requires on that line**", "\n",
+         ("lists the name of its operation's result flag", "lists `run.n_step`",
+          "the init result's name")),
     )
+    #: The wordings the one rule replaced, absent from every statement above.
+    _RETIRED_FLAG_WORDINGS = ("a RESULT `<r>`", "a result's FLAG", "fixed flag form",
+                              "Nor does a result's name", "result flag eq 0")
 
-    def test_each_statement_says_a_result_flag_stands_only_under_its_name(self) -> None:
-        """R4-3: the reads-state list, the not-such-a-quantity list, gate (l), TESTS.md
-        requirement 9 and the compile generate template each carry the result-flag clauses, in
-        a bounded window (its bound self-tested)."""
+    def test_each_statement_says_a_flag_stands_only_as_its_predicate(self) -> None:
+        """R5-2: the reads-state list, the not-such-a-quantity list, gate (l), TESTS.md
+        requirement 9 and §Description format, the compile generate template and the spec input
+        check each carry the flag rule, in a bounded window (its bound self-tested); the retired
+        four-form wordings are gone from those documents."""
         root = Path(__file__).resolve().parents[2]
-        for rel, start, stop, clauses in self._RESULT_FLAG_SITES:
+        for rel, start, stop, clauses in self._FLAG_SITES:
             with self.subTest(surface=rel, start=start):
                 text = (root / rel).read_text(encoding="utf-8")
                 self.assertEqual(text.count(start), 1, start)
@@ -3094,6 +3107,21 @@ class ClosureExemptionTest(unittest.TestCase):
                 self.assertLess(len(window), 6000, "the window runs past the statement")
                 for clause in clauses:
                     self.assertIn(clause, window)
+                for retired in self._RETIRED_FLAG_WORDINGS:
+                    self.assertNotIn(retired, text)
+
+    def test_the_outcome_line_is_stated_where_the_quantities_line_is(self) -> None:
+        """R5-1's rule at each statement a leaf or an operator reads."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, clause in (
+                ("docs/workflow/phases/phase_01_compile.md",
+                 "its tests.md `expected_outcome:` line (gated)"),
+                ("docs/TESTS.md", "exactly one `expected_outcome` line"),
+                ("tools/prompt_templates/workshop_compile_generate.txt",
+                 "copied from the `expected_outcome:` line of the test's definition"),
+                ("skills/spec-input-check/SKILL.md", "**The `expected_outcome` line**")):
+            with self.subTest(surface=rel, clause=clause):
+                self.assertEqual((root / rel).read_text(encoding="utf-8").count(clause), 1)
 
     def test_the_closure_is_not_a_quantity_the_statement_rule_refuses(self) -> None:
         """R4-1: phase_01's no-state-term rule and TESTS.md requirement 9 except gate (l)'s

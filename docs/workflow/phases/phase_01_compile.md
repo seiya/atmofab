@@ -133,7 +133,7 @@ io_contract:
     # into verdict.json in-process: a test's status is its expected_outcome when every predicate of the test
     # that is not cross-target holds, else fail (`tools/verdict_evaluator.py`). Formalize each tests.md §6 / §7 rule.
     - test_id: "<test_id>"                 # exactly the tests.md test_ids, no more/less
-      expected_outcome: "pass"             # pass | xfail (the certifying outcome when every predicate holds)
+      expected_outcome: "pass"             # pass | xfail: its tests.md `expected_outcome:` line (gated); certified if every predicate holds
       target_cases: ["<case_id>", ...]     # non-empty, case.test_case_set case_ids; the cases this test's judgment reads, and every case it reads
       quantities: ["<name>", ...]          # non-empty, distinct (`[a-z][a-z0-9_.]*`): EXACTLY the names of the `quantities:` line of the test's tests.md definition (gated)
   predicates:
@@ -149,18 +149,17 @@ io_contract:
     # `drive` entry writes (an `out` / `inout` dummy), `initial.<v>` of a
     # variable `drive.init` writes, or `history.<v>` / `series.<v>_min` / `series.<v>_max` of a variable a `drive`
     # entry writes. `final.t`, `final.step`, `initial.t`, `initial.step`, the driver's counters `history.t`,
-    # `history.step`, `series.t` and `series.step`, a RESULT `<r>` (the state a `result:` binds; another
-    # logical `out` counts), `initial.<v>` of a variable the host filled from
+    # `history.step`, `series.t` and `series.step`, a logical `out` state `<f>` of `step` or `init`
+    # (a flag, `result:` or not), `initial.<v>` of a variable the host filled from
     # `initial_state`, `final.<v>` of a variable nothing writes (and its history and series), `derived.*` and
     # `inputs.*` value nothing the kernel produced, and an entry that reads only
     # them is refused — a SYNTACTIC rule, under which a read that sits only inside a term multiplied by a literal
     # zero, raised to a literal zero or subtracted from itself or added to its own negation (spelled the same) is
-    # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483). Exempt, one per form per
-    # test, per case over all its targets: gate (l)'s closure (below: a `loop` node's `pass` test, the accepted
-    # ref, `quantity: run.n_step`) and a result's FLAG under `quantity: <r>` — `final.<r>` (`<r>` the `step`
-    # result of its cases' entries) eq 1 on a `pass` test without `loop`, `initial.<r>` (`init`'s) eq 1 on a
-    # `pass` test, either eq 0 on an `xfail` test (whose cases it values); under another quantity, value or
-    # outcome it reads nothing.
+    # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483). Exempt, per case over all
+    # the test's targets: gate (l)'s closure (below: a `loop` node's `pass` test, the accepted ref, `quantity:
+    # run.n_step`), one per test, and a FLAG PREDICATE, one per point and `<f>` per test: `expr` exactly `final.<f>`
+    # or `initial.<f>` (`<f>` written in every target case at that point; `initial.` for one `init` writes),
+    # `op: eq`, `value` 0 or 1, no `bind`, `quantity: <f>`. It values its cases only on an `xfail` test.
     # whether the value depends on the state in any other way, and is the test's own quantity, is V3's judgment. On an `expected_outcome: xfail`
     # test the entries state, in the failure direction, what the guard leaves behind (the state did not advance,
     # `final.guard_pass == 0`), and must hold for the test to certify `xfail`; the
@@ -185,7 +184,7 @@ io_contract:
     # a read the reads-state rule above counts. Four things are NOT such a quantity. A quantity a captured
     # state variable enters is not, however much of it the inputs fix (a CFL number over a wave speed the state
     # carries): transcribe its definition. Nor is `run.n_step`: its entry is gate (l)'s closure, exempt above,
-    # and needs no §5 state term. Nor is a result `<r>`: its entry is the flag, exempt above. And the `xfail_condition` of a guard test over the inputs (`nx < 2`,
+    # and needs no §5 state term. Nor is a flag: its predicate is exempt above. And the `xfail_condition` of a guard test over the inputs (`nx < 2`,
     # `dt <= 0`) is not a judged quantity: the test judges the kernel's refusal, and its entry states the state
     # fact the guard leaves behind, as above, whether or not tests.md spells that fact out. An xfail test that judges such a
     # quantity (a CFL guard whose instability is seeded at round-off only, so the state stays bounded) takes
@@ -406,8 +405,8 @@ drive:
   #   `expr: "final.step - <ref>"`, `op: eq`, `value: 0`, <ref> the counterpart of
   #   `loop.n_step`'s binding and nothing else: that `derived.<n>` / `inputs.<path>` verbatim, or, for
   #   `n_step: state.<n>` (a scalar `init` writes), `initial.<n>` or `final.<n>` — and then also the `init`
-  #   result's FLAG eq 1 (a refused `__init` planning 0 steps satisfies `0 - 0`); on a node without `loop`
-  #   every `pass` test carries the `step` result's FLAG eq 1 (ONE result its cases' entries share); each
+  #   result's flag eq 1 (a refused `__init` planning 0 steps satisfies `0 - 0`); on a node without `loop`
+  #   every `pass` test carries the `step` result's flag eq 1 (ONE result its cases' entries share); each
   #   over ALL the test's target cases, under its fixed quantity (`run.n_step`, the result's name), which
   #   the test's tests.md `quantities` line lists; (m) a `loop` node's tests.md carries ONE
   #   `history:` line (docs/TESTS.md §Description format) whose input name is `history.every` without
