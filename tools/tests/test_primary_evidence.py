@@ -2483,12 +2483,12 @@ def _toy() -> dict:
                 [{"name": "h", "shape_expr": "[nx]"}, {"name": "ok", "shape_expr": "scalar"}],
                 loop=True)},
             "tests": [{"test_id": "t_run", "expected_outcome": "pass",
-                       "target_cases": ["a", "b"], "quantities": ["mass", "step_count"]}],
+                       "target_cases": ["a", "b"], "quantities": ["mass", "run.n_step"]}],
             "predicates": [
                 {"test_id": "t_run", "quantity": "mass", "target_cases": ["a", "b"],
                  "per_case": True, "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le",
                  "value": 1e-12},
-                {"test_id": "t_run", "quantity": "step_count", "target_cases": ["a", "b"],
+                {"test_id": "t_run", "quantity": "run.n_step", "target_cases": ["a", "b"],
                  "per_case": True, "expr": "final.step - derived.n_step", "op": "eq",
                  "value": 0}]}}
 
@@ -2521,13 +2521,13 @@ def _toyi() -> dict:
                                                    ("n_plan", "scalar"), ("init_ok", "scalar"),
                                                    ("ok", "scalar"))], loop=True)
     io["tests"] = [{"test_id": "t_run", "expected_outcome": "pass", "target_cases": ["a", "b"],
-                    "quantities": ["init", "plan", "step_count"]}]
+                    "quantities": ["init", "plan", "run.n_step"]}]
     common = {"test_id": "t_run", "target_cases": ["a", "b"], "per_case": True}
     io["predicates"] = [
         {**common, "quantity": "init", "expr": "initial.init_ok", "op": "eq", "value": 1},
         {**common, "quantity": "plan", "op": "le", "value": 1e-12,
          "expr": "abs(initial.dt - 0.5 / max(initial.h)) + abs(initial.n_plan * initial.dt - 1)"},
-        {**common, "quantity": "step_count", "expr": "final.step - initial.n_plan", "op": "eq",
+        {**common, "quantity": "run.n_step", "expr": "final.step - initial.n_plan", "op": "eq",
          "value": 0}]
     return ir
 
@@ -2736,7 +2736,9 @@ class StateReadsTest(unittest.TestCase):
                                                 reads))
         for bad in ({"op": "le"}, {"value": 1}, {"value": True},
                     {"expr": "final.step - 2 * derived.n_step"},
-                    {"expr": "final.step + derived.n_step"}, {"bind": {"k": "1"}}):
+                    {"expr": "final.step + derived.n_step"}, {"bind": {"k": "1"}},
+                    # R3-1: the closure carries the FIXED quantity run.n_step, nothing else
+                    {"quantity": "mass"}, {"quantity": " run.n_step"}, {"quantity": None}):
             with self.subTest(bad=bad):
                 self.assertFalse(pe.is_zero_step_closure({**closure, **bad}, reads))
         self.assertFalse(pe.is_zero_step_closure(closure, reads._replace(loop=False)))
@@ -2748,11 +2750,18 @@ class StateReadsTest(unittest.TestCase):
         v = pe.validate_primary_predicate_schema(
             [{**closure, "expr": "final.step - derived.n_step + 0.0"}], **kw)
         self.assertTrue(any("reads no captured state" in m for m in v), v)
-        # ONE closure per test is exempt: a second cannot judge another quantity by the count
-        second = {**closure, "quantity": "mass"}
-        v = pe.validate_primary_predicate_schema([closure, second], **kw)
+        # ONE closure per test is exempt: a second, in the same form and quantity, is not
+        self.assertEqual(closure["quantity"], pe.ZERO_STEP_QUANTITY)
+        v = pe.validate_primary_predicate_schema([closure, dict(closure)], **kw)
         self.assertEqual(len(v), 1)
         self.assertTrue(v[0].startswith("predicates[1]: reads no captured state"), v)
+        # R3-1: nor is the closure's text under another quantity, which it would stand for
+        v = pe.validate_primary_predicate_schema([closure, {**closure, "quantity": "mass"}], **kw)
+        self.assertEqual(len(v), 1)
+        self.assertTrue(v[0].startswith("predicates[1]: reads no captured state"), v)
+        v = pe.validate_primary_predicate_schema([{**closure, "quantity": "mass"}], **kw)
+        self.assertEqual(len(v), 1)
+        self.assertTrue(v[0].startswith("predicates[0]: reads no captured state"), v)
         # R1-9: the closure of a test that is not one of the IR's `pass` tests is not exempt
         other_test = {**closure, "test_id": "t_other"}
         v = pe.validate_primary_predicate_schema(
@@ -2772,10 +2781,15 @@ class StateReadsTest(unittest.TestCase):
             ir = _toy()
             self.assertEqual([r["kind"] for r in pe.evaluate_primary_predicates(ir, run.root)],
                              ["pass", "pass"])
-            ir["io_contract"]["predicates"].append(
-                {**ir["io_contract"]["predicates"][1], "quantity": "mass"})
+            ir["io_contract"]["predicates"].append(dict(ir["io_contract"]["predicates"][1]))
             with self.assertRaisesRegex(pe.PrimaryEvidenceError,
                                         r"predicates\[2\]: reads no captured state"):
+                pe.evaluate_primary_predicates(ir, run.root)
+            # R3-1: the closure's text under another quantity is not exempt either
+            ir = _toy()
+            ir["io_contract"]["predicates"][1]["quantity"] = "mass"
+            with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                        r"predicates\[1\]: reads no captured state"):
                 pe.evaluate_primary_predicates(ir, run.root)
         finally:
             run.cleanup()
@@ -2878,6 +2892,11 @@ class DriverCounterReadsTest(unittest.TestCase):
         self.assertTrue(all("reads no captured state the kernel produced" in m for m in v), v)
 
 
+#: The tail of gate (l)'s loop-node refusal: the fixed quantity (review round 3, R3-1).
+_CLOSURE_QUANTITY_TAIL = (", under `quantity: run.n_step`, the name each `pass` test of a "
+                          "`loop` node lists in its tests.md `quantities` line")
+
+
 class ClosureExemptionTest(unittest.TestCase):
     """R1-9: the reads-a-capture exemption belongs to the predicate that IS gate (l)'s
     accepted closure — a loop node, a `pass` test, the ref the counterpart of `loop.n_step` —
@@ -2926,6 +2945,73 @@ class ClosureExemptionTest(unittest.TestCase):
         ir = self._ir(outcome="pass", ref="derived.n_step")
         self.assertEqual(self._schema(ir), [])
         self.assertEqual([r["kind"] for r in self._evaluate(ir)], ["pass", "pass"])
+
+    def test_the_closure_quantity_is_run_n_step(self) -> None:
+        """R3-1: the closure carries ONE fixed quantity, the name the swe fixture uses."""
+        self.assertEqual(pe.ZERO_STEP_QUANTITY, "run.n_step")
+        self.assertIn(f"`quantity: {pe.ZERO_STEP_QUANTITY}`", _CLOSURE_QUANTITY_TAIL)
+
+    def test_a_pass_test_s_closure_under_another_quantity_is_not_exempt(self) -> None:
+        """R3-1: the accepted closure's text under a PHYSICS quantity would value that
+        quantity by the step count alone; gate (l) does not accept it, and neither the schema
+        gate nor the evaluator exempts it."""
+        ir = self._ir(outcome="pass", ref="derived.n_step")
+        ir["io_contract"]["predicates"][1]["quantity"] = "mass"
+        ir["io_contract"]["tests"][0]["quantities"] = ["mass"]
+        self.assertEqual([m for m in pe.drive_violations(ir, kind="problem")
+                          if m.startswith("(l)")], [
+            "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - <ref>\"`, "
+            "`op: eq`, `value: 0`, `per_case: true` over all its target cases whose <ref> is "
+            "the closure counterpart of drive.loop.n_step: for this IR 'derived.n_step' (the "
+            "zero-step closure)" + _CLOSURE_QUANTITY_TAIL])
+        v = self._schema(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith(self._MSG), v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"predicates\[1\]: reads no captured state"):
+            self._evaluate(ir)
+
+    def test_a_non_closure_predicate_under_run_n_step_is_not_exempt(self) -> None:
+        """R3-1: the quantity alone exempts nothing — a predicate under `run.n_step` that is
+        not the closure's fixed form is held to the reads-a-capture rule."""
+        for expr in ("derived.n_step", "final.step", "max(series.step)",
+                     "final.step - derived.n_step + 0.0"):
+            with self.subTest(expr=expr):
+                ir = self._ir(outcome="pass", ref="derived.n_step")
+                ir["io_contract"]["predicates"].append(
+                    {**ir["io_contract"]["predicates"][1], "expr": expr, "op": "ge",
+                     "value": 0})
+                self.assertEqual(ir["io_contract"]["predicates"][2]["quantity"],
+                                 pe.ZERO_STEP_QUANTITY)
+                v = self._schema(ir)
+                self.assertEqual(len(v), 1, v)
+                self.assertTrue(v[0].startswith("predicates[2]: reads no captured state"), v)
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                            r"predicates\[2\]: reads no captured state"):
+                    self._evaluate(ir)
+
+    #: (surface, the text that opens the statement, the text that closes it): every statement
+    #: of gate (l)'s loop-node closure an author or a leaf reads.
+    _CLOSURE_SITES = (
+        ("docs/workflow/phases/phase_01_compile.md", "(l) THE ZERO-STEP CLOSURE", "; (m)"),
+        ("docs/TESTS.md", "A `tests.md` whose node runs a time loop", "\n"),
+        ("tools/prompt_templates/workshop_compile_generate.txt",
+         "every `pass` test carries the zero-step closure", "or the deterministic gate"),
+    )
+
+    def test_each_statement_of_the_closure_names_its_quantity(self) -> None:
+        """R3-1: each statement of gate (l)'s closure names the quantity the code fixes, inside
+        that statement (a bounded window, its bound self-tested)."""
+        root = Path(__file__).resolve().parents[2]
+        token = f"`{pe.ZERO_STEP_QUANTITY}`"
+        for rel, start, stop in self._CLOSURE_SITES:
+            with self.subTest(surface=rel):
+                text = (root / rel).read_text(encoding="utf-8")
+                self.assertEqual(text.count(start), 1, start)
+                head = text.index(start)
+                window = text[head:text.index(stop, head)]
+                self.assertLess(len(window), 2000, "the window runs past the statement")
+                self.assertIn(token, window)
 
     def test_a_pass_test_s_closure_with_a_wrong_ref_is_not_exempt(self) -> None:
         ir = self._ir(outcome="pass", ref="derived.z")
@@ -3476,7 +3562,7 @@ class DriveViolationsTest(unittest.TestCase):
         init-written scalar is refused."""
         def closure_expr(ir: dict, expr: str) -> dict:
             for pred in ir["io_contract"]["predicates"]:
-                if pred["quantity"] == "step_count":
+                if pred["quantity"] == "run.n_step":
                     pred["expr"] = expr
             return ir
 
@@ -3492,7 +3578,8 @@ class DriveViolationsTest(unittest.TestCase):
                     "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - "
                     "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target cases "
                     "whose <ref> is the closure counterpart of drive.loop.n_step: for this IR "
-                    "'derived.n_step' (the zero-step closure)"])
+                    "'derived.n_step' (the zero-step closure)"
+                    + _CLOSURE_QUANTITY_TAIL])
         self.assertEqual(l_findings(closure_expr(copy.deepcopy(toy),
                                                  "final.step - derived.n_step")), [])
         for bad in ("final.step - final.init_ok", "final.step - initial.init_ok",
@@ -3502,7 +3589,8 @@ class DriveViolationsTest(unittest.TestCase):
                     "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - "
                     "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target cases "
                     "whose <ref> is the closure counterpart of drive.loop.n_step: for this IR "
-                    "'initial.n_plan' or 'final.n_plan' (the zero-step closure)"])
+                    "'initial.n_plan' or 'final.n_plan' (the zero-step closure)"
+                    + _CLOSURE_QUANTITY_TAIL])
         for good in ("final.step - initial.n_plan", "final.step - final.n_plan"):
             with self.subTest(good=good):
                 self.assertEqual(l_findings(closure_expr(_toyi(), good)), [])

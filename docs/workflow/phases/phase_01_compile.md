@@ -154,8 +154,9 @@ io_contract:
     # them is refused — a SYNTACTIC rule, under which a read that sits only inside a term multiplied by a literal
     # zero, raised to a literal zero or subtracted from itself or added to its own negation (spelled the same) is
     # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483); gate (l)'s closure
-    # (§`drive` below) is exempt from it — only on a `loop` node, on a `pass` test, with the accepted ref, one
-    # per test: the same text on an `xfail` test or with another ref reads no kernel fact and is refused.
+    # (§`drive` below) is exempt from it — only on a `loop` node, on a `pass` test, with the accepted ref, under
+    # the quantity `run.n_step`, one per test: the same text on an `xfail` test, with another ref or under
+    # another quantity reads no kernel fact and is refused.
     # whether the value depends on the state in any other way, and is the test's own quantity, is V3's judgment. On an `expected_outcome: xfail`
     # test the entries state, in the failure direction, what the guard leaves behind (the state did not advance,
     # the depth is the initial depth, `final.guard_pass == 0`), and must hold for the test to certify `xfail`; the
@@ -266,7 +267,7 @@ io_contract:
   #   positivity            expr: "min(final.h)"                                  op: ge  value: 0.05   (the END-STATE minimum)
   #   run-wide extremum     expr: "min(series.h_min)"                             op: ge  value: 0.05   (the host's fold over EVERY committed state of a `loop` node, beside the end-state predicate above)
   #   sampled CFL           expr: "max(smax(derived.dt * (abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dx))"  op: le  value: 1.0   (a per-sample index over the `every`-step samples, `smax` per sample, `max` over samples; the same over final.* covers the last state)
-  #   zero-step closure     expr: "final.step - derived.n_step"                   op: eq  value: 0      (gate (l)'s fixed form on a `loop` node; `final.guard_pass` eq 1 on a node without `loop`)
+  #   zero-step closure     quantity: run.n_step  expr: "final.step - derived.n_step"   op: eq  value: 0      (gate (l)'s fixed form on a `loop` node; `final.guard_pass` eq 1 on a node without `loop`)
   #   harness sentinel      case: "l0_array_emit_pass"  expr: "maxabs(final.a2 - inputs.initial.a2)"   op: le  value: 1.0e-12   (a self-test's emitted array against the sentinel the case DECLARES, re-parsed by the host: the emitter round-trip judged from the raw file)
   #   lake at rest          expr: "maxabs(final.h - initial.h)"                   op: le  value: 1.0e-12
   #   analytic agreement    bind: {c0: "sqrt(inputs.constants.g * inputs.initial.H_0)", h_ref: "inputs.initial.H_0 + inputs.initial.eta0 * sin(2 * pi * (x - c0 * inputs.time.t_end) / inputs.grid.L_x)"}  (c0 is written before h_ref, which reads it; the reference is evaluated at the DECLARED end time, and every input path is spelled as this node's cases declare it — tests.md §5 is the formula's source, a shift or a second axis included)
@@ -397,6 +398,9 @@ drive:
   #   predicate over `initial.<v>`, and for a scalar that `loop.n_step` / `loop.dt` references, that predicate also
   #   reads `initial.<a>` of an ARRAY `init` writes; (l) THE ZERO-STEP CLOSURE, matched by its TEXT after
   #   whitespace normalisation, not inferred: on a `loop` node every `expected_outcome: pass` test carries
+  #   `quantity: run.n_step` (exactly that name: the closure is exempt from the reads-a-capture rule, so
+  #   under a physics quantity it would value that judgment by the step count alone; each such test
+  #   therefore lists `run.n_step` in its tests.md `quantities` line, docs/TESTS.md §Description format),
   #   `expr: "final.step - <ref>"`, `op: eq`, `value: 0`, <ref> being the counterpart of `loop.n_step`'s
   #   binding and nothing else: that `derived.<n>` / `inputs.<path>` verbatim, or, for `n_step: state.<n>`
   #   (a scalar `init` writes), `initial.<n>` or `final.<n>` — and then also `expr: "initial.<init result

@@ -30258,6 +30258,34 @@ class DriveGateStageTests(unittest.TestCase):
         hits = self._hits(v, "carries no predicate `expr: \"final.step - <ref>\"`")
         self.assertEqual(len(hits), len(passing), v)
 
+        # R3-1: the finding's repro — a test's `extrema.h.min` predicates deleted, the closure
+        # relabelled `extrema.h.min` and one `cfl.max` predicate relabelled `run.n_step` kept
+        # every quantity set and cleared every gate, and the verdict passed `min(final.h) < 0`
+        tid = "l1_refinement_mass_and_positivity"
+
+        def relabel(ir):
+            preds = ir["io_contract"]["predicates"]
+            preds[:] = [p for p in preds
+                        if not (p["test_id"] == tid and p["quantity"] == "extrema.h.min")]
+            for p in preds:
+                if p["test_id"] == tid and p["quantity"] == "run.n_step":
+                    p["quantity"] = "extrema.h.min"
+            next(p for p in preds if p["test_id"] == tid
+                 and p["quantity"] == "cfl.max")["quantity"] = "run.n_step"
+        v = _drive_stage("swe", relabel)
+        closure_at = next(i for i, p in enumerate(_drive_fixture("swe")["io_contract"][
+            "predicates"]) if p["test_id"] == tid and p["quantity"] == "run.n_step")
+        closure_at -= sum(1 for p in _drive_fixture("swe")["io_contract"]["predicates"][
+            :closure_at] if p["test_id"] == tid and p["quantity"] == "extrema.h.min")
+        self.assertEqual(self._hits(v, f"(l) test {tid!r} (pass) carries no predicate"), [
+            f"<ir>:(l) test {tid!r} (pass) carries no predicate `expr: \"final.step - <ref>\"`, "
+            "`op: eq`, `value: 0`, `per_case: true` over all its target cases whose <ref> is "
+            "the closure counterpart of drive.loop.n_step: for this IR 'derived.n_step' (the "
+            "zero-step closure), under `quantity: run.n_step`, the name each `pass` test of a "
+            "`loop` node lists in its tests.md `quantities` line"], v)
+        self.assertEqual(len(self._hits(v, f"predicates[{closure_at}]: reads no captured state "
+                                           "the kernel produced")), 1, v)
+
         def one_call(ir):
             for p in ir["io_contract"]["predicates"]:
                 if p["expr"] == "final.guard_pass" and p["test_id"] == "l0_pointwise_formula_pass":

@@ -554,11 +554,21 @@ _ZERO_STEP_RE = re.compile(
     r"|inputs\.[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)$")
 
 
+#: The ONE `quantity` gate (l)'s zero-step closure carries on a `loop` node (review round 3,
+#: R3-1): the closure is exempt from the reads-a-capture rule, so under any other name — a
+#: physics quantity whose own predicates were dropped — it would value that judgment by the
+#: step count alone. Every `pass` test of a `loop` node therefore lists it in its tests.md
+#: `quantities` line, and D10 (`quantity_violations`) holds the IR to the line.
+ZERO_STEP_QUANTITY = "run.n_step"
+
+
 def zero_step_closure_ref(pred: Any) -> str | None:
-    """The `<ref>` of a predicate in gate (l)'s fixed form on a `loop` node — `expr:
-    "final.step - <ref>"` (whitespace aside), `op: eq`, a numeric `value` equal to 0, no
-    `bind` — else None. Whether the `<ref>` names an admitted value is gate (l)'s question."""
-    if not isinstance(pred, dict) or pred.get("op") != "eq" or pred.get("bind"):
+    """The `<ref>` of a predicate in gate (l)'s fixed form on a `loop` node — `quantity:
+    run.n_step` (`ZERO_STEP_QUANTITY`, exactly), `expr: "final.step - <ref>"` (whitespace
+    aside), `op: eq`, a numeric `value` equal to 0, no `bind` — else None. Whether the `<ref>`
+    names an admitted value is gate (l)'s question."""
+    if not isinstance(pred, dict) or pred.get("quantity") != ZERO_STEP_QUANTITY \
+            or pred.get("op") != "eq" or pred.get("bind"):
         return None
     value = pred.get("value")
     if not _is_number(value) or value != 0:
@@ -571,10 +581,12 @@ def zero_step_closure_ref(pred: Any) -> str | None:
 def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str]) -> bool:
     """Whether ``pred`` IS gate (l)'s zero-step closure — gate-required, and exempt from the
     reads-a-capture rule (it reads the driver's `final.step`, which no kernel writes): the node
-    declares `loop`, the predicate's test is a `pass` test (``state.closure_tests``), and its
-    `<ref>` is the accepted counterpart of `loop.n_step` (``state.closure_refs``). The same
-    text on an `xfail` test, or with another ref, reads no kernel fact and is refused like any
-    other predicate (review round 1, R1-9). The schema gate and the evaluator both ask this."""
+    declares `loop`, the predicate's test is a `pass` test (``state.closure_tests``), its
+    quantity is `run.n_step` (`zero_step_closure_ref`), and its `<ref>` is the accepted
+    counterpart of `loop.n_step` (``state.closure_refs``). The same text on an `xfail` test,
+    with another ref (review round 1, R1-9) or under another quantity (review round 3, R3-1),
+    reads no kernel fact and is refused like any other predicate. The schema gate and the
+    evaluator both ask this."""
     if not isinstance(state, StateReads) or not state.loop or not isinstance(pred, dict):
         return False
     test_id = pred.get("test_id")
@@ -3898,7 +3910,9 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                 v.append(f"(l) test {tid!r} (pass) carries no predicate `expr: \"final.step - "
                          "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target "
                          "cases whose <ref> is the closure counterpart of drive.loop.n_step: "
-                         f"for this IR {_or_list(accepted)} (the zero-step closure)")
+                         f"for this IR {_or_list(accepted)} (the zero-step closure), under "
+                         f"`quantity: {ZERO_STEP_QUANTITY}`, the name each `pass` test of a "
+                         "`loop` node lists in its tests.md `quantities` line")
             init_result = _init_result_state(block)
             if init_result is not None and not any(
                     _norm(p.get("expr")) == f"initial.{init_result}" and p.get("op") == "eq"
