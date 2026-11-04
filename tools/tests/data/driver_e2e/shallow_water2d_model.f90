@@ -5,7 +5,7 @@
 ! Cell (i, j) of the IR (0-based) is index (i+1, j+1) here; the halo-extended arrays
 ! run 0..nx+1, 0..ny+1 with one ghost layer (ng = 1).
 module shallow_water2d_model
-  use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
+  use, intrinsic :: iso_fortran_env, only: real64, error_unit
   use dynamics_shallow_water_boundary_2d_periodic_copy_model, only: &
     bnd_apply => dynamics_shallow_water_boundary_2d_periodic_copy__apply
   use dynamics_shallow_water_flux_2d_rusanov_p0_model, only: &
@@ -14,6 +14,7 @@ module shallow_water2d_model
     ssprk2_advance => dynamics_shallow_water_time_update_2d_ssprk2__advance
   implicit none
   private
+  integer, parameter :: dp = real64
   public :: shallow_water2d__step
   public :: shallow_water2d_wave_rate
 
@@ -50,6 +51,8 @@ contains
     integer :: i, j
 
     ok = .false.
+    associate (unused_t => t)
+    end associate
 
     ! z_b on the halo-extended grid, ghost layer the periodic image
     allocate(z_b_ext(0:nx + 1, 0:ny + 1))

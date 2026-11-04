@@ -42,6 +42,7 @@ the *certified* harness IR signatures + source before rendering.
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -465,6 +466,16 @@ def _render_procedure(a: Any, plan: runner_ir.DriverPlan, proc: runner_ir.Proced
         a(f"  {line}")
     if proc.calls or proc.record:
         a("    integer :: call_no")
+    # A dummy nothing below reads would be refused as unused in a file no leaf can edit.
+    read = _names_of(proc.tree) | {d for d, _refs in proc.record}
+    dim_names = {tok for x in args.values() for tok in re.findall(r"[A-Za-z_]\w*", " ".join(
+        str(t) for t in (x.get("dims") or [])))}
+    unread = [n for n, x in args.items()
+              if x.get("intent") == "in" and n not in read and n not in dim_names]
+    if unread:
+        bindings = ", ".join(f"unused_{n} => {n}" for n in unread)
+        a(f"    associate ({bindings})")
+        a("    end associate")
     for line in _wrap(f"{proc.out} = {expr}"):
         a(f"    {line}")
     if proc.calls:
@@ -481,6 +492,10 @@ def _render_procedure(a: Any, plan: runner_ir.DriverPlan, proc: runner_ir.Proced
         for k, ref in enumerate(refs, start=1):
             a(f"    if (call_no == {k}) {_ST}{ref} = {dummy}")
     a(f"  {stanza[-1]}")
+
+
+def _names_of(tree: Any) -> set[str]:
+    return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
 
 
 def _wrap(text: str, width: int = 88) -> list[str]:
@@ -787,7 +802,7 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
                     a(f"{ind}  t_c = t_start_c")
                 if "dt" in state_loop:
                     a(f"{ind}  dt_c = {_ST}{state_loop['dt']}")
-                    a(f"{ind}  if (dt_c <= 0.0_dp) then")
+                    a(f"{ind}  if (.not. dt_c > 0.0_dp) then")
                     a(f"{ind}    write(error_unit, '(A)') 'error: init wrote a dt <= 0 for case '//cid")
                     a(f"{ind}    error stop 2")
                     a(f"{ind}  end if")

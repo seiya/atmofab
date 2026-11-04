@@ -2644,6 +2644,12 @@ def _is_open_statement(statement: str) -> bool:
 #: backend's I/O scan refuses the same by name.
 _COMMAND_CALL_RE = re.compile(r"\bcall\s+(?:execute_command_line|system)\b")
 
+#: `bind(c)`: an interface to a libc name reaches `atexit` and `system` under any local name, and
+#: a handler registered that way rewrites a capture after the driver has written it (measured in
+#: review). No §5.1 asks for one (0 occurrences over the certified models), and the C++ backend
+#: refuses `extern "C"` likewise.
+_BIND_C_RE = re.compile(r"\bbind\s*\(\s*c\b")
+
 
 def _leaf_sources(src_dir: Path, model_files: list[Path], spec_id: str) -> list[Path]:
     """The model files, then every other regular source under `src_dir` at any depth, symbolic
@@ -2718,6 +2724,11 @@ def model_harness_isolation_violations(
             violations.append(
                 f"{f}: a physics source must not start a program (`execute_command_line`, "
                 "`system`) — a child can rewrite what the host-rendered driver captured")
+        if any(_BIND_C_RE.search(mask_string_contents(stmt).lower()) for stmt in stmts):
+            violations.append(
+                f"{f}: a physics source must not declare `bind(c)` — an interface to the C "
+                "library reaches what the program's own language refuses here, and the "
+                "published operations are the language's own procedures")
         lowered = [stmt.lower() for stmt in stmts]
         violations.extend(
             f"{f}: forbidden judge-artifact filename detected ({output_name})"

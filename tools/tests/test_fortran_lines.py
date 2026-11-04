@@ -584,6 +584,16 @@ class ModelHarnessIsolationScanTests(unittest.TestCase):
                     for v in fortran_source.model_harness_isolation_violations(
                         src, [model], "p", **kwargs)]
 
+    def test_a_model_declares_no_bind_c(self) -> None:
+        for body in ("interface\n  subroutine c_sys() bind(c, name='system')\n  end subroutine"
+                     "\nend interface", "interface\n  subroutine q() BIND ( C )\n  end subroutine"
+                     "\nend interface"):
+            with self.subTest(body=body):
+                self.assertTrue(any("`bind(c)`" in v for v in self._scan(body)))
+        for body in ("x = 1  ! bind(c)", "x = 'bind(c)'", "call rebind(c)"):
+            with self.subTest(body=body):
+                self.assertFalse(any("`bind(c)`" in v for v in self._scan(body)))
+
     def test_a_model_starts_no_program(self) -> None:
         for body in ("call execute_command_line('cp a b')", "call system('cp a b')",
                      "if (.true.) call execute_command_line('x')"):

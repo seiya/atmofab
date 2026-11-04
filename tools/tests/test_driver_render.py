@@ -94,7 +94,7 @@ def _ir(variables: dict[str, str], drive: dict[str, Any], cases: list[dict[str, 
     }
 
 
-def loop_ir(*modes: int, every: int = 2, n_step: int = 4) -> dict[str, Any]:
+def loop_ir(*modes: int, every: int = 2, n_step: int = 4, dt: float = 0.25) -> dict[str, Any]:
     """A loop node: `u` an inout state, `w` a lone out, `ok` the result; one case per mode."""
     drive = {
         "step": {"operation": "drv_toy__step", "result": "ok", "arguments": {
@@ -103,9 +103,9 @@ def loop_ir(*modes: int, every: int = 2, n_step: int = 4) -> dict[str, Any]:
         "loop": {"n_step": "inputs.n_step", "dt": "derived.dt", "t_start": "inputs.t_start",
                  "t_end": "inputs.t_end"},
         "history": {"every": "inputs.every"}}
-    cases = [{"case_id": f"m{m}", "derived": {"dt": 0.25},
+    cases = [{"case_id": f"m{m}", "derived": {"dt": dt},
               "inputs": {"grid": {"nx": 3}, "mode": m, "n_step": n_step, "t_start": 1.0,
-                         "t_end": 1.0 + n_step * 0.25, "every": every},
+                         "t_end": 1.0 + n_step * dt, "every": every},
               "initial_state": {"u": [1.0, 2.0, 3.0], "w": 0.0}} for m in modes]
     return _ir({"u": "[nx]", "w": "[nx]", "ok": "scalar"}, drive, cases)
 
@@ -151,8 +151,40 @@ def procedure_ir(expr: str = "inputs.lam * u + sin(t) - 2 ** 2 / max(abs(u), 3.0
         "u_np1": "state.u_np1", "ok": "state.ok"}}}
     cases = [{"case_id": "c", "inputs": {"grid": {"nx": 3}, "t": 0.25, "dt": dt, "lam": -2.0},
               "initial_state": {"u_n": [1.0, 2.0, 4.0], "u_np1": -9.0}}]
-    return _ir({"u_n": "[nx]", "u_np1": "[nx]", "ok": "scalar", "n_calls": "scalar",
-                "stage_t": "[2]", "stage_u1": "[nx]", "stage_u2": "[nx]"}, drive, cases)
+    return _ir({"stage_t": "[2]", "u_n": "[nx]", "u_np1": "[nx]", "ok": "scalar",
+                "n_calls": "scalar", "stage_u1": "[nx]", "stage_u2": "[nx]"}, drive, cases)
+
+
+def init_call_ir(*modes: int) -> dict[str, Any]:
+    """A one-call node whose `init` writes the state the operation reads."""
+    drive = {
+        "init": {"operation": "drv_toy__init", "result": "init_ok", "arguments": {
+            "nx": "inputs.grid.nx", "mode": "inputs.mode", "n_plan": "state.n_plan",
+            "dt_plan": "state.dt_plan", "u": "state.a", "init_ok": "state.init_ok"}},
+        "step": {"operation": "drv_toy__apply", "result": "ok", "arguments": {
+            "nx": "inputs.grid.nx", "mode": "inputs.apply_mode", "a": "state.a", "b": "state.b",
+            "c": "state.c", "s": "state.s", "ok": "state.ok"}}}
+    cases = [{"case_id": f"m{m}", "inputs": {"grid": {"nx": 3}, "mode": m, "apply_mode": 0},
+              "initial_state": {"b": -999.0, "c": [5.0, 5.0, 5.0], "s": -7.0}} for m in modes]
+    return _ir({"a": "[nx]", "b": "[nx]", "c": "[nx]", "s": "scalar", "n_plan": "scalar",
+                "dt_plan": "scalar", "init_ok": "scalar", "ok": "scalar"}, drive, cases)
+
+
+def init_host_loop_ir(*modes: int) -> dict[str, Any]:
+    """`init` beside a loop whose count is host data: a refused `init` still takes no step."""
+    ir = init_ir(*modes)
+    ir["drive"]["loop"]["n_step"] = "inputs.n_step"
+    for case in ir["case"]["test_case_set"]:
+        case["inputs"]["n_step"] = 3
+    return ir
+
+
+def list_ir(*modes: int) -> dict[str, Any]:
+    """The list form: each case to its own entry."""
+    ir = call_ir(*modes)
+    entry = ir["drive"]["step"]
+    ir["drive"]["step"] = [{**entry, "cases": [f"m{m}"]} for m in modes]
+    return ir
 
 
 class Run:
@@ -310,6 +342,78 @@ class _DriverBehaviour:
         run = self._run(loop_ir(3))
         self.assertEqual(run.snapshot("m3")["ok"], 0.0)
 
+    def test_a_result_is_reset_before_every_call(self) -> None:
+        """A true result of the case before must not stand for a kernel that assigns none."""
+        run = self._run(call_ir(0, 3))
+        self.assertEqual(run.snapshot("m0")["ok"], 1.0)
+        self.assertEqual(run.snapshot("m3")["ok"], 0.0)
+        self.assertEqual(run.snapshot("m3")["step"], 0.0)
+
+    def test_t_is_t_start_plus_n_dt_not_an_accumulation(self) -> None:
+        final = self._run(loop_ir(0, every=0, n_step=10, dt=0.1)).snapshot("m0")
+        self.assertEqual(final["t"], 1.0 + 10 * 0.1)
+        accumulated = 1.0
+        for _ in range(10):
+            accumulated += 0.1
+        self.assertNotEqual(final["t"], accumulated)
+
+    def test_the_series_carries_the_time_of_the_last_committed_state(self) -> None:
+        run = self._run(loop_ir(1))
+        doc = json.loads((run.snapshots / "series" / "m1.json").read_text())
+        self.assertEqual(doc["t"], 1.5)
+
+    def test_walltime_is_summed_over_the_step_calls(self) -> None:
+        perf = self._run(loop_ir(0, every=0, n_step=500)).perf()
+        self.assertNotEqual(perf["walltime_sec"], 1.0e-9)
+        self.assertGreater(perf["walltime_sec"], 0.0)
+
+    def test_cells_updated_multiply_the_largest_state_array(self) -> None:
+        self.assertEqual(self._run(procedure_ir()).perf()["cells_updated"], 3)
+
+    def test_a_refused_init_on_a_one_call_node_takes_no_call(self) -> None:
+        run = self._run(init_call_ir(10))
+        final = run.snapshot("m10")
+        self.assertEqual(final["init_ok"], 0.0)
+        self.assertEqual(final["ok"], 0.0)
+        self.assertEqual(final["step"], 0.0)
+        self.assertEqual(final["b"], [-999.0] * 3)
+
+    def test_an_accepted_init_on_a_one_call_node_feeds_the_call(self) -> None:
+        run = self._run(init_call_ir(0))
+        self.assertEqual(run.snapshot("initial/m0")["a"], [1.0] * 3)
+        self.assertEqual(run.snapshot("m0")["b"], [2.0] * 3)
+
+    def test_a_refused_init_takes_no_step_when_the_count_is_host_data(self) -> None:
+        run = self._run(init_host_loop_ir(10, 0))
+        self.assertEqual(run.snapshot("m10")["step"], 0.0)
+        self.assertEqual(run.snapshot("m0")["step"], 3.0)
+
+    def test_an_init_written_array_is_reallocated_for_each_case(self) -> None:
+        run = self._run(init_ir(0, 5))
+        self.assertEqual(run.snapshot("initial/m5")["u"], [1.0] * 3)
+
+    def test_the_list_form_runs_each_case_through_its_entry(self) -> None:
+        run = self._run(list_ir(0, 1))
+        self.assertEqual(run.snapshot("m0")["ok"], 1.0)
+        self.assertEqual(run.snapshot("m1")["ok"], 0.0)
+
+    def test_a_case_no_entry_runs_stops_the_program(self) -> None:
+        run = self._run(list_ir(0))
+        source = run.dir / "ir" / "case_inputs" / "m0.json"
+        shutil.copy(source, source.with_name("other.json"))
+        second = _exec(run.dir, ["other"])
+        self.assertNotEqual(second.proc.returncode, 0)
+        self.assertIn("no drive entry", second.proc.stdout + second.proc.stderr)
+
+    def test_more_calls_than_recorded_slots_are_counted_and_not_stored(self) -> None:
+        ir = procedure_ir()
+        variables = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"]
+        next(v for v in variables if v["name"] == "stage_t")["shape_expr"] = "[1]"
+        final = self._run(ir).snapshot("c")
+        self.assertEqual(final["n_calls"], 2.0)
+        self.assertEqual(final["stage_t"], [0.25])
+
     def test_an_unassigned_cell_of_a_lone_out_reaches_the_capture_as_nan(self) -> None:
         run = self._run(loop_ir(2))
         doc = json.loads((run.snapshots / "m2.json").read_text())
@@ -432,7 +536,8 @@ class _DriverBehaviour:
         return u + 0.5 * dt * (k1 + rhs(t + dt, stage)), stage
 
     def test_a_procedure_binding_agrees_with_the_hosts_reading_and_records_its_calls(self) -> None:
-        expr = "inputs.lam * u + sin(t) - 2 ** 2 / max(abs(u), 3.0) + sqrt(exp(log(abs(u) + pi)))"
+        expr = ("inputs.lam * u + sin(t) - 2 ** 2 / max(abs(u), 3.0) + sqrt(exp(log(abs(u) + pi)))"
+                " + (-cos(t)) * min(u, e, 2.0)")
         run = self._run(procedure_ir(expr))
         final = run.snapshot("c")
         u = np.array([1.0, 2.0, 4.0])
@@ -459,6 +564,55 @@ class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
 @unittest.skipUnless(NVCC, "nvcc is not on PATH")
 class CppDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_cpp)
+
+
+class ResultResetOptimisationTest(unittest.TestCase):
+    """gfortran clobbers a plain `intent(out)` scalar actual at the call, so the driver's reset is a
+    dead store unless the actual is `volatile`: a kernel that never assigns its result would read
+    `true`. Measured to depend on the flags, so each flag set a build can use is run here."""
+
+    def _ok_after_true_case(self, flags: list[str]) -> float:
+        ir = call_ir(0, 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ids = _prepare(root, ir, None)
+            (root / "runner.f90").write_text(
+                f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU))
+            objs = []
+            for stem in ("harness_fortran_cpu", "drv_toy"):
+                subprocess.run(["gfortran", *flags, "-c", str(DATA / f"{stem}_model.f90"), "-o",
+                                f"{stem}.o"], cwd=root, check=True, capture_output=True)
+                objs.append(f"{stem}.o")
+            subprocess.run(["gfortran", *flags, "-c", "runner.f90", "-o", "r.o"], cwd=root,
+                           check=True, capture_output=True)
+            subprocess.run(["gfortran", *flags, *objs, "r.o", "-o", "bin"], cwd=root, check=True,
+                           capture_output=True)
+            run = _exec(root, ids)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-1000:])
+            return run.snapshot("m3")["ok"]
+
+    def test_a_never_assigned_result_reads_zero_under_every_flag_set(self) -> None:
+        for flags in (["-std=f2008", "-O0"], ["-std=f2008", "-O2"], ["-std=f2008", "-O3"],
+                      ["-std=f2008", "-O2", "-fcheck=bounds"],
+                      ["-std=f2008", "-O2", "-fopenmp"]):
+            with self.subTest(flags=flags):
+                self.assertEqual(self._ok_after_true_case(flags), 0.0)
+
+    def test_the_scalars_an_out_dummy_takes_are_volatile(self) -> None:
+        text = f_runner.render_runner(call_ir(0), "drv_toy", "harness_fortran_cpu", target=CPU)
+        self.assertIn("logical, volatile :: lg_ok", text)
+        self.assertIn("real(dp), volatile :: st_s", text)
+
+
+class FortranTokenWidthTest(unittest.TestCase):
+    def test_an_argument_past_the_token_width_stops_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = run_fortran(Path(tmp), call_ir(0))
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-500:])
+            long = "x" * (f_runner.TOKEN_LEN + 1)
+            second = _exec(Path(tmp), [long])
+            self.assertNotEqual(second.proc.returncode, 0)
+            self.assertIn("exceeds the token width", second.proc.stderr)
 
 
 class CertifiedModelEndToEndTest(unittest.TestCase):
@@ -565,6 +719,68 @@ class RenderRefusalTest(unittest.TestCase):
             with self.assertRaises(RenderError) as caught:
                 module.render_runner(ir, "drv_toy", harness, target=target)
             self.assertFalse(caught.exception.identity)
+
+    def test_the_shapes_the_renderers_have_no_spelling_for_are_refused(self) -> None:
+        def integer_array(ir: dict) -> None:
+            ir["public_api"]["signatures"][0]["signature"]["args"][2]["spec"] = INT
+
+        def logical_in_state(ir: dict) -> None:
+            args = ir["public_api"]["signatures"][0]["signature"]["args"]
+            args[2]["spec"] = LOGICAL
+            args[2].pop("dims"), args[2].pop("rank")
+
+        def string_dummy(ir: dict) -> None:
+            ir["public_api"]["signatures"][0]["signature"]["args"][1]["spec"] = {
+                "type": "string", "len": "assumed"}
+
+        def result_not_logical(ir: dict) -> None:
+            ir["drive"]["step"]["result"] = "s"
+
+        def unknown_extent(ir: dict) -> None:
+            ir["public_api"]["signatures"][0]["signature"]["args"][2]["dims"] = ["nope"]
+
+        def history_without_loop(ir: dict) -> None:
+            ir["drive"]["history"] = {"every": "inputs.mode"}
+
+        for mutate, ir_of in ((integer_array, lambda: call_ir(0)),
+                              (logical_in_state, lambda: call_ir(0)),
+                              (string_dummy, lambda: call_ir(0)),
+                              (result_not_logical, lambda: call_ir(0)),
+                              (history_without_loop, lambda: call_ir(0))):
+            with self.subTest(mutate=mutate.__name__):
+                ir = ir_of()
+                ir["public_api"]["signatures"] = [
+                    s for s in ir["public_api"]["signatures"] if s["symbol"] == "drv_toy__apply"]
+                ir["public_api"]["signatures"] = json.loads(
+                    json.dumps(ir["public_api"]["signatures"]))
+                mutate(ir)
+                with self.assertRaises(RenderError):
+                    f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+        ir = init_ir(0)
+        ir["public_api"] = json.loads(json.dumps(ir["public_api"]))
+        init_sig = next(s for s in ir["public_api"]["signatures"]
+                        if s["symbol"] == "drv_toy__init")["signature"]
+        next(a for a in init_sig["args"] if a["name"] == "u")["dims"] = ["nope"]
+        with self.assertRaisesRegex(RenderError, "extent token 'nope'"):
+            f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+
+    def test_a_host_rendered_procedure_binds_what_it_does_not_read(self) -> None:
+        """The promoted unused-dummy warning would refuse a file no leaf can edit."""
+        ir = procedure_ir("inputs.lam * u")
+        rhs = ir["drive"]["step"]["arguments"]["rhs"]
+        del rhs["record"], rhs["calls"]
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        schema["variables"] = [v for v in schema["variables"]
+                               if v["name"] in ("u_n", "u_np1", "ok")]
+        text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+        self.assertIn("unused_t => t", text)
+        with tempfile.TemporaryDirectory() as tmp:
+            run = run_fortran(Path(tmp), ir)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-500:])
+            subprocess.run(
+                ["gfortran", "-std=f2008", "-c", "-Wall", "-Werror=unused-dummy-argument",
+                 "-Wno-unused-variable", "runner.f90", "-o", "w.o"], cwd=tmp, check=True,
+                capture_output=True)
 
     def test_the_two_readers_of_a_procedure_binding_agree(self) -> None:
         self.assertEqual(runner_ir.PROCEDURE_FUNCTIONS, pe.PROCEDURE_FUNCTIONS)

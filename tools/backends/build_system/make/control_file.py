@@ -4,7 +4,7 @@
 Two halves, both moved unchanged out of the neutral core:
 
 * the RENDERERS of the host-authored `src/Makefile` — `render_node` (the IR-shaped Makefile of a
-  node with a fixed model / checks / runner set, and the Model B dependency closure) and
+  node with a fixed model / runner set, and the Model B dependency closure) and
   `render_from_graph` (a pure `CodegenBundle`'s derived build graph), from
   `tools/workflow_conductor.py`. The GRAMMAR is this module's; what it says to compile a language
   comes from that language backend's `control_file` rules (`rules`), which the conductor hands in;

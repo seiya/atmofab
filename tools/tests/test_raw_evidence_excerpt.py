@@ -242,6 +242,12 @@ class StateSnapshotsTest(unittest.TestCase):
     def _snapshots(self) -> dict:
         return rex.raw_evidence_excerpt(self.raw.path, _contract())["state_snapshots"]
 
+    def test_cases_are_ordered(self):
+        for name in ("case_c", "case_a", "case_b"):
+            self.raw.write(f"state_snapshots/{name}.json", {"h": [[1.0]]})
+        self.assertEqual([c["case_id"] for c in self._snapshots()["cases"]],
+                         ["case_a", "case_b", "case_c"])
+
     def test_absent_directory(self):
         self.assertEqual(self._snapshots(),
                          {"present": False, "schema": None, "cases": []})

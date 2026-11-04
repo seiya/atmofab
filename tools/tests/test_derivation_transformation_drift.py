@@ -1112,7 +1112,7 @@ PINNED_RENDER: dict[str, str] = {
     # `host_render`, `host_execution`, `fortran/lines.py`, `fortran/signatures.py`,
     # `make/control_file.py`, `ROLE_BUILD_PRECEDENCE`, `_write_runner`, `_write_makefile`,
     # `_render_leaf_makefile_from_graph`.
-    "render-15": "a79ec5f3e7f0cb883f21ecdc7f211112f56cef9cea842a64b3d2aac520f31f22",
+    "render-15": "0e4cb18fd5c9e038c0f0a43e7d146cd4dd14d3efcedb20a683ce8f9da2e68aa7",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source
@@ -1407,7 +1407,7 @@ PINNED_BUILD: dict[str, str] = {
     # object. Rows moved, measured against origin/main a55f7390: `make/control_file.py`,
     # `fortran/bundle.py`, `tools/host_execution.py`. Row added: `cuda_cpp/bundle.py`, which names
     # a staged dependency on that language as `fortran/bundle.py` does on its own.
-    "build-4": "8adbe5c7d5d49843dd0d75e5695e40868dbc6961f7e65e1f30f46b89a4ff9bff",
+    "build-4": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

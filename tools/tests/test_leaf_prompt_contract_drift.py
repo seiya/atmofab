@@ -1139,7 +1139,7 @@ PINNED: dict[str, str] = {
     # language's `GENERATE_RULES.md`. Members moved: the compile, generate and harness producer
     # templates, the generate and harness verify templates, the judge template, the six
     # generate fragments, the runner-output contract (whole and §1+§3) and the severity rubric.
-    "leaf-91": "eb043a4cccbd9681fc3c45e46f8146fac34cf732d616450100385afb7197ab4b",
+    "leaf-91": "905e8aa884f7a8c8cbe747eabebcc7e21226123a97a66a456f9bcb4f5fb2ac8a",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
