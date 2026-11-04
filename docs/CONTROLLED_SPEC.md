@@ -38,6 +38,7 @@ Boundary rules:
 - For the `Markdown` math notation, use `$...$` for inline and `$$...$$` for block, and do not use `\(...\)` or `\[...\]`.
 - Forbid completion of omissions by the `LLM` or a converter. Treat **a shortage as an error**.
 - Fix the physics algorithm (A) in the `Controlled Spec`, and handle the execution algorithm (B) outside the `spec`: the target profile and the CodegenBundle's `target_lowering_plan` hold it (`docs/IMPL_PLAN_SPEC.md`).
+- State a refusal of invalid input as the operation's logical result `false`, never as a stop of the program: the host-rendered driver records a `false` result and the tests judge the state it leaves ([issue #589](https://github.com/seiya/atmofab/issues/589)). A numerical-stability bound exceeded during the run (a CFL number above 1) is not a refusal: the operation performs its steps and the tests judge the state.
 
 ## Description format (fixed template)
 Place **0. Meta information** at the top. The subsequent sections are fixed per `spec_kind`.
@@ -64,6 +65,9 @@ Place **0. Meta information** at the top. The subsequent sections are fixed per 
 
 5. **Integration algorithm**
 - Required statement: state the `component` call order, data passing, and time-update order.
+- Required statement: the published surface ([issue #589](https://github.com/seiya/atmofab/issues/589)). The published `operation_id`s are exactly `<spec_id>__step` and, when the discrete initial state is not a closed form `tests.md` can state over the inputs, `<spec_id>__init`, each a backtick span carrying the `<spec_id>__` prefix. `__step` advances the state by ONE step: every state array is an `inout` argument or an `in` / `out` pair, the time step `dt`, the time `t` and the runtime inputs are `in` arguments, exactly one logical `out` is its result, and it has no rank-0 real or integer `out`. `__init` computes the discrete initial state and the values derived from it (a time step, a step count) as `out` arguments, with its own logical result. The time loop is not the operation's: the host-rendered driver calls `__step` once per step from the IR's `drive` block (`docs/workflow/phases/phase_01_compile.md`).
+- The subsection `### 5.1` is required: the canonical interface block of `__step` and `__init`, under the rules the `infrastructure` §5.1 states below. The `Compile` gate reads `## 5.` and `### 5.1` of a `problem` by number, as it does a `component`'s.
+- The model may keep private module state between `__init` and `__step` (a field `__init` computes for `__step` to read). It is not a schema variable and is captured in no file, and the driver does not reset it between cases: `__init`, called once per case, establishes every private field `__step` reads.
 
 6. **Model parameters and the runtime input contract**
 - Required statement: state the fixed / variable physical constants, units, and default values.
@@ -183,6 +187,7 @@ An `infrastructure spec` takes the `component spec` section shape **minus sectio
 - All required sections corresponding to the `spec_kind` exist.
 - The physics / algorithm definition and the test input conditions are not mixed.
 - For a `problem spec`, the dependent `component` and adopted `profile` are stated.
+- For a `problem spec`, §5 publishes `<spec_id>__step` (and `<spec_id>__init` where it is needed) and carries the `### 5.1` block.
 - For a `component spec`, the published `operation` and failure conditions are stated.
 - For a `profile spec`, the application conditions and exclusion conditions are stated.
 - For each `spec` other than a `profile`, the `tests.md` reference is stated and can be reconciled with `spec_ref`. A `profile spec` has no `tests.md` and no tests-reference section.

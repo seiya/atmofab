@@ -6897,31 +6897,17 @@ class Conductor:
         Nothing here names a target (issue #284): Compile is target-free, so the admissible-
         toolchain document and the `impl_defaults` knob-name schema this context carried until
         R4-a PR-3 are gone with the IR section they governed. The checks-module contract's ABI
-        sections were the one target-coloured document left (R4-a's accepted residual); since
-        issue #289 (R4-b PR-2) they are language-neutral, and the language binding is shown
-        only to the `generate` leaves. Its version is `LEAF_PROMPT_CONTRACT_VERSION`'s, the
-        classification `test_derivation_transformation_drift.INLINED_DOCUMENT_CLASS` gives it
-        (`contract`, pinned by `test_leaf_prompt_contract_drift`) — not
-        `COMPILE_INLINED_DOCUMENTS_VERSION`'s, which pins the three documents this context
-        inlines whole. The compile transformation carries both, so a change to either re-derives
-        every node's Compile.
+        sections (`checks_module_contract_document`) went with issue #589 PR-1a: the IR no longer
+        describes a checks module — the host-rendered driver calls the published operations from
+        the IR's `drive` block, and the phase contract states that block whole — so the producer
+        is handed no document about one. The `generate` and `validate` leaves keep theirs until
+        PR-1b deletes the module.
 
         The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
         dependency closure and the published operation names — reach it already host-resolved, as
         `dependency_graph_document` and (through the unfenced `<dependency_facts>` block) the
-        published-operations catalog. `docs/workflow/CHECKS_MODULE_CONTRACT.md` is sliced to its
-        ABI sections by the same `_checks_contract_abi_sections` the reviewer uses, so this caller
-        adds no new reader of that document beyond the reviewer's."""
-        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
-                                                 WORKFLOW_PHASE_DOC_BY_STEP)
-        contract_text = self._leaf_repo_document(
-            CHECKS_MODULE_CONTRACT_REF, "checks_contract")
-        try:
-            contract_abi = _checks_contract_abi_sections(contract_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                "pure_checks_contract_document_unsliceable: "
-                f"{self.repo_root / CHECKS_MODULE_CONTRACT_REF}: {exc}") from exc
+        published-operations catalog."""
+        from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
         return {
             "controlled_spec_document": self._leaf_node_document(
                 f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
@@ -6942,7 +6928,6 @@ class Conductor:
             "ir_algorithm_2d_example_document": self._leaf_repo_document(
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
                 "ir_algorithm_2d_example"),
-            "checks_module_contract_document": contract_abi,
         }
 
     def _build_leaf_compile_verify_context(self, refs: NodeRefs) -> dict[str, str]:
@@ -7754,7 +7739,6 @@ class Conductor:
             "phase_contract_document": "phase_01_compile.md",
             "ir_algorithm_example_document": "ir_algorithm_example.yaml",
             "ir_algorithm_2d_example_document": "ir_algorithm_2d_example.yaml",
-            "checks_module_contract_document": "CHECKS_MODULE_CONTRACT.md",
         }),
     }
     #: The host-composed orientation the pure template splices in, seeded as files.

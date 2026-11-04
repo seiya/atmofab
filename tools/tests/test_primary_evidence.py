@@ -38,6 +38,7 @@ import json
 import re
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from typing import ClassVar
 
@@ -208,9 +209,9 @@ class GrammarAllowlistTest(unittest.TestCase):
             "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
             "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
             "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 3), "flip": (2, 2),
-            "coarsen": (2, 2)})
+            "coarsen": (2, 2), "smax": (1, 1), "smin": (1, 1), "ssum": (1, 1)})
         self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
-        self.assertEqual(pe.GRAMMAR_VERSION, 5)
+        self.assertEqual(pe.GRAMMAR_VERSION, 6)
         self.assertEqual(pe.MAX_INPUT_RANK, 4)
         for src in ("abs(1, 2)", "sum()", "roll(final.h)", "transpose(final.h, 1, 0, 1)",
                     "flip(final.h)", "flip(final.h, 0, 1)", "coarsen(final.h)",
@@ -1063,24 +1064,17 @@ class VerdictIntegrationTest(unittest.TestCase):
         with self.assertRaises(PredicateError):
             evaluate_verdict(self.tests, ["x"])
 
-    def test_a_reported_read_through_real_records(self) -> None:
-        """D13 on records the evaluator produced: the report and the state are both judged."""
-        variables = [{"name": "h", "shape_expr": "[nx, ny]"},
-                     {"name": "s", "shape_expr": "scalar", "source": "reported"}]
-        report = {"test_id": "t_sym", "quantity": "sym", "target_cases": ["a", "b"],
-                  "expr": "final.s", "op": "le", "value": 10.0, "per_case": True}
-        state = {"test_id": "t_sym", "quantity": "sym", "target_cases": ["a", "b"],
-                 "expr": "max(final.h)", "op": "le", "value": 1e9, "per_case": True}
-        for cid in "ab":
-            self.run.write_state(cid, self.h, self.h)
-        self.ir = _ir([MASS, HMIN, report, state], variables=variables)
+    def test_records_carry_cases_read_and_no_sources_read(self) -> None:
+        """Grammar 6: a record names the cases it values and what D7 asks of it, and no longer
+        a per-`source` map (the vocabulary is retired). An IR with no `drive` has no one-call
+        scalar, so every record's `scalar_pairing` is empty and the verdict folds them."""
         records = self._records()
-        self.assertEqual(records[2]["sources_read"], {"reported": ["a", "b"]})
-        self.assertEqual(records[3]["sources_read"], {"operation": ["a", "b"]})
-        self.assertEqual(evaluate_verdict(self.tests, records)["per_test"][1]["status"], "pass")
-        self.ir = _ir([MASS, HMIN, report], variables=variables)
-        with self.assertRaisesRegex(PredicateError, "source: reported"):
-            evaluate_verdict(self.tests, self._records())
+        for rec in records:
+            self.assertNotIn("sources_read", rec)
+            self.assertEqual(rec["scalar_pairing"], {})
+            self.assertEqual(rec["grammar_version"], 6)
+        self.assertEqual(records[1]["cases_read"], ["a", "b"])
+        self.assertEqual(evaluate_verdict(self.tests, records)["per_test"][0]["status"], "pass")
 
 
 # ---------------------------------------------------------------------------- schema gate
@@ -1517,8 +1511,11 @@ class SchemaGateTest(unittest.TestCase):
         it, so the rank check does too."""
         ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
                                     {"name": "t", "shape_expr": "[nx]"}])
-        self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), [])
-        self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), [])
+        # grammar 6 refuses `t` as a variable name; the rank check still reads it as rank 0
+        reserved = ["state_snapshots.schema.variables: 't' is the driver's or the harness's "
+                    "own key (['case_id', 'step', 't']), not a variable name"]
+        self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), reserved)
+        self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), reserved)
 
     def test_a_rank_1_expr_is_refused(self) -> None:
         ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
@@ -1553,21 +1550,28 @@ class StaticRankTest(unittest.TestCase):
     def _envs(self) -> tuple[pe.RankEnv, pe.CaseEnv]:
         h = np.arange(1.0, 1.0 + NX * NY).reshape(NX, NY) / (NX * NY)
         v = np.linspace(0.1, 0.9, NX)
-        cap = {"h": h, "v": v, "s": 0.5, "t": 0.2}
+        cap = {"h": h, "v": v, "s": 0.5, "t": 0.2, "step": 3.0}
         inputs = {"k": 2.0, "a1": v.tolist(), "a2": h.tolist()}
+        history = {"h": np.stack([h, 2 * h, 3 * h]), "v": np.stack([v, v]),
+                   "s": np.array([0.5, 0.7]), "t": np.array([0.1, 0.2]),
+                   "step": np.array([1.0, 2.0])}
+        series = {"t": np.array([0.1, 0.2, 0.3]), "h_max": np.array([1.0, 1.1, 1.2])}
+        derived = {"dt": 0.01, "f": h * 0 + 1.0, "w": v.copy()}
         env = pe.CaseEnv(case_id="a", initial=dict(cap), final=dict(cap), inputs=inputs,
-                         coordinates={"x": h * 0 + 0.25})
-        ranks = {"h": 2, "v": 1, "s": 0, "t": 0}
+                         coordinates={"x": h * 0 + 0.25}, history=history, series=series,
+                         derived=derived, state_rank=2)
+        ranks = {"h": 2, "v": 1, "s": 0, "t": 0, "step": 0}
         renv = pe.RankEnv(captures=ranks, coordinates=frozenset({"x"}), coordinate_rank=2,
                           input_rank=lambda cid, p: int(np.ndim(
-                              pe.resolve_input_value(env.inputs, p))), case="a")
+                              pe.resolve_input_value(env.inputs, p))), case="a",
+                          derived_rank=lambda cid, n: int(np.ndim(derived[n])))
         return renv, env
 
     def test_every_function_has_a_rank_rule(self) -> None:
         self.assertEqual(set(pe._RANK_RULES), set(pe.FUNCTIONS))
         self.assertEqual(set(pe._RANK_RULES.values()),
                          {"reduce", "reduce_or_pairwise", "elementwise", "pairwise", "roll",
-                          "array_first"})
+                          "array_first", "sample_reduce"})
 
     ROWS = (
         "sum(final.h)", "mean(final.h)", "min(final.h)", "max(final.h)", "abs(final.h)",
@@ -1584,6 +1588,12 @@ class StaticRankTest(unittest.TestCase):
         "transpose(final.h, 0, 1)",
         "coarsen(final.h, 2)", "coarsen(final.v, 2)", "norm2(final.h - flip(at('a').final.h, 0))",
         "sum(coarsen(final.h, inputs.k))",
+        # grammar 6
+        "final.step", "initial.step", "history.h", "history.v", "history.s", "history.t",
+        "history.step", "series.h_max", "derived.dt", "derived.f", "derived.w",
+        "smax(history.h)", "smin(history.v)", "ssum(history.h)", "smax(series.t)",
+        "smax(history.s)", "max(smax(history.h * derived.dt))", "x * history.h",
+        "history.h - x", "at('a').x + history.h", "sum(history.h)", "final.h - derived.f",
     )
 
     def test_static_rank_is_the_evaluated_rank(self) -> None:
@@ -1609,7 +1619,10 @@ class StaticRankTest(unittest.TestCase):
                      "transpose(final.h, 1)", "transpose(final.h, final.h, 1)",
                      "transpose(final.h, 0, final.h)",
                      "flip(final.h, final.v)", "coarsen(final.h, final.h)",
-                     "transpose(final.h) + final.v", "flip(final.h, 0) - final.v"):
+                     "transpose(final.h) + final.v", "flip(final.h, 0) - final.v",
+                     # grammar 6
+                     "smax(final.s)", "smax(1.0)", "history.h - final.v", "history.h + final.h",
+                     "derived.w * final.h", "sqrt(x) * history.h"):
             with self.subTest(expr=expr):
                 tree = pe.parse_expr(expr)
                 with self.assertRaises(pe.PrimaryEvidenceError) as runtime:
@@ -1864,191 +1877,6 @@ class QuantityGateTest(unittest.TestCase):
             self._T, [1, {"quantity": "mass"}, {"test_id": "t_mass"},
                       {"test_id": "t_mass", "quantity": 1}]), base)
 
-
-class ReportedReadGateTest(unittest.TestCase):
-    """`reported_read_violations` (D13): each way a report could stand alone has its own row."""
-
-    SCHEMA: ClassVar[dict] = {"variables": [
-        {"name": "h", "shape_expr": "[nx, ny]"},
-        {"name": "op2", "shape_expr": "scalar", "source": "operation"},
-        {"name": "flag", "shape_expr": "scalar", "source": "record"},
-        {"name": "ref", "shape_expr": "[nx, ny]", "source": "reference"},
-        {"name": "cfl", "shape_expr": "scalar", "source": "reported"},
-        {"name": "hmin", "shape_expr": "scalar", "source": "reported"}]}
-
-    @staticmethod
-    def _p(expr: str, q: str = "cfl_max", t: str = "t", **kw: object) -> dict:
-        out = {"test_id": t, "quantity": q, "expr": expr, "op": "le", "value": 1.0,
-               "target_cases": ["a", "b"], "per_case": True, **kw}
-        if "case" in kw:
-            del out["per_case"]
-        return out
-
-    def _v(self, *preds: dict) -> list[str]:
-        return pe.reported_read_violations(list(preds), self.SCHEMA)
-
-    def test_paired_passes(self) -> None:
-        self.assertEqual(self._v(self._p("final.cfl"), self._p("max(final.h)")), [])
-        self.assertEqual(self._v(self._p("final.cfl"), self._p("final.op2")), [])
-        self.assertEqual(self._v(self._p("initial.cfl"), self._p("max(initial.h)")), [])
-
-    def test_alone_is_refused(self) -> None:
-        v = self._v(self._p("final.cfl"))
-        self.assertEqual(len(v), 1, v)
-        for token in ("predicates[0]", "'t'", "'cfl_max'", "['a', 'b']", "source: reported"):
-            self.assertIn(token, v[0])
-
-    def test_a_reported_read_in_a_bind_counts(self) -> None:
-        self.assertEqual(len(self._v(self._p("x", bind={"x": "final.cfl"}))), 1)
-        self.assertEqual(self._v(self._p("final.h[0]" if False else "max(final.h)",
-                                         bind={"dead": "final.cfl"})), [])
-
-    def test_a_term_constant_by_form_is_no_read_on_either_side(self) -> None:
-        # the report read only under `* 0` needs no pair ...
-        self.assertEqual(self._v(self._p("max(final.h) + 0 * final.cfl")), [])
-        # ... and a state read only under `* 0` is no pair
-        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("final.flag + 0 * max(final.h)"))),
-                         1)
-
-    def test_a_predicate_reading_both_does_not_pair_with_itself_or_its_twin(self) -> None:
-        both = self._p("final.cfl + 1e-300 * max(final.h)")
-        self.assertEqual(len(self._v(both)), 1)
-        self.assertEqual(len(self._v(both, self._p("final.hmin + max(final.h)"))), 2)
-
-    def test_the_pair_is_same_test_same_quantity(self) -> None:
-        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("max(final.h)", q="other"))), 1)
-        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("max(final.h)", t="u"))), 1)
-
-    def test_the_pair_is_not_cross_target(self) -> None:
-        self.assertEqual(len(self._v(self._p("final.cfl"),
-                                     self._p("maxabs(final.h - comparand.final.h)"))), 1)
-
-    def test_record_and_reference_do_not_pair_and_need_no_pair(self) -> None:
-        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("final.flag"))), 1)
-        self.assertEqual(len(self._v(self._p("final.cfl"), self._p("max(final.ref)"))), 1)
-        self.assertEqual(self._v(self._p("final.flag")), [])
-        self.assertEqual(self._v(self._p("max(final.ref)")), [])
-
-    def test_the_pair_reads_every_case_the_report_is_read_in(self) -> None:
-        one = self._p("max(final.h)", case="a")
-        self.assertEqual(len(self._v(self._p("final.cfl"), one)), 1)
-        self.assertEqual(self._v(self._p("final.cfl", case="a"), one), [])
-        self.assertEqual(len(self._v(self._p("final.cfl", case="b"), one)), 1)
-        self.assertEqual(self._v(self._p("final.cfl - at('b').final.cfl", case="a"),
-                                 self._p("max(final.h)")), [])
-        self.assertEqual(self._v(self._p("final.cfl"),
-                                 self._p("max(final.h) - max(at('b').final.h)", case="a")), [])
-
-    def test_malformed_shapes_are_left_to_the_schema_gates(self) -> None:
-        self.assertEqual(pe.reported_read_violations(None, self.SCHEMA), [])
-        self.assertEqual(pe.reported_read_violations([self._p("final.cfl")], None), [])
-        self.assertEqual(self._v(3, {"test_id": 1}, {"test_id": "t"}), [])  # type: ignore[arg-type]
-        self.assertEqual(self._v(self._p("final.cfl +")), [])
-
-
-class ReferenceReadGateTest(unittest.TestCase):
-    """`reference_read_violations` (round 2 R2): a leaf-computed reference judges nothing without
-    the operation's state, in the same predicate or another of the same test and quantity."""
-
-    SCHEMA: ClassVar[dict] = ReportedReadGateTest.SCHEMA
-    _p = staticmethod(ReportedReadGateTest._p)
-
-    def _v(self, *preds: dict) -> list[str]:
-        return pe.reference_read_violations(list(preds), self.SCHEMA)
-
-    def test_state_in_the_same_predicate_or_beside_it_passes(self) -> None:
-        self.assertEqual(self._v(self._p("maxabs(final.h - initial.ref)")), [])
-        self.assertEqual(self._v(self._p("maxabs(final.ref - 1.0)"), self._p("maxabs(final.h)")), [])
-        self.assertEqual(self._v(self._p("maxabs(final.ref)"), self._p("final.op2")), [])
-
-    def test_a_reference_judged_alone_is_refused(self) -> None:
-        for expr in ("maxabs(final.ref - inputs.grid.nx)",       # against the inputs
-                     "maxabs(final.ref - initial.ref)",          # against itself
-                     "maxabs(final.ref) + final.flag",           # a record is not state
-                     "maxabs(final.ref) + final.cfl"):           # nor is a report
-            with self.subTest(expr=expr):
-                v = self._v(self._p(expr))
-                self.assertEqual(len(v), 1, v)
-                for token in ("predicates[0]", "'t'", "'cfl_max'", "source: reference"):
-                    self.assertIn(token, v[0])
-
-    def test_a_term_constant_by_form_is_no_state_read(self) -> None:
-        self.assertEqual(len(self._v(self._p("maxabs(final.ref) + 0 * maxabs(final.h)"))), 1)
-        self.assertEqual(len(self._v(self._p("maxabs(final.ref)", bind={"d": "maxabs(final.h)"}))), 1)
-        # and a reference read only there is no reference read
-        self.assertEqual(self._v(self._p("final.flag + 0 * maxabs(final.ref)")), [])
-
-    def test_the_state_is_of_the_same_test_quantity_and_cases(self) -> None:
-        ref = self._p("maxabs(final.ref)")
-        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", q="other"))), 1)
-        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", t="u"))), 1)
-        self.assertEqual(len(self._v(ref, self._p("maxabs(final.h)", case="a"))), 1)
-        self.assertEqual(self._v(ref, self._p("maxabs(final.h)", case="a"),
-                                 self._p("maxabs(final.h)", case="b")), [])
-        self.assertEqual(self._v(self._p("maxabs(final.ref)", case="a"),
-                                 self._p("maxabs(final.h)", case="a")), [])
-
-    def test_a_cross_target_read_of_state_does_not_count(self) -> None:
-        self.assertEqual(len(self._v(self._p("maxabs(final.ref)"),
-                                     self._p("maxabs(final.h - comparand.final.h)"))), 1)
-
-    def test_a_record_stays_exempt_and_malformed_shapes_go_to_the_schema_gates(self) -> None:
-        self.assertEqual(self._v(self._p("final.flag")), [])
-        self.assertEqual(pe.reference_read_violations(None, self.SCHEMA), [])
-        self.assertEqual(pe.reference_read_violations([self._p("maxabs(final.ref)")], None), [])
-        self.assertEqual(self._v(3, {"test_id": 1}), [])  # type: ignore[arg-type]
-
-
-class SourceGateTest(unittest.TestCase):
-    def test_variable_sources_default_to_operation(self) -> None:
-        self.assertEqual(
-            pe.variable_sources({"variables": [
-                {"name": "h"}, {"name": " s ", "source": "record"}, 3, {"source": "x"}]}),
-            {"h": "operation", "s": "record"})
-        self.assertEqual(pe.SNAPSHOT_SOURCES, ("operation", "record", "reported", "reference"))
-
-    def test_each_declared_class_passes(self) -> None:
-        schema = {"variables": [{"name": n, "shape_expr": "scalar", "source": n}
-                                for n in pe.SNAPSHOT_SOURCES] + [{"name": "h", "shape_expr": "[n]"}]}
-        self.assertEqual(pe.source_violations(schema), [])
-        self.assertEqual(pe.source_violations(None), [])
-
-    def test_an_undeclared_class_is_refused(self) -> None:
-        for bad in ("kernel", " reported", "Reported", 3, None, True):
-            with self.subTest(bad=bad):
-                v = pe.source_violations({"variables": [
-                    {"name": "s", "shape_expr": "scalar", "source": bad}]})
-                self.assertEqual(len(v), 1)
-                self.assertIn("variables[0].source must be one of", v[0])
-
-    def test_a_reported_array_is_refused_and_another_class_may_be_one(self) -> None:
-        for shape in ("[nx]", "[nx, ny]", "[ncomp, nx, ny]"):   # rank 1 is an array too (round 2 R5)
-            with self.subTest(shape=shape):
-                self.assertEqual(len(pe.source_violations({"variables": [
-                    {"name": "c", "shape_expr": shape, "source": "reported"}]})), 1)
-        self.assertEqual(pe.source_violations({"variables": [
-            {"name": "c", "shape_expr": "scalar", "source": "reported"}]}), [])
-        v = pe.source_violations({"variables": [
-            {"name": "s", "shape_expr": "scalar"},
-            {"name": "c", "shape_expr": "[nx, ny]", "source": "reported"}]})
-        self.assertEqual(len(v), 1)
-        self.assertIn("variables[1]", v[0])
-        self.assertIn("is a scalar", v[0])
-        for source in ("operation", "record", "reference"):
-            self.assertEqual(pe.source_violations({"variables": [
-                {"name": "c", "shape_expr": "[nx, ny]", "source": source}]}), [])
-        # an unreadable shape is the schema gate's
-        self.assertEqual(pe.source_violations({"variables": [
-            {"name": "c", "shape_expr": "x", "source": "reported"}]}), [])
-
-    def test_sources_read_splits_by_class_and_leaves_empty_classes_out(self) -> None:
-        sources = {"h": "operation", "cfl": "reported", "flag": "record"}
-        p = {"target_cases": ["a", "b"], "per_case": True,
-             "expr": "final.cfl + max(final.h)"}
-        self.assertEqual(pe.sources_read(p, sources),
-                         {"operation": ["a", "b"], "reported": ["a", "b"]})
-        self.assertEqual(pe.sources_read({**p, "expr": "final.t"}, sources), {})
-        self.assertEqual(pe.sources_read({**p, "expr": "final.cfl +"}, sources), {})
 
 class CompileContractCouplingTest(unittest.TestCase):
     """The grammar is stated twice — in `FUNCTIONS` and in the compile contract's grammar block
@@ -2579,6 +2407,2848 @@ class CrossTargetCliTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(pe.main(["--ir", str(ir_path), "--run", str(runs["own"].root),
                                       "--comparand", f"gpu={runs['gpu'].root}"]), 1)
+
+
+# ------------------------------------------------------------------------- grammar 6 / drive
+#
+# Issue #589 PR-1a. The fixtures: the hand-converted coriolis component (one call, no loop)
+# under `tools/tests/data/drive_ir/`, and three IRs built here — `_toy` (a `loop` problem
+# whose loop scalars are host data), `_toyi` (a `loop` problem whose `init` writes the state
+# and the loop scalars) and `_rus` (a one-call component with a rank-0 real `out`: D7).
+
+_DRIVE_DIR = Path(__file__).resolve().parent / "data" / "drive_ir"
+
+
+def _coriolis() -> dict:
+    import yaml
+    return yaml.safe_load((_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml").read_text())
+
+
+def _arg(name: str, intent: str | None, typ: str, rank: int = 0,
+         dims: list[str] | None = None) -> dict:
+    out = {"name": name, "rank": rank, "spec": {"type": typ}}
+    if intent is not None:
+        out["intent"] = intent
+    if dims is not None:
+        out["dims"] = dims
+    return out
+
+
+def _api(ops: dict[str, list[dict]]) -> dict:
+    return {"published_operations": [{"operation_id": op} for op in ops],
+            "signatures": [{"symbol": op, "signature": {"kind": "subroutine", "name": op,
+                                                          "args": args}}
+                           for op, args in ops.items()]}
+
+
+def _evidence(variables: list[dict], *, loop: bool, coords: bool = True) -> list[dict]:
+    schema = {"variables": variables, "time_variable": "t", "time_shape_expr": "scalar"}
+    if coords:
+        schema["coordinates"] = [{"name": "x", "axis": 0, "count": "inputs.grid.nx",
+                                  "length": 1.0, "placement": "cell_center"}]
+    out = [{"artifact": "state_snapshots", "required": True, "schema": schema}]
+    if loop:
+        arrays = [v["name"] for v in variables if v["shape_expr"] != "scalar"]
+        out += [{"artifact": "state_history"},
+                {"artifact": "step_series",
+                 "names": ["t", "step"] + [f"{a}_{m}" for a in arrays for m in ("min", "max")]}]
+    return out
+
+
+def _toy_case(cid: str, nx: int) -> dict:
+    return {"case_id": cid,
+            "inputs": {"grid": {"nx": nx}, "time": {"t_start": 0.0, "t_end": 1.0},
+                       "history": {"every": 2}},
+            "initial_state": {"h": "1 + x"},
+            "derived": {"n_step": 10,
+                        "dt": "(inputs.time.t_end - inputs.time.t_start) / derived.n_step"}}
+
+
+def _toy() -> dict:
+    """A `loop` problem, host-data loop scalars: `toy__step(nx, dt, t, h inout, ok out)`."""
+    step = [_arg("nx", "in", "integer"), _arg("dt", "in", "real"), _arg("t", "in", "real"),
+            _arg("h", "inout", "real", 1, ["nx"]), _arg("ok", "out", "logical")]
+    return {
+        "meta": {"spec_id": "toy", "spec_kind": "problem"},
+        "public_api": _api({"toy__step": step}),
+        "drive": {"step": {"operation": "toy__step", "result": "ok",
+                           "arguments": {"nx": "inputs.grid.nx", "dt": "derived.dt",
+                                         "t": "time", "h": "state.h", "ok": "state.ok"}},
+                  "loop": {"n_step": "derived.n_step", "dt": "derived.dt",
+                           "t_start": "inputs.time.t_start", "t_end": "inputs.time.t_end"},
+                  "history": {"every": "inputs.history.every"}},
+        "case": {"test_case_set": [_toy_case("a", 4), _toy_case("b", 8)]},
+        "io_contract": {
+            "raw_requirements": {"required_evidence": _evidence(
+                [{"name": "h", "shape_expr": "[nx]"}, {"name": "ok", "shape_expr": "scalar"}],
+                loop=True)},
+            "tests": [{"test_id": "t_run", "expected_outcome": "pass",
+                       "target_cases": ["a", "b"], "quantities": ["mass", "run.n_step"]}],
+            "predicates": [
+                {"test_id": "t_run", "quantity": "mass", "target_cases": ["a", "b"],
+                 "per_case": True, "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le",
+                 "value": 1e-12},
+                {"test_id": "t_run", "quantity": "run.n_step", "target_cases": ["a", "b"],
+                 "per_case": True, "expr": "final.step - derived.n_step", "op": "eq",
+                 "value": 0}]}}
+
+
+def _toyi() -> dict:
+    """A `loop` problem whose `init` writes `h`, `dt`, `n_plan` and `init_ok`."""
+    init = [_arg("nx", "in", "integer"), _arg("h", "out", "real", 1, ["nx"]),
+            _arg("dt", "out", "real"), _arg("n_plan", "out", "integer"),
+            _arg("init_ok", "out", "logical")]
+    step = [_arg("nx", "in", "integer"), _arg("dt", "in", "real"), _arg("t", "in", "real"),
+            _arg("h", "inout", "real", 1, ["nx"]), _arg("ok", "out", "logical")]
+    ir = _toy()
+    ir["meta"]["spec_id"] = "toyi"
+    ir["public_api"] = _api({"toyi__init": init, "toyi__step": step})
+    ir["drive"] = {
+        "init": {"operation": "toyi__init", "result": "init_ok",
+                 "arguments": {"nx": "inputs.grid.nx", "h": "state.h", "dt": "state.dt",
+                               "n_plan": "state.n_plan", "init_ok": "state.init_ok"}},
+        "step": {"operation": "toyi__step", "result": "ok",
+                 "arguments": {"nx": "inputs.grid.nx", "dt": "state.dt", "t": "time",
+                               "h": "state.h", "ok": "state.ok"}},
+        "loop": {"n_step": "state.n_plan", "dt": "state.dt", "t_start": "inputs.time.t_start",
+                 "t_end": "inputs.time.t_end"},
+        "history": {"every": "inputs.history.every"}}
+    for case in ir["case"]["test_case_set"]:
+        del case["initial_state"], case["derived"]
+    io = ir["io_contract"]
+    io["raw_requirements"]["required_evidence"] = _evidence(
+        [{"name": n, "shape_expr": s} for n, s in (("h", "[nx]"), ("dt", "scalar"),
+                                                   ("n_plan", "scalar"), ("init_ok", "scalar"),
+                                                   ("ok", "scalar"))], loop=True)
+    io["tests"] = [{"test_id": "t_run", "expected_outcome": "pass", "target_cases": ["a", "b"],
+                    "quantities": ["init_ok", "plan", "run.n_step"]}]
+    common = {"test_id": "t_run", "target_cases": ["a", "b"], "per_case": True}
+    io["predicates"] = [
+        {**common, "quantity": "init_ok", "expr": "initial.init_ok", "op": "eq", "value": 1},
+        {**common, "quantity": "plan", "op": "le", "value": 1e-12,
+         "expr": "abs(initial.dt - 0.5 / max(initial.h)) + abs(initial.n_plan * initial.dt - 1)"},
+        {**common, "quantity": "run.n_step", "expr": "final.step - initial.n_plan", "op": "eq",
+         "value": 0}]
+    return ir
+
+
+def _rus_op() -> list[dict]:
+    return [_arg("nx", "in", "integer"), _arg("q", "in", "real", 1, ["nx"]),
+            _arg("F", "out", "real", 1, ["nx"]), _arg("a_x", "out", "real"),
+            _arg("ok", "out", "logical")]
+
+
+def _rus() -> dict:
+    """A one-call component with a rank-0 real `out` (`a_x`): D7's class."""
+    op = _rus_op()
+    common = {"test_id": "t_flux", "target_cases": ["a"], "per_case": True}
+    return {
+        "meta": {"spec_id": "rus", "spec_kind": "component"},
+        "public_api": _api({"rus__flux": op}),
+        "drive": {"step": {"operation": "rus__flux", "result": "ok",
+                           "arguments": {"nx": "inputs.grid.nx", "q": "state.q",
+                                         "F": "state.F", "a_x": "state.a_x",
+                                         "ok": "state.ok"}}},
+        "case": {"test_case_set": [{"case_id": "a", "inputs": {"grid": {"nx": 4}},
+                                    "initial_state": {"q": "x", "F": -999.0, "a_x": -999.0}}]},
+        "io_contract": {
+            "raw_requirements": {"required_evidence": _evidence(
+                [{"name": "q", "shape_expr": "[nx]"}, {"name": "F", "shape_expr": "[nx]"},
+                 {"name": "a_x", "shape_expr": "scalar"}, {"name": "ok", "shape_expr": "scalar"}],
+                loop=False)},
+            "tests": [{"test_id": "t_flux", "expected_outcome": "pass", "target_cases": ["a"],
+                       "quantities": ["ok", "flux", "speed"]}],
+            "predicates": [
+                {**common, "quantity": "ok", "expr": "final.ok", "op": "eq", "value": 1},
+                {**common, "quantity": "flux", "expr": "maxabs(final.F - initial.q)", "op": "le",
+                 "value": 1.0},
+                {**common, "quantity": "speed", "op": "le", "value": 1e-12,
+                 "expr": "abs(final.a_x - maxabs(final.F))"},
+                # D7: the scalar read beside its pair, a DIFFERENT predicate (review R1-4)
+                {**common, "quantity": "speed", "expr": "final.a_x", "op": "ge", "value": 0}]}}
+
+
+def _rus_with_init() -> dict:
+    """`_rus` with an `init` that writes its own result: a one-call node with `init`."""
+    ir = _rus()
+    init = [_arg("nx", "in", "integer"), _arg("init_ok", "out", "logical")]
+    step = ir["public_api"]["published_operations"][0]
+    ir["public_api"] = _api({"rus__init": init, step["operation_id"]: _rus_op()})
+    ir["drive"]["init"] = {"operation": "rus__init", "result": "init_ok",
+                           "arguments": {"nx": "inputs.grid.nx", "init_ok": "state.init_ok"}}
+    io = ir["io_contract"]
+    io["raw_requirements"]["required_evidence"][0]["schema"]["variables"].append(
+        {"name": "init_ok", "shape_expr": "scalar"})
+    io["tests"][0]["quantities"].append("init_ok")
+    io["predicates"].append({"test_id": "t_flux", "quantity": "init_ok", "target_cases": ["a"],
+                             "per_case": True, "expr": "initial.init_ok", "op": "eq",
+                             "value": 1})
+    return ir
+
+
+class Grammar6Test(unittest.TestCase):
+    """The grammar 6 roots and functions, both polarities."""
+
+    def test_the_new_roots_parse_and_name_what_they_read(self) -> None:
+        self.assertEqual(
+            pe.expr_names(pe.parse_expr("history.h + history.t + series.h_min + derived.dt "
+                                        "+ final.step")),
+            [pe.NameRef("history", "h"), pe.NameRef("history", "t"),
+             pe.NameRef("series", "h_min"), pe.NameRef("derived", "dt"),
+             pe.NameRef("capture", "step", point="final")])
+        for src in ("history", "series", "derived", "history.h.x", "series.a.b",
+                    "at('a').history.h", "at('a').series.t", "at('a').derived.dt",
+                    "comparand.history.h", "comparand.series.t", "history.h(1)"):
+            with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
+                pe.parse_expr(src)
+
+    def test_the_refusals_name_the_grammar_6_roots(self) -> None:
+        """The refusal text a repairing leaf reads names the grammar 6 roots: a cross-case
+        `history` read says the sampled roots are read in the case being evaluated only, and an
+        unadmitted root lists them among the admitted ones."""
+        with self.assertRaisesRegex(
+                pe.PrimaryEvidenceError,
+                r"history\.\*, series\.\* and derived\.\* are read in the case being evaluated "
+                r"only"):
+            pe.parse_expr("at('a').history.h")
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"roots: initial, final, inputs, history, series, derived, "
+                                    r"at\('<case_id>'\), comparand\)"):
+            pe.parse_expr("foo.bar")
+
+    def test_the_sample_reductions(self) -> None:
+        a = np.arange(24.0).reshape(2, 3, 4)
+        env = pe.CaseEnv("c", None, {}, {}, {}, history={"h": a, "t": np.array([1.0, 2.0])},
+                         state_rank=2)
+        ev = lambda e: pe.evaluate(pe.parse_expr(e), env)  # noqa: E731
+        np.testing.assert_array_equal(ev("smax(history.h)"), [11.0, 23.0])
+        np.testing.assert_array_equal(ev("smin(history.h)"), [0.0, 12.0])
+        np.testing.assert_array_equal(ev("ssum(history.h)"), [66.0, 210.0])
+        np.testing.assert_array_equal(ev("smax(history.t)"), [1.0, 2.0])   # identity on rank 1
+        self.assertEqual(ev("max(smax(history.h))"), 23.0)
+        self.assertEqual(ev("max(history.h)"), 23.0)                       # unchanged
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"smax\(\): the argument must be"):
+            ev("smax(1.0)")
+
+    def test_one_sample_of_a_field_reduces(self) -> None:
+        """A history of one sample has a leading extent 1, which is no state axis."""
+        env = pe.CaseEnv("c", None, {}, {}, {}, history={"h": np.ones((1, 3, 4))}, state_rank=2)
+        self.assertEqual(pe.evaluate(pe.parse_expr("sum(history.h)"), env), 12.0)
+        # Every whole-array reduction takes the sample axis as no state axis, not `sum` alone.
+        self.assertEqual(pe.evaluate(pe.parse_expr("mean(history.h)"), env), 1.0)
+        self.assertAlmostEqual(pe.evaluate(pe.parse_expr("norm2(history.h)"), env),
+                               np.sqrt(12.0))
+        self.assertEqual(pe.evaluate(pe.parse_expr("maxabs(history.h)"), env), 1.0)
+        env2 = env._replace(history={"h": np.ones((2, 3, 1))})
+        for fn in ("sum", "mean", "norm2", "maxabs"):
+            with self.subTest(fn=fn), \
+                    self.assertRaisesRegex(pe.PrimaryEvidenceError, "extent-1 axis"):
+                pe.evaluate(pe.parse_expr(f"{fn}(history.h)"), env2)
+
+    def test_a_coordinate_broadcasts_against_history_and_a_field_of_it_does_not(self) -> None:
+        x = np.array([[0.5], [1.5]]) * np.ones((2, 3))
+        hist = np.stack([np.ones((2, 3)), 2 * np.ones((2, 3))])
+        env = pe.CaseEnv("c", None, {}, {}, {"x": x}, history={"h": hist}, state_rank=2)
+        np.testing.assert_array_equal(pe.evaluate(pe.parse_expr("x * history.h"), env),
+                                      x[None] * hist)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "operands of rank 2 and 3"):
+            pe.evaluate(pe.parse_expr("(x + 0) * history.h"), env)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "operands of rank 2 and 3"):
+            pe.evaluate(pe.parse_expr("c * history.h"), env, binds={"c": x})
+
+    def test_step_is_a_capture_name_and_a_reserved_variable_name(self) -> None:
+        ir = _ir([HMIN])
+        schema = pe.snapshot_schema(ir)
+        cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+        gate = lambda preds, **kw: pe.validate_primary_predicate_schema(  # noqa: E731
+            preds, case_ids={"a", "b"}, test_ids=["t_mass"], schema=schema, cases=cases, **kw)
+        self.assertEqual(gate([{**HMIN, "expr": "min(final.h) + final.step"}]), [])
+        for name in ("step", "case_id"):
+            with self.subTest(name=name):
+                bad = {**schema, "variables": schema["variables"] + [
+                    {"name": name, "shape_expr": "scalar"}]}
+                v = pe.validate_primary_predicate_schema(
+                    [HMIN], case_ids={"a", "b"}, test_ids=["t_mass"], schema=bad, cases=cases)
+                self.assertIn(f"{name!r} is the driver's or the harness's own key", v[0])
+
+    def test_the_new_roots_resolve_only_where_the_ir_declares_them(self) -> None:
+        ir = _toy()
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        ctx = pe.predicate_schema_context(ir)
+
+        def gate(expr: str, **over) -> list[str]:
+            pred = {**io["predicates"][0], "expr": expr}
+            return pe.validate_primary_predicate_schema(
+                [pred], case_ids=set(cases), test_ids=["t_run"],
+                schema=pe.snapshot_schema(ir), cases=cases, **{**ctx, **over})
+        for ok in ("max(history.h)", "min(series.h_min)", "max(smax(history.h)) * derived.dt",
+                   "max(history.t) + sum(final.h)"):
+            with self.subTest(ok=ok):
+                self.assertEqual(gate(ok), [])
+        # ...and a declared one is not refused a second time (the cascade 9c275119 removed)
+        self.assertEqual(gate("sum(final.h) * derived.dt", case_inputs=None), [])
+        refused = [
+            ("max(history.q)", {}, "history.q is not a snapshot schema variable"),
+            ("max(history.h)", {"history_declared": False}, "declares no state_history"),
+            ("min(series.q_min)", {}, "series.q_min is not a name of the step_series entry"),
+            ("min(series.h_min)", {"series_names": None}, "declares no step_series"),
+            ("sum(final.h) * derived.nope", {}, "derived.nope is not a derived value"),
+            # with the case evaluation failed (`case_inputs` None, refused by (c)), a read is
+            # judged against the names the case declares: an undeclared one is still refused
+            ("sum(final.h) * derived.nope", {"case_inputs": None}, "derived.nope is not a derived"),
+            ("smax(history.h)", {}, "evaluates to an array of rank 1"),
+        ]
+        for expr, over, msg in refused:
+            with self.subTest(expr=expr, over=over):
+                v = gate(expr, **over)
+                self.assertTrue(any(msg in m for m in v), v)
+
+
+class StateReadsTest(unittest.TestCase):
+    """What counts as a state read under grammar 6 (`state_reads`, `predicate_reads_state`)."""
+
+    def _reads(self, expr: str, ir: dict) -> bool:
+        refs, binds = pe._predicate_refs({"expr": expr})
+        return pe.predicate_reads_state(refs, binds, pe.state_reads(ir))
+
+    def test_the_classes_decide_both_capture_points(self) -> None:
+        toy, toyi = _toy(), _toyi()
+        # the logical `out` `ok` is no state read (R5-2): `fixed_form` admits its flag predicate
+        self.assertEqual(pe.state_reads(toy)[:5],
+                         (frozenset({"h"}), frozenset(), True,
+                          frozenset({"derived.n_step"}), frozenset({"t_run"})))
+        self.assertEqual(pe.state_reads(toyi)[:2],
+                         (frozenset({"h", "dt", "n_plan"}), frozenset({"h", "dt", "n_plan"})))
+        self.assertEqual(pe.state_reads(toyi)[3], frozenset({"initial.n_plan", "final.n_plan"}))
+        # initial.<host var> is the host's own initial_state read back: no read
+        self.assertFalse(self._reads("sum(initial.h)", toy))
+        self.assertTrue(self._reads("sum(final.h)", toy))
+        # initial.<v> init writes is the kernel's
+        self.assertTrue(self._reads("sum(initial.h)", toyi))
+        self.assertTrue(self._reads("initial.dt", toyi))
+        # history / series of a written variable; derived, inputs, the driver's step and time
+        # (and their history / series, R2-1) never
+        for expr, want in (("max(history.t)", False), ("max(smax(history.h))", True),
+                           ("min(series.h_min)", True),
+                           ("derived.dt", False), ("inputs.grid.nx", False),
+                           ("final.step", False), ("final.t", False), ("initial.step", False)):
+            with self.subTest(expr=expr):
+                self.assertIs(self._reads(expr, toy), want)
+        # a variable nothing writes (coriolis U, an `in` state) is not read through final.
+        cor = _coriolis()
+        self.assertFalse(self._reads("sum(final.U)", cor))
+        self.assertTrue(self._reads("sum(final.S)", cor))
+
+    def test_passing_the_classes_changes_the_gate_s_answer(self) -> None:
+        """The pre-drive default (`reads=None`) counts `initial.<host var>`; the classes do
+        not — the one default this keyword keeps, pinned both ways."""
+        ir = _toy()
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        pred = {**io["predicates"][0], "expr": "sum(initial.h)"}
+        kw = dict(case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
+                  cases=cases)
+        self.assertEqual(pe.validate_primary_predicate_schema([pred], **kw), [])
+        v = pe.validate_primary_predicate_schema([pred], reads=pe.state_reads(ir), **kw)
+        self.assertEqual(len(v), 1)
+        self.assertIn("reads no captured state the kernel produced", v[0])
+
+    def test_the_zero_step_closure_is_exempt_only_in_its_fixed_form_on_a_loop_node(self):
+        ir = _toy()
+        reads = pe.state_reads(ir)
+        closure = ir["io_contract"]["predicates"][1]
+        self.assertTrue(pe.is_zero_step_closure(closure, reads))
+        self.assertTrue(pe.is_zero_step_closure({**closure, "expr": " final.step-derived.n_step"},
+                                                reads))
+        for bad in ({"op": "le"}, {"value": 1}, {"value": True},
+                    {"expr": "final.step - 2 * derived.n_step"},
+                    {"expr": "final.step + derived.n_step"}, {"bind": {"k": "1"}},
+                    # R3-1: the closure carries the FIXED quantity run.n_step, nothing else
+                    {"quantity": "mass"}, {"quantity": " run.n_step"}, {"quantity": None}):
+            with self.subTest(bad=bad):
+                self.assertFalse(pe.is_zero_step_closure({**closure, **bad}, reads))
+        self.assertFalse(pe.is_zero_step_closure(closure, reads._replace(loop=False)))
+        self.assertFalse(pe.is_zero_step_closure(closure, {"h"}))
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        kw = dict(case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
+                  cases=cases, **pe.predicate_schema_context(ir))
+        self.assertEqual(pe.validate_primary_predicate_schema([closure], **kw), [])
+        v = pe.validate_primary_predicate_schema(
+            [{**closure, "expr": "final.step - derived.n_step + 0.0"}], **kw)
+        self.assertTrue(any("reads no captured state" in m for m in v), v)
+        # ONE closure per test is exempt: a second, in the same form and quantity, is not
+        self.assertEqual(closure["quantity"], pe.ZERO_STEP_QUANTITY)
+        v = pe.validate_primary_predicate_schema([closure, dict(closure)], **kw)
+        self.assertEqual(len(v), 1)
+        self.assertTrue(v[0].startswith("predicates[1]: reads no captured state"), v)
+        # R3-1: nor is the closure's text under another quantity, which it would stand for
+        v = pe.validate_primary_predicate_schema([closure, {**closure, "quantity": "mass"}], **kw)
+        self.assertEqual(len(v), 1)
+        self.assertTrue(v[0].startswith("predicates[1]: reads no captured state"), v)
+        v = pe.validate_primary_predicate_schema([{**closure, "quantity": "mass"}], **kw)
+        self.assertEqual(len(v), 1)
+        self.assertTrue(v[0].startswith("predicates[0]: reads no captured state"), v)
+        # R1-9: the closure of a test that is not one of the IR's `pass` tests is not exempt
+        other_test = {**closure, "test_id": "t_other"}
+        v = pe.validate_primary_predicate_schema(
+            [closure, other_test], **{**kw, "test_ids": ["t_run", "t_other"]})
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith("predicates[1]: reads no captured state"), v)
+        reads2 = reads._replace(closure_tests=reads.closure_tests | {"t_other"})
+        self.assertTrue(pe.is_zero_step_closure(other_test, reads2))
+
+    def test_the_evaluator_exempts_one_closure_per_test_too(self) -> None:
+        run = _RunDir()
+        try:
+            for cid, n in (("a", 4), ("b", 8)):
+                h = [1.0] * n
+                run.write(cid, initial={"h": h, "ok": 0.0, "t": 0.0, "step": 0},
+                          final={"h": h, "ok": 1.0, "t": 1.0, "step": 10})
+            ir = _toy()
+            self.assertEqual([r["kind"] for r in pe.evaluate_primary_predicates(ir, run.root)],
+                             ["pass", "pass"])
+            ir["io_contract"]["predicates"].append(dict(ir["io_contract"]["predicates"][1]))
+            with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                        r"predicates\[2\]: reads no captured state"):
+                pe.evaluate_primary_predicates(ir, run.root)
+            # R3-1: the closure's text under another quantity is not exempt either
+            ir = _toy()
+            ir["io_contract"]["predicates"][1]["quantity"] = "mass"
+            with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                        r"predicates\[1\]: reads no captured state"):
+                pe.evaluate_primary_predicates(ir, run.root)
+        finally:
+            run.cleanup()
+
+
+def _toy_with_input_state() -> dict:
+    """`_toy` with an array state `b` the step operation only reads (an `in` dummy)."""
+    ir = _toy()
+    sig = ir["public_api"]["signatures"][0]["signature"]["args"]
+    sig.insert(3, _arg("b", "in", "real", 1, ["nx"]))
+    ir["drive"]["step"]["arguments"]["b"] = "state.b"
+    for case in ir["case"]["test_case_set"]:
+        case["initial_state"]["b"] = "2 + x"
+    ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
+    ev[0]["schema"]["variables"].append({"name": "b", "shape_expr": "[nx]"})
+    ev[2]["names"] += ["b_min", "b_max"]
+    return ir
+
+
+class DriverCounterReadsTest(unittest.TestCase):
+    """R2-1: the driver's counters `history.t`, `history.step`, `series.t` and `series.step`
+    are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
+    `cases_read` — and neither are the history and the series folds of a variable nothing
+    writes; those of a written variable are."""
+
+    _COUNTERS = ("max(history.t)", "max(history.step)", "max(series.t)", "max(series.step)")
+    _MSG = "predicates[0]: reads no captured state the kernel produced"
+
+    def _pred(self, expr: str) -> dict:
+        return {"test_id": "t_run", "quantity": "mass", "target_cases": ["a", "b"],
+                "per_case": True, "expr": expr, "op": "ge", "value": 0}
+
+    def test_is_state_read(self) -> None:
+        ir = _toy_with_input_state()
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        reads = pe.state_reads(ir)
+        for kind, name, want in (("history", "t", False), ("history", "step", False),
+                                 ("series", "t", False), ("series", "step", False),
+                                 ("history", "h", True), ("series", "h_min", True),
+                                 ("series", "h_max", True), ("history", "b", False),
+                                 ("series", "b_min", False), ("series", "b_max", False),
+                                 ("history", "ok", False),   # a result (R4-3)
+                                 ("series", "h_mean", False)):
+            with self.subTest(ref=f"{kind}.{name}"):
+                self.assertIs(pe.is_state_read(pe.NameRef(kind, name), reads), want)
+        # a plain set (the pre-drive rule) follows the same naming
+        self.assertFalse(pe.is_state_read(pe.NameRef("series", "step"), {"h"}))
+        self.assertTrue(pe.is_state_read(pe.NameRef("series", "h_min"), {"h"}))
+
+    def test_the_schema_gate_refuses_each_counter_alone(self) -> None:
+        ir = _toy_with_input_state()
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        kw = dict(case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
+                  cases=cases, **pe.predicate_schema_context(ir))
+        for expr in self._COUNTERS + ("max(smax(history.b))", "min(series.b_min)"):
+            with self.subTest(expr=expr):
+                v = pe.validate_primary_predicate_schema([self._pred(expr)], **kw)
+                self.assertEqual(len(v), 1, v)
+                self.assertTrue(v[0].startswith(self._MSG), v)
+                self.assertIn("history.t / history.step / series.t / series.step", v[0])
+                self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), set())
+        for expr in ("max(smax(history.h))", "min(series.h_min)"):
+            with self.subTest(expr=expr):
+                self.assertEqual(pe.validate_primary_predicate_schema(
+                    [self._pred(expr)], **kw), [])
+                self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), {"a", "b"})
+
+    def test_the_evaluator_refuses_each_counter_alone(self) -> None:
+        run = _RunDir()
+        try:
+            for expr in self._COUNTERS:
+                with self.subTest(expr=expr):
+                    ir = _toy_with_input_state()
+                    ir["io_contract"]["predicates"] = [self._pred(expr)]
+                    with self.assertRaisesRegex(
+                            pe.PrimaryEvidenceError,
+                            r"predicates\[0\]: reads no captured state the kernel produced"):
+                        pe.evaluate_primary_predicates(ir, run.root)
+        finally:
+            run.cleanup()
+
+    def test_the_swe_repro_is_refused(self) -> None:
+        """The finding's repro: a test's `extrema.h.min` predicates replaced by
+        `max(series.step) ge 0` passed every gate; the schema gate now refuses each, and the
+        test's cases are valued by its other predicates only."""
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        hits = [i for i, p in enumerate(io["predicates"]) if p["quantity"] == "extrema.h.min"]
+        self.assertTrue(hits)
+        for i in hits:
+            io["predicates"][i] = {**io["predicates"][i], "expr": "max(series.step)",
+                                   "op": "ge", "value": 0}
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        v = pe.validate_primary_predicate_schema(
+            io["predicates"], case_ids=set(cases), test_ids=[t["test_id"] for t in io["tests"]],
+            schema=pe.snapshot_schema(ir), cases=cases,
+            test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+            **pe.predicate_schema_context(ir))
+        self.assertEqual(sorted(int(m.split("]")[0].split("[")[1]) for m in v), hits, v)
+        self.assertTrue(all("reads no captured state the kernel produced" in m for m in v), v)
+
+
+#: The tail of gate (l)'s loop-node refusal: the fixed quantity (review round 3, R3-1).
+_CLOSURE_QUANTITY_TAIL = (", under `quantity: run.n_step`, the name each `pass` test of a "
+                          "`loop` node lists in its tests.md `quantities` line")
+
+
+class ClosureExemptionTest(unittest.TestCase):
+    """R1-9: the reads-a-capture exemption belongs to the predicate that IS gate (l)'s
+    accepted closure — a loop node, a `pass` test, the ref the counterpart of `loop.n_step` —
+    and both exemption sites (the schema gate, the evaluator) ask the same `state_reads`."""
+
+    _MSG = "predicates[1]: reads no captured state"
+
+    def _ir(self, *, outcome: str, ref: str) -> dict:
+        ir = _toy()
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["z"] = 10
+        ir["io_contract"]["tests"][0]["expected_outcome"] = outcome
+        ir["io_contract"]["predicates"][1]["expr"] = f"final.step - {ref}"
+        return ir
+
+    def _schema(self, ir: dict) -> list[str]:
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        return pe.validate_primary_predicate_schema(
+            io["predicates"], case_ids=set(cases), test_ids=["t_run"],
+            schema=pe.snapshot_schema(ir), cases=cases, **pe.predicate_schema_context(ir))
+
+    def _evaluate(self, ir: dict) -> list[dict]:
+        run = _RunDir()
+        try:
+            for cid, n in (("a", 4), ("b", 8)):
+                h = [1.0] * n
+                run.write(cid, initial={"h": h, "ok": 0.0, "t": 0.0, "step": 0},
+                          final={"h": h, "ok": 1.0, "t": 1.0, "step": 10})
+            return pe.evaluate_primary_predicates(ir, run.root)
+        finally:
+            run.cleanup()
+
+    def test_an_xfail_test_s_step_count_form_is_not_exempt(self) -> None:
+        for ref in ("derived.z", "derived.n_step"):
+            with self.subTest(ref=ref):
+                ir = self._ir(outcome="xfail", ref=ref)
+                self.assertEqual(pe.drive_violations(ir, kind="problem"), [])  # (l): pass only
+                v = self._schema(ir)
+                self.assertEqual(len(v), 1, v)
+                self.assertTrue(v[0].startswith(self._MSG), v)
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                            r"predicates\[1\]: reads no captured state"):
+                    self._evaluate(ir)
+
+    def test_a_pass_test_s_accepted_closure_is_exempt(self) -> None:
+        ir = self._ir(outcome="pass", ref="derived.n_step")
+        self.assertEqual(self._schema(ir), [])
+        self.assertEqual([r["kind"] for r in self._evaluate(ir)], ["pass", "pass"])
+
+    def test_the_closure_quantity_is_run_n_step(self) -> None:
+        """R3-1: the closure carries ONE fixed quantity, the name the swe fixture uses."""
+        self.assertEqual(pe.ZERO_STEP_QUANTITY, "run.n_step")
+        self.assertIn(f"`quantity: {pe.ZERO_STEP_QUANTITY}`", _CLOSURE_QUANTITY_TAIL)
+
+    def test_a_pass_test_s_closure_under_another_quantity_is_not_exempt(self) -> None:
+        """R3-1: the accepted closure's text under a PHYSICS quantity would value that
+        quantity by the step count alone; gate (l) does not accept it, and neither the schema
+        gate nor the evaluator exempts it."""
+        ir = self._ir(outcome="pass", ref="derived.n_step")
+        ir["io_contract"]["predicates"][1]["quantity"] = "mass"
+        ir["io_contract"]["tests"][0]["quantities"] = ["mass"]
+        self.assertEqual([m for m in pe.drive_violations(ir, kind="problem")
+                          if m.startswith("(l)")], [
+            "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - <ref>\"`, "
+            "`op: eq`, `value: 0`, `per_case: true` over all its target cases whose <ref> is "
+            "the closure counterpart of drive.loop.n_step: for this IR 'derived.n_step' (the "
+            "zero-step closure)" + _CLOSURE_QUANTITY_TAIL])
+        v = self._schema(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith(self._MSG), v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"predicates\[1\]: reads no captured state"):
+            self._evaluate(ir)
+
+    def test_a_non_closure_predicate_under_run_n_step_is_not_exempt(self) -> None:
+        """R3-1: the quantity alone exempts nothing — a predicate under `run.n_step` that is
+        not the closure's fixed form is held to the reads-a-capture rule."""
+        for expr in ("derived.n_step", "final.step", "max(series.step)",
+                     "final.step - derived.n_step + 0.0"):
+            with self.subTest(expr=expr):
+                ir = self._ir(outcome="pass", ref="derived.n_step")
+                ir["io_contract"]["predicates"].append(
+                    {**ir["io_contract"]["predicates"][1], "expr": expr, "op": "ge",
+                     "value": 0})
+                self.assertEqual(ir["io_contract"]["predicates"][2]["quantity"],
+                                 pe.ZERO_STEP_QUANTITY)
+                v = self._schema(ir)
+                self.assertEqual(len(v), 1, v)
+                self.assertTrue(v[0].startswith("predicates[2]: reads no captured state"), v)
+                with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                            r"predicates\[2\]: reads no captured state"):
+                    self._evaluate(ir)
+
+    #: (surface, the text that opens the statement, the text that closes it): every statement
+    #: of gate (l)'s loop-node closure an author or a leaf reads.
+    _CLOSURE_SITES = (
+        ("docs/workflow/phases/phase_01_compile.md", "(l) THE ZERO-STEP CLOSURE", "; (m)"),
+        ("docs/TESTS.md", "A `tests.md` whose node runs a time loop", "\n"),
+        ("tools/prompt_templates/workshop_compile_generate.txt",
+         "every `pass` test carries the zero-step closure", "or the deterministic gate"),
+    )
+
+    def test_each_statement_of_the_closure_names_its_quantity(self) -> None:
+        """R3-1: each statement of gate (l)'s closure names the quantity the code fixes, inside
+        that statement (a bounded window, its bound self-tested)."""
+        root = Path(__file__).resolve().parents[2]
+        token = f"`{pe.ZERO_STEP_QUANTITY}`"
+        for rel, start, stop in self._CLOSURE_SITES:
+            with self.subTest(surface=rel):
+                text = (root / rel).read_text(encoding="utf-8")
+                self.assertEqual(text.count(start), 1, start)
+                head = text.index(start)
+                window = text[head:text.index(stop, head)]
+                self.assertLess(len(window), 2000, "the window runs past the statement")
+                self.assertIn(token, window)
+
+    #: (surface, opens, closes, the clauses that must stand inside): each statement of the
+    #: no-state-term rule names the closure's quantity among what it does NOT send to
+    #: `Compile fail`, and requirement 9's read rule carries the exemption TESTS.md's `history`
+    #: paragraph cites.
+    _NOT_SUCH_A_QUANTITY_SITES = (
+        ("docs/workflow/phases/phase_01_compile.md", "Four things are NOT such a quantity",
+         "An xfail test that judges such a",
+         ("Nor is `run.n_step`: its entry is gate (l)'s closure",)),
+        ("docs/TESTS.md", "9. A judged quantity is defined in §5", "\n",
+         ("except in gate (l)'s zero-step closure, which that rule exempts under the quantity "
+          "`run.n_step` only", "Nor does `run.n_step`")),
+    )
+    #: (surface, opens, closes, the clauses that must stand inside) — review round 5, R5-2: each
+    #: statement says a logical `out` is no state read, a flag predicate is exempt only under the
+    #: flag's own name, it values its cases only on an xfail test with value 0, and what that asks of an
+    #: author.
+    _FLAG_SITES = (
+        ("docs/workflow/phases/phase_01_compile.md", "Every entry READS STATE",
+         "depends on the state in any other way",
+         ("a logical `out` state `<f>` of `step` or `init`\n    # (a flag, `result:` or not)",
+          "a FLAG PREDICATE, one per point and `<f>` per test: `expr` exactly `final.<f>`",
+          "`op: eq`, `value` 0 or 1, no `bind`, `quantity: <f>`. It values its cases only on an "
+          "`xfail` test with `value: 0`.")),
+        ("docs/workflow/phases/phase_01_compile.md", "Four things are NOT such a quantity",
+         "An xfail test that judges such a",
+         ("Nor is a flag: its predicate is exempt above.",)),
+        ("docs/workflow/phases/phase_01_compile.md", "(l) THE ZERO-STEP CLOSURE", "; (m)",
+         ("result's flag eq 1 (a refused", "`step` result's flag eq 1",
+          "under its fixed quantity (`run.n_step`, the result's name), which\n  #   the test's "
+          "tests.md `quantities` line lists")),
+        ("docs/TESTS.md", "9. A judged quantity is defined in §5", "\n",
+         ("nor does a logical `out` state", "except in its flag predicate, which that rule exempts "
+          "under the flag's own name only", "So a `pass` test of a `problem` or `component` node "
+          "without a time loop lists the result's name in its `quantities` line", "a flag values a test's cases only on an "
+          "`xfail` test and with `value: 0`", "a flag under any other quantity reads nothing",
+          "Nor does a flag's name: its entry is that flag predicate.")),
+        ("docs/TESTS.md", "A `tests.md` whose node runs a time loop", "\n",
+         ("every `pass` test also lists the init result's name",)),
+        ("tools/prompt_templates/workshop_compile_generate.txt",
+         "every `pass` test carries the zero-step closure", "Four things the gate cannot see",
+         ("the result's own name for a result flag predicate",
+          "(a logical `out` is no state read: it is judged only by a flag predicate, `expr: "
+          "final.<f>` or `initial.<f>`, `op: eq`, `value` 0 or 1, `per_case: true` over all "
+          "target cases, under `quantity: <f>`, which values its cases only on an `xfail` test "
+          "with `value: 0`; "
+          "a flag under any other quantity reads nothing)")),
+        ("skills/spec-input-check/SKILL.md", "**The names a gate requires on that line**", "\n",
+         ("on a `problem` or `component` node (a harness has no `drive`",
+          "lists the name of its operation's result flag", "lists `run.n_step`",
+          "the init result's name")),
+    )
+    #: The wordings the one rule replaced, absent from every statement above.
+    _RETIRED_FLAG_WORDINGS = ("a RESULT `<r>`", "a result's FLAG", "fixed flag form",
+                              "Nor does a result's name", "result flag eq 0")
+
+    def test_each_statement_says_a_flag_stands_only_as_its_predicate(self) -> None:
+        """R5-2: the reads-state list, the not-such-a-quantity list, gate (l), TESTS.md
+        requirement 9 and §Description format, the compile generate template and the spec input
+        check each carry the flag rule, in a bounded window (its bound self-tested); the retired
+        four-form wordings are gone from those documents."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, start, stop, clauses in self._FLAG_SITES:
+            with self.subTest(surface=rel, start=start):
+                text = (root / rel).read_text(encoding="utf-8")
+                self.assertEqual(text.count(start), 1, start)
+                head = text.index(start)
+                window = text[head:text.index(stop, head)]
+                self.assertLess(len(window), 6000, "the window runs past the statement")
+                for clause in clauses:
+                    self.assertIn(clause, window)
+                for retired in self._RETIRED_FLAG_WORDINGS:
+                    self.assertNotIn(retired, text)
+
+    def test_the_coverage_rule_states_the_flag_exception_at_each_statement(self) -> None:
+        """R6-3 (b): every statement that every target case must be valued says what else values
+        one, with R6-1's value, so no document says a guard test's flag fails the rule."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, clause in (
+                ("docs/workflow/phases/phase_01_compile.md",
+                 "kernel state in THAT case, or on an\n  #   `xfail` test by a flag predicate with "
+                 "`value: 0`."),
+                ("docs/workflow/phases/phase_01_compile.md",
+                 "some predicate of that test, or on an `xfail` test a flag predicate with `value: "
+                 "0` values it (per test"),
+                ("tools/prompt_templates/workshop_compile_generate.txt",
+                 "some predicate of that test, or on an `xfail` test a flag predicate with `value: "
+                 "0` values it (a read of")):
+            with self.subTest(surface=rel, clause=clause):
+                self.assertEqual((root / rel).read_text(encoding="utf-8").count(clause), 1)
+
+    def test_the_outcome_line_is_stated_where_the_quantities_line_is(self) -> None:
+        """R5-1's rule at each statement a leaf or an operator reads."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, clause in (
+                ("docs/workflow/phases/phase_01_compile.md",
+                 "its tests.md `expected_outcome:` line (gated)"),
+                ("docs/TESTS.md", "exactly one `expected_outcome` line"),
+                ("tools/prompt_templates/workshop_compile_generate.txt",
+                 "copied from the `expected_outcome:` line of the test's definition"),
+                ("skills/spec-input-check/SKILL.md", "**The `expected_outcome` line**")):
+            with self.subTest(surface=rel, clause=clause):
+                self.assertEqual((root / rel).read_text(encoding="utf-8").count(clause), 1)
+
+    def test_the_closure_is_not_a_quantity_the_statement_rule_refuses(self) -> None:
+        """R4-1: phase_01's no-state-term rule and TESTS.md requirement 9 except gate (l)'s
+        closure under `run.n_step`, so a leaf does not declare `Compile fail` over it."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, start, stop, clauses in self._NOT_SUCH_A_QUANTITY_SITES:
+            with self.subTest(surface=rel):
+                text = (root / rel).read_text(encoding="utf-8")
+                self.assertEqual(text.count(start), 1, start)
+                head = text.index(start)
+                window = text[head:text.index(stop, head)]
+                self.assertLess(len(window), 4000, "the window runs past the statement")
+                for clause in clauses:
+                    self.assertIn(clause, window)
+                    self.assertIn(f"`{pe.ZERO_STEP_QUANTITY}`", clause)
+
+    def test_the_evaluator_refuses_an_entry_that_reads_no_state_past_the_gate(self) -> None:
+        """R4-2: `evaluate_primary_predicates` refuses, by its OWN whole-entry message, an
+        entry the schema gate would refuse and that reaches it anyway (an IR the gate never
+        saw) — not only by the per-case refusal that follows it, whose message shares the
+        `reads no captured state` head."""
+        ir = self._ir(outcome="pass", ref="derived.n_step")
+        ir["io_contract"]["predicates"].append(
+            {**ir["io_contract"]["predicates"][0], "expr": "derived.n_step + inputs.grid.nx",
+             "op": "ge", "value": 0})
+        v = self._schema(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith("predicates[2]: reads no captured state"), v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, re.escape(
+                "predicates[2]: reads no captured state the kernel produced (final.<written "
+                "non-logical var>, initial.<var init writes>, history.<written var>, "
+                "series.<written var>_min|_max) in expr or a bind expr reaches. "
+                f"{pe.FLAG_FORM_STATEMENT}") + r"\Z"):
+            self._evaluate(ir)
+
+    def test_a_pass_test_s_closure_with_a_wrong_ref_is_not_exempt(self) -> None:
+        ir = self._ir(outcome="pass", ref="derived.z")
+        self.assertTrue([m for m in pe.drive_violations(ir, kind="problem")
+                         if m.startswith("(l) test 't_run'")])
+        v = self._schema(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith(self._MSG), v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"predicates\[1\]: reads no captured state"):
+            self._evaluate(ir)
+
+
+class ResultFlagFormTest(unittest.TestCase):
+    """Review round 5, R5-2 (the rule R4-3 began): a logical `out` state of `step` or `init` is
+    no kernel-state read, per case, so a flag stands for no physics quantity; a flag predicate
+    (`fixed_form`'s `FORM_FLAG`) is exempt from the reads-a-capture rule, ONE per (point, flag)
+    per test, only under the flag's own name. The schema gate, the evaluator and gate (l) ask
+    the one function. Removed with the four-form enumeration, their subject gone: the xfail form
+    on a pass test / pass form on an xfail test / init xfail form on a pass test (the value is
+    free now), "a logical out that is no result still counts" (it no longer does), and the
+    `VALUING_FORMS` equality."""
+
+    _NO_STATE = "reads no captured state the kernel produced"
+
+    @staticmethod
+    def _schema(ir: dict) -> list[str]:
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        return pe.validate_primary_predicate_schema(
+            io["predicates"], case_ids=set(cases),
+            test_ids=[t["test_id"] for t in io["tests"]], schema=pe.snapshot_schema(ir),
+            cases=cases,
+            test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+            **pe.predicate_schema_context(ir))
+
+    def _refused_at(self, ir: dict, idx: int) -> None:
+        """The schema gate refuses ``predicates[idx]`` (and only it) as reading no state, and so
+        does the evaluator (the IR never reaches captures: it raises first or at that entry)."""
+        v = [m for m in self._schema(ir) if self._NO_STATE in m]
+        self.assertEqual([m.split(":")[0] for m in v], [f"predicates[{idx}]"], v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    re.escape(f"predicates[{idx}]: {self._NO_STATE}")):
+            pe.evaluate_primary_predicates(ir, Path("/nonexistent-run-dir"))
+
+    @staticmethod
+    def _rus_xfail(expr: str = "final.ok", value: float = 0, quantity: str = "ok") -> dict:
+        rus = _rus()
+        io = rus["io_contract"]
+        io["tests"] = [{"test_id": "t_flux", "expected_outcome": "xfail", "target_cases": ["a"],
+                        "quantities": [quantity]}]
+        io["predicates"] = [{"test_id": "t_flux", "quantity": quantity, "target_cases": ["a"],
+                             "per_case": True, "expr": expr, "op": "eq", "value": value}]
+        return rus
+
+    @staticmethod
+    def _toyi_xfail(quantity: str = "init_ok", value: float = 0) -> dict:
+        ir = _toyi()
+        io = ir["io_contract"]
+        io["tests"].append({"test_id": "t_bad", "expected_outcome": "xfail",
+                            "target_cases": ["a", "b"], "quantities": [quantity]})
+        io["predicates"].append({"test_id": "t_bad", "quantity": quantity,
+                                 "target_cases": ["a", "b"], "per_case": True,
+                                 "expr": "initial.init_ok", "op": "eq", "value": value})
+        return ir
+
+    # --- the reviewer's repro --------------------------------------------------------------------
+    def test_the_coriolis_repro_is_refused_by_the_gate_and_the_evaluator(self) -> None:
+        """`l0_zero_f_gives_zero_source_pass`'s `max_abs_s` predicate rewritten to
+        `final.guard_pass eq 1.0` cleared every gate (0 findings), and with captures S == 7.5,
+        guard_pass = 1 the verdict passed while the test claims max|S| == 0."""
+        tid = "l0_zero_f_gives_zero_source_pass"
+        ir = _coriolis()
+        preds = ir["io_contract"]["predicates"]
+        i = next(i for i, p in enumerate(preds)
+                 if p["test_id"] == tid and p["quantity"] == "max_abs_s")
+        preds[i].update(expr="final.guard_pass", op="eq", value=1.0)
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(v[0].startswith(f"predicates[{i}]: {self._NO_STATE} (final.<v>"), v)
+        self.assertTrue(v[1].startswith(f"test {tid!r}: no predicate values the captured state "
+                                        "of target case(s) ['l0_zero_f']"), v)
+        # the evaluator over the reviewer's captures: refused, so no verdict passes on them
+        ir["io_contract"]["predicates"] = [p for p in preds if p["test_id"] == tid]
+        ir["io_contract"]["tests"] = [t for t in ir["io_contract"]["tests"]
+                                      if t["test_id"] == tid]
+        j = next(k for k, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["quantity"] == "max_abs_s")
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        u = np.zeros((3, 4, 3)).tolist()
+        s75 = np.full((3, 4, 3), 7.5).tolist()
+        run.write("l0_zero_f", initial={"U": u, "S": s75, "guard_pass": 0.0, "t": 0.0,
+                                        "step": 0},
+                  final={"U": u, "S": s75, "guard_pass": 1.0, "t": 0.0, "step": 1})
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    re.escape(f"predicates[{j}]: {self._NO_STATE}")):
+            pe.evaluate_primary_predicates(ir, run.root)
+        # the honest predicate on the same captures fails the test
+        honest = _coriolis()
+        honest["io_contract"]["predicates"] = [p for p in honest["io_contract"]["predicates"]
+                                               if p["test_id"] == tid]
+        honest["io_contract"]["tests"] = ir["io_contract"]["tests"]
+        records = pe.evaluate_primary_predicates(honest, run.root)
+        doc = evaluate_verdict(honest["io_contract"]["tests"], records)
+        self.assertEqual(doc["per_test"][0]["status"], "fail")
+
+    def test_the_refusal_names_the_one_admitted_form(self) -> None:
+        """R5-3: the text a repairing leaf reads, from both sites, says a logical `out` is no
+        kernel-state read and names the form, so the repair is the form and not deleting the
+        judgment."""
+        form = ("A logical `out` state is no kernel-state read: a flag is judged in one form "
+                "alone, `expr: final.<f>` (or `initial.<f>` for one init writes), `op: eq`, "
+                "`value: 0|1`, no bind, `per_case: true` over all the test's target cases, under "
+                "`quantity: <f>`, once per point and flag in a test; it values its cases only on "
+                "an xfail test, and only with `value: 0`")
+        self.assertEqual(pe.FLAG_FORM_STATEMENT, form)
+        rus = self._rus_xfail(quantity="guard")
+        v = [m for m in self._schema(rus) if self._NO_STATE in m]
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith(f"predicates[0]: {self._NO_STATE} (final.<v> of a "
+                                        "non-logical variable an operation writes"), v)
+        self.assertTrue(v[0].endswith(f"kernel state). {form}"), v)
+        with self.assertRaises(pe.PrimaryEvidenceError) as caught:
+            pe.evaluate_primary_predicates(rus, Path("/nonexistent-run-dir"))
+        self.assertTrue(str(caught.exception).startswith(
+            f"predicates[0]: {self._NO_STATE} (final.<written non-logical var>"), caught.exception)
+        self.assertTrue(str(caught.exception).endswith(f"reaches. {form}"), caught.exception)
+
+    def test_a_loop_node_s_result_under_a_physics_quantity_reads_nothing(self) -> None:
+        ir = _toy()
+        ir["io_contract"]["predicates"][0].update(expr="final.ok", op="eq", value=1)
+        self.assertIsNone(pe.fixed_form(ir["io_contract"]["predicates"][0], pe.state_reads(ir)))
+        self._refused_at(ir, 0)
+
+    # --- each form, under its name and under another ---------------------------------------------
+    def test_a_one_call_pass_flag_is_exempt_under_the_result_s_name_only(self) -> None:   # (a)
+        rus = _rus()
+        self.assertEqual(_all_gates(rus), [])
+        self.assertEqual(pe.fixed_form(rus["io_contract"]["predicates"][0], pe.state_reads(rus)),
+                         pe.FORM_FLAG)
+        rus["io_contract"]["predicates"][0]["quantity"] = "speed"
+        rus["io_contract"]["tests"][0]["quantities"] = ["flux", "speed"]
+        self.assertIn("(l) test 't_flux' (pass) carries no predicate `expr: \"final.ok\"`, "
+                      "`op: eq`, `value: 1`, `per_case: true` over all its target cases under "
+                      "`quantity: ok`, the result's own name its tests.md `quantities` line "
+                      "lists (the call's result, the zero-step closure of a one-call node)",
+                      pe.drive_violations(rus, kind="component"))
+        self._refused_at(rus, 0)
+
+    def test_an_xfail_flag_is_exempt_under_the_result_s_name_only(self) -> None:   # (b)
+        rus = self._rus_xfail()
+        self.assertEqual(_all_gates(rus), [])
+        self.assertEqual(pe.fixed_form(rus["io_contract"]["predicates"][0], pe.state_reads(rus)),
+                         pe.FORM_FLAG)
+        toy = _toy()   # any node: a loop node's xfail test too
+        toy["io_contract"]["tests"].append({"test_id": "t_x", "expected_outcome": "xfail",
+                                            "target_cases": ["b"], "quantities": ["ok"]})
+        toy["io_contract"]["predicates"].append(
+            {"test_id": "t_x", "quantity": "ok", "target_cases": ["b"], "per_case": True,
+             "expr": " final.ok ", "op": "eq", "value": 0.0})
+        self.assertEqual(_all_gates(toy), [])
+        self._refused_at(self._rus_xfail(quantity="guard"), 0)
+
+    def test_an_init_pass_flag_is_exempt_under_the_init_result_s_name_only(self) -> None:  # (c)
+        toyi = _toyi()
+        self.assertEqual(_all_gates(toyi), [])
+        self.assertEqual(pe.fixed_form(toyi["io_contract"]["predicates"][0],
+                                       pe.state_reads(toyi)), pe.FORM_FLAG)
+        toyi["io_contract"]["predicates"][0]["quantity"] = "plan"
+        toyi["io_contract"]["tests"][0]["quantities"] = ["plan", "run.n_step"]
+        self.assertTrue([m for m in pe.drive_violations(toyi, kind="problem")
+                         if "under `quantity: init_ok`, the init result's own name" in m])
+        self._refused_at(toyi, 0)
+
+    def test_an_init_xfail_flag_is_exempt_under_the_init_result_s_name_only(self) -> None:  # (d)
+        ir = self._toyi_xfail()
+        self.assertEqual(_all_gates(ir), [])
+        self.assertEqual(pe.fixed_form(ir["io_contract"]["predicates"][-1], pe.state_reads(ir)),
+                         pe.FORM_FLAG)
+        bad = self._toyi_xfail(quantity="plan_refused")
+        self._refused_at(bad, len(bad["io_contract"]["predicates"]) - 1)
+
+    # --- what a flag values (review round 6, R6-1) --------------------------------------------------
+    _NCOMP = "l0_invalid_ncomp_xfail"
+
+    def _ncomp_ir(self, value: float) -> dict:
+        """The coriolis guard test alone (its predicate's `value` set), its case's captures next."""
+        ir = _coriolis()
+        io = ir["io_contract"]
+        io["predicates"] = [p for p in io["predicates"] if p["test_id"] == self._NCOMP]
+        self.assertEqual(len(io["predicates"]), 1)
+        io["predicates"][0]["value"] = value
+        io["tests"] = [t for t in io["tests"] if t["test_id"] == self._NCOMP]
+        return ir
+
+    def _ncomp_run(self, guard_pass: float) -> "_RunDir":
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        u = np.zeros((2, 4, 3)).tolist()
+        run.write("l0_ncomp2", initial={"U": u, "S": u, "guard_pass": 0.0, "t": 0.0, "step": 0},
+                  final={"U": u, "S": u, "guard_pass": guard_pass, "t": 0.0, "step": 1})
+        return run
+
+    def test_a_value_1_flag_on_an_xfail_test_values_no_case(self) -> None:
+        """The reviewer's repro: `final.guard_pass eq 1` on a refusal test cleared every gate and
+        certified `xfail` on the kernel that ACCEPTED the invalid input, failing the one that
+        refused it. It stays a flag predicate, and values nothing."""
+        ir = _coriolis()
+        pred = next(p for p in ir["io_contract"]["predicates"] if p["test_id"] == self._NCOMP)
+        pred["value"] = 1
+        self.assertEqual(_all_gates(ir), [
+            f"test {self._NCOMP!r}: no predicate values the captured state of target case(s) "
+            "['l0_ncomp2']: a test certified without reading a case says nothing about it. Read "
+            "it with `per_case: true`, or through at('<case>').<initial|final>.<var> in the "
+            "value; a flag predicate values a case only on an xfail test with `value: 0`"])
+        self.assertEqual(pe.fixed_form(pred, pe.state_reads(ir)), pe.FORM_FLAG)
+        self.assertEqual(pe.cases_read(pred, pe.state_reads(ir)), set())
+        # the evaluator stamps no case, and the verdict re-check refuses the records
+        ir = self._ncomp_ir(1)
+        records = pe.evaluate_primary_predicates(ir, self._ncomp_run(1.0).root)
+        self.assertEqual(records[0]["cases_read"], [])
+        with self.assertRaisesRegex(PredicateError, re.escape(
+                f"no record of test {self._NCOMP!r} values the captured state of target case(s) "
+                "['l0_ncomp2']")):
+            evaluate_verdict(ir["io_contract"]["tests"], records)
+
+    def test_a_value_0_flag_on_an_xfail_test_certifies_the_refusal_alone(self) -> None:
+        for value in (0, 0.0):
+            with self.subTest(value=value):
+                ir = self._ncomp_ir(value)
+                reads = pe.state_reads(ir)
+                self.assertEqual(pe.cases_read(ir["io_contract"]["predicates"][0], reads),
+                                 {"l0_ncomp2"})
+                for guard_pass, status in ((0.0, "xfail"), (1.0, "fail")):
+                    records = pe.evaluate_primary_predicates(
+                        ir, self._ncomp_run(guard_pass).root)
+                    self.assertEqual(records[0]["cases_read"], ["l0_ncomp2"])
+                    self.assertEqual(evaluate_verdict(ir["io_contract"]["tests"],
+                                                      records)["per_test"][0]["status"], status)
+
+    def test_a_guard_1_flag_beside_a_converged_0_flag_is_admitted(self) -> None:
+        """`microphysics_saturation`'s xfail shape: the iteration did not converge, the input was
+        valid. `converged eq 0` values the case and `guard_pass eq 1` does not, and both hold in
+        the verdict; with the `value: 0` flag dropped the coverage refusal names the case."""
+        ir = self._sat_nonconverged()
+        self.assertEqual(_all_gates(ir), [])
+        reads = pe.state_reads(ir)
+        guard, converged = ir["io_contract"]["predicates"][-2:]
+        self.assertEqual(pe.cases_read(guard, reads), set())
+        self.assertEqual(pe.cases_read(converged, reads), {"s_a"})
+        # through the evaluator: the records of the shape, over captures of that kernel
+        ir["io_contract"]["predicates"] = [guard, converged]
+        ir["io_contract"]["tests"] = [t for t in ir["io_contract"]["tests"]
+                                      if t["test_id"] == "t_nc"]
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        grid = next(c for c in ir["case"]["test_case_set"]
+                    if c["case_id"] == "s_a")["inputs"]["grid"]
+        state = {n: np.ones([grid[tok] for tok in toks]).tolist() if toks else 0.0
+                 for n, toks in pe.schema_variables(pe.snapshot_schema(ir)).items()}
+        run.write("s_a", initial={**state, "t": 0.0, "step": 0},
+                  final={**state, "guard_pass": 1.0, "converged": 0.0, "t": 0.0, "step": 0})
+        records = pe.evaluate_primary_predicates(ir, run.root)
+        self.assertEqual({r["quantity"]: r["cases_read"] for r in records},
+                         {"guard_pass": [], "converged": ["s_a"]})
+        self.assertEqual(evaluate_verdict(ir["io_contract"]["tests"], records)["per_test"][0]
+                         ["status"], "xfail")
+        # the converged read gone, the guard flag alone stands for nothing
+        v = [m for m in _all_gates(self._sat_nonconverged(quantities=("guard_pass",)))
+             if "no predicate values" in m]
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith("test 't_nc': no predicate values the captured state of "
+                                        "target case(s) ['s_a']"), v)
+
+    # --- what is not a fixed form ----------------------------------------------------------------
+    def test_the_outcome_is_read_as_the_schema_gate_and_the_verdict_read_it(self) -> None:
+        """R6-4: `validate_tests_schema` and `evaluate_verdict` both admit any case and padding
+        (executed: ` XFAIL ` clears every gate, so the normalisation stays), and an unnormalised
+        read here would drop the flag's value on such an xfail test and gate (l)'s exemption on
+        such a pass test while the verdict still certified it."""
+        for spelling in ("XFAIL", " xfail ", "Xfail"):
+            with self.subTest(spelling=spelling):
+                rus = self._rus_xfail()
+                rus["io_contract"]["tests"][0]["expected_outcome"] = spelling
+                self.assertEqual(_all_gates(rus), [])
+                self.assertEqual(pe.state_reads(rus).outcomes, {"t_flux": "xfail"})
+                self.assertEqual(pe.cases_read(rus["io_contract"]["predicates"][0],
+                                               pe.state_reads(rus)), {"a"})
+        toy = _toy()
+        toy["io_contract"]["tests"][0]["expected_outcome"] = " PASS "
+        self.assertEqual(pe.state_reads(toy).closure_tests, frozenset({"t_run"}))
+        self.assertEqual(_all_gates(toy), [])
+        rus = _rus()
+        rus["io_contract"]["tests"][0]["expected_outcome"] = "PASS"
+        self.assertEqual(pe.state_reads(rus).outcomes, {"t_flux": "pass"})
+        self.assertEqual(_all_gates(rus), [])
+
+    def test_one_closure_per_test_whichever_spelling_of_the_ref(self) -> None:
+        """R6-4: `n_step: state.<n>` admits `initial.<n>` and `final.<n>` as the closure's ref, and
+        `exempt_once` keys a closure by its form (a flag by its expression), so a test's second
+        closure in the other spelling is not exempt. Each of those spellings also reads the kernel
+        scalar `n`, so the schema gate admits the pair on that read (executed); a second closure
+        that reads no state is reachable where the ref is unchecked, `closure_refs` None, while
+        gate (e) refuses `loop.n_step`, and there it draws the entry's own refusal."""
+        ir = _toyi()
+        reads = pe.state_reads(ir)
+        common = ir["io_contract"]["predicates"][-1]
+        first, second = ({**common, "expr": f"final.step - {ref}"}
+                         for ref in ("initial.n_plan", "final.n_plan"))
+        for one, other in ((first, second), (second, first)):
+            with self.subTest(first=one["expr"]):
+                exempted: set[tuple[str, str]] = set()
+                self.assertEqual(pe.fixed_form(other, reads), pe.FORM_CLOSURE)
+                self.assertTrue(pe.exempt_once(one, reads, exempted))
+                self.assertFalse(pe.exempt_once(other, reads, exempted))
+                self.assertEqual(exempted, {("t_run", pe.FORM_CLOSURE)})
+        ir["io_contract"]["predicates"].append(second)
+        self.assertEqual(_all_gates(ir), [])
+        # the unchecked ref: two closures, the second over an input alone
+        toy = _toy()
+        toy["drive"]["loop"]["n_step"] = "state.h"
+        preds = toy["io_contract"]["predicates"]
+        preds.append({**preds[-1], "expr": "final.step - inputs.grid.nx"})
+        self.assertIsNone(pe.state_reads(toy).closure_refs)
+        self.assertEqual(pe.fixed_form(preds[-1], pe.state_reads(toy)), pe.FORM_CLOSURE)
+        v = [m for m in self._schema(toy) if self._NO_STATE in m]
+        self.assertEqual([m.split(":")[0] for m in v], ["predicates[2]"], v)
+
+    def test_a_second_copy_of_a_form_in_one_test_is_not_exempt(self) -> None:
+        rus = _rus()
+        rus["io_contract"]["predicates"].append(copy.deepcopy(rus["io_contract"]["predicates"][0]))
+        self._refused_at(rus, 4)
+        rus = self._rus_xfail()
+        rus["io_contract"]["predicates"].append(copy.deepcopy(rus["io_contract"]["predicates"][0]))
+        self._refused_at(rus, 1)
+
+    def test_the_form_is_matched_by_its_whole_shape(self) -> None:
+        """`per_case: true` over all the test's target cases, `op: eq`, no bind, the text."""
+        for bad in ({"target_cases": []}, {"per_case": None, "case": "a"}, {"op": "ge"},
+                    {"bind": {"z": "final.F"}}, {"expr": "final.ok + 0"},
+                    {"expr": "initial.ok"}, {"quantity": " ok"}, {"value": 2}, {"value": True},
+                    {"value": 0.5}, {"value": "1"}, {"per_case": False},
+                    {"per_case": True, "case": "a"}):
+            with self.subTest(bad=bad):
+                rus = _rus()
+                rus["io_contract"]["predicates"][0].update(bad)
+                self.assertIsNone(pe.fixed_form(rus["io_contract"]["predicates"][0],
+                                                pe.state_reads(rus)))
+        toy = _toy()
+        toy["io_contract"]["tests"][0]["target_cases"] = ["a", "b"]
+        flag = {"test_id": "t_run", "quantity": "ok", "target_cases": ["a"], "per_case": True,
+                "expr": "final.ok", "op": "eq", "value": 0}
+        toy["io_contract"]["tests"][0]["expected_outcome"] = "xfail"
+        self.assertIsNone(pe.fixed_form(flag, pe.state_reads(toy)))   # not all its targets
+
+    def test_a_list_form_flag_names_the_result_of_the_entry_running_its_cases(self) -> None:
+        """On a list-form `drive.step` a flag is the one the entry running the test's cases
+        writes: Kessler's `__terminal_velocity` entry re-bound so its result is `tv_ok`, a
+        `final.guard_pass eq 1` on its test (guard_pass now host data there) is no flag
+        predicate and reads nothing; gate (l) asks for `final.tv_ok` under `tv_ok`."""
+        ir = _kessler()
+        entry = ir["drive"]["step"][1]
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": "tv_ok", "shape_expr": "scalar"})
+        entry["arguments"]["guard_pass"] = "state.tv_ok"
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["guard_pass" if case["case_id"] == "tv_a" else "tv_ok"] = 0.0
+        i = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["test_id"] == "t_tv" and p["expr"] == "final.guard_pass")
+        reads = pe.state_reads(ir)
+        self.assertEqual(reads.flags_for("tv_a"), frozenset({"tv_ok"}))
+        self.assertIsNone(pe.fixed_form(ir["io_contract"]["predicates"][i], reads))
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(v[0].startswith("(l) test 't_tv' (pass) carries no predicate `expr: "
+                                        "\"final.tv_ok\"`"), v)
+        self.assertTrue(v[1].startswith(f"predicates[{i}]: {self._NO_STATE} (final.<v>"), v)
+
+    def test_a_one_call_test_over_entries_with_different_results_is_refused(self) -> None:
+        """Gate (l): the one-call closure names ONE result state, so a `pass` test whose target
+        cases run entries with different results (the `tv_ok` re-binding above, the test over
+        an adjustment case and a terminal-velocity case) is refused by name."""
+        ir = _kessler()
+        entry = ir["drive"]["step"][1]
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": "tv_ok", "shape_expr": "scalar"})
+        entry["arguments"]["guard_pass"] = "state.tv_ok"
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["guard_pass" if case["case_id"] == "tv_a" else "tv_ok"] = 0.0
+        io = ir["io_contract"]
+        for item in [*io["tests"], *io["predicates"]]:
+            if item["test_id"] == "t_tv":
+                item["target_cases"] = ["adj_a", "tv_a"]
+        self.assertIn("(l) test 't_tv' (pass): its target cases run entries whose results "
+                      "differ (['guard_pass', 'tv_ok']): the one-call closure names ONE result "
+                      "state, so a test's cases run entries that share it",
+                      pe.drive_violations(ir, kind="component"))
+
+    def test_no_logical_out_is_a_state_read(self) -> None:
+        """A result or not (R5-2): saturation's `converged` as much as `guard_pass`, at either
+        point; `history.<f>` too."""
+        reads = pe.state_reads(_saturation())
+        for expr in ("final.converged", "final.guard_pass", "history.converged"):
+            with self.subTest(expr=expr):
+                refs, binds = pe._predicate_refs({"expr": expr})
+                self.assertIs(pe.predicate_reads_state(refs, binds, reads, ["s_a"]), False)
+        self.assertEqual(reads.flags_for("s_a"), {"guard_pass", "converged"})
+        self.assertEqual(reads.flags_for("q_a"), {"guard_pass"})
+        toyi = pe.state_reads(_toyi())
+        self.assertEqual(toyi.flags, {"init_ok", "ok"})
+        self.assertEqual(toyi.init_flags, {"init_ok"})
+        for name in ("init_ok", "ok"):
+            self.assertNotIn(name, toyi.final)
+            self.assertNotIn(name, toyi.initial)
+
+    def test_the_init_result_is_no_state_read_on_a_one_call_node(self) -> None:
+        """R5-5 (the reviewer's survivor M5): a one-call node with `init`: `initial.<init
+        result>` under a physics quantity values nothing, as on a `loop` node."""
+        ir = _rus_with_init()
+        self.assertEqual(_all_gates(ir), [])
+        reads = pe.state_reads(ir)
+        self.assertFalse(reads.loop)
+        self.assertEqual(reads.init_flags, {"init_ok"})
+        self.assertNotIn("init_ok", reads.final | reads.initial)
+        i = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["expr"] == "initial.init_ok")
+        ir["io_contract"]["predicates"][i]["quantity"] = "flux"
+        self._refused_at(ir, i)
+        self.assertEqual(pe.cases_read(_rus_with_init()["io_contract"]["predicates"][i], reads),
+                         set())
+
+    def test_only_an_xfail_flag_values_its_cases(self) -> None:
+        """A design decision of R4-3, kept by R5-2: an `xfail` test's judgment IS the flag, so a
+        flag predicate values the test's cases (`cases_read`, which the coverage rule and the
+        verdict re-check read); a `pass` test's flag values none — it would stand in for an
+        unread case."""
+        rus = self._rus_xfail()
+        reads = pe.state_reads(rus)
+        self.assertEqual(pe.cases_read(rus["io_contract"]["predicates"][0], reads), {"a"})
+        self.assertEqual(pe.cases_read(_rus()["io_contract"]["predicates"][0],
+                                       pe.state_reads(_rus())), set())
+        self.assertEqual(pe.cases_read(_toyi()["io_contract"]["predicates"][0],
+                                       pe.state_reads(_toyi())), set())
+        ir = self._toyi_xfail()
+        self.assertEqual(pe.cases_read(ir["io_contract"]["predicates"][-1], pe.state_reads(ir)),
+                         {"a", "b"})
+        # the value does not decide it on a pass test: `value: 0` values none there either
+        zero = dict(_rus()["io_contract"]["predicates"][0], value=0)
+        self.assertEqual(pe.fixed_form(zero, pe.state_reads(_rus())), pe.FORM_FLAG)
+        self.assertEqual(pe.cases_read(zero, pe.state_reads(_rus())), set())
+        # the coriolis guard tests are judged by the flag alone, and certify on it
+        cor = _coriolis()
+        self.assertEqual(_all_gates(cor), [])
+
+    # --- the gate and the evaluator agree on each ------------------------------------------------
+    @staticmethod
+    def _sat_nonconverged(guard=("final.guard_pass", 1), converged=("final.converged", 0),
+                          quantities=("guard_pass", "converged")) -> dict:
+        """Saturation's `l0_satadj_nonconverged_xfail` shape: an xfail test over the
+        saturation-adjustment case judging `guard_pass == 1` and `converged == 0`."""
+        ir = _saturation()
+        io = ir["io_contract"]
+        io["tests"].append({"test_id": "t_nc", "expected_outcome": "xfail",
+                            "target_cases": ["s_a"], "quantities": list(quantities)})
+        for quantity, (expr, value) in zip(quantities, (guard, converged)):
+            io["predicates"].append({"test_id": "t_nc", "quantity": quantity,
+                                     "target_cases": ["s_a"], "per_case": True, "expr": expr,
+                                     "op": "eq", "value": value})
+        return ir
+
+    def _table(self) -> list[tuple]:
+        """(label, IR, the predicate index, the cases it values — None when refused)."""
+        def last(ir: dict) -> int:
+            return len(ir["io_contract"]["predicates"]) - 1
+
+        def sat(mutate=None) -> tuple[dict, int]:
+            ir = _saturation()
+            i = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
+                     if p["quantity"] == "converged")
+            if mutate is not None:
+                mutate(ir["io_contract"]["predicates"][i], ir)
+            return ir, i
+
+        rows: list[tuple] = []
+        nc = self._sat_nonconverged()
+        rows.append(("xfail guard_pass eq 1 values nothing (R6-1)", nc, last(nc) - 1, []))
+        rows.append(("xfail converged eq 0 values", nc, last(nc), ["s_a"]))
+        ir, i = sat()
+        rows.append(("pass converged under its name values nothing", ir, i, []))
+
+        def under_physics(pred, ir):
+            pred["quantity"] = "satadj_conservation"
+            test = next(t for t in ir["io_contract"]["tests"] if t["test_id"] == "t_s")
+            test["quantities"] = ["guard_pass", "satadj", "satadj_conservation"]
+        ir, i = sat(under_physics)
+        rows.append(("converged under a physics quantity", ir, i, None))
+        for label, change in (("value 2", {"value": 2}), ("op le", {"op": "le"}),
+                              ("a bind", {"bind": {"z": "final.temp"}})):
+            ir, i = sat(lambda pred, _ir, change=change: pred.update(change))
+            rows.append((label, ir, i, None))
+        # a subset of the test's cases
+        ir = _saturation()
+        i = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["test_id"] == "t_q" and p["quantity"] == "guard_pass")
+        ir["io_contract"]["predicates"][i]["target_cases"] = ["q_a"]
+        rows.append(("a subset of the cases", ir, i, None))
+        # a second copy
+        ir, i = sat()
+        ir["io_contract"]["predicates"].append(
+            copy.deepcopy(ir["io_contract"]["predicates"][i]))
+        rows.append(("a second copy", ir, last(ir), None))
+        # another point of the same flag is its own exemption
+        toyi = _toyi()
+        toyi["io_contract"]["predicates"].append(
+            {"test_id": "t_run", "quantity": "init_ok", "target_cases": ["a", "b"],
+             "per_case": True, "expr": "final.init_ok", "op": "eq", "value": 1})
+        rows.append(("the other point of one flag", toyi, last(toyi), []))
+        # a flag on a case where another entry writes it: host data there
+        ir = _saturation()
+        ir["io_contract"]["predicates"].append(
+            {"test_id": "t_q", "quantity": "converged", "target_cases": ["q_a", "q_b"],
+             "per_case": True, "expr": "final.converged", "op": "eq", "value": 1})
+        next(t for t in ir["io_contract"]["tests"] if t["test_id"] == "t_q")[
+            "quantities"].append("converged")
+        rows.append(("a flag another entry writes", ir, last(ir), None))
+        # a loop node's step flag under its name, on a pass test
+        toy = _toy()
+        toy["io_contract"]["tests"][0]["quantities"].append("ok")
+        toy["io_contract"]["predicates"].append(
+            {"test_id": "t_run", "quantity": "ok", "target_cases": ["a", "b"], "per_case": True,
+             "expr": "final.ok", "op": "eq", "value": 1})
+        rows.append(("a loop pass flag values nothing", toy, last(toy), []))
+        # `initial.` only for one `init` writes
+        toyi = _toyi()
+        toyi["io_contract"]["tests"][0]["quantities"].append("ok")
+        toyi["io_contract"]["predicates"].append(
+            {"test_id": "t_run", "quantity": "ok", "target_cases": ["a", "b"], "per_case": True,
+             "expr": "initial.ok", "op": "eq", "value": 0})
+        rows.append(("initial. of a step flag", toyi, last(toyi), None))
+        x = self._toyi_xfail()
+        rows.append(("xfail init flag values", x, last(x), ["a", "b"]))
+        # a flag written in only SOME of the test's cases: every target case, not any
+        ir = _saturation()
+        ir["io_contract"]["tests"].append({"test_id": "t_mix", "expected_outcome": "xfail",
+                                           "target_cases": ["q_a", "s_a"],
+                                           "quantities": ["converged"]})
+        ir["io_contract"]["predicates"].append(
+            {"test_id": "t_mix", "quantity": "converged", "target_cases": ["q_a", "s_a"],
+             "per_case": True, "expr": "final.converged", "op": "eq", "value": 0})
+        rows.append(("a flag written in some of its cases", ir, last(ir), None))
+        # per case on a list-form node with `init`: its flag beside a state one entry writes
+        # reads kernel state in that entry's case alone, so the other case is unread
+        ir = _saturation()
+        ir["public_api"]["published_operations"].append({"operation_id": f"{_SAT}__init"})
+        ir["public_api"]["signatures"].append(
+            {"symbol": f"{_SAT}__init", "signature": {
+                "kind": "subroutine", "name": f"{_SAT}__init",
+                "args": [_arg("init_ok", "out", "logical")]}})
+        ir["drive"]["init"] = {"operation": f"{_SAT}__init", "result": "init_ok",
+                               "arguments": {"init_ok": "state.init_ok"}}
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": "init_ok", "shape_expr": "scalar"})
+        ir["io_contract"]["tests"].append({"test_id": "t_mix", "expected_outcome": "pass",
+                                           "target_cases": ["q_a", "s_a"],
+                                           "quantities": ["mixed"]})
+        ir["io_contract"]["predicates"].append(
+            {"test_id": "t_mix", "quantity": "mixed", "target_cases": ["q_a", "s_a"],
+             "per_case": True, "expr": "initial.init_ok + maxabs(final.qsat)", "op": "ge",
+             "value": 0})
+        rows.append(("a list-form init flag reads no case", ir, last(ir), None))
+        return rows
+
+    @staticmethod
+    def _run_of(ir: dict, flags: float = 1.0) -> "_RunDir":
+        """Captures of every case: each schema variable, the host's value or ones."""
+        run = _RunDir()
+        inputs = pe.evaluate_case_inputs(ir)
+        schema = pe.schema_variables(pe.snapshot_schema(ir))
+        for case in ir["case"]["test_case_set"]:
+            cid = case["case_id"]
+            grid = case["inputs"]["grid"]
+            state: dict = {"t": 0.0, "step": 0}
+            for name, tokens in schema.items():
+                if name in inputs[cid]:
+                    state[name] = inputs[cid][name]
+                elif tokens:
+                    state[name] = np.ones([grid[t] for t in tokens]).tolist()
+                else:
+                    state[name] = flags
+            run.write(cid, initial=state, final=state)
+        return run
+
+    def test_the_gate_and_the_evaluator_agree_on_each_row(self) -> None:
+        for label, ir, idx, values in self._table():
+            with self.subTest(label):
+                refused = [m for m in self._schema(ir) if self._NO_STATE in m]
+                run = self._run_of(ir)
+                self.addCleanup(run.cleanup)
+                if values is None:
+                    self.assertEqual([m.split(":")[0] for m in refused],
+                                     [f"predicates[{idx}]"], refused)
+                    with self.assertRaisesRegex(
+                            pe.PrimaryEvidenceError,
+                            re.escape(f"predicates[{idx}]: {self._NO_STATE}")):
+                        pe.evaluate_primary_predicates(ir, run.root)
+                    continue
+                self.assertEqual(refused, [])
+                record = pe.evaluate_primary_predicates(ir, run.root)[idx]
+                self.assertEqual(record["expr"], ir["io_contract"]["predicates"][idx]["expr"])
+                self.assertEqual(record["cases_read"], values)
+
+    def test_gate_l_asks_the_flag_it_names_not_any_flag(self) -> None:
+        """A `pass` test's other flag predicate does not stand for the one gate (l) requires, at
+        either point (mutation M15, this round's sweep)."""
+        ir = _saturation()
+        io = ir["io_contract"]
+        io["predicates"] = [p for p in io["predicates"]
+                            if not (p["test_id"] == "t_s" and p["quantity"] == "guard_pass")]
+        next(t for t in io["tests"] if t["test_id"] == "t_s")["quantities"].remove("guard_pass")
+        self.assertTrue([m for m in pe.drive_violations(ir, kind="component") if m.startswith(
+            "(l) test 't_s' (pass) carries no predicate `expr: \"final.guard_pass\"`")])
+        toyi = _toyi()
+        toyi["io_contract"]["predicates"][0]["expr"] = "final.init_ok"
+        self.assertEqual(pe.fixed_form(toyi["io_contract"]["predicates"][0],
+                                       pe.state_reads(toyi)), pe.FORM_FLAG)
+        self.assertTrue([m for m in pe.drive_violations(toyi, kind="problem") if m.startswith(
+            "(l) test 't_run' (pass) carries no predicate `expr: \"initial.init_ok\"`")])
+
+    def test_the_nonconverged_repro_is_judged_end_to_end(self) -> None:
+        """Finding (i): every spelling of `guard_pass == 1` on an xfail test was refused, so a
+        repairing leaf deleted the judgment and a kernel refusing valid input got `xfail`. It
+        is admitted now, and that kernel fails the test while the honest one gets `xfail`."""
+        ir = self._sat_nonconverged()
+        self.assertEqual(_all_gates(ir), [])
+        io = ir["io_contract"]
+        only = [p for p in io["predicates"] if p["test_id"] == "t_nc"]
+        io["predicates"], io["tests"] = only, [t for t in io["tests"] if t["test_id"] == "t_nc"]
+        for guard, want in ((0.0, "fail"), (1.0, "xfail")):
+            with self.subTest(guard=guard):
+                run = self._run_of(ir)
+                self.addCleanup(run.cleanup)
+                capture = json.loads((run.sdir / "s_a.json").read_text())
+                capture.update(guard_pass=guard, converged=0.0)
+                run.write("s_a", initial=capture, final=capture)
+                records = pe.evaluate_primary_predicates(ir, run.root)
+                doc = evaluate_verdict(io["tests"], records)
+                self.assertEqual(doc["per_test"][0]["status"], want)
+
+    def test_a_pass_test_needs_a_read_beyond_its_flags(self) -> None:
+        """A flag on a `pass` test values nothing: saturation's `t_s` with only its two flags is
+        refused by the coverage rule."""
+        ir = _saturation()
+        io = ir["io_contract"]
+        io["predicates"] = [p for p in io["predicates"] if p["quantity"] != "satadj"]
+        next(t for t in io["tests"] if t["test_id"] == "t_s")["quantities"].remove("satadj")
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith("test 't_s': no predicate values the captured state of "
+                                        "target case(s) ['s_a']"), v)
+
+
+class LazyLoaderTest(unittest.TestCase):
+    """`history/` and `series/` are read only when a predicate names them."""
+
+    def setUp(self) -> None:
+        self.run = _RunDir()
+        self.ir = _toy()
+        for cid, n in (("a", 4), ("b", 8)):
+            h = (1 + (np.arange(n) + 0.5) / n).tolist()
+            self.run.write(cid, initial={"h": h, "ok": 0.0, "t": 0.0, "step": 0},
+                           final={"h": h, "ok": 1.0, "t": 1.0, "step": 10})
+
+    def tearDown(self) -> None:
+        self.run.cleanup()
+
+    def _eval(self, expr: str, quantity: str = "mass") -> dict:
+        ir = copy.deepcopy(self.ir)
+        ir["io_contract"]["predicates"] = [
+            {"test_id": "t_run", "quantity": quantity, "target_cases": ["a", "b"],
+             "per_case": True, "expr": expr, "op": "le", "value": 1e9},
+            ir["io_contract"]["predicates"][1]]
+        return pe.evaluate_primary_predicates(ir, self.run.root)
+
+    def _series(self, cid: str, doc: dict) -> None:
+        (self.run.sdir / "series").mkdir(exist_ok=True)
+        (self.run.sdir / "series" / f"{cid}.json").write_text(json.dumps(doc))
+
+    def test_nothing_is_read_when_no_predicate_names_them(self) -> None:
+        recs = self._eval("sum(final.h)")
+        self.assertEqual([r["kind"] for r in recs], ["pass", "pass"])
+        self.assertFalse((self.run.sdir / "series").exists())
+
+    def test_an_empty_series_loads_and_a_reduction_over_it_is_structural_alone(self) -> None:
+        for cid in "ab":
+            self._series(cid, {"t": [], "step": [], "h_min": [], "h_max": []})
+        recs = self._eval("min(series.h_min)")
+        self.assertEqual(recs[0]["kind"], "structural")
+        self.assertIn("reduction over an empty array", recs[0]["evaluated"][0]["error"])
+        self.assertEqual(recs[1]["kind"], "pass")        # the other predicate is unaffected
+        for fn in ("sum", "mean", "max", "norm2", "maxabs"):
+            with self.subTest(fn=fn):
+                rec = self._eval(f"{fn}(series.h_min)")[0]
+                self.assertEqual(rec["kind"], "structural")
+
+    def test_a_non_finite_series_entry_is_refused(self) -> None:
+        self._series("a", {"t": [0.1], "step": [1], "h_min": [float("nan")], "h_max": [1.0]})
+        rec = self._eval("min(series.h_max)")[0]
+        self.assertEqual(rec["kind"], "structural")
+        self.assertIn("'h_min' holds a non-finite value", rec["evaluated"][0]["error"])
+
+    def test_series_entries_of_unequal_length_are_refused(self) -> None:
+        self._series("a", {"t": [0.1, 0.2], "h_min": [1.0]})
+        self.assertIn("not of one length", self._eval("min(series.h_min) + min(series.t)")[0]["evaluated"][0]["error"])
+
+    def test_history_stacks_samples_by_numeric_step(self) -> None:
+        hdir = self.run.sdir / "history"
+        hdir.mkdir()
+        for cid, n in (("a", 4), ("b", 8)):
+            for k in (2, 10):
+                (hdir / f"{cid}__{k}.json").write_text(json.dumps(
+                    {"h": [float(k)] * n, "ok": 1.0, "t": 0.1 * k, "step": k}))
+        (hdir / "a__x__3.json").write_text("{}")   # not a sample of case a
+        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
+                               pe.snapshot_schema(self.ir))
+        hist = env.history.get()
+        np.testing.assert_array_equal(hist["step"], [2.0, 10.0])   # 10 after 2, not before
+        self.assertEqual(hist["h"].shape, (2, 4))
+        # the step count alone is no state read (R2-1): read beside the samples of h
+        self.assertEqual(self._eval("max(history.step) + 0 * max(smax(history.h))")[0]
+                         ["evaluated"][0]["value"], 10.0)
+
+    def test_a_sample_whose_step_is_not_its_name_is_refused(self) -> None:
+        hdir = self.run.sdir / "history"
+        hdir.mkdir()
+        (hdir / "a__2.json").write_text(json.dumps({"h": [1.0] * 4, "ok": 1.0, "t": 0.2,
+                                                    "step": 3}))
+        rec = self._eval("max(history.h)")[0]
+        self.assertIn("carries step 3.0, not the committed step 2", rec["evaluated"][0]["error"])
+
+    def test_no_sample_is_an_empty_history(self) -> None:
+        env = pe.load_case_env(self.run.root, self.ir["case"]["test_case_set"][0],
+                               pe.snapshot_schema(self.ir))
+        hist = env.history.get()
+        self.assertEqual(hist["h"].shape, (0, 4))
+        self.assertEqual(hist["t"].shape, (0,))
+        rec = self._eval("max(smax(history.h))")[0]
+        self.assertEqual(rec["kind"], "structural")
+
+    def test_derived_reads_the_host_evaluation(self) -> None:
+        rec = self._eval("sum(final.h) * 0 + derived.dt + sum(final.h)")[0]
+        self.assertEqual(rec["kind"], "pass")
+        self.assertAlmostEqual(rec["evaluated"][0]["value"], 0.1 + sum(1 + (i + 0.5) / 4
+                                                                       for i in range(4)))
+
+
+class CaseInputsTest(unittest.TestCase):
+    """`evaluate_case_inputs` / `write_case_inputs` against values computed by hand."""
+
+    def test_a_1d_case_against_literal_arrays(self) -> None:
+        out = pe.evaluate_case_inputs(_toy())
+        self.assertEqual(out["a"], {
+            "inputs.grid.nx": 4, "inputs.time.t_start": 0.0, "inputs.time.t_end": 1.0,
+            "inputs.history.every": 2, "derived.n_step": 10, "derived.dt": 0.1,
+            "h": [1.125, 1.375, 1.625, 1.875]})
+        self.assertEqual(len(out["b"]["h"]), 8)
+        self.assertIsInstance(out["a"]["inputs.grid.nx"], int)
+        self.assertIsInstance(out["a"]["derived.n_step"], int)
+
+    def test_the_coriolis_cases_against_values_computed_by_hand(self) -> None:
+        out = pe.evaluate_case_inputs(_coriolis())
+        zero = out["l0_zero_f"]
+        self.assertEqual(set(zero), {"inputs.grid.ncomp", "inputs.grid.nx", "inputs.grid.ny",
+                                     "derived.f", "U", "S"})
+        nx, ny = 4, 3
+        # cell centres of a unit-length axis: x = i + 1/2, so (x + 1/2) = i + 1
+        u = [[[1 + 0.1 * (i + 1) + 0.05 * (j + 1) for j in range(ny)] for i in range(nx)],
+             [[0.1 * (i + 1) - 0.2 * (j + 1) for j in range(ny)] for i in range(nx)],
+             [[0.3 * (j + 1) - 0.05 * (i + 1) for j in range(ny)] for i in range(nx)]]
+        self.assertEqual(zero["U"], u)
+        self.assertEqual(zero["S"], [[[-999.0] * ny] * nx] * 3)
+        self.assertEqual(zero["derived.f"], [[0.0] * ny] * nx)
+        # a 2-D derived field: f(i, j) = f_0 + f_j * j + f_i * i, shape [nx, ny]
+        gen = out["l0_general_f"]["derived.f"]
+        self.assertEqual(gen, [[1e-4 + 2e-5 * j + 3e-6 * i for j in range(ny)]
+                               for i in range(nx)])
+        self.assertEqual(out["l0_ncomp2"]["inputs.grid.ncomp"], 2)
+        self.assertEqual(np.shape(out["l0_ncomp4"]["U"]), (4, 4, 3))
+
+    def test_an_infrastructure_payload_is_every_numeric_leaf(self) -> None:
+        ir = {"case": {"test_case_set": [{"case_id": "s", "inputs": {
+            "a": 1, "b": 2.5, "flag": True, "name": "x", "v": [1, 2], "w": [],
+            "m": [[1.0, 2.0], [3.0, 4.0]], "r": [[1], [2, 3]], "mixed": [1, "x"],
+            "g": {"k": 3}}}]}}
+        self.assertEqual(pe.evaluate_case_inputs(ir)["s"], {
+            "inputs.a": 1, "inputs.b": 2.5, "inputs.flag": 1, "inputs.v": [1, 2],
+            "inputs.w": [], "inputs.m": [[1.0, 2.0], [3.0, 4.0]], "inputs.g.k": 3})
+        ir["case"]["test_case_set"][0]["inputs"]["bad"] = float("inf")
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "non-finite"):
+            pe.evaluate_case_inputs(ir)
+
+    def test_the_t_end_check_both_ways(self) -> None:
+        ir = _toy()
+        pe.evaluate_case_inputs(ir)   # 0 + 10 * 0.1 == 1.0
+        ir["case"]["test_case_set"][1]["inputs"]["time"]["t_end"] = 1.0 + 1e-9
+        ir["case"]["test_case_set"][1]["derived"]["dt"] = 0.1
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    r"case 'b': drive\.loop: t_start \+ n_step \* dt"):
+            pe.evaluate_case_inputs(ir)
+        # within 4 ulp of t_end passes
+        ir["case"]["test_case_set"][1]["inputs"]["time"]["t_end"] = float(
+            np.nextafter(1.0, 2.0))
+        pe.evaluate_case_inputs(ir)
+        # a loop scalar init writes skips the check (never fails it)
+        toyi = _toyi()
+        toyi["case"]["test_case_set"][0]["inputs"]["time"]["t_end"] = 123.0
+        pe.evaluate_case_inputs(toyi)
+
+    def test_each_host_refusal_names_the_case_and_the_entry(self) -> None:
+        def mutate(fn) -> dict:
+            ir = _toy()
+            fn(ir["case"]["test_case_set"][0])
+            return ir
+        rows = [
+            (lambda c: c["derived"].update(n_step=10.5), "drive.loop.n_step"),
+            (lambda c: c["derived"].update(n_step=0, dt=0.1), "not an integer >= 1"),
+            (lambda c: c["derived"].update(n_step=0), "derived.dt: evaluation failed"),
+            (lambda c: c["derived"].update(dt="0 - 0.1"), "not > 0"),
+            (lambda c: c["inputs"]["history"].update(every=-1), "not an integer >= 0"),
+            (lambda c: c["inputs"]["history"].update(every=1.5), "not an integer >= 0"),
+            (lambda c: c["initial_state"].update(h="1 / (x - x)"), "initial_state.h"),
+            (lambda c: c["initial_state"].update(h=[1.0, 2.0]), "a literal of shape [2]"),
+            (lambda c: c["initial_state"].update(h="final.h"), "final.h is not admitted"),
+            (lambda c: c["initial_state"].pop("h"), "initial_state has no entry for ['h']"),
+            (lambda c: c["initial_state"].update(ok=0), "takes no initial_state entry"),
+            (lambda c: c["derived"].update(n_step="final.step"), "final.step is not admitted"),
+            (lambda c: c["inputs"]["grid"].update(nx=4.5), "resolved to 4.5"),
+        ]
+        for fn, msg in rows:
+            with self.subTest(msg=msg), self.assertRaises(pe.PrimaryEvidenceError) as cm:
+                pe.evaluate_case_inputs(mutate(fn))
+            self.assertIn("case 'a'", str(cm.exception))
+            self.assertIn(msg, str(cm.exception))
+
+    def test_an_integral_float_loop_count_is_admitted(self) -> None:
+        ir = _toy()
+        for c in ir["case"]["test_case_set"]:
+            c["derived"]["n_step"] = "ceil(9.5)"
+        out = pe.evaluate_case_inputs(ir)
+        self.assertEqual(out["a"]["derived.n_step"], 10)
+        self.assertIsInstance(out["a"]["derived.n_step"], int)
+
+    def test_a_derived_field_fills_its_dummy_by_the_broadcast_rule(self) -> None:
+        self.assertEqual(pe._fit(np.ones((1, 4, 3)), (4, 3), "w").shape, (4, 3))
+        np.testing.assert_array_equal(pe._fit(np.array([[1.0], [2.0]]), (2, 3), "w"),
+                                      [[1.0] * 3, [2.0] * 3])
+        self.assertEqual(pe._fit(2.0, (2,), "w").tolist(), [2.0, 2.0])
+        for bad in (np.ones(4), np.ones((3, 3)), np.ones((2, 2, 3))):
+            with self.subTest(shape=bad.shape), self.assertRaises(pe.PrimaryEvidenceError):
+                pe._fit(bad, (4, 3), "w")
+
+    def test_write_replaces_through_a_temporary_name_and_touches_nothing_else(self) -> None:
+        ir = _toy()
+        with tempfile.TemporaryDirectory() as td:
+            ir_dir = Path(td)
+            out_dir = ir_dir / "case_inputs"
+            out_dir.mkdir()
+            (out_dir / "a.json").write_text("stale")
+            (out_dir / "other.json").write_text("keep me")
+            inode = out_dir.stat().st_ino
+            replaced: list[tuple[str, str]] = []
+            real_replace = pe.os.replace
+
+            def spy(src, dst):
+                replaced.append((str(src), str(dst)))
+                return real_replace(src, dst)
+
+            with unittest.mock.patch.object(pe.os, "replace", spy):
+                paths = pe.write_case_inputs(ir, ir_dir)
+            self.assertEqual(paths, [out_dir / "a.json", out_dir / "b.json"])
+            self.assertEqual([Path(d).name for _s, d in replaced], ["a.json", "b.json"])
+            for src, _d in replaced:
+                self.assertEqual(Path(src).parent, out_dir)
+                self.assertNotIn(Path(src).name, ("a.json", "b.json"))
+                self.assertFalse(Path(src).exists())
+            self.assertEqual(out_dir.stat().st_ino, inode)
+            self.assertEqual((out_dir / "other.json").read_text(), "keep me")
+            self.assertEqual(sorted(p.name for p in out_dir.iterdir()),
+                             ["a.json", "b.json", "other.json"])
+            text = (out_dir / "a.json").read_text()
+            self.assertEqual(json.loads(text), pe.evaluate_case_inputs(ir)["a"])
+            self.assertEqual(text, json.dumps(json.loads(text), sort_keys=True,
+                                              separators=(",", ":")) + "\n")
+            first = (out_dir / "b.json").read_bytes()
+            pe.write_case_inputs(ir, ir_dir)
+            self.assertEqual((out_dir / "b.json").read_bytes(), first)   # deterministic
+
+    def test_write_creates_the_directory_and_leaves_nothing_on_failure(self) -> None:
+        ir = _toy()
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(len(pe.write_case_inputs(ir, Path(td))), 2)
+            self.assertTrue((Path(td) / "case_inputs").is_dir())
+        with tempfile.TemporaryDirectory() as td:
+            out_dir = Path(td) / "case_inputs"
+            with unittest.mock.patch.object(pe.os, "replace", side_effect=OSError("boom")), \
+                    self.assertRaises(OSError):
+                pe.write_case_inputs(ir, Path(td))
+            self.assertEqual(list(out_dir.iterdir()), [])
+        bad = _toy()
+        bad["case"]["test_case_set"][0]["initial_state"]["h"] = "1 / (x - x)"
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(pe.PrimaryEvidenceError):
+                pe.write_case_inputs(bad, Path(td))
+            self.assertFalse((Path(td) / "case_inputs").exists())   # evaluated before writing
+
+
+class DriveViolationsTest(unittest.TestCase):
+    """`drive_violations` (SHAPE §6 (a)-(l)): admitted on the coriolis fixture and on the two
+    loop IRs built here, and one refusal row per clause, each asserting its message."""
+
+    def _v(self, ir: dict, kind: str | None = None) -> list[str]:
+        return pe.drive_violations(ir, kind=kind or ir["meta"]["spec_kind"])
+
+    def _refused(self, ir: dict, msg: str, kind: str | None = None) -> None:
+        v = self._v(ir, kind)
+        self.assertTrue(any(msg in m for m in v), v)
+
+    def test_admitted(self) -> None:
+        for name, ir in (("coriolis", _coriolis()), ("toy", _toy()), ("toyi", _toyi()),
+                         ("rus", _rus())):
+            with self.subTest(ir=name):
+                self.assertEqual(self._v(ir), [])
+
+    def test_the_kind(self) -> None:
+        self.assertEqual(self._v({"case": {}}, "infrastructure"), [])
+        self.assertEqual(self._v(_toy(), "infrastructure"),
+                         ["drive: an infrastructure node carries no drive block (its own runner "
+                          "runs its cases)"])
+        ir = _toy()
+        del ir["drive"]
+        self._refused(ir, "drive is required on a problem node")
+        self._refused(_coriolis(), "spec kind 'physics' is not one of", "physics")
+
+    def test_a_problem_publishes_and_calls_its_step(self) -> None:   # (a)
+        ir = _toy()
+        ir["meta"]["spec_id"] = "other"
+        self._refused(ir, "(a) a problem publishes other__step")
+        self._refused(ir, "(a) drive.step.operation is 'toy__step'; a problem's drive.step "
+                          "calls other__step")
+        self.assertEqual(self._v(ir, "component"), [])   # a component's operation is any
+        ir = _toyi()
+        ir["public_api"]["published_operations"].append({"operation_id": "toyi__setup"})
+        ir["public_api"]["signatures"][0]["symbol"] = "toyi__setup"
+        ir["drive"]["init"]["operation"] = "toyi__setup"
+        self._refused(ir, "(a) drive.init.operation is 'toyi__setup'; a problem's init is "
+                          "toyi__init")
+
+    def test_the_structure(self) -> None:   # (b) structural half
+        rows = [
+            (lambda d: d["step"]["arguments"].pop("t"), "binds no value to dummy(ies) ['t']"),
+            (lambda d: d["step"]["arguments"].update(zz="time"), "names ['zz'], which are not"),
+            (lambda d: d["step"]["arguments"].update(t="clock"), "binding 'clock' is not one"),
+            (lambda d: d["step"].update(operation="toy__nope"), "'toy__nope' is not a published"),
+            (lambda d: d.update(init=[d["step"]]), "drive.init is one mapping entry"),
+            (lambda d: d["loop"].pop("t_end"), "drive.loop.t_end is required whenever loop"),
+            (lambda d: d["loop"].update(dt="time"), "drive.loop.dt must be inputs.<path>"),
+            (lambda d: d.update(history={"every": "derived.n_step"}),
+             "drive.history must be {every: inputs.<path>}"),
+            (lambda d: d.update(extra=1), "drive.extra is not a key of drive"),
+        ]
+        for fn, msg in rows:
+            with self.subTest(msg=msg):
+                ir = _toy()
+                fn(ir["drive"])
+                self._refused(ir, msg)
+
+    def test_the_bindings(self) -> None:   # (b)
+        def toy_with(fn):
+            ir = _toy()
+            fn(ir)
+            return ir
+        sig = lambda ir, i: ir["public_api"]["signatures"][0]["signature"]["args"][i]  # noqa
+        rows = [
+            (toy_with(lambda ir: ir["drive"]["step"]["arguments"].update(h="inputs.grid.nx")),
+             "an inout dummy binds state.<var> only"),
+            (toy_with(lambda ir: ir["drive"]["step"]["arguments"].update(ok="inputs.grid.nx")),
+             "an out dummy binds state.<var> only"),
+            (toy_with(lambda ir: ir["drive"]["step"]["arguments"].update(h="state.zz")),
+             "state.zz is not a snapshot schema variable"),
+            (toy_with(lambda ir: ir["drive"]["step"]["arguments"].update(t="step")),
+             "step binds a rank-0 integer dummy"),
+            (toy_with(lambda ir: ir["drive"]["step"]["arguments"].update(nx=4.5)),
+             "the literal 4.5 does not bind a integer dummy"),
+            (toy_with(lambda ir: ir["drive"]["step"]["arguments"].update(dt={"procedure": "x"})),
+             "{procedure: ...} binds a procedure-typed dummy"),
+            (toy_with(lambda ir: sig(ir, 3).update(rank=0, dims=None)),
+             "a rank-0 dummy bound to state.h, whose shape_expr has rank 1"),
+            (toy_with(lambda ir: sig(ir, 0).update(spec={"type": "string"})),
+             "a dummy of type 'string' cannot be driven"),
+            (toy_with(lambda ir: (sig(ir, 1).update(intent="out"),
+                                  ir["drive"]["step"]["arguments"].update(dt="state.ok"))),
+             "a rank-0 real out of the step operation on a loop node is refused"),
+            (toy_with(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
+                      ["schema"]["variables"].append({"name": "spare", "shape_expr": "[nx]"})),
+             "'spare' is bound by no dummy of drive"),
+            (toy_with(lambda ir: ir["io_contract"]["raw_requirements"]["required_evidence"][0]
+                      ["schema"]["variables"][0].update(source="operation")),
+             "variables[0].source: the source vocabulary is retired"),
+        ]
+        for ir, msg in rows:
+            with self.subTest(msg=msg):
+                self._refused(ir, msg)
+        # one-call node: an in/out pair binds two states; a rank-0 out binds its own name
+        rus = _rus()
+        rus["public_api"]["signatures"][0]["signature"]["args"][2]["intent"] = "out"
+        rus["drive"]["step"]["arguments"]["F"] = "state.q"
+        self._refused(rus, "the in/out pair ['q', 'F'] binds one state, state.q")
+        rus = _rus()
+        rus["drive"]["step"]["arguments"]["a_x"] = "state.ok"
+        self._refused(rus, "a rank-0 real out binds the state named after the dummy, state.a_x")
+
+    def test_the_shapes_per_case(self) -> None:   # (c)
+        ir = _toy()
+        ir["public_api"]["signatures"][0]["signature"]["args"][3]["dims"] = ["nx + 1"]
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["coordinates"] = []
+        ir["case"]["test_case_set"][0]["initial_state"]["h"] = 1.0
+        ir["case"]["test_case_set"][1]["initial_state"]["h"] = 1.0
+        self.assertEqual(self._v(ir), [])
+        self.assertEqual(len(pe.evaluate_case_inputs(ir)["a"]["h"]), 5)
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"][0][
+            "shape_expr"] = "[4]"
+        self._refused(ir, "(c) case 'a': state.h: shape_expr extent 4 on axis 0 disagrees")
+        ir = _toy()
+        ir["public_api"]["signatures"][0]["signature"]["args"][3]["dims"] = ["dt"]
+        self._refused(ir, "(c) case 'a': drive.step.arguments.h (state.h): dt is 0.1, not an "
+                          "integer")
+        ir = _toy()
+        ir["public_api"]["signatures"][0]["signature"]["args"][3]["dims"] = ["t"]
+        self._refused(ir, "dims token 't' names dummy 't', bound to time")
+        ir = _toy()
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["coordinates"][0][
+            "count"] = 3
+        self._refused(ir, "coordinates['x'].count 3 is not the extent of axis 0")
+
+    def test_the_result(self) -> None:   # (d)
+        ir = _toy()
+        ir["drive"]["step"]["result"] = "h"
+        self._refused(ir, "(d) drive.step.result 'h' is not a logical rank-0 out dummy")
+
+    def test_the_loop_references(self) -> None:   # (e)
+        ir = _toyi()
+        ir["drive"]["loop"]["dt"] = "state.h"
+        self._refused(ir, "(e) drive.loop.dt (state.h): a state.<var> loop reference names a "
+                          "scalar init writes")
+        ir = _toy()
+        ir["drive"]["loop"]["n_step"] = "derived.nope"
+        self._refused(ir, "(e) drive.loop.n_step (derived.nope): case 'a' has no derived.nope")
+        ir = _toy()
+        ir["drive"]["loop"]["t_start"] = "inputs.time.nope"
+        self._refused(ir, "(e) drive.loop.t_start (inputs.time.nope): in case 'a'")
+        ir = _toy()
+        del ir["drive"]["history"]
+        self._refused(ir, "(e) drive.history is required with loop")
+        rus = _rus()
+        rus["drive"]["history"] = {"every": "inputs.grid.nx"}
+        self._refused(rus, "(e) drive.history is refused without loop")
+
+    def test_the_initial_state_entries(self) -> None:   # (f)
+        ir = _toy()
+        del ir["case"]["test_case_set"][1]["initial_state"]["h"]
+        self._refused(ir, "(f) case 'b': initial_state has no entry for ['h']")
+        ir = _toy()
+        ir["case"]["test_case_set"][0]["initial_state"]["zz"] = 1.0
+        self._refused(ir, "(f) case 'a': initial_state.zz is not a snapshot schema variable")
+        ir = _toy()
+        ir["case"]["test_case_set"][0]["initial_state"]["ok"] = 0
+        self._refused(ir, "(f) case 'a': initial_state.ok — a variable init writes, or a logical")
+        ir = _toyi()
+        ir["case"]["test_case_set"][0]["initial_state"] = {"dt": 0.1}
+        self._refused(ir, "(f) case 'a': initial_state.dt — a variable init writes")
+        rus = _rus()
+        rus["case"]["test_case_set"][0]["initial_state"]["F"] = "0 * x"
+        self._refused(rus, "(f) case 'a': initial_state.F — an output the operation only writes "
+                           "takes a number literal")
+
+    def test_the_list_form(self) -> None:   # (f')
+        rus = _rus()
+        rus["case"]["test_case_set"].append(
+            {**copy.deepcopy(rus["case"]["test_case_set"][0]), "case_id": "b"})
+        rus["io_contract"]["tests"][0]["target_cases"] = ["a", "b"]
+        for p in rus["io_contract"]["predicates"]:
+            p["target_cases"] = ["a", "b"]
+        entry = rus["drive"]["step"]
+        rus["drive"]["step"] = [{**entry, "cases": ["a"]}, {**entry, "cases": ["b"]}]
+        self.assertEqual(self._v(rus), [])
+        rus["drive"]["step"][1]["cases"] = ["a"]
+        self._refused(rus, "(f') drive.step[].cases lists ['a'] more than once")
+        self._refused(rus, "(f') drive.step[].cases leaves ['b'] to no entry")
+        rus["drive"]["step"][1]["cases"] = ["b", "zz"]
+        self._refused(rus, "(f') drive.step[].cases names unknown case_id(s) ['zz']")
+        toy = _toy()
+        toy["drive"]["step"] = [{**toy["drive"]["step"], "cases": ["a", "b"]}]
+        self._refused(toy, "(f') a loop node's drive.step is one mapping entry, not a list")
+
+    def test_the_host_expression_names(self) -> None:   # (g)
+        rows = [
+            ("initial_state", "h", "final.h + x", "(g) case 'a': initial_state.h: final.h is not"),
+            ("initial_state", "h", "history.h", "history.h is not admitted"),
+            ("initial_state", "h", "derived.dt + x", "derived.dt is not admitted"),
+            ("initial_state", "h", "inputs.grid.nx + y", "name 'y' is not a coordinate"),
+            ("derived", "dt", "derived.later", "derived.later is not a derived entry written "
+                                               "before"),
+            ("derived", "dt", "series.t_min", "series.t_min is not admitted"),
+            ("derived", "dt", "at('b').x", "at('<case>') is not admitted"),
+            ("derived", "dt", "comparand.initial.h", "comparand.initial.h is not admitted"),
+        ]
+        for block, key, text, msg in rows:
+            with self.subTest(text=text):
+                ir = _toy()
+                ir["case"]["test_case_set"][0][block][key] = text
+                self._refused(ir, msg)
+        # a derived expression may read initial.<v> of a host-materialised variable ...
+        ir = _toy()
+        for c in ir["case"]["test_case_set"]:
+            c["derived"]["h0"] = "max(initial.h)"
+        self.assertEqual(self._v(ir), [])
+        # ... never one init writes
+        ir = _toyi()
+        ir["case"]["test_case_set"][0]["derived"] = {"q": "max(initial.h)"}
+        self._refused(ir, "(g) case 'a': derived.q: initial.h is not admitted")
+
+    def test_the_history_artifacts(self) -> None:   # (h)
+        ir = _toy()
+        ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
+        ev[2]["names"] = ["t", "step", "h_min"]
+        self._refused(ir, "(h) step_series.names must be exactly ['h_max', 'h_min', 'step', 't']")
+        ev[2]["names"] = ["t", "step", "h_min", "h_max", "h_max"]
+        self._refused(ir, "(h) step_series.names must be exactly")
+        del ev[2]
+        self._refused(ir, "(h) the step_series evidence entry is declared iff drive.loop is")
+        del ev[1]
+        self._refused(ir, "(h) the state_history evidence entry is declared iff drive.history")
+        rus = _rus()
+        rus["io_contract"]["raw_requirements"]["required_evidence"].append(
+            {"artifact": "step_series", "names": ["t", "step"]})
+        self._refused(rus, "(h) the step_series evidence entry is declared iff drive.loop is")
+
+    def test_d7_is_clause_i(self) -> None:   # (i)
+        rus = _rus()
+        rus["io_contract"]["predicates"][2]["expr"] = "final.a_x"
+        self._refused(rus, "(i) predicates[2] (test 't_flux', quantity 'speed') reads final.a_x")
+
+    def test_every_init_written_variable_is_read(self) -> None:   # (k)
+        ir = _toyi()
+        ir["io_contract"]["predicates"][0]["expr"] = "final.ok"
+        self._refused(ir, "(k) 'init_ok', which init writes, is read by no predicate over "
+                          "initial.init_ok")
+        ir = _toyi()
+        ir["io_contract"]["predicates"][1]["expr"] = (
+            "abs(initial.dt - 0.5) + abs(initial.n_plan * initial.dt - 1) + 0 * max(initial.h)")
+        self._refused(ir, "(k) 'dt' sets the loop (drive.loop) and init writes it: a predicate "
+                          "over initial.dt also reads initial.<a> of an array init writes (['h'])")
+        self._refused(ir, "(k) 'n_plan' sets the loop")
+
+    def test_the_zero_step_closure(self) -> None:   # (l)
+        ir = _toy()
+        closure = ir["io_contract"]["predicates"][1]
+        for bad in ({"expr": "final.step - derived.n_step + 0"}, {"value": 1},
+                    {"op": "le"}, {"target_cases": ["a"]},
+                    {"per_case": None, "case": "a"},
+                    {"expr": "final.step - derived.nope"},
+                    {"expr": "final.step - inputs.grid.zz"},
+                    {"expr": "final.step - final.h"},
+                    {"expr": "final.step - inputs.grid.nx"}):
+            with self.subTest(bad=bad):
+                ir["io_contract"]["predicates"][1] = {**closure, **bad}
+                self._refused(ir, "(l) test 't_run' (pass) carries no predicate `expr: "
+                                  "\"final.step - <ref>\"`")
+        for good in ("final.step - derived.n_step", "final.step-derived.n_step"):
+            with self.subTest(good=good):
+                ir["io_contract"]["predicates"][1] = {**closure, "expr": good}
+                self.assertFalse(any(m.startswith("(l)") for m in self._v(ir)), self._v(ir))
+        cor = _coriolis()
+        cor["io_contract"]["predicates"][0]["value"] = 0.0
+        self._refused(cor, "(l) test 'l0_zero_f_gives_zero_source_pass' (pass) carries no "
+                           "predicate `expr: \"final.guard_pass\"`, `op: eq`, `value: 1`")
+        cor = _coriolis()   # an xfail test needs none: its predicate reads guard_pass == 0
+        self.assertEqual(cor["io_contract"]["tests"][-1]["expected_outcome"], "xfail")
+        self.assertEqual(self._v(cor), [])
+
+
+    def test_the_closure_ref_is_the_counterpart_of_loop_n_step(self) -> None:   # (l)
+        """R1-1: the `<ref>` of `final.step - <ref>` is the one value the loop runs by —
+        `drive.loop.n_step`'s binding verbatim for `derived.*` / `inputs.*`, `initial.<n>` /
+        `final.<n>` for an init-written `state.<n>` — and the refusal names it for this IR.
+        Another derived value, another input (one that resolves in every case), or another
+        init-written scalar is refused."""
+        def closure_expr(ir: dict, expr: str) -> dict:
+            for pred in ir["io_contract"]["predicates"]:
+                if pred["quantity"] == "run.n_step":
+                    pred["expr"] = expr
+            return ir
+
+        def l_findings(ir: dict) -> list[str]:
+            return [m for m in self._v(ir) if m.startswith("(l)")]
+
+        toy = _toy()
+        for case in toy["case"]["test_case_set"]:
+            case["derived"]["z"] = 10
+        for bad in ("final.step - derived.z", "final.step - inputs.history.every"):
+            with self.subTest(bad=bad):
+                self.assertEqual(l_findings(closure_expr(copy.deepcopy(toy), bad)), [
+                    "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - "
+                    "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target cases "
+                    "whose <ref> is the closure counterpart of drive.loop.n_step: for this IR "
+                    "'derived.n_step' (the zero-step closure)"
+                    + _CLOSURE_QUANTITY_TAIL])
+        self.assertEqual(l_findings(closure_expr(copy.deepcopy(toy),
+                                                 "final.step - derived.n_step")), [])
+        for bad in ("final.step - final.init_ok", "final.step - initial.init_ok",
+                    "final.step - initial.dt", "final.step - inputs.grid.nx"):
+            with self.subTest(bad=bad):
+                self.assertEqual(l_findings(closure_expr(_toyi(), bad)), [
+                    "(l) test 't_run' (pass) carries no predicate `expr: \"final.step - "
+                    "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target cases "
+                    "whose <ref> is the closure counterpart of drive.loop.n_step: for this IR "
+                    "'initial.n_plan' or 'final.n_plan' (the zero-step closure)"
+                    + _CLOSURE_QUANTITY_TAIL])
+        for good in ("final.step - initial.n_plan", "final.step - final.n_plan"):
+            with self.subTest(good=good):
+                self.assertEqual(l_findings(closure_expr(_toyi(), good)), [])
+        # An rk4-like loop whose count is a case input.
+        rk = _toy()
+        rk["drive"]["loop"]["n_step"] = "inputs.time.n_step"
+        for case in rk["case"]["test_case_set"]:
+            case["inputs"]["time"]["n_step"] = 10
+            case["derived"] = {"dt": "(inputs.time.t_end - inputs.time.t_start) "
+                                     "/ inputs.time.n_step"}
+        self.assertEqual(self._v(closure_expr(copy.deepcopy(rk), "final.step - inputs.time.n_step")),
+                         [])
+        self.assertTrue(l_findings(closure_expr(rk, "final.step - inputs.grid.nx")))
+
+    def test_an_init_planned_loop_also_closes_the_init_result(self) -> None:   # (l)
+        """R1-3: with `loop.n_step: state.n_plan` (init-written) a refused `init` planning 0
+        steps satisfies `final.step - initial.n_plan` with 0 - 0, so every `pass` test also
+        carries `initial.init_ok eq 1` per case over all its targets, under `quantity: init_ok`
+        (a logical `out` is no state read: this flag predicate is exempt — `fixed_form`'s
+        `FORM_FLAG`, R5-2)."""
+        msg = ("(l) test 't_run' (pass) carries no predicate `expr: \"initial.init_ok\"`, "
+               "`op: eq`, `value: 1`, `per_case: true` over all its target cases under "
+               "`quantity: init_ok`, the init result's own name its tests.md `quantities` line "
+               "lists: drive.loop.n_step is a scalar init writes, so the closure counts the "
+               "steps against init's own plan, which a refused init (result 0) planning 0 "
+               "steps satisfies with 0 - 0; the init result closes it")
+        self.assertNotIn("init_ok", pe.state_reads(_toyi()).initial)
+        self.assertEqual(self._v(_toyi()), [])
+        for bad in ({"value": 0}, {"op": "ge"}, {"expr": "initial.init_ok + 0"},
+                    {"target_cases": ["a"]}, {"per_case": None, "case": "a"},
+                    {"quantity": "init"}):
+            with self.subTest(bad=bad):
+                ir = _toyi()
+                ir["io_contract"]["predicates"][0].update(bad)
+                self.assertIn(msg, self._v(ir))
+        ir = _toyi()   # init_ok still read (gate (k)) but not in the fixed form
+        ir["io_contract"]["predicates"][0]["expr"] = "initial.init_ok * 1"
+        self.assertIn(msg, self._v(ir))
+        # A host-data count needs no init result.
+        self.assertFalse([m for m in self._v(_toy()) if "initial.init_ok" in m])
+
+    def test_the_swe_fixture_closure_is_its_loop_count(self) -> None:   # (l)
+        import yaml
+        swe = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7" / "spec.ir.yaml").read_text())
+        self.assertEqual(swe["drive"]["loop"]["n_step"], "derived.n_step")
+        self.assertFalse([m for m in self._v(swe, "problem") if m.startswith("(l)")])
+        for pred in swe["io_contract"]["predicates"]:
+            if pred.get("expr") == "final.step - derived.n_step":
+                pred["expr"] = "final.step - inputs.history.every"
+        self.assertTrue([m for m in self._v(swe, "problem") if m.startswith("(l)")])
+
+
+    # --- R1-8: one row per clause a mutant survived; each is red with its clause deleted ---
+    @staticmethod
+    def _sig(ir: dict, op: str) -> list:
+        return next(s["signature"]["args"] for s in ir["public_api"]["signatures"]
+                    if s["symbol"] == op)
+
+    @staticmethod
+    def _schema_var(ir: dict, name: str, shape: str) -> None:
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": name, "shape_expr": shape})
+
+    def test_a_host_materialised_scalar_cannot_set_the_loop(self) -> None:   # (e)
+        """A `state.<var>` loop reference names a scalar `init` writes. A scalar the host
+        fills (`initial_state`) as `loop.n_step` would dodge the host checks (n_step an
+        integer >= 1, the t_end check), which skip a `state.*` operand, and gate (l), which
+        restates nothing (e) refuses — so the IR would pass with no finding at all."""
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("nn", "in", "integer"))
+        ir["drive"]["step"]["arguments"]["nn"] = "state.nn"
+        self._schema_var(ir, "nn", "scalar")
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["nn"] = 0          # not >= 1, and never checked as host data
+        ir["drive"]["loop"]["n_step"] = "state.nn"
+        self.assertEqual(self._v(ir), ["(e) drive.loop.n_step (state.nn): a state.<var> loop "
+                                       "reference names a scalar init writes"])
+
+    def test_an_input_array_has_the_dummy_s_extents(self) -> None:   # (c)
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("w", "in", "real", 1, ["nx"]))
+        ir["drive"]["step"]["arguments"]["w"] = "inputs.w"
+        ir["case"]["test_case_set"][0]["inputs"]["w"] = [1.0, 2.0, 3.0]
+        ir["case"]["test_case_set"][1]["inputs"]["w"] = [1.0] * 8
+        self.assertEqual(self._v(ir), [
+            "(c) case 'a': drive.step.arguments.w (inputs.w): an input of shape [3], the "
+            "dummy's dims evaluate to [4]"])
+
+    def test_a_derived_array_cannot_bind_a_rank_0_dummy(self) -> None:   # (c)
+        ir = _toy()
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["arr"] = "x"
+        self._sig(ir, "toy__step").append(_arg("g", "in", "real"))
+        ir["drive"]["step"]["arguments"]["g"] = "derived.arr"
+        self.assertEqual(self._v(ir), [
+            f"(c) case {c!r}: drive.step.arguments.g (derived.arr): an array bound to a rank-0 "
+            "dummy" for c in ("a", "b")])
+
+    def test_two_dummies_of_one_state_give_one_extent(self) -> None:   # (c)
+        """`init`'s `h` (dims `nx + 1`) and `step`'s `h` (dims `nx`) bind one state."""
+        ir = _toyi()
+        self._sig(ir, "toyi__init")[1]["dims"] = ["nx + 1"]
+        self.assertEqual(self._v(ir), [
+            "(c) case 'a': drive.step.arguments.h (state.h): extents [4], while another dummy "
+            "bound to state.h gives [5]",
+            "(c) case 'b': drive.step.arguments.h (state.h): extents [8], while another dummy "
+            "bound to state.h gives [9]"])
+
+    def test_an_integer_state_takes_an_integral_initial_state(self) -> None:   # (c)
+        """Without the refusal the case file would carry `int(1.5)` = 1 in every cell: the
+        payload writer's `as_int` truncates, and reaches only values a guard found integral
+        (an int literal, an integer-bound derived value, the host n_step, an integer
+        state's initial content)."""
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("k", "in", "integer", 1, ["nx"]))
+        ir["drive"]["step"]["arguments"]["k"] = "state.k"
+        self._schema_var(ir, "k", "[nx]")
+        ir["io_contract"]["raw_requirements"]["required_evidence"][2]["names"] += [
+            "k_min", "k_max"]
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["k"] = 1.5
+        self.assertEqual(self._v(ir), [
+            f"(c) case {c!r}: initial_state.k: an integer is bound, and the value is not "
+            "integral" for c in ("a", "b")])
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "is not integral"):
+            pe.evaluate_case_inputs(ir)
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["k"] = 2.0
+        self.assertEqual(pe.evaluate_case_inputs(ir)["a"]["k"], [2, 2, 2, 2])
+
+    def test_a_state_array_has_one_reading_dummy_on_a_loop_node(self) -> None:   # (b)
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("h0", "in", "real", 1, ["nx"]))
+        ir["drive"]["step"]["arguments"]["h0"] = "state.h"
+        self.assertEqual(self._v(ir), [
+            "drive.step: state.h is read by dummies ['h', 'h0']: a state array has at most one "
+            "reading dummy per entry"])
+
+
+class ScalarPairingTest(unittest.TestCase):
+    """D7 (`scalar_pairing_violations`, re-checked by `evaluate_verdict`): the class is derived
+    from `drive` + signatures; a scalar read alone, or beside a pair that reads only arrays,
+    is refused."""
+
+    def test_the_class(self) -> None:
+        self.assertEqual(pe.drive_model(_rus()).one_call_scalars, {"a_x": frozenset({"F"})})
+        self.assertEqual(pe.drive_model(_coriolis()).one_call_scalars, {})   # logical only
+        self.assertEqual(pe.drive_model(_toy()).one_call_scalars, {})        # a loop node
+        mutated = _rus()   # the class follows the intent: an `in` scalar is no output
+        mutated["public_api"]["signatures"][0]["signature"]["args"][3]["intent"] = "in"
+        self.assertEqual(pe.drive_model(mutated).one_call_scalars, {})
+
+    def test_both_ways(self) -> None:
+        rus = _rus()
+        self.assertEqual(pe.scalar_pairing_violations(rus), [])   # [3] beside its pair [2]
+        preds = rus["io_contract"]["predicates"]
+        preds[2]["expr"] = "final.a_x"
+        v = pe.scalar_pairing_violations(rus)
+        self.assertEqual(len(v), 2)
+        self.assertIn("predicates[2] (test 't_flux', quantity 'speed') reads final.a_x — the "
+                      "scalar a rank-0 out of a one-call operation writes — in ['a']", v[0])
+        self.assertIn("(['F'])", v[0])
+        self.assertTrue(v[1].startswith("predicates[3] "), v)
+        # a pair of the same quantity that reads only the arrays does not pair
+        preds.append({**preds[2], "expr": "maxabs(final.F)"})
+        self.assertEqual(len(pe.scalar_pairing_violations(rus)), 2)
+        # a pair of the same quantity that reads both does
+        preds.append({**preds[2], "expr": "final.a_x - maxabs(final.F)", "op": "le",
+                      "value": 1.0})
+        self.assertEqual(pe.scalar_pairing_violations(rus), [])
+        alone = lambda: [m for m in pe.scalar_pairing_violations(rus)  # noqa: E731
+                         if m.startswith("predicates[2] ")]
+        # another quantity's pair does not
+        preds[-1]["quantity"] = "flux"
+        self.assertEqual(len(alone()), 1)
+        # a pair reading the array only inside a term constant by form does not
+        preds[-1].update(quantity="speed", expr="final.a_x + 0 * maxabs(final.F)")
+        self.assertEqual(len(alone()), 1)
+        # a pair reading an array the operation does not write does not
+        preds[-1].update(expr="final.a_x - maxabs(final.q)")
+        self.assertEqual(len(alone()), 1)
+
+    def test_a_predicate_never_pairs_itself(self) -> None:
+        """R1-4: the pair is a DIFFERENT predicate. A sole predicate reading the scalar and an
+        array — `final.a_x + 1e-300 * sum(final.F)`, judged by `a_x` alone, the spelling the
+        retired `reported_read_violations` refused, or the honest `abs(final.a_x -
+        maxabs(final.F))` — is refused; a second predicate of the test and quantity reading
+        `final.a_x` (alone, or itself paired) admits it, and the verdict agrees."""
+        msg = ("predicates[2] (test 't_flux', quantity 'speed') reads final.a_x — the scalar a "
+               "rank-0 out of a one-call operation writes — in ['a'], and no OTHER predicate of "
+               "that test and quantity reads final.a_x in those cases with final.<a> of an "
+               "array state the same operation writes (['F']) read beside it by one of the two "
+               "(D7: a kernel-reported scalar is judged beside the state its call wrote, by a "
+               "predicate other than the one reading it)")
+        for expr in ("final.a_x + 1e-300 * sum(final.F)", "abs(final.a_x - maxabs(final.F))"):
+            with self.subTest(expr=expr):
+                rus = _rus()
+                preds = rus["io_contract"]["predicates"]
+                preds[2]["expr"] = expr
+                del preds[3]
+                self.assertEqual(pe.scalar_pairing_violations(rus), [msg])
+                preds.append({**preds[2], "expr": "final.a_x", "op": "ge", "value": 0})
+                self.assertEqual(pe.scalar_pairing_violations(rus), [])
+                preds[3]["expr"] = "final.a_x - max(final.F)"     # two pairs pair each other
+                self.assertEqual(pe.scalar_pairing_violations(rus), [])
+                preds[3]["quantity"] = "flux"                     # another quantity's does not
+                self.assertIn(msg, pe.scalar_pairing_violations(rus))
+        run = _RunDir()
+        try:
+            run.write("a", initial={"q": [0.125, 0.375, 0.625, 0.875], "F": [-999.0] * 4,
+                                    "a_x": -999.0, "ok": 0.0, "t": 0.0, "step": 0},
+                      final={"q": [0.125, 0.375, 0.625, 0.875], "F": [0.5] * 4, "a_x": 0.5,
+                             "ok": 1.0, "t": 0.0, "step": 1})
+            solo = _rus()
+            del solo["io_contract"]["predicates"][3]
+            tests = solo["io_contract"]["tests"]
+            with self.assertRaisesRegex(PredicateError, r"reads the one-call scalar final\.a_x "
+                                                        r"in \['a'\] and no OTHER record"):
+                evaluate_verdict(tests, pe.evaluate_primary_predicates(solo, run.root))
+            self.assertEqual(evaluate_verdict(
+                tests, pe.evaluate_primary_predicates(_rus(), run.root))["self_verdict"], "pass")
+        finally:
+            run.cleanup()
+
+    def test_the_mutated_class_drops_the_finding(self) -> None:
+        """With `a_x` an `in` (the derivation's `out` -> `in`) the alone read is no D7 case:
+        this row and `test_both_ways` together go red if the derivation reads the wrong intent."""
+        rus = _rus()
+        rus["io_contract"]["predicates"][2]["expr"] = "final.a_x"
+        rus["public_api"]["signatures"][0]["signature"]["args"][3]["intent"] = "in"
+        self.assertEqual(pe.scalar_pairing_violations(rus), [])
+        self.assertNotEqual(pe.scalar_pairing_violations(_rus_alone()), [])
+
+    def test_through_real_records_and_the_verdict(self) -> None:
+        run = _RunDir()
+        try:
+            run.write("a", initial={"q": [0.125, 0.375, 0.625, 0.875], "F": [-999.0] * 4,
+                                    "a_x": -999.0, "ok": 0.0, "t": 0.0, "step": 0},
+                      final={"q": [0.125, 0.375, 0.625, 0.875], "F": [0.5] * 4, "a_x": 0.5,
+                             "ok": 1.0, "t": 0.0, "step": 1})
+            rus = _rus()
+            recs = pe.evaluate_primary_predicates(rus, run.root)
+            self.assertEqual(recs[2]["scalar_pairing"],
+                             {"a_x": {"scalar": ["a"], "paired": ["a"]}})
+            self.assertEqual(recs[0]["scalar_pairing"], {})
+            tests = rus["io_contract"]["tests"]
+            self.assertEqual(evaluate_verdict(tests, recs)["self_verdict"], "pass")
+            alone = pe.evaluate_primary_predicates(_rus_alone(), run.root)
+            self.assertEqual(alone[2]["scalar_pairing"],
+                             {"a_x": {"scalar": ["a"], "paired": []}})
+            with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
+                evaluate_verdict(tests, alone)
+            # R1-2: a cross-target predicate reading the one-call scalar alone is no D7 case at
+            # the gate (`_own_predicates`) and none in the verdict: its `no_comparand`
+            # placeholder takes no part in the status.
+            cross = _rus()
+            cross["io_contract"]["predicates"].append(
+                {"test_id": "t_flux", "quantity": "agree", "target_cases": ["a"],
+                 "per_case": True, "expr": "abs(final.a_x - comparand.final.a_x)", "op": "le",
+                 "value": 1e-12})
+            self.assertEqual(pe.scalar_pairing_violations(cross), [])
+            recs = pe.evaluate_primary_predicates(cross, run.root)
+            self.assertEqual((recs[4]["kind"], recs[4]["scalar_pairing"]),
+                             ("no_comparand", {"a_x": {"scalar": ["a"], "paired": []}}))
+            self.assertEqual(evaluate_verdict(tests, recs)["self_verdict"], "pass")
+        finally:
+            run.cleanup()
+
+
+def _rus_alone() -> dict:
+    rus = _rus()
+    rus["io_contract"]["predicates"][2]["expr"] = "final.a_x"
+    return rus
+
+
+# Review round 2, R2-2 / R2-3: two-operation LIST-form nodes, one schema, partitioned cases —
+# the shapes PR-3 converts. The dummies are the real §5.1 fences, read from the spec.
+
+_REPO = Path(__file__).resolve().parents[2]
+_MICRO = _REPO / "spec" / "component" / "microphysics"
+
+
+def _fence_procedures(rel: str) -> dict[str, list[dict]]:
+    """symbol -> args of the `### 5.1` yaml fence of a controlled_spec.md under microphysics."""
+    import yaml
+    text = (_MICRO / rel / "controlled_spec.md").read_text()
+    block = text.split("### 5.1", 1)[1].split("```yaml", 1)[1].split("```", 1)[0]
+    return {p["name"]: p["args"] for p in yaml.safe_load(block)["procedures"]}
+
+
+_CONSTS = {"rvap": 461.46, "cpvap": 1845.6, "cl": 4218.0, "lhv0": 2.501e6, "psat0": 610.7,
+           "tem00": 273.15, "eps": 1e-30, "dwatr": 1000.0}
+
+
+def _list_form_ir(spec_id: str, rel: str, partition: dict[str, list[str]],
+                  initial: dict[str, dict], tests: list[tuple[str, list[str], list[tuple]]],
+                  arrays: list[str], scalars: list[str]) -> dict:
+    """A component IR whose `drive.step` is the list form: one entry per published operation
+    (``partition``: operation suffix -> its cases), every dummy bound to `state.<its name>`
+    (rank >= 1 or logical) or to `inputs.grid.<name>` / `inputs.dt` / `inputs.constants.<name>`."""
+    procs = _fence_procedures(rel)
+    step = []
+    for suffix, cids in partition.items():
+        op = f"{spec_id}__{suffix}"
+        arguments = {}
+        for a in procs[op]:
+            name = a["name"]
+            if a["rank"] >= 1 or a["spec"]["type"] == "logical":
+                arguments[name] = f"state.{name}"
+            elif name in ("ka", "ks", "ke"):
+                arguments[name] = f"inputs.grid.{name}"
+            elif name == "dt":
+                arguments[name] = "inputs.dt"
+            else:
+                arguments[name] = f"inputs.constants.{name}"
+        step.append({"operation": op, "result": "guard_pass", "arguments": arguments,
+                     "cases": cids})
+    cases = [{"case_id": cid, "inputs": {"grid": {"ka": 8, "ks": 2, "ke": 7}, "dt": 10.0,
+                                         "constants": dict(_CONSTS)},
+              "initial_state": dict(initial[cid])}
+             for cids in partition.values() for cid in cids]
+    variables = [{"name": n, "shape_expr": "[ka]"} for n in arrays] \
+        + [{"name": n, "shape_expr": "scalar"} for n in scalars]
+    schema = {"variables": variables, "time_variable": "t", "time_shape_expr": "scalar",
+              "coordinates": [{"name": "x", "axis": 0, "count": "inputs.grid.ka",
+                               "length": "inputs.grid.ka", "placement": "cell_center"}]}
+    io_tests, preds = [], []
+    for tid, targets, rows in tests:
+        io_tests.append({"test_id": tid, "expected_outcome": "pass", "target_cases": targets,
+                         "quantities": sorted({q for q, *_ in rows})})
+        preds += [{"test_id": tid, "quantity": q, "target_cases": targets, "per_case": True,
+                   "expr": e, "op": o, "value": val} for q, e, o, val in rows]
+    return {
+        "meta": {"spec_id": spec_id, "spec_kind": "component"},
+        "public_api": _api({op: procs[op] for op in (e["operation"] for e in step)}),
+        "drive": {"step": step},
+        "case": {"test_case_set": cases},
+        "io_contract": {"raw_requirements": {"required_evidence": [
+            {"artifact": "state_snapshots", "required": True, "schema": schema}]},
+            "tests": io_tests, "predicates": preds}}
+
+
+_KES = "microphysics_kessler_warm_rain_1d_column"
+_SAT = "microphysics_saturation_liquid_1d_column"
+_GUARD = ("guard_pass", "final.guard_pass", "eq", 1)
+
+
+def _kessler() -> dict:
+    """`__adjustment` over c_adj (adj_a, adj_b) writes temp qv qc qr cptot cvtot (inout) and
+    rhoe_t evaporate pcsat (out); `__terminal_velocity` over c_tv (tv_a) writes vterm_c vterm_r.
+    In c_adj the terminal-velocity arrays are bound by no entry, and in c_tv the adjustment's."""
+    adj_host = {"temp": "280 + x", "dens": "1.1 - 0.05 * x", "pres": "95000 - 3000 * x",
+                "qv": 0.002, "qc": 0.0, "qr": 0.0, "cptot": 1004.0, "cvtot": 717.0,
+                "rhoe_t": -999.0, "evaporate": -999.0, "pcsat": -999.0}
+    tv_host = {"dens": "1.1 - 0.05 * x", "rhoq_c": 1e-4, "rhoq_r": "1e-3 + 2e-4 * x",
+               "refstate_dens": "1.2 - 0.08 * x", "vterm_c": -999.0, "vterm_r": -999.0}
+    # each partition's host data for the arrays its entry does not bind: any form
+    adj = {**adj_host, "rhoq_c": 0.0, "rhoq_r": 0.0, "refstate_dens": 1.0,
+           "vterm_c": "0 * x", "vterm_r": -1.0}
+    tv = {**tv_host, "temp": 280.0, "pres": 9e4, "qv": 0.0, "qc": 0.0, "qr": 0.0,
+          "cptot": 1.0, "cvtot": 1.0, "rhoe_t": "0 * x", "evaporate": 0.0, "pcsat": 0.0}
+    arrays = ["temp", "dens", "pres", "qv", "qc", "qr", "cptot", "cvtot", "rhoe_t",
+              "evaporate", "pcsat", "rhoq_c", "rhoq_r", "refstate_dens", "vterm_c", "vterm_r"]
+    return _list_form_ir(
+        _KES, "kessler/microphysics_kessler_warm_rain_1d_column",
+        {"adjustment": ["adj_a", "adj_b"], "terminal_velocity": ["tv_a"]},
+        {"adj_a": adj, "adj_b": adj, "tv_a": tv},
+        [("t_adj", ["adj_a", "adj_b"], [_GUARD, ("qv_nonneg", "min(final.qv)", "ge", 0)]),
+         ("t_tv", ["tv_a"], [_GUARD, ("vterm", "min(final.vterm_r)", "ge", 0)])],
+        arrays, ["guard_pass"])
+
+
+def _saturation() -> dict:
+    """`__dens2qsat_liq` over q_a, q_b reads temp and dens and writes qsat; `__saturation_
+    adjustment` over s_a updates temp qv qc cptot cvtot, writes rhoe_d and `converged` — a
+    logical result of that operation alone, so host data (-1, tests.md) on the q cases."""
+    q = {"temp": "273.15 + 0 * x", "dens": "1.2 - 0.1 * x", "qsat": -999.0, "qv": 0.0,
+         "qc": 0.0, "cptot": 1.0, "cvtot": 1.0, "rhoe_d": -999.0, "converged": -1.0}
+    sa = {"temp": "280 + 4 * x", "dens": "1.1 - 0.05 * x", "qv": 0.002, "qc": 0.0,
+          "cptot": 1004.0, "cvtot": 717.0, "rhoe_d": -999.0, "qsat": -999.0}
+    return _list_form_ir(
+        _SAT, "saturation/microphysics_saturation_liquid_1d_column",
+        {"dens2qsat_liq": ["q_a", "q_b"], "saturation_adjustment": ["s_a"]},
+        {"q_a": q, "q_b": q, "s_a": sa},
+        [("t_q", ["q_a", "q_b"], [_GUARD, ("qsat_formula", "maxabs(final.qsat)", "le", 1)]),
+         ("t_s", ["s_a"], [_GUARD, ("converged", "final.converged", "eq", 1),
+                           ("satadj", "maxabs(final.temp - initial.temp)", "le", 1)])],
+        ["temp", "dens", "qv", "qc", "cptot", "cvtot", "qsat", "rhoe_d"],
+        ["guard_pass", "converged"])
+
+
+def _all_gates(ir: dict) -> list[str]:
+    """Every IR-side gate `ShippedFixturesTest` runs, concatenated."""
+    io, cases = ir["io_contract"], pe._cases_by_id(ir)
+    ctx = pe.predicate_schema_context(ir)
+    return (pe.drive_violations(ir, kind=ir["meta"]["spec_kind"])
+            + pe.validate_primary_predicate_schema(
+                io["predicates"], case_ids=set(cases),
+                test_ids=[t["test_id"] for t in io["tests"]],
+                schema=pe.snapshot_schema(ir), cases=cases,
+                test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+                **ctx)
+            + pe.quantity_violations(io["tests"], io["predicates"], ctx["reads"])
+            + ([] if ctx["case_inputs"] is not None else ["case inputs did not evaluate"]))
+
+
+class LoopTimeArgumentsTest(unittest.TestCase):
+    """Review round 6, R6-2: on a `loop` node the step's `dt` and `t` are the driver's (gate (e)),
+    and the host's `dt > 0` and `t_end` checks ask only of a case some test other than an `xfail`
+    one targets, or none: a case only `xfail` tests target may carry the invalid dt the kernel's
+    refusal is the subject of."""
+
+    @staticmethod
+    def _dt_msg(got: str, want: str) -> str:
+        return (f"(e) drive.step.arguments.dt is bound to {got}: on a `loop` node a step dummy "
+                f"named `dt` is bound to {want}, the reference `loop.dt` names")
+
+    @staticmethod
+    def _t_msg(got: str) -> str:
+        return (f"(e) drive.step.arguments.t is bound to {got}: on a `loop` node a step dummy "
+                "named `t` is bound to time, the driver's t")
+
+    @staticmethod
+    def _swe() -> dict:
+        import yaml
+        return yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+
+    @staticmethod
+    def _guard_toy(dt: dict[str, float], outcome: str = "xfail", n_step: float = 1,
+                   t_end: float = 2.5) -> dict:
+        """`_toy` with one `xfail` test per case of ``dt`` (the rk4 guard shape: one call, judged
+        by the flag), each case starting at t = 2.5 and carrying ``dt`` as its `derived.dt`."""
+        ir = _toy()
+        io = ir["io_contract"]
+        for cid, value in dt.items():
+            case = _toy_case(cid, 4)
+            case["inputs"]["time"] = {"t_start": 2.5, "t_end": t_end}
+            case["derived"] = {"n_step": n_step, "dt": value}
+            ir["case"]["test_case_set"].append(case)
+            io["tests"].append({"test_id": f"t_{cid}", "expected_outcome": outcome,
+                                "target_cases": [cid], "quantities": ["ok"]})
+            io["predicates"].append(
+                {"test_id": f"t_{cid}", "quantity": "ok", "target_cases": [cid], "per_case": True,
+                 "expr": "final.ok", "op": "eq", "value": 0})
+        return ir
+
+    def test_the_converted_fixtures_bind_them(self) -> None:
+        self.assertEqual(pe.drive_violations(self._swe(), kind="problem"), [])
+        self.assertEqual(pe.drive_violations(_toy(), kind="problem"), [])
+        self.assertEqual(pe.drive_violations(_toyi(), kind="problem"), [])   # `state.dt`
+
+    def test_a_dt_the_loop_does_not_advance_by_is_refused(self) -> None:
+        """The reviewer's two repros, 0 findings before: the kernel integrates another dt while
+        the driver's `final.t` reaches t_end."""
+        ir = self._swe()
+        ir["drive"]["step"]["arguments"]["dt"] = 1e-6
+        self.assertEqual(pe.drive_violations(ir, kind="problem"),
+                         [self._dt_msg("1e-06", "derived.dt")])
+        ir = self._swe()
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["dt_half"] = "derived.dt * 0.5"
+        ir["drive"]["step"]["arguments"]["dt"] = "derived.dt_half"
+        self.assertEqual(pe.drive_violations(ir, kind="problem"),
+                         [self._dt_msg("derived.dt_half", "derived.dt")])
+        for got in ("time", "step", "inputs.time.t_end"):
+            with self.subTest(got=got):
+                ir = _toy()
+                ir["drive"]["step"]["arguments"]["dt"] = got
+                self.assertIn(self._dt_msg(got, "derived.dt"),
+                              pe.drive_violations(ir, kind="problem"))
+
+    def test_the_same_reference_as_loop_dt_is_admitted_whatever_its_root(self) -> None:
+        ir = _toyi()
+        self.assertEqual(ir["drive"]["step"]["arguments"]["dt"], "state.dt")
+        self.assertEqual(ir["drive"]["loop"]["dt"], "state.dt")
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        ir["drive"]["step"]["arguments"]["dt"] = "inputs.grid.nx"
+        self.assertIn(self._dt_msg("inputs.grid.nx", "state.dt"),
+                      pe.drive_violations(ir, kind="problem"))
+        ir = _toy()   # an input on both sides
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["time"]["dt"] = 0.1
+        ir["drive"]["step"]["arguments"]["dt"] = "inputs.time.dt"
+        ir["drive"]["loop"]["dt"] = "inputs.time.dt"
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+
+    def test_a_t_that_is_not_the_driver_s_is_refused(self) -> None:
+        for raw, got in ((0.0, "0.0"), ("step", "step"), ("derived.dt", "derived.dt"),
+                         ("inputs.time.t_start", "inputs.time.t_start")):
+            with self.subTest(got=got):
+                ir = _toy()
+                ir["drive"]["step"]["arguments"]["t"] = raw
+                self.assertIn(self._t_msg(got), pe.drive_violations(ir, kind="problem"))
+
+    def test_the_clause_asks_of_a_rank_0_dummy_on_a_loop_node_only(self) -> None:
+        """A `t` array (a temperature) is no driver time; a one-call node has no loop dt."""
+        ir = _toy()
+        args = ir["public_api"]["signatures"][0]["signature"]["args"]
+        args[2] = _arg("t", "in", "real", 1, ["nx"])
+        ir["drive"]["step"]["arguments"]["t"] = "state.temp"
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        schema["variables"].append({"name": "temp", "shape_expr": "[nx]"})
+        ir["io_contract"]["raw_requirements"]["required_evidence"][2]["names"] += [
+            "temp_min", "temp_max"]
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["temp"] = 280.0
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        rus = _rus()
+        rus["public_api"]["signatures"][0]["signature"]["args"].append(_arg("dt", "in", "real"))
+        rus["drive"]["step"]["arguments"]["dt"] = 0.5
+        self.assertEqual(pe.drive_violations(rus, kind="component"), [])
+
+    def test_a_dummy_the_spec_names_otherwise_is_not_this_clause_s(self) -> None:
+        """A differently-named spec dummy is V3 (iv)'s: the gate reads names, it does not guess."""
+        ir = _toy()
+        ir["public_api"]["signatures"][0]["signature"]["args"][1]["name"] = "del_t"
+        arguments = ir["drive"]["step"]["arguments"]
+        del arguments["dt"]
+        arguments["del_t"] = 1e-6
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+
+    def test_the_rk4_guard_cases_evaluate_and_pass_every_gate(self) -> None:
+        """`l0_invalid_dt_zero` (dt = 0.0) and `l0_invalid_dt_negative` (dt = -0.1), one call,
+        `xfail`: refused by the host's `dt > 0` before, which pushed a converter to a separate
+        loop dt."""
+        ir = self._guard_toy({"dz": 0.0, "dn": -0.1})
+        self.assertEqual(_all_gates(ir), [])
+        out = pe.evaluate_case_inputs(ir)
+        self.assertEqual((out["dz"]["derived.dt"], out["dn"]["derived.dt"]), (0.0, -0.1))
+        self.assertEqual(out["dn"]["derived.n_step"], 1)
+
+    def _refused_on_evaluation(self, ir: dict, case: str, message: str) -> None:
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    re.escape(f"case {case!r}: {message}")):
+            pe.evaluate_case_inputs(ir)
+        self.assertEqual([m for m in pe.drive_violations(ir, kind="problem")
+                          if m.startswith("(c)")], [f"(c) case {case!r}: {message}"])
+
+    def test_the_same_dt_on_a_case_a_pass_test_targets_is_refused(self) -> None:
+        msg = "drive.loop.dt (derived.dt) is {!r}, not > 0"
+        for value in (0.0, -0.1):
+            with self.subTest(value=value):
+                self._refused_on_evaluation(self._guard_toy({"dz": value}, outcome="pass"), "dz",
+                                            msg.format(value))
+                # a pass test beside the xfail one: not xfail-only
+                both = self._guard_toy({"dz": value})
+                both["io_contract"]["tests"][0]["target_cases"].append("dz")
+                self._refused_on_evaluation(both, "dz", msg.format(value))
+                # a case no test targets asks the check: nothing says its refusal is the subject
+                orphan = _toy()
+                case = _toy_case("dz", 4)
+                case["derived"] = {"n_step": 1, "dt": value}
+                orphan["case"]["test_case_set"].append(case)
+                self._refused_on_evaluation(orphan, "dz", msg.format(value))
+
+    def test_the_t_end_drift_both_ways(self) -> None:
+        # an invalid dt on an xfail-only case: the loop cannot end at t_end, and need not
+        self.assertEqual(_all_gates(self._guard_toy({"d": 0.0}, t_end=9.0)), [])
+        pe.evaluate_case_inputs(self._guard_toy({"d": 0.0}, t_end=9.0))
+        # a valid dt keeps the check on any case (review round 7: an xfail-only case's run length
+        # is not the leaf's to change), and a pass test's case keeps both
+        for outcome in ("xfail", "pass"):
+            with self.subTest(outcome=outcome), self.assertRaisesRegex(
+                    pe.PrimaryEvidenceError,
+                    r"case 'd': drive\.loop: t_start \+ n_step \* dt"):
+                pe.evaluate_case_inputs(self._guard_toy({"d": 0.1}, outcome=outcome, t_end=9.0))
+
+    def test_the_checks_every_case_keeps(self) -> None:
+        """`n_step >= 1` and finiteness stay on an xfail-only case."""
+        for n_step in (0, 1.5):
+            with self.subTest(n_step=n_step):
+                self._refused_on_evaluation(
+                    self._guard_toy({"d": 0.0}, n_step=n_step), "d",
+                    f"drive.loop.n_step (derived.n_step) is {float(n_step)!r}, not an integer >= 1")
+        ir = self._guard_toy({"d": "1 / (derived.n_step - 1)"})
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, r"case 'd': derived\.dt: "):
+            pe.evaluate_case_inputs(ir)
+
+    def test_the_outcome_is_read_as_the_schema_and_the_verdict_read_it(self) -> None:
+        """R6-4's sibling: `XFAIL` is admitted by the schema gate and the verdict, so it is an
+        xfail test here too."""
+        ir = self._guard_toy({"dz": 0.0}, outcome=" XFAIL ")
+        self.assertEqual(pe._xfail_only_cases(ir), frozenset({"dz"}))
+        self.assertEqual(pe.evaluate_case_inputs(ir)["dz"]["derived.dt"], 0.0)
+        # a malformed outcome is no xfail, and a target list that is no list targets nothing
+        self.assertEqual(pe._xfail_only_cases(self._guard_toy({"dz": 0.0}, outcome="xfailed")),
+                         frozenset())
+        ir = self._guard_toy({"dz": 0.0})
+        ir["io_contract"]["tests"][-1]["target_cases"] = "dz"
+        self.assertEqual(pe._xfail_only_cases(ir), frozenset())
+
+
+class ListFormCasesTest(unittest.TestCase):
+    """R2-2 / R2-3: on a list-form `drive.step` the variable classes, the shapes, gate (f)
+    and the reads-a-capture rule are PER CASE — from the entries that run the case."""
+
+    def test_both_microphysics_shapes_pass_every_gate(self) -> None:
+        for build in (_kessler, _saturation):
+            with self.subTest(fixture=build.__name__):
+                self.assertEqual(_all_gates(build()), [])
+
+    def test_the_classes_are_per_case(self) -> None:
+        reads = pe.state_reads(_saturation())
+        temp = pe.NameRef("capture", "temp", "final")
+        self.assertFalse(pe.is_state_read(temp, reads, "q_a"))
+        self.assertTrue(pe.is_state_read(temp, reads, "s_a"))
+        self.assertTrue(pe.is_state_read(temp, reads))           # the node's: some entry writes
+        self.assertFalse(pe.is_state_read(temp, reads, "no_such_case"))
+        self.assertTrue(pe.is_state_read(pe.NameRef("capture", "temp", "final", "s_a"),
+                                         reads, "q_a"))         # at('s_a') reads s_a's state
+        # no logical `out` is a state read (R5-2), a result or not
+        self.assertEqual(reads.by_case["q_a"][0], frozenset({"qsat"}))
+        self.assertNotIn("converged", reads.by_case["s_a"][0])
+        self.assertNotIn("guard_pass", reads.by_case["s_a"][0])
+        # the mapping form keeps no per-case table
+        self.assertIsNone(pe.state_reads(_rus()).by_case)
+
+    def test_final_temp_on_a_dens2qsat_case_is_no_state_read(self) -> None:
+        ir = _saturation()
+        preds = ir["io_contract"]["predicates"]
+        i = next(i for i, p in enumerate(preds) if p["quantity"] == "qsat_formula")
+        preds[i]["expr"] = "maxabs(final.temp)"        # temp is `in` on __dens2qsat_liq
+        v = _all_gates(ir)
+        # the pass test's guard flag values no case (R4-3), so the coverage rule names them too
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(v[0].startswith(
+            f"predicates[{i}]: reads no captured state the kernel produced in case(s) "
+            "['q_a', 'q_b'], which its scope evaluates"), v)
+        self.assertTrue(v[1].startswith("test 't_q': no predicate values the captured state "
+                                        "of target case(s) ['q_a', 'q_b']"), v)
+        # the same read on the saturation_adjustment case is kernel state
+        ir = _saturation()
+        j = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["quantity"] == "satadj")
+        ir["io_contract"]["predicates"][j]["expr"] = "maxabs(final.temp)"
+        self.assertEqual(_all_gates(ir), [])
+
+    def test_a_scope_over_both_partitions_reads_state_in_each(self) -> None:
+        """A predicate whose read is kernel state in one partition and host data in the other
+        is refused naming the case — by the schema gate and by the evaluator — and
+        `cases_read` / the per-test rule count only the case it reads state in."""
+        ir = _saturation()
+        io = ir["io_contract"]
+        io["tests"].append({"test_id": "t_mix", "expected_outcome": "xfail",
+                            "target_cases": ["q_a", "s_a"], "quantities": ["temp"]})
+        pred = {"test_id": "t_mix", "quantity": "temp", "target_cases": ["q_a", "s_a"],
+                "per_case": True, "expr": "maxabs(final.temp)", "op": "le", "value": 1e9}
+        io["predicates"].append(pred)
+        idx = len(io["predicates"]) - 1
+        reads = pe.state_reads(ir)
+        self.assertEqual(pe.cases_read(pred, reads), {"s_a"})
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 2, v)
+        self.assertEqual(v[0], f"predicates[{idx}]: reads no captured state the kernel produced "
+                         "in case(s) ['q_a'], which its scope evaluates: on a list-form "
+                         "drive.step a variable is kernel state only in the cases of the "
+                         "entries that write it, and elsewhere its capture is the host's "
+                         "initial_state (judge those cases by a variable their own entry "
+                         "writes)")
+        self.assertTrue(v[1].startswith("test 't_mix': no predicate values the captured state "
+                                        "of target case(s) ['q_a']"), v)
+        # q_a valued by a variable its own entry writes: admitted
+        pred["expr"] = "maxabs(final.temp) + maxabs(final.qsat)"
+        self.assertEqual(_all_gates(ir), [])
+        pred["expr"] = "maxabs(final.temp)"
+        run = _RunDir()
+        try:
+            with self.assertRaisesRegex(
+                    pe.PrimaryEvidenceError,
+                    rf"predicates\[{idx}\]: reads no captured state the kernel produced in "
+                    r"case\(s\) \['q_a'\], which its scope evaluates"):
+                pe.evaluate_primary_predicates(ir, run.root)
+        finally:
+            run.cleanup()
+
+    def test_gate_f_is_per_case(self) -> None:
+        # `converged` is logical on s_a (no entry) and host data on q_a (an entry required)
+        ir = _saturation()
+        del ir["case"]["test_case_set"][0]["initial_state"]["converged"]
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 'q_a': initial_state has no entry for ['converged']"])
+        ir = _saturation()
+        ir["case"]["test_case_set"][2]["initial_state"]["converged"] = -1.0
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 's_a': initial_state.converged — a variable init writes, "
+                          "or a logical result the driver writes, takes no initial_state "
+                          "entry"])
+        # vterm_r: host data on adj_a (an expression admitted, adj_a's `0 * x` vterm_c is one),
+        # an output the operation only writes on tv_a (a number literal)
+        ir = _kessler()
+        ir["case"]["test_case_set"][2]["initial_state"]["vterm_r"] = "0 * x"
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 'tv_a': initial_state.vterm_r — an output the operation "
+                          "only writes takes a number literal (its pre-call content)"])
+        # an unbound array on one partition still needs its entry there
+        ir = _kessler()
+        del ir["case"]["test_case_set"][0]["initial_state"]["vterm_r"]
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 'adj_a': initial_state has no entry for ['vterm_r']"])
+
+    def test_an_unbound_array_takes_its_extents_from_another_entry(self) -> None:
+        ir = _kessler()
+        payload = pe.evaluate_case_inputs(ir)
+        self.assertEqual(payload["adj_a"]["vterm_r"], [-1.0] * 8)    # no entry of adj_a binds
+        self.assertEqual(payload["adj_a"]["vterm_c"], [0.0] * 8)
+        self.assertEqual(payload["tv_a"]["pres"], [9e4] * 8)        # no entry of tv_a binds
+        self.assertEqual(len(payload["tv_a"]["rhoe_t"]), 8)
+        # the extent follows the binding evaluated against THIS case's inputs
+        ir["case"]["test_case_set"][0]["inputs"]["grid"]["ka"] = 5
+        self.assertEqual(len(pe.evaluate_case_inputs(ir)["adj_a"]["vterm_r"]), 5)
+
+    def test_disagreeing_or_missing_tokens_are_refused(self) -> None:
+        ir = _kessler()
+        tv = ir["drive"]["step"][1]["arguments"]
+        tv["ka"] = "inputs.grid.ka_tv"
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["grid"]["ka_tv"] = 9 if case["case_id"] != "tv_a" else 8
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [
+            f"(c) case {cid!r}: state.{var}: shape_expr token 'ka' names 'ka', which the "
+            "drive entries bind to different values in this case ({'drive.step[0]': 8, "
+            "'drive.step[1]': 9})" for cid, var in (("adj_a", "rhoq_c"), ("adj_b", "rhoq_c"))])
+        ir = _kessler()
+        var = next(v for v in ir["io_contract"]["raw_requirements"]["required_evidence"][0][
+            "schema"]["variables"] if v["name"] == "vterm_r")
+        var["shape_expr"] = "[nz]"
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [
+            f"(c) case {cid!r}: state.vterm_r: shape_expr token 'nz' names 'nz', which no "
+            "drive entry binds as a rank-0 dummy, so the extent of an array no entry running "
+            "this case binds is unknown" for cid in ("adj_a", "adj_b")])
+
+    def test_d7_counts_a_scalar_only_where_its_entry_runs(self) -> None:
+        """`record_scalar_pairing` with `one_call_by_case`: a one-call scalar is a kernel
+        scalar only in the cases of the entry that writes it."""
+        ir = _rus()
+        other = [_arg("nx", "in", "integer"), _arg("q", "in", "real", 1, ["nx"]),
+                 _arg("G", "out", "real", 1, ["nx"]), _arg("ok", "out", "logical")]
+        ir["public_api"] = _api({"rus__flux": ir["public_api"]["signatures"][0]["signature"][
+            "args"], "rus__other": other})
+        ir["drive"]["step"] = [
+            {**ir["drive"]["step"], "cases": ["a"]},
+            {"operation": "rus__other", "result": "ok", "cases": ["b"],
+             "arguments": {"nx": "inputs.grid.nx", "q": "state.q", "G": "state.G",
+                           "ok": "state.ok"}}]
+        ir["case"]["test_case_set"].append({**copy.deepcopy(ir["case"]["test_case_set"][0]),
+                                            "case_id": "b"})
+        model = pe.drive_model(ir)
+        by_case = pe.one_call_by_case(ir, model)
+        self.assertEqual(by_case, {"a": {"a_x": frozenset({"F"})}, "b": {}})
+        pred = {"target_cases": ["a", "b"], "per_case": True,
+                "expr": "final.a_x + maxabs(final.F) + maxabs(final.G)"}
+        self.assertEqual(pe.record_scalar_pairing(pred, model.one_call_scalars, by_case),
+                         {"a_x": {"scalar": ["a"], "paired": ["a"]}})
+        self.assertEqual(pe.record_scalar_pairing(pred, model.one_call_scalars),
+                         {"a_x": {"scalar": ["a", "b"], "paired": ["a", "b"]}})
+
+    def test_d7_pairs_a_case_only_with_an_array_its_own_entry_writes(self) -> None:
+        """Review round 3, R3-2: when BOTH entries write the one-call scalar `a_x` (case a's
+        beside its array `F`, case b's beside `G`), `final.a_x + maxabs(final.F)` is paired in
+        case a only — in case b `F` is host data, and b's entry writes `G`. Red when the per-case
+        array filter of `record_scalar_pairing` admits every array of the scalar."""
+        ir = _rus()
+        other = [_arg("nx", "in", "integer"), _arg("q", "in", "real", 1, ["nx"]),
+                 _arg("G", "out", "real", 1, ["nx"]), _arg("a_x", "out", "real"),
+                 _arg("ok", "out", "logical")]
+        ir["public_api"] = _api({"rus__flux": ir["public_api"]["signatures"][0]["signature"][
+            "args"], "rus__other": other})
+        ir["drive"]["step"] = [
+            {**ir["drive"]["step"], "cases": ["a"]},
+            {"operation": "rus__other", "result": "ok", "cases": ["b"],
+             "arguments": {"nx": "inputs.grid.nx", "q": "state.q", "G": "state.G",
+                           "a_x": "state.a_x", "ok": "state.ok"}}]
+        ir["case"]["test_case_set"].append({**copy.deepcopy(ir["case"]["test_case_set"][0]),
+                                            "case_id": "b"})
+        model = pe.drive_model(ir)
+        by_case = pe.one_call_by_case(ir, model)
+        self.assertEqual(by_case, {"a": {"a_x": frozenset({"F"})},
+                                   "b": {"a_x": frozenset({"G"})}})
+        pred = {"target_cases": ["a", "b"], "per_case": True,
+                "expr": "final.a_x + maxabs(final.F)"}
+        self.assertEqual(pe.record_scalar_pairing(pred, model.one_call_scalars, by_case),
+                         {"a_x": {"scalar": ["a", "b"], "paired": ["a"]}})
+
+
+class ShippedFixturesTest(unittest.TestCase):
+    """The two hand-converted fixtures pass every IR-side gate and evaluate."""
+
+    def test_both_fixtures(self) -> None:
+        import yaml
+        for rel in ("coriolis_0.2.0.spec.ir.yaml", "shallow_water2d_0.4.7/spec.ir.yaml"):
+            with self.subTest(rel=rel):
+                ir = yaml.safe_load((_DRIVE_DIR / rel).read_text())
+                self.assertEqual(pe.drive_violations(ir, kind=ir["meta"]["spec_kind"]), [])
+                io, cases = ir["io_contract"], pe._cases_by_id(ir)
+                ctx = pe.predicate_schema_context(ir)
+                self.assertIsNotNone(ctx["case_inputs"])
+                self.assertEqual(pe.validate_primary_predicate_schema(
+                    io["predicates"], case_ids=set(cases),
+                    test_ids=[t["test_id"] for t in io["tests"]],
+                    schema=pe.snapshot_schema(ir), cases=cases,
+                    test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+                    **ctx), [])
+                self.assertEqual(pe.quantity_violations(io["tests"], io["predicates"],
+                                                        ctx["reads"]), [])
+
+    def test_the_loop_fixture_lowers_one_call(self) -> None:
+        """R1-6: on a `loop` node `algorithm` lowers ONE call of `__step` (phase_01
+        §`algorithm.execution_mode`): the converted swe fixture is `sequence` with an empty
+        `iteration_contract` and orders no host-evaluated step. No gate pins this (an inner
+        iterative solve is legitimate; V2 judges it); this row keeps the reference fixture in
+        the documented form."""
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        algo = ir["algorithm"]
+        self.assertIn("loop", ir["drive"])
+        self.assertEqual((algo["execution_mode"], algo["iteration_contract"]), ("sequence", {}))
+        self.assertEqual(algo["ordering"], [st["step_id"] for st in algo["steps"]])
+        self.assertFalse({"step_02_initial_condition", "step_04_dt_rule"}
+                         & {st["step_id"] for st in algo["steps"]})
+
+    def test_a_failed_case_evaluation_is_reported_once(self) -> None:
+        """One case whose evaluation fails is (c)'s finding; the predicate gate judges each
+        `derived.*` read against the names the case declares instead of refusing every read
+        of every case (the cascade found while wiring PR-1a), and an undeclared name is still
+        refused."""
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        first = ir["case"]["test_case_set"][0]
+        first["derived"]["dx"] = "inputs.grid.L_x / 0"
+        drive_v = pe.drive_violations(ir, kind="problem")
+        self.assertTrue(drive_v)
+        self.assertTrue(all(m.startswith("(c)") for m in drive_v), drive_v)
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        ctx = pe.predicate_schema_context(ir)
+        self.assertIsNone(ctx["case_inputs"])
+
+        def schema_v(predicates: list) -> list[str]:
+            return pe.validate_primary_predicate_schema(
+                predicates, case_ids=set(cases),
+                test_ids=[t["test_id"] for t in io["tests"]],
+                schema=pe.snapshot_schema(ir), cases=cases,
+                test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+                **ctx)
+
+        self.assertEqual(schema_v(io["predicates"]), [])
+        reader = next(p for p in io["predicates"] if "derived." in str(p.get("expr")))
+        bad = dict(reader, expr=str(reader["expr"]).replace("derived.", "derived.no_such_", 1))
+        self.assertTrue(any("derived.no_such_" in m for m in schema_v([bad])))
 
 
 if __name__ == "__main__":

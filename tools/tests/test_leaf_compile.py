@@ -54,10 +54,10 @@ _PROBLEM_SPEC_ID = "shallow_water2d"
 _PROBLEM_SPEC_PATH = "spec/problem/dynamics/shallow_water/shallow_water2d"
 
 #: The repository documents `_build_leaf_compile_context` reads. Staged into the fixture repo by
-#: COPYING the real files, so the slicers and the presence checks run against what production
-#: reads rather than against a stand-in whose anchors a test author chose.
+#: COPYING the real files, so the presence checks run against what production reads rather than
+#: against a stand-in a test author chose. (`CHECKS_MODULE_CONTRACT.md`, sliced to its ABI sections,
+#: was the fourth until issue #589 PR-1a took it out of the compile producer's context.)
 _REPO_DOCUMENTS = (
-    "docs/workflow/CHECKS_MODULE_CONTRACT.md",
     "docs/examples/spec_ir_algorithm_section.example.yaml",
     "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
 )
@@ -336,7 +336,6 @@ class PureCompileContextTests(_Fixture):
                 "docs/examples/spec_ir_algorithm_section.example.yaml",
             "ir_algorithm_2d_example_document":
                 "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-            "checks_module_contract_document": "docs/workflow/CHECKS_MODULE_CONTRACT.md",
         },
         "verify": {
             "controlled_spec_document": "{spec}/controlled_spec.md",
@@ -467,7 +466,6 @@ class PureCompileContextTests(_Fixture):
         `run_substep` rather than the builder, so what is pinned is the recovery, not the raise."""
         for rel, marker in (
             (ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"], "pure_phase_contract_document_missing"),
-            ("docs/workflow/CHECKS_MODULE_CONTRACT.md", "pure_checks_contract_document_missing"),
             (f"{self.refs.ir_ref}/dependency_graph.json",
              "pure_dependency_graph_document_missing"),
         ):

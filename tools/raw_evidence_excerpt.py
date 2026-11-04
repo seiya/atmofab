@@ -51,6 +51,9 @@ RAW_EVIDENCE_ALIASES = {
     "state_snapshots": "state_snapshots",
     "raw/state_snapshots": "state_snapshots",
     "raw/state_snapshots/": "state_snapshots",
+    # Issue #589 (PR-1a admits the two at Compile; the excerpt's reading of them is PR-1b's).
+    "state_history": "state_history",
+    "step_series": "step_series",
 }
 
 #: How many distinct string values a non-numeric field is summarized by before the summary

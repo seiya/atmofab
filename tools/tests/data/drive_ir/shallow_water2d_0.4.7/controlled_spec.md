@@ -1,0 +1,269 @@
+# Controlled Spec: 2D shallow water problem (problem spec)
+<!-- PR-1a fixture (issue #589). A copy of spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md at spec_version 0.4.7, changed only where the converted IR (spec.ir.yaml beside this file) requires it; every change is listed in CONVERSION.md. Not a spec of the corpus. -->
+
+## 0. Meta information
+- `spec_id`: `shallow_water2d`
+- `spec_version`: `0.4.7`
+- `status`: `controlled_draft`
+- `spec_kind`: `problem`
+- `domain`: `dynamics`
+- `family`: `shallow_water`
+
+## 1. Problem definition
+The target is the conservative form of the 2D shallow water equation
+$$
+\frac{\partial h}{\partial t}
++ \frac{\partial (hu)}{\partial x}
++ \frac{\partial (hv)}{\partial y}
+= 0
+$$
+$$
+\frac{\partial (hu)}{\partial t}
++ \frac{\partial }{\partial x}\left(hu^2 + \frac{1}{2} g h^2\right)
++ \frac{\partial (huv)}{\partial y}
+= -gh\frac{\partial z_b}{\partial x}
+$$
+$$
+\frac{\partial (hv)}{\partial t}
++ \frac{\partial (huv)}{\partial x}
++ \frac{\partial }{\partial y}\left(hv^2 + \frac{1}{2} g h^2\right)
+= -gh\frac{\partial z_b}{\partial y}
+$$
+The forcing term handles only the source term due to the bottom-topography gradient.
+
+## 2. Definition of variables and coordinates
+The coordinate system is 2D Cartesian coordinates, the coordinate names are `x`,`y`, and the unit is `m`.
+- `h`: water depth, cell-centered placement, unit `m`
+- `hu`: `x`-direction momentum, cell-centered placement, unit `m2/s`
+- `hv`: `y`-direction momentum, cell-centered placement, unit `m2/s`
+- `z_b`: bottom topography, cell-centered placement, unit `m`, time-invariant
+- `eta`: free-surface elevation, `eta=h+z_b`, unit `m`
+
+The derived variables are `u=hu/h`, `v=hv/h`, and `c=sqrt(g*h)`. `h<=0` is invalid input.
+
+The equations of §1 are invariant under the exchange of the two axes, $(h, hu, hv)(x, y)\to(h, hv, hu)(y, x)$ with $z_b(x, y)\to z_b(y, x)$, under the reflection $x\to L_x-x$ with $hu\to-hu$, and under the reflection $y\to L_y-y$ with $hv\to-hv$, each with the bottom topography transformed the same way. The position of the cone of §6 is an input, `x_c_fraction` and `y_c_fraction`, so that the transformed configuration of each is a case of this `problem`, and §5 states the equivariance of the discretization under each ([issue #513](https://github.com/seiya/atmofab/issues/513)).
+
+## 3. Type definition of domain and boundary conditions
+The domain is the orthogonal periodic domain $[0,L_x)\times[0,L_y)$. The grid is a uniform cell-centered finite-volume grid, and $dx=L_x/nx$, $dy=L_y/ny$.
+
+The boundary condition is fixed to periodic boundary on all boundaries. The default input used for verification is defined in `tests.md`.
+
+## 4. Dependent `component` and adopted `profile`
+The adopted `profile` is `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2`, and it selects the following `component`, each of which is therefore a direct dependency of this `spec`. `<ir_ref>/dependency_graph.json` is the only exhaustive statement of that set. The runner harness is not in it: it belongs to the implementation target the node is built for, and the host adds it to every build of the node.
+- `dynamics_shallow_water_flux_2d_rusanov_p0`
+- `dynamics_shallow_water_boundary_2d_periodic_copy`
+- `dynamics_shallow_water_time_update_2d_ssprk2`
+
+No `component` is declared directly here: a `component` has exactly one source, so a `component` an adopted `profile` selects is not declared again in this `spec`'s own `deps.yaml`. A `component` no adopted `profile` selects would be declared there directly, together with its compatibility constraint.
+
+## 5. Integration algorithm
+The spatial discretization is **well-balanced** by the first-order hydrostatic reconstruction of Audusse et al. (2004). The interface states supplied to the flux `component` and the discrete bottom-topography source term are built from the same reconstructed depths.
+
+The reconstruction is first-order (`p0`): the in-cell reconstruction stays piecewise constant and only the interface depth is redefined. It satisfies the `profile` constraint `reconstruction: p0` and the flux `component`'s fixed `p0` order. The reconstruction order is never switched at runtime.
+
+The analytic gradient $\partial z_b/\partial x$, $\partial z_b/\partial y$ is not an input of the discretization. The bottom-topography source term is the discrete difference form of step 4.
+
+`z_b` is time-invariant. This `problem` `node` evaluates it once, at setup, on the halo-extended grid with its periodic image, so that the interface reconstruction of step 2 is defined at the domain seam. The boundary `component` maps `U` only; its input/output contract is unchanged and `z_b` is not passed to it.
+
+The update step is fixed to the following order.
+1. Update the ghost region of `U` with `dynamics_shallow_water_boundary_2d_periodic_copy__apply`.
+2. Reconstruct the interface states hydrostatically. At the `x`-interface $(i+1/2,j)$, define
+$$
+z_{i+1/2,j}=\max\left(z_{b,i,j},\;z_{b,i+1,j}\right)
+$$
+$$
+h^{*}_{i+1/2,j,L}=\max\left(0,\;h_{i,j}+z_{b,i,j}-z_{i+1/2,j}\right),\quad
+h^{*}_{i+1/2,j,R}=\max\left(0,\;h_{i+1,j}+z_{b,i+1,j}-z_{i+1/2,j}\right)
+$$
+and form the interface states with the cell velocities
+$$
+U^{*}_{i+1/2,j,L}=\left[h^{*}_{i+1/2,j,L},\;h^{*}_{i+1/2,j,L}\,u_{i,j},\;h^{*}_{i+1/2,j,L}\,v_{i,j}\right]^T
+$$
+$$
+U^{*}_{i+1/2,j,R}=\left[h^{*}_{i+1/2,j,R},\;h^{*}_{i+1/2,j,R}\,u_{i+1,j},\;h^{*}_{i+1/2,j,R}\,v_{i+1,j}\right]^T
+$$
+The `y`-interface $(i,j+1/2)$ is reconstructed the same way, with $z_{i,j+1/2}=\max(z_{b,i,j},z_{b,i,j+1})$ giving $h^{*}_{i,j+1/2,B}$ from cell $(i,j)$ and $h^{*}_{i,j+1/2,T}$ from cell $(i,j+1)$, and producing the bottom state $U^{*}_{i,j+1/2,B}$ and the top state $U^{*}_{i,j+1/2,T}$.
+3. Compute the interface flux with `dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux`, passing the reconstructed states of step 2 as its `U_L` / `U_R` / `U_B` / `U_T` inputs. The flux `component`'s input/output contract is unchanged: it consumes the interface states the caller supplies.
+4. Execute one stage of the `SSPRK2` step of step 5 with `dynamics_shallow_water_time_update_2d_ssprk2__advance`, supplying the interface-flux difference field
+$$
+L_{flux}=-\frac{F^{*}_{i+1/2,j}-F^{*}_{i-1/2,j}}{\Delta x}
+-\frac{G^{*}_{i,j+1/2}-G^{*}_{i,j-1/2}}{\Delta y}
+$$
+and the reconstruction-consistent bottom-topography source term $S_b=[0,S^{hu}_{i,j},S^{hv}_{i,j}]^T$ with
+$$
+S^{hu}_{i,j}=\frac{g}{2\,\Delta x}\left(\left(h^{*}_{i+1/2,j,L}\right)^2-\left(h^{*}_{i-1/2,j,R}\right)^2\right),\quad
+S^{hv}_{i,j}=\frac{g}{2\,\Delta y}\left(\left(h^{*}_{i,j+1/2,B}\right)^2-\left(h^{*}_{i,j-1/2,T}\right)^2\right)
+$$
+Here $h^{*}_{i+1/2,j,L}$ and $h^{*}_{i-1/2,j,R}$ are the two reconstructed depths of cell $(i,j)$ itself, taken at its right and left `x`-interfaces; $h^{*}_{i,j+1/2,B}$ and $h^{*}_{i,j-1/2,T}$ are the same for its top and bottom `y`-interfaces. `z_b` remains accepted but inert at the `dynamics_shallow_water_time_update_2d_ssprk2__advance` boundary: the bottom topography is consumed by the reconstruction of step 2 and by $S_b$, both of which belong to this `problem` `node`, and the time-update `component`'s input/output contract is unchanged.
+5. Compose the two stages of the `SSPRK2` step in this `problem` `node`. Write $L(U)=L_{flux}(U)+S_b(U)$ for the right-hand side that steps 1 to 4 build from a state $U$: the ghost update, the reconstruction, the interface flux and the source term are all evaluated at that state. One step from $U^n$ to $U^{n+1}$ makes two calls of `dynamics_shallow_water_time_update_2d_ssprk2__advance`:
+$$
+U^{(1)}=\mathrm{advance}\left(U^n;\ L_{flux}(U^n),\ S_b(U^n)\right)=U^n+\Delta t\,L(U^n)
+$$
+$$
+U^{(2)}=\mathrm{advance}\left(U^{(1)};\ L_{flux}(U^{(1)}),\ S_b(U^{(1)})\right)=U^{(1)}+\Delta t\,L(U^{(1)})
+$$
+$$
+U^{n+1}=\frac{1}{2}U^n+\frac{1}{2}U^{(2)}
+$$
+Steps 1 to 4 run at $U^n$ for the call that gives $U^{(1)}$, and again at $U^{(1)}$ for the call that gives $U^{(2)}$. The time-update `component` receives `L_flux` and `S_b` as fixed fields, and at its `L0` profile one call is the step $U+\Delta t\,(L_{flux}+S_b)$, so the re-evaluation of the right-hand side at the stage state and the average with $U^n$ belong to this `problem` `node`. A step made of one call with the fields of $U^n$ is the forward-Euler step, not the `SSPRK2` step of this `spec`.
+
+The discretization holds the following invariants.
+- **Wet domain.** $h^{*}>0$ at every interface, at every step of the run. The domain of validity of this `problem spec` is the non-drying regime; drying and wetting are out of scope.
+- **Well-balanced (lake at rest).** When $\eta=h+z_b$ is uniform and $u=v=0$, the two reconstructed depths at each interface are equal and the flux difference cancels $S_b$. `h`, `hu`, and `hv` are unchanged up to round-off.
+- **Flat reduction.** When `topography_profile=flat`, $h^{*}=h$ and $S_b=0$, and the discretization is identical to the plain `p0` scheme.
+- **Mass conservation.** The mass component of $S_b$ is zero and the interface mass flux is single-valued, so $\sum_{i,j}h_{i,j}$ is conserved up to round-off.
+- **Axis-exchange equivariance.** The case with `nx` ↔ `ny`, `L_x` ↔ `L_y`, `x_c_fraction` ↔ `y_c_fraction` and the initial state transposed with its two momentum components exchanged ($(h, hu, hv)'_{i,j}=(h, hv, hu)_{j,i}$) has, at every step, the state of the original case transposed the same way, up to round-off: the domain is periodic in both directions, and every operation of steps 1 to 5 acts on the two array axes by the same rule, the `y`-interface with the roles of the two momentum components exchanged.
+- **Mirror equivariance in `x`.** The case with `x_c_fraction` → $1-$`x_c_fraction` (modulo 1) and the initial state reflected along `x` with `hu` sign-reversed ($(h, hu, hv)'_{i,j}=(h, -hu, hv)_{nx+1-i,j}$) has, at every step, the state of the original case reflected the same way, up to round-off: the hydrostatic reconstruction and the Rusanov flux treat the two sides of an interface by the same rule, and $S_b$ is the difference of the two reconstructed depths of the cell.
+- **Mirror equivariance in `y`.** The same with `y_c_fraction` → $1-$`y_c_fraction` (modulo 1), the reflection along `y` and `hv` sign-reversed.
+
+The round-off of the three equivariances is not zero in general: an initial state given by a closed form is reflected only to the rounding of its argument, and a contracted multiply-add or a vector remainder loop changes the last bit under a reordering.
+
+The $\max(0,\cdot)$ of step 2 is the definitional positivity guard of the reconstruction, and it does not activate while the wet-domain invariant holds. An interface at which the reconstruction yields $h^{*}\le 0$ is a violation of that invariant: it is a runtime error, and the step returns `ok = false` (§5.1) before the value reaches the flux `component`, whose contract treats `h<=0` as an error; the step is then not committed and the run stops at the last committed state. It must not be handled by clipping or flooring the state, by substituting a positive replacement depth, or by continuing with a zero-depth interface flux. Section 6 states the initial condition that establishes the invariant at $t=0$.
+
+The stability index is defined as
+$$
+\mathrm{cfl}=\Delta t\cdot\max_{i,j}\left(\frac{|u_{i,j}|+c_{i,j}}{\Delta x}+\frac{|v_{i,j}|+c_{i,j}}{\Delta y}\right)
+$$
+For the threshold, refer to the judgment conditions of `tests.md`.
+
+The only published `operation_id` is `shallow_water2d__step`. One call advances the state `h`, `hu`, `hv` (`inout`) by ONE `SSPRK2` step of step 5, over the time-invariant `z_b` (`in`), with the grid `nx`, `ny`, the spacings `dx`, `dy`, the gravitational acceleration `g`, the step `dt` and the time `t` at the start of the step (all `in`), and returns the logical `ok`: `true` when the step completed, `false` on a runtime error of this section (a guard of a dependency `component` false, or a reconstructed depth $h^{*}\le 0$), in which case the content of `h`, `hu`, `hv` is undefined. A failure is that `false` result, never a stop of the program. A stability index above `1` is not a failure. The initial state, the step count and `dt` are the host's (`tests.md` §2, §3); the host's driver calls the operation once per step and commits the state only on `ok = true`.
+
+A change breaking compatibility of the published signature — the argument names, their order, their types, their ranks, or their `intent`s — is a **breaking change released under a new `spec_version`**.
+
+### 5.1 Canonical interface block
+The exact published surface, as a machine-readable **language-neutral** signature block (`module_parameters` / `types` / `procedures`), in the form of a `component`'s §5.1.
+
+```yaml
+module_parameters:
+- name: dp
+  value: float64
+types: []
+procedures:
+- kind: subroutine
+  name: shallow_water2d__step
+  args:
+  - name: nx
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: ny
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: dx
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: dy
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: g
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: dt
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: t
+    rank: 0
+    intent: in
+    spec:
+      type: real
+      kind: dp
+  - name: z_b
+    rank: 2
+    intent: in
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: h
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hu
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: hv
+    rank: 2
+    intent: inout
+    spec:
+      type: real
+      kind: dp
+    dims:
+    - nx
+    - ny
+  - name: ok
+    rank: 0
+    intent: out
+    spec:
+      type: logical
+```
+
+## 6. Model parameters and the runtime input contract
+The physical constants are `g=9.81 m/s2` and `H_0=1.0 m`. The bottom-topography profile is specified by `topography_profile`, and only the 2 values `williamson_tc5_cone` and `flat` are allowed. When `topography_profile=williamson_tc5_cone`, the bottom topography `z_b` follows Williamson et al. (1992) and is fixed to an isolated cone-mountain shape as follows.
+$$
+d_x(x)=\min\left(|x-x_c|,L_x-|x-x_c|\right),\quad
+d_y(y)=\min\left(|y-y_c|,L_y-|y-y_c|\right)
+$$
+$$
+r(x,y)=\sqrt{d_x(x)^2+d_y(y)^2}
+$$
+$$
+z_b(x,y)=h_s\max\left(0,1-\frac{r(x,y)}{r_0}\right)
+$$
+The centre is $x_c=\mathrm{x\_c\_fraction}\cdot L_x$, $y_c=\mathrm{y\_c\_fraction}\cdot L_y$, with the runtime inputs `x_c_fraction` and `y_c_fraction` in $[0,1)$, whose defaults are `3/4` and `2/3`. The parameters are `r_0=min(L_x,L_y)/6` and `h_s=0.2H_0`. The default centre and the radius are the value of Williamson et al. (1992) `Test Case 5` `(\lambda_c,\theta_c,R_0)=(3\pi/2,\pi/6,\pi/9)` mapped to the periodic orthogonal coordinates; a centre other than the default is the position of the cone in a transformed case of §5. After discretization, `z_b` must satisfy `z_b>0` in at least 1 cell. When `topography_profile=flat`, `z_b=0` in all cells.
+
+The runtime input requires the following.
+- `L_x`, `L_y`, `nx`, `ny`
+- `topography_profile`, and for `williamson_tc5_cone` its centre `x_c_fraction`, `y_c_fraction` (defaults `3/4`, `2/3`; a value outside $[0,1)$ is an error at setup)
+- `initial_condition` (`h`, `hu`, `hv`)
+- `t_start`, `t_end`
+- `dt_rule`
+
+In the initial state, `h>0` and `h+z_b>0` in all cells are required. The hydrostatic reconstruction of section 5 additionally requires the initial free surface of every cell to lie above the bottom topography of its 4 face neighbours,
+$$
+\eta_{i,j}(0)>\max\left(z_{b,i,j},\;z_{b,i\pm1,j},\;z_{b,i,j\pm1}\right)
+$$
+so that the reconstructed interface depth satisfies $h^{*}>0$ in the initial state. This condition is stronger than `h+z_b>0`, which constrains the cell's own bottom only. It establishes the wet-domain invariant of section 5 at $t=0$; the invariant is required to hold at every step thereafter, and its violation during the run is a runtime error as defined in section 5. An undefined parameter is an error without implicit completion.
+
+## 7. Prohibitions
+Forbid non-periodic boundary, automatic switching of `topography_profile`, the introduction of a bottom-topography function or parameter other than the allowed values, the introduction of a forcing term other than the bottom-topography source term, and the runtime automatic switching of the discretization scheme. Forbid `clip` / `limiter` / `filter` on `h`. The $\max(0,\cdot)$ of the hydrostatic reconstruction of section 5 is applied to the reconstructed interface depth $h^{*}$, a derived quantity of the reconstruction of step 2, and never to the cell-centered state `h`; it is not a `clip` on `h`.
+
+Forbid computing a case by transposing or reflecting its state, its grid, its coordinates or its topography to the orientation of another case, computing there and transforming the result back: the kernel computes each case in its own orientation, from the inputs as given. `tests.md` compares the transformed cases of §5 with their originals as symmetry pairs (`docs/TESTS.md` §Symmetry pairs), and a kernel that maps one onto the other compares a code path with itself. Computing the `x` and the `y` direction of every case with one routine — the momentum components handed to it in the order normal, tangential, or the arrays transposed for the other direction — is not that mapping: it is applied the same way in every case, whatever the case's orientation.
+
+## 8. Traceability
+The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself and the `component`; the runner harness is the target's, not a node of this closure), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
+
+The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009). The centre of the cone as an input and the equivariances of §5 are those of [issue #513](https://github.com/seiya/atmofab/issues/513).
+
+## 9. tests reference
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.7.0`.
+
+## 10. AD preparation information
+`ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, `ceil`, and the periodic-index wrap are made explicit as non-differentiable operations.

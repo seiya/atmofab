@@ -194,6 +194,13 @@ _CAPTURED_WORKSHOP_VERSION_FORM = re.compile(r"^(pure|leaf|workshop)-\d+$")
 #: before step 2 added them) does not carry. Exempt on such a capture only: a later capture
 #: carries them and is held to them like any other field.
 _WORKSHOP_1_ABSENT_KEYS = {"workshop_provider"}
+#: `pure_context` keys a capture recorded that the host no longer inlines, per pair. Issue #589
+#: PR-1a took `checks_module_contract_document` out of the `compile.generate` producer's context;
+#: the tracked capture (`orch_20261023T233910Z_159fd6eb`) predates that, and `main` runs no
+#: workflow end to end until issue #589 PR-3, so no re-capture can replace it before then. Exempt
+#: on the capture only, and only while the contract table does not require the key: the first
+#: re-capture after PR-3 drops the key and this entry with it.
+_RETIRED_CAPTURED_CONTEXT_KEYS = {("compile", "generate"): {"checks_module_contract_document"}}
 
 
 def _load_real_requests() -> dict[tuple[str, str | None, str], dict]:
@@ -512,6 +519,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
         pure_rows = {k: v for k, v in _load_real_requests().items()
                      if v.get("leaf_mode") == "workshop"}
         self.assertEqual(len(pure_rows), 6)
+        exempted: set[tuple[str, str]] = set()
         for (step, substep, _mode), req in pure_rows.items():
             with self.subTest(step=step, substep=substep):
                 if "pure_context" not in req:
@@ -523,7 +531,19 @@ class BuildLaunchRequestTest(unittest.TestCase):
                 # fixtures by test_orchestration_runtime) checks the required keys are PRESENT
                 # and admits extras, so it alone would not notice a capture carrying a key the
                 # host no longer inlines, or the table growing past what a real run rendered.
-                self.assertEqual(set(req["pure_context"]),
+                retired = _RETIRED_CAPTURED_CONTEXT_KEYS.get((step, substep), set())
+                self.assertFalse(retired & set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]),
+                                 "a key the table requires again is not retired")
+                # self-removing (review round 2, R2-6): the exemption holds only while the
+                # capture still CARRIES the retired key; a re-capture that drops it fails
+                # here, and the _RETIRED_CAPTURED_CONTEXT_KEYS entry is deleted with it
+                missing = sorted(retired - set(req["pure_context"]))
+                self.assertEqual(missing, [], "the capture no longer carries the retired "
+                                 f"key(s) {missing}: delete their _RETIRED_CAPTURED_CONTEXT_KEYS "
+                                 "entry")
+                if retired:
+                    exempted.add((step, substep))
+                self.assertEqual(set(req["pure_context"]) - retired,
                                  set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]))
                 for key, value in req["pure_context"].items():
                     self.assertRegex(value, placeholder, f"pure_context[{key}]")
@@ -539,6 +559,9 @@ class BuildLaunchRequestTest(unittest.TestCase):
                     for v in (*req["pure_context"].values(), req["launch_prompt_full"]))
                 self.assertGreater(src["bytes"], redacted_bytes)
                 self.assertRegex(src["sha256"], r"^[0-9a-f]{64}$")
+        # every exemption was asked of a cold row of its pair (a pair whose row is gone, or
+        # warm, would keep an entry nothing checks)
+        self.assertEqual(exempted, set(_RETIRED_CAPTURED_CONTEXT_KEYS))
 
     def test_omits_launch_prompt_full(self) -> None:
         # record-launch must render the prompt; the builder must not supply it.
@@ -18483,12 +18506,18 @@ class DeterministicBuildTest(unittest.TestCase):
             basis = doc["per_test"][0]["basis"]
             self.assertEqual(set(basis), {"predicates"})
             self.assertEqual(basis["predicates"][0]["evaluated"][0]["value"], 0.0)
-            self.assertEqual(basis["predicates"][0]["sources_read"],
-                             {"operation": ["l0_scale_identity_pass"]})
+            # The record shape of issue #589: no `sources_read` (the vocabulary is retired), the
+            # grammar version, and what D7 asks of the predicate (`scalar_pairing`; this IR
+            # declares no one-call scalar, so none).
+            record = basis["predicates"][0]
+            self.assertNotIn("sources_read", record)
+            self.assertEqual(record["grammar_version"], 6)
+            self.assertEqual(record["scalar_pairing"], {})
             on_disk = json.loads((node / "verdict.json").read_text())
             self.assertEqual(on_disk["per_test"][0]["basis"]["predicates"][0]["quantity"], "scale")
-            self.assertEqual(on_disk["per_test"][1]["basis"]["predicates"][0]["sources_read"],
-                             {"record": ["l0_invalid_length_xfail"]})
+            self.assertNotIn("sources_read", on_disk["per_test"][1]["basis"]["predicates"][0])
+            self.assertEqual(
+                on_disk["per_test"][1]["basis"]["predicates"][0]["grammar_version"], 6)
 
             # the captured state says the kernel did not scale
             self._write_predicate_captures(node, [2.0, 4.0, 6.0, 9.0])

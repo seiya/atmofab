@@ -23,15 +23,13 @@ definition states in the failure direction.
 
 ``evaluate_verdict`` re-checks, on the records it is handed, what the Compile gate states:
 a record ranges over its test's ``target_cases``; every test holds at least one record that is not
-cross-target, and those records value the state of every target case; a record reading a
-``source: reported`` snapshot variable stands beside a record of the same quantity that reads
-``source: operation`` state, and no reported variable, over the same cases
-(`tools.primary_evidence.reported_read_violations`); and a record reading a ``source: reference``
-variable has ``source: operation`` state read in those cases by itself or another record of the same
-quantity (`_check_reference_state`). Both rules key on the label, which the Compile leaf writes: a
-kernel's report of its own run-wide extremum never judges a test alone under a ``reported`` label,
-and the ``tests.md`` ``reported:`` line holds that label for the names it gives, not for a report
-declared under another name, which is `Compile.verify` V3 (iv)'s.
+cross-target, and those records value the state of every target case; and a record reading
+``final.<s>`` of a one-call scalar ``s`` (the scalar a rank-0 real / integer ``out`` of a one-call
+operation writes, derived from the IR's ``drive`` — issue #589 D7) stands beside ANOTHER record of
+the same quantity, not cross-target, that reads ``final.<s>`` in those cases, one of the two reading
+an array state the same operation writes beside it (`scalar_pairs`, shared with
+`tools.primary_evidence.scalar_pairing_violations`; each record carries its ``scalar_pairing``,
+`_check_scalar_pairing`).
 """
 
 from __future__ import annotations
@@ -52,10 +50,6 @@ _KIND_STRUCTURAL = "structural"  # a predicate could not be valued
 #: Since issue #383 it is the only cross-target record a verdict holds — the verdict evaluates
 #: no comparison, and the cross-target agreement does, outside it.
 _KIND_NO_COMPARAND = "no_comparand"
-#: The `sources_read` keys the rules of issue #582 pair (`tools.primary_evidence.SNAPSHOT_SOURCES`).
-_SOURCE_OPERATION = "operation"
-_SOURCE_REPORTED = "reported"
-_SOURCE_REFERENCE = "reference"
 
 
 def is_cross_target_record(rec: dict[str, Any]) -> bool:
@@ -115,58 +109,59 @@ def _resolve_value(value: Any, case_id: str | None) -> tuple[bool, Any]:
     return (True, value)
 
 
-def _sources_read(rec: dict[str, Any], test_id: str) -> dict[str, set[str]]:
-    """A record's `sources_read` (source class -> the cases read through it). A record without
-    the map says nothing about what it read, so the pairing rule could not be asked of it."""
-    read = rec.get("sources_read")
-    if not isinstance(read, dict):
+def _scalar_pairing(rec: dict[str, Any], test_id: str) -> dict[str, dict[str, set[str]]]:
+    """A record's `scalar_pairing` (one-call scalar -> {scalar: cases it reads final.<s> in,
+    paired: cases it reads final.<s> and an array the same operation writes in}). A record
+    without the map says nothing about what it read, so D7 could not be asked of it: refused."""
+    pairing = rec.get("scalar_pairing")
+    if not isinstance(pairing, dict):
         raise PredicateError(f"primary record for {test_id!r} quantity {rec.get('quantity')!r} "
-                             "carries no sources_read map")
-    return {str(k): {str(c) for c in v} for k, v in read.items() if isinstance(v, list)}
+                             "carries no scalar_pairing map")
+    out: dict[str, dict[str, set[str]]] = {}
+    for scalar, facts in pairing.items():
+        if not isinstance(facts, dict):
+            raise PredicateError(f"primary record for {test_id!r}: scalar_pairing[{scalar!r}] "
+                                 "is not a mapping")
+        out[str(scalar)] = {key: {str(c) for c in facts.get(key) or []}
+                            for key in ("scalar", "paired")}
+    return out
 
 
-def _check_reported_pairing(test_id: str, records: list[dict[str, Any]]) -> None:
-    """The Compile gate's reported-read rule (`primary_evidence.reported_read_violations`),
-    re-checked on the records: a record that reads a `reported` variable needs another record
-    of the same quantity, not cross-target, that reads `operation` state and no `reported`
-    variable, in every case the report is read in."""
-    for rec in records:
-        reported = _sources_read(rec, test_id).get(_SOURCE_REPORTED)
-        if not reported:
-            continue
-        paired = False
-        for other in records:
-            if other is rec or is_cross_target_record(other) \
-                    or other.get("quantity") != rec.get("quantity"):
+def scalar_pairs(cases: set[str], mine: dict[str, Any], other: dict[str, Any]) -> bool:
+    """Whether a DIFFERENT predicate's (or record's) D7 facts ``other`` for one scalar pair the
+    reading whose facts are ``mine`` over ``cases``: ``other`` reads `final.<s>` in every one of
+    ``cases`` and, in each of them, one of the two also reads `final.<a>` of an array state the
+    same operation writes. Shared by the gate (`primary_evidence.scalar_pairing_violations`, which imports it from here)
+    and the verdict re-check (`_check_scalar_pairing`), so the two agree."""
+    theirs = set(other.get("scalar") or ())
+    paired = set(mine.get("paired") or ()) | set(other.get("paired") or ())
+    return cases <= theirs and cases <= paired
+
+
+def _check_scalar_pairing(test_id: str, records: list[dict[str, Any]]) -> None:
+    """The Compile gate's D7 (`primary_evidence.scalar_pairing_violations`), re-checked on the
+    records by the same rule (`scalar_pairs`): a record that reads a one-call
+    scalar in cases C needs ANOTHER record of the same quantity that reads it in every case of
+    C, one of the two reading an array state the same operation writes beside it in each — a
+    record never pairs itself. A CROSS-TARGET record (the `no_comparand` placeholder included)
+    takes no part, on either side, exactly as the gate reads only the predicates that are not
+    cross-target (`primary_evidence._own_predicates`): it takes no part in the status, so the
+    scalar it reads asks for no pair."""
+    pairings = [(rec, _scalar_pairing(rec, test_id)) for rec in records
+                if not is_cross_target_record(rec)]
+    for i, (rec, pairing) in enumerate(pairings):
+        for scalar, facts in pairing.items():
+            cases = facts["scalar"]
+            if not cases:
                 continue
-            read = _sources_read(other, test_id)
-            if not read.get(_SOURCE_REPORTED) and reported <= read.get(_SOURCE_OPERATION, set()):
-                paired = True
-                break
-        if not paired:
-            raise PredicateError(
-                f"primary record for {test_id!r} quantity {rec.get('quantity')!r} reads a "
-                f"source: reported variable in {sorted(reported)} and no record of that quantity "
-                "reads source: operation state alone in those cases")
-
-
-def _check_reference_state(test_id: str, records: list[dict[str, Any]]) -> None:
-    """The Compile gate's rule (`primary_evidence.reference_read_violations`), re-checked on the
-    records: a `reference` read needs `operation` state read in those cases, by records of the same
-    quantity, the same one included, none cross-target."""
-    for rec in records:
-        cases = _sources_read(rec, test_id).get(_SOURCE_REFERENCE)
-        if not cases:
-            continue
-        state: set[str] = set()
-        for other in records:
-            if not is_cross_target_record(other) and other.get("quantity") == rec.get("quantity"):
-                state |= _sources_read(other, test_id).get(_SOURCE_OPERATION, set())
-        if not cases <= state:
-            raise PredicateError(
-                f"primary record for {test_id!r} quantity {rec.get('quantity')!r} reads a "
-                f"source: reference variable and no record of that quantity reads source: "
-                f"operation state in {sorted(cases - state)}")
+            if not any(j != i and other.get("quantity") == rec.get("quantity")
+                       and scalar in theirs and scalar_pairs(cases, facts, theirs[scalar])
+                       for j, (other, theirs) in enumerate(pairings)):
+                raise PredicateError(
+                    f"primary record for {test_id!r} quantity {rec.get('quantity')!r} reads the "
+                    f"one-call scalar final.{scalar} in {sorted(cases)} and no OTHER record of "
+                    "that quantity reads it in those cases with an array state its operation "
+                    "writes read beside it by one of the two (D7)")
 
 
 def evaluate_verdict(tests: Any, records: Any, *,
@@ -180,9 +175,10 @@ def evaluate_verdict(tests: Any, records: Any, *,
 
     A test with no record, or with only cross-target records, raises ``PredicateError``: nothing
     would judge it. So does a record of a test no entry carries, one over other cases than its
-    test's, a target case no record values, a reported read with no state read beside it
-    (`_check_reported_pairing`), and a reference read with no state read in its cases
-    (`_check_reference_state`).
+    test's, a target case no record values, a record that is not cross-target with no
+    `scalar_pairing` map, and a
+    one-call scalar read with no record of its quantity reading it beside an array its
+    operation writes (`_check_scalar_pairing`, D7).
 
     A CROSS-TARGET record (`is_cross_target_record`, issue #324) takes no part in the status.
     Since issue #383 the verdict evaluates no comparison: every cross-target record it is handed
@@ -252,8 +248,7 @@ def evaluate_verdict(tests: Any, records: Any, *,
         if unread:
             raise PredicateError(f"no record of test {test_id!r} values the captured state of "
                                  f"target case(s) {unread}")
-        _check_reported_pairing(test_id, recs)
-        _check_reference_state(test_id, recs)
+        _check_scalar_pairing(test_id, recs)
         satisfied = all(bool(r.get("satisfied")) for r in own)
         structural = any(r.get("kind") == _KIND_STRUCTURAL for r in own)
         if not satisfied:
