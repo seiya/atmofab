@@ -3013,6 +3013,34 @@ class ClosureExemptionTest(unittest.TestCase):
                 self.assertLess(len(window), 2000, "the window runs past the statement")
                 self.assertIn(token, window)
 
+    #: (surface, opens, closes, the clauses that must stand inside): each statement of the
+    #: no-state-term rule names the closure's quantity among what it does NOT send to
+    #: `Compile fail`, and requirement 9's read rule carries the exemption TESTS.md's `history`
+    #: paragraph cites.
+    _NOT_SUCH_A_QUANTITY_SITES = (
+        ("docs/workflow/phases/phase_01_compile.md", "Three things are NOT such a quantity",
+         "An xfail test that judges such a",
+         ("Nor is `run.n_step`: its entry is gate (l)'s closure",)),
+        ("docs/TESTS.md", "9. A judged quantity is defined in §5", "\n",
+         ("except in gate (l)'s zero-step closure, which that rule exempts under the quantity "
+          "`run.n_step` only", "Nor does `run.n_step`")),
+    )
+
+    def test_the_closure_is_not_a_quantity_the_statement_rule_refuses(self) -> None:
+        """R4-1: phase_01's no-state-term rule and TESTS.md requirement 9 except gate (l)'s
+        closure under `run.n_step`, so a leaf does not declare `Compile fail` over it."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, start, stop, clauses in self._NOT_SUCH_A_QUANTITY_SITES:
+            with self.subTest(surface=rel):
+                text = (root / rel).read_text(encoding="utf-8")
+                self.assertEqual(text.count(start), 1, start)
+                head = text.index(start)
+                window = text[head:text.index(stop, head)]
+                self.assertLess(len(window), 4000, "the window runs past the statement")
+                for clause in clauses:
+                    self.assertIn(clause, window)
+                    self.assertIn(f"`{pe.ZERO_STEP_QUANTITY}`", clause)
+
     def test_the_evaluator_refuses_an_entry_that_reads_no_state_past_the_gate(self) -> None:
         """R4-2: `evaluate_primary_predicates` refuses, by its OWN whole-entry message, an
         entry the schema gate would refuse and that reaches it anyway (an IR the gate never
