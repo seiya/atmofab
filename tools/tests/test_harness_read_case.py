@@ -53,11 +53,17 @@ def _sentinels(spec_id: str, case_id: str) -> dict:
 
 
 def _predicates(spec_id: str, test_id: str) -> list[str]:
-    """The predicate expressions of `test_id` in `tests.md`, each `<expr> == <value>`."""
+    """Every predicate expression of `test_id` in `tests.md`, each `<expr> == <value>`. Everything
+    in backticks after the line's head is an expression, so a term spelled some other way fails
+    here rather than going unread."""
     text = _tests_md(spec_id)
     row = text[text.index(f"- `test_id`: `{test_id}`") + 1:]
     row = row[:row.index("- `test_id`:")] if "- `test_id`:" in row else row
-    return re.findall(r"`((?:max\(|final\.)[^`]+ == [^`]+)`", re.search(r"`predicate`[^\n]*", row).group(0))
+    line = re.search(r"`predicate`[^\n]*", row).group(0)
+    body = line.split("): ", 1)[1].split("(op `eq`)", 1)[0]
+    expressions = re.findall(r"`([^`]+)`", body)
+    assert expressions and all(" == " in e for e in expressions), line
+    return expressions
 
 
 def _section51(spec_id: str) -> dict:
@@ -182,10 +188,62 @@ class SpecSurfaceTests(unittest.TestCase):
                 self.assertNotEqual(declared["rc_real"], sentinels["rc_real"])
                 self.assertTrue(all(a != b for a, b in zip(declared["rc_r1"], sentinels["rc_r1"])))
 
-    def test_the_number_sentinel_holds_a_token_of_full_length(self) -> None:
+    def test_each_sentinel_keeps_the_token_it_exists_for(self) -> None:
         for spec_id in HARNESSES:
-            token = repr(_sentinels(spec_id, "l0_read_case_roundtrip_pass")["rc_real"])
-            self.assertGreaterEqual(len(token), 17, "a token short enough for a narrow buffer")
+            with self.subTest(spec_id=spec_id):
+                s = _sentinels(spec_id, "l0_read_case_roundtrip_pass")
+                self.assertGreaterEqual(len(repr(s["rc_real"])), 17, "a token a narrow buffer cuts")
+                self.assertIs(type(s["rc_whole"]), int, "an integer token read as a real")
+                self.assertLess(s["rc_int"], 0, "the sign of an integer token")
+                self.assertIs(s["rc_true"], True)
+                self.assertIs(s["rc_false"], False)
+                self.assertEqual(s["rc_empty"], [])
+                self.assertEqual(s["rc_r1"], [-1.5, 1.0e-30, 1.0e+30], "both exponent signs")
+                self.assertTrue(all(isinstance(v, int) for v in s["rc_r2"][0]), "integer tokens")
+
+    def test_the_tests_keep_their_outcome_and_the_absent_id_names_no_case(self) -> None:
+        for spec_id in HARNESSES:
+            with self.subTest(spec_id=spec_id):
+                text = _tests_md(spec_id)
+                outcomes = dict(re.findall(
+                    r"^- `test_id`: `([^`]+)`\n  - `level`: `L0`\n  - `operation_id`: `[^`]+`[^\n]*\n"
+                    r"  - `expected_outcome`: `([a-z]+)`", text, re.M))
+                self.assertEqual(outcomes["l0_read_case_roundtrip_pass"], "pass")
+                self.assertEqual(outcomes["l0_read_case_second_pass"], "pass")
+                self.assertEqual(outcomes["l0_missing_case_file_xfail"], "xfail")
+                self.assertIn("l0_no_such_case_file", text)
+                self.assertNotIn("l0_no_such_case_file", outcomes)
+                row = text[text.index("- `test_id`: `l0_read_case_second_pass`"):]
+                self.assertIn(f"`{spec_id}__read_case`", row[:row.index("`expected_outcome`")])
+
+    def test_the_seeded_contract_states_what_the_specs_state(self) -> None:
+        """A producer reads RUNNER_OUTPUT_CONTRACT §6 and not `controlled_spec.md`; Compile and the
+        reviewer read the spec. Each pair below is one rule in its two statements. A sample of the
+        rules, not their set: a rule stated in neither is out of its reach."""
+        contract = (ROOT / "docs/workflow/RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8")
+        section = " ".join(contract[contract.index("## 6. The case file"):].split())
+        rules = (
+            ("the token `1` (true) or `0` (false)",) * 2,
+            ("holds no default and takes no `ok`",) * 2,
+            ("no value of an earlier case remains readable",) * 2,
+            ("so `[]` reads at every rank and `[[],[]]` at rank 2 and above",) * 2,
+            ("the leading array index", "the leading array index"),
+            ("(no fraction", "(no fraction"),
+            ("stops the program with a non-zero exit status",) * 2,
+            ("a scalar asked as an array or an array as a scalar",) * 2,
+            ("does not convert to a finite binary64 value",) * 2,
+            ("so its width is not `case_id_len`",) * 2,
+        )
+        for spec_id in HARNESSES:
+            spec = " ".join((_HARNESS_DIR / spec_id / "controlled_spec.md")
+                            .read_text(encoding="utf-8").split())
+            for in_contract, in_spec in rules:
+                with self.subTest(spec_id=spec_id, rule=in_contract):
+                    self.assertIn(in_contract, section)
+                    self.assertIn(in_spec, spec)
+        # the reversals of what §6 forbids are absent
+        for reversal in ("returns a default", "keeps the previous case"):
+            self.assertNotIn(reversal, section)
 
     def test_the_fortran_pins_carry_the_operations_under_each_harness_name(self) -> None:
         for spec_id, pin in fortran_runner._HARNESS_PINS.items():
@@ -340,6 +398,17 @@ class ReaderAgainstTheHostWriterTests(unittest.TestCase):
         res = self._run("empty_parse:", "read:c3")
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(res.stdout.split(), ["empty_parse", "F", "read", "T"])
+
+    def test_a_parse_with_a_path_and_no_case_keeps_the_earlier_path(self) -> None:
+        res = self._run("short_parse:/nowhere/spec.ir.yaml", "read:c3")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout.split(), ["short_parse", "F", "read", "T"])
+
+    def test_a_document_refused_by_grammar_leaves_no_part_of_itself_readable(self) -> None:
+        self._write_case("partial", '{"early":1,"late":"x"}\n')
+        res = self._run("read:partial", "real:early")
+        self.assertNotEqual(res.returncode, 0, res.stdout)
+        self.assertIn("no case is loaded", res.stdout)
 
     def test_a_case_with_no_numeric_input_is_an_empty_object(self) -> None:
         self.assertEqual((self.ir_dir / "case_inputs" / "c3.json").read_text(), "{}\n")

@@ -1,7 +1,8 @@
 ! The test program of `test_harness_read_case.py`: `probe --cases <spec> <case_id> -- <command>...`
 ! parses the argv through `__parse_cases` and reads the case; each command is `<getter>:<name>`
 ! and prints the name with the extents, then the values. `read:<case_id>` reads a case, and
-! `empty_parse:` calls `__parse_cases` on a length-0 token list.
+! `empty_parse:` calls `__parse_cases` on a length-0 token list, and `short_parse:<path>` on
+! `--cases <path>` with no case id.
 program probe
   use harness_fortran_cpu_model, only: dp, case_id_len, harness_fortran_cpu__parse_cases, &
     harness_fortran_cpu__read_case, harness_fortran_cpu__get_real, harness_fortran_cpu__get_int, &
@@ -12,6 +13,7 @@ program probe
   character(len=4096) :: tokens(64), command
   character(len=case_id_len) :: case_ids(64), no_ids(1)
   character(len=8) :: no_tokens(1)
+  character(len=4000) :: other(2)
   character(len=64) :: op
   character(len=4000) :: name
   ! A getter that refuses stops the program, so it is never called inside an output statement: the
@@ -44,6 +46,11 @@ program probe
     case ('empty_parse')
       call harness_fortran_cpu__parse_cases(no_tokens, 0, no_ids, n, ok)
       write (*, '(a,1x,l1)') 'empty_parse', ok
+    case ('short_parse')
+      other(1) = '--cases'
+      other(2) = trim(name)
+      call harness_fortran_cpu__parse_cases(other, 2, no_ids, n, ok)
+      write (*, '(a,1x,l1)') 'short_parse', ok
     case ('real')
       x = harness_fortran_cpu__get_real(trim(name))
       write (*, '(a,1x,es24.16e3)') trim(name), x

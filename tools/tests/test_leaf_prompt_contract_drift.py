@@ -1133,7 +1133,7 @@ PINNED: dict[str, str] = {
     # leaf-90 (issue #589, PR-2): the runner-output contract gains §6, the case file, and §5 points
     # at it; the harness producer template says a case reads it through the published operations,
     # and the harness verify template's H7b holds it to them.
-    "leaf-90": "2ccfcfbdd6e9d5500d33833c7ba1f43a2a0b95705243ad7e0a05cfb5762f813f",
+    "leaf-90": "e0200270a7e2532fc142ea13217ef5a43d64bc2e1ebf95897941e798c1a90843",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1150,7 +1150,7 @@ PINNED_READER: dict[str, str] = {
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
     # generate-verify-4 (issue #589, PR-2): the seeded runner-output contract gains §6, the case file
     # and what its reading operations refuse; H7b holds a case to them.
-    "generate-verify-4": "5b51e3b4aa96111420c9e8107d255f43ec8ef599c270a5f96c280bf3cf5bc806",
+    "generate-verify-4": "76058855cc0ac2fcfc8e391152a1e260b29da15c84f7248a783089b8a814b537",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
