@@ -748,3 +748,16 @@ Two things outlast the fix. The premise "the driver's reset holds" read as a fac
 and was a fact about the compiler and its flags, so it took a run. And the first rows pinning the fix
 did not pin it, because at the flags they built with the defect did not show: `-O2` alone read `0` by
 register luck, while `-O2 -fcheck=bounds` and `-O3` read `1`. `atmofab-review-loop` carries that half.
+
+## Rule 1-d: a contract at every rank, a self-test at rank 1 (issue #589 PR-3 / PR #596, 2026-11-05)
+
+PR-3 added zero-extent `xfail` cases, whose rank-2 state is the case-file value `[]`. The harness
+contract already said `[]` reads at every rank, and the self-test's `rc_empty_read` judged rank 1.
+Round 0's end-to-end run at the GPU site stopped on `coriolis`'s `l0_nx0`: the hand-written C++
+reader refused "a value of another nesting depth". The fix changed that fixture and no other reader.
+
+The fixture is the smaller half. A generated reader written the same way would have passed its own
+certification and stopped every zero-extent case of a physics node, because the self-test could not
+tell the two apart. The fix did both: the fixture follows the contract, and `rc_empty2 = [[], []]`
+joins the self-test of all three harnesses. The case was new and the clause was old, so nothing in
+the diff pointed at the clause. Only a run on the second target did.

@@ -1548,6 +1548,14 @@ that tells you how it closed.
   check members against EACH OTHER, not only against the implementation. The remedies differ
   (`assertNotIn(implemented_id, probe)` vs. widening the family), so name both when they overlap.
   Episodes, including a 13-family sweep of this repository's own tests: `references/mutation-testing.md`
+- **A spec change's `pass` cases hold one value of an input** → a kernel that hard-codes that value,
+  or refuses every other, certifies. Driving the named mutants does not show this, because nobody
+  named that mutant, and `mutation_check.py` does not either, because the kernel is not in the diff.
+  **For each scalar and extent in §5.1, list the values the `pass` cases hold and the values a
+  consumer passes; a case at a consumer's value is the cheapest catch. A constant the spec fixes is
+  excepted. Once a reviewer finds this on one node, sweep every node in the same round**: issue #589
+  PR-3 fixed the nodes round 2 named, and round 3 found nine more. No gate holds this; a reviewer
+  has to read for it. Episode: `references/signs-episodes.md` §"One value per input" (issue #589 PR-3)
 
 ## Finally
 

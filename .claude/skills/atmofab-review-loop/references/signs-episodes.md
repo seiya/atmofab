@@ -514,3 +514,18 @@ returned a closing message ("no new information, the final report stands as deli
 report that had never arrived; the full checklist came back only after being asked for it directly.
 **A subagent's completion notice is not its report** — if you cannot quote a finding from it, you
 have not received one.
+
+## "One value per input" (issue #589 PR-3, PR #596)
+
+PR-3 converted 17 physics `tests.md` files and drove every mutant issue #588 named, and each moved
+its test. Round 2's blank-slate reviewer found literal index ranges on Kessler and saturation, ghost clamps on `shallow_water2d` and over-guards on `rk4`.
+A guard refusing `dt > 0.4` or `ncomp > 3` certified `rk4`, while the channel passes `dt` of about
+470.
+
+Round 2 fixed those nodes. Round 3 found the same class on nine others: `euler1` at `dt` 0.1 and `nx`
+4, `advdiff_flux` at `dt` 0.1, both Rusanov fluxes at `g` 9.80616 where `shallow_water2d` passes 9.81,
+`muscl` at `nx` at most 6, `ssprk2` at fixed `dt` and spacing with `ncomp` 3, and the two periodic
+copies and `channel_mirror` at `nx` and `ny` at most 4. Twelve nodes gained a case by the end. The
+class recurring on new nodes is why that review did not converge. A gate requiring two values per
+scalar input was offered to the operator and not decided; it would also refuse a constant the spec
+fixes.
