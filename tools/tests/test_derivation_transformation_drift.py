@@ -806,7 +806,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-24": "33c85442a90a6b0b6c2d905bec8f7e8d198b0188f14a76f2554fa7c46b346e8c",
     # compile-docs-25 (issue #589, PR-1a): the phase contract and both IR examples describe the
     # `drive` block, per-case `initial_state` / `derived`, history and series, and grammar 6.
-    "compile-docs-25": "3c0b475359a732a602a74fee1729e712db7ee4e4cc811c5240982b20eb8f915a",
+    "compile-docs-25": "431b6d50949bf690c804f1ac9034268e3eec3d9c3233ebe06f6af1c5d26fe33f",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1853,7 +1853,7 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-13 (issue #589, PR-1a): grammar 6 (history / series / derived, smax / smin / ssum,
     # the step capture), the drive model and the case-input evaluator, D7 re-checked on the
     # records; the source / reported / reference classes deleted.
-    "verdict-13": "b96beb4ae0617e54b8ef5e5009c9b29f05aadb333d665d65c1056ccc71665bbe",
+    "verdict-13": "7f5330f2d910288ed91bc089191d80b911e1f95f3073cc955b8641148ffc3ff0",
 }
 
 
