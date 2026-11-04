@@ -231,6 +231,14 @@ to **one unbilled observation**).
   name the configuration of the certified run on which a defective implementation gives a
   DIFFERENT answer, and make the run take it** (`references/judgment-episodes.md` §Rule 1-d,
   issue #512)
+- **A contract sentence that says "at every X" is a claim about each X, and a self-test that
+  judges one X certifies a reader that handles only that one.** Issue #589 PR-3's harness contract
+  said `[]` reads at every rank, and the self-test judged rank 1. The hand-written `cpp_gpu` fixture
+  refused a rank-2 `[]`, and the stop came on `l0_nx0` in round 0's end-to-end run at the GPU site.
+  **Rule: when a change adds a new use of an old contract
+  clause, run it on every target, and widen the self-test to each member the clause names. A fixture
+  shows what one author read, so a fixture that passes does not show that the contract holds**
+  (`references/judgment-episodes.md` §Rule 1-d, issue #589 PR-3)
 - **A node certified alone is certified under ITS OWN RUNNER'S calling convention, and its
   consumers may call it another way.** Issue #512 PR-4a's lowering rules let a `component`
   distribute its cases; two regenerated components did it INSIDE their published operation,
