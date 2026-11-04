@@ -24,15 +24,14 @@ The pin set is deliberately NARROW (a churn magnet if widened): the launch templ
 fragment files composed into them, the two workshop system prompts (the `--system-prompt`
 strings), the leaf-read tables that sit in code (the `<tool_surface>` rows, the cut-read
 and schema-repair scope paragraphs, the repair prompt's document fence, the verdict-repair slots, the codex reading helper, the HTTP file-tool declarations),
-the checks-ABI constants the
-templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths), and — since
-issue #142 — the §1-4 slice of `docs/workflow/CHECKS_MODULE_CONTRACT.md` and — since issue #143 —
-the `#### Severity of a finding` slice of `docs/workflow/phases/phase_02_generate.md`, both of
-which the reviewer's prompt inlines verbatim. Those last two are DOCUMENTS, which the bar above
-would normally exclude; they qualify because those sections stopped being a document the leaf
+and — since issue #143 — the `#### Severity of a finding` slice of
+`docs/workflow/phases/phase_02_generate.md`, which the reviewer is seeded verbatim. (The checks-ABI
+constants and the §1-4 slice of the checks-module contract were members until issue #589 deleted
+the module.) That slice is a DOCUMENT, which the bar above
+would normally exclude; it qualifies because the section stopped being a document the leaf
 reads and became a document the host pastes into the leaf's prompt, which is the same category as
-the template bytes. Each is hashed as its SLICE, so the rest of its file stays outside the pin:
-editing §5 (the deterministic-gate section) or a G1-G7 checklist item costs no bump. Every member
+the template bytes. It is hashed as its SLICE, so the rest of its file stays outside the pin:
+editing a G1-G7 checklist item costs no bump. Every member
 is a STABLE, behavior-defining input (not a churny one); do NOT grow it beyond that bar. A third
 document slice needs the same argument made for it — that the host pastes it into a leaf prompt
 and that the leaf's decision depends on it — not this precedent alone.
@@ -68,12 +67,9 @@ The operator chose the whole-document, unhashed disposition for PR-1 (issue #168
 round reverses that, the reversal costs exactly one version bump.
 
 Every pinned member is either a production constant IMPORTED from its authority
-(`CHECKS_PUBLIC_NAMES`, the status width, the system prompts, the tool-surface tables) or the template file
-bytes themselves — never a test-local COPY of a production value, which would drift silently from its
-source and pin nothing. In particular the checks-status vocabulary (`'pass'`/`'fail'`/`'na  '`) is
-NOT pinned as a separate literal: it has no production enum constant (it lives only as prose in the
-templates), and the template prose is already covered by hashing the template bytes above, so a copy
-here would be redundant and self-referential.
+(the system prompts, the tool-surface tables), a document read through the path production reads it
+by, or the template file bytes themselves — never a test-local COPY of a production value, which
+would drift silently from its source and pin nothing.
 
 DELIBERATELY OUT OF SCOPE — host-side acceptance-gate / backstop IMPLEMENTATIONS (e.g.
 `validate_pipeline_semantics._validate_diagnostics_contract_output`, the post_execute backstop for
@@ -97,6 +93,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import tools.codegen_bundle as cb
@@ -1134,6 +1131,15 @@ PINNED: dict[str, str] = {
     # at it; the harness producer template says a case reads it through the published operations,
     # and the harness verify template's H7b holds it to them.
     "leaf-90": "e0200270a7e2532fc142ea13217ef5a43d64bc2e1ebf95897941e798c1a90843",
+    # leaf-91 (issue #589, PR-1b): the host renders the driver and the checks module is deleted.
+    # Measured against origin/main a55f7390. Members gone with what they read:
+    # `checks_public_names` (`CHECKS_PUBLIC_NAMES`), `checks_contract_abi_sections`
+    # (`CHECKS_MODULE_CONTRACT.md`), `checks_abi_binding_sections` (`CHECKS_ABI.md`, the `checks_abi`
+    # capability). `checks_contract_gate_guards_section` is `gate_guards_section`, over each
+    # language's `GENERATE_RULES.md`. Members moved: the compile, generate and harness producer
+    # templates, the generate and harness verify templates, the judge template, the six
+    # generate fragments, the runner-output contract (whole and §1+§3) and the severity rubric.
+    "leaf-91": "eb043a4cccbd9681fc3c45e46f8146fac34cf732d616450100385afb7197ab4b",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1151,9 +1157,18 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-4 (issue #589, PR-2): the seeded runner-output contract gains §6, the case file
     # and what its reading operations refuse; H7b holds a case to them.
     "generate-verify-4": "76058855cc0ac2fcfc8e391152a1e260b29da15c84f7248a783089b8a814b537",
+    # generate-verify-5 (issue #589, PR-1b): a reviewer reads a model and a rendered driver, with no
+    # checks module. Gone: `checks_contract_abi_sections`, `checks_abi_binding_sections`,
+    # `checks_public_names`. Moved: both verify templates, the three verify fragments, the severity
+    # rubric and the runner-output contract. The gate guards are a producer's, and no reader is
+    # seeded them. compile-verify-3 stands: its reader digest did not move on this PR.
+    "generate-verify-5": "4b1510fa3754ac74f5fca40a90a400b0495c2244921cae1df49da3883bb2a68a",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
+    # validate-judge-4 (issue #589, PR-1b): the judge template and §1+§3 of the runner-output
+    # contract follow the driver; `checks_public_names` is gone with the module.
+    "validate-judge-4": "67e52883deef5f306c1128e6f9276171f8c11b6599bfee39b99a5ce1cef1cf63",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
@@ -1201,26 +1216,7 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         # The five file tools an HTTP workshop leaf is declared: their names, descriptions and
         # schemas are what the model reads.
         "http_file_tool_declarations": list(leaf_contract.HTTP_FILE_TOOL_DECLARATIONS),
-        # The checks ABI's names, PER LANGUAGE that renders a runner (issue #289,
-        # R4-b PR-6): until the second renderer these named the Fortran module, so a `cuda_cpp`
-        # runner's ABI could change with the digest unmoved.
-        "checks_public_names": {
-            language: list(_runner_module(language).CHECKS_PUBLIC_NAMES)
-            for language in _runner_languages()
-        },
-        # The §1-4 SLICE of the checks-module contract, not the file: since issue #142 those
-        # sections are inlined verbatim into the reviewer's prompt, which puts them under this
-        # pin's own stated bar (a stable, behavior-defining leaf INPUT) exactly as the template
-        # bytes are. Hashing the slice rather than the whole document keeps §5 — the deterministic
-        # gate section the reviewer is told not to re-check — out of the tuple, so an edit there
-        # is not a spurious bump; and it makes the slicer's OWN behaviour part of the contract,
-        # closing the gap `_checks_contract_abi_sections`' docstring used to record: moving an
-        # anchor, or a document renumbering that silently re-slices, changes the digest.
-        "checks_contract_abi_sections": wc._checks_contract_abi_sections(
-            (Path(wc.__file__).resolve().parents[1]
-             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8")),
-        # The severity-rubric SLICE of phase_02_generate.md, on the same ground and with the same
-        # scoping (issue #143): since `pure-25` the `#### Severity of a finding` subsection is
+        # The severity-rubric SLICE of phase_02_generate.md (issue #143): since `pure-25` the `#### Severity of a finding` subsection is
         # inlined verbatim into the reviewer's prompt and is the sole rule for the
         # `issue_severity` a verdict carries, so it is a leaf INPUT, not a document the leaf
         # reads. Hashing the slice keeps G1-G7 and the phase's retry policy out of the tuple —
@@ -1261,23 +1257,13 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         "runner_output_contract_document": (
             Path(wc.__file__).resolve().parents[1]
             / "docs" / "workflow" / "RUNNER_OUTPUT_CONTRACT.md").read_text(encoding="utf-8"),
-        # §5 of the checks-module contract, on the same ground as the §1-§4 slice beside it: it
-        # is inlined verbatim into the `harness` producer's prompt, so it is a leaf INPUT rather
-        # than a document the leaf reads. Hashing the SLICE keeps §1-§4 out of this member (they
-        # are already their own) and makes the section's CONTENT part of the contract.
-        # WHAT THIS DOES NOT PIN, corrected by round 4 after the first version of this comment
-        # claimed it did: the slicer's REFUSALS. A digest over the slice of today's document —
-        # which carries no `## 6.` — cannot see a guard against one, and deleting that guard left
-        # the whole suite green. `test_leaf_producer.PureHarnessShapeTests` drives both
-        # refusals on synthetic text, and pins the slice's identity against
-        # `_checks_contract_abi_sections` so swapping the two is red.
         # The static lint rule set as the harness producer is shown it. A leaf INPUT like the
         # slices beside it, and the one member that comes from a BACKEND rather than a document:
         # adding a code to `RULE_CODES` changes what the leaf is told, which is a contract change
         # and has to bump the version rather than ship silently.
         #
         # PER LANGUAGE, derived from the registry (issue #289, R4-b PR-4): until the second
-        # language this member and the three below named the Fortran backend's modules, so a
+        # language this member and the ones below named the Fortran backend's modules, so a
         # `cuda_cpp` leaf's rule set, gate guards and runner-output binding could change with
         # the digest unmoved. Every language that declares `prompt_fragments` (the capability a
         # launch of that language composes its prompts with) contributes its entry; the linter
@@ -1289,15 +1275,15 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
             ).lint_rules_document()
             for language in _prompt_languages()
         },
-        # Since issue #289 (R4-b PR-2) §5 is the LANGUAGE's (its checks-ABI binding), and the
-        # reviewer is shown the binding's §1-§4 after the neutral ones: both slices are leaf
-        # INPUT on the same ground as the neutral slice above.
-        "checks_contract_gate_guards_section": {
-            language: wc._checks_contract_gate_guards_section(_checks_abi_document(language))
-            for language in _prompt_languages()
-        },
-        "checks_abi_binding_sections": {
-            language: wc._checks_contract_abi_sections(_checks_abi_document(language))
+        # The `Legality and gate guards` SLICE of the language's generate rules, which the
+        # `harness` producer is seeded (`gate_guards.md`), read as production reads it
+        # (`Conductor._generate_rules_text`, then `_gate_guards_section`): so a rewired read, a moved
+        # anchor and an edited section each move the digest, and the rest of the document, which
+        # no leaf is given, does not. It was §5 of each language's `CHECKS_ABI.md` until issue #589.
+        # WHAT THIS DOES NOT PIN: the slicer's REFUSALS, which today's document cannot show.
+        # `test_leaf_producer.PureHarnessShapeTests` drives them on synthetic text.
+        "gate_guards_section": {
+            language: wc._gate_guards_section(_generate_rules_text(language))
             for language in _prompt_languages()
         },
         # The exemplar gate-drift note each language appends to the exemplar block
@@ -1372,18 +1358,14 @@ READER_MEMBERS_BY_PHASE: dict[str, frozenset[str]] = {
     "generate": _EVERY_READER | {
         "templates/workshop_generate_verify.txt",
         "templates/workshop_generate_verify_harness.txt",
-        "checks_contract_abi_sections",
-        "checks_abi_binding_sections",
         "generate_verify_severity_rubric_section",
         "runner_output_contract_document",
         "runner_output_binding_document",
-        "checks_public_names",
         "dependency_facts_render",
     },
     "validate": _EVERY_READER | {
         "templates/workshop_validate_judge.txt",
         "runner_output_contract_sections",
-        "checks_public_names",
         "dependency_facts_render",
     },
 }
@@ -1396,7 +1378,7 @@ ADVISORY_MEMBERS: frozenset[str] = frozenset({
     "templates/workshop_ir_repair.txt",
     "system_prompts/producing",
     "tool_surface_text/producing",
-    "checks_contract_gate_guards_section",
+    "gate_guards_section",
     "lint_rules_document",
     "exemplar_gate_drift_note",
 })
@@ -1447,18 +1429,18 @@ def _prompt_languages() -> list[str]:
             if _registry.provides("language", language, "prompt_fragments")]
 
 
-def _runner_languages() -> list[str]:
-    """Every language whose runner the host renders (`runner_render`), sorted."""
-    return [language for language in _registry.implemented_backend_ids("language")
-            if _registry.provides("language", language, "runner_render")]
+def _generate_rules_text(language: str) -> str:
+    """`language`'s generate rules, by the conductor's own read of them for a target of it."""
+    conductor = SimpleNamespace(target=SimpleNamespace(toolchain={"language": language}))
+    return wc.Conductor._generate_rules_text(conductor)  # type: ignore[arg-type]
 
 
-def _runner_module(language: str):
-    return _registry.capability_module("language", language, "runner_render")
-
-
-def _checks_abi_document(language: str) -> str:
-    return _registry.capability_module("language", language, "checks_abi").document()
+def _with_a_gate_guard(document: str) -> str:
+    """`document` with one more line inside its `Legality and gate guards` section."""
+    edited, count = re.subn(r"^(## (?:\d+\.\s+)?Legality and gate guards\s*)$",
+                            r"\1\n\n- one more", document, flags=re.MULTILINE)
+    assert count == 1, "no gate-guards heading to edit"
+    return edited
 
 
 def _digest(tpl_dir: Path | None = None) -> str:
@@ -1480,9 +1462,9 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "prompt_templates/backends/, the two workshop system prompts, a <tool_surface> row, "
             "the cut-read or schema-repair scope paragraph, the document fence, the "
             "verdict-repair slots, the codex reading helper, the HTTP "
-            "file-tool declarations, the language backends' checks-ABI constants, lint rules, "
-            "gate-guard and binding sections or exemplar note, or an inlined document slice — "
-            "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
+            "file-tool declarations, the language backends' lint rules, gate-guard section, "
+            "runner-output binding or exemplar note, or an inlined document slice — "
+            "phase_02_generate.md's severity rubric, "
             "RUNNER_OUTPUT_CONTRACT.md §3 AND the whole of that file, or the fixed text of "
             "DEPENDENCIES.md).\n"
             "A member only a producer reads needs this bump alone, and it moves no derivation key. "
@@ -1557,6 +1539,11 @@ class PurePromptContractDriftTests(unittest.TestCase):
                 self.assertNotEqual(_digest(edited), _digest())
                 self.assertEqual(
                     readers, {phase: _reader_digest(phase, edited) for phase in readers})
+        # The one non-template member only a producer reads that moved here with issue #589.
+        whole = _digest()
+        with mock.patch.object(wc, "_gate_guards_section", return_value="other"):
+            self.assertNotEqual(whole, _digest())
+            self.assertEqual(readers, {phase: _reader_digest(phase) for phase in readers})
         for relative, phase in (("workshop_compile_verify.txt", "compile"),
                                 ("workshop_generate_verify.txt", "generate"),
                                 ("backends/language/fortran/generate_verify.txt", "generate"),
@@ -1579,7 +1566,8 @@ class PurePromptContractDriftTests(unittest.TestCase):
                              {p for p in readers if readers[p] != _reader_digest(p, edited)})
         with mock.patch.object(leaf_contract, "PURE_DOC_FENCE_BEGIN", "<<other>>"):
             self.assertEqual(moved(), set(readers))
-        with mock.patch.object(wc, "_checks_contract_abi_sections", return_value="other"):
+        with mock.patch.object(wc, "_generate_verify_severity_rubric_section",
+                               return_value="other"):
             self.assertEqual(moved(), {"generate"})
         with mock.patch.object(wc, "_runner_output_contract_sections", return_value="other"):
             self.assertEqual(moved(), {"validate"})
@@ -1618,18 +1606,15 @@ class PurePromptContractDriftTests(unittest.TestCase):
         self.assertIn("cuda_cpp", _prompt_languages())
         base = _digest()
         from unittest import mock
-        self.assertIn("cuda_cpp", _runner_languages())
-        checks = _registry.capability_module("language", "cuda_cpp", "checks_abi")
         prompts = _registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         lint = _registry.capability_module("linter", "nvcc", "lint_rules")
-        runner = _registry.capability_module("language", "cuda_cpp", "runner_render")
         for label, target, attribute, value in (
-                ("checks-ABI binding", checks, "document",
-                 lambda: checks.DOCUMENT_PATH.read_text(encoding="utf-8") + "\n- one more\n"),
+                ("gate guards", prompts, "generate_rules_document",
+                 lambda: _with_a_gate_guard(prompts.GENERATE_RULES_DOCUMENT.read_text(
+                     encoding="utf-8"))),
                 ("runner-output binding", prompts, "runner_output_document", lambda: "changed"),
                 ("exemplar gate-drift note", prompts, "EXEMPLAR_GATE_DRIFT_NOTE", "changed"),
-                ("lint rule set", lint, "lint_rules_document", lambda: "changed"),
-                ("checks-ABI names", runner, "CHECKS_PUBLIC_NAMES", ("case_setup",))):
+                ("lint rule set", lint, "lint_rules_document", lambda: "changed")):
             with self.subTest(label=label), mock.patch.object(target, attribute, value):
                 self.assertNotEqual(base, _digest())
 
@@ -1642,7 +1627,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
         """Issue #534 PR-J4-b's union: each class of leaf-read text — a template (the escalate
         diagnostician's), a fragment file, a document slice, a tool-surface row, a system
         prompt, the codex reading helper, an HTTP tool declaration, a lint rule set and a
-        checks-ABI name — is witnessed by changing it and watching the digest move."""
+        gate-guards section — is witnessed by changing it and watching the digest move."""
         from unittest import mock
         base = _digest()
         tpl_dir = Path(ort.__file__).resolve().parent / "prompt_templates"
@@ -1654,10 +1639,9 @@ class PurePromptContractDriftTests(unittest.TestCase):
                 return text + "\nchanged\n" if str(self).endswith(path_suffix) else text
             return read_text
 
-        fortran = _registry.capability_module("language", "fortran", "checks_abi")
+        fortran = _registry.capability_module("language", "fortran", "prompt_fragments")
         lint = _registry.capability_module(
             "linter", _registry.linter_for_language("fortran"), "lint_rules")
-        runner = _registry.capability_module("language", "fortran", "runner_render")
         for label, patcher in (
                 ("escalate template", mock.patch.object(
                     Path, "read_text", _patched("workshop_escalate_diagnose.txt"))),
@@ -1685,11 +1669,10 @@ class PurePromptContractDriftTests(unittest.TestCase):
                     leaf_contract, "PURE_DOC_FENCE_END", "changed")),
                 ("lint rule set", mock.patch.object(lint, "lint_rules_document",
                                                     lambda: "changed")),
-                ("checks-ABI binding", mock.patch.object(
-                    fortran, "document",
-                    lambda: fortran.DOCUMENT_PATH.read_text(encoding="utf-8") + "\n- one more\n")),
-                ("checks-ABI names", mock.patch.object(
-                    runner, "CHECKS_PUBLIC_NAMES", ("case_setup",)))):
+                ("gate guards", mock.patch.object(
+                    fortran, "generate_rules_document",
+                    lambda: _with_a_gate_guard(fortran.GENERATE_RULES_DOCUMENT.read_text(
+                        encoding="utf-8"))))):
             with self.subTest(member=label), patcher:
                 self.assertNotEqual(base, _digest(), label)
 
