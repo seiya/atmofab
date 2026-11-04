@@ -3383,6 +3383,92 @@ class DriveViolationsTest(unittest.TestCase):
         self.assertTrue([m for m in self._v(swe, "problem") if m.startswith("(l)")])
 
 
+    # --- R1-8: one row per clause a mutant survived; each is red with its clause deleted ---
+    @staticmethod
+    def _sig(ir: dict, op: str) -> list:
+        return next(s["signature"]["args"] for s in ir["public_api"]["signatures"]
+                    if s["symbol"] == op)
+
+    @staticmethod
+    def _schema_var(ir: dict, name: str, shape: str) -> None:
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": name, "shape_expr": shape})
+
+    def test_a_host_materialised_scalar_cannot_set_the_loop(self) -> None:   # (e)
+        """A `state.<var>` loop reference names a scalar `init` writes. A scalar the host
+        fills (`initial_state`) as `loop.n_step` would dodge the host checks (n_step an
+        integer >= 1, the t_end check), which skip a `state.*` operand, and gate (l), which
+        restates nothing (e) refuses — so the IR would pass with no finding at all."""
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("nn", "in", "integer"))
+        ir["drive"]["step"]["arguments"]["nn"] = "state.nn"
+        self._schema_var(ir, "nn", "scalar")
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["nn"] = 0          # not >= 1, and never checked as host data
+        ir["drive"]["loop"]["n_step"] = "state.nn"
+        self.assertEqual(self._v(ir), ["(e) drive.loop.n_step (state.nn): a state.<var> loop "
+                                       "reference names a scalar init writes"])
+
+    def test_an_input_array_has_the_dummy_s_extents(self) -> None:   # (c)
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("w", "in", "real", 1, ["nx"]))
+        ir["drive"]["step"]["arguments"]["w"] = "inputs.w"
+        ir["case"]["test_case_set"][0]["inputs"]["w"] = [1.0, 2.0, 3.0]
+        ir["case"]["test_case_set"][1]["inputs"]["w"] = [1.0] * 8
+        self.assertEqual(self._v(ir), [
+            "(c) case 'a': drive.step.arguments.w (inputs.w): an input of shape [3], the "
+            "dummy's dims evaluate to [4]"])
+
+    def test_a_derived_array_cannot_bind_a_rank_0_dummy(self) -> None:   # (c)
+        ir = _toy()
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["arr"] = "x"
+        ir["drive"]["step"]["arguments"]["dt"] = "derived.arr"
+        self.assertEqual(self._v(ir), [
+            f"(c) case {c!r}: drive.step.arguments.dt (derived.arr): an array bound to a rank-0 "
+            "dummy" for c in ("a", "b")])
+
+    def test_two_dummies_of_one_state_give_one_extent(self) -> None:   # (c)
+        """`init`'s `h` (dims `nx + 1`) and `step`'s `h` (dims `nx`) bind one state."""
+        ir = _toyi()
+        self._sig(ir, "toyi__init")[1]["dims"] = ["nx + 1"]
+        self.assertEqual(self._v(ir), [
+            "(c) case 'a': drive.step.arguments.h (state.h): extents [4], while another dummy "
+            "bound to state.h gives [5]",
+            "(c) case 'b': drive.step.arguments.h (state.h): extents [8], while another dummy "
+            "bound to state.h gives [9]"])
+
+    def test_an_integer_state_takes_an_integral_initial_state(self) -> None:   # (c)
+        """Without the refusal the case file would carry `int(1.5)` = 1 in every cell: the
+        payload writer's `as_int` truncates, and reaches only values a guard found integral
+        (an int literal, an integer-bound derived value, the host n_step, an integer
+        state's initial content)."""
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("k", "in", "integer", 1, ["nx"]))
+        ir["drive"]["step"]["arguments"]["k"] = "state.k"
+        self._schema_var(ir, "k", "[nx]")
+        ir["io_contract"]["raw_requirements"]["required_evidence"][2]["names"] += [
+            "k_min", "k_max"]
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["k"] = 1.5
+        self.assertEqual(self._v(ir), [
+            f"(c) case {c!r}: initial_state.k: an integer is bound, and the value is not "
+            "integral" for c in ("a", "b")])
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "is not integral"):
+            pe.evaluate_case_inputs(ir)
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["k"] = 2.0
+        self.assertEqual(pe.evaluate_case_inputs(ir)["a"]["k"], [2, 2, 2, 2])
+
+    def test_a_state_array_has_one_reading_dummy_on_a_loop_node(self) -> None:   # (b)
+        ir = _toy()
+        self._sig(ir, "toy__step").append(_arg("h0", "in", "real", 1, ["nx"]))
+        ir["drive"]["step"]["arguments"]["h0"] = "state.h"
+        self.assertEqual(self._v(ir), [
+            "drive.step: state.h is read by dummies ['h', 'h0']: a state array has at most one "
+            "reading dummy per entry"])
+
+
 class ScalarPairingTest(unittest.TestCase):
     """D7 (`scalar_pairing_violations`, re-checked by `evaluate_verdict`): the class is derived
     from `drive` + signatures; a scalar read alone, or beside a pair that reads only arrays,
