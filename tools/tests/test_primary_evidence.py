@@ -3540,6 +3540,21 @@ class ShippedFixturesTest(unittest.TestCase):
                 self.assertEqual(pe.quantity_violations(io["tests"], io["predicates"],
                                                         ctx["reads"]), [])
 
+    def test_the_loop_fixture_lowers_one_call(self) -> None:
+        """R1-6: on a `loop` node `algorithm` lowers ONE call of `__step` (phase_01
+        §`algorithm.execution_mode`): the converted swe fixture is `sequence` with an empty
+        `iteration_contract` and orders no host-evaluated step. No gate pins this (an inner
+        iterative solve is legitimate; V2 judges it); this row keeps the reference fixture in
+        the documented form."""
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        algo = ir["algorithm"]
+        self.assertIn("loop", ir["drive"])
+        self.assertEqual((algo["execution_mode"], algo["iteration_contract"]), ("sequence", {}))
+        self.assertEqual(algo["ordering"], [st["step_id"] for st in algo["steps"]])
+        self.assertFalse({"step_02_initial_condition", "step_04_dt_rule"}
+                         & {st["step_id"] for st in algo["steps"]})
+
     def test_a_failed_case_evaluation_is_reported_once(self) -> None:
         """One case whose evaluation fails is (c)'s finding; the predicate gate judges each
         `derived.*` read against the names the case declares instead of refusing every read

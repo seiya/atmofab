@@ -1469,92 +1469,34 @@ case:
         case
 algorithm:
   algorithm_id: shallow_water2d_hydrostatic_rusanov_p0_ssprk2
-  execution_mode: iterative
+  execution_mode: sequence
   description: 'Conservative 2D shallow water equations on the doubly periodic domain [0,L_x) x [0,L_y): d(h)/dt + d(hu)/dx
     + d(hv)/dy = 0; d(hu)/dt + d(hu^2 + g h^2/2)/dx + d(huv)/dy = -g h d(z_b)/dx; d(hv)/dt + d(huv)/dx + d(hv^2 + g h^2/2)/dy
     = -g h d(z_b)/dy. Uniform cell-centred finite volumes, dx = L_x/nx, dy = L_y/ny, state U = (h, hu, hv), well-balanced
     first-order (p0) hydrostatic reconstruction of Audusse et al. (2004), Rusanov interface flux (dependency), periodic ghost
     copy (dependency), and an SSPRK2 step composed by this node from two calls of the forward stage update (dependency). The
-    published operation shallow_water2d__step advances the state h, hu, hv (inout) by ONE SSPRK2 step (steps 06-21) with z_b
-    (in), the grid, g, dt and t, and returns the logical ok (false on a runtime error, the state then undefined and not committed
-    by the driver). The host evaluates the topography, the initial condition and the dt rule (steps 01, 02, 04) as initial_state
-    / derived; the host-rendered driver runs the loop n = 1 .. derived.n_step, commits each step, and samples history / step_series.
+    published operation shallow_water2d__step advances the state h, hu, hv (inout) by ONE SSPRK2 step (steps 01 and 06-21)
+    with z_b (in), the grid, g, dt and t, and returns the logical ok (false on a runtime error, the state then undefined and
+    not committed by the driver); this section lowers that one call. The host evaluates the topography, the initial condition
+    and the dt rule (rules z_b_cone, initial_condition_profiles, dt_rule) as initial_state / derived; the host-rendered driver
+    runs the loop n = 1 .. derived.n_step, commits each step, and samples history / step_series.
     Cell indices are 0-based: interior cell (i, j), i = 0..nx-1, j = 0..ny-1, centre x_i = (i + 1/2) dx, y_j = (j + 1/2) dy;
     halo-extended arrays carry one ghost layer (ng = 1) at index -1 and nx (resp. ny). Each case is computed in its own orientation
     from its inputs as given.'
   steps:
-  - step_id: step_01_topography_setup
+  - step_id: step_01_topography_halo
     step_kind: pointwise_process
-    operation_ref: setup_topography
+    operation_ref: extend_topography
     inputs:
+    - z_b
     - nx
     - ny
-    - L_x
-    - L_y
-    - topography_profile
-    - x_c_fraction
-    - y_c_fraction
-    - H_0
-    - dx
-    - dy
     outputs:
-    - z_b
     - z_b_ext
-    description: 'Host-evaluated (case.test_case_set[].initial_state.z_b): z_b is time-invariant. topography_profile selects
-      the closed form: flat -> z_b = 0 in every cell; williamson_tc5_cone -> z_b(x_i, y_j) by rule z_b_cone with x_c = x_c_fraction*L_x,
-      y_c = y_c_fraction*L_y, r_0 = min(L_x, L_y)/6, h_s = 0.2*H_0, evaluated at the cell centres ((i+1/2)dx, (j+1/2)dy) of
-      this case''s own grid. Any other topography_profile value, a fraction outside [0,1), or a cone whose discretized z_b
-      has no cell with z_b > 0 is a setup error (fail closed, no implicit completion). Inside shallow_water2d__step, z_b_ext
-      is z_b on the halo-extended grid, its ghost layer the periodic image (z_b_ext(-1,j) = z_b(nx-1,j), z_b_ext(nx,j) = z_b(0,j),
-      likewise in j), so that the reconstruction of step 2 is defined at the domain seam. z_b is never passed to the boundary
-      component.'
-  - step_id: step_02_initial_condition
-    step_kind: pointwise_process
-    operation_ref: setup_initial_condition
-    inputs:
-    - nx
-    - ny
-    - L_x
-    - L_y
-    - initial_profile
-    - eta0
-    - wave_sign
-    - shift_x_fraction
-    - shift_y_fraction
-    - H_0
-    - g
-    - z_b
-    - dx
-    - dy
-    outputs:
-    - h
-    - hu
-    - hv
-    description: 'Host-evaluated (case.test_case_set[].initial_state): h, hu, hv at the cell centres from initial_profile
-      by rule initial_condition_profiles (with c_0 = sqrt(g*H_0)); wave_sign is read only by linear_wave_x / linear_wave_y,
-      eta0 by every profile but lake_at_rest.'
-  - step_id: step_04_dt_rule
-    step_kind: reduction
-    operation_ref: compute_dt_rule
-    inputs:
-    - h
-    - hu
-    - hv
-    - g
-    - dx
-    - dy
-    - dt_scale
-    - cfl_target
-    - t_start
-    - t_end
-    outputs:
-    - lam0
-    - dt_raw
-    - n_step
-    - dt
-    description: 'Host-evaluated (case.test_case_set[].derived): tests.md §3 dt procedure, from the initial state, by rule
-      dt_rule: lam0 = max_ij((|u|+sqrt(g h))/dx + (|v|+sqrt(g h))/dy), dt_raw = dt_scale*cfl_target/lam0, n_step = ceil((t_end
-      - t_start)/dt_raw), dt = (t_end - t_start)/n_step. dt is fixed for the whole run.'
+    description: 'z_b (in) is host-evaluated (case.test_case_set[].initial_state.z_b, rule z_b_cone) and time-invariant. Inside
+      shallow_water2d__step, z_b_ext is z_b on the halo-extended grid, its ghost layer the periodic image (z_b_ext(-1,j) = z_b(nx-1,j),
+      z_b_ext(nx,j) = z_b(0,j), likewise in j), so that the reconstruction of step 2 is defined at the domain seam. z_b is
+      never passed to the boundary component.'
   - step_id: step_06_step_start
     step_kind: pointwise_process
     operation_ref: pack_step_state
@@ -1791,9 +1733,7 @@ algorithm:
       into h = U^{n+1}(0), hu = U^{n+1}(1), hv = U^{n+1}(2) (the committed state). A step made of one advance call with the
       fields of U^n (forward Euler) is NOT this step.'
   ordering:
-  - step_01_topography_setup
-  - step_02_initial_condition
-  - step_04_dt_rule
+  - step_01_topography_halo
   - step_06_step_start
   - step_07_s1_halo_fill
   - step_08_s1_boundary
@@ -1810,37 +1750,12 @@ algorithm:
   - step_19_s2_flux_difference
   - step_20_s2_advance
   - step_21_ssprk2_average
-  control_condition: Steps 01, 02 and 04 are host-evaluated per case (initial_state, derived). The driver calls shallow_water2d__step
-    (steps 06-21) once per step for n = 1 .. derived.n_step; a false ok (grid_valid, guard_ok or guard_pass false, or a reconstructed
-    depth <= 0) stops the loop with the last committed state, final.step counting the committed steps.
-  iteration_contract:
-    loop_variable: n
-    start: 1
-    stop_condition: n > derived.n_step
-    step_count_rule: derived.n_step = ceil((t_end - t_start)/dt_raw) from rule dt_rule; derived.dt = (t_end - t_start)/derived.n_step;
-      drive.loop runs n = 1 .. derived.n_step
-    body_steps:
-    - step_06_step_start
-    - step_07_s1_halo_fill
-    - step_08_s1_boundary
-    - step_09_s1_reconstruct
-    - step_10_s1_flux
-    - step_11_s1_source
-    - step_12_s1_flux_difference
-    - step_13_s1_advance
-    - step_14_s2_halo_fill
-    - step_15_s2_boundary
-    - step_16_s2_reconstruct
-    - step_17_s2_flux
-    - step_18_s2_source
-    - step_19_s2_flux_difference
-    - step_20_s2_advance
-    - step_21_ssprk2_average
-    stage_composition:
-      kind: fixed_stage_composition
-      stages: 2
-      description: two advance calls per step, the right-hand side re-evaluated at the stage state, then the average with
-        U^n
+  control_condition: One call of shallow_water2d__step runs steps 01 and 06-21 once, advancing h, hu, hv by ONE SSPRK2 step of
+    length dt (two forward stage updates, then the average with U^n); a false ok (grid_valid, guard_ok or guard_pass false, or
+    a reconstructed depth <= 0) is the call's result, and the driver commits no step then. The time loop, n_step, dt and the
+    stop rule are the driver's (drive.loop, derived), and the topography, the initial condition and the dt rule are host data
+    (initial_state, derived; rules z_b_cone, initial_condition_profiles, dt_rule).
+  iteration_contract: {}
   update_semantics:
     target_variables:
     - h
