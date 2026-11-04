@@ -522,9 +522,13 @@ def _mock_public_api(extra_args: tuple = ()) -> dict:
 
 
 #: The zero-step closure of the one-call mock node (gate (l)): its pass test reads the result,
-#: under the quantity the test already judges (the D10 sets stay the fixture's).
-_MOCK_RESULT_PREDICATE: dict = {"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
-                                "expr": "final.ok", "op": "eq", "value": 1, "per_case": True}
+#: under the result's own name `ok` (review round 4, R4-3: the flag is no state read, and the
+#: fixed form is exempt only under that quantity), which the test's `quantities` and its
+#: tests.md line therefore list (`_MOCK_RESULT_QUANTITY`).
+_MOCK_RESULT_QUANTITY = "ok"
+_MOCK_RESULT_PREDICATE: dict = {"test_id": "t1", "quantity": _MOCK_RESULT_QUANTITY,
+                                "target_cases": ["c1"], "expr": "final.ok", "op": "eq",
+                                "value": 1, "per_case": True}
 
 
 def _seed_mock_spec(repo_root: Path) -> None:
@@ -694,7 +698,7 @@ def _create_minimal_execution_tree(
                 ]
             },
             "tests": [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                       "quantities": ["mass_drift_rel"]}],
+                       "quantities": ["mass_drift_rel", _MOCK_RESULT_QUANTITY]}],
             "predicates": [{"test_id": "t1", "quantity": "mass_drift_rel", "target_cases": ["c1"],
                             "expr": "abs(sum(final.h) - sum(initial.h))", "op": "le", "value": 0.5,
                             "per_case": True},
@@ -10592,7 +10596,8 @@ end program shallow_water2d_runner
             self.assertTrue(any("'-c1'" in x for x in v), v)
 
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",),
-                        quantities: tuple[str, ...] = ("mass_drift_rel",)) -> None:
+                        quantities: tuple[str, ...] = ("mass_drift_rel",
+                                                       _MOCK_RESULT_QUANTITY)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
         gated (`_validate_ir_source_refs_tests`) and the test-id and `quantities:` pins read the
         file through it."""
@@ -10606,31 +10611,55 @@ end program shallow_water2d_runner
         )
 
     @staticmethod
-    def _with_result_closure(io_contract: dict) -> dict:
+    def _with_result_closure(io_contract: dict) -> list[str]:
         """Gate (l) (issue #589): every `pass` test of the one-call mock node carries the
         zero-step closure `final.ok eq 1` over all its target cases. A fixture about another gate
-        gets it here, as a real IR transcribes it, under a quantity the test's own predicates
-        already judge — so the D10 sets (`quantities`, the tests.md line, the judged set) are the
-        row's, unchanged. A test with no predicate of its own (a row about omission) and a test
-        that already carries the closure are left alone; `closure=False`
-        (`_compile_with_io_contract`) leaves the whole io_contract as given."""
+        gets it here, as a real IR transcribes it, under the result's own name `ok` (review round
+        4, R4-3), which is added to the test's `quantities`; `_with_result_quantity_in_tests_md`
+        adds it to the tests.md line, so the D10 sets stay the row's plus `ok`. A test with no
+        predicate of its own (a row about omission) and a test that already carries the closure
+        are left alone; `closure=False` (`_compile_with_io_contract`) leaves the whole
+        io_contract as given. Returns the test ids that carry it (got it here or already)."""
         tests = io_contract.get("tests")
         preds = io_contract.get("predicates")
+        added: list[str] = []
         if not isinstance(tests, list) or not isinstance(preds, list):
-            return io_contract
+            return added
         for test in tests:
             if not isinstance(test, dict) or test.get("expected_outcome") != "pass":
                 continue
             tid = test.get("test_id")
             own = [p for p in preds if isinstance(p, dict) and p.get("test_id") == tid
                    and "comparand." not in str(p.get("expr", ""))]
-            if not own or any(str(p.get("expr", "")).replace(" ", "") == "final.ok"
-                              for p in own):
+            if not own:
                 continue
-            preds.append({**copy.deepcopy(_MOCK_RESULT_PREDICATE), "test_id": tid,
-                          "quantity": own[0].get("quantity"),
-                          "target_cases": copy.deepcopy(test.get("target_cases"))})
-        return io_contract
+            if not any(str(p.get("expr", "")).replace(" ", "") == "final.ok" for p in own):
+                preds.append({**copy.deepcopy(_MOCK_RESULT_PREDICATE), "test_id": tid,
+                              "target_cases": copy.deepcopy(test.get("target_cases"))})
+            if isinstance(test.get("quantities"), list) \
+                    and _MOCK_RESULT_QUANTITY not in test["quantities"]:
+                test["quantities"] = [*test["quantities"], _MOCK_RESULT_QUANTITY]
+            added.append(tid)
+        return added
+
+    @staticmethod
+    def _with_result_quantity_in_tests_md(repo_root: Path, test_ids: list[str]) -> None:
+        """Append `ok` to the `quantities:` line of each of ``test_ids`` in the mock tests.md
+        (`_with_result_closure`'s other half), where the line does not list it already."""
+        tests_md = repo_root / MOCK_TESTS_REF
+        if not test_ids or not tests_md.exists():
+            return
+        lines = tests_md.read_text(encoding="utf-8").split("\n")
+        current = None
+        for i, line in enumerate(lines):
+            if line.startswith("#"):
+                current = next((t for t in test_ids if f"`{t}`" in line), None)
+                continue
+            m = vps.TEST_QUANTITIES_LINE.match(line.strip())
+            if current is not None and m and "ok" not in {
+                    e.strip().strip("`") for e in m.group(1).split(",")}:
+                lines[i] = line.rstrip() + f", `{_MOCK_RESULT_QUANTITY}`"
+        tests_md.write_text("\n".join(lines), encoding="utf-8")
 
     def _compile_with_io_contract(
         self, repo_root: Path, io_contract: dict, *, plant_tests_md: bool = True,
@@ -10639,8 +10668,7 @@ end program shallow_water2d_runner
     ):
         """``step_args``: dummies added to the mock `__step` (its §5.1, `public_api` and `drive`,
         each bound to the state of its name); ``extra_initial``: their `initial_state` entries."""
-        if closure:
-            io_contract = self._with_result_closure(io_contract)
+        closed = self._with_result_closure(io_contract) if closure else []
         if step_args:
             cs = repo_root / MOCK_SPEC_DIR / "controlled_spec.md"
             cs.parent.mkdir(parents=True, exist_ok=True)
@@ -10648,6 +10676,7 @@ end program shallow_water2d_runner
         _seed_shape_expr_schema_into(repo_root)
         if plant_tests_md:
             self._plant_tests_md(repo_root)
+        self._with_result_quantity_in_tests_md(repo_root, closed)
         _create_minimal_execution_tree(
             repo_root,
             dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -11152,7 +11181,7 @@ end program shallow_water2d_runner
                 mutate(io)
                 v = self._compile_with_io_contract(Path(tmp), io)
                 self.assertTrue(any("no predicate (one that is not cross-target) judges "
-                                    "['mass_drift_rel']" in x for x in v), v)
+                                    "['mass_drift_rel', 'ok']" in x for x in v), v)
 
     @staticmethod
     def _primary_predicate(**override) -> dict:
@@ -11163,7 +11192,7 @@ end program shallow_water2d_runner
     @staticmethod
     def _test_entry(**override) -> dict:
         return {"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
-                "quantities": ["mass_drift_rel"], **override}
+                "quantities": ["mass_drift_rel", _MOCK_RESULT_QUANTITY], **override}
 
     def test_compile_gate_accepts_a_resolvable_primary_predicate(self) -> None:
         """`io_contract.predicates` is gated at `--stage compile` through the REAL wiring
@@ -11555,7 +11584,8 @@ end program shallow_water2d_runner
         with tempfile.TemporaryDirectory() as tmp:
             v = self._compile_with_tests_md_body(Path(tmp), applied, [cross], primary=False)
             self.assertEqual(len([x for x in v if "no predicate (one that is not cross-target) "
-                                  "judges ['mass_drift_rel']" in x]), 1, v)
+                                  f"judges ['mass_drift_rel', '{_MOCK_RESULT_QUANTITY}']" in x]),
+                             1, v)
             self.assertFalse([x for x in v if "cross-target judgment to test" in x], v)
         # ... and beside a predicate that does judge it, the same entry is clean.
         with tempfile.TemporaryDirectory() as tmp:
@@ -11625,9 +11655,10 @@ end program shallow_water2d_runner
             return [self._primary_predicate(quantity=n) for n in names]
 
         rows = [
-            ("the line lists more", "`a`, `b`", ["a"], "quantities ['a'] must equal"),
-            ("the IR lists more", "`a`", ["a", "b"], "quantities ['a', 'b'] must equal"),
-            ("disjoint", "`a`", ["b"], "quantities ['b'] must equal"),
+            # (`ok`, the mock result's name, rides on both sides: `_with_result_closure`)
+            ("the line lists more", "`a`, `b`", ["a"], "quantities ['a', 'ok'] must equal"),
+            ("the IR lists more", "`a`", ["a", "b"], "quantities ['a', 'b', 'ok'] must equal"),
+            ("disjoint", "`a`", ["b"], "quantities ['b', 'ok'] must equal"),
         ]
         for label, line, listed, fragment in rows:
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
@@ -11752,10 +11783,10 @@ end program shallow_water2d_runner
                                                                   "max(final.h)"}])):
             with self.subTest(label):
                 self.assertEqual(self._scalar_stage(preds), [])
-        # The logical result is no one-call scalar (D8: the driver writes it): read alone it
-        # needs no pairing.
+        # The logical result is no one-call scalar (D8: the driver writes it): its closure
+        # under its own name (R4-3) needs no pairing beside a state read of the test's quantity.
         self.assertEqual(self._scalar_stage(
-            [{**self._STATE_READ, "expr": "final.ok", "op": "eq", "value": 1}]), [])
+            [self._STATE_READ, {**_MOCK_RESULT_PREDICATE, "target_cases": ["c1"]}]), [])
 
     def test_a_scalar_read_with_no_pairing_is_refused_at_the_stage(self) -> None:
         """Each spelling of "no pairing", one refusal each, on the scalar read: alone; beside a
@@ -26084,7 +26115,8 @@ class IrFixtureShapeTests(unittest.TestCase):
         tests_md.write_text(
             tests_md_body
             if tests_md_body is not None
-            else "".join(f"### 1-{i}. `{t}`\n- `quantities`: `mass_drift_rel`\n"
+            else "".join(f"### 1-{i}. `{t}`\n- `quantities`: `mass_drift_rel`, "
+                         f"`{_MOCK_RESULT_QUANTITY}`\n"
                          for i, t in enumerate(test_ids, start=1)),
             encoding="utf-8",
         )
@@ -26094,7 +26126,7 @@ class IrFixtureShapeTests(unittest.TestCase):
         if tests is not _UNSET:
             doc["io_contract"]["tests"] = [
                 {"test_id": t, "expected_outcome": "pass", "target_cases": ["c1"],
-                 "quantities": ["mass_drift_rel"]} for t in tests]
+                 "quantities": ["mass_drift_rel", _MOCK_RESULT_QUANTITY]} for t in tests]
         if drop_tests_ref:
             doc["meta"]["source_refs"].pop("tests", None)
         ir_path.write_text(json.dumps(doc), encoding="utf-8")
@@ -29942,6 +29974,16 @@ def _coriolis_spec_with_init() -> str:
             + text[match.end(1):])
 
 
+def _coriolis_tests_md_with_init() -> str:
+    """The real coriolis tests.md whose first test (`_coriolis_with_init`'s) lists `init_ok`."""
+    repo_real = Path(__file__).resolve().parents[2]
+    text = (repo_real / _drive_fixture("coriolis")["meta"]["source_refs"]["tests"]
+            ).read_text(encoding="utf-8")
+    old = "  - `quantities`: `guard_pass`, `max_abs_s`\n"
+    assert text.count(old) == 1, old
+    return text.replace(old, "  - `quantities`: `guard_pass`, `init_ok`, `max_abs_s`\n")
+
+
 def _coriolis_with_init(ir: dict) -> None:
     """`drive.init` on the coriolis fixture: `init` writes `U` (no `initial_state` entry any more)
     and `init_ok`, which one predicate reads over `initial.*` (gate (k))."""
@@ -29958,7 +30000,12 @@ def _coriolis_with_init(ir: dict) -> None:
     for case in ir["case"]["test_case_set"]:
         case["initial_state"].pop("U")
     closure = next(p for p in ir["io_contract"]["predicates"] if p["expr"] == "final.guard_pass")
-    ir["io_contract"]["predicates"].append({**closure, "expr": "initial.init_ok"})
+    # the init result's fixed form, under its own name (review round 4, R4-3), which the test
+    # lists (the seeded tests.md follows: `_coriolis_tests_md_with_init`)
+    ir["io_contract"]["predicates"].append({**closure, "expr": "initial.init_ok",
+                                            "quantity": "init_ok"})
+    test = next(t for t in ir["io_contract"]["tests"] if t["test_id"] == closure["test_id"])
+    test["quantities"] = sorted([*test["quantities"], "init_ok"])
 
 
 class DriveGateStageTests(unittest.TestCase):
@@ -30238,11 +30285,15 @@ class DriveGateStageTests(unittest.TestCase):
 
     def test_every_variable_init_writes_is_read_over_initial(self) -> None:   # (k)
         spec = _coriolis_spec_with_init()
-        self.assertEqual(_drive_stage("coriolis", _coriolis_with_init, controlled_spec=spec), [])
+        md = _coriolis_tests_md_with_init()
+        self.assertEqual(_drive_stage("coriolis", _coriolis_with_init, controlled_spec=spec,
+                                      tests_md=md), [])
 
         def unread(ir):
             _coriolis_with_init(ir)
-            ir["io_contract"]["predicates"].pop()
+            pred = ir["io_contract"]["predicates"].pop()
+            test = next(t for t in ir["io_contract"]["tests"] if t["test_id"] == pred["test_id"])
+            test["quantities"].remove("init_ok")   # the real tests.md's line again
         v = _drive_stage("coriolis", unread, controlled_spec=spec)
         self.assertEqual(v, ["<ir>:(k) 'init_ok', which init writes, is read by no predicate "
                              "over initial.init_ok"])
@@ -30291,10 +30342,26 @@ class DriveGateStageTests(unittest.TestCase):
                 if p["expr"] == "final.guard_pass" and p["test_id"] == "l0_pointwise_formula_pass":
                     p["value"] = 0.0
         v = _drive_stage("coriolis", one_call)
+        flag_at = next(i for i, p in enumerate(_drive_fixture("coriolis")["io_contract"][
+            "predicates"]) if p["expr"] == "final.guard_pass"
+            and p["test_id"] == "l0_pointwise_formula_pass")
+        # the flag in no fixed form reads nothing (review round 4, R4-3: a result is no state
+        # read), so the reads-a-capture rule refuses it beside gate (l)
         self.assertEqual(v, ["<ir>:(l) test 'l0_pointwise_formula_pass' (pass) carries no "
                              "predicate `expr: \"final.guard_pass\"`, `op: eq`, `value: 1`, "
-                             "`per_case: true` over all its target cases (the call's result, "
-                             "the zero-step closure of a one-call node)"])
+                             "`per_case: true` over all its target cases under `quantity: "
+                             "guard_pass`, the result's own name its tests.md `quantities` line "
+                             "lists (the call's result, the zero-step closure of a one-call "
+                             "node)",
+                             f"<ir>:predicates[{flag_at}]: reads no captured state the kernel "
+                             "produced (final.<v> of a variable an operation writes, "
+                             "initial.<v> of one init writes, history.<v> / series.<v>_min|_max "
+                             "of a written v) in expr or a bind expr reaches: a predicate values "
+                             "the state the kernel produced (the host's own initial_state read "
+                             "back, a derived.* value, final.step / final.t, the driver's "
+                             "history.t / history.step / series.t / series.step, and a "
+                             "comparand.<point>.<var> — another target's state — are not this "
+                             "run's kernel state)"])
 
     # --- (m), the tests.md `history:` line --------------------------------------------------------
     # The fixture states a per-case stride (`ceil(n_step / 2)`, CONVERSION.md); the one-number

@@ -14,11 +14,14 @@ number. These predicates alone decide a test (issue #582, `tools/verdict_evaluat
 **What a predicate may count as a state read** (grammar 6, issue #589) is derived from the IR's
 `drive` block and the published operations' §5.1 signatures (`drive_model`), never from a label the
 leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` dummy of `init` or of a
-`step` entry, every logical result included), `initial.<v>` of a variable `init` writes,
+`step` entry; a logical `out` that is no `result:` included), `initial.<v>` of a variable `init` writes,
 `history.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts for. `initial.<v>`
 of a variable the host materialised from the case's `initial_state`, `final.<v>` of a variable
 nothing writes (and its history), `final.step` / `final.t` and `history.t` / `history.step` /
-`series.t` / `series.step` (the driver's counters), `derived.*` and `inputs.*` are not (`predicate_reads_state`). An IR with no `drive` (an
+`series.t` / `series.step` (the driver's counters), a RESULT state (bound to a `result:` dummy of
+`step` or `init`: the flag the driver requires on every call, so under a physics quantity it would
+value that judgment alone — review round 4, R4-3), `derived.*` and `inputs.*` are not
+(`predicate_reads_state`); a result's flag stands only in its fixed forms (`fixed_form`). An IR with no `drive` (an
 `infrastructure` node) counts every schema variable at both capture points, as grammar 5 did. One
 class of kernel-written scalar remains judged at all — the scalar a rank-0 real / integer `out` of
 a one-call operation writes — and a predicate reading it stands beside one that reads it TOGETHER
@@ -473,15 +476,15 @@ def effective_names(tree: ast.Expression) -> list[NameRef]:
 
 class StateReads(NamedTuple):
     """Which capture reads value the kernel's state (grammar 6, issue #589): ``final`` — the
-    variables whose `final.<v>` counts (those an operation writes, every logical result
-    included), ``initial`` — those whose `initial.<v>` counts (those `init` writes).
+    variables whose `final.<v>` counts (those an operation writes, the RESULT states aside),
+    ``initial`` — those whose `initial.<v>` counts (those `init` writes, its result aside).
     `history.<v>` and `series.<v>_min` / `_max` count for a ``final`` variable, the driver's
     counters (`history.t`, `history.step`, `series.t`, `series.step`) never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
     `<ref>`s gate (l) accepts in `final.step - <ref>` (`_zero_step_refs`: the counterpart of
     `loop.n_step`; None while gate (e) refuses `loop.n_step` itself — the IR is refused there,
     and any ref is then exempt so the refusal is not restated per predicate); ``closure_tests`` — the `test_id`s of the `expected_outcome: pass` tests gate
     (l) asks the closure of. Together they say which predicate IS gate (l)'s closure, the one
-    exempt from the reads-a-capture rule (`is_zero_step_closure`). Built by `state_reads`; a
+    exempt from the reads-a-capture rule (`is_zero_step_closure`, through `fixed_form`). Built by `state_reads`; a
     plain ``set`` of names in its place is the pre-drive rule (both points, every listed
     variable), which an IR with no `drive` keeps."""
     final: frozenset[str]
@@ -494,6 +497,26 @@ class StateReads(NamedTuple):
     #: entries run disjoint cases; None on the mapping form, where every case runs every entry
     #: and the classes above are each case's.
     by_case: dict[str, tuple[frozenset[str], frozenset[str]]] | None = None
+    #: The RESULT states (review round 4, R4-3): ``step_results`` — those bound to a `step`
+    #: entry's `result:` dummy (``step_results_by_case`` per case on a LIST-form `drive.step`,
+    #: from the entries that run it; None on the mapping form); ``init_result`` — the one
+    #: `init`'s `result:` binds.
+    #: A result is no kernel-state read (`state_reads` leaves it out of ``final`` /
+    #: ``initial``): the driver requires the flag on every call, so a `final.<result> eq 1`
+    #: under a physics quantity would value that judgment by the flag alone. ``outcomes``
+    #: (test_id -> `pass` / `xfail`) and ``test_targets`` (test_id -> its target cases) say
+    #: which flag predicate IS one of the fixed forms (`fixed_form`).
+    step_results: frozenset[str] = frozenset()
+    step_results_by_case: dict[str, frozenset[str]] | None = None
+    init_result: str | None = None
+    outcomes: dict[str, str] | None = None
+    test_targets: dict[str, frozenset[str]] | None = None
+
+    def results_for(self, case: str) -> frozenset[str]:
+        """The `step` result states of the entries that run ``case``."""
+        if self.step_results_by_case is None:
+            return self.step_results
+        return self.step_results_by_case.get(case, frozenset())
 
     def sets_for(self, case: str | None) -> tuple[frozenset[str], frozenset[str]]:
         """``(final, initial)`` in ``case``: its own classes on a list-form node (none for a
@@ -586,13 +609,81 @@ def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str
     counterpart of `loop.n_step` (``state.closure_refs``). The same text on an `xfail` test,
     with another ref (review round 1, R1-9) or under another quantity (review round 3, R3-1),
     reads no kernel fact and is refused like any other predicate. The schema gate and the
-    evaluator both ask this."""
+    evaluator ask it through `fixed_form`."""
     if not isinstance(state, StateReads) or not state.loop or not isinstance(pred, dict):
         return False
     test_id = pred.get("test_id")
     ref = zero_step_closure_ref(pred)
     return isinstance(test_id, str) and test_id.strip() in state.closure_tests \
         and ref is not None and (state.closure_refs is None or ref in state.closure_refs)
+
+
+#: The tags of the fixed forms exempt from the reads-a-capture rule (`fixed_form`): gate (l)'s
+#: zero-step closure, and the result flag predicates (review round 4, R4-3).
+FORM_CLOSURE = "closure"
+FORM_RESULT_PASS = "final_result_pass"
+FORM_RESULT_XFAIL = "final_result_xfail"
+FORM_INIT_PASS = "initial_result_pass"
+FORM_INIT_XFAIL = "initial_result_xfail"
+#: The fixed forms that VALUE their target cases (`cases_read`): an `xfail` test's judgment is
+#: the guard's flag itself. A `pass` test's flag values none — it would stand in for an unread
+#: physics case — and neither does the closure.
+VALUING_FORMS = frozenset({FORM_RESULT_XFAIL, FORM_INIT_XFAIL})
+
+_FLAG_RE = re.compile(r"^(?P<point>final|initial)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)$")
+
+
+def fixed_form(pred: Any, state: StateReads | set[str] | frozenset[str]) -> str | None:
+    """Which fixed form ``pred`` IS, exempt from the reads-a-capture rule — None for any other
+    predicate. The schema gate, the evaluator (one exemption per form per test, both) and gate
+    (l) ask this ONE function, so they cannot disagree.
+
+    `FORM_CLOSURE`: gate (l)'s zero-step closure (`is_zero_step_closure`). The result flag
+    forms (review round 4, R4-3) — a result state is no kernel-state read (`StateReads`), so a
+    flag predicate is admitted only here: `expr: "<point>.<r>"` (whitespace aside), `op: eq`,
+    no `bind`, `per_case: true` over ALL its test's target cases, and `quantity` exactly
+    ``<r>``, the result's own name:
+
+    - `FORM_RESULT_PASS`: `final.<r>` `value: 1` on a `pass` test of a node without `loop`,
+      ``<r>`` the `step` result of the entries running every target case (one shared name);
+    - `FORM_RESULT_XFAIL`: `final.<r>` `value: 0` on an `xfail` test (any node), the same
+      ``<r>``;
+    - `FORM_INIT_PASS`: `initial.<r>` `value: 1` on a `pass` test, ``<r>`` `init`'s result
+      (gate (l)'s companion where `loop.n_step` is a `state.<n>` init writes; on any node with
+      `init` the one pass-test read of the init result gate (k) asks for);
+    - `FORM_INIT_XFAIL`: `initial.<r>` `value: 0` on an `xfail` test, ``<r>`` `init`'s
+      result."""
+    if not isinstance(state, StateReads) or not isinstance(pred, dict):
+        return None
+    if is_zero_step_closure(pred, state):
+        return FORM_CLOSURE
+    test_id = pred.get("test_id")
+    if not isinstance(test_id, str) or state.outcomes is None or state.test_targets is None:
+        return None
+    outcome = state.outcomes.get(test_id.strip())
+    targets = state.test_targets.get(test_id.strip())
+    ptargets = pred.get("target_cases")
+    if outcome not in ("pass", "xfail") or not targets or pred.get("op") != "eq" \
+            or pred.get("bind") or pred.get("per_case") is not True or "case" in pred \
+            or not isinstance(ptargets, list) or not all(isinstance(c, str) for c in ptargets) \
+            or {c.strip() for c in ptargets} != targets:
+        return None
+    value = pred.get("value")
+    if not _is_number(value) or value != (1 if outcome == "pass" else 0):
+        return None
+    match = _FLAG_RE.match(_norm(pred.get("expr")))
+    if match is None or pred.get("quantity") != match.group("name"):
+        return None
+    name = match.group("name")
+    if match.group("point") == "final":
+        if not all(state.results_for(c) == frozenset({name}) for c in targets):
+            return None
+        if outcome == "xfail":
+            return FORM_RESULT_XFAIL
+        return None if state.loop else FORM_RESULT_PASS
+    if name != state.init_result:
+        return None
+    return FORM_INIT_XFAIL if outcome == "xfail" else FORM_INIT_PASS
 
 
 def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]],
@@ -607,7 +698,8 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
     constant, an input, a `derived.*` value, the time or the step count alone, the host's own
     `initial_state` read back, or a state read only in a bind the expression never uses —
     values nothing the kernel produced and judges nothing; the gate and the evaluator both
-    refuse it, gate (l)'s zero-step closure aside (`is_zero_step_closure`).
+    refuse it, the fixed forms aside (`fixed_form`: gate (l)'s zero-step closure and the result
+    flags, R4-3).
 
     SYNTACTIC: the rule sees that the state is read, not that the value depends on it. The
     schema gate first prunes the terms constant by form (`effective_names`: a factor of
@@ -1629,7 +1721,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         return env_cache[(key, cid)]
 
     out: list[dict[str, Any]] = []
-    closures: set[str] = set()
+    exempted: set[tuple[str, str]] = set()   # (test_id, fixed form) already exempted
     for idx, pred in enumerate(preds):
         loc = f"predicates[{idx}]"
         if not isinstance(pred, dict):
@@ -1650,9 +1742,11 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                 raise PrimaryEvidenceError(f"{loc}: {key} is not a primary predicate key")
         tree = parse_expr(pred.get("expr"))
         expr_refs, bind_refs = _predicate_refs(pred)
-        closure = is_zero_step_closure(pred, reads) and test_id.strip() not in closures
+        form = fixed_form(pred, reads)
+        closure = form is not None and (test_id.strip(), form) not in exempted
         if closure:
-            closures.add(test_id.strip())   # one exempt closure per test, as the gate admits
+            # one exemption per form per test, as the gate admits
+            exempted.add((test_id.strip(), str(form)))
         scope, contexts = _predicate_scope(pred, loc)
         if not predicate_reads_state(expr_refs, bind_refs, reads) and not closure:
             raise PrimaryEvidenceError(
@@ -2022,7 +2116,7 @@ def validate_primary_predicate_schema(
         except PrimaryEvidenceError as exc:
             v.append(f"state_snapshots.schema.coordinates does not resolve in case {cid!r}: {exc}")
     md_set = set(test_ids)
-    closures: set[str] = set()   # the tests whose zero-step closure has been exempted
+    exempted: set[tuple[str, str]] = set()   # (test_id, fixed form) already exempted
 
     for idx, pred in enumerate(predicates):
         loc = f"predicates[{idx}]"
@@ -2206,11 +2300,12 @@ def validate_primary_predicate_schema(
                                                coord_names, cases, case_inputs)
             if rank_v is not None:
                 v.append(rank_v)
-        if parsed_all and is_zero_step_closure(pred, state) \
-                and str(test_id).strip() not in closures:
-            # gate (l)'s fixed form: gate-required, exempt from the rule below — ONE per test,
-            # so a second one cannot stand for another quantity judged by the step count alone
-            closures.add(str(test_id).strip())
+        form = fixed_form(pred, state) if parsed_all else None
+        if form is not None and (str(test_id).strip(), form) not in exempted:
+            # a fixed form (gate (l)'s closure, a result flag under its own name): exempt from
+            # the rule below — ONE per form per test, so a second copy cannot stand for
+            # another quantity judged by the step count or the flag alone
+            exempted.add((str(test_id).strip(), form))
             continue
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<v> of a "
@@ -2288,12 +2383,18 @@ def cases_read(pred: dict[str, Any],
     `at('<case>')` read values that case when it is kernel state there. So a bind `expr` never reaches, an `at('<case>')` only inside a term constant by form,
     and an `at('<case>').inputs.<path>` normaliser or `at('<case>').final.t` beside own-case
     state (issue #567 review round 1) add no case. The record's `cases_read` key keeps its name.
+    An `xfail` test's result flag in its fixed form (`fixed_form`, `VALUING_FORMS`) values
+    every case of its scope: the flag is that test's judgment (review round 4, R4-3); a `pass`
+    test's flag and gate (l)'s closure value none.
     None when the scope or an expression is malformed (the primary schema gate refuses those;
     they cover nothing here)."""
     found = _entering_refs(pred)
     if found is None:
         return None
     contexts, entering = found
+    if fixed_form(pred, state_names) in VALUING_FORMS:
+        # an `xfail` test's guard flag under its own name (R4-3): the flag is its judgment
+        return set(contexts)
     read = {c for c in contexts
             if any(r.case is None and is_state_read(r, state_names, c) for r in entering)}
     read |= {r.case for r in entering if r.case is not None and is_state_read(r, state_names)}
@@ -2818,34 +2919,61 @@ def one_call_by_case(ir: dict[str, Any], model: DriveModel
     return {cid: model.for_case(cid).one_call_scalars for cid in _cases_by_id(ir)}
 
 
+def _result_of(entry: DriveEntry | None) -> str | None:
+    """The state an entry's `result:` dummy binds, None when it binds none."""
+    if entry is None:
+        return None
+    binding = entry.arguments.get(entry.result)
+    return binding.ref if binding is not None and binding.kind == _STATE_ROOT else None
+
+
 def state_reads(ir: dict[str, Any]) -> StateReads:
     """What counts as a kernel-state read in this IR's predicates (`StateReads`): from
-    `drive_model` when the IR carries `drive` (raising on a malformed one); every schema
-    variable at both capture points when it carries none (an `infrastructure` node)."""
+    `drive_model` when the IR carries `drive` (raising on a malformed one) — every written /
+    init-written variable but the RESULT states (review round 4, R4-3: the `step` results of
+    the entries running the case, and `init`'s), whose flag predicates `fixed_form` admits;
+    every schema variable at both capture points when it carries none (an `infrastructure`
+    node)."""
     if _has_drive(ir):
         model = drive_model(ir)
-        loop = model.block.loop
+        block = model.block
+        loop = block.loop
+        init_result = _result_of(block.init)
+        init_drop = frozenset({init_result}) if init_result is not None else frozenset()
+        step_results = frozenset(r for e in block.step if (r := _result_of(e)) is not None)
+        tests = _test_entries(ir)
+        context = {
+            "step_results": step_results, "init_result": init_result,
+            "outcomes": {t["test_id"].strip(): str(t.get("expected_outcome") or "").strip()
+                         .lower() for t in tests},
+            "test_targets": {t["test_id"].strip(): frozenset(
+                str(c).strip() for c in (t.get("target_cases") or [])
+                if isinstance(c, str)) for t in tests}}
         if loop is None:
-            by_case = None
-            if model.block.list_form:
-                by_case = {}
+            by_case = results_by_case = None
+            if block.list_form:
+                by_case, results_by_case = {}, {}
                 for cid in _cases_by_id(ir):
                     # a case no entry runs is (f')'s refusal; the node's classes there keep
                     # the predicate gates from restating it per predicate
-                    cm = (model.for_case(cid) if any(cid in (e.cases or ())
-                                                     for e in model.block.step) else model)
-                    by_case[cid] = (cm.written, cm.init_written)
-            return StateReads(final=model.written, initial=model.init_written, by_case=by_case)
-        passing = frozenset(
-            t["test_id"].strip() for t in _test_entries(ir)
-            if str(t.get("expected_outcome") or "").strip().lower() == "pass")
+                    runs = any(cid in (e.cases or ()) for e in block.step)
+                    cm = model.for_case(cid) if runs else model
+                    mine = frozenset(r for e in block.step if (r := _result_of(e)) is not None
+                                     and (not runs or cid in (e.cases or ())))
+                    results_by_case[cid] = mine
+                    by_case[cid] = (cm.written - mine - init_drop, cm.init_written - init_drop)
+            return StateReads(final=model.written - step_results - init_drop,
+                              initial=model.init_written - init_drop, by_case=by_case,
+                              step_results_by_case=results_by_case, **context)
+        passing = frozenset(tid for tid, o in context["outcomes"].items() if o == "pass")
         n_step = loop.get("n_step")
         refused = n_step is not None and n_step.kind == _STATE_ROOT and (
             n_step.ref not in model.init_written or model.variables.get(n_step.ref) != [])
         # (a list-form `step` is refused with `loop`, gate (f'): the classes are the node's)
-        return StateReads(final=model.written, initial=model.init_written, loop=True,
+        return StateReads(final=model.written - step_results - init_drop,
+                          initial=model.init_written - init_drop, loop=True,
                           closure_refs=None if refused else frozenset(_zero_step_refs(n_step)),
-                          closure_tests=passing)
+                          closure_tests=passing, **context)
     schema = snapshot_schema(ir)
     names = frozenset(schema_variables(schema)) if schema is not None else frozenset()
     return StateReads(final=names, initial=names, loop=False)
@@ -3896,6 +4024,7 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     n_step = (block.loop or {}).get("n_step")
     n_step_refused = n_step is not None and n_step.kind == _STATE_ROOT and (
         n_step.ref not in model.init_written or schema_vars.get(n_step.ref) != [])
+    reads = state_reads(ir)   # the classes `fixed_form` asks (the structure parsed above)
     for test in _test_entries(ir):
         if n_step_refused:
             break
@@ -3915,29 +4044,31 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                          "`loop` node lists in its tests.md `quantities` line")
             init_result = _init_result_state(block)
             if init_result is not None and not any(
-                    _norm(p.get("expr")) == f"initial.{init_result}" and p.get("op") == "eq"
-                    and _is_number(p.get("value")) and p.get("value") == 1
-                    and not p.get("bind") for p in mine):
+                    fixed_form(p, reads) == FORM_INIT_PASS for p in mine):
                 v.append(f"(l) test {tid!r} (pass) carries no predicate `expr: \"initial."
                          f"{init_result}\"`, `op: eq`, `value: 1`, `per_case: true` over all its "
-                         "target cases: drive.loop.n_step is a scalar init writes, so the "
-                         "closure counts the steps against init's own plan, which a refused "
-                         "init (result 0) planning 0 steps satisfies with 0 - 0; the init "
-                         "result closes it")
+                         f"target cases under `quantity: {init_result}`, the init result's own "
+                         "name its tests.md `quantities` line lists: drive.loop.n_step is a "
+                         "scalar init writes, so the closure counts the steps against init's "
+                         "own plan, which a refused init (result 0) planning 0 steps satisfies "
+                         "with 0 - 0; the init result closes it")
         else:
             covering = [e for e in block.step
                         if e.cases is None or set(e.cases) & set(targets)]
             results = sorted({e.arguments[e.result].ref for e in covering
                               if e.result in e.arguments
                               and e.arguments[e.result].kind == _STATE_ROOT})
-            for state in results:
-                if not any(_norm(p.get("expr")) == f"final.{state}" and p.get("op") == "eq"
-                           and _is_number(p.get("value")) and p.get("value") == 1
-                           and not p.get("bind") for p in mine):
+            if len(results) > 1:
+                v.append(f"(l) test {tid!r} (pass): its target cases run entries whose results "
+                         f"differ ({results}): the one-call closure names ONE result state, so "
+                         "a test's cases run entries that share it")
+            for state in results[:1]:
+                if not any(fixed_form(p, reads) == FORM_RESULT_PASS for p in mine):
                     v.append(f"(l) test {tid!r} (pass) carries no predicate `expr: "
                              f"\"final.{state}\"`, `op: eq`, `value: 1`, `per_case: true` over "
-                             "all its target cases (the call's result, the zero-step closure of "
-                             "a one-call node)")
+                             f"all its target cases under `quantity: {state}`, the result's own "
+                             "name its tests.md `quantities` line lists (the call's result, the "
+                             "zero-step closure of a one-call node)")
     return v
 
 def _read_ir(path: Path) -> dict[str, Any]:

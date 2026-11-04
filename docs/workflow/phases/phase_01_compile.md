@@ -146,21 +146,24 @@ io_contract:
     # verdict.json records each one under `per_test[].basis.predicates[]`. The set of `quantity` over a test's
     # predicates that are not cross-target equals its `quantities` (gated, D10), and a quantity may have several
     # predicates. Every entry READS STATE, in `expr` or a `bind` that `expr` reaches: `final.<v>` of a variable a
-    # `drive` entry writes (an `out` / `inout` dummy, a logical result's state included), `initial.<v>` of a
+    # `drive` entry writes (an `out` / `inout` dummy), `initial.<v>` of a
     # variable `drive.init` writes, or `history.<v>` / `series.<v>_min` / `series.<v>_max` of a variable a `drive`
     # entry writes. `final.t`, `final.step`, `initial.t`, `initial.step`, the driver's counters `history.t`,
-    # `history.step`, `series.t` and `series.step`, `initial.<v>` of a variable the host filled from
+    # `history.step`, `series.t` and `series.step`, a RESULT `<r>` (the state a `result:` binds; another
+    # logical `out` counts), `initial.<v>` of a variable the host filled from
     # `initial_state`, `final.<v>` of a variable nothing writes (and its history and series), `derived.*` and
     # `inputs.*` value nothing the kernel produced, and an entry that reads only
     # them is refused — a SYNTACTIC rule, under which a read that sits only inside a term multiplied by a literal
     # zero, raised to a literal zero or subtracted from itself or added to its own negation (spelled the same) is
-    # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483); gate (l)'s closure
-    # (§`drive` below) is exempt from it — only on a `loop` node, on a `pass` test, with the accepted ref, under
-    # the quantity `run.n_step`, one per test: the same text on an `xfail` test, with another ref or under
-    # another quantity reads no kernel fact and is refused.
+    # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483). Exempt, one per form per
+    # test, per case over all its targets: gate (l)'s closure (below: a `loop` node's `pass` test, the accepted
+    # ref, `quantity: run.n_step`) and a result's FLAG under `quantity: <r>` — `final.<r>` (`<r>` the `step`
+    # result of its cases' entries) eq 1 on a `pass` test without `loop`, `initial.<r>` (`init`'s) eq 1 on a
+    # `pass` test, either eq 0 on an `xfail` test (whose cases it values); under another quantity, value or
+    # outcome it reads nothing.
     # whether the value depends on the state in any other way, and is the test's own quantity, is V3's judgment. On an `expected_outcome: xfail`
     # test the entries state, in the failure direction, what the guard leaves behind (the state did not advance,
-    # the depth is the initial depth, `final.guard_pass == 0`), and must hold for the test to certify `xfail`; the
+    # `final.guard_pass == 0`), and must hold for the test to certify `xfail`; the
     # key `expected_outcome` is not a predicate key — the outcome is the test's.
     # THE ONE-CALL SCALAR PAIRING (gate (i), primary_evidence.scalar_pairing_violations; re-checked by
     # evaluate_verdict): a ONE-CALL SCALAR is the scalar state a rank-0 real / integer `out` of a `step` entry is
@@ -179,10 +182,10 @@ io_contract:
     # `Compile.generate` declares a `Compile fail` (§1-1) whose `compile_fail` names `tests`, §5 and the
     # quantity, and a term the leaf supplies in its place — a bound of its own, or a state read whose
     # only role is to pass the rule above — is not a transcription. "A captured state variable" in this rule is
-    # a read the reads-state rule above counts. Three things are NOT such a quantity. A quantity a captured
+    # a read the reads-state rule above counts. Four things are NOT such a quantity. A quantity a captured
     # state variable enters is not, however much of it the inputs fix (a CFL number over a wave speed the state
     # carries): transcribe its definition. Nor is `run.n_step`: its entry is gate (l)'s closure, exempt above,
-    # and needs no §5 state term. And the `xfail_condition` of a guard test over the inputs (`nx < 2`,
+    # and needs no §5 state term. Nor is a result `<r>`: its entry is the flag, exempt above. And the `xfail_condition` of a guard test over the inputs (`nx < 2`,
     # `dt <= 0`) is not a judged quantity: the test judges the kernel's refusal, and its entry states the state
     # fact the guard leaves behind, as above, whether or not tests.md spells that fact out. An xfail test that judges such a
     # quantity (a CFL guard whose instability is seeded at round-off only, so the state stays bounded) takes
@@ -268,7 +271,7 @@ io_contract:
   #   positivity            expr: "min(final.h)"                                  op: ge  value: 0.05   (the END-STATE minimum)
   #   run-wide extremum     expr: "min(series.h_min)"                             op: ge  value: 0.05   (the host's fold over EVERY committed state of a `loop` node, beside the end-state predicate above)
   #   sampled CFL           expr: "max(smax(derived.dt * (abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dx))"  op: le  value: 1.0   (a per-sample index over the `every`-step samples, `smax` per sample, `max` over samples; the same over final.* covers the last state)
-  #   zero-step closure     quantity: run.n_step  expr: "final.step - derived.n_step"   op: eq  value: 0      (gate (l)'s fixed form on a `loop` node; `final.guard_pass` eq 1 on a node without `loop`)
+  #   zero-step closure     quantity: run.n_step  expr: "final.step - derived.n_step"   op: eq  value: 0      (gate (l) on a `loop` node; without `loop`: `final.guard_pass` eq 1 under `quantity: guard_pass`)
   #   harness sentinel      case: "l0_array_emit_pass"  expr: "maxabs(final.a2 - inputs.initial.a2)"   op: le  value: 1.0e-12   (a self-test's emitted array against the sentinel the case DECLARES, re-parsed by the host: the emitter round-trip judged from the raw file)
   #   lake at rest          expr: "maxabs(final.h - initial.h)"                   op: le  value: 1.0e-12
   #   analytic agreement    bind: {c0: "sqrt(inputs.constants.g * inputs.initial.H_0)", h_ref: "inputs.initial.H_0 + inputs.initial.eta0 * sin(2 * pi * (x - c0 * inputs.time.t_end) / inputs.grid.L_x)"}  (c0 is written before h_ref, which reads it; the reference is evaluated at the DECLARED end time, and every input path is spelled as this node's cases declare it — tests.md §5 is the formula's source, a shift or a second axis included)
@@ -388,8 +391,8 @@ drive:
   #   publishes `<spec_id>__step` and every `step` entry names it; (b) the intent rules above; (c) each array
   #   dummy's `dims` (a dims-less one: its state's `shape_expr`) EVALUATE PER CASE under the entry's bindings
   #   — a token naming a rank-0 dummy bound to an input, a `derived` value or a literal resolves, `nx + 1`
-  #   arithmetic included, any other token is refused; an array no entry running the case binds takes its
-  #   `shape_expr` through the other entries' bindings, as the driver block states — every dummy bound to one state gives the same
+  #   arithmetic included, any other token is refused; an array no entry running the case binds: as the
+  #   driver block states — every dummy bound to one state gives the same
   #   extents, a numeric `shape_expr` extent agrees, and an array input or `derived` value has its dummy's
   #   extents; (d) `result` above; (e) `loop` references resolve (`state.<var>` only to a scalar `init`
   #   writes) and `t_end` is declared; (f) `initial_state` as the `case` block states, under each case's classes; (f') a `step` list's
@@ -399,17 +402,14 @@ drive:
   #   (`predicates`); (j) the `predicates` rules, unchanged; (k) every variable `init` writes is read by a
   #   predicate over `initial.<v>`, and for a scalar that `loop.n_step` / `loop.dt` references, that predicate also
   #   reads `initial.<a>` of an ARRAY `init` writes; (l) THE ZERO-STEP CLOSURE, matched by its TEXT after
-  #   whitespace normalisation, not inferred: on a `loop` node every `expected_outcome: pass` test carries
-  #   `quantity: run.n_step` (exactly: exempt from the reads-a-capture rule, under a physics quantity it
-  #   would value that judgment by the step count alone; so each such test lists `run.n_step` in its
-  #   tests.md `quantities` line),
-  #   `expr: "final.step - <ref>"`, `op: eq`, `value: 0`, <ref> being the counterpart of `loop.n_step`'s
-  #   binding and nothing else: that `derived.<n>` / `inputs.<path>` verbatim, or, for `n_step: state.<n>`
-  #   (a scalar `init` writes), `initial.<n>` or `final.<n>` — and then also `expr: "initial.<init result
-  #   state>"`, `op: eq`, `value: 1` (a refused `__init` planning 0 steps satisfies `0 - 0`); on a node
-  #   without `loop` every `pass` test carries `expr: "final.<result state>"`, `op: eq`, `value: 1` for
-  #   the result state of each entry
-  #   covering its cases; either over ALL the test's target cases; (m) a `loop` node's tests.md carries ONE
+  #   whitespace normalisation: on a `loop` node every `pass` test carries `quantity: run.n_step`,
+  #   `expr: "final.step - <ref>"`, `op: eq`, `value: 0`, <ref> the counterpart of
+  #   `loop.n_step`'s binding and nothing else: that `derived.<n>` / `inputs.<path>` verbatim, or, for
+  #   `n_step: state.<n>` (a scalar `init` writes), `initial.<n>` or `final.<n>` — and then also the `init`
+  #   result's FLAG eq 1 (a refused `__init` planning 0 steps satisfies `0 - 0`); on a node without `loop`
+  #   every `pass` test carries the `step` result's FLAG eq 1 (ONE result its cases' entries share); each
+  #   over ALL the test's target cases, under its fixed quantity (`run.n_step`, the result's name), which
+  #   the test's tests.md `quantities` line lists; (m) a `loop` node's tests.md carries ONE
   #   `history:` line (docs/TESTS.md §Description format) whose input name is `history.every` without
   #   `inputs.` and whose number each case's input equals; a node without `loop` carries none. The host also
   #   EVALUATES every case (primary_evidence.evaluate_case_inputs) and refuses a non-finite value, a shape

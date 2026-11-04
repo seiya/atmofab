@@ -2521,10 +2521,10 @@ def _toyi() -> dict:
                                                    ("n_plan", "scalar"), ("init_ok", "scalar"),
                                                    ("ok", "scalar"))], loop=True)
     io["tests"] = [{"test_id": "t_run", "expected_outcome": "pass", "target_cases": ["a", "b"],
-                    "quantities": ["init", "plan", "run.n_step"]}]
+                    "quantities": ["init_ok", "plan", "run.n_step"]}]
     common = {"test_id": "t_run", "target_cases": ["a", "b"], "per_case": True}
     io["predicates"] = [
-        {**common, "quantity": "init", "expr": "initial.init_ok", "op": "eq", "value": 1},
+        {**common, "quantity": "init_ok", "expr": "initial.init_ok", "op": "eq", "value": 1},
         {**common, "quantity": "plan", "op": "le", "value": 1e-12,
          "expr": "abs(initial.dt - 0.5 / max(initial.h)) + abs(initial.n_plan * initial.dt - 1)"},
         {**common, "quantity": "run.n_step", "expr": "final.step - initial.n_plan", "op": "eq",
@@ -2691,9 +2691,12 @@ class StateReadsTest(unittest.TestCase):
 
     def test_the_classes_decide_both_capture_points(self) -> None:
         toy, toyi = _toy(), _toyi()
-        self.assertEqual(pe.state_reads(toy),
-                         pe.StateReads(frozenset({"h", "ok"}), frozenset(), True,
-                                       frozenset({"derived.n_step"}), frozenset({"t_run"})))
+        # the result state `ok` is no state read (R4-3): `fixed_form` admits its flag
+        self.assertEqual(pe.state_reads(toy)[:5],
+                         (frozenset({"h"}), frozenset(), True,
+                          frozenset({"derived.n_step"}), frozenset({"t_run"})))
+        self.assertEqual(pe.state_reads(toyi)[:2],
+                         (frozenset({"h", "dt", "n_plan"}), frozenset({"h", "dt", "n_plan"})))
         self.assertEqual(pe.state_reads(toyi)[3], frozenset({"initial.n_plan", "final.n_plan"}))
         # initial.<host var> is the host's own initial_state read back: no read
         self.assertFalse(self._reads("sum(initial.h)", toy))
@@ -2831,7 +2834,8 @@ class DriverCounterReadsTest(unittest.TestCase):
                                  ("history", "h", True), ("series", "h_min", True),
                                  ("series", "h_max", True), ("history", "b", False),
                                  ("series", "b_min", False), ("series", "b_max", False),
-                                 ("history", "ok", True), ("series", "h_mean", False)):
+                                 ("history", "ok", False),   # a result (R4-3)
+                                 ("series", "h_mean", False)):
             with self.subTest(ref=f"{kind}.{name}"):
                 self.assertIs(pe.is_state_read(pe.NameRef(kind, name), reads), want)
         # a plain set (the pre-drive rule) follows the same naming
@@ -3018,13 +3022,56 @@ class ClosureExemptionTest(unittest.TestCase):
     #: `Compile fail`, and requirement 9's read rule carries the exemption TESTS.md's `history`
     #: paragraph cites.
     _NOT_SUCH_A_QUANTITY_SITES = (
-        ("docs/workflow/phases/phase_01_compile.md", "Three things are NOT such a quantity",
+        ("docs/workflow/phases/phase_01_compile.md", "Four things are NOT such a quantity",
          "An xfail test that judges such a",
          ("Nor is `run.n_step`: its entry is gate (l)'s closure",)),
         ("docs/TESTS.md", "9. A judged quantity is defined in §5", "\n",
          ("except in gate (l)'s zero-step closure, which that rule exempts under the quantity "
           "`run.n_step` only", "Nor does `run.n_step`")),
     )
+    #: (surface, opens, closes, the clauses that must stand inside) — review round 4, R4-3: each
+    #: statement says a result is no state read, its flag is exempt only under the result's own
+    #: name, and what that asks of an author.
+    _RESULT_FLAG_SITES = (
+        ("docs/workflow/phases/phase_01_compile.md", "Every entry READS STATE",
+         "whether the value depends on the state",
+         ("a RESULT `<r>` (the state a `result:` binds; another\n    # logical `out` counts)",
+          "a result's FLAG under `quantity: <r>`",
+          "either eq 0 on an `xfail` test (whose cases it values); under another quantity, value "
+          "or\n    # outcome it reads nothing")),
+        ("docs/workflow/phases/phase_01_compile.md", "Four things are NOT such a quantity",
+         "An xfail test that judges such a",
+         ("Nor is a result `<r>`: its entry is the flag, exempt above.",)),
+        ("docs/workflow/phases/phase_01_compile.md", "(l) THE ZERO-STEP CLOSURE", "; (m)",
+         ("result's FLAG eq 1", "under its fixed quantity (`run.n_step`, the result's name), "
+          "which\n  #   the test's tests.md `quantities` line lists")),
+        ("docs/TESTS.md", "9. A judged quantity is defined in §5", "\n",
+         ("except in its fixed flag form, which that rule exempts under the result's own name "
+          "only", "So a `pass` test of a node without a time loop lists the result's name in its "
+          "`quantities` line", "an `xfail` guard test judges the flag under that name, and a "
+          "flag predicate under any other quantity reads nothing",
+          "Nor does a result's name: its entry is that flag form.")),
+        ("tools/prompt_templates/workshop_compile_generate.txt",
+         "every `pass` test carries the zero-step closure", "Four things the gate cannot see",
+         ("the result's own name for a result flag",
+          "(the result flag eq 0 under the result's own name; a flag under any other quantity "
+          "reads nothing)")),
+    )
+
+    def test_each_statement_says_a_result_flag_stands_only_under_its_name(self) -> None:
+        """R4-3: the reads-state list, the not-such-a-quantity list, gate (l), TESTS.md
+        requirement 9 and the compile generate template each carry the result-flag clauses, in
+        a bounded window (its bound self-tested)."""
+        root = Path(__file__).resolve().parents[2]
+        for rel, start, stop, clauses in self._RESULT_FLAG_SITES:
+            with self.subTest(surface=rel, start=start):
+                text = (root / rel).read_text(encoding="utf-8")
+                self.assertEqual(text.count(start), 1, start)
+                head = text.index(start)
+                window = text[head:text.index(stop, head)]
+                self.assertLess(len(window), 6000, "the window runs past the statement")
+                for clause in clauses:
+                    self.assertIn(clause, window)
 
     def test_the_closure_is_not_a_quantity_the_statement_rule_refuses(self) -> None:
         """R4-1: phase_01's no-state-term rule and TESTS.md requirement 9 except gate (l)'s
@@ -3069,6 +3116,239 @@ class ClosureExemptionTest(unittest.TestCase):
         with self.assertRaisesRegex(pe.PrimaryEvidenceError,
                                     r"predicates\[1\]: reads no captured state"):
             self._evaluate(ir)
+
+
+class ResultFlagFormTest(unittest.TestCase):
+    """Review round 4, R4-3: a RESULT state (bound to a `result:` dummy of `step` or `init`) is
+    no kernel-state read, so a flag predicate stands for no physics quantity; the four fixed
+    flag forms (`fixed_form`) are exempt from the reads-a-capture rule, ONE per form per test,
+    each only under the result's own name. The schema gate, the evaluator and gate (l) ask the
+    one function."""
+
+    _NO_STATE = "reads no captured state the kernel produced"
+
+    @staticmethod
+    def _schema(ir: dict) -> list[str]:
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        return pe.validate_primary_predicate_schema(
+            io["predicates"], case_ids=set(cases),
+            test_ids=[t["test_id"] for t in io["tests"]], schema=pe.snapshot_schema(ir),
+            cases=cases,
+            test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+            **pe.predicate_schema_context(ir))
+
+    def _refused_at(self, ir: dict, idx: int) -> None:
+        """The schema gate refuses ``predicates[idx]`` (and only it) as reading no state, and so
+        does the evaluator (the IR never reaches captures: it raises first or at that entry)."""
+        v = [m for m in self._schema(ir) if self._NO_STATE in m]
+        self.assertEqual([m.split(":")[0] for m in v], [f"predicates[{idx}]"], v)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    re.escape(f"predicates[{idx}]: {self._NO_STATE}")):
+            pe.evaluate_primary_predicates(ir, Path("/nonexistent-run-dir"))
+
+    @staticmethod
+    def _rus_xfail(expr: str = "final.ok", value: float = 0, quantity: str = "ok") -> dict:
+        rus = _rus()
+        io = rus["io_contract"]
+        io["tests"] = [{"test_id": "t_flux", "expected_outcome": "xfail", "target_cases": ["a"],
+                        "quantities": [quantity]}]
+        io["predicates"] = [{"test_id": "t_flux", "quantity": quantity, "target_cases": ["a"],
+                             "per_case": True, "expr": expr, "op": "eq", "value": value}]
+        return rus
+
+    @staticmethod
+    def _toyi_xfail(quantity: str = "init_ok", value: float = 0) -> dict:
+        ir = _toyi()
+        io = ir["io_contract"]
+        io["tests"].append({"test_id": "t_bad", "expected_outcome": "xfail",
+                            "target_cases": ["a", "b"], "quantities": [quantity]})
+        io["predicates"].append({"test_id": "t_bad", "quantity": quantity,
+                                 "target_cases": ["a", "b"], "per_case": True,
+                                 "expr": "initial.init_ok", "op": "eq", "value": value})
+        return ir
+
+    # --- the reviewer's repro --------------------------------------------------------------------
+    def test_the_coriolis_repro_is_refused_by_the_gate_and_the_evaluator(self) -> None:
+        """`l0_zero_f_gives_zero_source_pass`'s `max_abs_s` predicate rewritten to
+        `final.guard_pass eq 1.0` cleared every gate (0 findings), and with captures S == 7.5,
+        guard_pass = 1 the verdict passed while the test claims max|S| == 0."""
+        tid = "l0_zero_f_gives_zero_source_pass"
+        ir = _coriolis()
+        preds = ir["io_contract"]["predicates"]
+        i = next(i for i, p in enumerate(preds)
+                 if p["test_id"] == tid and p["quantity"] == "max_abs_s")
+        preds[i].update(expr="final.guard_pass", op="eq", value=1.0)
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(v[0].startswith(f"predicates[{i}]: {self._NO_STATE} (final.<v>"), v)
+        self.assertTrue(v[1].startswith(f"test {tid!r}: no predicate values the captured state "
+                                        "of target case(s) ['l0_zero_f']"), v)
+        # the evaluator over the reviewer's captures: refused, so no verdict passes on them
+        ir["io_contract"]["predicates"] = [p for p in preds if p["test_id"] == tid]
+        ir["io_contract"]["tests"] = [t for t in ir["io_contract"]["tests"]
+                                      if t["test_id"] == tid]
+        j = next(k for k, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["quantity"] == "max_abs_s")
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        u = np.zeros((3, 4, 3)).tolist()
+        s75 = np.full((3, 4, 3), 7.5).tolist()
+        run.write("l0_zero_f", initial={"U": u, "S": s75, "guard_pass": 0.0, "t": 0.0,
+                                        "step": 0},
+                  final={"U": u, "S": s75, "guard_pass": 1.0, "t": 0.0, "step": 1})
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
+                                    re.escape(f"predicates[{j}]: {self._NO_STATE}")):
+            pe.evaluate_primary_predicates(ir, run.root)
+        # the honest predicate on the same captures fails the test
+        honest = _coriolis()
+        honest["io_contract"]["predicates"] = [p for p in honest["io_contract"]["predicates"]
+                                               if p["test_id"] == tid]
+        honest["io_contract"]["tests"] = ir["io_contract"]["tests"]
+        records = pe.evaluate_primary_predicates(honest, run.root)
+        doc = evaluate_verdict(honest["io_contract"]["tests"], records)
+        self.assertEqual(doc["per_test"][0]["status"], "fail")
+
+    def test_a_loop_node_s_result_under_a_physics_quantity_reads_nothing(self) -> None:
+        ir = _toy()
+        ir["io_contract"]["predicates"][0].update(expr="final.ok", op="eq", value=1)
+        self.assertIsNone(pe.fixed_form(ir["io_contract"]["predicates"][0], pe.state_reads(ir)))
+        self._refused_at(ir, 0)
+
+    # --- each form, under its name and under another ---------------------------------------------
+    def test_a_one_call_pass_flag_is_exempt_under_the_result_s_name_only(self) -> None:   # (a)
+        rus = _rus()
+        self.assertEqual(_all_gates(rus), [])
+        self.assertEqual(pe.fixed_form(rus["io_contract"]["predicates"][0], pe.state_reads(rus)),
+                         pe.FORM_RESULT_PASS)
+        rus["io_contract"]["predicates"][0]["quantity"] = "speed"
+        rus["io_contract"]["tests"][0]["quantities"] = ["flux", "speed"]
+        self.assertIn("(l) test 't_flux' (pass) carries no predicate `expr: \"final.ok\"`, "
+                      "`op: eq`, `value: 1`, `per_case: true` over all its target cases under "
+                      "`quantity: ok`, the result's own name its tests.md `quantities` line "
+                      "lists (the call's result, the zero-step closure of a one-call node)",
+                      pe.drive_violations(rus, kind="component"))
+        self._refused_at(rus, 0)
+
+    def test_an_xfail_flag_is_exempt_under_the_result_s_name_only(self) -> None:   # (b)
+        rus = self._rus_xfail()
+        self.assertEqual(_all_gates(rus), [])
+        self.assertEqual(pe.fixed_form(rus["io_contract"]["predicates"][0], pe.state_reads(rus)),
+                         pe.FORM_RESULT_XFAIL)
+        toy = _toy()   # any node: a loop node's xfail test too
+        toy["io_contract"]["tests"].append({"test_id": "t_x", "expected_outcome": "xfail",
+                                            "target_cases": ["b"], "quantities": ["ok"]})
+        toy["io_contract"]["predicates"].append(
+            {"test_id": "t_x", "quantity": "ok", "target_cases": ["b"], "per_case": True,
+             "expr": " final.ok ", "op": "eq", "value": 0.0})
+        self.assertEqual(_all_gates(toy), [])
+        self._refused_at(self._rus_xfail(quantity="guard"), 0)
+
+    def test_an_init_pass_flag_is_exempt_under_the_init_result_s_name_only(self) -> None:  # (c)
+        toyi = _toyi()
+        self.assertEqual(_all_gates(toyi), [])
+        self.assertEqual(pe.fixed_form(toyi["io_contract"]["predicates"][0],
+                                       pe.state_reads(toyi)), pe.FORM_INIT_PASS)
+        toyi["io_contract"]["predicates"][0]["quantity"] = "plan"
+        toyi["io_contract"]["tests"][0]["quantities"] = ["plan", "run.n_step"]
+        self.assertTrue([m for m in pe.drive_violations(toyi, kind="problem")
+                         if "under `quantity: init_ok`, the init result's own name" in m])
+        self._refused_at(toyi, 0)
+
+    def test_an_init_xfail_flag_is_exempt_under_the_init_result_s_name_only(self) -> None:  # (d)
+        ir = self._toyi_xfail()
+        self.assertEqual(_all_gates(ir), [])
+        self.assertEqual(pe.fixed_form(ir["io_contract"]["predicates"][-1], pe.state_reads(ir)),
+                         pe.FORM_INIT_XFAIL)
+        bad = self._toyi_xfail(quantity="plan_refused")
+        self._refused_at(bad, len(bad["io_contract"]["predicates"]) - 1)
+
+    # --- what is not a fixed form ----------------------------------------------------------------
+    def test_a_second_copy_of_a_form_in_one_test_is_not_exempt(self) -> None:
+        rus = _rus()
+        rus["io_contract"]["predicates"].append(copy.deepcopy(rus["io_contract"]["predicates"][0]))
+        self._refused_at(rus, 4)
+        rus = self._rus_xfail()
+        rus["io_contract"]["predicates"].append(copy.deepcopy(rus["io_contract"]["predicates"][0]))
+        self._refused_at(rus, 1)
+
+    def test_the_xfail_form_on_a_pass_test_is_not_exempt(self) -> None:
+        rus = _rus()
+        rus["io_contract"]["predicates"][0]["value"] = 0
+        self.assertIsNone(pe.fixed_form(rus["io_contract"]["predicates"][0],
+                                        pe.state_reads(rus)))
+        self._refused_at(rus, 0)
+        # ... nor the pass form on an xfail test
+        self._refused_at(self._rus_xfail(value=1), 0)
+        # ... nor the init xfail form on a pass test
+        toyi = _toyi()
+        toyi["io_contract"]["predicates"][0]["value"] = 0
+        self._refused_at(toyi, 0)
+
+    def test_the_form_is_matched_by_its_whole_shape(self) -> None:
+        """`per_case: true` over all the test's target cases, `op: eq`, no bind, the text."""
+        for bad in ({"target_cases": []}, {"per_case": None, "case": "a"}, {"op": "ge"},
+                    {"bind": {"z": "final.F"}}, {"expr": "final.ok + 0"},
+                    {"expr": "initial.ok"}, {"quantity": " ok"}):
+            with self.subTest(bad=bad):
+                rus = _rus()
+                rus["io_contract"]["predicates"][0].update(bad)
+                self.assertIsNone(pe.fixed_form(rus["io_contract"]["predicates"][0],
+                                                pe.state_reads(rus)))
+        toy = _toy()
+        toy["io_contract"]["tests"][0]["target_cases"] = ["a", "b"]
+        flag = {"test_id": "t_run", "quantity": "ok", "target_cases": ["a"], "per_case": True,
+                "expr": "final.ok", "op": "eq", "value": 0}
+        toy["io_contract"]["tests"][0]["expected_outcome"] = "xfail"
+        self.assertIsNone(pe.fixed_form(flag, pe.state_reads(toy)))   # not all its targets
+
+    def test_a_list_form_flag_names_the_result_of_the_entry_running_its_cases(self) -> None:
+        """On a list-form `drive.step` the form's `<r>` is the result of the entry that runs
+        the test's cases: Kessler's `__terminal_velocity` entry re-bound so its result is
+        `tv_ok`, a `final.guard_pass eq 1` on its test (guard_pass now host data there) is no
+        fixed form and reads nothing; gate (l) asks for `final.tv_ok` under `tv_ok`."""
+        ir = _kessler()
+        entry = ir["drive"]["step"][1]
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": "tv_ok", "shape_expr": "scalar"})
+        entry["arguments"]["guard_pass"] = "state.tv_ok"
+        for case in ir["case"]["test_case_set"]:
+            case["initial_state"]["guard_pass" if case["case_id"] == "tv_a" else "tv_ok"] = 0.0
+        i = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["test_id"] == "t_tv" and p["expr"] == "final.guard_pass")
+        reads = pe.state_reads(ir)
+        self.assertEqual(reads.results_for("tv_a"), frozenset({"tv_ok"}))
+        self.assertIsNone(pe.fixed_form(ir["io_contract"]["predicates"][i], reads))
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(v[0].startswith("(l) test 't_tv' (pass) carries no predicate `expr: "
+                                        "\"final.tv_ok\"`"), v)
+        self.assertTrue(v[1].startswith(f"predicates[{i}]: {self._NO_STATE} (final.<v>"), v)
+
+    def test_a_logical_out_that_is_no_result_still_counts(self) -> None:
+        reads = pe.state_reads(_saturation())
+        for name, want in (("converged", True), ("guard_pass", False)):
+            with self.subTest(name=name):
+                refs, binds = pe._predicate_refs({"expr": f"final.{name}"})
+                self.assertIs(pe.predicate_reads_state(refs, binds, reads, ["s_a"]), want)
+
+    def test_only_an_xfail_form_values_its_cases(self) -> None:
+        """A design decision of R4-3: an `xfail` test's judgment IS the guard flag, so its form
+        values the test's cases (`cases_read`, which the coverage rule and the verdict re-check
+        read); a `pass` test's flag values none — it would stand in for an unread case."""
+        rus = self._rus_xfail()
+        reads = pe.state_reads(rus)
+        self.assertEqual(pe.cases_read(rus["io_contract"]["predicates"][0], reads), {"a"})
+        self.assertEqual(pe.cases_read(_rus()["io_contract"]["predicates"][0],
+                                       pe.state_reads(_rus())), set())
+        self.assertEqual(pe.cases_read(_toyi()["io_contract"]["predicates"][0],
+                                       pe.state_reads(_toyi())), set())
+        ir = self._toyi_xfail()
+        self.assertEqual(pe.cases_read(ir["io_contract"]["predicates"][-1], pe.state_reads(ir)),
+                         {"a", "b"})
+        self.assertEqual(pe.VALUING_FORMS, {pe.FORM_RESULT_XFAIL, pe.FORM_INIT_XFAIL})
+        # the coriolis guard tests are judged by the flag alone, and certify on it
+        cor = _coriolis()
+        self.assertEqual(_all_gates(cor), [])
 
 
 class LazyLoaderTest(unittest.TestCase):
@@ -3654,17 +3934,20 @@ class DriveViolationsTest(unittest.TestCase):
     def test_an_init_planned_loop_also_closes_the_init_result(self) -> None:   # (l)
         """R1-3: with `loop.n_step: state.n_plan` (init-written) a refused `init` planning 0
         steps satisfies `final.step - initial.n_plan` with 0 - 0, so every `pass` test also
-        carries `initial.init_ok eq 1` per case over all its targets. The init-written logical
-        is itself a state read (`state_reads(...).initial`), so it needs no exemption."""
+        carries `initial.init_ok eq 1` per case over all its targets, under `quantity: init_ok`
+        (review round 4, R4-3: the init result is no state read, and this fixed form is
+        exempt — `fixed_form`'s `FORM_INIT_PASS`)."""
         msg = ("(l) test 't_run' (pass) carries no predicate `expr: \"initial.init_ok\"`, "
-               "`op: eq`, `value: 1`, `per_case: true` over all its target cases: "
-               "drive.loop.n_step is a scalar init writes, so the closure counts the steps "
-               "against init's own plan, which a refused init (result 0) planning 0 steps "
-               "satisfies with 0 - 0; the init result closes it")
-        self.assertIn("init_ok", pe.state_reads(_toyi()).initial)
+               "`op: eq`, `value: 1`, `per_case: true` over all its target cases under "
+               "`quantity: init_ok`, the init result's own name its tests.md `quantities` line "
+               "lists: drive.loop.n_step is a scalar init writes, so the closure counts the "
+               "steps against init's own plan, which a refused init (result 0) planning 0 "
+               "steps satisfies with 0 - 0; the init result closes it")
+        self.assertNotIn("init_ok", pe.state_reads(_toyi()).initial)
         self.assertEqual(self._v(_toyi()), [])
         for bad in ({"value": 0}, {"op": "ge"}, {"expr": "initial.init_ok + 0"},
-                    {"target_cases": ["a"]}, {"per_case": None, "case": "a"}):
+                    {"target_cases": ["a"]}, {"per_case": None, "case": "a"},
+                    {"quantity": "init"}):
             with self.subTest(bad=bad):
                 ir = _toyi()
                 ir["io_contract"]["predicates"][0].update(bad)
@@ -3977,7 +4260,7 @@ def _list_form_ir(spec_id: str, rel: str, partition: dict[str, list[str]],
 
 _KES = "microphysics_kessler_warm_rain_1d_column"
 _SAT = "microphysics_saturation_liquid_1d_column"
-_GUARD = ("input_guard", "final.guard_pass", "eq", 1)
+_GUARD = ("guard_pass", "final.guard_pass", "eq", 1)
 
 
 def _kessler() -> dict:
@@ -4057,7 +4340,11 @@ class ListFormCasesTest(unittest.TestCase):
         self.assertFalse(pe.is_state_read(temp, reads, "no_such_case"))
         self.assertTrue(pe.is_state_read(pe.NameRef("capture", "temp", "final", "s_a"),
                                          reads, "q_a"))         # at('s_a') reads s_a's state
-        self.assertEqual(reads.by_case["q_a"][0], frozenset({"qsat", "guard_pass"}))
+        # the result `guard_pass` is no state read (R4-3); the s_a entry's `converged`, a
+        # logical out that is no `result:`, is
+        self.assertEqual(reads.by_case["q_a"][0], frozenset({"qsat"}))
+        self.assertIn("converged", reads.by_case["s_a"][0])
+        self.assertNotIn("guard_pass", reads.by_case["s_a"][0])
         # the mapping form keeps no per-case table
         self.assertIsNone(pe.state_reads(_rus()).by_case)
 
@@ -4067,10 +4354,13 @@ class ListFormCasesTest(unittest.TestCase):
         i = next(i for i, p in enumerate(preds) if p["quantity"] == "qsat_formula")
         preds[i]["expr"] = "maxabs(final.temp)"        # temp is `in` on __dens2qsat_liq
         v = _all_gates(ir)
-        self.assertEqual(len(v), 1, v)
+        # the pass test's guard flag values no case (R4-3), so the coverage rule names them too
+        self.assertEqual(len(v), 2, v)
         self.assertTrue(v[0].startswith(
             f"predicates[{i}]: reads no captured state the kernel produced in case(s) "
             "['q_a', 'q_b'], which its scope evaluates"), v)
+        self.assertTrue(v[1].startswith("test 't_q': no predicate values the captured state "
+                                        "of target case(s) ['q_a', 'q_b']"), v)
         # the same read on the saturation_adjustment case is kernel state
         ir = _saturation()
         j = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
