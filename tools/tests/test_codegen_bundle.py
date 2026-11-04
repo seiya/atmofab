@@ -48,15 +48,13 @@ def _file(path: str, role: str, member: str | None, modules: "list[str] | None" 
 
 
 def _minimal_bundle() -> dict:
-    """The current M3c shape: one member, a model + a checks module, the harness-registration
-    state capture (bundle 1.2.0 — the checks module's module-level `q` is the storage the
-    host-rendered runner reads), and the synchronous CPU harness."""
+    """The current M3c shape (bundle 2.0.0): one member, a model — the host renders the driver —
+    and the synchronous CPU harness."""
     return {
-        "bundle_schema_version": "1.0.0",
+        "bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION,
         "optimization_unit": {"members": [ADV]},
         "files": [
             _file("adv1d_model.f90", "model", ADV),
-            _file("adv1d_checks.f90", "checks", ADV),
         ],
         "entrypoints": [
             {"symbol": "adv1d__apply", "kind": "operation", "node_key": ADV,
@@ -64,12 +62,7 @@ def _minimal_bundle() -> dict:
         ],
         "target_lowering_plan": {"precision": {"real_kind": "real64"},
                                  "state_residency": "host"},
-        "capability_requirements": ["sync_single_case@1", "state_registration@1"],
-        "state_bindings": [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-        ],
+        "capability_requirements": ["sync_single_case@1"],
     }
 
 
@@ -77,14 +70,12 @@ def _multi_node_bundle() -> dict:
     """A two-member optimization unit with a unit-shared internal module: the shape that
     proves a semantic node boundary is not a mandatory optimization boundary."""
     return {
-        "bundle_schema_version": "1.0.0",
+        "bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION,
         "optimization_unit": {"members": [FLUX, ADV]},
         "files": [
             _file("unit_types.f90", "internal_module", None),
             _file("adv_flux_model.f90", "model", FLUX),
-            _file("adv_flux_checks.f90", "checks", FLUX),
             _file("adv1d_model.f90", "model", ADV),
-            _file("adv1d_checks.f90", "checks", ADV),
         ],
         "entrypoints": [
             {"symbol": "adv_flux__apply", "kind": "operation", "node_key": FLUX,
@@ -98,7 +89,6 @@ def _multi_node_bundle() -> dict:
             "fusion": [{"members": [FLUX, ADV]}],
         },
         "capability_requirements": ["sync_single_case@1"],
-        "state_bindings": [],
     }
 
 
@@ -120,12 +110,11 @@ class MultiFileSourceTest(unittest.TestCase):
 
         graph = cb.derive_build_graph(doc, toolchain={"build_system": "make", "language": "fortran"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
-            # model -> internal_module (unit-shared first) -> helper -> checks: the model
+            # model -> internal_module (unit-shared first) -> helper: the model
             # compiles alone, and a private file may `use` it (issue #415)
             "adv1d_model.o", "unit_constants.o", "adv1d_types.o", "adv1d_limiter.o",
-            "adv1d_checks.o",
         ])
-        self.assertEqual(len(graph["link"]["objects"]), 5)
+        self.assertEqual(len(graph["link"]["objects"]), 4)
 
     def test_multiple_files_of_one_role_are_ordered_by_logical_path(self) -> None:
         doc = _minimal_bundle()
@@ -146,12 +135,10 @@ class PrivateHelperTest(unittest.TestCase):
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_helper_cannot_define_an_entrypoint(self) -> None:
-        # Use a checks_interface kind so the only defect is the privacy violation (an extra
-        # `operation` would additionally trip the one-operation-per-member rule).
         doc = _minimal_bundle()
         doc["files"].append(_file("adv1d_limiter.f90", "helper", ADV))
         doc["entrypoints"].append(
-            {"symbol": "adv1d__limit", "kind": "checks_interface", "node_key": ADV,
+            {"symbol": "adv1d__limit", "kind": "operation", "node_key": ADV,
              "defined_in": "adv1d_limiter.f90", "module": "adv1d_limiter"})
         violations = cb.validate_bundle(doc)
         self.assertEqual(len(violations), 1)
@@ -177,15 +164,6 @@ class PrivateHelperTest(unittest.TestCase):
         _find(doc["files"], "adv1d_model.f90")["member_node_key"] = None
         violations = cb.validate_bundle(doc)
         self.assertTrue(any("member_node_key may be null only for role" in v for v in violations))
-
-    def test_checks_entrypoint_must_live_in_a_checks_file(self) -> None:
-        doc = _minimal_bundle()
-        doc["entrypoints"].append(
-            {"symbol": "case_run", "kind": "checks_interface", "node_key": ADV,
-             "defined_in": "adv1d_model.f90", "module": "adv1d_model"})
-        violations = cb.validate_bundle(doc)
-        self.assertEqual(len(violations), 1)
-        self.assertIn("must be defined in a file of role 'checks'", violations[0])
 
     def test_entrypoint_declares_its_fortran_module(self) -> None:
         # Z2 renders `use <module>, only: <symbol>` mechanically, so the module is a declared
@@ -257,10 +235,21 @@ class CapabilityNegotiationTest(unittest.TestCase):
 
     def test_current_harness_satisfies_the_current_bundle(self) -> None:
         provided = cb.harness_provided_capabilities(HARNESS)
-        self.assertEqual(provided, frozenset({"sync_single_case@1", "state_registration@1"}))
+        self.assertEqual(provided, frozenset({"sync_single_case@1"}))
         self.assertEqual(
-            cb.unsatisfied_capability_requirements(
-                ["sync_single_case@1", "state_registration@1"], provided), [])
+            cb.unsatisfied_capability_requirements(["sync_single_case@1"], provided), [])
+
+    def test_the_retired_binding_capability_is_no_token_any_more(self) -> None:
+        # Issue #589: the host holds the state, so `state_registration@1` — what a checks module's
+        # bound storage was negotiated by — is neither in the vocabulary nor provided by a harness,
+        # and a bundle still asking for it is told so at the schema's next layer.
+        self.assertNotIn("state_registration", cb.CAPABILITY_VOCABULARY)
+        for node_key, provides in cb.HARNESS_CAPABILITY_MANIFESTS.items():
+            with self.subTest(node_key=node_key):
+                self.assertFalse([t for t in provides if t.startswith("state_registration")])
+        doc = _minimal_bundle()
+        doc["capability_requirements"].append("state_registration@1")
+        self.assertTrue(any("state_registration" in v for v in cb.validate_bundle(doc)))
 
     def test_manifest_schema_example_states_the_live_manifest(self) -> None:
         # The example in `harness_capabilities.schema.json` is what a reader of the schema
@@ -270,37 +259,22 @@ class CapabilityNegotiationTest(unittest.TestCase):
         by_node = {m["node_key"]: set(m["provides"]) for m in example["manifests"]}
         self.assertEqual(by_node, {k: set(v) for k, v in cb.HARNESS_CAPABILITY_MANIFESTS.items()})
 
-    def test_state_registration_is_provided_by_the_current_harness(self) -> None:
-        # Z6 (issue #255): `state_registration@1` is the token every M3c bundle's bindings
-        # carry, so the one harness in the tree provides it — it is defined by what the
-        # host-rendered runner does with bound storage, and the harness version is unchanged.
-        provided = cb.harness_provided_capabilities(HARNESS)
-        self.assertIn(cb.STATE_REGISTRATION_TOKEN, provided)
-        self.assertEqual(cb.STATE_REGISTRATION_TOKEN, "state_registration@1")
-        self.assertEqual(
-            cb.unsatisfied_capability_requirements([cb.STATE_REGISTRATION_TOKEN], provided), [])
-        # ...and only that generation: @2 is not licensed by it.
-        self.assertEqual(
-            cb.unsatisfied_capability_requirements(["state_registration@2"], provided),
-            ["state_registration@2"])
-
     def test_distributed_state_is_provided_by_the_mpi_harness_alone(self) -> None:
         # Issue #316 (R4-c PR-3): a `distributed` bundle's requirement set is satisfied by the
         # harness of the process-parallel target and by no other; the single-process harnesses
         # keep the set they had, so their consumers' negotiation is unchanged.
-        distributed = ["sync_single_case@1", "distributed_state@2", cb.STATE_REGISTRATION_TOKEN]
+        distributed = ["sync_single_case@1", "distributed_state@2"]
         mpi = cb.harness_provided_capabilities("infrastructure/harness_fortran_cpu_mpi@0.4.0")
         self.assertEqual(cb.unsatisfied_capability_requirements(distributed, mpi), [])
         # Issue #512: `@2` replaced `@1` (the one-dimensional arrangement); a bundle still
         # asking for `@1` is not satisfied by the two-dimensional harness.
         self.assertEqual(cb.unsatisfied_capability_requirements(
-            ["sync_single_case@1", "distributed_state@1", cb.STATE_REGISTRATION_TOKEN], mpi),
+            ["sync_single_case@1", "distributed_state@1"], mpi),
             ["distributed_state@1"])
         for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.4.0"):
             with self.subTest(harness=single):
                 provided = cb.harness_provided_capabilities(single)
-                self.assertEqual(provided,
-                                 frozenset({"sync_single_case@1", cb.STATE_REGISTRATION_TOKEN}))
+                self.assertEqual(provided, frozenset({"sync_single_case@1"}))
                 self.assertEqual(
                     cb.unsatisfied_capability_requirements(distributed, provided),
                     ["distributed_state@2"])
@@ -384,7 +358,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
             toolchain={"build_system": "make", "language": "fortran"}, host_glue_sources=("adv1d_runner.f90",))
         self.assertEqual([unit["source"] for unit in graph["compile_units"]], [
             "staged:base_model.f90", "staged:mid_model.f90",
-            "bundle:adv1d_model.f90", "bundle:adv1d_checks.f90",
+            "bundle:adv1d_model.f90",
             "glue:adv1d_runner.f90",
         ])
         # conservative total order: each unit depends on every object emitted before it
@@ -561,7 +535,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         for flag in (True, False):
             with self.subTest(initial_capture_dir=flag):
                 node = control_file.render_node(
-                    **common, model_stem="m", runner_stem="r", checks_stem=None, closure=(),
+                    **common, model_stem="m", runner_stem="r", closure=(),
                     initial_capture_dir=flag)
                 pure = control_file.render_from_graph(
                     **common, graph=graph, initial_capture_dir=flag)
@@ -640,36 +614,33 @@ class CompileAfterTest(unittest.TestCase):
     def test_dangling_reference_is_rejected(self) -> None:
         doc = _minimal_bundle()
         doc["files"].append(dict(_file("h.f90", "helper", ADV), compile_after=["nope.f90"]))
-        self.assertIn("files[2].compile_after 'nope.f90' does not name a files[] entry",
+        self.assertIn("files[1].compile_after 'nope.f90' does not name a files[] entry",
                       cb.validate_bundle(doc))
 
     def test_self_reference_is_rejected(self) -> None:
         doc = _minimal_bundle()
         doc["files"].append(dict(_file("h.f90", "helper", ADV), compile_after=["h.f90"]))
-        self.assertIn("files[2].compile_after must not name the file itself ('h.f90')",
+        self.assertIn("files[1].compile_after must not name the file itself ('h.f90')",
                       cb.validate_bundle(doc))
 
     def test_precedence_reversing_edge_is_rejected(self) -> None:
-        # A model must not depend on its checks: ROLE_BUILD_PRECEDENCE already orders the
-        # model first and the checks module `use`s it. Honoring such an edge would emit
-        # checks before model and break the build.
+        # The model compiles alone and a private file may `use` it: ROLE_BUILD_PRECEDENCE orders
+        # the model first. Honoring a model -> internal_module edge would emit the private file
+        # before the model and break the build.
         doc = _minimal_bundle()
-        for entry in doc["files"]:
-            if entry["role"] == "model":
-                entry["compile_after"] = ["adv1d_checks.f90"]
+        doc["files"].append(_file("adv1d_types.f90", "internal_module", ADV))
+        doc["files"][0]["compile_after"] = ["adv1d_types.f90"]
         self.assertIn(
-            "files[0].compile_after 'adv1d_checks.f90' has role 'checks', which build "
+            "files[0].compile_after 'adv1d_types.f90' has role 'internal_module', which build "
             "precedence orders after this 'model' file (compile_after must not reverse "
             "ROLE_BUILD_PRECEDENCE)",
             cb.validate_bundle(doc))
 
     def test_precedence_agreeing_cross_role_edge_is_valid(self) -> None:
-        # checks -> model agrees with role precedence (redundant but not a reversal), and a
+        # helper -> model agrees with role precedence (redundant but not a reversal), and a
         # helper -> internal_module edge likewise.
         doc = _minimal_bundle()
-        for entry in doc["files"]:
-            if entry["role"] == "checks":
-                entry["compile_after"] = ["adv1d_model.f90"]
+        doc["files"].append(dict(_file("h.f90", "helper", ADV), compile_after=["adv1d_model.f90"]))
         self.assertEqual(cb.validate_bundle(doc), [])
         doc = _minimal_bundle()
         doc["files"] += [_file("types.f90", "internal_module", ADV),
@@ -678,7 +649,7 @@ class CompileAfterTest(unittest.TestCase):
 
     def test_a_private_file_may_follow_the_model(self) -> None:
         # helper -> model agrees with precedence: the model compiles alone, and a private
-        # file that serves the checks / runner file may `use` it (issue #415).
+        # file may `use` it (issue #415).
         doc = _minimal_bundle()
         doc["files"].append(
             dict(_file("h.f90", "helper", ADV), compile_after=["adv1d_model.f90"]))
@@ -714,11 +685,11 @@ class CompileAfterTest(unittest.TestCase):
         ]
         objects = [u["object"] for u in cb.derive_build_graph(doc, toolchain={"build_system": "make"})["compile_units"]]
         self.assertEqual(sorted(objects),
-                         sorted(["p.o", "q.o", "adv1d_model.o", "adv1d_checks.o"]))
+                         sorted(["p.o", "q.o", "adv1d_model.o"]))
 
     def test_compile_after_must_be_a_string_array(self) -> None:
         doc = _minimal_bundle()
-        doc["files"][0]["compile_after"] = "adv1d_checks.f90"
+        doc["files"][0]["compile_after"] = "adv1d_types.f90"
         self.assertIn("files[0].compile_after must be an array", cb.validate_bundle(doc))
         doc = _minimal_bundle()
         doc["files"][0]["compile_after"] = [""]
@@ -872,33 +843,18 @@ class FieldGrammarTest(unittest.TestCase):
         doc["target_lowering_plan"]["data_layout"] = ["soa"]
         self.assertIn("target_lowering_plan.data_layout must be an object", cb.validate_bundle(doc))
 
-    def test_capture_enum(self) -> None:
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["capture"] = "raw_device_pointer"
-        self.assertIn("state_bindings[0].capture must be one of harness_registration",
-                      cb.validate_bundle(doc))
-
-    def test_checks_getter_capture_is_unrepresentable(self) -> None:
-        # Z6 fixture (b) at the bundle layer: bundle 1.1.0's `checks_getter` capture — a
-        # value read through a generated getter — is no longer a member of the enum, so a
-        # document declaring it is refused at the schema layer whatever else it says.
-        self.assertEqual(cb.STATE_CAPTURES, ("harness_registration",))
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["capture"] = "checks_getter"
-        doc["state_bindings"][0]["capability"] = None
-        doc["capability_requirements"] = ["sync_single_case@1"]
-        self.assertIn("state_bindings[0].capture must be one of harness_registration",
-                      cb.validate_bundle(doc))
-
-    def test_state_binding_symbols_must_be_identifiers(self) -> None:
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["storage_symbol"] = "get_r1; rm -rf /"
-        self.assertIn("state_bindings[0].storage_symbol must be an identifier",
-                      cb.validate_bundle(doc))
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["state_variable"] = "9q"
-        self.assertIn("state_bindings[0].state_variable must be an identifier",
-                      cb.validate_bundle(doc))
+    def test_a_retired_binding_key_is_refused_by_the_closure(self) -> None:
+        # Z6 fixture (b) at the bundle layer, carried to issue #589: a binding of a state to a
+        # module's storage has no field left, whatever capture it names — the driver holds the
+        # state — so a document declaring one is refused at the schema layer.
+        for value in ([], [{"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
+                            "module": "adv1d_model", "capture": "checks_getter",
+                            "capability": None}]):
+            with self.subTest(value=value):
+                doc = _minimal_bundle()
+                doc["state_bindings"] = value
+                self.assertIn("unknown key 'state_bindings' (the object is closed)",
+                              cb.validate_bundle(doc))
 
     def test_entrypoint_symbol_must_be_an_identifier(self) -> None:
         doc = _minimal_bundle()
@@ -1015,23 +971,18 @@ class FieldGrammarTest(unittest.TestCase):
             self.assertTrue(union.fullmatch("_abc"))     # only zzlang admits it
             self.assertFalse(union.fullmatch("1abc"))    # neither does
             files = [{"logical_path": "m.f90", "language": "fortran", "modules": ["_bad"],
-                      "role": "checks", "member_node_key": "n"},
+                      "role": "helper", "member_node_key": "n"},
                      {"logical_path": "m.zz", "language": "zzlang", "modules": ["_ok", "bad"],
-                      "role": "checks", "member_node_key": "n"}]
+                      "role": "helper", "member_node_key": "n"}]
             # The entrypoints are listed in the OPPOSITE order to their files: an owner resolved
             # by any position — the first file (round 2, #289) or the file at the entrypoint's
             # own index (round 3) — holds one of them to the other file's grammar.
             entrypoints = [{"symbol": "_zz", "module": "_ok", "defined_in": "m.zz"},
                            {"symbol": "_sym", "module": "_ok", "defined_in": "m.f90"}]
-            # The binding's owner is the member's checks-role file that defines `_ok`: the
-            # second, although the first is a checks-role file of the same member too.
-            bindings = [{"state_variable": "q", "storage_symbol": "q", "module": "_ok",
-                         "node_key": "n"}]
-            found = cb._identifier_language_violations(files, entrypoints, bindings)
+            found = cb._identifier_language_violations(files, entrypoints)
             self.assertEqual(sorted(v.split(" ", 1)[0] for v in found), [
                 "entrypoints[1].module", "entrypoints[1].symbol", "files[0].modules[0]",
-                "files[1].modules[1]", "state_bindings[0].state_variable",
-                "state_bindings[0].storage_symbol"])
+                "files[1].modules[1]"])
             # ... and the layer is WIRED into the contract, not only callable (round 1, issue
             # #289: deleting the call from `bundle_invariant_violations` left this row green
             # while it drove the function directly). A Fortran file's entrypoint named with a
@@ -1076,8 +1027,7 @@ class FieldGrammarTest(unittest.TestCase):
         doc["entrypoints"][0]["symbol"] = at_limit
         self.assertEqual(cb.validate_bundle(doc), [])
         for field, path in (("symbol", ("entrypoints", 0, "symbol")),
-                            ("storage_symbol", ("state_bindings", 0, "storage_symbol")),
-                            ("state_variable", ("state_bindings", 0, "state_variable"))):
+                            ("module", ("entrypoints", 0, "module"))):
             with self.subTest(field=field):
                 doc = _minimal_bundle()
                 container, index, key = path
@@ -1088,13 +1038,16 @@ class FieldGrammarTest(unittest.TestCase):
 
     def test_entrypoint_kind_enum(self) -> None:
         # An ADDED entrypoint with a bogus kind: mutating the sole entrypoint would also
-        # trip the member-coverage invariant, so the enum must be pinned on its own.
-        doc = _minimal_bundle()
-        doc["entrypoints"].append(
-            {"symbol": "build_it", "kind": "build_command", "node_key": ADV,
-             "defined_in": "adv1d_model.f90", "module": "adv1d_model"})
-        self.assertIn("entrypoints[1].kind must be one of operation, checks_interface",
-                      cb.validate_bundle(doc))
+        # trip the member-coverage invariant, so the enum must be pinned on its own. The kind the
+        # checks module's fixed surface was published under is one of them.
+        for kind in ("build_command", "checks_interface"):
+            with self.subTest(kind=kind):
+                doc = _minimal_bundle()
+                doc["entrypoints"].append(
+                    {"symbol": "build_it", "kind": kind, "node_key": ADV,
+                     "defined_in": "adv1d_model.f90", "module": "adv1d_model"})
+                self.assertIn("entrypoints[1].kind must be one of operation",
+                              cb.validate_bundle(doc))
 
     def test_empty_content_is_rejected(self) -> None:
         doc = _minimal_bundle()
@@ -1143,8 +1096,6 @@ class ClosedObjectTest(unittest.TestCase):
              "entrypoints[0].unknown key 'link_command' (the object is closed)"),
             (lambda d: d["target_lowering_plan"].__setitem__("build_command", "x"),
              "target_lowering_plan.unknown key 'build_command' (the object is closed)"),
-            (lambda d: d["state_bindings"][0].__setitem__("shell", "x"),
-             "state_bindings[0].unknown key 'shell' (the object is closed)"),
         ]
         for mutate, clause in cases:
             with self.subTest(clause=clause):
@@ -1173,8 +1124,7 @@ class ClosedObjectTest(unittest.TestCase):
 
     def test_non_object_array_entries_are_clauses_not_crashes(self) -> None:
         for key, clause in (("files", "files[0] must be an object"),
-                            ("entrypoints", "entrypoints[0] must be an object"),
-                            ("state_bindings", "state_bindings[0] must be an object")):
+                            ("entrypoints", "entrypoints[0] must be an object")):
             with self.subTest(key=key):
                 doc = _minimal_bundle()
                 doc[key] = ["adv1d_model.f90"]
@@ -1199,9 +1149,6 @@ class ClosedObjectTest(unittest.TestCase):
         doc = _minimal_bundle()
         doc["entrypoints"][0]["node_key"] = "garbage"
         self.assertIn("entrypoints[0].node_key must be a node_key", cb.validate_bundle(doc))
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["node_key"] = "garbage"
-        self.assertIn("state_bindings[0].node_key must be a node_key", cb.validate_bundle(doc))
 
     def test_node_key_grammar_matches_the_repository_parser(self) -> None:
         # Aligned with tools/orchestration_runtime.py:_parse_node_key_strict: a dot-separated
@@ -1213,9 +1160,7 @@ class ClosedObjectTest(unittest.TestCase):
                 doc = _minimal_bundle()
                 doc["optimization_unit"]["members"] = [good]
                 _find(doc["files"], "adv1d_model.f90")["member_node_key"] = good
-                _find(doc["files"], "adv1d_checks.f90")["member_node_key"] = good
                 doc["entrypoints"][0]["node_key"] = good
-                doc["state_bindings"][0]["node_key"] = good
                 self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_trailing_newline_does_not_slip_past_a_grammar(self) -> None:
@@ -1226,10 +1171,6 @@ class ClosedObjectTest(unittest.TestCase):
         doc = _minimal_bundle()
         doc["entrypoints"][0]["symbol"] = "adv1d__apply\n"
         self.assertIn("entrypoints[0].symbol must be an identifier", cb.validate_bundle(doc))
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["storage_symbol"] = "get_r1\n"
-        self.assertIn("state_bindings[0].storage_symbol must be an identifier",
-                      cb.validate_bundle(doc))
         doc = _minimal_bundle()
         doc["optimization_unit"]["members"] = [ADV + "\n"]
         self.assertTrue(any("must be a node_key" in v for v in cb.validate_bundle(doc)))
@@ -1296,7 +1237,6 @@ class NullValueTest(unittest.TestCase):
             "entrypoints": "entrypoints must be a non-empty array",
             "target_lowering_plan": "target_lowering_plan must be an object",
             "capability_requirements": "capability_requirements must be a non-empty array",
-            "state_bindings": "state_bindings must be an array",
         }
         for key, clause in expected.items():
             with self.subTest(key=key):
@@ -1305,10 +1245,10 @@ class NullValueTest(unittest.TestCase):
                 self.assertIn(clause, cb.validate_bundle(doc))
 
     def test_all_null_bundle_is_rejected(self) -> None:
-        doc = {"bundle_schema_version": "1.0.0", "optimization_unit": None, "files": None,
-               "entrypoints": None, "target_lowering_plan": None, "state_bindings": None,
+        doc = {"bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION, "optimization_unit": None,
+               "files": None, "entrypoints": None, "target_lowering_plan": None,
                "capability_requirements": None}
-        self.assertEqual(len(cb.validate_bundle(doc)), 6)
+        self.assertEqual(len(cb.validate_bundle(doc)), 5)
 
     def test_null_members_is_rejected(self) -> None:
         doc = _minimal_bundle()
@@ -1342,8 +1282,7 @@ class HostGivenNamesAreTheLanguagesTest(unittest.TestCase):
         from unittest import mock
 
         from tools.backends.language.fortran import bundle
-        with mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"), \
-                mock.patch.object(bundle, "checks_basename", lambda sid: f"{sid}_checks.zz"):
+        with mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"):
             graph = cb.derive_build_graph(
                 _minimal_bundle(), dependency_closure=("component/diffuse@0.1.0",),
                 toolchain={"build_system": "make", "language": "fortran"})
@@ -1353,8 +1292,6 @@ class HostGivenNamesAreTheLanguagesTest(unittest.TestCase):
                 {"files": [{"logical_path": "bx_model.f90", "role": "model",
                             "modules": ["bx_model"]}]}, "bx", language="fortran")
             self.assertIn("bx_model.zz", violation)
-            violation = cb.m3c_checks_abi_violation({"files": []}, "bx", language="fortran")
-            self.assertIn("bx_checks.zz", violation)
 
     def test_a_language_with_no_bundle_facts_is_refused_not_defaulted(self) -> None:
         with self.assertRaises(ValueError) as ctx:
@@ -1397,8 +1334,7 @@ class ObjectNameCollisionTest(unittest.TestCase):
                 toolchain={"build_system": "make", "language": "fortran"},
                 host_glue_sources=("adv1d_runner.f90",))
         self.assertEqual([u["object"] for u in graph["compile_units"]],
-                         ["zz:diffuse_model.f90", "zz:adv1d_model.f90", "zz:adv1d_checks.f90",
-                          "zz:adv1d_runner.f90"])
+                         ["zz:diffuse_model.f90", "zz:adv1d_model.f90", "zz:adv1d_runner.f90"])
         for toolchain in ({}, {"build_system": ""}, {"build_system": "cmake"}):
             with self.subTest(toolchain=toolchain), \
                     self.assertRaisesRegex(RuntimeError, "no object-name rule"):
@@ -1489,42 +1425,35 @@ class EntrypointAttributionTest(unittest.TestCase):
         # Two entrypoints with the same (module, symbol) are an unlinkable duplicate.
         doc = _minimal_bundle()
         doc["entrypoints"] += [
-            {"symbol": "case_run", "module": "adv1d_checks", "kind": "checks_interface",
-             "node_key": ADV, "defined_in": "adv1d_checks.f90"},
-            {"symbol": "case_run", "module": "adv1d_checks", "kind": "checks_interface",
-             "node_key": ADV, "defined_in": "adv1d_checks.f90"},
+            {"symbol": "adv1d__step", "module": "adv1d_model", "kind": "operation",
+             "node_key": ADV, "defined_in": "adv1d_model.f90"},
+            {"symbol": "adv1d__step", "module": "adv1d_model", "kind": "operation",
+             "node_key": ADV, "defined_in": "adv1d_model.f90"},
         ]
-        self.assertIn("entrypoints[2].symbol 'case_run' is published more than once by module "
-                      "'adv1d_checks'", cb.validate_bundle(doc))
+        self.assertIn("entrypoints[2].symbol 'adv1d__step' is published more than once by module "
+                      "'adv1d_model'", cb.validate_bundle(doc))
 
     def test_duplicate_symbol_in_one_module_is_case_insensitive(self) -> None:
         doc = _minimal_bundle()
         doc["entrypoints"] += [
-            {"symbol": "case_run", "module": "adv1d_checks", "kind": "checks_interface",
-             "node_key": ADV, "defined_in": "adv1d_checks.f90"},
-            {"symbol": "CASE_RUN", "module": "adv1d_checks", "kind": "checks_interface",
-             "node_key": ADV, "defined_in": "adv1d_checks.f90"},
+            {"symbol": "adv1d__step", "module": "adv1d_model", "kind": "operation",
+             "node_key": ADV, "defined_in": "adv1d_model.f90"},
+            {"symbol": "ADV1D__STEP", "module": "adv1d_model", "kind": "operation",
+             "node_key": ADV, "defined_in": "adv1d_model.f90"},
         ]
         self.assertTrue(any("published more than once by module" in v
                             for v in cb.validate_bundle(doc)))
 
     def test_same_symbol_in_distinct_modules_is_allowed(self) -> None:
-        # Each member's checks module exports the same fixed ABI names; scoped by module they
-        # are distinct procedures (`adv_flux_checks::case_run` vs `adv1d_checks::case_run`).
+        # Scoped by module, one name is two procedures (`adv_flux_model::step` vs
+        # `adv1d_model::step`).
         doc = _multi_node_bundle()
         doc["entrypoints"] += [
-            {"symbol": "case_run", "module": "adv_flux_checks", "kind": "checks_interface",
-             "node_key": FLUX, "defined_in": "adv_flux_checks.f90"},
-            {"symbol": "case_run", "module": "adv1d_checks", "kind": "checks_interface",
-             "node_key": ADV, "defined_in": "adv1d_checks.f90"},
+            {"symbol": "step", "module": "adv_flux_model", "kind": "operation",
+             "node_key": FLUX, "defined_in": "adv_flux_model.f90"},
+            {"symbol": "step", "module": "adv1d_model", "kind": "operation",
+             "node_key": ADV, "defined_in": "adv1d_model.f90"},
         ]
-        self.assertEqual(cb.validate_bundle(doc), [])
-
-    def test_checks_entrypoint_of_the_right_member_is_valid(self) -> None:
-        doc = _minimal_bundle()
-        doc["entrypoints"].append(
-            {"symbol": "case_run", "kind": "checks_interface", "node_key": ADV,
-             "defined_in": "adv1d_checks.f90", "module": "adv1d_checks"})
         self.assertEqual(cb.validate_bundle(doc), [])
 
 
@@ -1540,7 +1469,7 @@ class HarnessManifestValidatorTest(unittest.TestCase):
         # The manifests are frozensets: rendering them unsorted would make the document
         # hash-order-dependent as soon as one harness provides a second capability.
         multi = {"infrastructure/harness_gpu@0.1.0": frozenset(
-            {"async_device_resident@1", "state_registration@1", "trusted_reductions@1"})}
+            {"async_device_resident@1", "full_state_capture@1", "trusted_reductions@1"})}
         with mock.patch.dict(cb.HARNESS_CAPABILITY_MANIFESTS, multi):
             document = cb.harness_capability_manifest_document()
         entry = next(m for m in document["manifests"]
@@ -1643,11 +1572,12 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
 
     def test_graph_respects_member_order_within_a_role(self) -> None:
         doc = _multi_node_bundle()
+        doc["files"] += [_file("adv1d_h.f90", "helper", ADV), _file("adv_flux_h.f90", "helper", FLUX)]
         graph = cb.derive_build_graph(doc, toolchain={"build_system": "make"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
             "adv_flux_model.o", "adv1d_model.o",    # models in member order
             "unit_types.o",                         # then the unit-shared internal module
-            "adv_flux_checks.o", "adv1d_checks.o",  # checks in member order
+            "adv_flux_h.o", "adv1d_h.o",            # helpers in member order
         ])
 
     def test_member_without_a_model_file_is_rejected(self) -> None:
@@ -1661,17 +1591,21 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
                       violations)
         self.assertIn(f"optimization_unit member {FLUX!r} has no operation entrypoint", violations)
 
-    def test_a_problem_member_has_exactly_one_operation_entrypoint(self) -> None:
-        # A problem node's single published integration update path: two operations leave the
-        # host with no rule to pick which one it publishes.
+    def test_a_problem_member_may_publish_several_operations(self) -> None:
+        # Issue #589 D3: how many operations a member publishes is its IR's to say, whatever its
+        # kind (a `problem` with `__init` and `__step`); the one-operation rule went with the
+        # leaf-authored driver. L1c holds the set to the IR's.
         doc = _minimal_bundle()  # ADV = problem/adv1d
         doc["entrypoints"].append(
-            {"symbol": "adv1d__apply_alt", "kind": "operation", "node_key": ADV,
+            {"symbol": "adv1d__init", "kind": "operation", "node_key": ADV,
              "defined_in": "adv1d_model.f90", "module": "adv1d_model"})
-        self.assertIn(
-            f"optimization_unit member {ADV!r} has 2 operation entrypoints; a problem node "
-            "publishes exactly one (its integration update path)",
-            cb.validate_bundle(doc))
+        self.assertEqual(cb.validate_bundle(doc), [])
+
+    def test_a_member_publishing_no_operation_is_refused(self) -> None:
+        doc = _multi_node_bundle()
+        doc["entrypoints"] = [e for e in doc["entrypoints"] if e["node_key"] != ADV]
+        self.assertIn(f"optimization_unit member {ADV!r} has no operation entrypoint",
+                      cb.validate_bundle(doc))
 
     def test_a_component_or_infrastructure_member_may_publish_several_operations(self) -> None:
         # A component / infrastructure node publishes an API of one or more operations (the
@@ -1685,12 +1619,10 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
                 sid = member.split("/", 1)[1].split("@", 1)[0]
                 doc["files"] = [
                     _file(f"{sid}_model.f90", "model", member, modules=[f"{sid}_model"]),
-                    _file(f"{sid}_checks.f90", "checks", member, modules=[f"{sid}_checks"]),
                 ]
                 doc["entrypoints"] = [
                     {"symbol": f"{mod}__op{i}", "module": f"{sid}_model", "kind": "operation",
                      "node_key": member, "defined_in": f"{sid}_model.f90"} for i in range(3)]
-                doc["state_bindings"] = []
                 self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_a_profile_member_is_refused_outright(self) -> None:
@@ -1707,12 +1639,10 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         doc["target_lowering_plan"].pop("fusion", None)
         doc["files"] = [
             _file("adv1d_default_model.f90", "model", profile, modules=["adv1d_default_model"]),
-            _file("adv1d_default_checks.f90", "checks", profile, modules=["adv1d_default_checks"]),
         ]
         doc["entrypoints"] = [
-            {"symbol": "case_run", "module": "adv1d_default_checks", "kind": "checks_interface",
-             "node_key": profile, "defined_in": "adv1d_default_checks.f90"}]  # no operation
-        doc["state_bindings"] = []
+            {"symbol": "adv1d_default__other", "module": "adv1d_default_model",
+             "kind": "operation", "node_key": profile, "defined_in": "adv1d_default_model.f90"}]
         expected = [f"optimization_unit member {profile!r} is a profile; a profile is a "
                     f"compile-time selection policy resolved by the host and not a certified "
                     f"node (issue #175)"]
@@ -1742,12 +1672,10 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         doc["target_lowering_plan"].pop("fusion", None)
         doc["files"] = [
             _file("adv1d_default_model.f90", "model", profile, modules=["adv1d_default_model"]),
-            _file("adv1d_default_checks.f90", "checks", profile, modules=["adv1d_default_checks"]),
         ]
         doc["entrypoints"] = [
-            {"symbol": "case_run", "module": "adv1d_default_checks", "kind": "checks_interface",
-             "node_key": profile, "defined_in": "adv1d_default_checks.f90"}]
-        doc["state_bindings"] = []
+            {"symbol": "adv1d_default__other", "module": "adv1d_default_model",
+             "kind": "operation", "node_key": profile, "defined_in": "adv1d_default_model.f90"}]
         violations = cb.validate_bundle(doc)
         self.assertEqual(len(violations), 1, violations)
         emitted = violations[0]
@@ -1770,16 +1698,6 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
             [q for q in quoted if q in perturbed],
             "the quote matched a perturbed message too, so it pins nothing about the refusal.")
 
-    def test_extra_checks_interface_entrypoints_are_allowed(self) -> None:
-        # Only `operation` is one-per-member; the checks surface is a fixed ABI and may have
-        # several checks_interface entrypoints.
-        doc = _minimal_bundle()
-        for symbol in ("case_setup", "case_run"):
-            doc["entrypoints"].append(
-                {"symbol": symbol, "kind": "checks_interface", "node_key": ADV,
-                 "defined_in": "adv1d_checks.f90", "module": "adv1d_checks"})
-        self.assertEqual(cb.validate_bundle(doc), [])
-
     def test_entrypoint_outside_the_unit_is_rejected(self) -> None:
         doc = _multi_node_bundle()
         doc["entrypoints"][0]["node_key"] = "component/other@0.1.0"
@@ -1788,7 +1706,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
 
     def test_file_member_outside_the_unit_is_rejected(self) -> None:
         doc = _multi_node_bundle()
-        _find(doc["files"], "adv1d_checks.f90")["member_node_key"] = "component/other@0.1.0"
+        doc["files"].append(_file("adv1d_extra.f90", "helper", "component/other@0.1.0"))
         self.assertTrue(any("is not a member of optimization_unit" in v
                             for v in cb.validate_bundle(doc)))
 
@@ -1820,7 +1738,6 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
             "adv1d_model.o", "adv_flux_model.o",
             "unit_types.o",
-            "adv1d_checks.o", "adv_flux_checks.o",
         ])
 
     def test_a_member_that_is_also_a_dependency_is_not_staged_twice(self) -> None:
@@ -1974,7 +1891,7 @@ class ContractPlumbingTest(unittest.TestCase):
         # schema-only consumer rejects an incompatible major at the schema boundary
         self.assertEqual(self.schema["properties"]["bundle_schema_version"]["pattern"],
                          cb.BUNDLE_SCHEMA_VERSION_PATTERN)
-        self.assertEqual(cb.BUNDLE_SCHEMA_VERSION_PATTERN, r"^1\.[0-9]+\.[0-9]+(?![\s\S])")
+        self.assertEqual(cb.BUNDLE_SCHEMA_VERSION_PATTERN, r"^2\.[0-9]+\.[0-9]+(?![\s\S])")
 
     def test_schema_patterns_use_portable_end_of_string_anchor(self) -> None:
         # `^` … `(?![\s\S])`, not `^` … `$`: under Python regex `$` also matches before a
@@ -2035,7 +1952,7 @@ class ContractPlumbingTest(unittest.TestCase):
         version = self.schema["properties"]["bundle_schema_version"]["pattern"]
         token = self.schema["definitions"]["capability_token"]["pattern"]
         node = self.schema["definitions"]["node_key"]["pattern"]
-        for pattern, good in ((version, "1.0.0"), (token, "sync_single_case@1"),
+        for pattern, good in ((version, cb.CODEGEN_BUNDLE_SCHEMA_VERSION), (token, "sync_single_case@1"),
                              (node, "problem/adv1d@0.1.0")):
             compiled = re.compile(pattern)
             self.assertTrue(compiled.search(good))
@@ -2045,9 +1962,7 @@ class ContractPlumbingTest(unittest.TestCase):
         self.assertEqual(entrypoint["symbol"]["pattern"], cb.IDENTIFIER_PATTERN)
         self.assertEqual(tuple(entrypoint["kind"]["enum"]), cb.ENTRYPOINT_KINDS)
         self.assertEqual(entrypoint["kind"]["x-role-for-kind"], cb.ROLE_FOR_ENTRYPOINT_KIND)
-        binding = self.schema["properties"]["state_bindings"]["items"]["properties"]
-        for key in ("state_variable", "storage_symbol"):
-            self.assertEqual(binding[key]["pattern"], cb.IDENTIFIER_PATTERN)
+        self.assertNotIn("state_bindings", self.schema["properties"])
         self.assertEqual(
             self.capability_schema["properties"]["manifests"]["items"]["properties"]["node_key"]
             ["pattern"],
@@ -2082,17 +1997,12 @@ class ContractPlumbingTest(unittest.TestCase):
         # member_node_key keeps the node_key GRAMMAR in its nullable branch
         self.assertEqual(self._files_property("member_node_key")["oneOf"],
                          [{"$ref": "#/definitions/node_key"}, {"type": "null"}])
-        self.assertEqual(
-            properties["state_bindings"]["items"]["properties"]["capability"]["oneOf"],
-            [{"$ref": "#/definitions/capability_token"}, {"type": "null"}])
 
     def test_schema_required_lists_match_the_module(self) -> None:
         properties = self.schema["properties"]
         entrypoint_properties = properties["entrypoints"]["items"]["properties"]
-        binding_properties = properties["state_bindings"]["items"]["properties"]
         # the node_key GRAMMAR, not merely "a string", on every node_key-bearing field
         self.assertEqual(entrypoint_properties["node_key"], {"$ref": "#/definitions/node_key"})
-        self.assertEqual(binding_properties["node_key"], {"$ref": "#/definitions/node_key"})
         self.assertEqual(
             properties["target_lowering_plan"]["properties"]["fusion"]["items"]["required"],
             ["members"])
@@ -2100,12 +2010,6 @@ class ContractPlumbingTest(unittest.TestCase):
                          ["defined_in", "kind", "module", "node_key", "symbol"])
         self.assertEqual(
             properties["entrypoints"]["items"]["properties"]["module"]["pattern"],
-            cb.IDENTIFIER_PATTERN)
-        self.assertEqual(sorted(properties["state_bindings"]["items"]["required"]),
-                         ["capability", "capture", "module", "node_key", "state_variable",
-                          "storage_symbol"])
-        self.assertEqual(
-            properties["state_bindings"]["items"]["properties"]["module"]["pattern"],
             cb.IDENTIFIER_PATTERN)
         capability = self.capability_schema["properties"]
         self.assertEqual(sorted(self.capability_schema["required"]),
@@ -2195,12 +2099,6 @@ class ContractPlumbingTest(unittest.TestCase):
         self.assertEqual(tuple(plan["properties"]["state_residency"]["enum"]), cb.STATE_RESIDENCIES)
         self.assertEqual(plan["properties"]["state_residency"]["x-required-capability-name"],
                          cb.RESIDENCY_REQUIRED_CAPABILITY)
-
-    def test_schema_state_binding_capture_matches_the_module(self) -> None:
-        binding = self.schema["properties"]["state_bindings"]["items"]["properties"]
-        self.assertEqual(tuple(binding["capture"]["enum"]), cb.STATE_CAPTURES)
-        self.assertEqual(binding["capture"]["x-capability-name-for-capture"],
-                         cb.CAPABILITY_FOR_CAPTURE)
 
     def test_schema_version_marker_matches_the_module(self) -> None:
         self.assertEqual(
@@ -2526,7 +2424,7 @@ class ContractPlumbingTest(unittest.TestCase):
 
     def test_ordered_requirements_keep_requirement_order(self) -> None:
         # Every iterable that HAS an order keeps it — only a set is re-ordered.
-        tokens = ["sync_single_case@1", "state_registration@1", "full_state_capture@1"]
+        tokens = ["sync_single_case@1", "trusted_reductions@1", "full_state_capture@1"]
         for required in (tokens, tuple(tokens), iter(tokens), (t for t in tokens)):
             with self.subTest(kind=type(required).__name__):
                 self.assertEqual(cb.unsatisfied_capability_requirements(required, None), tokens)
@@ -2588,20 +2486,21 @@ class ContractPlumbingTest(unittest.TestCase):
 
     def test_major_version_mismatch_is_terminal(self) -> None:
         doc = _minimal_bundle()
-        doc["bundle_schema_version"] = "2.0.0"
+        doc["bundle_schema_version"] = "3.0.0"
         doc["files"] = []  # would raise several other clauses under a matching major
         violations = cb.validate_bundle(doc)
         self.assertEqual(len(violations), 1)
-        self.assertIn("bundle_schema_version major 2 is not supported", violations[0])
+        self.assertIn("bundle_schema_version major 3 is not supported", violations[0])
 
     def test_schema_version_pattern_rejects_an_incompatible_major(self) -> None:
-        # A schema-only consumer (structured generation) must reject a non-1 major at the
-        # schema boundary — the declarative pattern agrees with validate_bundle, not just the
-        # generic semver shape.
+        # A schema-only consumer (structured generation) must reject another major at the schema
+        # boundary — the declarative pattern agrees with validate_bundle, not just the generic
+        # semver shape. `1.x` is the shape that carried a checks module.
         pattern = re.compile(self.schema["properties"]["bundle_schema_version"]["pattern"])
-        self.assertTrue(pattern.fullmatch("1.0.0"))
-        self.assertTrue(pattern.fullmatch("1.9.3"))
-        for bad in ("2.0.0", "0.9.0", "10.0.0"):
+        self.assertTrue(pattern.fullmatch("2.0.0"))
+        self.assertTrue(pattern.fullmatch("2.9.3"))
+        self.assertTrue(pattern.fullmatch(cb.CODEGEN_BUNDLE_SCHEMA_VERSION))
+        for bad in ("1.0.0", "1.9.3", "3.0.0", "0.9.0", "20.0.0"):
             with self.subTest(version=bad):
                 self.assertIsNone(pattern.fullmatch(bad))
                 # and the canonical validator agrees
@@ -2610,7 +2509,7 @@ class ContractPlumbingTest(unittest.TestCase):
 
     def test_minor_and_patch_drift_is_accepted(self) -> None:
         doc = _minimal_bundle()
-        doc["bundle_schema_version"] = "1.4.2"
+        doc["bundle_schema_version"] = "2.4.2"
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_compatibility_is_backward_only_a_new_minor_field_is_rejected(self) -> None:
@@ -2619,11 +2518,11 @@ class ContractPlumbingTest(unittest.TestCase):
         # know is rejected by the closed-object checks — the closure is never relaxed for
         # forward compatibility, or a command could ride in on an unknown key.
         doc = _minimal_bundle()
-        doc["bundle_schema_version"] = "1.9.0"
+        doc["bundle_schema_version"] = "2.9.0"
         doc["a_field_a_future_minor_adds"] = {"x": 1}
         self.assertIn("unknown key 'a_field_a_future_minor_adds' (the object is closed)",
                       cb.validate_bundle(doc))
-        # the same version using only known fields validates (a valid 1.0-subset document)
+        # the same version using only known fields validates (a valid 2.0-subset document)
         doc.pop("a_field_a_future_minor_adds")
         self.assertEqual(cb.validate_bundle(doc), [])
 
@@ -2638,7 +2537,8 @@ class ContractPlumbingTest(unittest.TestCase):
                 self.assertEqual(cb.validate_bundle(value), ["bundle must be a JSON object"])
 
     def test_missing_required_keys_are_reported(self) -> None:
-        violations = cb.validate_bundle({"bundle_schema_version": "1.0.0"})
+        violations = cb.validate_bundle(
+            {"bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION})
         for key in cb.REQUIRED_BUNDLE_KEYS[1:]:
             self.assertIn(f"{key} is required", violations)
 
@@ -2648,7 +2548,7 @@ class ContractPlumbingTest(unittest.TestCase):
         violations = cb.validate_bundle(doc)
         self.assertTrue(any("requires a async_device_resident@N capability" in v
                             for v in violations))
-        doc["capability_requirements"] = ["async_device_resident@1", "state_registration@1"]
+        doc["capability_requirements"] = ["async_device_resident@1"]
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_distributed_residency_requires_a_distributed_state_capability(self) -> None:
@@ -2656,206 +2556,7 @@ class ContractPlumbingTest(unittest.TestCase):
         doc["target_lowering_plan"]["state_residency"] = "distributed"
         violations = cb.validate_bundle(doc)
         self.assertTrue(any("requires a distributed_state@N capability" in v for v in violations))
-        doc["capability_requirements"] = [
-            "sync_single_case@1", "distributed_state@1", "state_registration@1"]
-        self.assertEqual(cb.validate_bundle(doc), [])
-
-    def test_harness_registration_binding_requires_its_capability(self) -> None:
-        doc = _minimal_bundle()
-        doc["capability_requirements"] = ["sync_single_case@1"]
-        violations = cb.validate_bundle(doc)
-        self.assertTrue(any("is not declared in capability_requirements" in v
-                            for v in violations))
-        # declare the token and the same bundle validates
-        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
-        self.assertEqual(cb.validate_bundle(doc), [])
-
-    def test_declared_state_registration_requires_a_binding(self) -> None:
-        # The coupling holds in both directions: an unused capability requirement would
-        # make the negotiated ABI wider than the bundle's actual use.
-        doc = _minimal_bundle()
-        doc["state_bindings"] = []
-        violations = cb.validate_bundle(doc)
-        self.assertTrue(any("no state_bindings[] entry captures through" in v
-                            for v in violations))
-
-    def test_reverse_coupling_is_per_registration_version(self) -> None:
-        # A @1 binding does not license an unused @2 requirement — that negotiates a wider
-        # ABI than the bundle uses. The coupling is per token, not "at least one binding".
-        doc = _minimal_bundle()
-        doc["capability_requirements"] = [
-            "sync_single_case@1", "state_registration@1", "state_registration@2"]
-        doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q_storage",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-        ]
-        self.assertIn(
-            "capability_requirements declares state_registration@2 but no state_bindings[] "
-            "entry captures through 'harness_registration' with it",
-            cb.validate_bundle(doc))
-        # binding both versions clears it
-        doc["state_bindings"].append(
-            {"node_key": ADV, "state_variable": "p", "storage_symbol": "p_storage",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@2"})
-        self.assertEqual(cb.validate_bundle(doc), [])
-
-    def test_binding_declares_the_module_that_exports_its_storage_symbol(self) -> None:
-        # Z2 renders `use <module>, only: <storage_symbol>`; a member may have several checks
-        # files with freely chosen module names, so the exporting module is a declared field.
-        doc = _minimal_bundle()
-        del doc["state_bindings"][0]["module"]
-        self.assertIn("state_bindings[0].module is required", cb.validate_bundle(doc))
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["module"] = "9 not an identifier"
-        self.assertIn("state_bindings[0].module must be an identifier", cb.validate_bundle(doc))
-        # ambiguity the field resolves: a member with two checks files is now unambiguous
-        doc = _minimal_bundle()
-        doc["files"].append(_file("adv1d_extra_checks.f90", "checks", ADV))
-        self.assertEqual(cb.validate_bundle(doc), [])  # the binding names its module
-
-    def test_a_binding_without_a_capability_is_refused(self) -> None:
-        # Bundle 1.1.0 admitted `capability: null` for the retired `checks_getter` capture;
-        # the one remaining capture always names its token.
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["capability"] = None
-        violations = cb.validate_bundle(doc)
-        self.assertTrue(any("requires a state_registration@N capability" in v
-                            for v in violations), violations)
-
-    def test_binding_module_must_be_a_checks_module_of_its_member(self) -> None:
-        # A binding reads/registers storage_symbol from `module`; that module must be defined
-        # by a checks-role file OWNED BY THIS MEMBER (for either capture).
-        doc = _minimal_bundle()  # adv1d_checks.f90 (module adv1d_checks) for ADV + binding
-        self.assertEqual(cb.validate_bundle(doc), [])
-        # drop the checks file entirely: the module no longer exists -> rejected
-        doc["files"] = [f for f in doc["files"] if f["role"] != "checks"]
-        self.assertTrue(any(
-            "module 'adv1d_checks' must be defined by a checks-role file owned by member"
-            in v for v in cb.validate_bundle(doc)))
-
-    def test_binding_module_may_not_belong_to_another_member(self) -> None:
-        # The bypass Codex found: a binding for FLUX naming ADV's checks module captures ADV's
-        # storage as FLUX's state. Both members own a checks file, yet this must be rejected.
-        # (Written over both captures while `checks_getter` existed; one capture remains.)
-        for capture, capability, requirements in (
-                ("harness_registration", "state_registration@1",
-                 ["sync_single_case@1", "state_registration@1"]),):
-            with self.subTest(capture=capture):
-                doc = _multi_node_bundle()
-                doc["capability_requirements"] = requirements
-                doc["state_bindings"] = [
-                    {"node_key": FLUX, "state_variable": "u", "storage_symbol": "u",
-                     "module": "adv1d_checks",  # ADV's checks module, not FLUX's
-                     "capture": capture, "capability": capability},
-                ]
-                self.assertTrue(any(
-                    "must be defined by a checks-role file owned by member" in v and FLUX in v
-                    for v in cb.validate_bundle(doc)))
-                # naming FLUX's own checks module is valid
-                doc["state_bindings"][0]["module"] = "adv_flux_checks"
-                self.assertEqual(cb.validate_bundle(doc), [])
-
-    def test_harness_registration_module_is_ownership_checked(self) -> None:
-        # Codex's finding: harness_registration validated only the capability, not the module.
-        doc = _multi_node_bundle()
-        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
-        doc["state_bindings"] = [
-            {"node_key": FLUX, "state_variable": "u", "storage_symbol": "u_storage",
-             "module": "does_not_exist",  # no file defines this module
-             "capture": "harness_registration", "capability": "state_registration@1"},
-        ]
-        self.assertTrue(any("must be defined by a checks-role file owned by member" in v
-                            for v in cb.validate_bundle(doc)))
-
-    def test_binding_module_must_be_a_checks_role_file_not_the_model(self) -> None:
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["module"] = "adv1d_model"  # exists, but role=model
-        self.assertTrue(any("must be defined by a checks-role file owned by member" in v
-                            for v in cb.validate_bundle(doc)))
-
-    def test_harness_registration_rejects_the_wrong_capability(self) -> None:
-        doc = _minimal_bundle()
-        doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q_storage",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "sync_single_case@1"},
-        ]
-        violations = cb.validate_bundle(doc)
-        self.assertTrue(any("requires a state_registration@N capability" in v for v in violations))
-
-    def test_state_binding_node_must_be_a_member(self) -> None:
-        doc = _minimal_bundle()
-        doc["state_bindings"][0]["node_key"] = "component/other@0.1.0"
-        self.assertTrue(any("is not a member of optimization_unit" in v
-                            for v in cb.validate_bundle(doc)))
-
-    def test_duplicate_binding_for_one_state_variable_is_rejected(self) -> None:
-        # Two bindings for the same (node_key, state_variable) leave the primary-state
-        # mapping ambiguous — a consumer could register/read different storage for one state.
-        doc = _minimal_bundle()
-        doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q_other",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-        ]
-        self.assertIn(
-            f"state_bindings[1].duplicate binding for state_variable 'q' of member {ADV!r}",
-            cb.validate_bundle(doc))
-
-    def test_same_variable_name_on_distinct_members_is_allowed(self) -> None:
-        # The identity is (node_key, state_variable): two members may each bind their own `q`.
-        doc = _multi_node_bundle()
-        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
-        doc["state_bindings"] = [
-            {"node_key": FLUX, "state_variable": "q", "storage_symbol": "q",
-             "module": "adv_flux_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-        ]
-        self.assertEqual(cb.validate_bundle(doc), [])
-
-    def test_two_registration_states_may_not_share_one_storage(self) -> None:
-        # For harness_registration the storage_symbol IS the registered storage, so two
-        # variables sharing it register the same storage for two states — corrupt evidence.
-        doc = _minimal_bundle()
-        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
-        doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q_storage",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-            {"node_key": ADV, "state_variable": "p", "storage_symbol": "q_storage",  # shared
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-        ]
-        self.assertTrue(any("is already registered by state_variable" in v
-                            for v in cb.validate_bundle(doc)))
-
-    def test_two_variables_bound_to_distinct_storage_are_accepted(self) -> None:
-        # Each state has its own storage; the duplicate-storage rule is about SHARED storage.
-        doc = _minimal_bundle()
-        doc["state_bindings"] = [
-            {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-            {"node_key": ADV, "state_variable": "p", "storage_symbol": "p",
-             "module": "adv1d_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"},
-        ]
-        self.assertEqual(cb.validate_bundle(doc), [])
-
-    def test_state_bindings_may_be_absent(self) -> None:
-        # At the SCHEMA layer only (the harness shape omits the key); the pure contract's
-        # m3c layer requires it — `PureStateBindingLayerTests`.
-        doc = _minimal_bundle()
-        del doc["state_bindings"]
-        doc["capability_requirements"] = ["sync_single_case@1"]
+        doc["capability_requirements"] = ["sync_single_case@1", "distributed_state@1"]
         self.assertEqual(cb.validate_bundle(doc), [])
 
     def test_invariants_do_not_run_on_a_structurally_broken_document(self) -> None:
@@ -2884,14 +2585,12 @@ class PromptContractedBundleShapesTest(unittest.TestCase):
     @staticmethod
     def _problem_bundle() -> dict:
         # S1 (`capability_requirements == ["sync_single_case@1"]`), S2 (`state_residency ==
-        # "host"`), S3 (a `problem` node publishes EXACTLY ONE operation entrypoint). No
-        # `state_bindings`: the IR declares no algorithm.state_variables, so the leaf omits it.
+        # "host"`), S3 (one `operation` entrypoint per name the IR publishes).
         return {
-            "bundle_schema_version": "1.0.0",
+            "bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION,
             "optimization_unit": {"members": [ADV]},
             "files": [
                 _file("adv1d_model.f90", "model", ADV),
-                _file("adv1d_checks.f90", "checks", ADV),
             ],
             "entrypoints": [
                 {"symbol": "adv1d__apply", "kind": "operation", "node_key": ADV,
@@ -2906,11 +2605,10 @@ class PromptContractedBundleShapesTest(unittest.TestCase):
     def _component_bundle() -> dict:
         # S3: a `component` node publishes ONE OR MORE operation entrypoints.
         return {
-            "bundle_schema_version": "1.0.0",
+            "bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION,
             "optimization_unit": {"members": [FLUX]},
             "files": [
                 _file("adv_flux_model.f90", "model", FLUX),
-                _file("adv_flux_checks.f90", "checks", FLUX),
             ],
             "entrypoints": [
                 {"symbol": "adv_flux__apply", "kind": "operation", "node_key": FLUX,
@@ -2951,53 +2649,31 @@ class PublishedOperationsFromIrTests(unittest.TestCase):
 class PurePublishedSurfacePinTests(unittest.TestCase):
     """L1c: `pure_bundle_contract_violation`'s component published-surface layer — the bundle's
     `operation` entrypoint symbols must equal the IR public_api published surface (casefold).
-    Inert on `ir_published_operations=None` (legacy IR) and on a non-component node."""
+    Inert on `ir_published_operations=None` (legacy IR)."""
 
-    _CHECKS_OK = (
-        "module bx_checks\n"
-        "  use, intrinsic :: iso_fortran_env, only: real64\n"
-        "  ! allow(C003)\n"
-        "  implicit none\n"
-        "  private\n"
-        "  real(real64), allocatable :: q(:)\n"
-        "  public :: case_setup, case_run, get_time\n"
-        "  public :: q\n"
-        "contains\n"
-        "  subroutine case_setup(case_id, ok)\n"
-        "    character(len=*), intent(in) :: case_id\n"
-        "    logical, intent(out) :: ok\n"
-        "    ok = .true.\n"
-        "  end subroutine case_setup\n"
-        "end module bx_checks\n")
     _MODEL_OK = "module bx_model\n! allow(C003)\nimplicit none\nend module bx_model\n"
 
     def _bundle(self, member: str, op_symbols: "list[str]") -> dict:
         return {
-            "bundle_schema_version": "1.0.0",
+            "bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION,
             "optimization_unit": {"members": [member]},
             "files": [
                 {"logical_path": "bx_model.f90", "role": "model", "language": "fortran",
                  "member_node_key": member, "content": self._MODEL_OK, "modules": ["bx_model"]},
-                {"logical_path": "bx_checks.f90", "role": "checks", "language": "fortran",
-                 "member_node_key": member, "content": self._CHECKS_OK, "modules": ["bx_checks"]},
             ],
             "entrypoints": [
                 {"symbol": s, "kind": "operation", "node_key": member,
                  "defined_in": "bx_model.f90", "module": "bx_model"} for s in op_symbols],
             "target_lowering_plan": {"precision": {"real_kind": "real64"},
                                      "state_residency": "host"},
-            "capability_requirements": ["sync_single_case@1", "state_registration@1"],
-            "state_bindings": [
-                {"node_key": member, "state_variable": "q", "storage_symbol": "q",
-                 "module": "bx_checks", "capture": "harness_registration",
-                 "capability": "state_registration@1"}],
+            "capability_requirements": ["sync_single_case@1"],
         }
 
     def _run(self, doc: dict, node_key: str, ir_published):
         return cb.pure_bundle_contract_violation(
             doc, node_key=node_key, spec_id="bx", shape="m3c",
-            language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
-            harness_provided={"sync_single_case@1", "state_registration@1"},
+            language="fortran", runner_basename="bx_runner.f90",
+            harness_provided={"sync_single_case@1"},
             build_graph=lambda d: None, ir_published_operations=ir_published)
 
     _NK = "component/bx@0.1.0"
@@ -3048,23 +2724,19 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         self.assertEqual(cb.L1C_PUBLISHED_SURFACE_SPEC_KINDS,
                          Conductor._LEAF_IR_PUBLIC_API_KINDS)
 
-    def test_non_pinned_node_kind_is_inert(self) -> None:
-        # A `problem` node's surface is derived post-hoc, not pinned against §5 here; passing a
-        # pin must not trip the surface layer (its spec_kind is not in
-        # L1C_PUBLISHED_SURFACE_SPEC_KINDS). `profile` used to be this row's subject and cannot
-        # be one any more — since issue #175 `validate_bundle` refuses a profile member.
+    def test_a_problem_node_is_pinned_too(self) -> None:
+        # Issue #589 D3: a problem's published operations are its IR's, `__init` and `__step`
+        # among them, and the driver calls them by those names.
         nk = "problem/bx@0.1.0"
-        doc = self._bundle(nk, [])
-        doc["entrypoints"] = [
-            {"symbol": "case_run", "kind": "checks_interface", "node_key": nk,
-             "defined_in": "bx_checks.f90", "module": "bx_checks"},
-            # A `problem` publishes exactly one operation, and it is deliberately NOT the
-            # `bx__anything` the pin names: the surface layer must stay inert on this kind
-            # even when the published name disagrees.
-            {"symbol": "bx__advance", "kind": "operation", "node_key": nk,
-             "defined_in": "bx_model.f90", "module": "bx_model"}]
-        self.assertNotIn("problem", cb.L1C_PUBLISHED_SURFACE_SPEC_KINDS)
-        self.assertIsNone(self._run(doc, nk, ["bx__anything"]))
+        self.assertIn("problem", cb.L1C_PUBLISHED_SURFACE_SPEC_KINDS)
+        self.assertIsNone(self._run(self._bundle(nk, ["bx__init", "bx__step"]), nk,
+                                    ["bx__step", "bx__init"]))
+        r = self._run(self._bundle(nk, ["bx__step"]), nk, ["bx__step", "bx__init"])
+        self.assertEqual(r[0], "bundle_published_surface_mismatch")
+        self.assertIn("bx__init", r[1])
+        r = self._run(self._bundle(nk, ["bx__step", "bx__extra"]), nk, ["bx__step"])
+        self.assertEqual(r[0], "bundle_published_surface_mismatch")
+        self.assertIn("bx__extra", r[1])
 
 
 class RunnerRoleTest(unittest.TestCase):
@@ -3074,7 +2746,7 @@ class RunnerRoleTest(unittest.TestCase):
 
     def _harness_bundle(self) -> dict:
         return {
-            "bundle_schema_version": "1.1.0",
+            "bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION,
             "optimization_unit": {"members": [HARNESS]},
             "files": [
                 _file("harness_fortran_cpu_model.f90", "model", HARNESS,
@@ -3089,7 +2761,6 @@ class RunnerRoleTest(unittest.TestCase):
             "target_lowering_plan": {"precision": {"real_kind": "real64"},
                                      "state_residency": "host"},
             "capability_requirements": ["sync_single_case@1"],
-            "state_bindings": [],
         }
 
     def test_the_role_refusal_names_the_roles_and_denies_no_admissible_one(self) -> None:
@@ -3127,7 +2798,7 @@ class RunnerRoleTest(unittest.TestCase):
         doc = self._harness_bundle()
         _find(doc["files"], "harness_fortran_cpu_runner.f90")["modules"] = ["hfc_runner"]
         doc["entrypoints"].append(
-            {"symbol": "harness_fortran_cpu__x", "kind": "checks_interface",
+            {"symbol": "harness_fortran_cpu__x", "kind": "operation",
              "node_key": HARNESS, "defined_in": "harness_fortran_cpu_runner.f90",
              "module": "hfc_runner"})
         self.assertTrue(any("which cannot define an entrypoint" in v
@@ -3205,219 +2876,96 @@ class RunnerRoleTest(unittest.TestCase):
         self.assertIn("object name collision", str(ctx.exception))
 
 
-class PureStateBindingLayerTests(unittest.TestCase):
-    """Z6 (issue #255): the m3c state-binding layer of `pure_bundle_contract_violation`. The
-    host-rendered runner is rendered from the IR alone as `use <spec_id>_checks, only:
-    sb_<var> => <var>` for every snapshot variable, so a bundle is accepted only when its
-    `state_bindings[]` DECLARE exactly that convention for exactly that set — and the checks
-    ABI layer then requires each bound variable to be published. Pinned at the handler
-    (`pure_bundle_contract_violation`), not the helper, so a caller that stopped passing the
-    snapshot set could not stay green."""
+class PureContractLayersTests(unittest.TestCase):
+    """What `pure_bundle_contract_violation` still holds an M3c bundle to past the schema: the
+    single-node unit, the host-rendered runner's literal names, assembly, and what the conductor's
+    acceptance entry hands it. (The state-binding, bound-state and checks-ABI layers that stood
+    here went with the leaf-authored checks module, issue #589 PR-1b.)"""
 
-    _CHECKS = PurePublishedSurfacePinTests._CHECKS_OK
-    _MODEL = PurePublishedSurfacePinTests._MODEL_OK
     _NK = "problem/bx@0.1.0"
 
-    def _binding(self, var: str, **over) -> dict:
-        b = {"node_key": self._NK, "state_variable": var, "storage_symbol": var,
-             "module": "bx_checks", "capture": "harness_registration",
-             "capability": "state_registration@1"}
-        b.update(over)
-        return b
-
-    def _bundle(self, bindings: "list[dict] | None", checks: str | None = None) -> dict:
-        doc = {
-            "bundle_schema_version": "1.2.0",
+    def _bundle(self) -> dict:
+        return {
+            "bundle_schema_version": cb.CODEGEN_BUNDLE_SCHEMA_VERSION,
             "optimization_unit": {"members": [self._NK]},
             "files": [
                 {"logical_path": "bx_model.f90", "role": "model", "language": "fortran",
-                 "member_node_key": self._NK, "content": self._MODEL, "modules": ["bx_model"]},
-                {"logical_path": "bx_checks.f90", "role": "checks", "language": "fortran",
-                 "member_node_key": self._NK, "content": checks or self._CHECKS,
-                 "modules": ["bx_checks"]},
+                 "member_node_key": self._NK, "content": "module bx_model\nend module bx_model\n",
+                 "modules": ["bx_model"]},
             ],
             "entrypoints": [
-                {"symbol": "bx__apply", "kind": "operation", "node_key": self._NK,
+                {"symbol": "bx__step", "kind": "operation", "node_key": self._NK,
                  "defined_in": "bx_model.f90", "module": "bx_model"}],
             "target_lowering_plan": {"precision": {"real_kind": "real64"},
                                      "state_residency": "host"},
-            "capability_requirements": ["sync_single_case@1", "state_registration@1"],
+            "capability_requirements": ["sync_single_case@1"],
         }
-        if bindings is not None:
-            doc["state_bindings"] = bindings
-        if not bindings:  # no binding carries the token, so the bundle may not declare it
-            doc["capability_requirements"] = ["sync_single_case@1"]
-        return doc
 
-    def _run(self, doc: dict, snapshot_vars, shape: str = "m3c"):
-        return cb.pure_bundle_contract_violation(
-            doc, node_key=self._NK, spec_id="bx", shape=shape,
-            language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=snapshot_vars,
-            harness_provided={"sync_single_case@1", "state_registration@1"},
-            build_graph=lambda d: None, ir_published_operations=None)
+    def _run(self, doc: dict, **kw):
+        params = dict(node_key=self._NK, spec_id="bx", shape="m3c", language="fortran",
+                      runner_basename="bx_runner.f90", harness_provided={"sync_single_case@1"},
+                      build_graph=lambda d: None, ir_published_operations=None)
+        params.update(kw)
+        return cb.pure_bundle_contract_violation(doc, **params)
 
-    def test_the_binding_layer_is_given_the_target_language(self) -> None:
-        # Its reasons are the runner language's words (issue #289, R4-b PR-4), so the layer
-        # must be handed the TARGET's language, not a fixed one — observable only with a
-        # language other than the one every fixture uses.
-        doc = self._bundle([self._binding("q")])
-        with mock.patch.object(cb, "_m3c_state_binding_mismatch",
-                               return_value="stop here") as layer:
-            r = cb.pure_bundle_contract_violation(
-                doc, node_key=self._NK, spec_id="bx", shape="m3c", language="zz_target",
-                runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
-                harness_provided={"sync_single_case@1", "state_registration@1"},
-                build_graph=lambda d: None, ir_published_operations=None)
-        self.assertEqual(r, ("bundle_state_binding_mismatch", "stop here"))
-        self.assertEqual(layer.call_args.kwargs, {"language": "zz_target"})
+    def test_the_model_alone_is_accepted(self) -> None:
+        self.assertIsNone(self._run(self._bundle()))
+
+    def test_the_host_rendered_runner_s_names_are_required(self) -> None:
+        for mutate, cue in (
+                (lambda d: d["files"][0].update(logical_path="other.f90") or
+                 d["entrypoints"][0].update(defined_in="other.f90"), "must be named 'bx_model.f90'"),
+                (lambda d: d["files"][0].update(modules=["other"]) or
+                 d["entrypoints"][0].update(module="other"), "must declare module 'bx_model'")):
+            with self.subTest(cue=cue):
+                doc = self._bundle()
+                mutate(doc)
+                self.assertEqual(cb.validate_bundle(doc), [])
+                r = self._run(doc)
+                self.assertEqual(r[0], "bundle_assembly_collision", r)
+                self.assertIn(cue, r[1])
+
+    def test_a_retired_requirement_is_a_schema_violation_not_an_unsatisfied_one(self) -> None:
+        doc = self._bundle()
+        doc["capability_requirements"].append("state_registration@1")
+        self.assertEqual(self._run(doc)[0], "bundle_schema_violation")
+
+    def test_an_unknown_harness_satisfies_nothing(self) -> None:
+        r = self._run(self._bundle(), harness_provided=None)
+        self.assertEqual(r[0], "bundle_capability_unsatisfied")
+        self.assertIn("sync_single_case@1", r[1])
 
     def test_an_in_bundle_object_collision_is_an_assembly_finding(self) -> None:
         """Two bundle files deriving one object name reach the leaf as
         `bundle_assembly_collision` from the build graph — the one place the target build
         system's object-name rule is applied (issue #424 PR-2; `validate_bundle` reported it
         as a schema violation until then, without knowing the build system)."""
-        doc = self._bundle([self._binding("q")])
+        doc = self._bundle()
         for path, stem in (("a/b.f90", "bx_h1"), ("A__B.f90", "bx_h2")):
             doc["files"].append({"logical_path": path, "role": "helper", "language": "fortran",
                                  "member_node_key": self._NK,
                                  "content": f"module {stem}\nend module {stem}\n",
                                  "modules": [stem]})
         self.assertEqual(cb.validate_bundle(doc), [])
-        r = cb.pure_bundle_contract_violation(
-            doc, node_key=self._NK, spec_id="bx", shape="m3c",
-            language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
-            harness_provided={"sync_single_case@1", "state_registration@1"},
-            build_graph=lambda d: cb.derive_build_graph(
-                d, toolchain={"build_system": "make", "language": "fortran"},
-                host_glue_sources=("bx_runner.f90",)),
-            ir_published_operations=None)
+        r = self._run(doc, build_graph=lambda d: cb.derive_build_graph(
+            d, toolchain={"build_system": "make", "language": "fortran"},
+            host_glue_sources=("bx_runner.f90",)))
         self.assertIsNotNone(r)
         self.assertEqual(r[0], "bundle_assembly_collision", r)
         self.assertIn("object name collision", r[1])
 
-    def test_the_convention_is_accepted(self) -> None:
-        self.assertIsNone(self._run(self._bundle([self._binding("q")]), ["q"]))
-        # the IR's object form is projected the same way
-        self.assertIsNone(self._run(self._bundle([self._binding("q")]),
-                                    [{"name": "q", "shape_expr": "[nx]"}]))
-
-    def test_missing_bindings_are_refused_on_m3c(self) -> None:
-        for doc in (self._bundle(None), self._bundle([])):
-            r = self._run(doc, ["q"])
-            self.assertIsNotNone(r)
-            self.assertEqual(r[0], "bundle_state_binding_mismatch")
-            self.assertIn("must bind every snapshot variable", r[1])
-            self.assertIn("'q'", r[1])
-
-    def test_set_equality_in_both_directions(self) -> None:
-        # an unbound snapshot variable (the runner's `use` would not resolve)
-        r = self._run(self._bundle([self._binding("q")]), ["q", "p"])
-        self.assertEqual(r[0], "bundle_state_binding_mismatch")
-        self.assertIn("with no binding: ['p']", r[1])
-        # a binding of an undeclared name (an invented registration)
-        r = self._run(self._bundle([self._binding("q"), self._binding("zz")]), ["q"])
-        self.assertEqual(r[0], "bundle_state_binding_mismatch")
-        self.assertIn("does not declare: ['zz']", r[1])
-        # an EMPTY declared set rejects any binding (fail-closed), never accepts all
-        r = self._run(self._bundle([self._binding("q")]), [])
-        self.assertEqual(r[0], "bundle_state_binding_mismatch")
-
-    def test_each_convention_field_is_pinned(self) -> None:
-        # Each case is built so the EARLIER layers accept it (a second checks-role module the
-        # member owns; a @2 token the harness under test provides), so the refusal observed is
-        # the convention layer's own.
-        for over, needle in (
-                ({"module": "bx_aux_checks"}, "module must be 'bx_checks'"),
-                ({"storage_symbol": "q_storage"}, "storage_symbol must equal its state_variable"),
-                ({"capability": "state_registration@2"},
-                 "capability must be 'state_registration@1'")):
-            with self.subTest(over=over):
-                doc = self._bundle([self._binding("q", **over)])
-                doc["files"].append(
-                    {"logical_path": "bx_aux_checks.f90", "role": "checks", "language": "fortran",
-                     "member_node_key": self._NK,
-                     "content": self._CHECKS.replace("bx_checks", "bx_aux_checks"),
-                     "modules": ["bx_aux_checks"]})
-                if "capability" in over:
-                    doc["capability_requirements"] = ["sync_single_case@1", over["capability"]]
-                r = cb.pure_bundle_contract_violation(
-                    doc, node_key=self._NK, spec_id="bx", shape="m3c",
-                    language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
-                    harness_provided={"sync_single_case@1", "state_registration@1",
-                                      "state_registration@2"},
-                    build_graph=lambda d: None, ir_published_operations=None)
-                self.assertIsNotNone(r, over)
-                self.assertEqual(r[0], "bundle_state_binding_mismatch")
-                self.assertIn(needle, r[1])
-        # the module and the storage symbol compare case-insensitively (Fortran identifiers)
-        self.assertIsNone(self._run(
-            self._bundle([self._binding("q", module="BX_Checks", storage_symbol="Q")]), ["q"]))
-
-    def test_a_capture_other_than_harness_registration_is_unrepresentable(self) -> None:
-        # Refused one layer EARLIER (the schema enum) — the convention layer's own `capture`
-        # branch is then reachable only through a widened enum, which this pins as well.
-        doc = self._bundle([self._binding("q", capture="checks_getter", capability=None)])
-        r = self._run(doc, ["q"])
-        self.assertEqual(r[0], "bundle_schema_violation")
-        self.assertIn("capture must be one of harness_registration", r[1])
-        self.assertIn("checks_getter", cb._m3c_state_binding_mismatch(
-            [self._binding("q", capture="checks_getter")], ["q"], "bx", language="fortran"))
-
-    def test_a_distributed_harness_requires_the_bound_arrays_metadata_published(self) -> None:
-        """Issue #316 (R4-c PR-4): over a harness that runs the program as several ranks, the
-        runner also imports each bound ARRAY's partition metadata, so the acceptance layer holds
-        the checks module to publishing it — resolved from the harness the caller names, and
-        asked only for an array (the IR's `shape_expr`)."""
-        vars_ = [{"name": "q", "shape_expr": "[8]"}, {"name": "s", "shape_expr": "scalar"}]
-        meta = ("sb_q_axis1", "sb_q_lo1", "sb_q_hi1", "sb_q_glo1",
-                "sb_q_axis2", "sb_q_lo2", "sb_q_hi2", "sb_q_glo2")
-        with_s = self._CHECKS.replace("  public :: q\n", "  public :: q, s\n")
-        published = with_s.replace("  public :: q, s\n",
-                                   "  public :: q, s\n  public :: " + ", ".join(meta) + "\n")
-        bindings = [self._binding("q"), self._binding("s")]
-
-        def run(checks: str, harness: str) -> object:
-            return cb.pure_bundle_contract_violation(
-                self._bundle(bindings, checks=checks), node_key=self._NK, spec_id="bx",
-                shape="m3c", language="fortran", runner_basename="bx_runner.f90",
-                ir_snapshot_variables=vars_,
-                harness_provided={"sync_single_case@1", "state_registration@1"},
-                harness_label=harness, build_graph=lambda d: None,
-                ir_published_operations=None)
-
-        mpi = "infrastructure/harness_fortran_cpu_mpi@0.4.0"
-        # What the two production callers pass (`snapshot_variable_entries_from_ir`), not a
-        # hand-built list: round 1 found the callers passing bare names, which left this layer
-        # with no array to ask about — `test_the_conductor_passes_the_shapes` pins the caller.
-        ir = {"io_contract": {"raw_requirements": {"required_evidence": [
-            {"artifact": "state_snapshots", "schema": {"variables": vars_}}]}}}
-        self.assertEqual(cb.snapshot_variable_entries_from_ir(ir), vars_)
-        self.assertEqual(cb.snapshot_variables_from_ir(ir), ["q", "s"])
-        self.assertIsNone(run(published, mpi))
-        r = run(with_s, mpi)
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("naming them): " + ", ".join(meta) + ".", r[1])
-        # The single-process harness, an unnamed one and an unparseable label ask none of it.
-        for harness in ("infrastructure/harness_fortran_cpu@0.10.0", None, "harness_fortran_cpu_mpi"):
-            with self.subTest(harness=harness):
-                self.assertIsNone(run(with_s, harness))
-
-    def test_the_conductor_passes_the_shapes(self) -> None:
-        """The conductor's acceptance entry hands the contract the IR's `{name, shape_expr}`
-        entries, so the distributed-metadata half sees which variables are arrays."""
+    def test_the_conductor_hands_the_contract_the_harness_and_the_published_surface(self) -> None:
+        """The conductor's acceptance entry, driven with its real input derivation: the harness's
+        node key and the IR's published operations reach the contract."""
         from types import SimpleNamespace
-        from unittest import mock
 
-        from tools import workflow_conductor as wc
+        import yaml
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)
             ir_ref = "workspace/ir/problem__bx__0.1.0/ir_1"
             (root / ir_ref).mkdir(parents=True)
-            vars_ = [{"name": "q", "shape_expr": "[8]"}]
-            import yaml
-            (root / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump({"io_contract": {
-                "raw_requirements": {"required_evidence": [
-                    {"artifact": "state_snapshots", "schema": {"variables": vars_}}]}}}))
+            (root / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump({"public_api": {
+                "published_operations": [{"operation_id": "bx__step"}]}}))
             holder = SimpleNamespace(
                 repo_root=root,
                 _leaf_harness_node_key=lambda nk: "infrastructure/harness_fortran_cpu_mpi@0.4.0",
@@ -3431,128 +2979,10 @@ class PureStateBindingLayerTests(unittest.TestCase):
             with mock.patch.object(cb, "pure_bundle_contract_violation",
                                    autospec=True, return_value=None) as spy:
                 wc.Conductor._leaf_bundle_violations(holder, refs, {})
-        self.assertEqual(spy.call_args.kwargs["ir_snapshot_variables"], vars_)
         self.assertEqual(spy.call_args.kwargs["harness_label"],
                          "infrastructure/harness_fortran_cpu_mpi@0.4.0")
-
-    def test_bound_variable_must_be_published_by_the_checks_module(self) -> None:
-        # The ABI layer: a binding whose storage the module does not `public ::` is a `use`
-        # the runner cannot resolve. Same parser and same "published" as the ABI procedures.
-        unpublished = self._CHECKS.replace("  public :: q\n", "")
-        self.assertNotEqual(unpublished, self._CHECKS)
-        r = self._run(self._bundle([self._binding("q")], checks=unpublished), ["q"])
-        self.assertIsNotNone(r)
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("must publish every bound state variable", r[1])
-        self.assertIn("naming them): q.", r[1])
-        # an explicit `private :: q` hides it under either default
-        hidden = self._CHECKS.replace("  public :: q\n", "  private :: q\n")
-        r = self._run(self._bundle([self._binding("q")], checks=hidden), ["q"])
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("naming them): q.", r[1])
-        # under the default-public module nothing needs naming (the language publishes it;
-        # an undeclared name is the syntax gate's), and the comparison is case-insensitive
-        default_public = self._CHECKS.replace("  private\n", "").replace(
-            "  public :: q\n", "")
-        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=default_public),
-                                    ["q"]))
-        upper = self._CHECKS.replace("  public :: q\n", "  public :: Q\n")
-        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=upper), ["q"]))
-
-    def test_a_wrong_kind_alone_is_named_as_such(self) -> None:
-        # The remedy distinguishes a name defined as the wrong kind from an unpublished one: the
-        # two lists reach the backend separately, so a leaf told "publish it" for a name it
-        # already published is not sent round an extra repair (issue #289, round 2).
-        as_function = self._CHECKS.replace(
-            "  subroutine case_setup(case_id, ok)\n", "  function case_setup(case_id) result(ok)\n"
-        ).replace("  end subroutine case_setup\n", "  end function case_setup\n")
-        self.assertNotEqual(as_function, self._CHECKS)
-        r = self._run(self._bundle([self._binding("q")], checks=as_function), ["q"])
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("defined here as a FUNCTION: case_setup", r[1])
-        self.assertNotIn("not published by module", r[1])
-
-    def test_a_remedy_that_cannot_be_stated_still_refuses(self) -> None:
-        # Issue #289 (R4-b PR-4 preconditions): the checks-ABI and bound-state remedies are the
-        # runner backend's words. A backend that raises while stating one must not turn the
-        # finding the neutral layer already decided into an acceptance, nor escape the layer.
-        import tools.host_render as host_render
-        unpublished = self._CHECKS.replace("  public :: q\n", "")
-        for name, checks in (("bound_state_publication_violation", unpublished),
-                             ("checks_abi_publication_violation",
-                              self._CHECKS.replace("  public :: ", "  !public :: "))):
-            with self.subTest(name), mock.patch.object(
-                    host_render, name, side_effect=RuntimeError("no words")):
-                r = self._run(self._bundle([self._binding("q")], checks=checks), ["q"])
-            self.assertIsNotNone(r)
-            self.assertEqual(r[0], "bundle_checks_abi_violation")
-            self.assertIn("could not be stated (RuntimeError('no words'))", r[1])
-
-    def test_the_abi_layer_requires_exactly_the_three_procedures(self) -> None:
-        """Issue #582: the checks ABI is `case_setup`, `case_run`, `get_time`, pinned at the
-        handler. A module publishing those three passes (no `metric_compute`, no
-        `checks_compute`); one that still publishes a retired name beside them adds nothing the
-        layer reads; one missing any of the three is refused, naming it, and a missing procedure
-        is reported before an unpublished bound state variable."""
-        self.assertNotIn("metric_compute", self._CHECKS)
-        self.assertNotIn("checks_compute", self._CHECKS)
-        self.assertIsNone(self._run(self._bundle([self._binding("q")]), ["q"]))
-        extra = self._CHECKS.replace("  public :: q\n",
-                                     "  public :: q\n  public :: metric_compute\n")
-        self.assertIsNone(self._run(self._bundle([self._binding("q")], checks=extra), ["q"]))
-        abi_line = "  public :: case_setup, case_run, get_time\n"
-        self.assertIn(abi_line, self._CHECKS)
-        for gone, kept in (("get_time", "case_setup, case_run"),
-                           ("case_run", "case_setup, get_time"),
-                           ("case_setup", "case_run, get_time")):
-            # The fixture defines `case_setup`, so its removal also takes the definition out.
-            checks = self._CHECKS.replace(abi_line, f"  public :: {kept}\n")
-            if gone == "case_setup":
-                checks = checks[:checks.index("  subroutine case_setup")] + (
-                    checks[checks.index("end module bx_checks"):])
-            with self.subTest(gone):
-                r = self._run(self._bundle([self._binding("q")], checks=checks), ["q"])
-                self.assertIsNotNone(r)
-                self.assertEqual(r[0], "bundle_checks_abi_violation")
-                self.assertIn(f"not published by module bx_checks: {gone}", r[1])
-        r = self._run(self._bundle([self._binding("q")], checks=self._CHECKS.replace(
-            abi_line, "  public :: case_setup, case_run\n").replace("  public :: q\n", "")),
-                      ["q"])
-        self.assertEqual(r[0], "bundle_checks_abi_violation")
-        self.assertIn("not published by module bx_checks: get_time", r[1])
-        self.assertNotIn("bound state", r[1])
-
-    def test_harness_shape_refuses_a_binding(self) -> None:
-        doc = BundleShapeAdmissibilityTest()._harness_doc()
-        doc["capability_requirements"] = ["sync_single_case@1", "state_registration@1"]
-        doc["state_bindings"] = [{
-            "node_key": HARNESS, "state_variable": "x_out", "storage_symbol": "x_out",
-            "module": "harness_fortran_cpu_model", "capture": "harness_registration",
-            "capability": "state_registration@1"}]
-        r = cb.pure_bundle_contract_violation(
-            doc, node_key=HARNESS, spec_id="harness_fortran_cpu", shape="harness",
-            language="fortran",
-            runner_basename="harness_fortran_cpu_runner.f90", ir_snapshot_variables=["x_out"],
-            harness_provided={"sync_single_case@1", "state_registration@1"},
-            build_graph=lambda d: None, ir_published_operations=None)
-        self.assertIsNotNone(r)
-        # The schema layer refuses it first — a harness bundle has no checks-role file, so no
-        # binding's `module` can be owned by one — and the shape layer's own refusal (the
-        # `state_bindings must be omitted on the harness shape` clause) is a backstop that the
-        # ordered contract does not reach today; it is stated as such where it lives.
-        self.assertEqual(r[0], "bundle_schema_violation")
-        self.assertIn("must be defined by a checks-role file owned by member", r[1])
-
-    def test_snapshot_variables_from_ir(self) -> None:
-        ir = {"io_contract": {"raw_requirements": {"required_evidence": [
-            {"artifact": "metrics_basis.json"},
-            {"artifact": "state_snapshots", "schema": {"variables": [
-                {"name": "h", "shape_expr": "[nx, ny]"}, {"name": " hu ", "shape_expr": "[nx, ny]"},
-                {"name": "h", "shape_expr": "[nx, ny]"}, {"shape_expr": "[nx]"}, "junk"]}}]}}}
-        self.assertEqual(cb.snapshot_variables_from_ir(ir), ["h", "hu"])
-        for degenerate in ({}, {"io_contract": None}, {"io_contract": {"raw_requirements": 3}},
-                           "not a mapping", None):
-            self.assertEqual(cb.snapshot_variables_from_ir(degenerate), [])
+        self.assertEqual(spy.call_args.kwargs["ir_published_operations"], ["bx__step"])
+        self.assertEqual(spy.call_args.kwargs["language"], "fortran")
 
 
 class BundleShapeAdmissibilityTest(unittest.TestCase):
@@ -3571,7 +3001,7 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         params = dict(
             node_key=HARNESS, spec_id="harness_fortran_cpu", shape=shape,
             language="fortran",
-            runner_basename="harness_fortran_cpu_runner.f90", ir_snapshot_variables=[],
+            runner_basename="harness_fortran_cpu_runner.f90",
             harness_provided={"sync_single_case@1"}, build_graph=lambda d: None,
             ir_published_operations=["harness_fortran_cpu__parse_cases"])
         params.update(kw)
@@ -3706,23 +3136,18 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         self.assertEqual(result[0], "bundle_shape_unsupported")
         self.assertIn("runner-role file", result[1])
 
-    def test_harness_shape_refuses_a_checks_file(self) -> None:
+    def test_the_retired_checks_role_is_refused_on_either_shape(self) -> None:
+        # A file role of its own no more: refused where every unknown role is, by the schema.
+        self.assertNotIn("checks", cb.FILE_ROLES)
         doc = self._harness_doc()
         doc["files"].append(
             _file("harness_fortran_cpu_checks.f90", "checks", HARNESS,
                   modules=["harness_fortran_cpu_checks"]))
-        result = self._run(doc, "harness")
-        self.assertEqual(result[0], "bundle_shape_unsupported")
-        self.assertIn("no checks-role file", result[1])
-
-    def test_harness_shape_does_not_run_the_m3c_checks_abi_layer(self) -> None:
-        # The M3c layers would demand a `<spec_id>_checks.f90` this shape forbids; a plain
-        # non-None answer would not tell the two apart, so pin that the ACCEPTED harness
-        # bundle is exactly the one the M3c name layer rejects.
-        self.assertIsNotNone(
-            cb.m3c_literal_name_violation(self._harness_doc(), "harness_fortran_cpu",
-                                          language="fortran"))
-        self.assertIsNone(self._run(self._harness_doc(), "harness"))
+        for shape in cb.BUNDLE_SHAPES:
+            with self.subTest(shape=shape):
+                result = self._run(doc, shape)
+                self.assertEqual(result[0], "bundle_schema_violation")
+                self.assertIn("role must be one of", result[1])
 
     def test_l1c_applies_on_the_harness_shape(self) -> None:
         result = self._run(self._harness_doc(), "harness",
@@ -3799,10 +3224,10 @@ class IdentifierKeyIsTheLanguagesTest(unittest.TestCase):
             with self.subTest(lang=lang):
                 doc = _minimal_bundle()
                 doc["entrypoints"] += [
-                    {"symbol": "case_run", "module": "adv1d_checks", "kind": "checks_interface",
-                     "node_key": ADV, "defined_in": "adv1d_checks.f90"},
-                    {"symbol": "CASE_RUN", "module": "adv1d_checks", "kind": "checks_interface",
-                     "node_key": ADV, "defined_in": "adv1d_checks.f90"},
+                    {"symbol": "adv1d__step", "module": "adv1d_model", "kind": "operation",
+                     "node_key": ADV, "defined_in": "adv1d_model.f90"},
+                    {"symbol": "ADV1D__STEP", "module": "adv1d_model", "kind": "operation",
+                     "node_key": ADV, "defined_in": "adv1d_model.f90"},
                 ]
                 found = any("published more than once by module" in v
                             for v in cb.validate_bundle(_as_language(doc, lang)))
@@ -3816,51 +3241,6 @@ class IdentifierKeyIsTheLanguagesTest(unittest.TestCase):
                 found = any("is not defined by" in v
                             for v in cb.validate_bundle(_as_language(doc, lang)))
                 self.assertEqual(found, not self.FOLDS[lang])
-
-    def test_binding_module_resolves_under_the_owning_file_s_rule(self) -> None:
-        for lang in self.LANGS:
-            with self.subTest(lang=lang):
-                doc = _minimal_bundle()
-                doc["state_bindings"][0]["module"] = "ADV1D_CHECKS"
-                found = any("must be defined by a checks-role file owned by member" in v
-                            for v in cb.validate_bundle(_as_language(doc, lang)))
-                self.assertEqual(found, not self.FOLDS[lang])
-
-    def test_a_binding_naming_another_member_s_checks_module_is_refused(self) -> None:
-        """The lookup starts from the binding's MEMBER (`_binding_owner`): a case-variant of the
-        OTHER member's checks module resolves to that member's file in a folding language, and
-        must still be refused, as the exact spelling is."""
-        for lang in self.LANGS:
-            for module in ("adv1d_checks", "adv_flux_checks", "ADV_FLUX_CHECKS"):
-                with self.subTest(lang=lang, module=module):
-                    doc = _multi_node_bundle()
-                    self.assertEqual(_find(doc["files"], "adv_flux_checks.f90")["modules"],
-                                     ["adv_flux_checks"])
-                    doc["state_bindings"] = [
-                        {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
-                         "module": module, "capture": "harness_registration",
-                         "capability": "state_registration@1"}]
-                    doc["capability_requirements"] = [
-                        t for t in doc["capability_requirements"]
-                        if not t.startswith("state_registration")] + ["state_registration@1"]
-                    violations = cb.validate_bundle(_as_language(doc, lang))
-                    # The member's own module is the control: the refusal is about the owner.
-                    self.assertEqual(
-                        any("must be defined by a checks-role file owned by member" in v
-                            for v in violations),
-                        module != "adv1d_checks", violations)
-
-    def test_registered_storage_uniqueness(self) -> None:
-        for lang in self.LANGS:
-            with self.subTest(lang=lang):
-                doc = _minimal_bundle()
-                doc["state_bindings"].append(
-                    {"node_key": ADV, "state_variable": "r", "storage_symbol": "Q",
-                     "module": "adv1d_checks", "capture": "harness_registration",
-                     "capability": "state_registration@1"})
-                found = any("is already registered" in v
-                            for v in cb.validate_bundle(_as_language(doc, lang)))
-                self.assertEqual(found, self.FOLDS[lang])
 
     def test_staged_dependency_module_collision_is_the_target_language_s(self) -> None:
         for lang in self.LANGS:
@@ -3900,21 +3280,6 @@ class IdentifierKeyIsTheLanguagesTest(unittest.TestCase):
                     doc, "harness_fortran_cpu", "harness_fortran_cpu_runner.f90", language=lang)
                 self.assertEqual(clause is not None, not self.FOLDS[lang], clause)
 
-    def test_state_binding_convention(self) -> None:
-        base = {"capture": cb.STATE_BINDING_CAPTURE, "capability": cb.STATE_REGISTRATION_TOKEN}
-        for lang in self.LANGS:
-            for field, binding in (
-                    ("module", {"state_variable": "q", "storage_symbol": "q",
-                                "module": "ADV1D_CHECKS"}),
-                    ("storage_symbol", {"state_variable": "q", "storage_symbol": "Q",
-                                        "module": "adv1d_checks"})):
-                with self.subTest(lang=lang, field=field):
-                    clause = cb._m3c_state_binding_mismatch(
-                        [{**base, **binding}], ["q"], "adv1d", language=lang)
-                    self.assertEqual(clause is not None, not self.FOLDS[lang], clause)
-                    if clause is not None:
-                        self.assertIn(f"state_bindings[0].{field} must", clause)
-
     def test_published_surface_is_compared_under_the_target_language(self) -> None:
         """L1c. The layers before it are held to the Fortran fixture's own language; only the
         target `language` the surface comparison reads is varied."""
@@ -3922,13 +3287,10 @@ class IdentifierKeyIsTheLanguagesTest(unittest.TestCase):
         doc = pin._bundle(pin._NK, ["BX__Compute_Flux"])
         for lang in self.LANGS:
             with self.subTest(lang=lang), \
-                    mock.patch.object(cb, "m3c_literal_name_violation", return_value=None), \
-                    mock.patch.object(cb, "m3c_checks_abi_violation", return_value=None), \
-                    mock.patch.object(cb, "_m3c_state_binding_mismatch", return_value=None):
+                    mock.patch.object(cb, "m3c_literal_name_violation", return_value=None):
                 result = cb.pure_bundle_contract_violation(
                     doc, node_key=pin._NK, spec_id="bx", shape="m3c", language=lang,
-                    runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
-                    harness_provided={"sync_single_case@1", "state_registration@1"},
+                    runner_basename="bx_runner.f90", harness_provided={"sync_single_case@1"},
                     build_graph=lambda d: None, ir_published_operations=["bx__compute_flux"])
                 if self.FOLDS[lang]:
                     self.assertIsNone(result)
