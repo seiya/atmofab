@@ -194,15 +194,12 @@ _CAPTURED_WORKSHOP_VERSION_FORM = re.compile(r"^(pure|leaf|workshop)-\d+$")
 #: before step 2 added them) does not carry. Exempt on such a capture only: a later capture
 #: carries them and is held to them like any other field.
 _WORKSHOP_1_ABSENT_KEYS = {"workshop_provider"}
-#: `pure_context` keys a capture recorded that the host no longer inlines, per pair. Issue #589
-#: PR-1a took `checks_module_contract_document` out of the `compile.generate` producer's context,
-#: and PR-1b out of the `generate.verify` reviewer's with the module;
-#: the tracked capture (`orch_20261023T233910Z_159fd6eb`) predates that, and `main` runs no
-#: workflow end to end until issue #589 PR-3, so no re-capture can replace it before then. Exempt
-#: on the capture only, and only while the contract table does not require the key: the first
-#: re-capture after PR-3 drops the key and this entry with it.
-_RETIRED_CAPTURED_CONTEXT_KEYS = {("compile", "generate"): {"checks_module_contract_document"},
-                                  ("generate", "verify"): {"checks_module_contract_document"}}
+#: `pure_context` keys a capture recorded that the host no longer inlines, per pair. Empty since
+#: issue #589 PR-1b removed `checks_module_contract_document` BY HAND from the `compile.generate`
+#: and `generate.verify` captures (`orch_20261023T233910Z_159fd6eb`, whose `_capture_source` row
+#: still names the file as it was captured): `main` runs no workflow end to end until PR-3, so no
+#: re-capture could. The tracked captures stay hand-edited until a real run re-captures them.
+_RETIRED_CAPTURED_CONTEXT_KEYS: dict[tuple[str, str], set[str]] = {}
 
 
 def _load_real_requests() -> dict[tuple[str, str | None, str], dict]:
