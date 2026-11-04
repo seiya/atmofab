@@ -10,7 +10,7 @@
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies the published `operation` `dynamics_shallow_water_time_update_2d_ssprk2__advance` at `L0`: the zero-`RHS` invariance, the 2-stage weight consistency, the frozen-`RHS` exactness, the `z_b`-invariance, the axis-exchange symmetry pair, and the input guard for an invalid time step (`dt<=0`).
+This suite verifies the published `operation` `dynamics_shallow_water_time_update_2d_ssprk2__advance` at `L0`: the zero-`RHS` invariance, the 2-stage weight consistency, the frozen-`RHS` exactness, the `z_b`-invariance, the axis-exchange symmetry pair, and the input guard for each invalid input of the Controlled Spec §4 alone, at its boundary and on its negative side (`dt<=0`, `dx<=0`, `dy<=0`).
 
 Of the transformations of `docs/TESTS.md` §Symmetry pairs, the suite carries the **axis exchange** $(h, hu, hv)(x, y) \to (h, hv, hu)(y, x)$, applied to `U_n`, `L_flux` and `S_b` alike, with `z_b` transposed and `dx` and `dy` exchanged, as a pair: the transformed case has `nx` and `ny` exchanged, so every loop of the update runs over the other extent, and a loop bounded by the wrong extent, which on the base case (`nx > ny`) only runs past the array, leaves cells unwritten on the transformed case (`nx < ny`). The two **mirrors** and the **translation** are admitted only trivially and carry no pair: each keeps the base's extents, and the `L0` update combines each element of `U_n`, `L_flux` and `S_b` with the same elements of the others by the same weights for every component and every cell, linearly, so a mirrored or translated case is the base's elements reordered within the same loop ranges, with one component of every input negated under a mirror, and its result is the base's result reordered and negated the same way whatever the kernel's loop bounds (measured: both loop-bound defects of `l0_symmetry_pairs_pass` give a mirror pair residual of exactly `0`). The closed-form judgment of §6 pins every element of the base case, so a mirror pair would observe nothing it does not.
 
@@ -24,11 +24,11 @@ Of the transformations of `docs/TESTS.md` §Symmetry pairs, the suite carries th
 - `L_flux` and `S_b` are supplied as fixed fields; the `operation` does not recompute them.
 - Every case declares `z_b` by three inputs, the coefficients of `z_b(i,j) = a0 + a_i*i + a_j*j` (`a0=0`, `a_i=0.1`, `a_j=0.05` wherever §2 gives `0.1*i + 0.05*j`, and `a0=0`, `a_i=0.05`, `a_j=0.1` on `l0_frozen_rhs_axis`).
 - The `z_b`-invariance pair is two cases, `l0_zb_invariance` and `l0_zb_invariance_zb2`, the second sorting after the first. Both hold the extents, `U_n`, `L_flux`, `S_b`, `dt`, `dx` and `dy` of `l0_frozen_rhs`, and they differ in the `z_b` inputs alone: `a0=0`, `a_i=0.1`, `a_j=0.05` on the first and `a0=0.5`, `a_i=-0.2`, `a_j=0.3` on the second.
-- The abnormal case `l0_invalid_dt` uses the fields, the extents, `dx` and `dy` of `l0_frozen_rhs` with `dt=-0.1`, so `dt<=0`.
+- The abnormal cases each use the fields, the extents, `dt`, `dx` and `dy` of `l0_frozen_rhs` with one input replaced, so each violates one clause of the Controlled Spec §4 alone: `l0_invalid_dt` has `dt=-0.1`, `l0_dt0` has `dt=0`, `l0_dx0` has `dx=0`, `l0_dx_neg` has `dx=-0.5`, `l0_dy0` has `dy=0`, `l0_dy_neg` has `dy=-0.25`.
 - Before the call the state holds the inputs above and `U_np1` holds the literal `-999` at every element, its pre-call content: `U_np1` is an operation-only output, so an element the `operation` does not write is captured as `-999` and fails every judgment of §6 over `U_np1`.
 
 ## 3. Execution-control rules
-`N/A`: this `component` advances a single step for a given `dt` and does not control the time loop or its cadence. Execution control is the responsibility of the `problem` runner.
+`N/A`: this `component` advances a single step for a given `dt` and does not control the time loop or its cadence. Execution control belongs to the `problem` that composes this `operation`.
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
@@ -81,9 +81,44 @@ The host-rendered driver calls the `operation` once per case on the case's state
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
   - `expected_outcome`: `xfail`
-  - `xfail_condition`: `dt<=0`
+  - `xfail_condition`: `dt<0`
   - `quantities`: `guard_pass`
   - `judgment`: on the abnormal case of §2 (`l0_invalid_dt`), the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
+- `test_id`: `l0_invalid_dt_zero_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `dt=0`
+  - `quantities`: `guard_pass`
+  - `judgment`: on `l0_dt0`, with `dt=0` and every other input valid, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
+- `test_id`: `l0_invalid_dx_zero_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `dx=0`
+  - `quantities`: `guard_pass`
+  - `judgment`: on `l0_dx0`, with `dx=0` and every other input valid, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
+- `test_id`: `l0_invalid_dx_negative_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `dx<0`
+  - `quantities`: `guard_pass`
+  - `judgment`: on `l0_dx_neg`, with `dx=-0.5` and every other input valid, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
+- `test_id`: `l0_invalid_dy_zero_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `dy=0`
+  - `quantities`: `guard_pass`
+  - `judgment`: on `l0_dy0`, with `dy=0` and every other input valid, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
+- `test_id`: `l0_invalid_dy_negative_xfail`
+  - `level`: `L0`
+  - `operation_id`: `dynamics_shallow_water_time_update_2d_ssprk2__advance`
+  - `expected_outcome`: `xfail`
+  - `xfail_condition`: `dy<0`
+  - `quantities`: `guard_pass`
+  - `judgment`: on `l0_dy_neg`, with `dy=-0.25` and every other input valid, the `operation` refuses the input: `guard_pass == 0`, in the failure direction. The cross-target judgment is not applied.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when every predicate of the test holds.
