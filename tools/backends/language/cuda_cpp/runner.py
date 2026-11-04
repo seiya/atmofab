@@ -512,7 +512,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
 EXPECTED_HARNESS_SPEC_ID = "harness_cpp_gpu"
 
 # Verbatim copy of spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md §5.1
-# (spec_version 0.2.0). If a harness recert changes §5.1, THIS block and the render template must
+# (spec_version 0.4.0). If a harness recert changes §5.1, THIS block and the render template must
 # be updated together (the pin message says so).
 _HARNESS_V1_INTERFACE = """\
 module_parameters:
@@ -736,6 +736,115 @@ procedures:
     intent: in
     spec:
       type: integer
+- kind: subroutine
+  name: harness_cpp_gpu__read_case
+  args:
+  - name: case_id
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: ok
+    intent: out
+    spec:
+      type: logical
+- kind: function
+  name: harness_cpp_gpu__get_real
+  args:
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  result:
+    name: x
+    spec:
+      type: real
+      kind: dp
+- kind: function
+  name: harness_cpp_gpu__get_int
+  args:
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  result:
+    name: i
+    spec:
+      type: integer
+- kind: function
+  name: harness_cpp_gpu__get_bool
+  args:
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  result:
+    name: b
+    spec:
+      type: logical
+- kind: subroutine
+  name: harness_cpp_gpu__get_array_r1
+  args:
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 1
+    intent: out
+    spec:
+      type: real
+      kind: dp
+      alloc: true
+- kind: subroutine
+  name: harness_cpp_gpu__get_array_r2
+  args:
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 2
+    intent: out
+    spec:
+      type: real
+      kind: dp
+      alloc: true
+- kind: subroutine
+  name: harness_cpp_gpu__get_array_r3
+  args:
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 3
+    intent: out
+    spec:
+      type: real
+      kind: dp
+      alloc: true
+- kind: subroutine
+  name: harness_cpp_gpu__get_array_r4
+  args:
+  - name: name
+    intent: in
+    spec:
+      type: string
+      len: assumed
+  - name: a
+    rank: 4
+    intent: out
+    spec:
+      type: real
+      kind: dp
+      alloc: true
 - kind: function
   name: harness_cpp_gpu__block_size
   result:

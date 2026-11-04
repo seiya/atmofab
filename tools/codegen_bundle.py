@@ -447,13 +447,17 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # copy with no reader. The plan on the issue records this departure from
 # `docs/design/zero_base_architecture.md` §A4 as written.
 #
-# `sync_single_case@1` is defined as exactly the canonical interface block of
-# `harness_fortran_cpu@0.9.0` §5.1 (11 operations, 1 published type, `dp = float64`,
-# `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to
-# its target language by that language's backend. The token predates that release: until
-# `0.9.0` (issue #582) the block also held the writers of the two documents the runner no longer
-# writes, and their types, which no consuming node's bundle code called, and the host-rendered
-# runner stopped calling them with the issue's PR-H. Its `__write_perf`, which no consuming
+# `sync_single_case@1` is defined as the synchronous single-case block of the catalogued harness
+# version: at this writing the canonical interface block of `harness_fortran_cpu@0.10.0` §5.1
+# (19 operations, 1 published type, `dp = float64`, `case_id_len = 64`), under the providing
+# harness node's own `<spec_id>__` names and bound to its target language by that language's
+# backend. The token names the block of whichever version the catalog holds, not one generation
+# of it: `0.10.0` (issue #589) extends the block by `__read_case` and the typed getters under the
+# same token, because no physics bundle calls an operation of the block,
+# `assert_harness_pin` is the mechanical enforcer of its text, and no consumer distinguishes a
+# generation. Until `0.9.0` (issue #582) the block also held the writers of the two documents
+# the runner no longer writes, and their types, which no consuming node's bundle code called,
+# and the host-rendered runner stopped calling them with the issue's PR-H. Its `__write_perf`, which no consuming
 # node's bundle code calls either (the host-rendered runner calls it,
 # `docs/workflow/CHECKS_MODULE_CONTRACT.md` §4, and so does the providing harness's own
 # self-test), takes no `threads_per_rank` argument, because it writes the thread count the run's
@@ -480,11 +484,11 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # `assert_harness_pin` for the host-rendered runner built against that harness (PR-4 of the
 # issue: the runner gathers the partitioned state onto rank 0 and writes on rank 0 only).
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
-    "infrastructure/harness_fortran_cpu@0.9.0": frozenset(
+    "infrastructure/harness_fortran_cpu@0.10.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
-    "infrastructure/harness_cpp_gpu@0.3.0": frozenset(
+    "infrastructure/harness_cpp_gpu@0.4.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
-    "infrastructure/harness_fortran_cpu_mpi@0.3.0": frozenset(
+    "infrastructure/harness_fortran_cpu_mpi@0.4.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN, "distributed_state@2"}),
 }
 

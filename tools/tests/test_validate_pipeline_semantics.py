@@ -24700,7 +24700,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         # a bundle that followed an older token would be `bundle_capability_unsatisfied`.
         from tools.codegen_bundle import capability_name, harness_provided_capabilities
         provided = harness_provided_capabilities(
-            "infrastructure/harness_fortran_cpu_mpi@0.3.0") or frozenset()
+            "infrastructure/harness_fortran_cpu_mpi@0.4.0") or frozenset()
         token = next(t for t in provided if capability_name(t) == "distributed_state")
         self.assertIn(f"(with {token} in capability_requirements)", v[0])
         for model in ("none", "serial", "openmp"):
@@ -24778,7 +24778,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(
             model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
             plan={"precision": {}, "state_residency": "host"},
-            node_key="infrastructure/harness_fortran_cpu_mpi@0.3.0"), [])
+            node_key="infrastructure/harness_fortran_cpu_mpi@0.4.0"), [])
 
 
 class ExecutionModeContractCouplingGateTests(unittest.TestCase):

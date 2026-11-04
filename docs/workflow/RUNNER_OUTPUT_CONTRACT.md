@@ -139,4 +139,42 @@ to this document wherever this document is seeded whole.
   by `run_program` directly and by the `make test`/`check` target (which forwards
   the same argv, so the re-run writes the same captures as `run_program`'s). It
   may treat a missing `--cases` as a hard error (no no-argv mode needed); it takes
-  the spec path positionally and need not read the spec file.
+  the spec path positionally and need not read the spec file. The directory of that
+  path is where the case files are (§6).
+
+## 6. The case file
+
+- The host evaluates each case's inputs and writes the result to
+  `case_inputs/<case_id>.json` beside `spec.ir.yaml`, before the program runs, for every
+  case of the IR. The `runner` opens this file through the certified harness's `__read_case`
+  and reads each value through the typed getters; it parses neither the file nor
+  `spec.ir.yaml` itself.
+- The file is one flat JSON object on one line of any length, with sorted keys. A key is
+  a name: `inputs.<path>` for an input, `derived.<name>` for a host-evaluated derived value,
+  a state variable's name for its initial content. On an `infrastructure` node it holds every
+  numeric `inputs.*` leaf of the case, a boolean written as `1` or `0`.
+- Each value is an RFC 8259 number or a rectangular nested array of numbers of depth 1 to 4
+  (the leading array index outermost, as the emitters write it), an empty array admitted. This
+  grammar is not §4's: a number is spelled as the host's serializer spells it (`3`, `0.1`,
+  `1e-30`), and no non-finite token occurs, because the host refuses a non-finite input.
+- The certified harness's reading operations are the only reader:
+  - `__parse_cases` keeps the spec path when it returns `ok = true`, and a call that returns
+    `ok = false` leaves the kept path as it is. The token array holds that path whole, so its width
+    is not `case_id_len`.
+  - `__read_case(case_id, ok)` reads the file of `case_id` from `case_inputs/` in the directory of
+    the kept path (no directory part: the current directory), the whole line whatever its length.
+    `ok = true` replaces the loaded case. `ok = false` loads none, so no value of an earlier case
+    remains readable. It is `false` when the file is absent, when it holds anything but the grammar above (a nested
+    object, a string, `true` / `false` / `null`, a non-finite token, a ragged array, an array deeper
+    than 4, a `\` in a key, a number that does not convert to a finite binary64 value), and when
+    no `__parse_cases` has succeeded. It never stops the program.
+  - `__get_real(name)` reads any number token; `__get_int(name)` an integer token (no fraction, no
+    exponent) that fits the default integer; `__get_bool(name)` exactly the token `1` (true) or `0` (false);
+    `__get_array_r1..r4(name, a)` allocates `a` to the array's extents, the leading array index the
+    outermost JSON level. An empty array gives extent 0 at its level and every level below, so `[]`
+    reads at every rank and `[[],[]]` at rank 2 and above.
+  - A getter holds no default and takes no `ok`. With no case loaded, a name the case does not hold,
+    a scalar asked as an array or an array as a scalar, an array of another nesting depth, or a
+    token its type does not admit, it stops the program with a non-zero exit status. Do not call a
+    getter inside an output statement: a runtime can hold that unit's lock while the stop runs,
+    and the program then hangs instead of stopping.

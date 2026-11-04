@@ -372,7 +372,7 @@ _HARNESS_STUB = textwrap.dedent("""\
     end module harness_fortran_cpu_model
     """)
 
-# The writer of `_HARNESS_STUB` (`harness_fortran_cpu@0.9.0` §3.2: it obtains the thread count
+# The writer of `_HARNESS_STUB` (`harness_fortran_cpu@0.10.0` §3.2: it obtains the thread count
 # itself) and the eight-argument one the distributed harness publishes and `harness_fortran_cpu`
 # published up to `0.7.0` (its caller passes the count). `_EIGHT_ARG_HARNESS_STUB` is the stub
 # with the second in place of the first.
@@ -579,7 +579,7 @@ class RenderShapeTest(unittest.TestCase):
     def test_terminal_writer(self) -> None:
         self.assertEqual(1, self.txt.count("call harness_fortran_cpu__write_perf("))
         # perf parallelism: mpi=1, gpu=0, and no thread count — the harness's writer obtains
-        # the count the run is given itself (`harness_fortran_cpu@0.9.0` §3.2, issue #512:
+        # the count the run is given itself (`harness_fortran_cpu@0.10.0` §3.2, issue #512:
         # Validate runs the binary at several counts, so the profile's is the wrong one for
         # every sweep shape).
         self.assertIn("    steps_total, cells_total, walltime, 1, 0)\n", self.txt)
@@ -1125,7 +1125,7 @@ class HarnessPinTest(unittest.TestCase):
 
     def test_a_certified_harness_whose_writer_takes_the_thread_count_fails_the_pin(self) -> None:
         """Issue #512: the single-process runner calls the seven-argument `__write_perf` of
-        `harness_fortran_cpu@0.9.0` §3.2, whose writer obtains the thread count itself, so a
+        `harness_fortran_cpu@0.10.0` §3.2, whose writer obtains the thread count itself, so a
         certified harness whose writer still takes `threads_per_rank` — a `0.7.0` one — is
         refused before Build, in its IR signatures and in its model source alike, naming the
         writer. The pinned interface is the distributed harness's block but for that argument."""
