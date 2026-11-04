@@ -155,9 +155,10 @@ io_contract:
     # key `expected_outcome` is not a predicate key — the outcome is the test's.
     # THE ONE-CALL SCALAR PAIRING (gate (i), primary_evidence.scalar_pairing_violations; re-checked by
     # evaluate_verdict): a ONE-CALL SCALAR is the scalar state a rank-0 real / integer `out` of a `step` entry is
-    # bound to on a node without `loop`. A test any of whose predicates reads `final.<s>` of one carries a
-    # predicate of the same test and quantity, over the same target cases, that reads `final.<s>` AND `final.<a>`
-    # of an array state the same operation writes: a kernel's scalar never stands alone.
+    # bound to on a node without `loop`. Each predicate that reads `final.<s>` of one needs ANOTHER predicate
+    # of the same test and quantity that reads `final.<s>` over the same target cases, one of the two also
+    # reading `final.<a>` of an array state the same operation writes: a kernel's scalar never stands alone,
+    # and a predicate never pairs itself (`final.s + 1e-300 * sum(final.F)` alone is judged by `s` alone).
     # A judged quantity no captured state variable enters — one tests.md defines over the case inputs, the
     # constants and the time alone (a CFL number over a prescribed speed, a step count the inputs fix) — has no
     # faithful state-reading transcription. For such a quantity tests.md §5 STATES the definition with its state

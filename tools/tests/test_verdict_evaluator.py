@@ -185,14 +185,31 @@ class ScalarPairingTest(unittest.TestCase):
     def _verdict(self, *recs: dict, cases: tuple[str, ...] = ("a",)) -> dict:
         return evaluate_verdict([_test(cases=cases)], list(recs))
 
-    def test_paired_in_itself_or_beside_passes_and_each_half_decides(self) -> None:
-        self.assertEqual(self._verdict(_rec(pairing=self.BOTH))["self_verdict"], "pass")
+    def test_paired_beside_passes_and_each_half_decides(self) -> None:
         self.assertEqual(self._verdict(_rec(pairing=self.ALONE), _rec(pairing=self.BOTH))
                          ["self_verdict"], "pass")
+        self.assertEqual(self._verdict(_rec(pairing=self.BOTH), _rec(pairing=self.BOTH))
+                         ["self_verdict"], "pass")   # two pairs pair each other
         for alone_ok, pair_ok in ((False, True), (True, False)):
             doc = self._verdict(_rec(pairing=self.ALONE, ok=alone_ok),
                                 _rec(pairing=self.BOTH, ok=pair_ok))
             self.assertEqual(doc["per_test"][0]["status"], "fail")
+
+    def test_a_record_never_pairs_itself(self) -> None:
+        """R1-4, as the gate (`primary_evidence.scalar_pairing_violations`): a sole record that
+        reads the scalar AND an array is judged by the scalar alone; the pair is ANOTHER
+        record."""
+        with self.assertRaisesRegex(PredicateError, r"reads the one-call scalar final\.a_x in "
+                                                    r"\['a'\] and no OTHER record"):
+            self._verdict(_rec(pairing=self.BOTH))
+        with self.assertRaisesRegex(PredicateError, "no OTHER record"):
+            self._verdict(_rec(pairing=self.BOTH), _rec(q="other", pairing=self.BOTH))
+        # the other record must read the scalar in every case: one over fewer does not pair
+        with self.assertRaisesRegex(PredicateError, "no OTHER record"):
+            self._verdict(_rec(pairing={"a_x": {"scalar": ["a", "b"], "paired": ["a", "b"]}},
+                               cases=("a", "b")),
+                          _rec(pairing={"a_x": {"scalar": ["a"], "paired": []}},
+                               cases=("a", "b")), cases=("a", "b"))
 
     def test_a_scalar_read_alone_raises(self) -> None:
         with self.assertRaisesRegex(PredicateError, r"one-call scalar final\.a_x in \['a'\]"):
@@ -219,7 +236,8 @@ class ScalarPairingTest(unittest.TestCase):
         reads it alone still raises."""
         cross = {**CrossTargetTest.PLACEHOLDER, "quantity": "agree", "scalar_pairing": self.ALONE}
         self.assertEqual(self._verdict(_rec(), cross)["self_verdict"], "pass")
-        self.assertEqual(self._verdict(_rec(pairing=self.BOTH), cross)["self_verdict"], "pass")
+        self.assertEqual(self._verdict(_rec(pairing=self.ALONE), _rec(pairing=self.BOTH),
+                                       cross)["self_verdict"], "pass")
         no_map = {k: v for k, v in cross.items() if k != "scalar_pairing"}
         self.assertEqual(self._verdict(_rec(), no_map)["self_verdict"], "pass")
         with self.assertRaisesRegex(PredicateError, r"quantity 'q' reads the one-call scalar "

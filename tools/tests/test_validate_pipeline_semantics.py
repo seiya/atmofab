@@ -11708,7 +11708,8 @@ end program shallow_water2d_runner
     # These rows were D13's (issue #582): a `source: reported` read paired with a state read of the
     # same test and quantity. Issue #589 retired the label; the class is now DERIVED from `drive`
     # and the signatures (a scalar a rank-0 real `out` of a one-call `step` writes), and the pair
-    # is ONE predicate that reads the scalar and an array the same operation writes. Every
+    # is ANOTHER predicate that reads the scalar, one of the two also reading an array the same
+    # operation writes (review R1-4: a predicate never pairs itself). Every
     # spelling of "no pairing" D13 was pinned against is kept, on D7, through the stage.
     # `test_a_test_judged_by_a_reference_alone_is_refused_at_the_stage` is deleted: `source:
     # reference` is gone, and a reference-like value is host data (`derived`), never a read state.
@@ -11744,9 +11745,11 @@ end program shallow_water2d_runner
                                **{a["name"]: 0.0 for a in step_args}})
 
     def test_a_scalar_read_paired_with_state_passes_the_stage(self) -> None:
-        for label, preds in (("the pair alone", [self._PAIR]),
-                             ("the pair beside the scalar read", [self._REPORT_READ, self._PAIR]),
-                             ("declared order is no part of it", [self._PAIR, self._REPORT_READ])):
+        for label, preds in (("the pair beside the scalar read", [self._REPORT_READ, self._PAIR]),
+                             ("declared order is no part of it", [self._PAIR, self._REPORT_READ]),
+                             ("two pairs pair each other",
+                              [self._PAIR, {**self._PAIR, "expr": "final.cfl_run_max - "
+                                                                  "max(final.h)"}])):
             with self.subTest(label):
                 self.assertEqual(self._scalar_stage(preds), [])
         # The logical result is no one-call scalar (D8: the driver writes it): read alone it
@@ -11762,9 +11765,13 @@ end program shallow_water2d_runner
         logical result beside it; a pair of another test."""
         rows = [
             ("alone", [self._REPORT_READ], [0]),
+            # R1-4: the pair alone is judged by the scalar alone — a predicate never pairs itself
+            ("the pair alone", [self._PAIR], [0]),
+            ("the self-pairing spelling D13 refused",
+             [{**self._PAIR, "expr": "final.cfl_run_max + 1e-300 * sum(final.h)"}], [0]),
             ("a state read beside it", [self._REPORT_READ, self._STATE_READ], [0]),
             ("the pair of another quantity",
-             [self._REPORT_READ, {**self._PAIR, "quantity": "other"}], [0]),
+             [self._REPORT_READ, {**self._PAIR, "quantity": "other"}], [0, 1]),
             ("a cross-target pair",
              [self._REPORT_READ,
               {**self._PAIR, "expr": "final.cfl_run_max - maxabs(final.h - comparand.final.h)"}],
@@ -11803,8 +11810,10 @@ end program shallow_water2d_runner
                 Path(tmp), io, plant_tests_md=False, step_args=(self._SCALAR_OUT,),
                 extra_initial={"cfl_run_max": -999.0})
         hits = [x for x in v if self._D7_FRAGMENT in x]
-        self.assertEqual(len(hits), 1, v)
-        self.assertIn("(test 't1', quantity 'cfl_max')", hits[0])
+        # t2's pair stands alone in its own test too (R1-4: it never pairs itself)
+        self.assertEqual(len(hits), 2, v)
+        self.assertIn("predicates[0] (test 't1', quantity 'cfl_max')", hits[0])
+        self.assertIn("predicates[1] (test 't2', quantity 'cfl_max')", hits[1])
 
     def test_a_pairing_over_fewer_cases_is_refused_at_the_stage(self) -> None:
         """The pair reads the scalar AND an array in EVERY case the scalar is read in. A `case:`
@@ -11856,14 +11865,14 @@ end program shallow_water2d_runner
         whatever its value (the four classes the gate once admitted included), once each."""
         for value in ("operation", "reported", "record", "reference", "kernel", 1, None):
             with self.subTest(source=value):
-                v = self._scalar_stage([self._PAIR], variables=(
+                v = self._scalar_stage([self._REPORT_READ, self._PAIR], variables=(
                     {"name": "w", "shape_expr": "[2,2]", "source": value},),
                     step_args=({"name": "w", "rank": 2, "intent": "inout",
                                 "spec": {"type": "real", "kind": "dp"}},))
                 hits = [x for x in v if "source: the source vocabulary is retired (D6)" in x]
                 self.assertEqual(len(hits), 1, v)
                 self.assertIn("state_snapshots.schema.variables[5].source", hits[0])
-        self.assertEqual(self._scalar_stage([self._PAIR]), [])
+        self.assertEqual(self._scalar_stage([self._REPORT_READ, self._PAIR]), [])
 
     def test_metrics_basis_is_refused_as_an_artifact_and_as_a_reference(self) -> None:
         """`metrics_basis.json` is no artifact since issue #582, refused by name in each place an

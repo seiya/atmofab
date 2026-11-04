@@ -163,7 +163,8 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
-from tools.verdict_evaluator import _QUANTITY_RE, _apply_op, _is_number, _resolve_value
+from tools.verdict_evaluator import (_QUANTITY_RE, _apply_op, _is_number, _resolve_value,
+                                     scalar_pairs)
 
 #: The version of the expression grammar: the allowed `ast` nodes, the function table, the
 #: name roots and the broadcasting rule. Bumped when any of them changes; recorded on every
@@ -3305,10 +3306,13 @@ def _covers_test(pred: dict[str, Any], test: dict[str, Any]) -> bool:
 def scalar_pairing_violations(ir: dict[str, Any]) -> list[str]:
     """D7 (gate (i)): a predicate that reads `final.<s>`, `s` a one-call scalar
     (`DriveModel.one_call_scalars`: the scalar a rank-0 real / integer `out` of a `step` entry
-    writes on a node without `loop`), needs a predicate of the SAME test and quantity, not
-    cross-target — itself included — that reads `final.<s>` AND `final.<a>` of an array state
-    the same operation writes, in every case it reads `s` in (reads that enter the value,
-    `point_reads`). A scalar a kernel reports is judged beside the state its call wrote. An IR
+    writes on a node without `loop`), needs ANOTHER predicate of the SAME test and quantity, not
+    cross-target, that reads `final.<s>` in every case it reads `s` in, and in each of those
+    cases one of the two reads `final.<a>` of an array state the same operation writes
+    (`scalar_pairs`; reads that enter the value, `point_reads`). A scalar a kernel reports is
+    judged beside the state its call wrote, by a predicate other than the one reading it: a
+    sole predicate reading both — `final.s + 1e-300 * sum(final.F)` — is judged by `s` alone,
+    the spelling the retired `reported_read_violations` refused (review round 1, R1-4). An IR
     with no `drive`, or a malformed one (`drive_violations` reports it), gives none here."""
     if not _has_drive(ir):
         return []
@@ -3326,17 +3330,18 @@ def scalar_pairing_violations(ir: dict[str, Any]) -> list[str]:
         for scalar, facts in pairing.items():
             cases = set(facts["scalar"])
             paired = any(
-                p["test_id"].strip() == tid and p["quantity"] == quantity
-                and cases <= set(other.get(scalar, {}).get("paired", ()))
-                for _j, p, other in own)
+                j != idx and p["test_id"].strip() == tid and p["quantity"] == quantity
+                and scalar in other and scalar_pairs(cases, facts, other[scalar])
+                for j, p, other in own)
             if not paired:
                 v.append(
                     f"predicates[{idx}] (test {tid!r}, quantity {quantity!r}) reads final."
                     f"{scalar} — the scalar a rank-0 out of a one-call operation writes — in "
-                    f"{sorted(cases)}, and no predicate of that test and quantity reads final."
-                    f"{scalar} together with final.<a> of an array state the same operation "
-                    f"writes ({sorted(model.one_call_scalars[scalar])}) in those cases (D7: a "
-                    "kernel-reported scalar is judged beside the state its call wrote)")
+                    f"{sorted(cases)}, and no OTHER predicate of that test and quantity reads "
+                    f"final.{scalar} in those cases with final.<a> of an array state the same "
+                    f"operation writes ({sorted(model.one_call_scalars[scalar])}) read beside "
+                    "it by one of the two (D7: a kernel-reported scalar is judged beside the "
+                    "state its call wrote, by a predicate other than the one reading it)")
     return v
 
 

@@ -25,10 +25,11 @@ definition states in the failure direction.
 a record ranges over its test's ``target_cases``; every test holds at least one record that is not
 cross-target, and those records value the state of every target case; and a record reading
 ``final.<s>`` of a one-call scalar ``s`` (the scalar a rank-0 real / integer ``out`` of a one-call
-operation writes, derived from the IR's ``drive`` — issue #589 D7) stands beside a record of the
-same quantity, not cross-target, itself included, that reads ``final.<s>`` together with an array
-state the same operation writes in those cases (`tools.primary_evidence.scalar_pairing_violations`;
-each record carries its ``scalar_pairing``, `_check_scalar_pairing`).
+operation writes, derived from the IR's ``drive`` — issue #589 D7) stands beside ANOTHER record of
+the same quantity, not cross-target, that reads ``final.<s>`` in those cases, one of the two reading
+an array state the same operation writes beside it (`scalar_pairs`, shared with
+`tools.primary_evidence.scalar_pairing_violations`; each record carries its ``scalar_pairing``,
+`_check_scalar_pairing`).
 """
 
 from __future__ import annotations
@@ -126,29 +127,41 @@ def _scalar_pairing(rec: dict[str, Any], test_id: str) -> dict[str, dict[str, se
     return out
 
 
+def scalar_pairs(cases: set[str], mine: dict[str, Any], other: dict[str, Any]) -> bool:
+    """Whether a DIFFERENT predicate's (or record's) D7 facts ``other`` for one scalar pair the
+    reading whose facts are ``mine`` over ``cases``: ``other`` reads `final.<s>` in every one of
+    ``cases`` and, in each of them, one of the two also reads `final.<a>` of an array state the
+    same operation writes. Shared by the gate (`primary_evidence.scalar_pairing_violations`, which imports it from here)
+    and the verdict re-check (`_check_scalar_pairing`), so the two agree."""
+    theirs = set(other.get("scalar") or ())
+    paired = set(mine.get("paired") or ()) | set(other.get("paired") or ())
+    return cases <= theirs and cases <= paired
+
+
 def _check_scalar_pairing(test_id: str, records: list[dict[str, Any]]) -> None:
     """The Compile gate's D7 (`primary_evidence.scalar_pairing_violations`), re-checked on the
-    records: a record that reads a one-call scalar in cases C needs a record of the same quantity,
-    not cross-target (itself included), that reads it together with an array state the same
-    operation writes in every case of C. A CROSS-TARGET record (the `no_comparand` placeholder
-    included) takes no part, on either side, exactly as the gate reads only the predicates that
-    are not cross-target (`primary_evidence._own_predicates`): it takes no part in the status,
-    so the scalar it reads asks for no pair."""
+    records by the same rule (`scalar_pairs`): a record that reads a one-call
+    scalar in cases C needs ANOTHER record of the same quantity that reads it in every case of
+    C, one of the two reading an array state the same operation writes beside it in each — a
+    record never pairs itself. A CROSS-TARGET record (the `no_comparand` placeholder included)
+    takes no part, on either side, exactly as the gate reads only the predicates that are not
+    cross-target (`primary_evidence._own_predicates`): it takes no part in the status, so the
+    scalar it reads asks for no pair."""
     pairings = [(rec, _scalar_pairing(rec, test_id)) for rec in records
                 if not is_cross_target_record(rec)]
-    for rec, pairing in pairings:
+    for i, (rec, pairing) in enumerate(pairings):
         for scalar, facts in pairing.items():
             cases = facts["scalar"]
             if not cases:
                 continue
-            if not any(other.get("quantity") == rec.get("quantity")
-                       and cases <= theirs.get(scalar, {}).get("paired", set())
-                       for other, theirs in pairings):
+            if not any(j != i and other.get("quantity") == rec.get("quantity")
+                       and scalar in theirs and scalar_pairs(cases, facts, theirs[scalar])
+                       for j, (other, theirs) in enumerate(pairings)):
                 raise PredicateError(
                     f"primary record for {test_id!r} quantity {rec.get('quantity')!r} reads the "
-                    f"one-call scalar final.{scalar} in {sorted(cases)} and no record of that "
-                    "quantity reads it together with an array state its operation writes in "
-                    "those cases (D7)")
+                    f"one-call scalar final.{scalar} in {sorted(cases)} and no OTHER record of "
+                    "that quantity reads it in those cases with an array state its operation "
+                    "writes read beside it by one of the two (D7)")
 
 
 def evaluate_verdict(tests: Any, records: Any, *,

@@ -2559,7 +2559,9 @@ def _rus() -> dict:
                 {**common, "quantity": "flux", "expr": "maxabs(final.F - initial.q)", "op": "le",
                  "value": 1.0},
                 {**common, "quantity": "speed", "op": "le", "value": 1e-12,
-                 "expr": "abs(final.a_x - maxabs(final.F))"}]}}
+                 "expr": "abs(final.a_x - maxabs(final.F))"},
+                # D7: the scalar read beside its pair, a DIFFERENT predicate (review R1-4)
+                {**common, "quantity": "speed", "expr": "final.a_x", "op": "ge", "value": 0}]}}
 
 
 class Grammar6Test(unittest.TestCase):
@@ -3396,17 +3398,18 @@ class ScalarPairingTest(unittest.TestCase):
 
     def test_both_ways(self) -> None:
         rus = _rus()
-        self.assertEqual(pe.scalar_pairing_violations(rus), [])   # reads a_x and F together
+        self.assertEqual(pe.scalar_pairing_violations(rus), [])   # [3] beside its pair [2]
         preds = rus["io_contract"]["predicates"]
         preds[2]["expr"] = "final.a_x"
         v = pe.scalar_pairing_violations(rus)
-        self.assertEqual(len(v), 1)
+        self.assertEqual(len(v), 2)
         self.assertIn("predicates[2] (test 't_flux', quantity 'speed') reads final.a_x — the "
                       "scalar a rank-0 out of a one-call operation writes — in ['a']", v[0])
         self.assertIn("(['F'])", v[0])
+        self.assertTrue(v[1].startswith("predicates[3] "), v)
         # a pair of the same quantity that reads only the arrays does not pair
         preds.append({**preds[2], "expr": "maxabs(final.F)"})
-        self.assertEqual(len(pe.scalar_pairing_violations(rus)), 1)
+        self.assertEqual(len(pe.scalar_pairing_violations(rus)), 2)
         # a pair of the same quantity that reads both does
         preds.append({**preds[2], "expr": "final.a_x - maxabs(final.F)", "op": "le",
                       "value": 1.0})
@@ -3422,6 +3425,48 @@ class ScalarPairingTest(unittest.TestCase):
         # a pair reading an array the operation does not write does not
         preds[-1].update(expr="final.a_x - maxabs(final.q)")
         self.assertEqual(len(alone()), 1)
+
+    def test_a_predicate_never_pairs_itself(self) -> None:
+        """R1-4: the pair is a DIFFERENT predicate. A sole predicate reading the scalar and an
+        array — `final.a_x + 1e-300 * sum(final.F)`, judged by `a_x` alone, the spelling the
+        retired `reported_read_violations` refused, or the honest `abs(final.a_x -
+        maxabs(final.F))` — is refused; a second predicate of the test and quantity reading
+        `final.a_x` (alone, or itself paired) admits it, and the verdict agrees."""
+        msg = ("predicates[2] (test 't_flux', quantity 'speed') reads final.a_x — the scalar a "
+               "rank-0 out of a one-call operation writes — in ['a'], and no OTHER predicate of "
+               "that test and quantity reads final.a_x in those cases with final.<a> of an "
+               "array state the same operation writes (['F']) read beside it by one of the two "
+               "(D7: a kernel-reported scalar is judged beside the state its call wrote, by a "
+               "predicate other than the one reading it)")
+        for expr in ("final.a_x + 1e-300 * sum(final.F)", "abs(final.a_x - maxabs(final.F))"):
+            with self.subTest(expr=expr):
+                rus = _rus()
+                preds = rus["io_contract"]["predicates"]
+                preds[2]["expr"] = expr
+                del preds[3]
+                self.assertEqual(pe.scalar_pairing_violations(rus), [msg])
+                preds.append({**preds[2], "expr": "final.a_x", "op": "ge", "value": 0})
+                self.assertEqual(pe.scalar_pairing_violations(rus), [])
+                preds[3]["expr"] = "final.a_x - max(final.F)"     # two pairs pair each other
+                self.assertEqual(pe.scalar_pairing_violations(rus), [])
+                preds[3]["quantity"] = "flux"                     # another quantity's does not
+                self.assertIn(msg, pe.scalar_pairing_violations(rus))
+        run = _RunDir()
+        try:
+            run.write("a", initial={"q": [0.125, 0.375, 0.625, 0.875], "F": [-999.0] * 4,
+                                    "a_x": -999.0, "ok": 0.0, "t": 0.0, "step": 0},
+                      final={"q": [0.125, 0.375, 0.625, 0.875], "F": [0.5] * 4, "a_x": 0.5,
+                             "ok": 1.0, "t": 0.0, "step": 1})
+            solo = _rus()
+            del solo["io_contract"]["predicates"][3]
+            tests = solo["io_contract"]["tests"]
+            with self.assertRaisesRegex(PredicateError, r"reads the one-call scalar final\.a_x "
+                                                        r"in \['a'\] and no OTHER record"):
+                evaluate_verdict(tests, pe.evaluate_primary_predicates(solo, run.root))
+            self.assertEqual(evaluate_verdict(
+                tests, pe.evaluate_primary_predicates(_rus(), run.root))["self_verdict"], "pass")
+        finally:
+            run.cleanup()
 
     def test_the_mutated_class_drops_the_finding(self) -> None:
         """With `a_x` an `in` (the derivation's `out` -> `in`) the alone read is no D7 case:
@@ -3461,7 +3506,7 @@ class ScalarPairingTest(unittest.TestCase):
                  "value": 1e-12})
             self.assertEqual(pe.scalar_pairing_violations(cross), [])
             recs = pe.evaluate_primary_predicates(cross, run.root)
-            self.assertEqual((recs[3]["kind"], recs[3]["scalar_pairing"]),
+            self.assertEqual((recs[4]["kind"], recs[4]["scalar_pairing"]),
                              ("no_comparand", {"a_x": {"scalar": ["a"], "paired": []}}))
             self.assertEqual(evaluate_verdict(tests, recs)["self_verdict"], "pass")
         finally:
