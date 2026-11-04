@@ -605,6 +605,7 @@ def _write_case_files(ctx: WrapperContext) -> str | None:
 def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:
     """Run a binary the leaf's `compile` built, on a case file of its tree."""
     from tools.build_runtime import tool_run_program
+    from tools.primary_evidence import CASE_INPUTS_DIRNAME
     from tools.spec_input_gates import CASE_ID_TOKEN_RE
 
     if ctx.run_unavailable is not None or ctx.launch_argv_prefix is None:
@@ -652,8 +653,19 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
     why = _write_case_files(ctx)
     if why is not None:
         return _result(False, category=CATEGORY_RUN_UNAVAILABLE, findings=why)
+    # A named `cases_file` selects case ids. What a case holds is the host's: the program reads
+    # `case_inputs/` beside the spec path it is given, so it is given the seeded IR's path, and a
+    # case the seeded IR does not declare has no file and is refused before anything starts.
+    seeded_path = ctx.paths.tree / SEEDED_IR_NAME
+    unknown_cases = sorted(
+        c for c in case_ids
+        if not (ctx.paths.tree / CASE_INPUTS_DIRNAME / f"{c}.json").is_file())
+    if unknown_cases:
+        return _result(False, category=CATEGORY_BAD_ARGUMENTS,
+                       findings=f"the IR declares no case {unknown_cases}, so the host wrote no "
+                                f"case file for it; name cases of {SEEDED_IR_NAME}")
     env = dict(ctx.base_env) | dict(ctx.launch_env)
-    command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(cases_path), *case_ids]
+    command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(seeded_path), *case_ids]
     result = tool_run_program({
         "command": command,
         "project_dir": str(ctx.paths.tree),

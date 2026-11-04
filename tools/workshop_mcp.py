@@ -113,7 +113,9 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                  "binary": {"type": "string",
                             "description": "basename of a binary the last compile built"},
                  "cases_file": {"type": "string",
-                                "description": "tree-relative case file (default spec.ir.yaml)"},
+                                "description": "tree-relative file whose case ids run when case_ids is "
+                                               "empty (default spec.ir.yaml); a case runs on "
+                                               "the case file the host wrote for it"},
                  "case_ids": {"type": "array", "items": {"type": "string"},
                               "description": "case ids to run (default: every case)"},
              },

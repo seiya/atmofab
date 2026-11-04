@@ -740,7 +740,8 @@ class WrapperCallCompositionTests(_LineageCase):
         def ir(*ids: str) -> str:
             return "case:\n  test_case_set:\n" + "".join(f"  - case_id: '{i}'\n" for i in ids)
 
-        (self.paths.tree / "sub" / "few.yaml").write_text(ir("c9"))
+        (self.paths.tree / "sub" / "few.yaml").write_text(ir("c2"))
+        (self.paths.tree / "other.yaml").write_text(ir("c9"))
         refused = {"none.yaml": "case:\n  test_case_set: []\n",
                    "flat.yaml": "- case_id: c1\n",
                    "top_level.yaml": "cases:\n- case_id: c1\n",
@@ -753,8 +754,7 @@ class WrapperCallCompositionTests(_LineageCase):
             ({"binary": "x_runner"}, ["c1", "c2"]),
             ({"binary": "x_runner", "case_ids": []}, ["c1", "c2"]),
             ({"binary": "x_runner", "case_ids": ["c2"]}, ["c2"]),
-            ({"binary": "x_runner", "cases_file": "sub/few.yaml"}, ["c9"]),
-            ({"binary": "x_runner", "cases_file": "real.ir.yaml"}, real_ids),
+            ({"binary": "x_runner", "cases_file": "sub/few.yaml"}, ["c2"]),
         ]
         with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
             for args, ids in rows:
@@ -763,6 +763,12 @@ class WrapperCallCompositionTests(_LineageCase):
                     self.assertTrue(ww.run_wrapper_op(ctx, "run", args)["ok"])
                     command = self.calls[0]["command"]
                     self.assertEqual(command[command.index(str(binary)) + 1:][2:], ids)
+            self.calls.clear()
+            real_ctx = self.run_context(seed_ir=real, max_wrapper_calls=100)
+            self.assertTrue(ww.run_wrapper_op(real_ctx, "run", {
+                "binary": "x_runner", "cases_file": "real.ir.yaml"})["ok"])
+            command = self.calls[0]["command"]
+            self.assertEqual(command[command.index(str(binary)) + 1:][2:], real_ids)
             for cases_file in refused:
                 with self.subTest(cases_file=cases_file):
                     self.calls.clear()
@@ -902,16 +908,15 @@ class WrapperCallCompositionTests(_LineageCase):
                 self.assertEqual(seen["m1.json"]["inputs.mode"], 1)
         # The named file is what the command line carries: it selects, and only that.
         self.assertEqual(self.calls[0]["command"][-3:], [
-            str(self.paths.tree / "mine.yaml"), "m1", "m2"])
+            str(self.paths.tree / ww.SEEDED_IR_NAME), "m1", "m2"])
 
     def test_a_started_run_has_each_named_case_s_file_where_the_driver_reads_it(self) -> None:
-        """RED today, on purpose (issue #589 PR-1b, reported): the harness's `__read_case` reads
-        `case_inputs/` in the directory of the path `--cases` names
-        (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §6), and `_op_run` writes it beside the tree's
-        IR alone, for the seed's cases alone, so a `cases_file` in a subdirectory, or one naming a
-        case the seed does not hold, starts a driver that stops on its first case with `no
-        readable case file`. Neutral between the two repairs: a run the wrapper REFUSES starts
-        nothing and passes, and so does one that writes the file where the driver reads it."""
+        """The harness's `__read_case` reads `case_inputs/` in the directory of the path `--cases`
+        names (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §6), and `_op_run` writes it beside the
+        tree's IR alone, for the seed's cases alone. So a `cases_file` in a subdirectory, or one
+        naming a case the seed does not hold, must not start a driver that stops on its first
+        case with `no readable case file`: the program is given the seeded path, and a case with
+        no file is refused."""
         from unittest import mock
 
         import yaml
