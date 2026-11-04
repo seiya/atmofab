@@ -1864,7 +1864,9 @@ def _validate_raw_evidence(
                                         f"{snapshot}:{name} has unsupported or ragged shape"
                                     )
                                     continue
-                                if not _shape_matches_expr(shape_expr, value_shape):
+                                # A zero-extent guard case's state: nested lists cannot spell
+                                # the extents after the zero (issue #589 PR-3).
+                                if 0 not in value_shape and not _shape_matches_expr(shape_expr, value_shape):
                                     violations.append(
                                         f"{snapshot}:{name} shape {value_shape} does not match declared shape_expr {shape_expr}"
                                     )
