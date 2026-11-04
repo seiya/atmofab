@@ -3451,6 +3451,19 @@ class ScalarPairingTest(unittest.TestCase):
                              {"a_x": {"scalar": ["a"], "paired": []}})
             with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
                 evaluate_verdict(tests, alone)
+            # R1-2: a cross-target predicate reading the one-call scalar alone is no D7 case at
+            # the gate (`_own_predicates`) and none in the verdict: its `no_comparand`
+            # placeholder takes no part in the status.
+            cross = _rus()
+            cross["io_contract"]["predicates"].append(
+                {"test_id": "t_flux", "quantity": "agree", "target_cases": ["a"],
+                 "per_case": True, "expr": "abs(final.a_x - comparand.final.a_x)", "op": "le",
+                 "value": 1e-12})
+            self.assertEqual(pe.scalar_pairing_violations(cross), [])
+            recs = pe.evaluate_primary_predicates(cross, run.root)
+            self.assertEqual((recs[3]["kind"], recs[3]["scalar_pairing"]),
+                             ("no_comparand", {"a_x": {"scalar": ["a"], "paired": []}}))
+            self.assertEqual(evaluate_verdict(tests, recs)["self_verdict"], "pass")
         finally:
             run.cleanup()
 

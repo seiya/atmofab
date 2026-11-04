@@ -212,6 +212,20 @@ class ScalarPairingTest(unittest.TestCase):
         with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
             self._verdict(_rec(pairing=self.ALONE), cross)
 
+    def test_a_cross_target_record_asks_for_no_pair(self) -> None:
+        """R1-2: a cross-target record (an evaluated one is refused elsewhere, so the
+        `no_comparand` placeholder) that reads a one-call scalar alone takes no part, as the
+        Compile gate reads only the predicates that are not cross-target; an own record that
+        reads it alone still raises."""
+        cross = {**CrossTargetTest.PLACEHOLDER, "quantity": "agree", "scalar_pairing": self.ALONE}
+        self.assertEqual(self._verdict(_rec(), cross)["self_verdict"], "pass")
+        self.assertEqual(self._verdict(_rec(pairing=self.BOTH), cross)["self_verdict"], "pass")
+        no_map = {k: v for k, v in cross.items() if k != "scalar_pairing"}
+        self.assertEqual(self._verdict(_rec(), no_map)["self_verdict"], "pass")
+        with self.assertRaisesRegex(PredicateError, r"quantity 'q' reads the one-call scalar "
+                                                    r"final\.a_x in \['a'\]"):
+            self._verdict(_rec(pairing=self.ALONE), cross)
+
     def test_a_pair_over_fewer_cases_does_not_pair(self) -> None:
         with self.assertRaisesRegex(PredicateError, "one-call scalar final.a_x"):
             self._verdict(_rec(pairing={"a_x": {"scalar": ["a", "b"], "paired": []}},

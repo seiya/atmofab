@@ -130,15 +130,18 @@ def _check_scalar_pairing(test_id: str, records: list[dict[str, Any]]) -> None:
     """The Compile gate's D7 (`primary_evidence.scalar_pairing_violations`), re-checked on the
     records: a record that reads a one-call scalar in cases C needs a record of the same quantity,
     not cross-target (itself included), that reads it together with an array state the same
-    operation writes in every case of C."""
-    pairings = [(rec, _scalar_pairing(rec, test_id)) for rec in records]
+    operation writes in every case of C. A CROSS-TARGET record (the `no_comparand` placeholder
+    included) takes no part, on either side, exactly as the gate reads only the predicates that
+    are not cross-target (`primary_evidence._own_predicates`): it takes no part in the status,
+    so the scalar it reads asks for no pair."""
+    pairings = [(rec, _scalar_pairing(rec, test_id)) for rec in records
+                if not is_cross_target_record(rec)]
     for rec, pairing in pairings:
         for scalar, facts in pairing.items():
             cases = facts["scalar"]
             if not cases:
                 continue
-            if not any(not is_cross_target_record(other)
-                       and other.get("quantity") == rec.get("quantity")
+            if not any(other.get("quantity") == rec.get("quantity")
                        and cases <= theirs.get(scalar, {}).get("paired", set())
                        for other, theirs in pairings):
                 raise PredicateError(
@@ -159,7 +162,8 @@ def evaluate_verdict(tests: Any, records: Any, *,
 
     A test with no record, or with only cross-target records, raises ``PredicateError``: nothing
     would judge it. So does a record of a test no entry carries, one over other cases than its
-    test's, a target case no record values, a record with no `scalar_pairing` map, and a
+    test's, a target case no record values, a record that is not cross-target with no
+    `scalar_pairing` map, and a
     one-call scalar read with no record of its quantity reading it beside an array its
     operation writes (`_check_scalar_pairing`, D7).
 
