@@ -453,10 +453,10 @@ class WrapperBoundsAndDeriveTests(_LineageCase):
         self.write("x_model.f90", "m\n")
         self.manifest("x_model.f90")
         ctx = _context(self.paths, self.reserved,
-                       violations=lambda doc: ("bundle_checks_abi_violation", "no checks"))
+                       violations=lambda doc: ("bundle_capability_unsatisfied", "no such"))
         out = ww.run_wrapper_op(ctx, "derive")
-        self.assertEqual(out, {"ok": False, "category": "bundle_checks_abi_violation",
-                               "findings": "no checks"})
+        self.assertEqual(out, {"ok": False, "category": "bundle_capability_unsatisfied",
+                               "findings": "no such"})
         self.assertFalse((self.paths.tree / _CONTROL).exists())
 
     def test_derive_names_a_missing_staged_closure(self) -> None:
@@ -547,12 +547,18 @@ class WrapperCallCompositionTests(_LineageCase):
         path.chmod(0o755)
         return path
 
+    def run_context(self, *, seed_ir: str | None = None, **over) -> ww.WrapperContext:
+        """A context a `run` can pass through: the lineage was seeded the IR its case files are
+        written from (`_write_case_files`), `_SEEDS`' unless a row names another."""
+        text = _SEEDS[ww.SEEDED_IR_NAME] if seed_ir is None else seed_ir
+        return _context(self.paths, self.reserved, seed_texts=((ww.SEEDED_IR_NAME, text),),
+                        **over)
+
     def test_a_run_is_bounded_by_the_lineage_time_left(self) -> None:
         from unittest import mock
 
         self.make_binary()
-        ctx = _context(self.paths, self.reserved, lineage_deadline=time.time() + 30,
-                       run_timeout_sec=3600)
+        ctx = self.run_context(lineage_deadline=time.time() + 30, run_timeout_sec=3600)
         with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
             self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
         self.assertLessEqual(self.calls[0]["timeout_sec"], 30)
@@ -562,8 +568,8 @@ class WrapperCallCompositionTests(_LineageCase):
         from unittest import mock
 
         self.make_binary()
-        ctx = _context(self.paths, self.reserved, launch_argv_prefix=("launcher", "-n", "2"),
-                       launch_env=(("OMP_NUM_THREADS", "4"),))
+        ctx = self.run_context(launch_argv_prefix=("launcher", "-n", "2"),
+                               launch_env=(("OMP_NUM_THREADS", "4"),))
         with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
             out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner", "case_ids": ["c1"]})
         self.assertTrue(out["ok"], out)
@@ -691,8 +697,8 @@ class WrapperCallCompositionTests(_LineageCase):
 
         self.write("x_model.cu", "#include \"x_model.cuh\"\n")
         self.write("x_model.cuh", "header\n")
-        self.write("x_checks.cu", "checks\n")
-        self.manifest("x_model.cu", "x_model.cuh", "x_checks.cu")
+        self.write("x_helper.cu", "helper\n")
+        self.manifest("x_model.cu", "x_model.cuh", "x_helper.cu")
         staged: list[list[str]] = []
 
         def record(args):
@@ -742,7 +748,7 @@ class WrapperCallCompositionTests(_LineageCase):
                    "twice.yaml": ir("c1", "c1")}
         for name, text in refused.items():
             (self.paths.tree / name).write_text(text)
-        ctx = _context(self.paths, self.reserved, max_wrapper_calls=100)
+        ctx = self.run_context(max_wrapper_calls=100)
         rows = [
             ({"binary": "x_runner"}, ["c1", "c2"]),
             ({"binary": "x_runner", "case_ids": []}, ["c1", "c2"]),
@@ -766,21 +772,182 @@ class WrapperCallCompositionTests(_LineageCase):
                     self.assertIn(f"the case file {cases_file}", out["findings"])
                     self.assertEqual(self.calls, [])
 
+    _CAPTURE_DIRS = (("raw", "state_snapshots", "initial"),
+                     ("raw", "state_snapshots", "history"),
+                     ("raw", "state_snapshots", "series"))
+
     def test_a_run_creates_the_capture_directories_validate_execute_creates(self) -> None:
         from unittest import mock
 
         self.make_binary()
-        ctx = _context(self.paths, self.reserved,
-                       run_raw_dirs=("raw", "state_snapshots", "initial"))
+        ctx = self.run_context(run_raw_dirs=self._CAPTURE_DIRS)
         with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
             self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
-        self.assertTrue((self.paths.tree / "raw" / "state_snapshots" / "initial").is_dir())
-        # A link where a capture directory goes is refused, not followed.
+        for raw_dir in self._CAPTURE_DIRS:
+            with self.subTest(raw_dir=raw_dir):
+                self.assertTrue(self.paths.tree.joinpath(*raw_dir).is_dir())
+
+    def test_a_link_at_any_capture_directory_is_refused_and_starts_nothing(self) -> None:
+        """Every part of every directory: a link where one goes is refused, not followed. The
+        link's target must stay empty, which is what following it would have changed."""
         import shutil
-        shutil.rmtree(self.paths.tree / "raw")
-        (self.paths.tree / "raw").symlink_to(Path(self._tmp.name))
-        self.assertEqual(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["category"],
-                         ww.CATEGORY_BAD_ARGUMENTS)
+        from unittest import mock
+
+        def clear_raw() -> None:
+            raw = self.paths.tree / "raw"
+            if raw.is_symlink() or raw.is_file():
+                raw.unlink()
+            else:
+                shutil.rmtree(raw, ignore_errors=True)
+
+        self.make_binary()
+        ctx = self.run_context(run_raw_dirs=self._CAPTURE_DIRS, max_wrapper_calls=50)
+        for parts in (("raw",), ("raw", "state_snapshots"), *self._CAPTURE_DIRS):
+            with self.subTest(parts=parts):
+                clear_raw()
+                outside = Path(tempfile.mkdtemp(dir=self._tmp.name))
+                link = self.paths.tree.joinpath(*parts)
+                link.parent.mkdir(parents=True, exist_ok=True)
+                link.symlink_to(outside)
+                self.calls.clear()
+                with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+                    out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})
+                self.assertEqual(out["category"], ww.CATEGORY_BAD_ARGUMENTS, out)
+                self.assertIn("/".join(parts), out["findings"])
+                self.assertEqual(self.calls, [])
+                self.assertEqual(list(outside.iterdir()), [])
+        # ...and a file there is refused the same way: a run could not capture into it.
+        clear_raw()
+        self.write("raw", "a file\n")
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})
+        self.assertEqual(out["category"], ww.CATEGORY_BAD_ARGUMENTS, out)
+        self.assertEqual(self.calls, [])
+
+    def _drive_seed(self) -> tuple[str, dict]:
+        """A driven IR's text and the case files the host evaluates from it: two cases whose
+        inputs differ, so a file written from another document cannot equal them."""
+        import yaml
+
+        from tools.primary_evidence import evaluate_case_inputs
+        from tools.tests.test_driver_render import call_ir
+
+        ir = call_ir(1, 2)
+        return yaml.safe_dump(ir), evaluate_case_inputs(ir)
+
+    def _case_files_at_spawn(self):
+        """A `tool_run_program` recorder that reads `case_inputs/` when the binary would start."""
+        seen: dict[str, dict] = {}
+        inner = self.recorder()
+
+        def record(args):
+            directory = self.paths.tree / "case_inputs"
+            if directory.is_dir():
+                for path in directory.iterdir():
+                    seen[path.name] = json.loads(path.read_text(encoding="utf-8"))
+            return inner(args)
+        return record, seen
+
+    def test_a_run_writes_each_case_file_beside_the_ir_before_the_binary_starts(self) -> None:
+        """`Validate.execute` writes `case_inputs/` beside the certified IR; a generate lineage's
+        driver reads it beside the tree's copy, and a driver with no file refuses its case. Read
+        at the moment the binary would start, not after the call returns."""
+        from unittest import mock
+
+        self.make_binary()
+        text, expected = self._drive_seed()
+        ctx = self.run_context(seed_ir=text)
+        record, seen = self._case_files_at_spawn()
+        with mock.patch("tools.build_runtime.tool_run_program", record):
+            out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(set(seen), {"m1.json", "m2.json"})
+        self.assertEqual(seen, {f"{cid}.json": doc for cid, doc in expected.items()})
+        self.assertNotEqual(seen["m1.json"], seen["m2.json"], "the fixture must separate them")
+        self.assertEqual(Path(self.calls[0]["project_dir"]), self.paths.tree)
+
+    def test_the_case_files_are_the_seed_s_whatever_the_leaf_edited_or_named(self) -> None:
+        """A case's values are the host's: the leaf's edited copy of `spec.ir.yaml` and a
+        `cases_file` it names select cases at most, and neither reaches a case file. Both edits
+        set the mode to another value, so a writer that read either is red on the row's equality.
+        The edit of the seed is planted AFTER `run_wrapper_op`'s re-place would run, inside the
+        recorder of the earlier call, so it is the on-disk text a tree-reading writer would see
+        on the second call only if re-place is removed as well; the seed text is what must win."""
+        import yaml
+        from unittest import mock
+
+        from tools.tests.test_driver_render import call_ir
+
+        self.make_binary()
+        text, expected = self._drive_seed()
+        ctx = self.run_context(seed_ir=text, max_wrapper_calls=10)
+        forged = call_ir(1, 2)
+        for case in forged["case"]["test_case_set"]:
+            case["inputs"]["mode"] = 99
+        forged_text = yaml.safe_dump(forged)
+        self.write("mine.yaml", forged_text)
+        for name, args, plant in (
+                ("an edited seed", {"binary": "x_runner"},
+                 lambda: self.write("spec.ir.yaml", forged_text)),
+                ("a named cases_file", {"binary": "x_runner", "cases_file": "mine.yaml"},
+                 lambda: None)):
+            with self.subTest(name):
+                plant()
+                record, seen = self._case_files_at_spawn()
+                self.calls.clear()
+                with mock.patch("tools.build_runtime.tool_run_program", record):
+                    out = ww.run_wrapper_op(ctx, "run", args)
+                self.assertTrue(out["ok"], out)
+                self.assertEqual(seen, {f"{cid}.json": doc for cid, doc in expected.items()})
+                self.assertEqual(seen["m1.json"]["inputs.mode"], 1)
+        # The named file is what the command line carries: it selects, and only that.
+        self.assertEqual(self.calls[0]["command"][-3:], [
+            str(self.paths.tree / "mine.yaml"), "m1", "m2"])
+
+    def test_a_case_file_a_leaf_left_is_overwritten_by_the_seed_s(self) -> None:
+        from unittest import mock
+
+        self.make_binary()
+        text, expected = self._drive_seed()
+        self.write("case_inputs/m1.json", '{"inputs.mode": 99}\n')
+        ctx = self.run_context(seed_ir=text)
+        record, seen = self._case_files_at_spawn()
+        with mock.patch("tools.build_runtime.tool_run_program", record):
+            self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
+        self.assertEqual(seen["m1.json"], expected["m1"])
+
+    def test_a_lineage_with_no_seeded_ir_answers_unavailable_and_starts_nothing(self) -> None:
+        from unittest import mock
+
+        self.make_binary()
+        ctx = _context(self.paths, self.reserved, seed_texts=(("tests.md", "# tests\n"),))
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner", "case_ids": ["c1"]})
+        self.assertEqual(out["category"], ww.CATEGORY_RUN_UNAVAILABLE, out)
+        self.assertIn(ww.SEEDED_IR_NAME, out["findings"])
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.paths.tree / "case_inputs").exists())
+
+    def test_a_seeded_ir_the_host_cannot_evaluate_answers_unavailable(self) -> None:
+        """No repair of the bundle answers it: the IR came through `Compile.static`. Each row
+        breaks the seed a different way, and nothing starts."""
+        import yaml
+        from unittest import mock
+
+        from tools.tests.test_driver_render import call_ir
+
+        self.make_binary()
+        undefined = call_ir(1)
+        undefined["case"]["test_case_set"][0]["initial_state"]["a"] = "no_such_name * 2"
+        for name, text in (("not yaml", "a: [\n"), ("no drive state", yaml.safe_dump(undefined))):
+            with self.subTest(name):
+                self.calls.clear()
+                ctx = self.run_context(seed_ir=text, max_wrapper_calls=10)
+                with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+                    out = ww.run_wrapper_op(ctx, "run",
+                                            {"binary": "x_runner", "case_ids": ["m1"]})
+                self.assertEqual(out["category"], ww.CATEGORY_RUN_UNAVAILABLE, out)
+                self.assertEqual(self.calls, [])
 
     def test_a_failed_derive_leaves_no_control_file_behind(self) -> None:
         self.write("x_model.f90", "m\n")

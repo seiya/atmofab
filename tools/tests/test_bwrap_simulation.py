@@ -1458,7 +1458,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
             agent_run_id="arid-sim", reserved_names=reserved, control_file_basename="Makefile",
             violations=lambda doc: None, build_graph=lambda doc: {},
             render_control_file=lambda *, graph: self._CONTROL,
-            closure_file_names=("dep_model.f90",), seed_names=seeds, run_raw_dirs=("raw",),
+            closure_file_names=("dep_model.f90",), seed_names=seeds, run_raw_dirs=(("raw",),),
             language="fortran", build_system="make",
             build_overrides=(f"OBJDIR={self.paths.staged_obj}", f"BINDIR={self.paths.staged_bin}",
                              "BIN=x_runner"),
@@ -1469,7 +1469,8 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
             run_unavailable=None, base_env=tuple(sorted(ww.wrapper_base_env().items())),
             toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(
                 ["make", "gfortran", "python3", *lint_preset_executables("fortitude")])),
-            max_wrapper_calls=20, lineage_deadline=time.time() + 900)
+            max_wrapper_calls=20, lineage_deadline=time.time() + 900,
+            seed_texts=(("spec.ir.yaml", "case:\n  test_case_set:\n  - case_id: c1\n"),))
 
     def tearDown(self) -> None:
         self._tmp.cleanup()

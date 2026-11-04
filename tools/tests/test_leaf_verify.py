@@ -64,22 +64,19 @@ def _verdict(status: str = "pass", *, severity: str | None = None,
             "findings": findings or [{"summary": "mass is not conserved"}]}
 
 
-# The two real documents the reviewer context slices, copied into each fixture repo. Deliberately
-# the REAL documents and not synthetic stand-ins: every reviewer-loop test below renders the live
-# slices, so a reorganization either slicer cannot cut turns this whole file red — the early
-# warning that a billed run would otherwise be the first to give. `ChecksContractSlicerTests` and
-# `SeverityRubricSlicerTests` cover the two helpers' own contracts on synthetic text.
-_REAL_CHECKS_CONTRACT = (
-    Path(wc.__file__).resolve().parents[1] / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md")
+# The real document the reviewer context slices, copied into each fixture repo. Deliberately the
+# REAL document and not a synthetic stand-in: every reviewer-loop test below renders the live
+# slice, so a reorganization the slicer cannot cut turns this whole file red — the early warning
+# that a billed run would otherwise be the first to give. `SeverityRubricSlicerTests` covers the
+# helper's own contract on synthetic text.
 _REAL_PHASE_02 = (Path(wc.__file__).resolve().parents[1]
                   / "docs" / "workflow" / "phases" / "phase_02_generate.md")
 
 
-def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
-                 stage_phase_02: bool = True) -> wc.NodeRefs:
+def _verify_node(repo: Path, *, stage_phase_02: bool = True) -> wc.NodeRefs:
     """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input),
-    and — unless the corresponding `stage_*` argument is False — the repository's checks-module
-    contract and phase_02 contract staged where `_build_leaf_verify_context` reads them."""
+    and — unless `stage_phase_02` is False — the repository's phase_02 contract staged where
+    `_build_leaf_verify_context` reads it."""
     refs = _write_node(repo)
     src = repo / refs.source_dir()
     src.mkdir(parents=True, exist_ok=True)
@@ -87,10 +84,6 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
     (repo / refs.spec_path).mkdir(parents=True, exist_ok=True)
     (repo / refs.spec_path / "controlled_spec.md").write_text(
         "# §5.1 interface\nconserves mass.\n", encoding="utf-8")
-    if stage_checks_contract:
-        dest = repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(_REAL_CHECKS_CONTRACT, dest)
     if stage_phase_02:
         dest = repo / "docs" / "workflow" / "phases" / "phase_02_generate.md"
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -180,7 +173,6 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
                               "ir_document", "target_profile",
-                              "checks_module_contract_document",
                               "severity_rubric_document", "bundle_document"})
             self.assertIn("conserves mass", ctx["controlled_spec_document"])
             # The reviewer judges G6 against the run's target (issue #284): the whole profile,
@@ -188,64 +180,6 @@ class PureVerifyContextTests(unittest.TestCase):
             conductor = _conductor(repo)
             self.assertEqual(json.loads(ctx["target_profile"]), conductor.target.doc)
             self.assertIn("bundle_schema_version", ctx["bundle_document"])
-
-    def test_checks_contract_document_is_sections_1_to_4_of_the_real_doc(self) -> None:
-        # issue #142: the reviewer receives the ABI half of the contract and nothing else. What is
-        # pinned is the SPAN — §1 opens it, §4's content is inside, §5 and the preamble are out.
-        # Since issue #289 (R4-b PR-2) the span is TWO documents in order: §1-§4 of the neutral
-        # contract, then §1-§4 of the target language's binding of it — and §5 of neither.
-        from tools.backends.language.fortran import checks_abi
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _verify_node(repo)
-            doc = _conductor(repo)._build_leaf_verify_context(
-                refs)["checks_module_contract_document"]
-            self.assertTrue(doc.startswith("## 1. The fixed ABI\n"), doc[:80])
-            neutral_end = doc.index("## 1. The fixed ABI in Fortran")
-            for present in ("## 2. Semantics the harness relies on",
-                            "## 3. Module-level state is expected",
-                            "## 4. Prohibitions",
-                            "The runner does not read `ok`",
-                            "runner always captures the case's state"):
-                self.assertIn(present, doc[:neutral_end])
-            for present in ("### 1-b. The bound state in Fortran",
-                            "## 2. The semantics, spelled in Fortran",
-                            "## 4. Prohibitions in Fortran",
-                            "logical, intent(out) :: ok"):
-                self.assertIn(present, doc[neutral_end:])
-            for retired in ("checks_compute", "metric_compute"):
-                self.assertNotIn(retired, doc)
-            # Issue #399: the wording that gave a value of `ok` a meaning is gone from the
-            # reviewer's document (the sentence-level rule is
-            # `test_checks_module_loops_and_ok_are_not_findings_on_every_target`).
-            for refused in ("rejects a guard", "`ok` false", "ok = .false.", "ok=.false.",
-                            "returned `ok`", "returning `ok"):
-                self.assertNotIn(refused, doc)
-            # Every literal here must occur in the REAL documents, or the assertion is true of
-            # any slice and pins nothing — an earlier version of this test named a preamble
-            # sentence the same commit had rewritten away.
-            real = _REAL_CHECKS_CONTRACT.read_text(encoding="utf-8") + checks_abi.document()
-            for absent in ("## 5.",
-                           "Fortran legality and gate guards",
-                           "## 5. Language binding",
-                           "# Checks-module contract",
-                           "# Checks-module ABI",
-                           "NO leaf reads this document from disk"):
-                self.assertIn(absent, real, f"{absent!r} no longer occurs in the documents, so "
-                                            f"asserting its absence from the slice pins nothing")
-                self.assertNotIn(absent, doc)
-
-    def test_missing_checks_contract_raises_the_named_contract(self) -> None:
-        # Raises, as the four node artifacts do since issue #467. Measured in issue #169's
-        # review: a whitespace-only `pure_context` value never reaches the leaf — the launch
-        # validator counts it missing and raises — so degrading only defers the refusal one
-        # frame, into `record_launch`, where it escapes the loop's named branch.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _verify_node(repo, stage_checks_contract=False)
-            with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_leaf_verify_context(refs)
-            self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
 
     def test_each_unreadable_node_artifact_raises_its_named_document(self) -> None:
         """Issue #467: the builder-level rows for the four node artifacts, plus one undecodable
@@ -285,60 +219,6 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertIn("pure_ir_document_missing", str(cm.exception))
             self.assertTrue(str(cm.exception).endswith(": empty"), str(cm.exception))
 
-    def test_non_utf8_checks_contract_raises_the_named_contract(self) -> None:
-        # UnicodeDecodeError is a ValueError, not an OSError: catching OSError alone would let it
-        # escape unnamed (the producer's runner read has the same pin).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _verify_node(repo)
-            (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_bytes(
-                b"## 1. x\n\xff\xfe\n## 5. y\n")
-            with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_leaf_verify_context(refs)
-            self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
-
-    def test_the_language_binding_fails_closed_three_ways(self) -> None:
-        """The binding appended to the neutral §1-§4 (issue #289) raises a NAMED refusal when the
-        target language declares none, when it cannot be read, and when its section anchors are
-        gone — never a shorter document with the header still promising the binding (round 2:
-        replacing the unsliceable raise with an empty binding survived every test file)."""
-        from unittest import mock
-        from tools.backends import registry as backend_registry
-        from tools.backends.language.fortran import checks_abi
-        body = checks_abi.document()
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _verify_node(repo)
-            c = _conductor(repo)
-            with mock.patch.object(checks_abi, "document",
-                                   lambda: body.replace("## 1. ", "## One ", 1)):
-                with self.assertRaises(RuntimeError) as cm:
-                    c._build_leaf_verify_context(refs)
-            self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
-            self.assertIn("checks-ABI binding", str(cm.exception))
-            with mock.patch.object(checks_abi, "document", side_effect=OSError("gone")):
-                with self.assertRaises(RuntimeError) as cm:
-                    c._build_leaf_verify_context(refs)
-            self.assertIn("pure_checks_abi_binding_missing", str(cm.exception))
-            record = backend_registry.get("language", "fortran")
-            with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
-                    backend_provides=record.backend_provides - {"checks_abi"})}):
-                with self.assertRaises(RuntimeError) as cm:
-                    c._build_leaf_verify_context(refs)
-            self.assertIn("pure_checks_abi_binding_unavailable", str(cm.exception))
-
-    def test_unsliceable_checks_contract_raises_the_named_contract(self) -> None:
-        # A readable document whose anchors moved is a DIFFERENT diagnosis from an absent one:
-        # the operator's repair is the document's section numbering, not a missing file.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _verify_node(repo)
-            (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_text(
-                "## 1. The fixed ABI\nbody\n", encoding="utf-8")
-            with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_leaf_verify_context(refs)
-            self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
-
     def test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02(self) -> None:
         # issue #143: the reviewer receives §2-2's severity rubric and nothing else of phase_02.
         # What is pinned is the SPAN — the subsection heading opens it, its own bullets are
@@ -352,51 +232,11 @@ class PureVerifyContextTests(unittest.TestCase):
                           "the rubric's lead sentence no longer says what the value names; this "
                           "is the witness that the slot carries the RUBRIC and not some other "
                           "subsection, so a reworded lead sentence means re-reading it here")
-            # The rubric restates #142's scope rule as a severity clause, which makes it a THIRD
-            # statement of that rule inside phase_02. Pin its polarity POSITIVELY: the sibling
-            # `test_phase_02_states_the_scope_rule_with_its_bound` refuses one spelling of the
-            # fail-open ("the contract does not state is out of scope"), and a negative phrase
-            # pin stops catching the moment the sentence is reworded.
-            self.assertIn("is dropped and takes no severity when the checks-module contract "
-                          "contradicts it", doc)
-            self.assertIn("Where the contract is silent, the finding stands and takes the value "
-                          "its subject earns", doc)
-            # …and its CLASS, which is what round 1 found wrong: this bullet was strictly wider
-            # than the two statements of the same rule it joins ("or the harness", "a value the
-            # bundle returns"), so a G5 dataflow finding justified by what the harness does with
-            # a MODEL-produced value fell inside the droppable class here and outside it there.
-            # The class is taken FROM the template — the pre-existing authority — never spelled
-            # again, so the two cannot drift apart. The extraction is self-tested.
-            tpl = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
-                   / "workshop_generate_verify.txt").read_text(encoding="utf-8")
-            _, sep, rest = tpl.partition(
-                "can only OVERRULE one kind of claim — a claim about ")
-            self.assertTrue(sep, "the template's droppable-class sentence no longer opens with "
-                                 "'can only OVERRULE one kind of claim — a claim about '; "
-                                 "re-read the TEMPLATE and re-derive this marker")
-            claim_class, sep2, _ = rest.partition(" — so drop a finding")
-            self.assertTrue(sep2, "the template's droppable-class sentence no longer ends with "
-                                  "' — so drop a finding'; the class could not be delimited, so "
-                                  "the comparison below would be against the rest of the "
-                                  "TEMPLATE, not against a class")
-            self.assertTrue(40 < len(claim_class) < 300,
-                            f"the extracted class is {len(claim_class)} characters, which is not "
-                            f"a claim class; the template's markers moved: {claim_class[:120]!r}")
-            # EXCLUSIVITY, not presence. `assertIn` passed on a bullet that stated the template's
-            # class AND MORE — appending "or about what the harness does with any value the
-            # bundle returns" was green, which is the very widening this coupling exists to
-            # refuse. Compare the rubric bullet's own class span for EQUALITY.
-            opener, closer = "- A claim about ", " is dropped and takes no severity"
-            bullet = [ln for ln in doc.splitlines() if ln.startswith(opener)]
-            self.assertEqual(len(bullet), 1,
-                             f"the rubric must carry exactly one {opener!r} bullet; found "
-                             f"{len(bullet)}")
-            rubric_class, sep3, _ = bullet[0][len(opener):].partition(closer)
-            self.assertTrue(sep3, f"the rubric's drop bullet no longer contains {closer!r}, so "
-                                  f"its class span could not be delimited")
-            self.assertEqual(rubric_class, claim_class,
-                             "the rubric's droppable class is not the template's, character for "
-                             "character; a WIDER class here drops findings the template keeps")
+            # The droppable-claim bullet and the template sentence it was held equal to went with
+            # the checks-module contract (issue #589 PR-1b): the host renders the driver, so the
+            # reviewer has no contract that could overrule a finding. Their return is refused.
+            self.assertNotIn("is dropped and takes no severity", doc)
+            self.assertNotIn("checks-module", doc)
             # The two tie-break sentences decide the ambiguous case, and one direction of each
             # ends the run. A polarity, not prose: pin both, or an inversion ships on a version
             # bump alone.
@@ -479,7 +319,7 @@ class PureVerifyContextTests(unittest.TestCase):
                          "open `- `identifier`:` — write it without the colon.")
 
     def test_missing_phase_02_raises_the_named_contract(self) -> None:
-        # Same disposition as the checks contract, and for the same corrected reason: a
+        # Same disposition as the node artifacts, and for the same corrected reason: a
         # whitespace-only value is counted missing and raises, so degrading only defers the
         # refusal one frame into `record_launch` (issue #169).
         with tempfile.TemporaryDirectory() as tmp:
@@ -517,58 +357,19 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertIn("pure_severity_rubric_document_unsliceable", str(cm.exception))
 
 
-# ======================================================================================
-# _checks_contract_abi_sections (the slicer's own contract, on synthetic text)
-# ======================================================================================
-class ChecksContractSlicerTests(unittest.TestCase):
-    _DOC = ("# Title\n\npreamble\n\n"
-            "## 1. The fixed ABI\nabi body\n\n"
-            "## 2. Semantics\nsemantics body\n\n"
-            "## 3. State\nstate body\n\n"
-            "## 4. Prohibitions\nprohibitions body\n\n"
-            "## 5. Legality\nlegality body\n")
-
-    def test_keeps_1_to_4_and_drops_title_preamble_and_5(self) -> None:
-        self.assertEqual(
-            wc._checks_contract_abi_sections(self._DOC),
-            "## 1. The fixed ABI\nabi body\n\n"
-            "## 2. Semantics\nsemantics body\n\n"
-            "## 3. State\nstate body\n\n"
-            "## 4. Prohibitions\nprohibitions body")
-
-    def test_missing_begin_anchor_raises(self) -> None:
-        with self.assertRaises(ValueError):
-            wc._checks_contract_abi_sections("# Title\n\n## 5. Legality\nbody\n")
-
-    def test_missing_end_anchor_raises(self) -> None:
-        # Degrading to "everything after §1" would silently hand the reviewer the deterministic
-        # gate section the template tells it not to re-check.
-        with self.assertRaises(ValueError):
-            wc._checks_contract_abi_sections("## 1. ABI\nbody\n\n## 4. Prohibitions\nb\n")
-
-    def test_decimal_subsection_headings_do_not_anchor(self) -> None:
-        # `## 1.5` / `## 5.1` are subsection numbers, not the section anchors.
-        with self.assertRaises(ValueError):
-            wc._checks_contract_abi_sections("## 1.5 sub\nbody\n\n## 5. Legality\nb\n")
-        with self.assertRaises(ValueError):
-            wc._checks_contract_abi_sections("## 1. ABI\nbody\n\n## 5.1 sub\nb\n")
-
-    def test_an_end_anchor_before_the_begin_anchor_is_not_counted(self) -> None:
-        # The end search starts AFTER the begin index; a §5 back-reference above §1 must not
-        # produce an empty (or reversed) slice.
-        doc = ("## 5. Legality\nearly\n\n## 1. ABI\nabi body\n\n"
-               "## 5. Legality\nlegality body\n")
-        self.assertEqual(wc._checks_contract_abi_sections(doc), "## 1. ABI\nabi body")
-
-
 class NumberedSectionRangeTests(unittest.TestCase):
-    """The engine both numbered-section slicers delegate to (issue #169).
+    """The engine the numbered-section slicer delegates to (issue #169).
 
-    `ChecksContractSlicerTests` above drives it through the `checks` caller; these rows drive
-    the properties its docstring states that no caller's document can currently exercise —
-    measured: a mutant searching for the end anchor from index 0 rather than from `start + 1`
-    survived the whole suite, because both real documents happen to be in heading order.
+    These rows drive the properties its docstring states that no caller's document can currently
+    exercise — measured: a mutant searching for the end anchor from index 0 rather than from
+    `start + 1` survived the whole suite, because the real documents are in heading order.
     """
+
+    def test_it_keeps_the_range_and_drops_the_title_the_preamble_and_the_terminator(self) -> None:
+        doc = ("# Title\n\npreamble\n\n## 1. One\none body\n\n## 2. Two\ntwo body\n\n"
+               "## 5. Five\nfive body\n")
+        self.assertEqual(wc._numbered_section_range(doc, "1", "5", subject="s"),
+                         "## 1. One\none body\n\n## 2. Two\ntwo body")
 
     def test_a_back_reference_above_the_section_is_not_the_terminator(self) -> None:
         doc = "## 5. Legality\nearly\n\n## 1. ABI\nabi body\n\n## 5. Legality\nlate\n"
@@ -586,6 +387,9 @@ class NumberedSectionRangeTests(unittest.TestCase):
     def test_a_decimal_subsection_does_not_anchor(self) -> None:
         with self.assertRaises(ValueError):
             wc._numbered_section_range("## 1.5 sub\nb\n\n## 5. end\nb\n", "1", "5",
+                                       subject="s")
+        with self.assertRaises(ValueError):
+            wc._numbered_section_range("## 1. one\nb\n\n## 5.1 sub\nb\n", "1", "5",
                                        subject="s")
 
 
@@ -680,12 +484,10 @@ class SeverityRubricSlicerTests(unittest.TestCase):
 # The generate.verify reviewer loop: happy path, fail verdict, repair, exhaustion, transport
 # ======================================================================================
 class PureVerifySubstepTests(unittest.TestCase):
-    def _run(self, envelopes, *, cls=None, stage_checks_contract=True,
-             stage_phase_02=True, llm_config=None, unlink=None):
+    def _run(self, envelopes, *, cls=None, stage_phase_02=True, llm_config=None, unlink=None):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
-        refs = _verify_node(repo, stage_checks_contract=stage_checks_contract,
-                            stage_phase_02=stage_phase_02)
+        refs = _verify_node(repo, stage_phase_02=stage_phase_02)
         if unlink is not None:
             # A repo-relative path, computed from the node's refs, removed after staging.
             (repo / unlink(refs)).unlink()
@@ -717,12 +519,13 @@ class PureVerifySubstepTests(unittest.TestCase):
         direction — the failure swallowed and the launch continued — the reviewer would return
         `pass` and the assertions on spawn count and artifacts would catch it.
         """
-        c, refs, oc = self._run([_envelope(_verdict("pass"))], stage_checks_contract=False)
+        c, refs, oc = self._run([_envelope(_verdict("pass"))],
+                               unlink=lambda r: f"{r.spec_path}/controlled_spec.md")
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.leaf_returncode, 1)      # transport => run_phase's fail_closed route
         self.assertIsNotNone(oc.infra_error)
         self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
-        self.assertIn("pure_checks_contract_document_missing", oc.infra_error[1])
+        self.assertIn("pure_controlled_spec_document_missing", oc.infra_error[1])
         self.assertEqual(oc.output_refs, [])
         self.assertEqual(_spawned(c), 0)  # no leaf was billed
         base = c.repo_root / refs.source_dir()
@@ -734,14 +537,11 @@ class PureVerifySubstepTests(unittest.TestCase):
         events = [e for e in c.events if e["event"] == "pure_context_assembly_failed"]
         self.assertEqual(len(events), 1, c.events)
         self.assertEqual(events[0]["node_key"], refs.node_key)
-        self.assertIn("pure_checks_contract_document_missing", events[0]["detail"])
+        self.assertIn("pure_controlled_spec_document_missing", events[0]["detail"])
 
     def test_a_missing_severity_rubric_is_the_same_recorded_fail_closed_outcome(self) -> None:
-        """Twin of the test above for the SECOND sliced document (issue #143).
-
-        The builder reads the checks contract first, so the assertion above would still pass with
-        the rubric read deleted — the contract's own name reaches the outcome either way. This
-        drives the second read on its own: contract staged, phase_02 absent.
+        """Twin of the test above for the sliced document (issue #143): the node's artifacts
+        staged, phase_02 absent, so the rubric read is driven on its own.
         """
         c, refs, oc = self._run([_envelope(_verdict("pass"))], stage_phase_02=False)
         self.assertEqual(oc.status, "fail")
@@ -1716,9 +1516,7 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
                 runner_host_authored=True,
                 pure_leaf=True,
                 pure_context={"controlled_spec_document": "cs", "tests_document": "t",
-                              "ir_document": "ir",
-                              "checks_module_contract_document": "## 1. The fixed ABI",
-                              "bundle_document": "b"})
+                              "ir_document": "ir", "bundle_document": "b"})
             req = wc.build_launch_request(refs, workshop_lineage_id="c",
                                           workshop_provider="claude_cli", **kwargs)
             self.assertEqual(req["leaf_mode"], "workshop")
@@ -1867,8 +1665,7 @@ class PureStepResultValidationTests(unittest.TestCase):
                 json.dumps({"leaf_mode": "pure", "step": "generate", "substep": substep}),
                 encoding="utf-8")
         # Host-authored deliverables on disk (what the pure producer + verify write).
-        required = wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                          bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
+        required = wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
         for ref in required:
             p = repo / ref
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -2033,10 +1830,8 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
     green, which is exactly the "the predicate has a test, the call site does not" shape.
     """
 
-    #: The reviewer context reads two of these; the third is here because this class also drives
-    #: the PRODUCER through `run_substep`, and that context reads the checks-module contract.
+    #: The two repository documents the reviewer context reads.
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
-                  "docs/workflow/CHECKS_MODULE_CONTRACT.md",
                   "docs/workflow/phases/phase_02_generate.md")
 
     def setUp(self) -> None:
@@ -2147,9 +1942,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
             sorted(request["pure_context"]),
             sorted(wc_ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
                 ("generate", "verify", "harness")]))
-        # ...and the runner-output contract really is what the fifth slot carries, not the
-        # checks-module ABI the m3c reviewer receives.
-        self.assertNotIn("checks_module_contract_document", request["pure_context"])
+        # ...and the runner-output contract really is carried, which the m3c reviewer's is not.
         self.assertIn("runner_output_contract_document", request["pure_context"])
 
     def test_run_substep_dispatches_the_reviewer_with_the_shape(self) -> None:
@@ -2214,7 +2007,9 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
             request = [cap["--request-json"] for sub, cap in c.calls
                        if sub == "record-launch"][-1]
         self.assertNotIn("pure_shape", request)
-        self.assertIn("checks_module_contract_document", request["pure_context"])
+        self.assertEqual(sorted(request["pure_context"]),
+                         sorted(wc_ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]))
+        self.assertNotIn("runner_output_contract_document", request["pure_context"])
 
 
 if __name__ == "__main__":
