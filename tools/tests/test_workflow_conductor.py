@@ -519,6 +519,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
         pure_rows = {k: v for k, v in _load_real_requests().items()
                      if v.get("leaf_mode") == "workshop"}
         self.assertEqual(len(pure_rows), 6)
+        exempted: set[tuple[str, str]] = set()
         for (step, substep, _mode), req in pure_rows.items():
             with self.subTest(step=step, substep=substep):
                 if "pure_context" not in req:
@@ -533,6 +534,15 @@ class BuildLaunchRequestTest(unittest.TestCase):
                 retired = _RETIRED_CAPTURED_CONTEXT_KEYS.get((step, substep), set())
                 self.assertFalse(retired & set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]),
                                  "a key the table requires again is not retired")
+                # self-removing (review round 2, R2-6): the exemption holds only while the
+                # capture still CARRIES the retired key; a re-capture that drops it fails
+                # here, and the _RETIRED_CAPTURED_CONTEXT_KEYS entry is deleted with it
+                missing = sorted(retired - set(req["pure_context"]))
+                self.assertEqual(missing, [], "the capture no longer carries the retired "
+                                 f"key(s) {missing}: delete their _RETIRED_CAPTURED_CONTEXT_KEYS "
+                                 "entry")
+                if retired:
+                    exempted.add((step, substep))
                 self.assertEqual(set(req["pure_context"]) - retired,
                                  set(PURE_CONTEXT_REQUIRED_KEYS[(step, substep)]))
                 for key, value in req["pure_context"].items():
@@ -549,6 +559,9 @@ class BuildLaunchRequestTest(unittest.TestCase):
                     for v in (*req["pure_context"].values(), req["launch_prompt_full"]))
                 self.assertGreater(src["bytes"], redacted_bytes)
                 self.assertRegex(src["sha256"], r"^[0-9a-f]{64}$")
+        # every exemption was asked of a cold row of its pair (a pair whose row is gone, or
+        # warm, would keep an entry nothing checks)
+        self.assertEqual(exempted, set(_RETIRED_CAPTURED_CONTEXT_KEYS))
 
     def test_omits_launch_prompt_full(self) -> None:
         # record-launch must render the prompt; the builder must not supply it.
