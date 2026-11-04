@@ -219,6 +219,36 @@ class PureVerifyContextTests(unittest.TestCase):
             self.assertIn("pure_ir_document_missing", str(cm.exception))
             self.assertTrue(str(cm.exception).endswith(": empty"), str(cm.exception))
 
+    def _assert_no_contract_overrules_a_finding(self, doc: str) -> None:
+        """The droppable-claim bullet and the template sentence it was held equal to went with
+        the checks-module contract (issue #589 PR-1b): the host renders the driver, so the
+        reviewer has no contract that could overrule a finding. Their return is refused."""
+        self.assertNotIn("is dropped and takes no severity", doc)
+        self.assertNotIn("checks-module", doc)
+
+    def test_the_overruling_bullet_planted_back_in_the_rubric_is_seen(self) -> None:
+        """The reversal of the row above, through the real slicer: the phrases are planted in the
+        fixture's phase_02 inside the rubric's span, so a pin reading a narrower text is red."""
+        planted = ("#### Severity of a finding (`issue_severity`)\n"
+                   "- A claim about X is dropped and takes no severity when the checks-module "
+                   "contract contradicts it.\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            path = repo / "docs" / "workflow" / "phases" / "phase_02_generate.md"
+            real = path.read_text(encoding="utf-8")
+            heading = "#### Severity of a finding (`issue_severity`)\n"
+            self.assertEqual(real.count(heading), 1)
+            path.write_text(real.replace(heading, planted), encoding="utf-8")
+            doc = _conductor(repo)._build_leaf_verify_context(refs)["severity_rubric_document"]
+        self.assertIn("is dropped and takes no severity", doc)
+        with self.assertRaises(AssertionError):
+            self._assert_no_contract_overrules_a_finding(doc)
+        # ...and each phrase alone, so neither half of the pin rides on the other.
+        for phrase in ("is dropped and takes no severity", "checks-module"):
+            with self.subTest(phrase), self.assertRaises(AssertionError):
+                self._assert_no_contract_overrules_a_finding(phrase)
+
     def test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02(self) -> None:
         # issue #143: the reviewer receives §2-2's severity rubric and nothing else of phase_02.
         # What is pinned is the SPAN — the subsection heading opens it, its own bullets are
@@ -232,11 +262,7 @@ class PureVerifyContextTests(unittest.TestCase):
                           "the rubric's lead sentence no longer says what the value names; this "
                           "is the witness that the slot carries the RUBRIC and not some other "
                           "subsection, so a reworded lead sentence means re-reading it here")
-            # The droppable-claim bullet and the template sentence it was held equal to went with
-            # the checks-module contract (issue #589 PR-1b): the host renders the driver, so the
-            # reviewer has no contract that could overrule a finding. Their return is refused.
-            self.assertNotIn("is dropped and takes no severity", doc)
-            self.assertNotIn("checks-module", doc)
+            self._assert_no_contract_overrules_a_finding(doc)
             # The two tie-break sentences decide the ambiguous case, and one direction of each
             # ends the run. A polarity, not prose: pin both, or an inversion ships on a version
             # bump alone.

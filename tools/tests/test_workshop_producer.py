@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -874,6 +875,269 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("Work tree contract", cold)
         self.assertNotIn("Work tree contract", warm)
 
+
+
+class DriverPromptTests(unittest.TestCase):
+    """What the prompts say since the host renders the driver (issue #589 PR-1b), read from each
+    rendered launch on both language targets. A template's fragments are composed per target at
+    render, so a read of the template files alone would not see a language's half."""
+
+    TARGETS = ("fortran_cpu", "cpp_gpu")
+    PAIRS = (("generate", "generate", ""), ("generate", "generate", "harness"),
+             ("generate", "verify", ""), ("generate", "verify", "harness"),
+             ("compile", "generate", ""), ("compile", "verify", ""), ("validate", "judge", ""))
+
+    #: The words of the deleted checks module. `_checks` as a token suffix: `<spec_id>_checks`,
+    #: `x_checks`, and so on, however the prefix is spelled.
+    _STALE = re.compile(r"case_run|case_setup|state_bindings?|state_registration|checks[- ]module"
+                        r"|[\w<>]*_checks\b", re.IGNORECASE)
+
+    @classmethod
+    def _stale_words(cls, text: str) -> list[str]:
+        return sorted({m.group(0) for m in cls._STALE.finditer(text)})
+
+    @staticmethod
+    def _profile(target_id: str):
+        from tools.target_profile import load_target_profile
+        return load_target_profile(Path(wc.__file__).resolve().parents[1], target_id)
+
+    def _render(self, step: str, substep: str, shape: str, target_id: str) -> str:
+        """Through `build_launch_request` -> `prepare_launch_request_payload` ->
+        `render_launch_prompt_text`, telling the language and the parallel backend only to the
+        phase `Conductor._leaf_language` tells them to."""
+        profile = self._profile(target_id)
+        keys = (ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(step, substep, shape)] if shape
+                else ort.PURE_CONTEXT_REQUIRED_KEYS[(step, substep)])
+        refs = wc.NodeRefs(target_id=target_id, node_key="component/x@0.1.0",
+                           spec_path="spec/component/x", ir_id="ir_20260908_001",
+                           pipeline_id="p_20260908_001", source_id="src_20260908_001",
+                           binary_id="bin_20260908_001", run_id="run_20260908_001")
+        told = step == "generate"
+        req = wc.build_launch_request(
+            refs, step=step, substep=substep, orchestration_id=_ORCH,
+            orchestration_agent_run_id="orch", child_agent_run_id="ar_x",
+            agent_model="opus", workflow_mode="dev", pure_leaf=True, pure_shape=shape,
+            pure_language=str(profile.toolchain["language"]) if told else "",
+            pure_parallel=str(profile.parallel_backend) if told else "",
+            pure_context={k: f"DOCUMENT-{k}" for k in keys},
+            workshop_lineage_id="ar_x", workshop_provider="claude_cli")
+        return ort.render_launch_prompt_text(ort.prepare_launch_request_payload(req))
+
+    def test_no_rendered_prompt_carries_a_word_of_the_checks_module(self) -> None:
+        for target_id in self.TARGETS:
+            for pair in self.PAIRS:
+                with self.subTest(target=target_id, pair=pair):
+                    text = self._render(*pair, target_id)
+                    self.assertNotIn("{{", text)
+                    self.assertEqual(self._stale_words(text), [])
+
+    def test_no_composed_template_carries_one_either(self) -> None:
+        """The repair and diagnose templates, which no row here renders from a request: every
+        registered template, composed for each target."""
+        from tools.tests.target_fixtures import composed_pure_template
+        self.assertGreater(len(ort._PROMPT_TEMPLATE_FILES), len(self.PAIRS))
+        for target_id in self.TARGETS:
+            profile = self._profile(target_id)
+            for key in sorted(ort._PROMPT_TEMPLATE_FILES):
+                with self.subTest(target=target_id, template=key):
+                    self.assertEqual(self._stale_words(composed_pure_template(key, profile)), [])
+
+    def test_no_seeded_document_carries_one_either(self) -> None:
+        """A seed is read as the prompt is. The real documents the context builders hand over,
+        through the language's own `prompt_fragments`, and the tool list the leaf is served."""
+        from tools.backends import registry as backend_registry
+        from tools.workshop_mcp import TOOL_DEFINITIONS
+        root = Path(wc.__file__).resolve().parents[1]
+        phase_02 = (root / ort.WORKFLOW_PHASE_DOC_BY_STEP["generate"]).read_text(encoding="utf-8")
+        shared = {
+            "the runner-output contract": (root / ort.RUNNER_OUTPUT_CONTRACT_REF).read_text(
+                encoding="utf-8"),
+            "the severity rubric": wc._generate_verify_severity_rubric_section(phase_02),
+            "the compile phase contract": (root / ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"])
+            .read_text(encoding="utf-8"),
+            "the operations": json.dumps(TOOL_DEFINITIONS),
+        }
+        for name, text in shared.items():
+            with self.subTest(document=name):
+                self.assertGreater(len(text), 100)
+                self.assertEqual(self._stale_words(text), [])
+        for target_id in self.TARGETS:
+            language = self._profile(target_id).toolchain["language"]
+            module = backend_registry.capability_module("language", language, "prompt_fragments")
+            rules = module.generate_rules_document()
+            for name, text in (("generate rules", rules),
+                               ("gate guards", wc._gate_guards_section(rules)),
+                               ("runner-output binding", module.runner_output_document())):
+                with self.subTest(language=language, document=name):
+                    self.assertGreater(len(text), 100)
+                    self.assertEqual(self._stale_words(text), [])
+
+    def test_the_sweep_sees_each_word_planted_in_a_template_it_renders(self) -> None:
+        """The witness of the two rows above, through the loader and the renderer: planting into
+        the scanned string would witness the regex alone, and a render that dropped the template
+        would pass both."""
+        real = ort._load_launch_prompt_templates()
+        words = ("case_run", "case_setup", "state_bindings", "state_registration@1",
+                 "checks module", "the checks-module contract", "shallow_water2d_checks",
+                 "`<spec_id>_checks`")
+        for step, substep, shape in self.PAIRS:
+            key = f"workshop {step}.{substep}" + (f".{shape}" if shape else "")
+            for word in words:
+                with self.subTest(template=key, word=word):
+                    planted = {**real, key: real[key] + f"\nPlanted: {word}.\n"}
+                    with mock.patch.object(ort, "_load_launch_prompt_templates",
+                                           lambda p=planted: p):
+                        found = self._stale_words(self._render(step, substep, shape,
+                                                               self.TARGETS[0]))
+                    self.assertTrue(found, f"{word!r} planted in {key} was not read")
+                    self.assertTrue(all(f.lower() in word.lower() for f in found), found)
+
+    def test_the_two_targets_render_their_own_language(self) -> None:
+        """The sweep would be one prompt read twice if the target did not reach the composer."""
+        fortran = self._render("generate", "generate", "", "fortran_cpu")
+        cuda = self._render("generate", "generate", "", "cpp_gpu")
+        self.assertIn("gfortran", fortran)
+        self.assertNotIn("__global__", fortran)
+        self.assertIn("__global__", cuda)
+        self.assertNotIn("gfortran", cuda)
+
+    # ---------------------------------------------------------------------- the driver's sentences
+
+    @staticmethod
+    def _stated_roles(text: str) -> set[str]:
+        """The backticked names of the `role` clause of the output contract's `files` entry."""
+        _, sep, rest = text.partition("`role` (")
+        if not sep:
+            raise AssertionError("the output contract has no `role` (...) clause")
+        clause = rest.partition("), `language`")[0]
+        return set(re.findall(r"`([a-z_]+)`", clause))
+
+    def _assert_producer_contract(self, text: str) -> None:
+        """Each statement is compared with the code that holds it, or the wording that decides
+        its polarity, so a reversal fails here rather than reaching a leaf on a version bump."""
+        from tools import codegen_bundle as cb
+        from tools import workshop_wrapper as ww
+        self.assertEqual(self._stated_roles(text), set(cb.FILE_ROLES))
+        self.assertIn("a `runner` file is refused because the host renders the driver", text)
+        self.assertIn("You author the model and nothing else", text)
+        self.assertIn("`kind` (the literal `operation`: every entrypoint is one)", text)
+        self.assertEqual(set(cb.ROLE_FOR_ENTRYPOINT_KIND), {"operation"})
+        self.assertIn(f"`{ww.SEEDED_IR_NAME}` (the default case file of `run`)", text)
+        self.assertIn("The driver alone reads the case file and writes every capture", text)
+        self.assertIn("so what your operations leave in their arguments and their result logical "
+                      "is the whole of the evidence", text)
+        self.assertIn('Output contract (CodegenBundle, schema '
+                      f'{cb.CODEGEN_BUNDLE_SCHEMA_VERSION})', text)
+
+    def test_the_producer_is_told_what_the_host_holds_it_to_on_both_targets(self) -> None:
+        for target_id in self.TARGETS:
+            with self.subTest(target=target_id):
+                self._assert_producer_contract(
+                    self._render("generate", "generate", "", target_id))
+
+    def test_the_producer_pin_fails_on_the_document_saying_the_opposite(self) -> None:
+        text = self._render("generate", "generate", "", self.TARGETS[0])
+        self._assert_producer_contract(text)
+        for name, old, new in (
+                ("a checks role", "`model`, or `helper`", "`model`, `checks`, or `helper`"),
+                ("a role dropped", " / `internal_module` for a private file", " for a private file"),
+                ("a runner authored", "a `runner` file is refused", "a `runner` file is required"),
+                ("more than the model", "You author the model and nothing else",
+                 "You author the model and the checks"),
+                ("another kind", "(the literal `operation`:", "(the literal `checks_interface`:"),
+                ("another case file", "`spec.ir.yaml` (the default case file",
+                 "`cases.yaml` (the default case file"),
+                ("the model captures", "The driver alone reads the case file",
+                 "Your model reads the case file"),
+                ("a kernel's own report", "is the whole of the evidence", "is part of the evidence"),
+                ("schema 1", "Output contract (CodegenBundle, schema 2.0.0)",
+                 "Output contract (CodegenBundle, schema 1.2.0)")):
+            with self.subTest(name):
+                self.assertIn(old, text, "the reversal must act on the rendered text")
+                with self.assertRaises(AssertionError):
+                    self._assert_producer_contract(text.replace(old, new))
+
+    def _assert_reviewer_scope(self, text: str) -> None:
+        self.assertIn("The host-rendered driver reads each case from a host-written case file, "
+                      "holds the state, owns any time loop, writes every capture", text)
+        self.assertIn("the model does none of that, and you do not fail the bundle for driver "
+                      "code you cannot see", text)
+
+    def test_the_reviewer_does_not_fail_a_bundle_for_the_driver_on_both_targets(self) -> None:
+        for target_id in self.TARGETS:
+            with self.subTest(target=target_id):
+                text = self._render("generate", "verify", "", target_id)
+                self._assert_reviewer_scope(text)
+                for old, new in (("the model does none of that", "the model does all of that"),
+                                 ("you do not fail the bundle for driver",
+                                  "you fail the bundle for driver"),
+                                 ("reads each case from a host-written case file",
+                                  "reads each case from the checks module")):
+                    self.assertIn(old, text)
+                    with self.assertRaises(AssertionError):
+                        self._assert_reviewer_scope(text.replace(old, new))
+
+    def _assert_judge_capture(self, text: str) -> None:
+        self.assertIn("A capture is what the host-rendered driver wrote from what the published "
+                      "operations left in their arguments", text)
+        self.assertIn("is read from the driver's own `series` fold, never from a kernel's report",
+                      text)
+
+    def test_the_judge_reads_a_capture_as_the_driver_s(self) -> None:
+        text = self._render("validate", "judge", "", self.TARGETS[0])
+        self._assert_judge_capture(text)
+        for old, new in (("the host-rendered driver wrote", "the checks module wrote"),
+                         ("never from a kernel's report", "or from a kernel's report")):
+            self.assertIn(old, text)
+            with self.assertRaises(AssertionError):
+                self._assert_judge_capture(text.replace(old, new))
+
+    def test_every_refusal_the_producer_is_quoted_is_the_one_the_host_gives(self) -> None:
+        """The prompt quotes the refusal a leaf will read. Each is driven through the real
+        acceptance layer with the defect the sentence names, and the quote must occur on both
+        sides, so a reworded refusal or a sentence left behind is red and names which."""
+        from tools.tests.test_leaf_producer import _conductor, _NODE
+
+        def plant_two_models(d: dict) -> None:
+            d["capability_requirements"] = ["sync_single_case@1", "batched_cases@1"]
+
+        def plant_missing(d: dict) -> None:
+            d["entrypoints"] = [dict(d["entrypoints"][0], symbol="extra_op")]
+
+        def plant_extra(d: dict) -> None:
+            d["entrypoints"].append(dict(d["entrypoints"][0], symbol="extra_op"))
+
+        def plant_profile(d: dict) -> None:
+            d["optimization_unit"]["members"] = ["profile/p@0.1.0"]
+            d["files"][0]["member_node_key"] = "profile/p@0.1.0"
+            d["entrypoints"][0]["node_key"] = "profile/p@0.1.0"
+
+        rows = (
+            ("capability_requirements must be a non-empty array",
+             lambda d: d.update(capability_requirements=[])),
+            ("must declare exactly one execution-model capability", plant_two_models),
+            ("capability_requirements not satisfied by harness",
+             lambda d: d.update(capability_requirements=["batched_cases@1"])),
+            ("IR public_api operation(s) with no matching operation entrypoint", plant_missing),
+            ("operation entrypoint symbol(s) not in the IR public_api", plant_extra),
+            ("is a profile; a profile is a compile-time selection policy", plant_profile),
+        )
+        prompt = self._render("generate", "generate", "", self.TARGETS[0])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        refs = _write_node(repo)
+        conductor = _conductor(repo)
+        self.assertEqual(refs.node_key, _NODE)
+        for quote, plant in rows:
+            with self.subTest(quote):
+                self.assertIn(quote, prompt)
+                bad = _valid_bundle()
+                plant(bad)
+                found = conductor._leaf_bundle_violations(refs, bad)
+                self.assertIsNotNone(found)
+                assert found is not None
+                self.assertIn(quote, found[1])
 
 
 class AuditTests(unittest.TestCase):

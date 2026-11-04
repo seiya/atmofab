@@ -870,9 +870,9 @@ class WrapperCallCompositionTests(_LineageCase):
         """A case's values are the host's: the leaf's edited copy of `spec.ir.yaml` and a
         `cases_file` it names select cases at most, and neither reaches a case file. Both edits
         set the mode to another value, so a writer that read either is red on the row's equality.
-        The edit of the seed is planted AFTER `run_wrapper_op`'s re-place would run, inside the
-        recorder of the earlier call, so it is the on-disk text a tree-reading writer would see
-        on the second call only if re-place is removed as well; the seed text is what must win."""
+        (`run_wrapper_op` re-places an edited seed before the operation, so the first row holds
+        by that re-place or by the writer's own read of `seed_texts`; the second holds by the
+        latter alone.)"""
         import yaml
         from unittest import mock
 
@@ -903,6 +903,46 @@ class WrapperCallCompositionTests(_LineageCase):
         # The named file is what the command line carries: it selects, and only that.
         self.assertEqual(self.calls[0]["command"][-3:], [
             str(self.paths.tree / "mine.yaml"), "m1", "m2"])
+
+    def test_a_started_run_has_each_named_case_s_file_where_the_driver_reads_it(self) -> None:
+        """RED today, on purpose (issue #589 PR-1b, reported): the harness's `__read_case` reads
+        `case_inputs/` in the directory of the path `--cases` names
+        (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §6), and `_op_run` writes it beside the tree's
+        IR alone, for the seed's cases alone, so a `cases_file` in a subdirectory, or one naming a
+        case the seed does not hold, starts a driver that stops on its first case with `no
+        readable case file`. Neutral between the two repairs: a run the wrapper REFUSES starts
+        nothing and passes, and so does one that writes the file where the driver reads it."""
+        from unittest import mock
+
+        import yaml
+
+        from tools.tests.test_driver_render import call_ir
+
+        self.make_binary()
+        text, _ = self._drive_seed()
+        other = call_ir(9)
+        self.write("sub/few.yaml", text)
+        self.write("root_few.yaml", yaml.safe_dump(other))
+        ctx = self.run_context(seed_ir=text, max_wrapper_calls=10)
+        for name, args in (
+                ("a case file in a subdirectory", {"binary": "x_runner",
+                                                   "cases_file": "sub/few.yaml"}),
+                ("a case the seed does not hold", {"binary": "x_runner",
+                                                   "cases_file": "root_few.yaml"})):
+            with self.subTest(name):
+                absent: list[str] = []
+
+                def record(run_args, absent=absent):
+                    command = run_args["command"]
+                    at = command.index("--cases")
+                    beside = Path(command[at + 1]).parent / "case_inputs"
+                    absent.extend(str(beside / f"{cid}.json") for cid in command[at + 2:]
+                                  if not (beside / f"{cid}.json").is_file())
+                    return {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+                with mock.patch("tools.build_runtime.tool_run_program", record):
+                    ww.run_wrapper_op(ctx, "run", args)
+                self.assertEqual(absent, [])
 
     def test_a_case_file_a_leaf_left_is_overwritten_by_the_seed_s(self) -> None:
         from unittest import mock
