@@ -142,9 +142,11 @@ io_contract:
     # predicates that are not cross-target equals its `quantities` (gated, D10), and a quantity may have several
     # predicates. Every entry READS STATE, in `expr` or a `bind` that `expr` reaches: `final.<v>` of a variable a
     # `drive` entry writes (an `out` / `inout` dummy, a logical result's state included), `initial.<v>` of a
-    # variable `drive.init` writes, or any `history.*` / `series.*` read. `final.t`, `final.step`, `initial.t`,
-    # `initial.step`, `initial.<v>` of a variable the host filled from `initial_state`, `final.<v>` of a variable
-    # nothing writes, `derived.*` and `inputs.*` value nothing the kernel produced, and an entry that reads only
+    # variable `drive.init` writes, or `history.<v>` / `series.<v>_min` / `series.<v>_max` of a variable a `drive`
+    # entry writes. `final.t`, `final.step`, `initial.t`, `initial.step`, the driver's counters `history.t`,
+    # `history.step`, `series.t` and `series.step`, `initial.<v>` of a variable the host filled from
+    # `initial_state`, `final.<v>` of a variable nothing writes (and its history and series), `derived.*` and
+    # `inputs.*` value nothing the kernel produced, and an entry that reads only
     # them is refused — a SYNTACTIC rule, under which a read that sits only inside a term multiplied by a literal
     # zero, raised to a literal zero or subtracted from itself or added to its own negation (spelled the same) is
     # no read (`sum(final.u * 0 + 1)` is constant in the captured values, issue #483); gate (l)'s closure
@@ -273,7 +275,7 @@ io_contract:
   #                         expr: "maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)"  op: le  value: 1.0e-12
   #                         (the normaliser is the one tests.md states; this one is symmetric in the two variants, so which of them is the comparand does not decide the agreement)
   # cases_read: the cases a predicate reads are the cases its captured STATE reads
-  #   (initial.<var> / final.<var> of a snapshot schema variable, history.* / series.*) that ENTER ITS VALUE name — in expr, or in a
+  #   (the state reads the rule above counts: never the driver's time or step count, nor their history.* / series.*) that ENTER ITS VALUE name — in expr, or in a
   #   bind expr reaches (directly or through another bind), outside a term constant by form (the forms the
   #   reads-state rule above prunes): a read of its own case's state reads every case the scope evaluates
   #   (every target case under `per_case: true`, X under `case: X`), and an at('<case>').final.<var> read reads

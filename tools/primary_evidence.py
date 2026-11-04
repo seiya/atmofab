@@ -15,9 +15,10 @@ number. These predicates alone decide a test (issue #582, `tools/verdict_evaluat
 `drive` block and the published operations' §5.1 signatures (`drive_model`), never from a label the
 leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` dummy of `init` or of a
 `step` entry, every logical result included), `initial.<v>` of a variable `init` writes,
-`history.*` and `series.*`. `initial.<v>` of a variable the host materialised from the case's
-`initial_state`, `final.<v>` of a variable nothing writes, `final.step` / `final.t` (the driver's),
-`derived.*` and `inputs.*` are not (`predicate_reads_state`). An IR with no `drive` (an
+`history.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts for. `initial.<v>`
+of a variable the host materialised from the case's `initial_state`, `final.<v>` of a variable
+nothing writes (and its history), `final.step` / `final.t` and `history.t` / `history.step` /
+`series.t` / `series.step` (the driver's counters), `derived.*` and `inputs.*` are not (`predicate_reads_state`). An IR with no `drive` (an
 `infrastructure` node) counts every schema variable at both capture points, as grammar 5 did. One
 class of kernel-written scalar remains judged at all — the scalar a rank-0 real / integer `out` of
 a one-call operation writes — and a predicate reading it stands beside one that reads it TOGETHER
@@ -473,8 +474,9 @@ def effective_names(tree: ast.Expression) -> list[NameRef]:
 class StateReads(NamedTuple):
     """Which capture reads value the kernel's state (grammar 6, issue #589): ``final`` — the
     variables whose `final.<v>` counts (those an operation writes, every logical result
-    included), ``initial`` — those whose `initial.<v>` counts (those `init` writes). `history.*`
-    and `series.*` always count. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
+    included), ``initial`` — those whose `initial.<v>` counts (those `init` writes).
+    `history.<v>` and `series.<v>_min` / `_max` count for a ``final`` variable, the driver's
+    counters (`history.t`, `history.step`, `series.t`, `series.step`) never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
     `<ref>`s gate (l) accepts in `final.step - <ref>` (`_zero_step_refs`: the counterpart of
     `loop.n_step`; None while gate (e) refuses `loop.n_step` itself — the IR is refused there,
     and any ref is then exempt so the refusal is not restated per predicate); ``closure_tests`` — the `test_id`s of the `expected_outcome: pass` tests gate
@@ -489,17 +491,33 @@ class StateReads(NamedTuple):
     closure_tests: frozenset[str] = frozenset()
 
 
+#: A `series.<name>` that folds one state array: `<v>_min` / `<v>_max` (gate (h)).
+_SERIES_FOLD_RE = re.compile(r"^(?P<var>[A-Za-z_][A-Za-z0-9_]*)_(?:min|max)$")
+
+
 def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str]) -> bool:
     """Whether one reference reads kernel state under ``state`` (`StateReads`, or a set of
-    names counted at both capture points). `history.*` / `series.*` always do; a time or step
-    capture, an input, a coordinate, a `derived.*` value and a `comparand.` read never do."""
-    if ref.kind in (_HISTORY, _SERIES):
-        return True
-    if ref.kind != "capture":
+    names counted at both capture points). `history.<v>` and `series.<v>_min` / `_max` do when
+    `final.<v>` does — the samples and the per-step folds of a variable the kernel writes; the
+    DRIVER's counters `history.t`, `history.step`, `series.t` and `series.step`, like
+    `final.t` / `final.step`, never do (review round 2, R2-1: `max(series.step) ge 0` judged
+    nothing the kernel produced), and neither does the history of a variable nothing writes
+    (host data echoed per sample). A time or step capture, an input, a coordinate, a
+    `derived.*` value and a `comparand.` read never do."""
+    if ref.kind == _HISTORY:
+        name = ref.name
+    elif ref.kind == _SERIES:
+        match = _SERIES_FOLD_RE.match(ref.name)
+        if match is None:
+            return False
+        name = match.group("var")
+    elif ref.kind == "capture":
+        if isinstance(state, StateReads):
+            return ref.name in (state.final if ref.point == "final" else state.initial)
+        return ref.name in state
+    else:
         return False
-    if isinstance(state, StateReads):
-        return ref.name in (state.final if ref.point == "final" else state.initial)
-    return ref.name in state
+    return name in (state.final if isinstance(state, StateReads) else state)
 
 
 def reads_captured_state(refs: list[NameRef],
@@ -1589,8 +1607,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         if not predicate_reads_state(expr_refs, bind_refs, reads) and not closure:
             raise PrimaryEvidenceError(
                 f"{loc}: reads no captured state the kernel produced (final.<written var>, "
-                "initial.<var init writes>, history.*, series.*) in expr or a bind expr "
-                "reaches")
+                "initial.<var init writes>, history.<written var>, series.<written var>_min|"
+                "_max) in expr or a bind expr reaches")
         cross = predicate_reads_comparand(expr_refs, bind_refs)
         if cross_target_only and not cross:
             continue
@@ -2141,16 +2159,17 @@ def validate_primary_predicate_schema(
             continue
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<v> of a "
-                     "variable an operation writes, initial.<v> of one init writes, history.*, "
-                     "series.*) in expr or a "
+                     "variable an operation writes, initial.<v> of one init writes, "
+                     "history.<v> / series.<v>_min|_max of a written v) in expr or a "
                      "bind expr reaches: a predicate values the state the kernel produced (the "
                      "host's own initial_state read back, a derived.* value, final.step / "
-                     "final.t, and a comparand.<point>.<var> — another target's state — are not "
+                     "final.t, the driver's history.t / history.step / series.t / series.step, "
+                     "and a comparand.<point>.<var> — another target's state — are not "
                      "this run's kernel state)")
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
                                                       state):
             v.append(f"{loc}: reads no captured state the kernel produced (final.<var> / "
-                     "initial.<var> / history.* / series.*) "
+                     "initial.<var> / history.<var> / series.<var>_min|_max) "
                      "outside a term multiplied by a literal zero, raised to a literal zero, or "
                      "subtracted from itself or added to its own negation (the same expression "
                      "spelled the same): the expression is constant in the captured values "
@@ -2194,8 +2213,9 @@ def cases_read(pred: dict[str, Any],
                state_names: StateReads | set[str] | frozenset[str]) -> set[str] | None:
     """The cases a primary predicate VALUES the state of: the cases a kernel-state read
     (`is_state_read` under ``state_names``: `final.<written v>`, `initial.<v init writes>`,
-    `history.*`, `series.*` — or, given a plain set, `initial.<v>` / `final.<v>` with `<v>` in
-    it; the time variable, the step count, an `inputs.<path>`, a `derived.*` value, a
+    `history.<written v>`, `series.<written v>_min|_max` — or, given a plain set,
+    `initial.<v>` / `final.<v>` with `<v>` in it; the time variable, the step count and their
+    history / series, an `inputs.<path>`, a `derived.*` value, a
     coordinate and a `comparand.` read are not state) that ENTERS THE VALUE (`_entering_refs`)
     names — an own-case read values every case the scope evaluates the predicate in (every
     target case under `per_case: true`, X under `case: X`), an `at('<case>')` read values that

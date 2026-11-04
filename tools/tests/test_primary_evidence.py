@@ -2701,8 +2701,10 @@ class StateReadsTest(unittest.TestCase):
         # initial.<v> init writes is the kernel's
         self.assertTrue(self._reads("sum(initial.h)", toyi))
         self.assertTrue(self._reads("initial.dt", toyi))
-        # history / series always; derived, inputs, the driver's step and time never
-        for expr, want in (("max(history.t)", True), ("min(series.h_min)", True),
+        # history / series of a written variable; derived, inputs, the driver's step and time
+        # (and their history / series, R2-1) never
+        for expr, want in (("max(history.t)", False), ("max(smax(history.h))", True),
+                           ("min(series.h_min)", True),
                            ("derived.dt", False), ("inputs.grid.nx", False),
                            ("final.step", False), ("final.t", False), ("initial.step", False)):
             with self.subTest(expr=expr):
@@ -2777,6 +2779,103 @@ class StateReadsTest(unittest.TestCase):
                 pe.evaluate_primary_predicates(ir, run.root)
         finally:
             run.cleanup()
+
+
+def _toy_with_input_state() -> dict:
+    """`_toy` with an array state `b` the step operation only reads (an `in` dummy)."""
+    ir = _toy()
+    sig = ir["public_api"]["signatures"][0]["signature"]["args"]
+    sig.insert(3, _arg("b", "in", "real", 1, ["nx"]))
+    ir["drive"]["step"]["arguments"]["b"] = "state.b"
+    for case in ir["case"]["test_case_set"]:
+        case["initial_state"]["b"] = "2 + x"
+    ev = ir["io_contract"]["raw_requirements"]["required_evidence"]
+    ev[0]["schema"]["variables"].append({"name": "b", "shape_expr": "[nx]"})
+    ev[2]["names"] += ["b_min", "b_max"]
+    return ir
+
+
+class DriverCounterReadsTest(unittest.TestCase):
+    """R2-1: the driver's counters `history.t`, `history.step`, `series.t` and `series.step`
+    are not kernel state — neither for `is_state_read`, the schema gate, the evaluator nor
+    `cases_read` — and neither are the history and the series folds of a variable nothing
+    writes; those of a written variable are."""
+
+    _COUNTERS = ("max(history.t)", "max(history.step)", "max(series.t)", "max(series.step)")
+    _MSG = "predicates[0]: reads no captured state the kernel produced"
+
+    def _pred(self, expr: str) -> dict:
+        return {"test_id": "t_run", "quantity": "mass", "target_cases": ["a", "b"],
+                "per_case": True, "expr": expr, "op": "ge", "value": 0}
+
+    def test_is_state_read(self) -> None:
+        ir = _toy_with_input_state()
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        reads = pe.state_reads(ir)
+        for kind, name, want in (("history", "t", False), ("history", "step", False),
+                                 ("series", "t", False), ("series", "step", False),
+                                 ("history", "h", True), ("series", "h_min", True),
+                                 ("series", "h_max", True), ("history", "b", False),
+                                 ("series", "b_min", False), ("series", "b_max", False),
+                                 ("history", "ok", True), ("series", "h_mean", False)):
+            with self.subTest(ref=f"{kind}.{name}"):
+                self.assertIs(pe.is_state_read(pe.NameRef(kind, name), reads), want)
+        # a plain set (the pre-drive rule) follows the same naming
+        self.assertFalse(pe.is_state_read(pe.NameRef("series", "step"), {"h"}))
+        self.assertTrue(pe.is_state_read(pe.NameRef("series", "h_min"), {"h"}))
+
+    def test_the_schema_gate_refuses_each_counter_alone(self) -> None:
+        ir = _toy_with_input_state()
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        kw = dict(case_ids=set(cases), test_ids=["t_run"], schema=pe.snapshot_schema(ir),
+                  cases=cases, **pe.predicate_schema_context(ir))
+        for expr in self._COUNTERS + ("max(smax(history.b))", "min(series.b_min)"):
+            with self.subTest(expr=expr):
+                v = pe.validate_primary_predicate_schema([self._pred(expr)], **kw)
+                self.assertEqual(len(v), 1, v)
+                self.assertTrue(v[0].startswith(self._MSG), v)
+                self.assertIn("history.t / history.step / series.t / series.step", v[0])
+                self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), set())
+        for expr in ("max(smax(history.h))", "min(series.h_min)"):
+            with self.subTest(expr=expr):
+                self.assertEqual(pe.validate_primary_predicate_schema(
+                    [self._pred(expr)], **kw), [])
+                self.assertEqual(pe.cases_read(self._pred(expr), kw["reads"]), {"a", "b"})
+
+    def test_the_evaluator_refuses_each_counter_alone(self) -> None:
+        run = _RunDir()
+        try:
+            for expr in self._COUNTERS:
+                with self.subTest(expr=expr):
+                    ir = _toy_with_input_state()
+                    ir["io_contract"]["predicates"] = [self._pred(expr)]
+                    with self.assertRaisesRegex(
+                            pe.PrimaryEvidenceError,
+                            r"predicates\[0\]: reads no captured state the kernel produced"):
+                        pe.evaluate_primary_predicates(ir, run.root)
+        finally:
+            run.cleanup()
+
+    def test_the_swe_repro_is_refused(self) -> None:
+        """The finding's repro: a test's `extrema.h.min` predicates replaced by
+        `max(series.step) ge 0` passed every gate; the schema gate now refuses each, and the
+        test's cases are valued by its other predicates only."""
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7/spec.ir.yaml").read_text())
+        io, cases = ir["io_contract"], pe._cases_by_id(ir)
+        hits = [i for i, p in enumerate(io["predicates"]) if p["quantity"] == "extrema.h.min"]
+        self.assertTrue(hits)
+        for i in hits:
+            io["predicates"][i] = {**io["predicates"][i], "expr": "max(series.step)",
+                                   "op": "ge", "value": 0}
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        v = pe.validate_primary_predicate_schema(
+            io["predicates"], case_ids=set(cases), test_ids=[t["test_id"] for t in io["tests"]],
+            schema=pe.snapshot_schema(ir), cases=cases,
+            test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+            **pe.predicate_schema_context(ir))
+        self.assertEqual(sorted(int(m.split("]")[0].split("[")[1]) for m in v), hits, v)
+        self.assertTrue(all("reads no captured state the kernel produced" in m for m in v), v)
 
 
 class ClosureExemptionTest(unittest.TestCase):
@@ -2891,7 +2990,7 @@ class LazyLoaderTest(unittest.TestCase):
 
     def test_series_entries_of_unequal_length_are_refused(self) -> None:
         self._series("a", {"t": [0.1, 0.2], "h_min": [1.0]})
-        self.assertIn("not of one length", self._eval("min(series.t)")[0]["evaluated"][0]["error"])
+        self.assertIn("not of one length", self._eval("min(series.h_min) + min(series.t)")[0]["evaluated"][0]["error"])
 
     def test_history_stacks_samples_by_numeric_step(self) -> None:
         hdir = self.run.sdir / "history"
@@ -2906,7 +3005,9 @@ class LazyLoaderTest(unittest.TestCase):
         hist = env.history.get()
         np.testing.assert_array_equal(hist["step"], [2.0, 10.0])   # 10 after 2, not before
         self.assertEqual(hist["h"].shape, (2, 4))
-        self.assertEqual(self._eval("max(history.step)")[0]["evaluated"][0]["value"], 10.0)
+        # the step count alone is no state read (R2-1): read beside the samples of h
+        self.assertEqual(self._eval("max(history.step) + 0 * max(smax(history.h))")[0]
+                         ["evaluated"][0]["value"], 10.0)
 
     def test_a_sample_whose_step_is_not_its_name_is_refused(self) -> None:
         hdir = self.run.sdir / "history"
