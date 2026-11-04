@@ -4954,11 +4954,16 @@ class LoopTimeArgumentsTest(unittest.TestCase):
                 self._refused_on_evaluation(orphan, "dz", msg.format(value))
 
     def test_the_t_end_drift_both_ways(self) -> None:
-        self.assertEqual(_all_gates(self._guard_toy({"d": 0.1}, t_end=9.0)), [])
-        pe.evaluate_case_inputs(self._guard_toy({"d": 0.1}, t_end=9.0))
-        with self.assertRaisesRegex(pe.PrimaryEvidenceError,
-                                    r"case 'd': drive\.loop: t_start \+ n_step \* dt"):
-            pe.evaluate_case_inputs(self._guard_toy({"d": 0.1}, outcome="pass", t_end=9.0))
+        # an invalid dt on an xfail-only case: the loop cannot end at t_end, and need not
+        self.assertEqual(_all_gates(self._guard_toy({"d": 0.0}, t_end=9.0)), [])
+        pe.evaluate_case_inputs(self._guard_toy({"d": 0.0}, t_end=9.0))
+        # a valid dt keeps the check on any case (review round 7: an xfail-only case's run length
+        # is not the leaf's to change), and a pass test's case keeps both
+        for outcome in ("xfail", "pass"):
+            with self.subTest(outcome=outcome), self.assertRaisesRegex(
+                    pe.PrimaryEvidenceError,
+                    r"case 'd': drive\.loop: t_start \+ n_step \* dt"):
+                pe.evaluate_case_inputs(self._guard_toy({"d": 0.1}, outcome=outcome, t_end=9.0))
 
     def test_the_checks_every_case_keeps(self) -> None:
         """`n_step >= 1` and finiteness stay on an xfail-only case."""

@@ -3162,8 +3162,10 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                    case: dict[str, Any], *, refusal_subject: bool = False) -> CaseValues:
     """SHAPE §4 steps 1-4 for one case; raises `PrimaryEvidenceError` naming the entry.
     ``refusal_subject``: only `xfail` tests target the case (`_xfail_only_cases`), so its loop may
-    carry the invalid `dt` the kernel's refusal is the subject of (review round 6, R6-2): the
-    `dt > 0` and `t_end` checks ask only of the other cases; `n_step` of every case."""
+    carry the invalid `dt` the kernel's refusal is the subject of (review round 6, R6-2): `dt > 0`
+    asks only of the other cases, and the `t_end` check of every case whose `dt` is valid (review
+    round 7: a valid `dt` on an xfail-only case gives no reason to change the run's length);
+    `n_step` of every case."""
     block = model.block
     cid = str(case.get("case_id")).strip()
     inputs = case.get("inputs") if isinstance(case.get("inputs"), dict) else {}
@@ -3370,7 +3372,7 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                 ints.add(binding.ref)
         if key == "dt" and not refusal_subject and not value > 0:
             raise PrimaryEvidenceError(f"{what} is {value!r}, not > 0")
-    if len(host) == len(LOOP_KEYS) and not refusal_subject:
+    if len(host) == len(LOOP_KEYS) and not (refusal_subject and not host["dt"] > 0):
         drift = abs(host["t_start"] + host["n_step"] * host["dt"] - host["t_end"])
         bound = 4 * float(np.spacing(abs(host["t_end"])))
         if not drift <= bound:

@@ -414,8 +414,8 @@ drive:
   #   EVALUATES every case (primary_evidence.evaluate_case_inputs) and refuses a non-finite value, a shape
   #   mismatch, a host-data `loop.n_step` that is not an integer >= 1, a host-data `loop.dt` <= 0, an `every`
   #   that is not an integer >= 0, and, when all four `loop` references are host data,
-  #   |t_start + n_step * dt - t_end| > 4 ulp(t_end); the `dt` and `t_end` checks spare a case only `xfail`
-  #   tests target (its invalid dt is what the kernel refuses). No gate parses a threshold.
+  #   |t_start + n_step * dt - t_end| > 4 ulp(t_end); a case only `xfail` tests target may carry
+  #   an invalid dt, the kernel's refusal being its subject (both checks spare that dt alone). No gate parses a threshold.
 ```
 
 ### `<ir_ref>/dependency_graph.json` sidecar (conductor-authored)
