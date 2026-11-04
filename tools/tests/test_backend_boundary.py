@@ -2249,7 +2249,7 @@ class RegistryConsistencyTests(unittest.TestCase):
         dispatched = {"control_file", "build_execute", "runner_render", "lint", "lint_rules",
                       "execution", "execution_env", "perf_facts", "bundle_facts",
                       "syntax_check", "syntax_promotions", "prompt_fragments",
-                      "checks_abi", "source_reading", "signatures", "parallel_directives",
+                      "source_reading", "signatures", "parallel_directives",
                       "interface_header", "job_submit", "device_trace", "launcher",
                       "compiler_wrapper", "checked_flags"}
         # `checked_flags` joined them with issue #589 PR-0: `tools/checked_build.py`
@@ -2573,38 +2573,31 @@ class RegistryConsistencyTests(unittest.TestCase):
     _LANGUAGE_CAPABILITY_CONTRACT: ClassVar[dict[str, tuple[str, ...]]] = {
         "bundle_facts": ("SOURCE_EXTENSIONS", "COMPILER_SELECTOR_FAMILIES", "IDENTIFIER_MAX",
                          "IDENTIFIER_PATTERN", "DEFAULT_COMPILER", "MANDATORY_SYNTAX_COMPILER",
-                         "COMPILED", "model_basename", "checks_basename", "runner_basename",
+                         "COMPILED", "model_basename", "runner_basename",
                          "identifier_key", "SPEC_ID_MAX"),
         "syntax_promotions": ("SOURCE_SUFFIXES", "PROMOTED_WARNINGS", "compile_order"),
-        "prompt_fragments": ("fragments", "runner_output_document",
+        # `generate_rules_document` (issue #589): the gate guards the `harness` producer is shown
+        # are sliced from it (`Conductor._generate_rules_text`, `_gate_guards_section`).
+        "prompt_fragments": ("fragments", "runner_output_document", "generate_rules_document",
                              "EXEMPLAR_GATE_DRIFT_NOTE"),
-        "checks_abi": ("document",),
+        # `physics_harness_uses` (issue #316): what the isolation gate lets a physics source `use`
+        # from a harness that runs the program as several ranks.
         "runner_render": ("render_runner", "assert_harness_pin", "ir_content_violations",
-                          "CHECKS_PUBLIC_NAMES",
-                          # Issue #289, R4-b PR-4: the checks-ABI remedies the bundle layer and
-                          # the validator show a leaf, in the runner language's words.
-                          "checks_abi_publication_violation",
-                          "bound_state_publication_violation", "hidden_bound_state_remedy",
-                          "state_binding_module_reason", "state_binding_storage_reason",
-                          # Issue #289, R4-b PR-6: the header that declares the checks ABI for a
-                          # language whose checks source does not carry its own declarations.
-                          "render_checks_header"),
+                          "physics_harness_uses"),
         # Issue #289, R4-b PR-3: what the validator's source gates, the bundle acceptance layer
         # and the make control-file gate take off a language's source reader; what the §5.1
         # gates and the dependency-fact resolver take off its signature module; and what the
         # build system's control-file renderer takes off its control-file rules.
         "source_reading": (
             "model_source_gates", "model_source_not_found_violation",
-            "checks_module_declaration_violations", "checks_module_abi_facts",
-            "unpublished_bound_state", "checks_harness_isolation_violations",
+            # Issue #589: the isolation gate over every leaf-authored source, which the checks
+            # module's three gates became when the module was deleted.
+            "model_harness_isolation_violations",
             "validate_dependency_operations", "validate_runner_json_serialization",
             "validate_runner_snapshot_filenames", "published_subroutines", "counted_loops",
             "source_module_deps", "MODULE_SOURCE_SUFFIXES", "MODULE_ARTIFACT_SUFFIX",
             # R4-b PR-4: the component-surface gate's remedies.
             "published_operation_missing", "published_operation_extra",
-            # Issue #314: the checks-reach gate. Load-bearing: the neutral caller does not wrap
-            # content calls, so a language lacking it raises and discards every sibling finding.
-            "checks_model_reach_violations",
             # Issue #469 PR-4: the Python modules a launch for this language must find.
             "REQUIRED_PYTHON_MODULES"),
         "signatures": (
@@ -2679,12 +2672,10 @@ class RegistryConsistencyTests(unittest.TestCase):
             self._LANGUAGE_CAPABILITY_CONTRACT), set())
         # the documents a language serves are readable and non-empty
         for language in registry.backend_ids("language"):
-            if registry.provides("language", language, "checks_abi"):
-                self.assertTrue(registry.capability_module(
-                    "language", language, "checks_abi").document().strip())
             if registry.provides("language", language, "prompt_fragments"):
-                self.assertTrue(registry.capability_module(
-                    "language", language, "prompt_fragments").runner_output_document().strip())
+                fragments = registry.capability_module("language", language, "prompt_fragments")
+                self.assertTrue(fragments.runner_output_document().strip())
+                self.assertTrue(fragments.generate_rules_document().strip())
 
     def test_a_language_two_linters_declare_is_refused_not_resolved_by_order(self) -> None:
         import types
@@ -2918,7 +2909,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # live workflow would find out.
         module = registry.capability_module("language", "fortran", "runner_render")
         for name in ("render_runner", "assert_harness_pin", "ir_content_violations",
-                     "CHECKS_PUBLIC_NAMES"):
+                     "physics_harness_uses"):
             self.assertTrue(hasattr(module, name), name)
 
     def test_the_declaration_rules_do_not_block_a_single_value_migrating(self) -> None:
@@ -3021,7 +3012,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render"}))
         with self._patched(record):
             self.assertIsNotNone(host_render.runner_render_refusal("zz_liar"))
-            for call in (lambda: host_render.checks_public_names("zz_liar"),
+            for call in (lambda: host_render.physics_harness_uses("zz_liar", "hx"),
                          lambda: host_render.render_runner("zz_liar", {}, "bx", "hx", target=_TARGET_PROFILE.doc)):
                 with self.assertRaises(host_render.RunnerRenderUnavailable):
                     call()
@@ -3040,7 +3031,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render"}))
         with self._patched(record):
             with self.assertRaises(ModuleNotFoundError):
-                host_render.checks_public_names("zz_broken")
+                host_render.physics_harness_uses("zz_broken", "hx")
 
     def test_the_seam_dispatches_to_the_backend_of_the_LANGUAGE_it_is_given(self) -> None:
         """That the seam is asked the NODE's language, semantically rather than by spelling.
@@ -3057,7 +3048,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
 
         other = types.ModuleType("zz_other_lang_backend")
         other_runner = types.ModuleType("zz_other_lang_backend.runner")
-        other_runner.CHECKS_PUBLIC_NAMES = ("zz_only_name",)
+        answer = {"zz_only_module": frozenset({"zz_only_name"})}
+        other_runner.physics_harness_uses = lambda harness: answer
         other_runner.render_runner = lambda ir, spec_id, harness, target: "! rendered by zz_other\n"
         other.runner = other_runner
         record = registry.Backend(
@@ -3065,56 +3057,57 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render"}))
         with mock.patch.dict(sys.modules, {"zz_other_lang_backend": other}), \
                 self._patched(record):
-            self.assertEqual(("zz_only_name",), host_render.checks_public_names("zz_other"))
+            self.assertEqual(answer, host_render.physics_harness_uses("zz_other", "hx"))
             self.assertIn("zz_other", host_render.render_runner("zz_other", {}, "bx", "hx", target=_TARGET_PROFILE.doc))
             # ...and the incumbent still answers for itself, so the assertion above cannot pass
             # by the seam having been broken for everyone.
-            self.assertIn("case_setup", host_render.checks_public_names("fortran"))
+            self.assertNotEqual(answer, host_render.physics_harness_uses(
+                "fortran", "harness_fortran_cpu"))
+            self.assertIn("harness_fortran_cpu_mpi_model", host_render.physics_harness_uses(
+                "fortran", "harness_fortran_cpu_mpi"))
 
     def test_every_caller_of_the_seam_passes_the_NODE_S_language(self) -> None:
-        """The three call sites, not just the seam — measured, all three were unobserved.
+        """The call sites, not just the seam — measured, each was unobserved.
 
         `test_the_seam_dispatches_to_the_backend_of_the_LANGUAGE_it_is_given` witnesses
         `host_render`. Its callers each read the language off an artifact and hand it over, and
         hard-coding the value at any of them was killed ONLY by the token ratchet — which
         `docs/BACKEND_BOUNDARY.md` §Enforcement states is a bound on growth and not a detector,
-        so in a spelling the ratchet cannot see (`"for" "tran"`) all three survived the suite.
+        so in a spelling the ratchet cannot see (`"for" "tran"`) all of them survived the suite.
         This is the "hands a node to the wrong writer" class, and one language backend is not
         enough to observe it: a second one is synthesised so the answers are distinguishable.
+
+        The bundle layer's caller and the remedies it and the checks-source gate asked for went
+        with the checks module (issue #589): `codegen_bundle` no longer reaches this seam.
         """
         import json
         import sys
+        import tempfile
         import types
 
-        import tools.codegen_bundle as codegen_bundle
         import tools.validate_pipeline_semantics as vps
 
+        uses = {"zz_second_harness_model": frozenset({"zz_only_op"})}
         other = types.ModuleType("zz_second_lang")
         runner = types.ModuleType("zz_second_lang.runner")
-        runner.CHECKS_PUBLIC_NAMES = ("zz_only_abi_name",)
         runner.render_runner = lambda ir, spec_id, harness, target: "! zz_second\n"
         runner.ir_content_violations = lambda ir, spec_id, harness: ["zz_second says no"]
-        # The checks-ABI remedies are the runner backend's words (issue #289, R4-b PR-4), so a
-        # second language states its own, and the gates below must show THOSE.
-        runner.checks_abi_publication_violation = (
-            lambda spec_id, unpublished, wrong_kind: f"zz_second publishes {unpublished}")
-        runner.bound_state_publication_violation = (
-            lambda spec_id, hidden: f"zz_second hides {hidden}")
-        runner.hidden_bound_state_remedy = lambda hidden: f"zz_second hides {hidden}"
-        runner.state_binding_module_reason = lambda module: f"zz_second reads {module}"
-        runner.state_binding_storage_reason = lambda variable: f"zz_second imports {variable}"
+        runner.physics_harness_uses = lambda harness: uses
         other.runner = runner
         other.bundle = types.ModuleType("zz_second_lang.bundle")
         other.bundle.SOURCE_EXTENSIONS = (".zz",)
         other.bundle.IDENTIFIER_MAX = 63
         other.bundle.IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,62}(?![\s\S])"
         other.bundle.identifier_key = str.casefold
-        # The checks gate names and reads the checks source through the language too (issue
-        # #289, R4-b PR-3); this language borrows Fortran's reader, and names its checks source
-        # as the fixture below writes it, so the gate reaches the ABI question this row is about.
-        from tools.backends.language.fortran import source as fortran_source
-        other.bundle.checks_basename = lambda spec_id: f"{spec_id}_checks.f90"
-        other.source = fortran_source
+        # The isolation gate reads the sources through the language too (issue #289, R4-b PR-3).
+        other.source = types.ModuleType("zz_second_lang.source")
+        seen: list[dict[str, object]] = []
+
+        def isolation(src_dir, model_files, spec_id, *, allowed_harness_uses, forbidden_outputs):
+            seen.append({"allowed": allowed_harness_uses, "spec_id": spec_id})
+            return ["zz_second reader ran"]
+
+        other.source.model_harness_isolation_violations = isolation
         record = registry.Backend(
             "language", "zz_second", "zz_second_lang",
             core_provides=frozenset({"control_file"}),
@@ -3132,22 +3125,17 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 list(host_render.ir_content_violations(
                     vps._m3c_language(ir, "make", "zz_second"), ir, "bx",
                     "harness_fortran_cpu")))
-            # (2) the checks-source gate holds the leaf to THIS language's ABI. Driven through
-            # the gate body, not through the seam: hard-coding the language inside the gate
-            # survived the whole suite, because the seam's own witness never enters it.
-            import tempfile
+            # (2) the isolation gate asks THIS language's renderer which harness names a physics
+            # source may use, and hands them to THIS language's reader. Driven through the gate
+            # body, not through the seam: hard-coding the language inside the gate is what the
+            # seam's own witness cannot see.
             with tempfile.TemporaryDirectory() as tmp:
-                src = Path(tmp) / "src"
-                src.mkdir()
-                (src / "bx_checks.f90").write_text(
-                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
                 violations: list[str] = []
-                vps._validate_checks_source_files(
-                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_second", src, [],
-                    violations)
-            self.assertTrue(
-                any("zz_only_abi_name" in v for v in violations),
-                f"the gate demanded some other language's ABI: {violations}")
+                vps._validate_model_source_isolation(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_second", Path(tmp), [],
+                    violations, harness_spec_id="zz_second_harness")
+            self.assertEqual(["zz_second reader ran"], violations)
+            self.assertEqual([{"allowed": uses, "spec_id": "bx"}], seen)
 
             # (3) the render-precondition gate asks THIS language's renderer for its objections
             # — the language of a declared target (the Compile is target-free, issue #284)
@@ -3160,62 +3148,6 @@ class CapabilityOwnershipTests(unittest.TestCase):
             self.assertTrue(
                 any("zz_second says no" in v for v in pre),
                 f"the gate consulted some other language's renderer: {pre}")
-
-            # (4) the bundle ABI gate asks for the FILE's language, not a fixed one
-            bundle = {
-                "files": [{"logical_path": "bx_checks.f90", "role": "checks",
-                           "language": "zz_second", "member_node_key": "component/bx@0.1.0",
-                           "content": "module bx_checks\nend module bx_checks\n",
-                           "modules": ["bx_checks"]}],
-            }
-            # `language` names the files (the target's); the ABI is still the FILE's language's
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
-            self.assertIsNotNone(violation)
-            self.assertIn("zz_only_abi_name", violation)
-            # ...and so is the remedy's wording: the FILE's language states how to publish it.
-            self.assertEqual("zz_second publishes ['zz_only_abi_name']", violation)
-
-            # (5) the bound-state remedies are the runner language's words too (issue #289,
-            # R4-b PR-4): the bundle layer's, the validator's, and the two binding reasons.
-            published_abi = ("module bx_checks\n  private\n  real :: q\n"
-                             "  public :: zz_only_abi_name\ncontains\n"
-                             "  subroutine zz_only_abi_name()\n  end subroutine\n"
-                             "end module bx_checks\n")
-            bundle["files"][0]["content"] = published_abi
-            bundle["state_bindings"] = [{"state_variable": "q", "storage_symbol": "q"}]
-            self.assertEqual("zz_second hides ['q']", codegen_bundle.m3c_checks_abi_violation(
-                bundle, "bx", language="fortran"))
-            with tempfile.TemporaryDirectory() as tmp:
-                src = Path(tmp) / "src"
-                src.mkdir()
-                (src / "bx_checks.f90").write_text(published_abi, encoding="utf-8")
-                violations = []
-                vps._validate_checks_source_files(
-                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_second", src, [],
-                    violations, bound_state=["q"])
-            self.assertIn(f"{src / 'bx_checks.f90'}: zz_second hides ['q']", violations)
-            binding = {"state_variable": "q", "capture": "harness_registration",
-                       "capability": "state_registration@1"}
-            self.assertEqual(
-                "state_bindings[0].module must be 'bx_checks' — zz_second reads bx_checks; "
-                "got 'elsewhere'",
-                codegen_bundle._m3c_state_binding_mismatch(
-                    [dict(binding, module="elsewhere", storage_symbol="q")], ["q"], "bx",
-                    language="zz_second"))
-            self.assertEqual(
-                "state_bindings[0].storage_symbol must equal its state_variable 'q' — "
-                "zz_second imports q; got 'r'",
-                codegen_bundle._m3c_state_binding_mismatch(
-                    [dict(binding, module="bx_checks", storage_symbol="r")], ["q"], "bx",
-                    language="zz_second"))
-            # A runner backend that cannot be LOADED to state the reason still yields the
-            # finding, never an exception out of the acceptance layer.
-            with mock.patch.object(host_render, "_module", side_effect=ImportError("boom")):
-                reason = codegen_bundle._m3c_state_binding_mismatch(
-                    [dict(binding, module="elsewhere", storage_symbol="q")], ["q"], "bx",
-                    language="zz_second")
-            self.assertIn("state_bindings[0].module must be 'bx_checks'", reason)
-            self.assertIn("cannot be stated for language 'zz_second'", reason)
 
     @staticmethod
     def _unreachable_package_capabilities(
@@ -3294,7 +3226,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         it as a VIOLATION and never as an exception, since an uncaught raise inside
         `_validate_compile_stage_impl` discards every violation its sibling gates collected.
 
-        Driven THROUGH the checks gate, not through the seam: the seam's own refusal has its own
+        Driven THROUGH the isolation gate, not through the seam: the seam's own refusal has its own
         witness, and dispatching correctly inside a gate is a different fact from dispatching
         correctly when called directly. The render-precondition gate shares this branch and is
         driven for the broken-import input by its own test.
@@ -3309,8 +3241,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
         from tools.backends.language.fortran import source as fortran_source
 
         empty_pkg = types.ModuleType("zz_pkg_without_runner")  # no `runner` attribute
-        # It CAN name and read its sources (since issue #289's R4-b PR-3 the checks gate asks
-        # the language for both before anything else), so what this row reaches is the gap it
+        # It CAN name and read its sources (since issue #289's R4-b PR-3 the gate asks the
+        # language for its reader before anything else), so what this row reaches is the gap it
         # is about: a runner the record claims and the package does not carry.
         empty_pkg.bundle = fortran_bundle
         empty_pkg.source = fortran_source
@@ -3325,51 +3257,50 @@ class CapabilityOwnershipTests(unittest.TestCase):
             self.assertIsNotNone(host_render.runner_render_refusal("zz_hollow"))
 
             with tempfile.TemporaryDirectory() as tmp:
-                src = Path(tmp) / "src"
-                src.mkdir()
-                (src / "bx_checks.f90").write_text(
-                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
                 violations: list[str] = []
-                vps._validate_checks_source_files(
-                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_hollow", src, [],
+                vps._validate_model_source_isolation(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_hollow", Path(tmp), [],
                     violations)
                 self.assertTrue(
-                    any("cannot be stated for language 'zz_hollow'" in v for v in violations),
+                    any("its runner cannot be rendered for language 'zz_hollow'" in v
+                        for v in violations),
                     violations)
 
-    def test_the_bundle_abi_gate_refuses_a_file_language_it_cannot_read(self) -> None:
-        """`codegen_bundle.m3c_checks_abi_violation` reads the checks file with its LANGUAGE's
-        `source_reading` (issue #289, R4-b PR-3): a language that renders a runner but declares
-        no source reader is refused with the registry's reason, never read as Fortran and never
-        an escaping exception."""
+    def test_the_isolation_gate_refuses_a_language_it_cannot_read(self) -> None:
+        """The gate reads a physics source with its LANGUAGE's `source_reading` (issue #289, R4-b
+        PR-3): a language that renders a runner but declares no source reader is refused with the
+        registry's reason, never read as Fortran and never an escaping exception. This row drove
+        `codegen_bundle.m3c_checks_abi_violation` until issue #589 deleted it; the question is
+        `validate_pipeline_semantics._language_module`'s now."""
         import sys
+        import tempfile
         import types
 
-        import tools.codegen_bundle as codegen_bundle
+        import tools.validate_pipeline_semantics as vps
 
         pkg = types.ModuleType("zz_no_reader_pkg")
         pkg.runner = types.ModuleType("zz_no_reader_pkg.runner")
-        pkg.runner.CHECKS_PUBLIC_NAMES = ("case_setup",)
+        node = SimpleNamespace(node_key="component/bx@0.1.0")
         record = registry.Backend("language", "zz_no_reader", "zz_no_reader_pkg",
                                   backend_provides=frozenset({"runner_render"}))
-        bundle = {"files": [{"logical_path": "bx_checks.f90", "role": "checks",
-                             "language": "zz_no_reader",
-                             "member_node_key": "component/bx@0.1.0",
-                             "content": "module bx_checks\nend module bx_checks\n",
-                             "modules": ["bx_checks"]}]}
-        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record):
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
-        self.assertIsNotNone(violation)
-        self.assertIn("whose sources this repository cannot read", violation)
+        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record), \
+                tempfile.TemporaryDirectory() as tmp:
+            violations: list[str] = []
+            vps._validate_model_source_isolation(node, "zz_no_reader", Path(tmp), [], violations)
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("declares no 'source_reading' capability", violations[0])
         self.assertIn(str(registry.missing_capability_reason(
-            "language", "zz_no_reader", "source_reading")), violation)
+            "language", "zz_no_reader", "source_reading")), violations[0])
         # ... and a declared reader whose package does not carry it: a refusal, not an exception.
         record = registry.Backend("language", "zz_no_reader", "zz_no_reader_pkg",
                                   backend_provides=frozenset({"runner_render", "source_reading"}))
-        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record):
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
-        self.assertIsNotNone(violation)
-        self.assertIn("whose source reader could not be loaded", violation)
+        with mock.patch.dict(sys.modules, {"zz_no_reader_pkg": pkg}), self._patched(record), \
+                tempfile.TemporaryDirectory() as tmp:
+            violations = []
+            vps._validate_model_source_isolation(node, "zz_no_reader", Path(tmp), [], violations)
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("'source_reading' backend for language 'zz_no_reader' could not be loaded",
+                      violations[0])
 
     def test_a_backend_that_cannot_be_imported_does_not_empty_the_violation_list(self) -> None:
         """The seam lets a broken import escape as itself — the GATES must not.
@@ -3390,30 +3321,26 @@ class CapabilityOwnershipTests(unittest.TestCase):
         from tools.backends.language.fortran import source as fortran_source
 
         # (a) a package that does not import at all. Since issue #289's R4-b PR-3 the gate's
-        # FIRST reach into the language is its `bundle_facts` / `source_reading`
-        # (`_language_module`), so that is the conversion this input meets.
+        # FIRST reach into the language is its `source_reading` (`_language_module`), so that is
+        # the conversion this input meets.
+        node = SimpleNamespace(node_key="component/bx@0.1.0")
         record = registry.Backend(
             "language", "zz_missing_pkg", "zz_module_that_does_not_exist",
             backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
         with self._patched(record):
             with self.assertRaises(ModuleNotFoundError):     # the seam, unchanged
-                host_render.checks_public_names("zz_missing_pkg")
+                host_render.physics_harness_uses("zz_missing_pkg", "hx")
             with tempfile.TemporaryDirectory() as tmp:       # the gate, converted
-                src = Path(tmp) / "src"
-                src.mkdir()
-                (src / "bx_checks.f90").write_text(
-                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
                 violations = ["a sibling gate already found this"]
-                vps._validate_checks_source_files(
-                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_missing_pkg", src, [],
-                    violations)
+                vps._validate_model_source_isolation(
+                    node, "zz_missing_pkg", Path(tmp), [], violations, harness_spec_id="hx")
         self.assertIn("a sibling gate already found this", violations)
         self.assertTrue(any("could not be loaded" in v for v in violations), violations)
 
-        # (b) a package that imports and reads its sources, whose runner is broken: the ABI
-        # seam raises something other than its typed refusal, and the gate's OWN conversion is
-        # what must hold.
-        broken_runner = types.ModuleType("zz_broken_runner_pkg.runner")  # no CHECKS_PUBLIC_NAMES
+        # (b) a package that imports and reads its sources, whose runner is broken: the seam
+        # raises something other than its typed refusal, and the gate's OWN conversion is what
+        # must hold.
+        broken_runner = types.ModuleType("zz_broken_runner_pkg.runner")  # no physics_harness_uses
         pkg = types.ModuleType("zz_broken_runner_pkg")
         pkg.runner, pkg.bundle, pkg.source = broken_runner, fortran_bundle, fortran_source
         record = registry.Backend(
@@ -3421,19 +3348,25 @@ class CapabilityOwnershipTests(unittest.TestCase):
             backend_provides=frozenset({"runner_render", "bundle_facts", "source_reading"}))
         with mock.patch.dict(sys.modules, {"zz_broken_runner_pkg": pkg}), self._patched(record):
             with self.assertRaises(AttributeError):          # the seam, unchanged
-                host_render.checks_public_names("zz_broken_runner")
+                host_render.physics_harness_uses("zz_broken_runner", "hx")
             with tempfile.TemporaryDirectory() as tmp:       # the gate, converted
-                src = Path(tmp) / "src"
-                src.mkdir()
-                (src / "bx_checks.f90").write_text(
-                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
                 violations = ["a sibling gate already found this"]
-                vps._validate_checks_source_files(
-                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_broken_runner", src,
-                    [], violations)
-        self.assertIn("a sibling gate already found this", violations)
-        self.assertTrue(any("the backend for language 'zz_broken_runner' could not be loaded"
-                            in v for v in violations), violations)
+                vps._validate_model_source_isolation(
+                    node, "zz_broken_runner", Path(tmp), [], violations, harness_spec_id="hx")
+            self.assertIn("a sibling gate already found this", violations)
+            self.assertTrue(any("the distributed binding of harness 'hx' could not be stated for "
+                                "language 'zz_broken_runner'" in v for v in violations), violations)
+
+            # (c) the seam's refusal question itself raising: the gate's other conversion.
+            with mock.patch.object(host_render, "runner_render_refusal",
+                                   side_effect=ImportError("boom")), \
+                    tempfile.TemporaryDirectory() as tmp:
+                violations = ["a sibling gate already found this"]
+                vps._validate_model_source_isolation(
+                    node, "zz_broken_runner", Path(tmp), [], violations)
+            self.assertIn("a sibling gate already found this", violations)
+            self.assertTrue(any("the backend for language 'zz_broken_runner' could not be loaded"
+                                in v for v in violations), violations)
 
     def test_neither_gate_empties_its_violation_list_on_a_broken_backend(self) -> None:
         """BOTH gates, because the conversion is written twice and only one copy was driven.
@@ -3487,25 +3420,6 @@ class CapabilityOwnershipTests(unittest.TestCase):
         for spelling in (" fortran", "FORTRAN", "Fortran ", " FoRtRaN "):
             module = registry.capability_module("language", spelling, "runner_render")
             self.assertTrue(hasattr(module, "render_runner"), spelling)
-
-    def test_the_bundle_gate_is_the_third_caller_and_converts_a_broken_import_too(self) -> None:
-        # `m3c_checks_abi_violation` was enumerated as one of the seam's three callers and was
-        # the one left without the conversion its two siblings got. It escapes into
-        # `_leaf_bundle_violations`, which has no handler at that call, so the acceptance layer
-        # crashes rather than rejecting the bundle.
-        import tools.codegen_bundle as codegen_bundle
-
-        record = registry.Backend(
-            "language", "zz_broken_bundle", "zz_module_that_does_not_exist",
-            backend_provides=frozenset({"runner_render"}))
-        bundle = {"files": [{
-            "logical_path": "bx_checks.f90", "role": "checks", "language": "zz_broken_bundle",
-            "member_node_key": "component/bx@0.1.0",
-            "content": "module bx_checks\nend module bx_checks\n", "modules": ["bx_checks"]}]}
-        with self._patched(record):
-            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx", language="fortran")
-        self.assertIsNotNone(violation)
-        self.assertIn("could not be loaded", violation)
 
     def test_capability_module_refuses_a_non_module_under_the_convention_name(self) -> None:
         # The `isinstance(module, ModuleType)` narrowing survives being weakened to `is None`,
@@ -3581,7 +3495,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
             self.assertEqual(expected, host_render.runner_render_refusal("zz_no_renderer"))
             for call in (
                     lambda: host_render.render_runner("zz_no_renderer", {}, "bx", "hx", target=_TARGET_PROFILE.doc),
-                    lambda: host_render.checks_public_names("zz_no_renderer"),
+                    lambda: host_render.physics_harness_uses("zz_no_renderer", "hx"),
                     lambda: host_render.ir_content_violations(
                         "zz_no_renderer", {}, "bx", "hx"),
                     lambda: host_render.assert_harness_pin(
