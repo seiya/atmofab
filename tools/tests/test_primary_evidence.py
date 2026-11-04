@@ -3774,6 +3774,295 @@ def _rus_alone() -> dict:
     return rus
 
 
+# Review round 2, R2-2 / R2-3: two-operation LIST-form nodes, one schema, partitioned cases —
+# the shapes PR-3 converts. The dummies are the real §5.1 fences, read from the spec.
+
+_REPO = Path(__file__).resolve().parents[2]
+_MICRO = _REPO / "spec" / "component" / "microphysics"
+
+
+def _fence_procedures(rel: str) -> dict[str, list[dict]]:
+    """symbol -> args of the `### 5.1` yaml fence of a controlled_spec.md under microphysics."""
+    import yaml
+    text = (_MICRO / rel / "controlled_spec.md").read_text()
+    block = text.split("### 5.1", 1)[1].split("```yaml", 1)[1].split("```", 1)[0]
+    return {p["name"]: p["args"] for p in yaml.safe_load(block)["procedures"]}
+
+
+_CONSTS = {"rvap": 461.46, "cpvap": 1845.6, "cl": 4218.0, "lhv0": 2.501e6, "psat0": 610.7,
+           "tem00": 273.15, "eps": 1e-30, "dwatr": 1000.0}
+
+
+def _list_form_ir(spec_id: str, rel: str, partition: dict[str, list[str]],
+                  initial: dict[str, dict], tests: list[tuple[str, list[str], list[tuple]]],
+                  arrays: list[str], scalars: list[str]) -> dict:
+    """A component IR whose `drive.step` is the list form: one entry per published operation
+    (``partition``: operation suffix -> its cases), every dummy bound to `state.<its name>`
+    (rank >= 1 or logical) or to `inputs.grid.<name>` / `inputs.dt` / `inputs.constants.<name>`."""
+    procs = _fence_procedures(rel)
+    step = []
+    for suffix, cids in partition.items():
+        op = f"{spec_id}__{suffix}"
+        arguments = {}
+        for a in procs[op]:
+            name = a["name"]
+            if a["rank"] >= 1 or a["spec"]["type"] == "logical":
+                arguments[name] = f"state.{name}"
+            elif name in ("ka", "ks", "ke"):
+                arguments[name] = f"inputs.grid.{name}"
+            elif name == "dt":
+                arguments[name] = "inputs.dt"
+            else:
+                arguments[name] = f"inputs.constants.{name}"
+        step.append({"operation": op, "result": "guard_pass", "arguments": arguments,
+                     "cases": cids})
+    cases = [{"case_id": cid, "inputs": {"grid": {"ka": 8, "ks": 2, "ke": 7}, "dt": 10.0,
+                                         "constants": dict(_CONSTS)},
+              "initial_state": dict(initial[cid])}
+             for cids in partition.values() for cid in cids]
+    variables = [{"name": n, "shape_expr": "[ka]"} for n in arrays] \
+        + [{"name": n, "shape_expr": "scalar"} for n in scalars]
+    schema = {"variables": variables, "time_variable": "t", "time_shape_expr": "scalar",
+              "coordinates": [{"name": "x", "axis": 0, "count": "inputs.grid.ka",
+                               "length": "inputs.grid.ka", "placement": "cell_center"}]}
+    io_tests, preds = [], []
+    for tid, targets, rows in tests:
+        io_tests.append({"test_id": tid, "expected_outcome": "pass", "target_cases": targets,
+                         "quantities": sorted({q for q, *_ in rows})})
+        preds += [{"test_id": tid, "quantity": q, "target_cases": targets, "per_case": True,
+                   "expr": e, "op": o, "value": val} for q, e, o, val in rows]
+    return {
+        "meta": {"spec_id": spec_id, "spec_kind": "component"},
+        "public_api": _api({op: procs[op] for op in (e["operation"] for e in step)}),
+        "drive": {"step": step},
+        "case": {"test_case_set": cases},
+        "io_contract": {"raw_requirements": {"required_evidence": [
+            {"artifact": "state_snapshots", "required": True, "schema": schema}]},
+            "tests": io_tests, "predicates": preds}}
+
+
+_KES = "microphysics_kessler_warm_rain_1d_column"
+_SAT = "microphysics_saturation_liquid_1d_column"
+_GUARD = ("input_guard", "final.guard_pass", "eq", 1)
+
+
+def _kessler() -> dict:
+    """`__adjustment` over c_adj (adj_a, adj_b) writes temp qv qc qr cptot cvtot (inout) and
+    rhoe_t evaporate pcsat (out); `__terminal_velocity` over c_tv (tv_a) writes vterm_c vterm_r.
+    In c_adj the terminal-velocity arrays are bound by no entry, and in c_tv the adjustment's."""
+    adj_host = {"temp": "280 + x", "dens": "1.1 - 0.05 * x", "pres": "95000 - 3000 * x",
+                "qv": 0.002, "qc": 0.0, "qr": 0.0, "cptot": 1004.0, "cvtot": 717.0,
+                "rhoe_t": -999.0, "evaporate": -999.0, "pcsat": -999.0}
+    tv_host = {"dens": "1.1 - 0.05 * x", "rhoq_c": 1e-4, "rhoq_r": "1e-3 + 2e-4 * x",
+               "refstate_dens": "1.2 - 0.08 * x", "vterm_c": -999.0, "vterm_r": -999.0}
+    # each partition's host data for the arrays its entry does not bind: any form
+    adj = {**adj_host, "rhoq_c": 0.0, "rhoq_r": 0.0, "refstate_dens": 1.0,
+           "vterm_c": "0 * x", "vterm_r": -1.0}
+    tv = {**tv_host, "temp": 280.0, "pres": 9e4, "qv": 0.0, "qc": 0.0, "qr": 0.0,
+          "cptot": 1.0, "cvtot": 1.0, "rhoe_t": "0 * x", "evaporate": 0.0, "pcsat": 0.0}
+    arrays = ["temp", "dens", "pres", "qv", "qc", "qr", "cptot", "cvtot", "rhoe_t",
+              "evaporate", "pcsat", "rhoq_c", "rhoq_r", "refstate_dens", "vterm_c", "vterm_r"]
+    return _list_form_ir(
+        _KES, "kessler/microphysics_kessler_warm_rain_1d_column",
+        {"adjustment": ["adj_a", "adj_b"], "terminal_velocity": ["tv_a"]},
+        {"adj_a": adj, "adj_b": adj, "tv_a": tv},
+        [("t_adj", ["adj_a", "adj_b"], [_GUARD, ("qv_nonneg", "min(final.qv)", "ge", 0)]),
+         ("t_tv", ["tv_a"], [_GUARD, ("vterm", "min(final.vterm_r)", "ge", 0)])],
+        arrays, ["guard_pass"])
+
+
+def _saturation() -> dict:
+    """`__dens2qsat_liq` over q_a, q_b reads temp and dens and writes qsat; `__saturation_
+    adjustment` over s_a updates temp qv qc cptot cvtot, writes rhoe_d and `converged` — a
+    logical result of that operation alone, so host data (-1, tests.md) on the q cases."""
+    q = {"temp": "273.15 + 0 * x", "dens": "1.2 - 0.1 * x", "qsat": -999.0, "qv": 0.0,
+         "qc": 0.0, "cptot": 1.0, "cvtot": 1.0, "rhoe_d": -999.0, "converged": -1.0}
+    sa = {"temp": "280 + 4 * x", "dens": "1.1 - 0.05 * x", "qv": 0.002, "qc": 0.0,
+          "cptot": 1004.0, "cvtot": 717.0, "rhoe_d": -999.0, "qsat": -999.0}
+    return _list_form_ir(
+        _SAT, "saturation/microphysics_saturation_liquid_1d_column",
+        {"dens2qsat_liq": ["q_a", "q_b"], "saturation_adjustment": ["s_a"]},
+        {"q_a": q, "q_b": q, "s_a": sa},
+        [("t_q", ["q_a", "q_b"], [_GUARD, ("qsat_formula", "maxabs(final.qsat)", "le", 1)]),
+         ("t_s", ["s_a"], [_GUARD, ("converged", "final.converged", "eq", 1),
+                           ("satadj", "maxabs(final.temp - initial.temp)", "le", 1)])],
+        ["temp", "dens", "qv", "qc", "cptot", "cvtot", "qsat", "rhoe_d"],
+        ["guard_pass", "converged"])
+
+
+def _all_gates(ir: dict) -> list[str]:
+    """Every IR-side gate `ShippedFixturesTest` runs, concatenated."""
+    io, cases = ir["io_contract"], pe._cases_by_id(ir)
+    ctx = pe.predicate_schema_context(ir)
+    return (pe.drive_violations(ir, kind=ir["meta"]["spec_kind"])
+            + pe.validate_primary_predicate_schema(
+                io["predicates"], case_ids=set(cases),
+                test_ids=[t["test_id"] for t in io["tests"]],
+                schema=pe.snapshot_schema(ir), cases=cases,
+                test_target_cases={t["test_id"]: t["target_cases"] for t in io["tests"]},
+                **ctx)
+            + pe.quantity_violations(io["tests"], io["predicates"], ctx["reads"])
+            + ([] if ctx["case_inputs"] is not None else ["case inputs did not evaluate"]))
+
+
+class ListFormCasesTest(unittest.TestCase):
+    """R2-2 / R2-3: on a list-form `drive.step` the variable classes, the shapes, gate (f)
+    and the reads-a-capture rule are PER CASE — from the entries that run the case."""
+
+    def test_both_microphysics_shapes_pass_every_gate(self) -> None:
+        for build in (_kessler, _saturation):
+            with self.subTest(fixture=build.__name__):
+                self.assertEqual(_all_gates(build()), [])
+
+    def test_the_classes_are_per_case(self) -> None:
+        reads = pe.state_reads(_saturation())
+        temp = pe.NameRef("capture", "temp", "final")
+        self.assertFalse(pe.is_state_read(temp, reads, "q_a"))
+        self.assertTrue(pe.is_state_read(temp, reads, "s_a"))
+        self.assertTrue(pe.is_state_read(temp, reads))           # the node's: some entry writes
+        self.assertFalse(pe.is_state_read(temp, reads, "no_such_case"))
+        self.assertTrue(pe.is_state_read(pe.NameRef("capture", "temp", "final", "s_a"),
+                                         reads, "q_a"))         # at('s_a') reads s_a's state
+        self.assertEqual(reads.by_case["q_a"][0], frozenset({"qsat", "guard_pass"}))
+        # the mapping form keeps no per-case table
+        self.assertIsNone(pe.state_reads(_rus()).by_case)
+
+    def test_final_temp_on_a_dens2qsat_case_is_no_state_read(self) -> None:
+        ir = _saturation()
+        preds = ir["io_contract"]["predicates"]
+        i = next(i for i, p in enumerate(preds) if p["quantity"] == "qsat_formula")
+        preds[i]["expr"] = "maxabs(final.temp)"        # temp is `in` on __dens2qsat_liq
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 1, v)
+        self.assertTrue(v[0].startswith(
+            f"predicates[{i}]: reads no captured state the kernel produced in case(s) "
+            "['q_a', 'q_b'], which its scope evaluates"), v)
+        # the same read on the saturation_adjustment case is kernel state
+        ir = _saturation()
+        j = next(i for i, p in enumerate(ir["io_contract"]["predicates"])
+                 if p["quantity"] == "satadj")
+        ir["io_contract"]["predicates"][j]["expr"] = "maxabs(final.temp)"
+        self.assertEqual(_all_gates(ir), [])
+
+    def test_a_scope_over_both_partitions_reads_state_in_each(self) -> None:
+        """A predicate whose read is kernel state in one partition and host data in the other
+        is refused naming the case — by the schema gate and by the evaluator — and
+        `cases_read` / the per-test rule count only the case it reads state in."""
+        ir = _saturation()
+        io = ir["io_contract"]
+        io["tests"].append({"test_id": "t_mix", "expected_outcome": "xfail",
+                            "target_cases": ["q_a", "s_a"], "quantities": ["temp"]})
+        pred = {"test_id": "t_mix", "quantity": "temp", "target_cases": ["q_a", "s_a"],
+                "per_case": True, "expr": "maxabs(final.temp)", "op": "le", "value": 1e9}
+        io["predicates"].append(pred)
+        idx = len(io["predicates"]) - 1
+        reads = pe.state_reads(ir)
+        self.assertEqual(pe.cases_read(pred, reads), {"s_a"})
+        v = _all_gates(ir)
+        self.assertEqual(len(v), 2, v)
+        self.assertEqual(v[0], f"predicates[{idx}]: reads no captured state the kernel produced "
+                         "in case(s) ['q_a'], which its scope evaluates: on a list-form "
+                         "drive.step a variable is kernel state only in the cases of the "
+                         "entries that write it, and elsewhere its capture is the host's "
+                         "initial_state (judge those cases by a variable their own entry "
+                         "writes)")
+        self.assertTrue(v[1].startswith("test 't_mix': no predicate values the captured state "
+                                        "of target case(s) ['q_a']"), v)
+        # q_a valued by a variable its own entry writes: admitted
+        pred["expr"] = "maxabs(final.temp) + maxabs(final.qsat)"
+        self.assertEqual(_all_gates(ir), [])
+        pred["expr"] = "maxabs(final.temp)"
+        run = _RunDir()
+        try:
+            with self.assertRaisesRegex(
+                    pe.PrimaryEvidenceError,
+                    rf"predicates\[{idx}\]: reads no captured state the kernel produced in "
+                    r"case\(s\) \['q_a'\], which its scope evaluates"):
+                pe.evaluate_primary_predicates(ir, run.root)
+        finally:
+            run.cleanup()
+
+    def test_gate_f_is_per_case(self) -> None:
+        # `converged` is logical on s_a (no entry) and host data on q_a (an entry required)
+        ir = _saturation()
+        del ir["case"]["test_case_set"][0]["initial_state"]["converged"]
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 'q_a': initial_state has no entry for ['converged']"])
+        ir = _saturation()
+        ir["case"]["test_case_set"][2]["initial_state"]["converged"] = -1.0
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 's_a': initial_state.converged — a variable init writes, "
+                          "or a logical result the driver writes, takes no initial_state "
+                          "entry"])
+        # vterm_r: host data on adj_a (an expression admitted, adj_a's `0 * x` vterm_c is one),
+        # an output the operation only writes on tv_a (a number literal)
+        ir = _kessler()
+        ir["case"]["test_case_set"][2]["initial_state"]["vterm_r"] = "0 * x"
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 'tv_a': initial_state.vterm_r — an output the operation "
+                          "only writes takes a number literal (its pre-call content)"])
+        # an unbound array on one partition still needs its entry there
+        ir = _kessler()
+        del ir["case"]["test_case_set"][0]["initial_state"]["vterm_r"]
+        self.assertEqual(pe.drive_violations(ir, kind="component"),
+                         ["(f) case 'adj_a': initial_state has no entry for ['vterm_r']"])
+
+    def test_an_unbound_array_takes_its_extents_from_another_entry(self) -> None:
+        ir = _kessler()
+        payload = pe.evaluate_case_inputs(ir)
+        self.assertEqual(payload["adj_a"]["vterm_r"], [-1.0] * 8)    # no entry of adj_a binds
+        self.assertEqual(payload["adj_a"]["vterm_c"], [0.0] * 8)
+        self.assertEqual(payload["tv_a"]["pres"], [9e4] * 8)        # no entry of tv_a binds
+        self.assertEqual(len(payload["tv_a"]["rhoe_t"]), 8)
+        # the extent follows the binding evaluated against THIS case's inputs
+        ir["case"]["test_case_set"][0]["inputs"]["grid"]["ka"] = 5
+        self.assertEqual(len(pe.evaluate_case_inputs(ir)["adj_a"]["vterm_r"]), 5)
+
+    def test_disagreeing_or_missing_tokens_are_refused(self) -> None:
+        ir = _kessler()
+        tv = ir["drive"]["step"][1]["arguments"]
+        tv["ka"] = "inputs.grid.ka_tv"
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["grid"]["ka_tv"] = 9 if case["case_id"] != "tv_a" else 8
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [
+            f"(c) case {cid!r}: state.{var}: shape_expr token 'ka' names 'ka', which the "
+            "drive entries bind to different values in this case ({'drive.step[0]': 8, "
+            "'drive.step[1]': 9})" for cid, var in (("adj_a", "rhoq_c"), ("adj_b", "rhoq_c"))])
+        ir = _kessler()
+        var = next(v for v in ir["io_contract"]["raw_requirements"]["required_evidence"][0][
+            "schema"]["variables"] if v["name"] == "vterm_r")
+        var["shape_expr"] = "[nz]"
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [
+            f"(c) case {cid!r}: state.vterm_r: shape_expr token 'nz' names 'nz', which no "
+            "drive entry binds as a rank-0 dummy, so the extent of an array no entry running "
+            "this case binds is unknown" for cid in ("adj_a", "adj_b")])
+
+    def test_d7_counts_a_scalar_only_where_its_entry_runs(self) -> None:
+        """`record_scalar_pairing` with `one_call_by_case`: a one-call scalar is a kernel
+        scalar only in the cases of the entry that writes it."""
+        ir = _rus()
+        other = [_arg("nx", "in", "integer"), _arg("q", "in", "real", 1, ["nx"]),
+                 _arg("G", "out", "real", 1, ["nx"]), _arg("ok", "out", "logical")]
+        ir["public_api"] = _api({"rus__flux": ir["public_api"]["signatures"][0]["signature"][
+            "args"], "rus__other": other})
+        ir["drive"]["step"] = [
+            {**ir["drive"]["step"], "cases": ["a"]},
+            {"operation": "rus__other", "result": "ok", "cases": ["b"],
+             "arguments": {"nx": "inputs.grid.nx", "q": "state.q", "G": "state.G",
+                           "ok": "state.ok"}}]
+        ir["case"]["test_case_set"].append({**copy.deepcopy(ir["case"]["test_case_set"][0]),
+                                            "case_id": "b"})
+        model = pe.drive_model(ir)
+        by_case = pe.one_call_by_case(ir, model)
+        self.assertEqual(by_case, {"a": {"a_x": frozenset({"F"})}, "b": {}})
+        pred = {"target_cases": ["a", "b"], "per_case": True,
+                "expr": "final.a_x + maxabs(final.F) + maxabs(final.G)"}
+        self.assertEqual(pe.record_scalar_pairing(pred, model.one_call_scalars, by_case),
+                         {"a_x": {"scalar": ["a"], "paired": ["a"]}})
+        self.assertEqual(pe.record_scalar_pairing(pred, model.one_call_scalars),
+                         {"a_x": {"scalar": ["a", "b"], "paired": ["a", "b"]}})
+
+
 class ShippedFixturesTest(unittest.TestCase):
     """The two hand-converted fixtures pass every IR-side gate and evaluate."""
 

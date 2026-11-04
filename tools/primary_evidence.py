@@ -489,15 +489,31 @@ class StateReads(NamedTuple):
     loop: bool = False
     closure_refs: frozenset[str] | None = frozenset()
     closure_tests: frozenset[str] = frozenset()
+    #: Per case (review round 2, R2-2 / R2-3): case_id -> ``(final, initial)`` from the entries
+    #: that run that case (`DriveBlock.entries_for`) — set on a LIST-form `drive.step`, whose
+    #: entries run disjoint cases; None on the mapping form, where every case runs every entry
+    #: and the classes above are each case's.
+    by_case: dict[str, tuple[frozenset[str], frozenset[str]]] | None = None
+
+    def sets_for(self, case: str | None) -> tuple[frozenset[str], frozenset[str]]:
+        """``(final, initial)`` in ``case``: its own classes on a list-form node (none for a
+        case the node does not declare), the node's for None or on the mapping form."""
+        if case is None or self.by_case is None:
+            return self.final, self.initial
+        return self.by_case.get(case, (frozenset(), frozenset()))
 
 
 #: A `series.<name>` that folds one state array: `<v>_min` / `<v>_max` (gate (h)).
 _SERIES_FOLD_RE = re.compile(r"^(?P<var>[A-Za-z_][A-Za-z0-9_]*)_(?:min|max)$")
 
 
-def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str]) -> bool:
+def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str],
+                  case: str | None = None) -> bool:
     """Whether one reference reads kernel state under ``state`` (`StateReads`, or a set of
-    names counted at both capture points). `history.<v>` and `series.<v>_min` / `_max` do when
+    names counted at both capture points), IN ``case`` — the case the reference is read in
+    (its `at('<case>')` case, else the case being evaluated): on a list-form node a variable
+    is kernel state in a case only when an entry that runs that case writes it
+    (`StateReads.sets_for`, R2-2 / R2-3); None asks the node's classes. `history.<v>` and `series.<v>_min` / `_max` do when
     `final.<v>` does — the samples and the per-step folds of a variable the kernel writes; the
     DRIVER's counters `history.t`, `history.step`, `series.t` and `series.step`, like
     `final.t` / `final.step`, never do (review round 2, R2-1: `max(series.step) ge 0` judged
@@ -513,18 +529,22 @@ def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str]) -
         name = match.group("var")
     elif ref.kind == "capture":
         if isinstance(state, StateReads):
-            return ref.name in (state.final if ref.point == "final" else state.initial)
+            final, initial = state.sets_for(ref.case if ref.case is not None else case)
+            return ref.name in (final if ref.point == "final" else initial)
         return ref.name in state
     else:
         return False
-    return name in (state.final if isinstance(state, StateReads) else state)
+    if isinstance(state, StateReads):
+        return name in state.sets_for(ref.case if ref.case is not None else case)[0]
+    return name in state
 
 
 def reads_captured_state(refs: list[NameRef],
-                         state_names: StateReads | set[str] | frozenset[str]) -> bool:
-    """Whether any reference reads kernel state (`is_state_read`; the time variable and the
-    step count excluded)."""
-    return any(is_state_read(r, state_names) for r in refs)
+                         state_names: StateReads | set[str] | frozenset[str],
+                         case: str | None = None) -> bool:
+    """Whether any reference reads kernel state (`is_state_read`, in ``case``; the time
+    variable and the step count excluded)."""
+    return any(is_state_read(r, state_names, case) for r in refs)
 
 
 #: Gate (l)'s zero-step closure on a `loop` node, matched on the expression TEXT with every
@@ -564,9 +584,14 @@ def is_zero_step_closure(pred: Any, state: StateReads | set[str] | frozenset[str
 
 
 def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]],
-                          state_names: StateReads | set[str] | frozenset[str]) -> bool:
+                          state_names: StateReads | set[str] | frozenset[str],
+                          cases: Sequence[str] | set[str] | None = None) -> bool:
     """Whether a predicate's `expr`, or a `bind` that `expr` reaches (transitively), reads
-    kernel state (`is_state_read` under ``state_names``). A predicate that reads none — a
+    kernel state (`is_state_read` under ``state_names``) — with ``cases`` (the cases its scope
+    evaluates it in), IN EVERY ONE of them (review round 2, R2-2 / R2-3: on a list-form node a
+    variable is kernel state only in the cases of the entries that write it, and a predicate
+    whose reads are host data in one of its cases judges nothing there; the mapping form
+    answers as before). None asks whether it reads kernel state at all. A predicate that reads none — a
     constant, an input, a `derived.*` value, the time or the step count alone, the host's own
     `initial_state` read back, or a state read only in a bind the expression never uses —
     values nothing the kernel produced and judges nothing; the gate and the evaluator both
@@ -581,10 +606,20 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
     other way, and whether the expression is the test's own quantity, is `Compile.verify`
     V3's judgment (`phase_01_compile.md`); the gate over `quantity` names
     (`quantity_violations`) closes omission, not vacuity."""
-    if reads_captured_state(expr_refs, state_names):
-        return True
-    return any(reads_captured_state(bind_refs[name], state_names)
-               for name in reached_binds(expr_refs, bind_refs))
+    refs = list(expr_refs)
+    for name in reached_binds(expr_refs, bind_refs):
+        refs.extend(bind_refs[name])
+    if cases is None:
+        return reads_captured_state(refs, state_names)
+    return all(reads_captured_state(refs, state_names, c) for c in cases)
+
+
+def unread_scope_cases(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]],
+                       state_names: StateReads | set[str] | frozenset[str],
+                       cases: Sequence[str]) -> list[str]:
+    """The cases of ``cases`` (a predicate's scope) in which it reads no kernel state
+    (`predicate_reads_state` per case), in order; empty when it reads some in every one."""
+    return [c for c in cases if not predicate_reads_state(expr_refs, bind_refs, state_names, [c])]
 
 
 def reached_binds(expr_refs: list[NameRef], bind_refs: dict[str, list[NameRef]]) -> set[str]:
@@ -1561,7 +1596,9 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         raise PrimaryEvidenceError(
             "predicates declared but the IR has no state_snapshots evidence entry")
     reads = state_reads(ir)
-    one_call = drive_model(ir).one_call_scalars if _has_drive(ir) else {}
+    model_ = drive_model(ir) if _has_drive(ir) else None
+    one_call = model_.one_call_scalars if model_ is not None else {}
+    one_call_cases = one_call_by_case(ir, model_) if model_ is not None else None
     cases = _cases_by_id(ir)
     env_cache: dict[tuple[str, str], CaseEnv] = {}
     comparand_list = list(comparands)
@@ -1604,15 +1641,21 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
         closure = is_zero_step_closure(pred, reads) and test_id.strip() not in closures
         if closure:
             closures.add(test_id.strip())   # one exempt closure per test, as the gate admits
+        scope, contexts = _predicate_scope(pred, loc)
         if not predicate_reads_state(expr_refs, bind_refs, reads) and not closure:
             raise PrimaryEvidenceError(
                 f"{loc}: reads no captured state the kernel produced (final.<written var>, "
                 "initial.<var init writes>, history.<written var>, series.<written var>_min|"
                 "_max) in expr or a bind expr reaches")
+        unread = [] if closure else unread_scope_cases(expr_refs, bind_refs, reads, contexts)
+        if unread:
+            raise PrimaryEvidenceError(
+                f"{loc}: reads no captured state the kernel produced in case(s) {unread}, "
+                "which its scope evaluates (a variable is kernel state only in the cases of "
+                "the entries that write it)")
         cross = predicate_reads_comparand(expr_refs, bind_refs)
         if cross_target_only and not cross:
             continue
-        scope, contexts = _predicate_scope(pred, loc)
         targets = [c.strip() for c in pred["target_cases"]]
         record: dict[str, Any] = {
             "test_id": test_id.strip(), "quantity": quantity, "expr": str(pred["expr"]).strip(),
@@ -1621,7 +1664,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
             # (`record_scalar_pairing`), so the verdict evaluator can re-check both on records
             "cases_read": sorted(cases_read({**pred, "target_cases": targets}, reads) or []),
             "scalar_pairing": record_scalar_pairing({**pred, "target_cases": targets},
-                                                    one_call),
+                                                    one_call, one_call_cases),
             "grammar_version": GRAMMAR_VERSION,
             "comparands": [c.detail() for c in comparand_list] if cross else [],
             "satisfied": True, "kind": "pass", "evaluated": [],
@@ -2176,6 +2219,16 @@ def validate_primary_predicate_schema(
                      "and judges nothing (a cell count is the case's inputs.<grid path>; a "
                      "quantity no captured state enters takes the tests.md §5 primary-evidence "
                      "statement, its state term included)")
+        elif parsed_all and scope_cases:
+            # per case (R2-2 / R2-3): a kernel-state read in EVERY case the scope evaluates
+            unread = unread_scope_cases(effective_expr_refs, effective_bind_refs, state,
+                                        scope_cases)
+            if unread:
+                v.append(f"{loc}: reads no captured state the kernel produced in case(s) "
+                         f"{unread}, which its scope evaluates: on a list-form drive.step a "
+                         "variable is kernel state only in the cases of the entries that write "
+                         "it, and elsewhere its capture is the host's initial_state (judge "
+                         "those cases by a variable their own entry writes)")
     return v
 
 
@@ -2217,9 +2270,10 @@ def cases_read(pred: dict[str, Any],
     `initial.<v>` / `final.<v>` with `<v>` in it; the time variable, the step count and their
     history / series, an `inputs.<path>`, a `derived.*` value, a
     coordinate and a `comparand.` read are not state) that ENTERS THE VALUE (`_entering_refs`)
-    names — an own-case read values every case the scope evaluates the predicate in (every
-    target case under `per_case: true`, X under `case: X`), an `at('<case>')` read values that
-    case. So a bind `expr` never reaches, an `at('<case>')` only inside a term constant by form,
+    names — an own-case read values each case the scope evaluates the predicate in (every
+    target case under `per_case: true`, X under `case: X`) in which it IS kernel state (on a
+    list-form node, a variable an entry running that case writes: R2-2 / R2-3), an
+    `at('<case>')` read values that case when it is kernel state there. So a bind `expr` never reaches, an `at('<case>')` only inside a term constant by form,
     and an `at('<case>').inputs.<path>` normaliser or `at('<case>').final.t` beside own-case
     state (issue #567 review round 1) add no case. The record's `cases_read` key keeps its name.
     None when the scope or an expression is malformed (the primary schema gate refuses those;
@@ -2228,9 +2282,9 @@ def cases_read(pred: dict[str, Any],
     if found is None:
         return None
     contexts, entering = found
-    state_reads_ = [r for r in entering if is_state_read(r, state_names)]
-    read = set(contexts) if any(r.case is None for r in state_reads_) else set()
-    read |= {r.case for r in state_reads_ if r.case is not None}
+    read = {c for c in contexts
+            if any(r.case is None and is_state_read(r, state_names, c) for r in entering)}
+    read |= {r.case for r in entering if r.case is not None and is_state_read(r, state_names)}
     return read
 
 
@@ -2254,23 +2308,30 @@ def point_reads(pred: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
     return out
 
 
-def record_scalar_pairing(pred: dict[str, Any],
-                          one_call: dict[str, frozenset[str]]) -> dict[str, dict[str, list[str]]]:
+def record_scalar_pairing(pred: dict[str, Any], one_call: dict[str, frozenset[str]],
+                          by_case: dict[str, dict[str, frozenset[str]]] | None = None,
+                          ) -> dict[str, dict[str, list[str]]]:
     """What D7 asks of one predicate, stamped on its record (`evaluate_primary_predicates`) so
     `verdict_evaluator.evaluate_verdict` re-checks the pairing on the records alone: per one-call
     scalar ``s`` (`DriveModel.one_call_scalars`: ``s`` -> the array states the same operation
     writes) whose `final.<s>` this predicate reads, ``scalar`` — the cases it reads `final.<s>`
     in — and ``paired`` — the cases it reads BOTH `final.<s>` and `final.<a>` of one of those
-    arrays in. A scalar it does not read is left out."""
+    arrays in. A scalar it does not read is left out. With ``by_case`` (`one_call_by_case`, a
+    list-form node) a case counts for ``s`` only where ``s`` is a one-call scalar IN THAT CASE,
+    and its arrays are those the entry running that case writes (R2-2 / R2-3: elsewhere
+    `final.<s>` is host data, no kernel scalar)."""
     reads = point_reads(pred)
     out: dict[str, dict[str, list[str]]] = {}
     for scalar, arrays in sorted(one_call.items()):
-        scalar_cases = reads.get(("final", scalar), set())
+        scalar_cases = set(reads.get(("final", scalar), set()))
+        if by_case is not None:
+            scalar_cases = {c for c in scalar_cases if scalar in by_case.get(c, {})}
         if not scalar_cases:
             continue
         array_cases: set[str] = set()
         for array in arrays:
-            array_cases |= reads.get(("final", array), set())
+            array_cases |= {c for c in reads.get(("final", array), set())
+                            if by_case is None or array in by_case.get(c, {}).get(scalar, ())}
         out[scalar] = {"scalar": sorted(scalar_cases),
                        "paired": sorted(scalar_cases & array_cases)}
     return out
@@ -2290,7 +2351,7 @@ def quantity_violations(tests: Any, predicates: Any,
 
     With ``state_names`` (a `StateReads`, or a set of names counted at both capture points),
     every target case of a test must be valued by some predicate of the test
-    (`cases_read`): what remains of the coverage gate's reads-every-case rule without a condition
+    (`cases_read`, by a read that is kernel state in THAT case): what remains of the coverage gate's reads-every-case rule without a condition
     to compare against. A `case: a` predicate over `[a, b]` as the test's only judgment would
     certify it on case a alone (Z6 PR-3 rounds 1 and 2). Per test and not per quantity: a
     refinement order reads the cases of its own pair, so a quantity may read fewer."""
@@ -2660,11 +2721,25 @@ class DriveModel(NamedTuple):
     types: dict[str, str]
 
     def needs_initial(self) -> frozenset[str]:
-        """The variables every case gives an `initial_state` entry (gate (f))."""
+        """The variables a case gives an `initial_state` entry (gate (f)) — of a model
+        `for_case`, that case's."""
         return frozenset(self.variables) - self.init_written - self.logical
 
+    def for_case(self, case_id: str) -> DriveModel:
+        """The classes IN ONE CASE (review round 2, R2-2 / R2-3): computed from the entries
+        that run ``case_id`` (`DriveBlock.entries_for`: `init` and the `step` entries whose
+        `cases` list it), so on a list-form node a state another entry writes, or only reads,
+        is host data in this case — it needs its `initial_state` entry, and a predicate that
+        reads it there reads no kernel state. ``types`` stays the node's. On the mapping form
+        every case runs every entry and this is the node's model."""
+        if not self.block.list_form:
+            return self
+        return _model_from_block(self.block, self.variables,
+                                 self.block.entries_for(case_id))._replace(types=self.types)
 
-def _model_from_block(block: DriveBlock, variables: dict[str, list[str]]) -> DriveModel:
+
+def _model_from_block(block: DriveBlock, variables: dict[str, list[str]],
+                      entries: list[DriveEntry] | None = None) -> DriveModel:
     init_written: set[str] = set()
     written: set[str] = set()
     step_written: set[str] = set()
@@ -2673,7 +2748,7 @@ def _model_from_block(block: DriveBlock, variables: dict[str, list[str]]) -> Dri
     read: set[str] = set()
     one_call: dict[str, set[str]] = {}
     types: dict[str, str] = {}
-    for entry in block.entries():
+    for entry in (block.entries() if entries is None else entries):
         entry_arrays = {b.ref for name, b in entry.arguments.items()
                         if b.kind == _STATE_ROOT and (d := entry.dummy(name)) is not None
                         and d.get("intent") in ("out", "inout") and _dummy_rank(d) >= 1}
@@ -2722,6 +2797,15 @@ def drive_model(ir: dict[str, Any]) -> DriveModel:
     return _model_from_block(block, schema_variables(schema))
 
 
+def one_call_by_case(ir: dict[str, Any], model: DriveModel
+                     ) -> dict[str, dict[str, frozenset[str]]] | None:
+    """case_id -> that case's `one_call_scalars` (`DriveModel.for_case`) on a list-form node;
+    None on the mapping form, where every case's are the node's."""
+    if not model.block.list_form:
+        return None
+    return {cid: model.for_case(cid).one_call_scalars for cid in _cases_by_id(ir)}
+
+
 def state_reads(ir: dict[str, Any]) -> StateReads:
     """What counts as a kernel-state read in this IR's predicates (`StateReads`): from
     `drive_model` when the IR carries `drive` (raising on a malformed one); every schema
@@ -2730,13 +2814,23 @@ def state_reads(ir: dict[str, Any]) -> StateReads:
         model = drive_model(ir)
         loop = model.block.loop
         if loop is None:
-            return StateReads(final=model.written, initial=model.init_written)
+            by_case = None
+            if model.block.list_form:
+                by_case = {}
+                for cid in _cases_by_id(ir):
+                    # a case no entry runs is (f')'s refusal; the node's classes there keep
+                    # the predicate gates from restating it per predicate
+                    cm = (model.for_case(cid) if any(cid in (e.cases or ())
+                                                     for e in model.block.step) else model)
+                    by_case[cid] = (cm.written, cm.init_written)
+            return StateReads(final=model.written, initial=model.init_written, by_case=by_case)
         passing = frozenset(
             t["test_id"].strip() for t in _test_entries(ir)
             if str(t.get("expected_outcome") or "").strip().lower() == "pass")
         n_step = loop.get("n_step")
         refused = n_step is not None and n_step.kind == _STATE_ROOT and (
             n_step.ref not in model.init_written or model.variables.get(n_step.ref) != [])
+        # (a list-form `step` is refused with `loop`, gate (f'): the classes are the node's)
         return StateReads(final=model.written, initial=model.init_written, loop=True,
                           closure_refs=None if refused else frozenset(_zero_step_refs(n_step)),
                           closure_tests=passing)
@@ -2753,11 +2847,72 @@ def _integral(value: float, what: str) -> int:
     return int(value)
 
 
+def _rank0_extent(entry: DriveEntry, name: str, token: str, inputs: Any,
+                  derived: dict[str, Any], what: str) -> int:
+    """The value ``entry`` binds its rank-0 dummy ``name`` to, as an extent term: an
+    `inputs.*` number, a scalar `derived.*` value or a number literal, integral."""
+    binding = entry.arguments[name]
+    if binding.kind == "inputs":
+        value = resolve_input_number(inputs, binding.ref)
+    elif binding.kind == _DERIVED and binding.ref in derived \
+            and np.ndim(derived[binding.ref]) == 0:
+        value = float(derived[binding.ref])
+    elif binding.kind == "literal" and _is_number(binding.ref):
+        value = float(binding.ref)
+    else:
+        raise PrimaryEvidenceError(
+            f"{what}: dims token {token!r} names dummy {name!r}, bound to "
+            f"{binding.text()}: an extent resolves only through a dummy bound to "
+            "inputs.<path>, a scalar derived.<name> or a number")
+    return _integral(value, f"{what}: {name}")
+
+
 def _extent(token: str, entry: DriveEntry, inputs: Any, derived: dict[str, Any],
             what: str) -> int:
     """One dimension token evaluated under ``entry``'s bindings (gate (c)): an integer
     literal, a rank-0 dummy of the operation bound to `inputs.*`, `derived.*` or a number,
     and `+ - *` / unary minus between them. The extent is an integer >= 1."""
+    def name_value(name: str) -> int:
+        dummy = entry.dummy(name)
+        if dummy is None or _dummy_rank(dummy) != 0:
+            raise PrimaryEvidenceError(
+                f"{what}: dims token {token!r} names {name!r}, which is not a rank-0 "
+                f"dummy of {entry.operation}")
+        return _rank0_extent(entry, name, token, inputs, derived, what)
+
+    return _extent_by(token, name_value, what)
+
+
+def _unbound_extent(token: str, entries: list[DriveEntry], inputs: Any,
+                    derived: dict[str, Any], what: str) -> int:
+    """One `shape_expr` token of a state array no entry running this case binds (review round
+    2, R2-2 / R2-3), each name resolved under ANY entry's binding of a rank-0 dummy of that name
+    (``entries``: every entry of the node), evaluated against this case's inputs. A name no
+    entry binds as a rank-0 dummy, or that two entries bind to different values in this case,
+    is refused."""
+    def name_value(name: str) -> int:
+        values: dict[str, int] = {}
+        for entry in entries:
+            dummy = entry.dummy(name)
+            if dummy is not None and _dummy_rank(dummy) == 0:
+                values[entry.loc] = _rank0_extent(entry, name, token, inputs, derived, what)
+        if not values:
+            raise PrimaryEvidenceError(
+                f"{what}: shape_expr token {token!r} names {name!r}, which no drive entry "
+                "binds as a rank-0 dummy, so the extent of an array no entry running this case "
+                "binds is unknown")
+        if len(set(values.values())) > 1:
+            raise PrimaryEvidenceError(
+                f"{what}: shape_expr token {token!r} names {name!r}, which the drive entries "
+                f"bind to different values in this case ({values})")
+        return next(iter(values.values()))
+
+    return _extent_by(token, name_value, what)
+
+
+def _extent_by(token: str, name_value: Callable[[str], int], what: str) -> int:
+    """A dims / `shape_expr` token: an integer literal, a name ``name_value`` resolves, and
+    `+ - *` / unary minus between them; an integer >= 1."""
     try:
         tree = ast.parse(token.strip(), mode="eval")
     except SyntaxError:
@@ -2768,25 +2923,7 @@ def _extent(token: str, entry: DriveEntry, inputs: Any, derived: dict[str, Any],
                 and not isinstance(node.value, bool):
             return node.value
         if isinstance(node, ast.Name):
-            dummy = entry.dummy(node.id)
-            if dummy is None or _dummy_rank(dummy) != 0:
-                raise PrimaryEvidenceError(
-                    f"{what}: dims token {token!r} names {node.id!r}, which is not a rank-0 "
-                    f"dummy of {entry.operation}")
-            binding = entry.arguments[node.id]
-            if binding.kind == "inputs":
-                value = resolve_input_number(inputs, binding.ref)
-            elif binding.kind == _DERIVED and binding.ref in derived \
-                    and np.ndim(derived[binding.ref]) == 0:
-                value = float(derived[binding.ref])
-            elif binding.kind == "literal" and _is_number(binding.ref):
-                value = float(binding.ref)
-            else:
-                raise PrimaryEvidenceError(
-                    f"{what}: dims token {token!r} names dummy {node.id!r}, bound to "
-                    f"{binding.text()}: an extent resolves only through a dummy bound to "
-                    "inputs.<path>, a scalar derived.<name> or a number")
-            return _integral(value, f"{what}: {node.id}")
+            return name_value(node.id)
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult)):
             left, right = ev(node.left), ev(node.right)
             return left + right if isinstance(node.op, ast.Add) else (
@@ -2946,9 +3083,11 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
             shapes[var] = ext
     for var, dims in model.variables.items():
         if var not in shapes:
-            raise PrimaryEvidenceError(
-                f"state.{var} is an array no operation entry that runs this case binds, so its "
-                "extents are unknown")
+            # an array no entry running this case binds (a list-form node): host data here,
+            # its extents from its shape_expr under the other entries' bindings (R2-2 / R2-3)
+            shapes[var] = tuple(_unbound_extent(str(t), block.entries(), inputs, pre,
+                                                f"state.{var}") for t in dims)
+            continue
         for axis, token in enumerate(dims):
             if token.isdigit() and int(token) != shapes[var][axis]:
                 raise PrimaryEvidenceError(
@@ -2965,15 +3104,16 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
                 f"coordinates[{spec.get('name')!r}].count {n} is not the extent of axis "
                 f"{spec['axis']} of the state ({sorted(map(list, largest))})")
 
-    # 2. initial_state
+    # 2. initial_state — the classes of THIS case (`DriveModel.for_case`, R2-2 / R2-3)
+    cm = model.for_case(cid)
     for key in initial_raw:
         if key not in model.variables:
             raise PrimaryEvidenceError(f"initial_state.{key} is not a snapshot schema variable")
-        if key in model.init_written or key in model.logical:
+        if key in cm.init_written or key in cm.logical:
             raise PrimaryEvidenceError(
                 f"initial_state.{key}: a variable init writes, or a logical result the driver "
                 "writes, takes no initial_state entry (the driver starts it at 0)")
-    missing = sorted(model.needs_initial() - set(initial_raw))
+    missing = sorted(cm.needs_initial() - set(initial_raw))
     if missing:
         raise PrimaryEvidenceError(f"initial_state has no entry for {missing}")
     initial_env = CaseEnv(case_id=cid, initial=None, final={}, inputs=inputs,
@@ -2982,7 +3122,7 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
     for var, raw in initial_raw.items():
         what = f"initial_state.{var}"
         shape = shapes[var]
-        if var in model.operation_only and not _is_number(raw):
+        if var in cm.operation_only and not _is_number(raw):
             raise PrimaryEvidenceError(
                 f"{what}: an output the operation only writes takes a number literal, its "
                 "pre-call content broadcast to the shape")
@@ -3365,7 +3505,8 @@ def scalar_pairing_violations(ir: dict[str, Any]) -> list[str]:
         return []
     if not model.one_call_scalars:
         return []
-    own = [(i, p, record_scalar_pairing(p, model.one_call_scalars))
+    by_case = one_call_by_case(ir, model)
+    own = [(i, p, record_scalar_pairing(p, model.one_call_scalars, by_case))
            for i, p in _own_predicates(ir)]
     v: list[str] = []
     for idx, pred, pairing in own:
@@ -3614,9 +3755,12 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     elif block.history_every is not None:
         v.append("(e) drive.history is refused without loop (a one-call node has no samples)")
 
-    # (f) initial_state per case
-    needs = model.needs_initial()
+    # (f) initial_state per case, under the classes of that case (R2-2 / R2-3)
     for cid, case in sorted(cases.items()):
+        if block.list_form and not any(cid in (e.cases or ()) for e in block.step):
+            continue   # run by no entry: (f') refuses it, and it has no classes to check
+        cm = model.for_case(cid)
+        needs = cm.needs_initial()
         initial = case.get("initial_state")
         initial = initial if isinstance(initial, dict) else {}
         if case.get("initial_state") is not None and not isinstance(case["initial_state"], dict):
@@ -3625,10 +3769,10 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
             if key not in schema_vars:
                 v.append(f"(f) case {cid!r}: initial_state.{key} is not a snapshot schema "
                          "variable")
-            elif key in model.init_written or key in model.logical:
+            elif key in cm.init_written or key in cm.logical:
                 v.append(f"(f) case {cid!r}: initial_state.{key} — a variable init writes, or a "
                          "logical result the driver writes, takes no initial_state entry")
-            elif key in model.operation_only and not _is_number(initial[key]):
+            elif key in cm.operation_only and not _is_number(initial[key]):
                 v.append(f"(f) case {cid!r}: initial_state.{key} — an output the operation only "
                          "writes takes a number literal (its pre-call content)")
         missing = sorted(needs - set(initial))

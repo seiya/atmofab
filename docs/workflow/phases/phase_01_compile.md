@@ -60,6 +60,10 @@ case:
         # `Compile.static` refuses a non-finite value or a shape mismatch). Exactly one entry per
         # schema variable in EVERY case, except a variable `drive.init` writes and a logical state
         # (both start at 0, the driver's; an entry for either is refused); no key outside the schema.
+        # The classes are THE CASE'S: on a list-form `drive.step` they follow from the entries that run
+        # this case, so a logical state, an operation-only output or a written state of ANOTHER entry,
+        # and a state this case's entries only read or do not bind, is host data here and takes its
+        # entry (an array no entry of this case binds is captured unchanged).
         # A state an operation reads: its initial value — a number (filled to the shape), a nested
         # list of exactly the shape, or a predicate-grammar expression over `inputs.*`, the
         # coordinates and the constants (no capture, `derived`, `history`, `series`, `at`, `comparand`),
@@ -329,7 +333,9 @@ drive:
   # is the one spec/registry/spec_catalog.yaml records for `meta.spec_id`: an IR the catalog cannot answer
   # for, or whose `meta.spec_kind` disagrees with it, is refused. `drive` says how the host-rendered DRIVER
   # runs one case: every schema variable is a state it allocates to the extents its bound dummies' §5.1
-  # `dims` give and fills from `initial_state` (a logical state and every variable `init` writes start at
+  # `dims` give (an array no entry running the case binds: its `shape_expr`, each token resolved through
+  # ANY entry's rank-0 dummy of that name against this case's inputs — none, or two that disagree, is
+  # refused) and fills from `initial_state` (a logical state and every variable `init` writes start at
   # 0); it calls `init` once, captures `initial/`, calls `step` once (no `loop`) or up to `loop.n_step`
   # times, and captures the final state. A refusal is a `false` result, never a stop: a false `init`
   # refuses the case (both captures still written); on a `loop` node a step is COMMITTED only on a true
@@ -368,14 +374,21 @@ drive:
   #   reading (`in` / `inout`) and one writing (`out` / `inout`) dummy per entry, and on a node without
   #   `loop` an `in` / `out` pair binds two DIFFERENT states; every schema variable is bound by a dummy of
   #   `drive`.
+  # CLASSES ARE PER CASE: for case `c` they follow from `init` and the `step` entries that run `c` (one
+  #   entry on the mapping form; the entry whose `cases` lists `c` on the list form). A predicate reads
+  #   kernel state in `c` only through a variable an entry running `c` writes (`final.<v>`, its history and
+  #   series), or `init` writes (`initial.<v>`); it must read some in EVERY case its scope evaluates, and every
+  #   target case of a test must be valued by a read that is kernel state in THAT case. On a node whose
+  #   `__dens2qsat_liq` cases only read `temp`, `final.temp` there is the host's own `initial_state`.
   # GATES (Compile.static, primary_evidence.drive_violations; each a `Compile fail`): (a) a `problem`
   #   publishes `<spec_id>__step` and every `step` entry names it; (b) the intent rules above; (c) each array
   #   dummy's `dims` (a dims-less one: its state's `shape_expr`) EVALUATE PER CASE under the entry's bindings
   #   — a token naming a rank-0 dummy bound to an input, a `derived` value or a literal resolves, `nx + 1`
-  #   arithmetic included, any other token is refused — every dummy bound to one state gives the same
+  #   arithmetic included, any other token is refused; an array no entry running the case binds takes its
+  #   `shape_expr` through the other entries' bindings, as the driver block states — every dummy bound to one state gives the same
   #   extents, a numeric `shape_expr` extent agrees, and an array input or `derived` value has its dummy's
   #   extents; (d) `result` above; (e) `loop` references resolve (`state.<var>` only to a scalar `init`
-  #   writes) and `t_end` is declared; (f) `initial_state` as the `case` block states; (f') a `step` list's
+  #   writes) and `t_end` is declared; (f) `initial_state` as the `case` block states, under each case's classes; (f') a `step` list's
   #   `cases` partition `test_case_set` exactly once, and a `loop` node has one mapping entry; (g) the
   #   `initial_state` / `derived` name rules of the `case` block, checked statically; (h) `step_series` and
   #   `state_history` as their `required_evidence` entries state; (i) the one-call scalar pairing
