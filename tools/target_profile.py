@@ -612,8 +612,8 @@ def target_harness_entries(target: TargetProfile | None,
 
 #: What `Generate` asks of the target LANGUAGE for every node kind: `bundle_facts` (the bundle
 #: contract's file facts and the host-given names), `syntax_promotions` (the syntax stage),
-#: `prompt_fragments` (the generate prompts' rules and the runner-output binding) and
-#: `checks_abi` (the checks-module binding and the gate guards), `source_reading` (the gates'
+#: `prompt_fragments` (the generate prompts' rules, the runner-output binding and the gate guards),
+#: `source_reading` (the gates'
 #: reader of a generated source), `signatures` (the `controlled_spec` §5.1 signature gates and the
 #: dependency-interface extraction),
 #: and `control_file` (the language
@@ -623,8 +623,8 @@ def target_harness_entries(target: TargetProfile | None,
 #: phase reads for one kind only belongs in `toolchain_servable_reasons`' kind-specific list
 #: instead.
 LANGUAGE_CAPABILITIES_EVERY_NODE: tuple[str, ...] = (
-    "bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi", "source_reading",
-    "signatures", "control_file")
+    "bundle_facts", "syntax_promotions", "prompt_fragments", "source_reading", "signatures",
+    "control_file")
 
 
 def toolchain_servable_reasons(language: str, build_system: str, *,
@@ -637,7 +637,7 @@ def toolchain_servable_reasons(language: str, build_system: str, *,
 
     Every node needs its build system to be executable and its language to declare what the
     `Generate` phase asks of it (issue #289, R4-b PR-2): the bundle facts, the syntax-stage
-    facts, the prompt fragments and the checks-ABI binding, and since R4-b PR-3 the source
+    facts, the prompt fragments, and since R4-b PR-3 the source
     reader and the signature module the deterministic gates read every node's sources and §5.1
     surface with, and since R4-b PR-4 the control file's language half (both
     `LANGUAGE_CAPABILITIES_EVERY_NODE`); the build system's half of the control file too.

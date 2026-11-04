@@ -337,8 +337,8 @@ def mask_code_lookalikes(text: str) -> str:
     tree-sitter-fortran 0.6.0 report an ERROR on `o'   '` that it does not report on the raw
     text: five `Generate.gate` attempts were refused that way (issue #501). Keeping them is wrong
     the other way: the hex digits `a`-`f` and the prefix letter are identifiers to every rule that
-    collects names from the view, so `int(z'dead')` made a call edge to a procedure `dead` in the
-    checks-reach gate. An integer literal of zeros parses where the BOZ did and names nothing. A
+    collects names from the view, so `int(z'dead')` read as a reference to a procedure `dead` (a
+    call edge in the reach gate of the time). An integer literal of zeros parses where the BOZ did and names nothing. A
     quote opens a BOZ when the character before it is `b` / `o` / `z` and the one before THAT
     cannot end a name — on legal free-form source nothing else puts a lone letter against a quote
     (there is no implicit concatenation, and a kind prefix ends in `_`). The quote state is

@@ -77,7 +77,7 @@ def snapshot_schema(
 
     Each variable name is refused when it collides with a harness-reserved key, then handed to
     `check_name` — the renderer's own rules for a name its language binds (an identifier grammar,
-    a collision with the checks ABI) — in declaration order, one name at a time, so the first
+    a keyword) — in declaration order, one name at a time, so the first
     defective name is the one reported whichever rule it breaks."""
     io = dget(ir, "io_contract", {})
     rr = dget(io, "raw_requirements", {})

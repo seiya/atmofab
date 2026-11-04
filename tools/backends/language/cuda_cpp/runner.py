@@ -5,45 +5,29 @@ Pure-function module reached through `registry.capability_module("language", "cu
 "runner_render")` — the neutral seam is `tools/host_render.py`, which is what the conductor and
 the compile gate call. Nothing outside this package imports it by name.
 
-It renders two files of a `component` / `problem` node from the node's IR:
-
-* ``<spec_id>_runner.cu`` (`render_runner`) — the deterministic main program that drives the
-  node's ``<spec_id>_checks`` callbacks and emits the standard runner outputs THROUGH the
-  certified ``harness_cpp_gpu`` plumbing, which owns the JSON envelope assembly (harness
-  controlled_spec §3 / §5.1). The runner holds no serialization knowledge: it calls the writers —
-  it never formats a JSON token, and it judges nothing.
-* ``<spec_id>_checks.cuh`` (`render_checks_header`) — the DECLARATIONS of the checks ABI: the three
-  callbacks and one ``extern`` per bound state variable, in namespace ``<spec_id>_checks``. The
-  leaf's ``<spec_id>_checks.cu`` includes it and DEFINES every name it declares.
-
-WHY THE HOST DECLARES THE CHECKS ABI. The runner and the checks source are separate translation
-units that meet at link, and C++ does not check a namespace-scope VARIABLE's type across them: the
-mangled name of a variable carries no type, so a runner that declared ``extern std::vector<double>
-u;`` itself would link against a leaf's ``std::vector<float> u;`` and read garbage — a silent ODR
-violation. With the declaration rendered once and included by both files, a definition of another
-type is a compile error in the checks source (nvcc 13.4: "declaration is incompatible with ...
-declared at line N of <spec_id>_checks.cuh"), which the `Generate.gate` lint and syntax stages
-refuse. A callback defined with
-other parameter types is an overload the header's declaration never reaches — a link error — which
-the checks gates refuse before that (`source.checks_module_abi_facts`).
+It renders ``<spec_id>_runner.cu`` of a `component` / `problem` node from the node's IR
+(`render_runner`): the deterministic driver (issue #589). Per case it reads the host-written case
+file through the certified ``harness_cpp_gpu`` plumbing, allocates the state, calls the operations
+the node's model publishes, owns the time loop on a `loop` node, and emits the standard runner
+outputs through that plumbing, which owns the JSON envelope assembly (harness controlled_spec §3 /
+§5.1). The runner holds no serialization knowledge: it calls the writers — it never formats a JSON
+token, and it judges nothing.
 
 Split of authorship on a physics node:
-- ``<spec_id>_model.cu`` — the physics kernel + the published operation   (LLM leaf)
-- ``<spec_id>_checks.cu`` — the checks callbacks + the bound state storage (LLM leaf)
-- ``<spec_id>_runner.cu`` and ``<spec_id>_checks.cuh`` — this renderer     (host)
+- ``<spec_id>_model.cu`` — the physics kernel + the published operations   (LLM leaf)
+- ``<spec_id>_runner.cu`` — this renderer                                  (host)
 - ``<spec_id>_model.cuh`` — the published-surface header (`header.py`)     (host)
-- ``src/Makefile`` — the build system's control-file renderer               (host)
+- ``src/Makefile`` — the build system's control-file renderer              (host)
 
-The runner captures the bound state (Z6, issue #255): every snapshot variable is a namespace-scope
-variable of ``<spec_id>_checks`` named exactly as the IR declares it, read by the runner as
-``<spec_id>_checks::<var>`` and serialized by the harness emitters twice per case — right after
-``case_setup`` and right after ``case_run`` — before any later callback of that case
-runs. A scalar is a ``double``, a rank-1 array a ``std::vector<double>``, a rank-R array an
-``atmofab::Array<double, R>`` (the owning column-major array the published-surface header defines);
-the runner hands the emitters a non-owning ``atmofab::View`` over it.
+Every snapshot variable is a namespace-scope variable of the driver, ``st_<var>``: a scalar is a
+``double``, a rank-1 array a ``std::vector<double>``, a rank-R array an ``atmofab::Array<double, R>``
+(the owning column-major array the published-surface header defines); the driver hands the
+operations and the emitters a non-owning ``atmofab::View`` over it. So no generated function can
+filter, compute or rewrite a captured value on its way to the emitters, and a state's type is never
+declared across two translation units.
 
 The language-neutral IR readers — the snapshot schema, the cases, and their refusals — are `tools/runner_ir.py`'s, shared with every backend that renders a runner.
-This module adds the refusals CUDA C++ imposes on a name it binds (`_check_snapshot_name`). It
+This module adds the refusals CUDA C++ imposes on a driver variable's name (`_check_snapshot_name`). It
 imposes no rendered-line width: the declared lint rule set of this language reads no column
 (`tools/backends/linter/nvcc/lint.py`), so a width bound here would refuse IR the lint accepts.
 
@@ -59,21 +43,14 @@ import re
 from typing import Any
 
 from tools import runner_ir
-from tools.backends.language.cuda_cpp import bundle, checks_abi
+from tools.backends.language.cuda_cpp import bundle
 from tools.backends.language.cuda_cpp import declarations as cpp_decls
-from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import signatures as cpp_signatures
 from tools.host_execution import perf_parallelism
 
 # `RenderError` is the seam's class, not this module's: importing it is what makes the neutral
 # `except RenderError:` clause in the conductor work (see `tools/host_render.py`).
 from tools.host_render import RenderError
-
-#: The fixed ABI of the leaf-authored checks source and its C++ declarations — `checks_abi`'s,
-#: re-exported here because the seam reads the names off the module that renders the runner
-#: (`host_render.checks_public_names`).
-CHECKS_PUBLIC_NAMES = checks_abi.CHECKS_PUBLIC_NAMES
-CHECKS_ABI_PARAMS = checks_abi.CHECKS_ABI_PARAMS
 
 #: The harness's `case_id_len` — the neutral reader's bound on a declared case id, restated as
 #: the value the runner pins the certified harness header to (`static_assert`, see
@@ -83,11 +60,6 @@ CASE_ID_LEN = runner_ir.CASE_ID_LEN
 #: The bound on a spec_id is the language's (`bundle.SPEC_ID_MAX`); the render-time check below is
 #: the backstop to the neutral spec-input gate.
 MAX_SPEC_ID_LEN = bundle.SPEC_ID_MAX
-
-#: Names a snapshot variable may not take although they are identifiers: the two namespaces the
-#: checks header names inside `<spec_id>_checks` (a variable of that name declared there hides the
-#: namespace from every later declaration of the header).
-_NAMESPACE_NAMES = frozenset({"std", "atmofab"})
 
 _IDENTIFIER_RE = re.compile(bundle.IDENTIFIER_PATTERN)
 
@@ -112,45 +84,26 @@ _DRY_RUN_TARGET: dict[str, Any] = {"hardware": {"class": "gpu"},
 
 
 def _check_snapshot_name(name: str) -> None:
-    """The CUDA C++ rules on a snapshot variable's name: it IS a namespace-scope variable of
-    `<spec_id>_checks`, declared by the checks header and read by the runner as
-    `<spec_id>_checks::<name>`, so it must be an identifier of the bundle's grammar, not a
-    keyword, not one of the ABI callbacks (a namespace cannot hold a variable and a function of
-    one name) and not a namespace the header names."""
+    """The CUDA C++ rules on a snapshot variable's name: it IS the driver's state variable
+    `st_<name>`, so it must be an identifier of the bundle's grammar, and not a keyword (a snapshot
+    variable must be declarable in every target language)."""
     if not _IDENTIFIER_RE.fullmatch(name):
         raise RenderError(
             f"snapshot variable {name!r} is not a bindable identifier: every snapshot variable "
-            "is captured from a namespace-scope variable of that name in the checks source, so "
-            f"it must match {bundle.IDENTIFIER_PATTERN}")
+            "is the driver's state variable of that name, so it must match "
+            f"{bundle.IDENTIFIER_PATTERN}")
     if name in cpp_signatures.CPP_KEYWORDS:
         raise RenderError(
-            f"snapshot variable {name!r} is a C++ keyword, so no checks source can declare a "
-            "variable of that name — rename it (a snapshot variable must be declarable in every "
-            "target language)")
-    if name in CHECKS_PUBLIC_NAMES:
-        raise RenderError(
-            f"snapshot variable {name!r} collides with a checks-ABI callback name "
-            f"{list(CHECKS_PUBLIC_NAMES)}; a namespace cannot hold a variable of that name "
-            "beside the callback")
-    if name in _NAMESPACE_NAMES:
-        raise RenderError(
-            f"snapshot variable {name!r} is the name of a namespace the checks header uses "
-            f"({', '.join(sorted(_NAMESPACE_NAMES))}); declared in `<spec_id>_checks`, it would "
-            "hide that namespace from the header's later declarations — rename it")
+            f"snapshot variable {name!r} is a C++ keyword — rename it (a snapshot variable must "
+            "be declarable in every target language)")
 
 
 def _snapshot_schema(ir: dict[str, Any]) -> tuple[dict[str, str], str]:
     return runner_ir.snapshot_schema(ir, _check_snapshot_name)
 
 
-def _bound_state(ir: dict[str, Any]) -> list[tuple[str, int]]:
-    """Every snapshot variable with its rank, in schema declaration order."""
-    schema_vars, _ = _snapshot_schema(ir)
-    return [(v, runner_ir.rank_of_shape(shape, v)) for v, shape in schema_vars.items()]
-
-
 def _state_type(rank: int) -> str:
-    """The C++ type of a bound state variable of `rank` (CHECKS_ABI.md §1-b)."""
+    """The C++ type of a state variable of the driver, of `rank`."""
     if rank == 0:
         return "double"
     if rank == 1:
@@ -201,7 +154,7 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
     if len(spec_id) > MAX_SPEC_ID_LEN:
         raise RenderError(
             f"spec_id {spec_id!r} is {len(spec_id)} chars (>{MAX_SPEC_ID_LEN}); the derived "
-            f"`<spec_id>_checks` / `_runner` identifiers would exceed the "
+            f"`<spec_id>_runner` identifier would exceed the "
             f"{bundle.IDENTIFIER_MAX}-char identifier limit", identity=True)
     for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS):
         name = _hname(harness_spec_id, sym)
@@ -229,44 +182,6 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     except Exception as exc:  # noqa: BLE001
         return [f"IR is not renderable ({type(exc).__name__}: {exc})"]
     return []
-
-
-def _abi_declaration(name: str) -> str:
-    params = ", ".join(f"{ptype} {pname}" for ptype, pname in CHECKS_ABI_PARAMS[name])
-    return f"void {name}({params});"
-
-
-def render_checks_header(ir: dict[str, Any], spec_id: str) -> tuple[str, str]:
-    """`(basename, text)` of ``<spec_id>_checks.cuh``: the checks ABI's declarations — the three
-    callbacks (`CHECKS_ABI_PARAMS`) and one ``extern`` per bound state variable of the IR's
-    snapshot schema, typed by rank — in namespace ``<spec_id>_checks``, after the array types the
-    published-surface header also defines (`header.VIEW_DEFINITION`, guarded, so either header
-    may be included first). Deterministic and pure; raises ``RenderError`` for an IR
-    ``render_runner`` refuses too."""
-    spec_id = (spec_id or "").strip()
-    if not spec_id:
-        raise RenderError("spec_id is empty", identity=True)
-    bound = _bound_state(ir)
-    lines = [
-        (f"// {checks_abi.checks_header_basename(spec_id)}: the checks ABI of {spec_id}, "
-         "rendered by the host from the node's IR."),
-        (f"// Do not edit: {bundle.checks_basename(spec_id)} includes this header and DEFINES "
-         "every name it declares."),
-        "#pragma once",
-        "#include <string>",
-        "#include <vector>",
-        "",
-        cpp_header.VIEW_DEFINITION.rstrip("\n"),
-        "",
-        f"namespace {spec_id}_checks {{",
-        "// The three callbacks the host-rendered runner calls (CHECKS_ABI.md §1).",
-    ]
-    lines += [_abi_declaration(name) for name in CHECKS_PUBLIC_NAMES]
-    lines.append("// The bound state the runner captures after case_setup and after case_run "
-                 "(CHECKS_ABI.md §1-b).")
-    lines += [f"extern {_state_type(rank)} {name};" for name, rank in bound]
-    lines.append(f"}}  // namespace {spec_id}_checks")
-    return checks_abi.checks_header_basename(spec_id), "\n".join(lines) + "\n"
 
 
 def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
@@ -1252,79 +1167,8 @@ def assert_harness_pin(
                 f"pinned interface: {_PIN_DRIFT_HINT}")
 
 
-# --- the leaf-facing remedies of the checks ABI -------------------------------------------------
-#
-# The neutral gates decide WHETHER the checks source defines the ABI and the bound state
-# (`codegen_bundle.m3c_checks_abi_violation`, `_m3c_state_binding_mismatch`, the validator's
-# `_validate_checks_source_files`); HOW the leaf is told to fix it names this language's
-# declarations, so the sentences are this backend's.
-
-
-def _declared_abi() -> str:
-    return "; ".join(_abi_declaration(name) for name in CHECKS_PUBLIC_NAMES)
-
-
-def checks_abi_publication_violation(spec_id: str, unpublished: list[str],
-                                     wrong_kind: list[str]) -> str:
-    """The acceptance layer's refusal of a checks source that does not define an ABI callback
-    with the declared signature (`unpublished`). `wrong_kind` is always empty for this language
-    (`source.checks_module_abi_facts` reports a mismatched definition as not defined), and is
-    stated anyway if a caller passes one."""
-    parts = []
-    if unpublished:
-        parts.append(
-            f"not defined in namespace {spec_id}_checks with the declared parameter types: "
-            f"{', '.join(unpublished)}")
-    if wrong_kind:
-        parts.append(f"defined with another return type: {', '.join(wrong_kind)}")
-    return (f"{bundle.checks_basename(spec_id)} must DEFINE the fixed checks ABI the "
-            f"host-rendered {checks_abi.checks_header_basename(spec_id)} declares — " + "; ".join(parts)
-            + f". Include that header and define each callback in namespace {spec_id}_checks, "
-            f"with external linkage (not `static`, not in an unnamed namespace) and exactly the "
-            f"declared parameter types (the parameter names are free): {_declared_abi()} The "
-            f"full set is required for EVERY physics node.")
-
-
-def bound_state_publication_violation(spec_id: str, hidden: list[str]) -> str:
-    """The acceptance layer's refusal of a checks source that does not define bound state."""
-    return (f"{bundle.checks_basename(spec_id)} must DEFINE every bound state variable — the "
-            f"host-rendered runner reads each one as `{spec_id}_checks::<var>` and serializes it "
-            f"at the two capture points, and {checks_abi.checks_header_basename(spec_id)} declares it "
-            f"`extern` — but these have no definition in namespace {spec_id}_checks: "
-            f"{', '.join(hidden)}. Define each at namespace scope with the declared type "
-            f"(`double` for a scalar, `std::vector<double>` for rank 1, "
-            f"`atmofab::Array<double, R>` for rank R), with external linkage, and size an array "
-            f"in `case_setup`.")
-
-
-def hidden_bound_state_remedy(hidden: list[str]) -> str:
-    """The `Generate.gate` static check's statement of the same defect, after the file path."""
-    return (f"checks source must define every bound state variable at namespace scope of the "
-            f"checks namespace, with external linkage (the host-rendered runner reads each IR "
-            f"snapshot variable as `<spec_id>_checks::<var>` and the host-rendered checks header "
-            f"declares it `extern`); not defined: {hidden}")
-
-
-def state_binding_module_reason(module: str) -> str:
-    """Why a binding's `module` must be the checks namespace: how the runner reads the storage."""
-    return f"the host-rendered runner reads the bound storage as `{module}::<var>`"
-
-
-def state_binding_storage_reason(variable: str) -> str:
-    """Why a binding's `storage_symbol` must equal its variable: the runner's reference to it."""
-    return (f"the runner reads the namespace-scope variable of THAT name "
-            f"(`<spec_id>_checks::{variable}`)")
-
-
 def physics_harness_uses(harness_spec_id: str) -> dict[str, frozenset[str]]:
     """None: the one harness this renderer targets runs the program as one process and
     publishes no operation for a physics source (`host_render.physics_harness_uses`)."""
     del harness_spec_id
     return {}
-
-
-def distributed_state_names(harness_spec_id: str, arrays: list[str]) -> list[str]:
-    """None: no harness of this renderer gathers state across ranks
-    (`host_render.distributed_state_names`)."""
-    del harness_spec_id, arrays
-    return []

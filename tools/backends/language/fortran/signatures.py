@@ -1392,7 +1392,7 @@ def generated_source_violations(
     # node's own build rc=0); the failure lands at a CONSUMER's link. So a published operation must
     # be DEFINED by the publishing module, which the structure reader answers.
     #
-    # The three shapes `checks_module_abi_facts`' docstring names as legal-but-undefined-here (a
+    # The three shapes a module can publish a name by without defining it here (a
     # name association, a generic block, an implementation in a separate unit) never reach that
     # refusal: none puts the pinned header in the source, so each is "does not publish" first.
     # `PublishedProcedureDefinednessTests` pins that as a row.

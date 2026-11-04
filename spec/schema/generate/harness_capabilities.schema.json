@@ -49,8 +49,7 @@
         "distributed_state",
         "batched_cases",
         "full_state_capture",
-        "trusted_reductions",
-        "state_registration"
+        "trusted_reductions"
       ],
       "x-execution-model-capabilities": [
         "sync_single_case",
@@ -64,11 +63,11 @@
       "harness_capability_abi_version": 1,
       "manifests": [
         {"node_key": "infrastructure/harness_cpp_gpu@0.4.0",
-         "provides": ["state_registration@1", "sync_single_case@1"]},
+         "provides": ["sync_single_case@1"]},
         {"node_key": "infrastructure/harness_fortran_cpu@0.10.0",
-         "provides": ["state_registration@1", "sync_single_case@1"]},
+         "provides": ["sync_single_case@1"]},
         {"node_key": "infrastructure/harness_fortran_cpu_mpi@0.4.0",
-         "provides": ["distributed_state@2", "state_registration@1", "sync_single_case@1"]}
+         "provides": ["distributed_state@2", "sync_single_case@1"]}
       ]
     }
   ],

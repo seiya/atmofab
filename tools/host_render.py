@@ -141,19 +141,6 @@ def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_
     return _module(language).render_runner(ir, spec_id, harness_spec_id, target=target)
 
 
-def render_checks_header(language: Any, ir: dict[str, Any], spec_id: str
-                         ) -> tuple[str, str] | None:
-    """`(basename, text)` of the header that DECLARES the checks ABI for the leaf's checks
-    source to define, or None for a language whose checks module carries its own declarations.
-
-    A language that compiles each source on its own and checks no variable's type across them
-    at link (CUDA C++) needs the declarations rendered once and included by both the runner and
-    the leaf's checks source, so a definition of another type is a compile error instead of a
-    silent mismatch; the host writes the header beside the runner (issue #289, R4-b PR-6).
-    Deterministic and pure; raises `RenderError` for an IR `render_runner` refuses too."""
-    return _module(language).render_checks_header(ir, spec_id)
-
-
 def assert_harness_pin(
     language: Any,
     ir: dict[str, Any],
@@ -182,49 +169,6 @@ def ir_content_violations(
     return _module(language).ir_content_violations(ir, spec_id, harness_spec_id)
 
 
-def checks_abi_publication_violation(language: Any, spec_id: str, unpublished: list[str],
-                                     wrong_kind: list[str]) -> str:
-    """The bundle acceptance layer's refusal of a checks module that does not publish the ABI
-    `unpublished` names, or defines the `wrong_kind` ones as the wrong kind of callable, in
-    `language`'s words. The neutral gate decides WHETHER (`codegen_bundle.m3c_checks_abi_violation`);
-    how the leaf is told to publish a name is the language's (issue #289, R4-b PR-4)."""
-    return _module(language).checks_abi_publication_violation(spec_id, unpublished, wrong_kind)
-
-
-def bound_state_publication_violation(language: Any, spec_id: str, hidden: list[str]) -> str:
-    """The bundle acceptance layer's refusal of a checks module that hides `hidden` bound state
-    variables from the runner, in `language`'s words."""
-    return _module(language).bound_state_publication_violation(spec_id, hidden)
-
-
-def hidden_bound_state_remedy(language: Any, hidden: list[str]) -> str:
-    """The `Generate.gate` static check's statement of the same defect, after the file path."""
-    return _module(language).hidden_bound_state_remedy(hidden)
-
-
-def state_binding_module_reason(language: Any, module: str) -> str:
-    """Why a state binding's `module` must be the checks module: how `language`'s runner
-    reads the bound storage."""
-    return _module(language).state_binding_module_reason(module)
-
-
-def state_binding_storage_reason(language: Any, variable: str) -> str:
-    """Why a state binding's `storage_symbol` must equal its variable: how `language`'s runner
-    imports it."""
-    return _module(language).state_binding_storage_reason(variable)
-
-
-def checks_public_names(language: Any) -> tuple[str, ...]:
-    """The fixed public names of the leaf-authored checks module for `language`.
-
-    An ABI, not a convention: the host-rendered runner calls exactly these, so the neutral
-    consumers that verify a leaf authored them (the codegen bundle contract, the checks-source
-    validator) must read the same list the renderer emits against, not restate it.
-    See `docs/workflow/CHECKS_MODULE_CONTRACT.md`.
-    """
-    return tuple(_module(language).CHECKS_PUBLIC_NAMES)
-
-
 def physics_harness_uses(language: Any, harness_spec_id: str) -> dict[str, frozenset[str]]:
     """`{module: names}` a physics source of `language` may `use` from the harness
     `harness_spec_id` — empty unless that harness runs the program as several ranks, whose
@@ -232,12 +176,3 @@ def physics_harness_uses(language: Any, harness_spec_id: str) -> dict[str, froze
     backend that renders the runner over the harness is the one that knows which of its
     operations are the runner's own."""
     return dict(_module(language).physics_harness_uses(harness_spec_id))
-
-
-def distributed_state_names(language: Any, harness_spec_id: str,
-                            arrays: list[str]) -> list[str]:
-    """The partition metadata the checks module of `language` publishes for its bound ARRAYS
-    `arrays` when the runner over `harness_spec_id` gathers them (issue #316); empty for a
-    harness that runs the program as one process. The runner imports every one of them, so the
-    checks-source gate requires them published as it requires the bound state."""
-    return list(_module(language).distributed_state_names(harness_spec_id, arrays))

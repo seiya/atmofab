@@ -4,39 +4,32 @@ Pure-function module reached through `registry.capability_module("language", <la
 "runner_render")` — the neutral seam is `tools/host_render.py`, which is what the conductor and
 the compile gate call. Nothing outside this package imports it by name.
 
-It takes a compiled IR plus the target/harness
-spec ids and returns the text of ``<spec_id>_runner.f90`` — the deterministic
-"glue" main program that drives the physics node's ``<spec_id>_checks`` callbacks
-and emits the standard runner outputs *through the certified harness's
-plumbing* (``harness_fortran_cpu``, or ``harness_fortran_cpu_mpi``, over which the
-runner is the distributed variant — issue #316: it starts and ends the runtime, gathers
-the partitioned state onto rank 0 and writes on rank 0 only). Because the harness's interface owns the
-JSON envelope assembly (§3 / §5.1 of the harness controlled_spec), this renderer holds
-**no serialization knowledge**: it calls the writers — it never formats a JSON token, and it
-judges nothing (the host's predicates over the captures do, issue #582).
+It takes a compiled IR plus the target/harness spec ids and returns the text of
+``<spec_id>_runner.f90`` — the deterministic driver of the physics node (issue #589): per case it
+reads the host-written case file through the certified harness (``harness_fortran_cpu``), allocates
+the state, calls the operations the node's model publishes, owns the time loop on a ``loop`` node,
+and writes every capture THROUGH the harness's plumbing. Because the harness's interface owns the
+JSON envelope assembly (§3 / §5.1 of the harness controlled_spec), this renderer holds **no
+serialization knowledge**: it calls the writers — it never formats a JSON token, and it judges
+nothing (the host's predicates over the captures do, issue #582).
 
 Split of authorship on an M3c node:
-- ``<spec_id>_model.f90`` — the physics kernel + ``__apply`` op   (LLM leaf)
-- ``<spec_id>_checks.f90`` — the fixed-ABI driving callbacks + the
-  module-level state storage the snapshot is captured from   (LLM leaf)
-- ``<spec_id>_runner.f90`` — this renderer                        (host)
-- ``src/Makefile``          — ``workflow_conductor._write_makefile`` (host)
+- ``<spec_id>_model.f90`` — the physics kernel + its published operations   (LLM leaf)
+- ``<spec_id>_runner.f90`` — this renderer                                  (host)
+- ``src/Makefile``          — ``workflow_conductor._write_makefile``        (host)
 
-The rendered runner ``use``s two modules: ``<harness_spec_id>_model`` (the
-certified plumbing) and ``<spec_id>_checks`` (the leaf's fixed-ABI callbacks AND
-its bound state storage, see ``docs/workflow/CHECKS_MODULE_CONTRACT.md``). Snapshot
-capture is the runner's, not the module's (Z6, issue #255): every snapshot variable
-is a module-level ``real(dp)`` variable of ``<spec_id>_checks`` named exactly as the IR
-declares it, imported as ``sb_<var> => <var>`` and serialized by the certified harness
-emitters twice per case — right after ``case_setup`` (``raw/state_snapshots/initial/
-<case_id>.json``) and right after ``case_run`` (``raw/state_snapshots/<case_id>.json``)
-— before any later callback of that case runs. Generated code contributes
-the binding (the declaration and the allocation) and nothing downstream of it: there
-is no getter, so no generated procedure can filter, compute or rewrite a captured
-value (``zero_base_architecture.md`` §A4). It is authored lint-clean
-(``use only:``, a bare ``implicit none`` with NO allow directive, ≤99-column
-lines) so the deterministic
-Generate.gate lint checker — which lints the whole ``src/`` tree — stays green.
+The rendered program ``use``s two modules: ``<harness_spec_id>_model`` (the certified plumbing) and
+``<spec_id>_model`` (the node's operations), and on a node with a host-rendered procedure argument
+a third of its own, ``<spec_id>_drv``, ahead of the program in the same file. Every snapshot
+variable is a ``real(dp)`` variable of the driver, ``st_<var>``, so no generated procedure can
+filter, compute or rewrite a captured value on its way to the emitters. The text is authored
+lint-clean (``use only:``, a bare ``implicit none`` with NO allow directive, ≤99-column lines) so
+the deterministic Generate.gate lint checker — which lints the whole ``src/`` tree — stays green.
+
+A harness that runs the program as several ranks (``harness_fortran_cpu_mpi``) has no driver until
+the distributed driver lands: ``render_runner`` refuses it (``driver_distributed_pending``). Its
+pin stays here, because a physics source on such a harness is still held to its distributed-state
+operations (``physics_harness_uses``).
 
 ``render_runner`` raises ``RenderError`` (→ transport fail_closed, NOT a Generate
 retry) for any IR it cannot faithfully render: an unparseable ``shape_expr``, a
@@ -66,20 +59,6 @@ from tools.backends.language.fortran import bundle
 from tools.host_execution import DRIVER_DISTRIBUTED_PENDING, perf_parallelism
 from tools.host_render import RenderError
 
-# The fixed ABI of the leaf-authored `<spec_id>_checks` module (see
-# docs/workflow/CHECKS_MODULE_CONTRACT.md). Non-prefixed public names (module
-# scope makes them collision-free) so the f2008 63-char identifier limit is not
-# exceeded even for a 55-char spec_id. Three procedures (the judging half went in issue #582: a test is decided by host predicates over the captures): the former snapshot getters
-# (`get_scalar` / `get_r1..r4`) are retired — the runner reads the bound module-level
-# state directly (`STATE_BINDING_PREFIX`), so a value-returning getter is
-# unrepresentable rather than policed (Z6, issue #255).
-CHECKS_PUBLIC_NAMES = (
-    "case_setup", "case_run", "get_time",
-)
-
-# The prefix of a state's driver variable is `_ST` below. It keeps the name clear of every runner
-# local, so an IR variable named like one (`i`, `ok`, `vals`) still renders.
-STATE_BINDING_PREFIX = "sb_"
 _IDENTIFIER_RE = re.compile(bundle.IDENTIFIER_PATTERN)
 
 # Harness-owned snapshot keys a physics snapshot variable must not shadow (the neutral IR reader's,
@@ -142,16 +121,17 @@ _WK = "wk_"
 _LG = "lg_"
 _IV = "iv_"
 
-# The distributed-state operations the RUNNER calls on a harness that drives the program as
-# several ranks (`distributed_state@2`, issues #316 and #512): it starts and ends the runtime, asks its rank
+# The distributed-state operations a RUNNER calls on a harness that drives the program as several
+# ranks (`distributed_state@2`, issues #316 and #512): it starts and ends the runtime, asks its rank
 # (only rank 0 writes) and the run's size (the perf record's rank count, observed rather than
-# configured), sums the ranks' updated-cell counts, and gathers each distributed bound array onto
-# rank 0 before it is serialized (`gather_r<k>`, added per array rank on demand).
+# configured), sums the ranks' updated-cell counts, and gathers each distributed state array onto
+# rank 0 before it is serialized (`gather_r<k>`, added per array rank on demand). Pinned although
+# the driver does not render for such a harness yet (`render_runner`).
 _DISTRIBUTED_RUNNER_OPS = ("init", "finalize", "comm_rank", "comm_size", "reduce_sum_int")
 
-#: The distributed-state operations a PHYSICS source (the leaf's model or checks module) may call
-#: on such a harness, and the only harness names it may `use` (`source.
-#: checks_harness_isolation_violations`). The runner keeps the rest: the start and end of the
+#: The distributed-state operations a PHYSICS source (the leaf's model) may call on such a harness,
+#: and the only harness names it may `use` (`source.
+#: model_harness_isolation_violations`). The runner keeps the rest: the start and end of the
 #: runtime and the gather are the capture's, and the writers and emitters are the runner's alone
 #: (Z6) — a physics source that reached them could write its own evidence.
 PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
@@ -160,27 +140,11 @@ PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
     "reduce_sum", "reduce_max", "reduce_min", "reduce_sum_int",
 )
 
-#: The per-variable module variables a checks module publishes beside each bound ARRAY on a
-#: distributed harness (`docs/backends/language/fortran/CHECKS_ABI.md` §1-c), one group per
-#: dimension `<d>` of the process grid (issue #512): the axis of the array partitioned along
-#: grid dimension `<d>` (0 = not partitioned along it; 0 in both groups = replicated, rank 0's
-#: copy is the global value), the indices, in the array's own bounds, of the cells this rank
-#: contributes to the global array along that axis, and the global index of the first of them.
-#: Named `sb_<var>_<suffix>` in the checks module itself, and imported under that name.
-DISTRIBUTED_BINDING_SUFFIXES: tuple[str, ...] = (
-    "axis1", "lo1", "hi1", "glo1", "axis2", "lo2", "hi2", "glo2")
-
-
-def distributed_binding_names(variable: str) -> list[str]:
-    """The metadata names a checks module publishes for the bound array `variable`."""
-    return [f"{STATE_BINDING_PREFIX}{variable}_{s}" for s in DISTRIBUTED_BINDING_SUFFIXES]
-
-
 # --- IR extraction helpers ---------------------------------------------------------------------
 #
 # The language-neutral readers live in `tools/runner_ir.py` (issue #289, R4-b PR-6), shared with
 # every other backend that renders a runner, so the refusals of a neutral IR fact are one set for
-# every target. What stays here is what Fortran adds: the snapshot-name rules of its binding, and
+# every target. What stays here is what Fortran adds: the rules on the name of a driver variable, and
 # the bound the linter's column limit implies (`max_rendered_line`).
 
 _dget = runner_ir.dget
@@ -192,42 +156,33 @@ _infra_dep_count = runner_ir.infra_dep_count
 
 def _snapshot_schema(ir: dict[str, Any]) -> tuple[dict[str, str], str]:
     """Return ``({var_name: shape_expr}, time_variable)`` from the IR's snapshot schema
-    (`runner_ir.snapshot_schema`), with this binding's rules on each variable name.
+    (`runner_ir.snapshot_schema`), with this language's rules on each variable name.
 
     Same section `_author_snapshot_schema` (workflow_conductor) reads."""
     seen_folded: dict[str, str] = {}
-    abi_folded = {n.casefold() for n in CHECKS_PUBLIC_NAMES}
 
     def check_name(name: str) -> None:
-        # A snapshot variable IS a module-level variable of `<spec_id>_checks` (the binding
-        # convention), imported by the runner as `sb_<name> => <name>`: so the name must be a
-        # legal identifier, the alias must fit the identifier limit, two names may not fold to
-        # one identifier (Fortran is case-insensitive: `U` and `u` would be one variable, and
-        # `use ..., only: sb_U => U, sb_u => u` would alias one storage twice), and it may not
-        # fold to an ABI procedure name (a module cannot hold a variable and a procedure of one
-        # name, so no checks module could be written for such an IR).
+        # A snapshot variable IS the driver's state variable `st_<name>`: so the name must be a
+        # legal identifier, the prefixed name must fit the identifier limit (every driver prefix
+        # is `_ST`'s length), and two names may not fold to one identifier (Fortran is
+        # case-insensitive: `U` and `u` would be one variable, declared twice).
         if not _IDENTIFIER_RE.fullmatch(name):
             raise RenderError(
                 f"snapshot variable {name!r} is not a bindable identifier: every snapshot "
-                "variable is captured from a module-level variable of that name in the "
-                f"checks module, so it must match {bundle.IDENTIFIER_PATTERN}")
-        alias = f"{STATE_BINDING_PREFIX}{name}"
-        if len(alias) > bundle.IDENTIFIER_MAX:
+                "variable is the driver's state variable of that name, so it must match "
+                f"{bundle.IDENTIFIER_PATTERN}")
+        local = f"{_ST}{name}"
+        if len(local) > bundle.IDENTIFIER_MAX:
             raise RenderError(
-                f"snapshot variable {name!r} is {len(name)} chars; its runner alias "
-                f"{alias!r} exceeds the {bundle.IDENTIFIER_MAX}-char identifier limit")
+                f"snapshot variable {name!r} is {len(name)} chars; the driver's state variable "
+                f"{local!r} exceeds the {bundle.IDENTIFIER_MAX}-char identifier limit")
         folded = name.casefold()
         if folded in seen_folded:
             raise RenderError(
                 f"snapshot variables {seen_folded[folded]!r} and {name!r} are one identifier "
-                "to the checks module (identifiers are case-insensitive), so they cannot both "
-                "be bound")
+                "to the driver's state variable (identifiers are case-insensitive), so they "
+                "cannot both be declared")
         seen_folded[folded] = name
-        if folded in abi_folded:
-            raise RenderError(
-                f"snapshot variable {name!r} collides with a checks-ABI procedure name "
-                f"{list(CHECKS_PUBLIC_NAMES)}; a module cannot hold a variable of that name "
-                "beside the procedure")
 
     return runner_ir.snapshot_schema(ir, check_name)
 
@@ -284,14 +239,6 @@ def _flit(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _ranks_used(ir: dict[str, Any]) -> set[int]:
-    """The snapshot-variable ranks (0..4) the schema declares — every variable is captured
-    for every case — so both the renderer and the signature pin agree on which emitters the
-    glue depends on."""
-    schema_vars, _ = _snapshot_schema(ir)
-    return {_rank_of_shape(shape, v) for v, shape in schema_vars.items()}
-
-
 def _used_harness_ops(ir: dict[str, Any], *, distributed: bool = False) -> list[str]:
     """Unqualified harness op names the rendered driver calls (deterministic order): the core
     writers and readers, the emitters and getters of what the IR declares, and the rank-1 emitter
@@ -315,9 +262,9 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
     if len(spec_id) > MAX_SPEC_ID_LEN:
         raise RenderError(
             f"spec_id {spec_id!r} is {len(spec_id)} chars (>{MAX_SPEC_ID_LEN}); "
-            "the derived `<spec_id>_checks`/`_runner` identifiers would risk the "
+            "the derived `<spec_id>_runner` / `_drv` identifiers would risk the "
             f"f2008 {bundle.IDENTIFIER_MAX}-char limit", identity=True)
-    for derived in (f"{spec_id}_runner", f"{spec_id}_checks", f"{spec_id}_model"):
+    for derived in (f"{spec_id}_runner", f"{spec_id}_drv", f"{spec_id}_model"):
         if len(derived) > bundle.IDENTIFIER_MAX:
             raise RenderError(
                 f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
@@ -915,112 +862,6 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
     a(f"{ind}end do")
 
 
-def _render_distributed_capture(a: Any, H: Any, k: int, v: str, rank: int) -> None:
-    """The capture of the bound array `v` (of rank `rank`, slot `k` of `out`) on a distributed
-    harness: replicated (both partitioned-axis slots `0`) → rank 0's copy; partitioned along one
-    or both grid dimensions → gathered onto rank 0 by the harness, whose tile check stops the run
-    unless the contributed blocks cover the global array exactly. Every rank reaches the gather
-    (it is collective); only rank 0 serializes. Each argument sits on its own line, so the
-    longest bindable name stays under the lint limit."""
-    vlit = _flit(v)
-    sb = f"{STATE_BINDING_PREFIX}{v}"
-    axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2 = distributed_binding_names(v)
-    emit = H(f"emit_array_r{rank}")
-    a(f"    call require_bound(allocated({sb}), &")
-    a(f"      '{vlit}', cid)")
-    a(f"    call require_axis({axis1}, {rank}, &")
-    a(f"      '{vlit}', cid)")
-    a(f"    call require_axis({axis2}, {rank}, &")
-    a(f"      '{vlit}', cid)")
-    a(f"    if ({axis1} == 0 .and. &")
-    a(f"      {axis2} == 0) then")
-    a("      if (rank == 0) then")
-    a(f"        out({k}) = {H('box')}( &")
-    a(f"          '{vlit}', &")
-    a(f"          {emit}( &")
-    a(f"            {sb}))")
-    a("      end if")
-    a("    else")
-    # `lo<d>` / `hi<d>` are indices in the array's OWN bounds along the axis (a leaf declares
-    # `u(0:n+1)` as readily as `u(n+2)`); the gather counts positions from 1, so the runner
-    # shifts them by that axis's lower bound rather than asking the leaf to. A slot whose axis
-    # is 0 is not read by the gather, and its shift stays 0.
-    for slot, axis in ((1, axis1), (2, axis2)):
-        a(f"      off{slot} = 0")
-        a(f"      if ({axis} > 0) then")
-        a(f"        off{slot} = lbound({sb}, &")
-        a(f"          {axis if rank >= 2 else 1}) - 1")
-        a("      end if")
-    a(f"      call {H(f'gather_r{rank}')}( &")
-    a(f"        {sb}, &")
-    a(f"        {axis1}, &")
-    a(f"        {lo1} - off1, &")
-    a(f"        {hi1} - off1, &")
-    a(f"        {glo1}, &")
-    a(f"        {axis2}, &")
-    a(f"        {lo2} - off2, &")
-    a(f"        {hi2} - off2, &")
-    a(f"        {glo2}, &")
-    a(f"        g_r{rank})")
-    a("      if (rank == 0) then")
-    a(f"        out({k}) = {H('box')}( &")
-    a(f"          '{vlit}', &")
-    a(f"          {emit}(g_r{rank}))")
-    a("      end if")
-    a("    end if")
-
-
-def _render_distributed_abi_comment(a: Any, harness_spec_id: str) -> None:
-    """The distributed half of the checks ABI, stated where the producer leaf reads the ABI
-    from (the rendered runner is its source for the ABI's dynamic surface): the partition
-    metadata of every bound array, and the harness operations a physics source may call, with
-    their interfaces as the pin compares them."""
-    for line in (
-        "  ! Distributed binding: this harness runs the program as several ranks arranged in",
-        "  ! the p1 x p2 process grid the host imposes (grid_dims / grid_coord report it; the",
-        "  ! program never chooses it). For every bound ARRAY <var> the checks module also",
-        "  ! publishes eight default-integer module variables, which case_setup sets on every",
-        "  ! rank for that rank's copy, one group per grid dimension d = 1, 2: sb_<var>_axis<d>,",
-        "  ! the axis of <var> partitioned along grid dimension d (0 = not partitioned along d;",
-        "  ! 0 in both groups = replicated: every rank holds the global array and rank 0's is",
-        "  ! written), sb_<var>_lo<d> / sb_<var>_hi<d>, the indices, in the array's own declared",
-        "  ! bounds, of the cells this rank contributes along that axis to the GLOBAL array -",
-        "  ! the array as the IR's shape_expr declares it - and sb_<var>_glo<d>, the global",
-        "  ! index (from 1, in that shape) of the cell at lo<d>. A halo cell (a copy of a",
-        "  ! neighbour's cell) is never contributed; when the declared shape includes the",
-        "  ! domain's boundary ghost cells, the first rank along d contributes the leading ones",
-        "  ! and the last the trailing ones. hi<d> < lo<d> when a rank contributes nothing, and",
-        "  ! the array is allocated all the same. Along a dimension the array is not partitioned",
-        "  ! along, every rank of a line holds the same copy and only the coordinate 0 of that",
-        "  ! dimension contributes it. Every axis not partitioned holds exactly the extent the",
-        "  ! declared shape gives it. capture_state gathers each partitioned array onto rank 0,",
-        "  ! and the harness's gather stops the run unless the contributed blocks tile the",
-        "  ! global array. The halo exchange along dimension d takes an array whose partitioned",
-        "  ! axis holds ng halo cells, the owned cells, then ng halo cells, and fills them at",
-        "  ! every position of the other axis; exchanging along one dimension and then the other",
-        "  ! fills the corner halo cells too. A scalar is replicated. case_run reports the cells",
-        "  ! THIS rank updated (the runner sums them). A checks module, and a problem's",
-        "  ! model, may use the harness module for these operations and no other (the direct",
-        "  ! use of the message-passing library is refused). A component's model names none:",
-        "  ! consumers call its operations on their own rank's block, so the component",
-        "  ! distributes its cases in its checks module around the unmodified operations:",
-    ):
-        a(line)
-    ops, _types, _ifaces, _errs = _parse_stanzas(_harness_pin(harness_spec_id).interface)
-    for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS:
-        header, *body = ops[_hname(harness_spec_id, op)]
-        a(f"  !   {header.strip()}")
-        for line in body:
-            a(f"  !     {line.strip()}")
-
-
-def render_checks_header(ir: dict[str, Any], spec_id: str) -> None:
-    """None: the leaf's `<spec_id>_checks` module carries its own declarations, and the runner's
-    `use` of it is checked against them by the compiler, so the host renders no checks header
-    for Fortran (`host_render.render_checks_header`)."""
-    del ir, spec_id
-
-
 # --- harness interface signature pin (fail-closed, run before rendering) ------
 #
 # The harnesses this renderer targets are `_HARNESS_PINS`' keys: harness_fortran_cpu (the R1
@@ -1332,9 +1173,8 @@ class _HarnessPin:
 
     #: The §5.1 block the rendered glue is written against, under the harness's names.
     interface: str
-    #: Whether the harness drives the program as several ranks (`distributed_state@2`): the
-    #: runner then starts and ends the runtime, gathers the partitioned state onto rank 0 and
-    #: writes on rank 0 only.
+    #: Whether the harness drives the program as several ranks (`distributed_state@2`). The
+    #: driver does not render for one yet (`render_runner`).
     distributed: bool
 
 
@@ -1362,15 +1202,11 @@ def _harness_pin(harness_spec_id: str) -> _HarnessPin:
 
 
 def _is_distributed_harness(harness_spec_id: str) -> bool:
-    """Whether the runner over `harness_spec_id` is the distributed variant. A harness this
-    renderer does not target renders the single-process variant (its pin refuses it)."""
+    """Whether `harness_spec_id` runs the program as several ranks. A harness this renderer does
+    not target answers no (its pin refuses it)."""
     pin = _HARNESS_PINS.get((harness_spec_id or "").strip())
     return pin is not None and pin.distributed
 
-
-def _parse_stanzas(block: str) -> tuple[Any, Any, Any, Any]:
-    from tools.backends.language.fortran.signatures import parse_interface_stanzas
-    return parse_interface_stanzas(block)
 
 _PIN_DRIFT_HINT = (
     "the certified harness interface no longer matches the renderer's pinned "
@@ -1431,9 +1267,8 @@ def assert_harness_pin(
     used_symbols = [_hname(harness_spec_id, op)
                     for op in _used_harness_ops(ir, distributed=pin.distributed)]
     if pin.distributed:
-        # The operations the rendered comment offers a physics source are pinned too: the
-        # producer is told their interfaces from the embedded block, so the certified harness
-        # must still publish them as stated.
+        # The operations a physics source may call on this harness (`physics_harness_uses`) are
+        # pinned too: the certified harness must still publish them as the embedded block states.
         used_symbols += [_hname(harness_spec_id, op) for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS
                          if _hname(harness_spec_id, op) not in used_symbols]
     used_symbols += [_hname(harness_spec_id, t) for t in _HARNESS_TYPES]
@@ -1546,69 +1381,6 @@ def assert_harness_pin(
                 f"pinned interface: {_PIN_DRIFT_HINT}")
 
 
-# ---------------------------------------------------------------------------------------------
-# The leaf-facing remedies of the checks ABI (issue #289, R4-b PR-4 precondition). The neutral
-# gates decide WHETHER the checks module publishes the ABI and the bound state
-# (`codegen_bundle.m3c_checks_abi_violation`, `_m3c_state_binding_mismatch`, the validator's
-# `_validate_checks_source_files`); HOW the leaf is told to fix it names this language's
-# publication statements, procedure kinds and the runner's import spelling, so the sentence is
-# this backend's. Moved verbatim: the messages are byte-identical to the neutral copies they
-# replace.
-# ---------------------------------------------------------------------------------------------
-
-
-def checks_abi_publication_violation(spec_id: str, unpublished: list[str],
-                                     wrong_kind: list[str]) -> str:
-    """The acceptance layer's refusal of a checks module that leaves an ABI name unpublished
-    (`unpublished`) or defines one as a callable of the wrong kind (`wrong_kind`)."""
-    parts = []
-    if unpublished:
-        parts.append(
-            f"not published by module {spec_id}_checks: {', '.join(unpublished)} (define it "
-            f"there and, under a bare `private` default, name it in a `public ::` statement)")
-    if wrong_kind:
-        parts.append(
-            f"defined here as a FUNCTION: {', '.join(wrong_kind)} (every ABI name is a "
-            f"subroutine by contract, and the runner reaches the ones it imports with a "
-            f"`call`, so a function of that name cannot satisfy it)")
-    return (f"module {spec_id}_checks must define and publish the fixed checks ABI as "
-            f"subroutines — " + "; ".join(parts)
-            + f". The full required set is {', '.join(CHECKS_PUBLIC_NAMES)} for EVERY M3c "
-            f"node, whatever subset this node's runner imports.")
-
-
-def bound_state_publication_violation(spec_id: str, hidden: list[str]) -> str:
-    """The acceptance layer's refusal of a checks module that hides bound state variables."""
-    return (f"module {spec_id}_checks must publish every bound state variable — the "
-            f"host-rendered runner imports each one by name (`{STATE_BINDING_PREFIX}<var> => "
-            f"<var>`) and serializes it at the two capture points — but the module hides these "
-            f"(a bare `private` default with no `public ::` naming them, or a "
-            f"`private ::` naming them): {', '.join(hidden)}. Declare each as a "
-            f"module-level `real(dp)` variable (an array of the declared rank, allocated by "
-            f"`case_setup`) "
-            f"and list it in a `public ::` statement in the specification part.")
-
-
-def hidden_bound_state_remedy(hidden: list[str]) -> str:
-    """The `Generate.gate` static check's statement of the same defect, after the file path."""
-    return (f"checks module must publish every bound state variable (the "
-            f"host-rendered runner imports each IR snapshot variable as "
-            f"`{STATE_BINDING_PREFIX}<var> => <var>` and "
-            f"serializes it at the two capture points); hidden by a bare `private` default "
-            f"with no `public ::` naming it, or by a `private ::` naming it: {hidden}")
-
-
-def state_binding_module_reason(module: str) -> str:
-    """Why a binding's `module` must be the checks module: how the runner reads the storage."""
-    return f"the host-rendered runner reads the bound storage with `use {module}, only: ...`"
-
-
-def state_binding_storage_reason(variable: str) -> str:
-    """Why a binding's `storage_symbol` must equal its variable: the runner's import of it."""
-    return (f"the runner imports the module-level variable of THAT name "
-            f"(`{STATE_BINDING_PREFIX}{variable} => {variable}`)")
-
-
 def physics_harness_uses(harness_spec_id: str) -> dict[str, frozenset[str]]:
     """`{module: names}` a physics source may `use` from the harness (`host_render.
     physics_harness_uses`): its distributed-state operations for a physics source
@@ -1617,11 +1389,3 @@ def physics_harness_uses(harness_spec_id: str) -> dict[str, frozenset[str]]:
         return {}
     sid = harness_spec_id.strip()
     return {f"{sid}_model": frozenset(_hname(sid, op) for op in PHYSICS_CALLABLE_DISTRIBUTED_OPS)}
-
-
-def distributed_state_names(harness_spec_id: str, arrays: list[str]) -> list[str]:
-    """The partition metadata of the bound arrays `arrays` the runner over `harness_spec_id`
-    imports from the checks module (`host_render.distributed_state_names`)."""
-    if not _is_distributed_harness(harness_spec_id):
-        return []
-    return [name for v in arrays for name in distributed_binding_names(v)]

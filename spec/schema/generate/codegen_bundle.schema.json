@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "spec/schema/generate/codegen_bundle.schema.json",
   "title": "CodegenBundle document",
-  "description": "Canonical field grammar of a CodegenBundle: the typed output of target-specific code generation for one optimization unit (files[], entrypoints[], target_lowering_plan, capability_requirements, state_bindings[]). The enforcement point is tools/codegen_bundle.py:validate_bundle, which holds the same facts as module constants (the unit suite pins the two copies together) and therefore cannot fail-open when this file is missing or unreadable; it additionally holds the rules no draft-07 pattern can carry (closed vocabularies, cross-field invariants). No workflow phase produces a bundle yet: the producer arrives with Z2 (docs/design/zero_base_architecture.md); this schema pins the contract beforehand. Every object is closed (additionalProperties: false) except the declared A5 extension point — the value objects of target_lowering_plan (precision, data_layout, parallelization, decomposition, communication, accelerator_mapping), whose interiors a target backend defines. That closure, together with the file-role and logical_path rules and a build graph with no command slot, is what structurally denies the bundle any build or shell authority; the extension point does not weaken it, because no consumer executes a lowering-plan value.",
+  "description": "Canonical field grammar of a CodegenBundle: the typed output of target-specific code generation for one optimization unit (files[], entrypoints[], target_lowering_plan, capability_requirements). The enforcement point is tools/codegen_bundle.py:validate_bundle, which holds the same facts as module constants (the unit suite pins the two copies together) and therefore cannot fail-open when this file is missing or unreadable; it additionally holds the rules no draft-07 pattern can carry (closed vocabularies, cross-field invariants). No workflow phase produces a bundle yet: the producer arrives with Z2 (docs/design/zero_base_architecture.md); this schema pins the contract beforehand. Every object is closed (additionalProperties: false) except the declared A5 extension point — the value objects of target_lowering_plan (precision, data_layout, parallelization, decomposition, communication, accelerator_mapping), whose interiors a target backend defines. That closure, together with the file-role and logical_path rules and a build graph with no command slot, is what structurally denies the bundle any build or shell authority; the extension point does not weaken it, because no consumer executes a lowering-plan value.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,10 +15,10 @@
   ],
   "properties": {
     "bundle_schema_version": {
-      "description": "Semantic version of this contract. The pattern pins the supported MAJOR (1), so a schema-only consumer rejects an incompatible major here rather than admitting it to fail later at validate_bundle; the canonical validator additionally reports a malformed version and an unsupported major as distinct clauses.",
+      "description": "Semantic version of this contract. The pattern pins the supported MAJOR (2), so a schema-only consumer rejects an incompatible major here rather than admitting it to fail later at validate_bundle; the canonical validator additionally reports a malformed version and an unsupported major as distinct clauses.",
       "type": "string",
-      "pattern": "^1\\.[0-9]+\\.[0-9]+(?![\\s\\S])",
-      "x-current-version": "1.2.0"
+      "pattern": "^2\\.[0-9]+\\.[0-9]+(?![\\s\\S])",
+      "x-current-version": "2.0.0"
     },
     "optimization_unit": {
       "description": "The semantic nodes generated as this one bundle. The ordered member list IS the unit identity; no derived unit_id exists.",
@@ -60,10 +60,10 @@
             "x-segment-pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?![\\s\\S])"
           },
           "role": {
-            "description": "The file's build and visibility role. There is no build/script role (the backbone of the no-arbitrary-command rule). Only model and checks may define an entrypoint: helper and internal_module are private by role, and runner carries the unit's executable entry, which nothing may `use`. Only helper and internal_module may be shared across unit members (member_node_key: null). The runner role (added in 1.1.0) is admissible only on a node the host renders no contract-boundary glue for; where the host does render it, that glue can never be bundle content. WHICH nodes those are is not a property of this document — the acceptance layer decides it from the node (tools/codegen_bundle.py:pure_bundle_contract_violation, `shape`).",
+            "description": "The file's build and visibility role. There is no build/script role (the backbone of the no-arbitrary-command rule). Only model may define an entrypoint: helper and internal_module are private by role, and runner carries the unit's executable entry, which nothing may `use`. Only helper and internal_module may be shared across unit members (member_node_key: null). The runner role (added in 1.1.0) is admissible only on a node the host renders no contract-boundary glue for; where the host does render it, that glue can never be bundle content. WHICH nodes those are is not a property of this document — the acceptance layer decides it from the node (tools/codegen_bundle.py:pure_bundle_contract_violation, `shape`).",
             "type": "string",
-            "enum": ["model", "checks", "helper", "internal_module", "runner"],
-            "x-entrypoint-bearing-roles": ["model", "checks"],
+            "enum": ["model", "helper", "internal_module", "runner"],
+            "x-entrypoint-bearing-roles": ["model"],
             "x-unit-shareable-roles": ["helper", "internal_module"],
             "x-entry-bearing-role": "runner"
           },
@@ -74,7 +74,7 @@
             "x-extension-allowlist": {"cuda_cpp": [".cu"], "fortran": [".f90"]}
           },
           "member_node_key": {
-            "description": "The unit member this file belongs to, or null for a file shared by the whole unit. null is admissible only for role helper / internal_module; a model or checks file belongs to exactly one member.",
+            "description": "The unit member this file belongs to, or null for a file shared by the whole unit. null is admissible only for role helper / internal_module; a model file belongs to exactly one member.",
             "oneOf": [{"$ref": "#/definitions/node_key"}, {"type": "null"}]
           },
           "content": {
@@ -83,7 +83,7 @@
             "minLength": 1
           },
           "modules": {
-            "description": "The modules this file defines — a language's publishing units (a Fortran module, a CUDA C++ namespace). Non-empty except for the runner role — the unit's executable entry defines no module, because nothing else `use`s it (x-non-empty-unless-role; the canonical validator holds this rule, a draft-07 `minItems` cannot carry the exception). A module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's / state_binding's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
+            "description": "The modules this file defines — a language's publishing units (a Fortran module, a CUDA C++ namespace). Non-empty except for the runner role — the unit's executable entry defines no module, because nothing else `use`s it (x-non-empty-unless-role; the canonical validator holds this rule, a draft-07 `minItems` cannot carry the exception). A module name is unique across the whole bundle (one .mod per module). The host resolves an entrypoint's `module` to the file (and thus member) that owns it via this list, and renders `use <module>, only: <symbol>` without parsing the source; tools/codegen_bundle.py:bundle_invariant_violations ties module attribution to file/member ownership.",
             "type": "array",
             "x-non-empty-unless-role": "runner",
             "items": {"type": "string", "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"}
@@ -97,7 +97,7 @@
       }
     },
     "entrypoints": {
-      "description": "The externally visible symbols of the unit. Non-empty. Together with state_bindings these are the structural anchors that replace signature-shape heuristics for identifying a node's published update path.",
+      "description": "The externally visible symbols of the unit. Non-empty. These are the structural anchors that replace signature-shape heuristics for identifying a node's published update path.",
       "type": "array",
       "minItems": 1,
       "items": {
@@ -116,10 +116,10 @@
             "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
           },
           "kind": {
-            "description": "operation = the member's published semantic operation (defined in a model-role file). checks_interface = the member's checks module surface (defined in a checks-role file).",
+            "description": "operation = the member's published semantic operation (defined in a model-role file).",
             "type": "string",
-            "enum": ["operation", "checks_interface"],
-            "x-role-for-kind": {"operation": "model", "checks_interface": "checks"}
+            "enum": ["operation"],
+            "x-role-for-kind": {"operation": "model"}
           },
           "node_key": {"$ref": "#/definitions/node_key"},
           "defined_in": {
@@ -174,39 +174,6 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": {"$ref": "#/definitions/capability_token"}
-    },
-    "state_bindings": {
-      "description": "How each member's primary state is reached: the module-level storage the host-rendered runner reads and serializes through the certified harness at the two capture points (right after case_setup, right after case_run). Since 1.2.0 (Z6, issue #255) the only capture is harness_registration, which requires a state_registration@N token in capability and the same token in capability_requirements; 1.1.0's checks_getter (a value read through a generated getter) is retired with the getters and no longer a member of the enum. An M3c bundle binds EXACTLY the IR's snapshot variables (storage_symbol == state_variable, module == <spec_id>_checks) — checked at assembly time (Z2), where the IR is in scope; a harness-shape bundle omits the key.",
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["node_key", "state_variable", "storage_symbol", "module", "capture", "capability"],
-        "properties": {
-          "node_key": {"$ref": "#/definitions/node_key"},
-          "state_variable": {
-            "type": "string",
-            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
-          },
-          "storage_symbol": {
-            "type": "string",
-            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
-          },
-          "module": {
-            "description": "The Fortran module that publishes storage_symbol, so the host renders `use <module>, only: <storage_symbol>` mechanically. A member may have several checks files with freely chosen module names; the host never parses the source to find the exporter. Fortran identifier grammar (<= 63 chars).",
-            "type": "string",
-            "pattern": "^(?:[A-Za-z][A-Za-z0-9_]{0,1023}|[A-Za-z][A-Za-z0-9_]{0,62})(?![\\s\\S])"
-          },
-          "capture": {
-            "type": "string",
-            "enum": ["harness_registration"],
-            "x-capability-name-for-capture": {"harness_registration": "state_registration"}
-          },
-          "capability": {
-            "oneOf": [{"$ref": "#/definitions/capability_token"}, {"type": "null"}]
-          }
-        }
-      }
     }
   },
   "definitions": {
@@ -223,23 +190,19 @@
   },
   "examples": [
     {
-      "bundle_schema_version": "1.0.0",
+      "bundle_schema_version": "2.0.0",
       "optimization_unit": {"members": ["problem/adv1d@0.1.0"]},
       "files": [
         {"logical_path": "adv1d_model.f90", "role": "model", "language": "fortran",
          "member_node_key": "problem/adv1d@0.1.0", "content": "module adv1d_model\nend module adv1d_model\n",
-         "modules": ["adv1d_model"]},
-        {"logical_path": "adv1d_checks.f90", "role": "checks", "language": "fortran",
-         "member_node_key": "problem/adv1d@0.1.0", "content": "module adv1d_checks\nend module adv1d_checks\n",
-         "modules": ["adv1d_checks"]}
+         "modules": ["adv1d_model"]}
       ],
       "entrypoints": [
         {"symbol": "adv1d__apply", "kind": "operation", "node_key": "problem/adv1d@0.1.0",
          "defined_in": "adv1d_model.f90", "module": "adv1d_model"}
       ],
       "target_lowering_plan": {"precision": {"real_kind": "real64"}, "state_residency": "host"},
-      "capability_requirements": ["sync_single_case@1"],
-      "state_bindings": []
+      "capability_requirements": ["sync_single_case@1"]
     }
   ],
   "x-forbidden-examples": [

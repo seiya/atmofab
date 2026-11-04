@@ -49,6 +49,18 @@ def runner_output_document() -> str:
     return RUNNER_OUTPUT_DOCUMENT.read_text(encoding="utf-8")
 
 
+#: This language's generate rules, from which the conductor slices the gate guards the `harness`
+#: producer is shown (`workflow_conductor._gate_guards_section`).
+GENERATE_RULES_DOCUMENT = (Path(__file__).resolve().parents[4]
+                           / "docs" / "backends" / "language" / "cuda_cpp" / "GENERATE_RULES.md")
+
+
+def generate_rules_document() -> str:
+    """The generate rules, whole. Raises `OSError` / `UnicodeError` when they cannot be read; the
+    caller turns that into a named fail-closed outcome."""
+    return GENERATE_RULES_DOCUMENT.read_text(encoding="utf-8")
+
+
 #: The gate rule a certified exemplar most often predates, appended to the neutral exemplar
 #: block's "where the exemplar and a contract disagree, the contract wins"
 #: (`orchestration_runtime._build_exemplar`). It cites no document, and it is a member of the

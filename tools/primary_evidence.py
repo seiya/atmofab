@@ -3,11 +3,10 @@
 
 An `io_contract.predicates[]` entry is an arithmetic expression over the state the host-rendered
 runner captured through the certified harness emitters (`raw/state_snapshots/initial/<case_id>.json`
-right after `case_setup`, `raw/state_snapshots/<case_id>.json` right after `case_run`), over the
+before the case's step, `raw/state_snapshots/<case_id>.json` after its last), over the
 case's declared inputs, and over grid coordinates the host derives from those inputs — evaluated
 HERE, by the host, with the generated code contributing nothing to the value but the
-captured arrays themselves and the capture's time (`initial.t` / `final.t` is what the
-generated `get_time` reported; an expression that needs the case's end time reads the
+captured arrays themselves (`initial.t` / `final.t` is the driver's own clock; an expression that needs the case's end time reads the
 declared `inputs.time.t_end`). The LLM writes the expression at Compile; no LLM holds the
 number. These predicates alone decide a test (issue #582, `tools/verdict_evaluator.py`).
 
@@ -3113,7 +3112,7 @@ def _extent_by(token: str, name_value: Callable[[str], int], what: str) -> int:
 def _dummy_extents(entry: DriveEntry, dummy: dict[str, Any], tokens: list[str] | None,
                    inputs: Any, derived: dict[str, Any], what: str) -> tuple[int, ...]:
     """The extents of an array dummy: its `dims` (a `:` token reads none), else ``tokens``
-    (the bound state's `shape_expr`), each evaluated under the entry's bindings."""
+    (the state variable's `shape_expr`), each evaluated under the entry's bindings."""
     dims = dummy.get("dims")
     if not (isinstance(dims, list) and dims and all(isinstance(t, str) and t.strip() != ":"
                                                     for t in dims)):

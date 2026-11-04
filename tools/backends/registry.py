@@ -213,13 +213,6 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "the compiler it defaults to for it — which is also the syntax stage `Generate.gate` "
         "must pass.",
     ),
-    "checks_abi": (
-        ("language",),
-        "This value states how the language-neutral checks-module contract "
-        "(`docs/workflow/CHECKS_MODULE_CONTRACT.md`) is spelled in it, and the legality and "
-        "gate-guard rules its leaf-authored sources are held to: the document the `Generate` "
-        "leaves are shown beside the neutral contract.",
-    ),
     "prompt_fragments": (
         ("language", "parallel"),
         "The pure `generate` prompts have this value's authoring and review rules to carry: the "
@@ -237,7 +230,7 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         ("language",),
         "The deterministic `Generate` gates can READ a source of this value: the "
         "one-statement-per-line view, declarations, procedure envelopes, calls, the module "
-        "dependency map, the checks-module ABI facts, and the gates whose every rule is a "
+        "dependency map, and the gates whose every rule is a "
         "statement of this language's syntax (the `problem` model gates, the runner-output "
         "scans). Without it those gates have nothing to read a node's source with, and the node "
         "is refused rather than read as another language.",
@@ -407,7 +400,6 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "syntax_promotions": "syntax",
     "checked_flags": "checked_flags",
     "prompt_fragments": "prompts",
-    "checks_abi": "checks_abi",
     "source_reading": "source",
     "signatures": "signatures",
     "interface_header": "header",
@@ -469,21 +461,21 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         Backend(
             "language", "fortran", "tools.backends.language.fortran",
             backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions",
-                                        "prompt_fragments", "checks_abi", "source_reading",
-                                        "signatures", "control_file"}),
+                                        "prompt_fragments", "source_reading", "signatures",
+                                        "control_file"}),
         ),
         # CUDA C++ (issue #289): every capability a node of ANY kind needs
         # (`target_profile.LANGUAGE_CAPABILITIES_EVERY_NODE`), the language half of `control_file`
         # (the host authors every node's build control file — a harness bundle has no shape without
         # it) and `interface_header` (the host renders the published-surface header) since R4-b
         # PR-4, which made its `infrastructure` harness run; and `runner_render` since R4-b PR-6,
-        # which renders a physics node's runner and checks header over that harness, so a
+        # which renders a physics node's runner over that harness, so a
         # `component` / `problem` node of this language runs too.
         Backend(
             "language", "cuda_cpp", "tools.backends.language.cuda_cpp",
             backend_provides=frozenset({"runner_render", "bundle_facts", "syntax_promotions",
-                                        "prompt_fragments", "checks_abi", "source_reading",
-                                        "signatures", "control_file", "interface_header"}),
+                                        "prompt_fragments", "source_reading", "signatures",
+                                        "control_file", "interface_header"}),
         ),
         # Extracted for its control file (issue #289, R4-b PR-3): the control-file renderers the
         # conductor held and the control-file gates the validator held. `build_execute` followed

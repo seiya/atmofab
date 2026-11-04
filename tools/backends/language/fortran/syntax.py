@@ -31,8 +31,8 @@ STAGED_SUFFIXES: tuple[str, ...] = SOURCE_SUFFIXES
 #:
 #: unused-dummy-argument and unused-variable: a dummy an interface fixes but the algorithm never
 #: consumes (an inert input, an ABI-fixed `name` / `case_id`) must stay a live dummy bound by
-#: `associate (unused_<name> => <name>); end associate` — the canonical idiom is the checks ABI
-#: binding (`docs/backends/language/fortran/CHECKS_ABI.md`), and this promotion is what makes it
+#: `associate (unused_<name> => <name>); end associate` — the canonical idiom is the generate rules'
+#: (`docs/backends/language/fortran/GENERATE_RULES.md`, the gate guards), and this promotion is what makes it
 #: load-bearing rather than advisory. ampersand: gfortran's extension of resuming a continued
 #: character literal with NO leading `&` let a counted-`do` spelling written inside a string reach
 #: a PHYSICAL line start, where the fail_closed OpenMP presence floor — anchored at line starts,

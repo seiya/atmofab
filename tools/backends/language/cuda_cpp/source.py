@@ -9,11 +9,10 @@ facts (`MODULE_SOURCE_SUFFIXES`, `source_module_deps`), the runner scans
 (`model_source_gates`: the literal-metric floors, the preprocessor allowlist, and on a `problem`
 node the three model gates of `run_problem_model_gates`), the loop count the parallel presence
 floor reads (`counted_loops`), the absent-model remedy, and — since the host renders a physics
-node's runner (issue #289, R4-b PR-6) — the checks-source gates (`checks_module_declaration_
-violations`, `checks_module_abi_facts`, `unpublished_bound_state`,
-`checks_harness_isolation_violations`) and the dependency-use gate
+node's runner (issue #289, R4-b PR-6) — the leaf-source isolation gate
+(`model_harness_isolation_violations`) and the dependency-use gate
 (`validate_dependency_operations`). The C++ binding each implements is stated for a reader in
-`docs/backends/language/cuda_cpp/CHECKS_ABI.md` and `GENERATE_RULES.md`.
+`docs/backends/language/cuda_cpp/GENERATE_RULES.md`.
 
 A source whose structure `declarations.read` cannot resolve (an unbalanced bracket) is REFUSED by
 the gates that read declarations, never passed: a reader that stopped early would report nothing
@@ -31,7 +30,6 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from tools.backends.language.cuda_cpp import checks_abi
 from tools.backends.language.cuda_cpp import declarations as cpp_decls
 from tools.backends.language.cuda_cpp import header as cpp_header
 from tools.backends.language.cuda_cpp import lines as cpp_lines
@@ -519,7 +517,7 @@ def counted_loops(text: str) -> int:
     return count
 
 
-# --- the checks-source gates (a physics node; CHECKS_ABI.md §1-§4) ------------------------------
+# --- the leaf-source isolation gate (a physics node) --------------------------------------------
 
 _INCLUDE_RE = re.compile(r'^include[^\S\n]*"(?P<name>[^"\n]*)"')
 
@@ -547,128 +545,6 @@ def _structure_refusal(path: Path, errors: list[str], gate: str) -> str:
             "comment or a literal is not counted)")
 
 
-def checks_module_declaration_violations(checks_path: Path, text: str, spec_id: str) -> list[str]:
-    """The checks source includes the host-rendered checks header and opens namespace
-    `<spec_id>_checks` — the two facts every other checks gate reads the source by."""
-    out: list[str] = []
-    header_name = checks_abi.checks_header_basename(spec_id)
-    if header_name not in {name for _line, name in quoted_includes(text)}:
-        out.append(
-            f"{checks_path}: must `#include \"{header_name}\"` — the host-rendered header "
-            "declares the checks ABI and the bound state this source DEFINES, and including it is "
-            "what makes a definition of another type a compile error instead of a silent "
-            "mismatch at link")
-    decls = cpp_decls.read(text)
-    if decls.errors:
-        out.append(_structure_refusal(checks_path, decls.errors, "the checks-source gate"))
-    elif (f"{spec_id}_checks",) not in decls.namespaces:
-        out.append(
-            f"{checks_path}: must define the checks ABI in `namespace {spec_id}_checks {{ ... }}` "
-            "(the namespace the host-rendered runner calls into)")
-    return out
-
-
-#: Head words that give a namespace-scope function or variable something other than one external
-#: definition the runner's translation unit can link against: internal linkage (`static`), a
-#: definition every translation unit must repeat (`inline`, and `constexpr`, which implies it),
-#: or a declaration rather than a definition (`extern`).
-_NOT_EXTERNAL_DEFINITION = frozenset({"static", "inline", "__inline__", "__forceinline__",
-                                      "constexpr", "extern", "const"})
-
-
-_EAST_CONST_RE = re.compile(r"^(?P<base>[^&*]+?) const(?P<ref>[&*]?)$")
-
-
-def _canonical_type(ctype: str) -> str:
-    """A normalized parameter type with an east `const` moved west (`std::string const&` ->
-    `const std::string&`): one type, two spellings, and the ABI table spells the west one."""
-    east = _EAST_CONST_RE.match(ctype)
-    return f"const {east.group('base')}{east.group('ref')}" if east else ctype
-
-
-def _declarator_names(statement: str) -> list[str]:
-    """Every name a namespace-scope variable declaration declares (`std::vector<double> a, b`
-    declares both): the trailing identifier of each top-level declarator, its initializer — `=`,
-    a brace or a parenthesis group — removed."""
-    names: list[str] = []
-    for declarator in cpp_decls.split_top_level(statement):
-        head = cpp_decls.split_top_level(declarator, "=")[0]
-        head = re.sub(r"[({][^(){}]*[)}]\s*$", "", head.strip())
-        m = re.search(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\]\s*)*$", head)
-        if m is not None:
-            names.append(m.group(1))
-    return names
-
-
-def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str], set[str]]:
-    """`(published, defined_subroutines, defined_procs)` for namespace `<spec_id>_checks` of
-    `text` — the facts the `Generate.gate` static check and the bundle acceptance gate share.
-
-    `defined_procs` is every name DEFINED in that namespace (a qualified definition
-    `void <spec_id>_checks::f(...) {...}` included). `defined_subroutines` is the subset that is an
-    ABI callback defined as the header declares it: returning `void`, with exactly the declared
-    parameter types in order (`checks_abi.CHECKS_ABI_PARAMS`, names free; an east `const` reads as
-    the west one, `_canonical_type`), and with one external
-    definition (no `static` / `inline` / `constexpr`). `published` is `defined_subroutines`: in
-    C++ nothing but that definition satisfies the runner's call — a definition with other
-    parameter types is an OVERLOAD the header's declaration never reaches (a link error), a
-    `__device__` or `static` one is not callable from the runner's translation unit — so a name
-    defined any other way reads as unpublished, and the caller's remedy states the declaration.
-
-    A source whose declarations do not read (`declarations.read(...).errors`) publishes nothing,
-    so every caller refuses it; `checks_module_declaration_violations` names why."""
-    decls = cpp_decls.read(text)
-    if decls.errors:
-        return set(), set(), set()
-    namespace = (f"{spec_id}_checks",)
-    defined: set[str] = set()
-    subroutines: set[str] = set()
-    for fn in decls.functions:
-        if not (fn.defined and fn.namespace == namespace):
-            continue
-        defined.add(fn.name)
-        declared = checks_abi.CHECKS_ABI_PARAMS.get(fn.name)
-        if declared is None or fn.returns != "void":
-            continue
-        if set(fn.head.split(" ")) & _NOT_EXTERNAL_DEFINITION:
-            continue
-        if (tuple(_canonical_type(ptype) for ptype, _name in fn.params)
-                != tuple(ptype for ptype, _n in declared)):
-            continue
-        subroutines.add(fn.name)
-    return set(subroutines), subroutines, defined
-
-
-def unpublished_bound_state(text: str, spec_id: str, bound: Iterable[str]) -> list[str]:
-    """The `bound` names that `text` does not DEFINE at namespace scope of `<spec_id>_checks`
-    with external linkage — the definition the host-rendered header's `extern` declaration and
-    the runner's `<spec_id>_checks::<name>` reach.
-
-    A definition is a namespace-scope variable of that namespace whose declaration carries none
-    of `static` / `const` / `constexpr` / `extern` / `inline` (internal linkage, or a declaration
-    only). A direct-initialized one (`std::vector<double> u(3);`) is read by `declarations` as a
-    function declaration, so a non-defining function declaration of the name counts as its
-    definition too; the header's `extern` declaration then makes any type disagreement a compile
-    error, which is where the TYPE is judged. A source whose declarations do not read defines
-    nothing (every bound name is reported)."""
-    decls = cpp_decls.read(text)
-    names = list(bound)
-    if decls.errors:
-        return names
-    namespace = (f"{spec_id}_checks",)
-    defined: set[str] = set()
-    for var in decls.variables:
-        if var.namespace == namespace and not (
-                set(var.statement.split(" ")) & _NOT_EXTERNAL_DEFINITION):
-            defined.add(var.name)
-            defined.update(_declarator_names(var.statement))
-    for fn in decls.functions:
-        if (fn.namespace == namespace and not fn.defined
-                and not (set(fn.head.split(" ")) & _NOT_EXTERNAL_DEFINITION)):
-            defined.add(fn.name)
-    return [name for name in names if name not in defined]
-
-
 # Any mention of a harness's namespace or operations in code — a qualified name, a
 # `namespace h = harness_<x>_model;` alias, a `using` of it (round 1 of this change's review: the
 # alias passed a `::`-anchored pattern).
@@ -693,11 +569,11 @@ LEAF_IO_CALL_NAMES: tuple[str, ...] = ("open", "rename", "system", "truncate", "
 #: What a leaf-authored source of a physics node may not contain: every file-stream and
 #: stream-buffer class (`ofstream`, `fstream`, `basic_filebuf<char>`, the wide ones), anything of
 #: `std::filesystem`, the names above, and the one-path `remove` (the three-argument algorithm of
-#: `<algorithm>` is not a file operation). Why every leaf source and not the checks source alone
-#: (round 2 of this change's review): a C++ program runs namespace-scope destructors and `atexit`
+#: `<algorithm>` is not a file operation). Why every leaf source (round 2 of this change's review):
+#: a C++ program runs namespace-scope destructors and `atexit`
 #: handlers after `main` returns — after the harness has written the run's outputs. The
 #: host-rendered runner now ends with `std::_Exit`, so no such code runs (round 3); this refusal is
-#: the second layer, and it also covers I/O from inside a callback. Emission is the harness's alone.
+#: the second layer, and it also covers I/O from inside an operation. Emission is the harness's alone.
 #: A language-linkage specification (`extern "C" long syscall(long, ...);`): it declares a C symbol
 #: no allowed header provides, which is how round 5 of this change's review reached a system call
 #: past every name above. A leaf source has no reason to declare one. The literal's contents are
@@ -711,59 +587,35 @@ _LEAF_IO_RE = re.compile(
     r"|\bremove\s*\(\s*[^,()]*\)")
 
 
-def _model_declaration_violations(checks_path: Path, text: str,
-                                  model_files: list[Path]) -> list[str]:
-    """A checks source that DECLARES one of the node's own operations (`<spec_id>__<op>` in
-    namespace `<spec_id>_model`, which it must do on a `problem` node, whose host-rendered header
-    declares none — round 3 of this change's review) declares it with exactly the return type and
-    parameter types the model source defines it with: another spelling is an overload the model
-    never defines, a link error at Build, where it would cost a whole Build to learn."""
-    spec_id = checks_path.name.removesuffix("_checks.cu")
-    namespace = (f"{spec_id}_model",)
-
-    def shape(fn: cpp_decls.Function) -> tuple[str, tuple[str, ...]]:
-        return fn.returns, tuple(_canonical_type(ptype) for ptype, _n in fn.params)
-
-    defined: dict[str, set[tuple[str, tuple[str, ...]]]] = {}
-    for model in model_files:
-        try:
-            model_text = model.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for fn in cpp_decls.read(model_text).functions:
-            if fn.defined and fn.namespace == namespace:
-                defined.setdefault(fn.name, set()).add(shape(fn))
-    out: list[str] = []
-    for fn in cpp_decls.read(text).functions:
-        if fn.defined or fn.namespace != namespace or not fn.name.startswith(f"{spec_id}__"):
-            continue
-        if shape(fn) not in defined.get(fn.name, set()):
-            out.append(
-                f"{checks_path}: declares `{spec_id}_model::{fn.name}` with a return type or "
-                "parameter types the model source does not define it with (or the model defines "
-                "no such operation) — copy the declaration from the model's definition head "
-                "exactly, or the call cannot link")
-    return out
+_EAST_CONST_RE = re.compile(r"^(?P<base>[^&*]+?) const(?P<ref>[&*]?)$")
 
 
-def checks_harness_isolation_violations(
-    checks_path: Path, text: str, model_files: list[Path],
-    *, allowed_harness_uses: Any = None,
+def _canonical_type(ctype: str) -> str:
+    """A normalized parameter type with an east `const` moved west (`std::string const&` ->
+    `const std::string&`): one type, two spellings."""
+    east = _EAST_CONST_RE.match(ctype)
+    return f"const {east.group('base')}{east.group('ref')}" if east else ctype
+
+
+def model_harness_isolation_violations(
+    src_dir: Path, model_files: list[Path], spec_id: str,
+    *, allowed_harness_uses: Any = None, forbidden_outputs: Iterable[str] = (),
 ) -> list[str]:
-    """The isolation half of the checks-source gate: neither physics source includes a harness
-    header or names the harness (`harness_<x>_model`, `harness_<x>__<op>`) — the host-rendered
-    runner is the only caller of the harness — and no leaf-authored source of the node (every
-    `.cu` under the checks source's directory but the host-rendered runner) does file I/O, runs a
-    command, or registers code to run after `main` (`_LEAF_IO_RE`). `text` is the checks
-    source's raw content; every other source is read here. `allowed_harness_uses` is accepted
+    """The isolation gate over a physics node's leaf-authored sources (every `.cu` under `src_dir`
+    but the host-rendered runner, by its full path): none includes a harness header or names the
+    harness (`harness_<x>_model`, `harness_<x>__<op>`) — the host-rendered runner is the only
+    caller of the harness — and none does file I/O, runs a command, or registers code to run
+    after `main` (`_LEAF_IO_RE`), or holds a string literal naming a run output
+    (`forbidden_outputs`, the file names only the host writes). `allowed_harness_uses` is accepted
     for the neutral caller's sake and must be empty: no harness of this language publishes an
     operation for a physics source (the Fortran reader's docstring says what it admits)."""
     if allowed_harness_uses:
         raise ValueError("no harness of this language admits a physics-source use")
     violations: list[str] = []
-    for path in [checks_path, *model_files]:
-        source = text if path == checks_path else path.read_text(encoding="utf-8",
-                                                                  errors="ignore")
+    runner = src_dir / f"{spec_id}_runner.cu"
+    others = [p for p in leaf_sources(src_dir) if p != runner and p not in model_files]
+    for path in [*model_files, *others]:
+        source = path.read_text(encoding="utf-8", errors="ignore")
         harness_includes = [name for _line, name in quoted_includes(source)
                             if Path(name).name.startswith("harness_")]
         code = cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source)))
@@ -772,17 +624,6 @@ def checks_harness_isolation_violations(
                 f"{path}: a physics source must not include or name the harness — the physics "
                 "node never depends on the harness at the source level (the host-rendered "
                 "runner is the sole caller of the harness)")
-    violations.extend(_model_declaration_violations(checks_path, text, model_files))
-    # Every leaf-authored source of the node, at any depth (`leaf_sources`), but the host-rendered
-    # runner, whose name is derived from the checks source's.
-    runner_name = checks_path.name.removesuffix("_checks.cu") + "_runner.cu"
-    sources = [checks_path, *(p for p in leaf_sources(checks_path.parent) if p != checks_path)]
-    for path in sources:
-        if path.name == runner_name and path.parent == checks_path.parent:
-            continue
-        source = text if path == checks_path else path.read_text(encoding="utf-8",
-                                                                  errors="ignore")
-        code = cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source)))
         if _LINKAGE_SPEC_RE.search(code):
             violations.append(
                 f"{path}: a physics source must not declare a language linkage (`extern \"C\"`) — "
@@ -794,8 +635,13 @@ def checks_harness_isolation_violations(
                 f"{path}: a physics source must not do file I/O, run a command, or register code "
                 f"to run after `main` (`{io.group(0).strip()}` — no file stream, `fopen` / `open`, "
                 "`std::filesystem`, `rename` / `unlink` / a one-path `remove`, `system` / `popen` "
-                "/ `exec*`, `atexit`) — emission is the harness's job alone; the model computes "
-                "and the checks source holds the state and computes the checks and metrics")
+                "/ `exec*`, `atexit`) — emission is the harness's job alone, through the "
+                "host-rendered driver; the model only computes")
+        contents = [literal.lower() for _line, literal in cpp_lines.literals(source)]
+        violations.extend(
+            f"{path}: forbidden judge-artifact filename detected ({output_name})"
+            for output_name in forbidden_outputs
+            if any(output_name in literal for literal in contents))
     return violations
 
 
@@ -809,164 +655,6 @@ def published_subroutines(text: str, spec_id: str) -> list[str]:
                 and fn.name not in out):
             out.append(fn.name)
     return out
-
-
-_USING_STATEMENT_RE = re.compile(r"\busing\b[^;{}]*;")
-
-
-def checks_model_reach_violations(checks_path: Path, text: str, model_files: list[Path],
-                                  spec_id: str) -> list[str]:
-    """The checks-reach gate (issue #314): on an M3c node the checks source's `case_run`
-    advances the state by calling a published operation of the model —
-    `docs/workflow/CHECKS_MODULE_CONTRACT.md` §1, the `case_run` row, is canonical for the rule.
-    `text` is the checks source's raw content; each model source is read here.
-
-    THE PUBLISHED SET P is what the model under review DEFINES (`published_subroutines`: a
-    defined `<spec_id>__*` in namespace `<spec_id>_model`), never the leaf-authored bundle; an
-    empty P is its own violation.
-
-    THE READING IS POLARITY-INVERTED. It does not parse call expressions: every identifier token
-    of a defined function's body (`declarations.read`'s body — comments, literals and directives
-    blanked — with `using` declarations dropped) that names another function this source defines
-    is an edge, and a member of P QUALIFIED by the model's namespace (`<spec_id>_model::<op>`, or
-    an alias `namespace md = <spec_id>_model;` that a leaf source declares) is a hit. So a
-    kernel launch, a call split over lines, a helper called with template arguments, a call
-    inside a lambda in a body, and an operation taken by address are all followed. Functions are
-    keyed by bare name, so overloads and same-named functions in different namespaces merge
-    (over-approximation in the passing direction only, of the same gain as a dead call).
-
-    A NAME IS THE OPERATION ONLY WHEN QUALIFIED. In the checks source and in every other leaf
-    source but the model and the runner, a member of P appears only qualified by the model's
-    namespace, or (checks source) as the name of a declaration in `namespace <spec_id>_model`;
-    any other occurrence — a local lambda, functor or variable of that name, a member, a
-    template, an unqualified call after `using` — is refused, because a call can reach it
-    without reaching the model (round 1 of issue #314's review reached the gate with a local
-    lambda named as the operation). The occurrence count is taken over the masked text, so a
-    qualifier is read back over at most 200 characters of whitespace. The walk
-    starts at the `case_run` defined in namespace `<spec_id>_checks`; a call only from
-    `case_setup` does not count (the capture after it is the INITIAL state, §1-b). NOT followed,
-    so an operation reached only through one is refused: a namespace-scope lambda variable, a
-    member function of a struct, a template function (`declarations` reads none of them as a
-    function), and a macro (no directive but `#include` is allowed).
-
-    WHAT IT DOES NOT CLOSE: a dead or guarded call, a discarded result, an update recomputed
-    after a live call, and an operation named without being invoked all pass; `Generate.verify`
-    owns the semantic half. It closes the shape of probe g18 — a `case_run` that computes the
-    state inline and names no operation at all.
-
-    Also refused: a checks source that DEFINES a function named as a member of P, in any
-    namespace (it DECLARES the operation on a `problem` node and never defines one). A source
-    whose declarations do not read is refused with `_structure_refusal`."""
-    published: set[str] = set()
-    for model_file in model_files:
-        try:
-            model_text = model_file.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        published.update(published_subroutines(model_text, spec_id))
-    if not published:
-        return [(f"{checks_path}: the model source defines no `{spec_id}__<op>` in "
-                 f"`namespace {spec_id}_model` for case_run to call "
-                 f"({[str(p) for p in model_files]}) — define the operation there "
-                 "(GENERATE_RULES.md §3)")]
-    ops = ", ".join(sorted(published))
-
-    decls = cpp_decls.read(text)
-    if decls.errors:
-        return [_structure_refusal(checks_path, decls.errors, "the checks-reach gate")]
-
-    violations: list[str] = []
-    model_ns = f"{spec_id}_model"
-    # The names that qualify the model's namespace: itself, and every alias of it a leaf source
-    # declares (`namespace md = <spec_id>_model;`, as certified sources do).
-    qualifiers = {model_ns}
-    sources = [(checks_path, text)]
-    for path in leaf_sources(checks_path.parent):
-        # The host-rendered runner by its full path: a leaf file of that NAME in a subdirectory
-        # is a leaf source like any other (round 3).
-        if (path == checks_path or path in model_files
-                or path == checks_path.parent / f"{spec_id}_runner.cu"):
-            continue
-        try:
-            sources.append((path, path.read_text(encoding="utf-8", errors="ignore")))
-        except OSError:
-            continue
-    codes = [(path, cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source))))
-             for path, source in sources]
-    for _path, code in codes:
-        qualifiers.update(re.findall(
-            rf"\bnamespace\s+([A-Za-z_]\w*)\s*=\s*(?:::\s*)?{re.escape(model_ns)}\s*;", code))
-    qualified_re = re.compile(
-        r"\b(?:" + "|".join(re.escape(q) for q in sorted(qualifiers)) + r")\s*::\s*$")
-    op_re = re.compile(r"\b(" + "|".join(re.escape(op) for op in sorted(published)) + r")\b")
-
-    def unqualified(code: str) -> int:
-        return sum(1 for m in op_re.finditer(code)
-                   if not qualified_re.search(code[max(0, m.start() - 200):m.start()]))
-
-    # A name of the model's operation appears in a leaf source only qualified by the model's
-    # namespace (`<spec_id>_model::<op>` or an alias of it), or as the name of a declaration in
-    # that namespace in the checks source (the problem idiom). Anything else — a local lambda,
-    # variable or functor of that name, a member, a template, an unqualified call — is a name
-    # that a call can reach without reaching the model.
-    declared = sum(1 for fn in decls.functions
-                   if not fn.defined and fn.namespace == (model_ns,) and fn.name in published)
-    for path, code in codes:
-        extra = unqualified(code) - (declared if path == checks_path else 0)
-        if extra > 0:
-            violations.append(
-                f"{path}: names a published operation of the model ({ops}) other than as "
-                f"`{model_ns}::<op>` — a leaf source calls the operation qualified by the "
-                f"model's namespace (or an alias of it) and never declares, binds or defines "
-                f"that name itself (on a problem node the checks source only DECLARES it in "
-                f"`namespace {model_ns}`)")
-
-    checks_namespace = (f"{spec_id}_checks",)
-    bodies: dict[str, list[str]] = {}
-    has_root = False
-    for fn in decls.functions:
-        if not fn.defined:
-            continue
-        if fn.name in published:
-            violations.append(
-                f"{checks_path}: defines `{fn.name}`, a published operation of the model — the "
-                "checks source calls the model's operation and never defines one (on a problem "
-                "node it DECLARES the operation in its model namespace)")
-        if fn.name == "case_run":
-            if fn.namespace != checks_namespace:
-                # Only the ABI's `case_run` is the root: one in another namespace is not what
-                # the runner calls.
-                continue
-            has_root = True
-        bodies.setdefault(fn.name, []).append(_USING_STATEMENT_RE.sub(" ", fn.body))
-    if not has_root:
-        violations.append(
-            f"{checks_path}: namespace {spec_id}_checks defines no `case_run` for the "
-            "checks-reach gate to start from")
-        return violations
-
-    def reaches(body: str) -> bool:
-        return any(qualified_re.search(body[max(0, m.start() - 200):m.start()])
-                   for m in op_re.finditer(body))
-
-    seen = {"case_run"}
-    frontier = ["case_run"]
-    while frontier:
-        node = bodies.get(frontier.pop(), ())
-        if any(reaches(body) for body in node):
-            return violations
-        tokens = {token for body in node for token in _IDENTIFIER_TOKEN_RE.findall(body)}
-        for token in tokens:
-            if token in bodies and token not in seen:
-                seen.add(token)
-                frontier.append(token)
-    violations.append(
-        f"{checks_path}: case_run reaches no published operation of the model (one of: {ops}) "
-        f"— the checks source advances the state by `{spec_id}_model::{spec_id}__<op>(...)` "
-        "from case_run or from a function the checks source defines that case_run reaches (one "
-        "in another file, a template function, a struct member function and a namespace-scope "
-        "lambda are not followed); it must not compute the update itself")
-    return violations
 
 
 def published_operation_missing(name: str) -> str:

@@ -2644,16 +2644,6 @@ def _validate_generate_outputs(
     return model_files, dep_spec_ids, _language
 
 
-# R1/M3c-β: the fixed public ABI of a physics node's checks module
-# (see docs/workflow/CHECKS_MODULE_CONTRACT.md) is ASKED PER NODE, not restated here. The
-# language backend that renders the runner owns the set — it renders the consumer, and selects
-# the per-node subset that runner imports FROM it. A copy here would be a second authority for
-# one fact, which is exactly how the Z2 bundle gate came to require the imported subset while
-# this gate required the full set. It cannot be a module-level import either: module scope has no
-# node, so it has no language to ask about — `_validate_checks_source_files` asks with the
-# node's own value through `tools/host_render.py`.
-
-
 def _compile_render_targets(repo_root: Path) -> list[tuple[str, str, str]]:
     """``(target_id, language, harness_spec_id)`` of every declared target profile whose
     toolchain the host renders an M3c runner for — the targets a COMPILE-stage render
@@ -2702,15 +2692,14 @@ def _m3c_language(ir: dict[str, Any], build_system: str, language: str) -> str |
     """The implementation language of an M3c physics node, or ``None`` when the IR is not one.
 
     The predicate and the value it turns on, from ONE read. Every caller that needs the language
-    needs it *because* this returned non-None — the checks ABI and the runner text both belong to
-    the backend this predicate just established has the `runner_render` capability — so deriving
-    it separately would be a second reader of the field with its own defaulting, which is exactly
+    needs it *because* this returned non-None — the runner text belongs to the backend this
+    predicate just established has the `runner_render` capability — so deriving it separately would be a second reader of the field with its own defaulting, which is exactly
     how this mirror and the conductor drifted before.
 
     M3c means: a toolchain the host both writes a control file for and renders a runner for,
     and a ``spec_kind`` the IR states that is a physics kind (``M3C_SPEC_KINDS``). On such a
-    node the runner is host-rendered over the target's harness and the leaf authors the checks
-    module — mirrors ``workflow_conductor._conductor_authors_runner``. Until R4-a PR-3 it
+    node the runner is host-rendered over the target's harness and the leaf authors the model —
+    mirrors ``workflow_conductor._conductor_authors_runner``. Until R4-a PR-3 it
     required exactly one ``infrastructure`` direct dependency in the IR instead; the harness is
     the target's now (issue #284), so no dependency count enters it."""
     if not isinstance(ir, dict):
@@ -2723,7 +2712,7 @@ def _m3c_language(ir: dict[str, Any], build_system: str, language: str) -> str |
     # `Conductor._core_authors_control_file` and `_conductor_authors_runner`. This mirror kept
     # comparing against `(make, fortran)` after the conductor moved to the registry, so declaring
     # `control_file` for a second build system made the two disagree: the conductor host-renders
-    # the runner while this predicate answers False and switches `_validate_checks_source_files`
+    # the runner while this predicate answers False and switches `_validate_model_source_isolation`
     # off for it — a violation passing. Normalization stays the caller's for the same reason it
     # does there (the readers of this key deliberately differ on padding).
     for axis, value, capability in (("build_system", build_system, "control_file"),
@@ -2774,8 +2763,8 @@ def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | 
     """The implementation language of an M3c physics node, or ``None`` when it is not one.
 
     One read answering both questions the caller has, over the pipeline's target toolchain.
-    They cannot be answered separately: the checks ABI belongs to the backend that renders the
-    runner, and ``_m3c_language`` is the predicate that already established such a backend
+    They cannot be answered separately: the isolation gate's allowance belongs to the backend
+    that renders the runner, and ``_m3c_language`` is the predicate that already established such a backend
     exists for this value — re-deriving the language elsewhere would be a second reader of the
     same field with its own defaulting, which is how the conductor and this mirror drifted
     before.
@@ -2806,58 +2795,32 @@ def _shape_rank_or_none(shape_expr: Any) -> int | None:
         return None
 
 
-def _validate_checks_source_files(
+def _validate_model_source_isolation(
     execution: NodeExecution, language: str, src_dir: Path, model_files: list[Path],
-    violations: list[str], *, bound_state: Mapping[str, str] | Iterable[str] = (),
-    harness_spec_id: str | None = None,
+    violations: list[str], *, harness_spec_id: str | None = None,
 ) -> None:
-    """R1/M3c-β deterministic gate: an M3c physics node's leaf-authored
-    ``<spec_id>_checks.f90`` must satisfy the fixed-ABI contract
-    (docs/workflow/CHECKS_MODULE_CONTRACT.md). Checks: the file exists; it declares
-    ``module <spec_id>_checks``; it publishes every ABI name AND every bound state variable
-    (``bound_state`` — the IR's snapshot variables, which the host-rendered runner imports as
-    ``sb_<var> => <var>`` since Z6, issue #255); NEITHER the checks NOR
-    the model source ``use``s the harness (the host-rendered runner is the sole caller of its
-    plumbing — the one exception is below); the checks module does no file I/O
-    (``open(``); its ``case_run`` reaches a published operation of the model (the
-    checks-reach gate, issue #314 — the language's ``checks_model_reach_violations``); and it
-    writes no forbidden judge-artifact filename. A violation routes
-    back to Generate.generate to re-author the checks source.
+    """The deterministic isolation gate over an M3c physics node's leaf-authored sources: the
+    host-rendered driver is the sole caller of the harness's plumbing, so no such source `use`s
+    the harness, does file I/O, or names a run output only the host writes
+    (`FORBIDDEN_RUNNER_OUTPUTS`) — the language's `model_harness_isolation_violations` holds the
+    three scans. A violation routes back to Generate.generate to re-author the source.
 
-    On a harness that runs the program as several ranks (`harness_spec_id`, the target's —
-    issue #316) two things change, both asked of the backend that renders the runner over it:
-    the checks module publishes each bound ARRAY's partition metadata as well
-    (`host_render.distributed_state_names`; `bound_state` maps each name to its `shape_expr`
-    for that, and a bare name list is read as having none), and a physics source may `use` the
-    harness for its distributed-state operations and nothing else
-    (`host_render.physics_harness_uses`)."""
+    On a harness that runs the program as several ranks (`harness_spec_id`, the target's — issue
+    #316) a physics source may `use` the harness for its distributed-state operations and nothing
+    else (`host_render.physics_harness_uses`), asked of the backend that renders the runner over
+    it."""
     spec_id = _spec_id_from_node_key(execution.node_key)
     if spec_id is None:
         return
-    # `language` is `_m3c_language`'s answer, which required `runner_render`; the two readers
-    # below are asked separately, because declaring one job does not declare the others.
-    bundle = _language_module(language, "bundle_facts", src_dir, violations)
+    # `language` is `_m3c_language`'s answer, which required `runner_render`; the reader below is
+    # asked separately, because declaring one job does not declare the others.
     source_reading = _language_source_reading(language, src_dir, violations)
-    if bundle is None or source_reading is None:
+    if source_reading is None:
         return
-    checks_name = bundle.checks_basename(spec_id)
-    checks_path = src_dir / checks_name
-    if not checks_path.is_file():
-        violations.append(
-            f"{checks_path}: an M3c physics node must author {checks_name} (the "
-            "fixed-ABI checks module the host-rendered runner drives) — see "
-            "docs/workflow/CHECKS_MODULE_CONTRACT.md")
-        return
-    text = checks_path.read_text(encoding="utf-8", errors="ignore")
-    violations.extend(source_reading.checks_module_declaration_violations(
-        checks_path, text, spec_id))
-
-    published, _, _ = source_reading.checks_module_abi_facts(text, spec_id)
-    # The ABI is the renderer's, so it is read per node from the backend that renders THIS
-    # node's runner — not from a module-level constant, because module scope has no language.
+    harness_uses: dict[str, frozenset[str]] = {}
     # A refusal becomes a violation and NEVER an exception: this runs inside
-    # `_validate_compile_stage_impl`, where an uncaught raise discards every violation the
-    # sibling gates have already collected and replaces an actionable list with a traceback.
+    # `_validate_compile_stage_impl`, where an uncaught raise discards every violation the sibling
+    # gates have already collected and replaces an actionable list with a traceback.
     #
     # REACHABLE, and it took three review rounds to stop claiming otherwise. `language` comes
     # from `_m3c_language`, which gates on `registry.provides` — a DECLARATION question, over
@@ -2865,84 +2828,29 @@ def _validate_checks_source_files(
     # actually dispatch, which additionally requires the record's package to really carry the
     # capability. Those two cannot be made identical: the registry must not import a backend at
     # declaration time (see its module docstring), so nothing can check a declaration against the
-    # tree until something loads it. Twice this comment claimed a rule had closed the gap, and
-    # twice a reviewer built a record that walked through it — the second time a record this
-    # file's own witness had already constructed for another purpose.
-    #
-    # So the gap is HANDLED rather than declared impossible: a declaration that outruns its
-    # package lands here as a violation routed to compile.generate, never as an exception. That
-    # is the whole reason the branch exists, and it has a witness now.
-    # The `try` wraps the SEAM ENTRY only — the two calls that reach the registry and import a
-    # backend package. An earlier version also wrapped nothing else by accident of shape, but
-    # the risk it created is worth naming: a content call inside this handler would report an
-    # unrenderable NODE as a host load failure and return without emitting the content
-    # violation, which is a node defect dressed as a host fault.
+    # tree until something loads it. So the gap is HANDLED rather than declared impossible: a
+    # declaration that outruns its package lands here as a violation routed to compile.generate,
+    # never as an exception. A backend package that fails to IMPORT is a host fault, not a node
+    # defect, and is converted for the same reason.
     try:
-        abi_refusal = host_render.runner_render_refusal(language)
-        checks_public_names: tuple[str, ...] = (
-            () if abi_refusal is not None else host_render.checks_public_names(language))
+        refusal = host_render.runner_render_refusal(language)
     except Exception as exc:  # noqa: BLE001
-        # A backend package that fails to IMPORT is a host fault, not a node defect — but it
-        # must not escape from here. `_validate_compile_stage_impl` has no handler, so an
-        # uncaught exception discards every violation the sibling gates already collected and
-        # replaces an actionable list with a traceback. The seam deliberately lets a broken
-        # import through as itself (re-typing it would tell a leaf to implement what already
-        # exists); converting it HERE keeps both properties.
-        abi_refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
-        checks_public_names = ()
-    if abi_refusal is not None:
+        refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
+    if refusal is not None:
         violations.append(
-            f"{checks_path}: this node is host-rendered, but the checks ABI its runner would "
-            f"call cannot be stated for language {language!r}: {abi_refusal}")
-    missing = [n for n in checks_public_names if n not in published]
-    if missing:
-        violations.append(
-            f"{checks_path}: checks module must publish the fixed ABI names "
-            f"{list(checks_public_names)}; missing {missing}")
-    distributed_names: list[str] = []
-    harness_uses: dict[str, frozenset[str]] = {}
-    if abi_refusal is None and harness_spec_id:
-        arrays = [v for v, shape in (bound_state.items() if isinstance(bound_state, Mapping)
-                                     else ())
-                  if _shape_rank_or_none(shape) not in (None, 0)]
+            f"{src_dir}: this node is host-rendered, but its runner cannot be rendered for "
+            f"language {language!r}: {refusal}")
+    elif harness_spec_id:
         try:
-            distributed_names = host_render.distributed_state_names(
-                language, harness_spec_id, arrays)
             harness_uses = host_render.physics_harness_uses(language, harness_spec_id)
         except Exception as exc:  # noqa: BLE001
             # The same containment as the seam entry above: a violation, never a raise.
             violations.append(
-                f"{checks_path}: the distributed binding of harness {harness_spec_id!r} could "
+                f"{src_dir}: the distributed binding of harness {harness_spec_id!r} could "
                 f"not be stated for language {language!r} ({exc!r})")
-    hidden = source_reading.unpublished_bound_state(
-        text, spec_id, [*bound_state, *distributed_names])
-    if hidden:
-        # The remedy spells the runner's import of the variable, so the backend that renders
-        # the runner states it (issue #289, R4-b PR-4). When that backend could not be reached
-        # the refusal above already names why, and the finding is stated without a remedy
-        # rather than asked of a backend that raised.
-        remedy = f"checks module must publish every bound state variable: {hidden}"
-        if abi_refusal is None:
-            try:
-                remedy = host_render.hidden_bound_state_remedy(language, hidden)
-            except Exception as exc:  # noqa: BLE001
-                # Only the WORDING is the backend's; the finding stands without it, and an
-                # exception here would discard every violation the sibling gates collected.
-                remedy += f" (the language's remedy could not be stated: {exc!r})"
-        violations.append(f"{checks_path}: {remedy}")
-
-    violations.extend(source_reading.checks_harness_isolation_violations(
-        checks_path, text, model_files, allowed_harness_uses=harness_uses))
-    # The checks-reach gate (issue #314): `case_run` reaches a published operation of the model
-    # (CHECKS_MODULE_CONTRACT.md §1, the `case_run` row). Independent of the ABI refusal above
-    # and appended, never returned on, so no sibling gate is skipped.
-    violations.extend(source_reading.checks_model_reach_violations(
-        checks_path, text, model_files, spec_id))
-    lowered = text.lower()
-    for output_name in FORBIDDEN_RUNNER_OUTPUTS:
-        if output_name in lowered:
-            violations.append(
-                f"{checks_path}: forbidden judge-artifact filename detected ({output_name})")
+    violations.extend(source_reading.model_harness_isolation_violations(
+        src_dir, model_files, spec_id, allowed_harness_uses=harness_uses,
+        forbidden_outputs=FORBIDDEN_RUNNER_OUTPUTS))
 
 
 def _validate_generate_outputs_for_generation(
@@ -2983,7 +2891,7 @@ def _validate_generate_outputs_for_generation(
     # a runner for is refused at launch (`target_profile.target_profile_violations`).
     # Removing the heuristics accepts that fabrication in the harness self-test runner is caught
     # by the LLM verify/judge + these deterministic backstops, not by the two deleted ones.)
-    # R1/M3c-β: the leaf-authored checks module (fixed ABI) is gated only on an M3c node. Read
+    # The isolation gate over the leaf's sources applies only on an M3c node. Read
     # ONCE, and read here rather than below, because the runner gates underneath need the same
     # answer: on an M3c node the runner is HOST-RENDERED and every finding against it is this
     # repository's defect (issue #112). One reader, `_execution_m3c_language`, which is already
@@ -3036,9 +2944,8 @@ def _validate_generate_outputs_for_generation(
         )
     if is_m3c:
         pipeline_target = _pipeline_target(repo_root, execution.pipeline_dir)
-        _validate_checks_source_files(
+        _validate_model_source_isolation(
             execution, m3c_language, src_dir, model_files, violations,
-            bound_state=_state_snapshot_requirement_details(repo_root, execution)[0],
             harness_spec_id=(str(pipeline_target.harness.get("infrastructure_id") or "")
                              if pipeline_target is not None else None))
 
@@ -3233,32 +3140,21 @@ def _validate_parallel_presence_floor(
         return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
     if not isinstance(bundle, dict):
         return
-    # The launch-configuration half (issue #512, the CUDA backend's): asked of every leaf source,
+    # The launch-configuration half (issue #512, the CUDA backend's): asked of the model sources,
     # whatever the plan and the loop count, before anything below may return.
     launch_violations = getattr(floor, "launch_violations", None)
     if launch_violations is not None:
-        spec_id = _spec_id_from_node_key(execution.node_key)
-        facts = _language_module(language, "bundle_facts", src_dir, [])
-        checks_path = (src_dir / facts.checks_basename(spec_id)
-                       if facts is not None and spec_id else None)
-        leaf_files = [*model_files, *([checks_path] if checks_path is not None
-                                      and checks_path.is_file() else [])]
         violations.extend(launch_violations(
-            {f: f.read_text(encoding="utf-8", errors="ignore") for f in leaf_files}))
-    # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: the checks module holds the
-    # partition, the model the halo exchange, and a forbidden direct use of the library does not
-    # depend on the plan) states its findings itself, over the model sources and the checks
-    # module together, and decides for itself what a declining plan exempts.
+            {f: f.read_text(encoding="utf-8", errors="ignore") for f in model_files}))
+    # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: a forbidden direct use of the
+    # library does not depend on the plan) states its findings itself, and decides for itself what
+    # a declining plan exempts. `checks_texts` is that floor's keyword until the distributed
+    # driver rewrites it; no leaf source answers to it any more.
     node_violations = getattr(floor, "node_violations", None)
     if node_violations is not None:
-        spec_id = _spec_id_from_node_key(execution.node_key)
-        facts = _language_module(language, "bundle_facts", src_dir, [])
-        checks_path = (src_dir / facts.checks_basename(spec_id)
-                       if facts is not None and spec_id else None)
         violations.extend(node_violations(
             model_texts={f: f.read_text(encoding="utf-8", errors="ignore") for f in model_files},
-            checks_texts=({checks_path: checks_path.read_text(encoding="utf-8", errors="ignore")}
-                          if checks_path is not None and checks_path.is_file() else {}),
+            checks_texts={},
             plan=bundle.get("target_lowering_plan"),
             bound_arrays=[v for v, shape in _state_snapshot_requirement_details(
                 repo_root, execution)[0].items() if _shape_rank_or_none(shape) not in (None, 0)],
@@ -3453,7 +3349,7 @@ def _language_module(
         # disagreement, or a package that fails to import — is a HOST fault, and it must land as
         # a violation rather than escape: `_validate_compile_stage_impl` and the post_generate
         # stage have no handler, so an escaping exception replaces every violation the sibling
-        # gates already collected with a traceback (the same conversion the checks-ABI seam's
+        # gates already collected with a traceback (the same conversion the isolation gate's seam
         # caller makes).
         violations.append(
             f"{subject}: the '{capability}' backend for language {language!r} could not be "
@@ -5303,7 +5199,7 @@ def _validate_io_contract_file(
             continue
 
         # ONE `state_snapshots` entry. Every runtime reader of the schema — the runner
-        # renderer, the bundle gate's `snapshot_variables_from_ir`, the post-execute
+        # renderer, the post-execute
         # requirement details, the schema author — takes the FIRST entry; a second one would be
         # read by nothing at runtime while this validator's own union over entries admitted its
         # names, so a declared state could satisfy the ⊆ clause below through an entry no
@@ -9086,7 +8982,7 @@ def _validate_harness_render_preconditions(
     targets = _compile_render_targets(repo_root)
     per_message: dict[str, list[str]] = {}
     for target_id, language, harness_sid in targets:
-        # REACHABLE, for the reason spelled out in `_validate_checks_source_files`: the
+        # REACHABLE, for the reason spelled out in `_validate_model_source_isolation`: the
         # predicate asks a DECLARATION question and the seam asks whether it can dispatch, and
         # no rule can make those identical while the registry declines to import backends at
         # declaration time. The refusal is a VIOLATION rather than a raise because an uncaught
@@ -9099,7 +8995,7 @@ def _validate_harness_render_preconditions(
             # handler is for the one thing it cannot — its package failing to load at all.
             refusal = host_render.runner_render_refusal(language)
         except Exception as exc:  # noqa: BLE001
-            # See the note in `_validate_checks_source_files`: a backend that cannot be imported
+            # See the note in `_validate_model_source_isolation`: a backend that cannot be imported
             # is a host fault, and letting it escape from inside this gate would discard every
             # sibling gate's violations.
             refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
@@ -10864,8 +10760,7 @@ def _validate_post_generate_bundle(
     Fires ONLY when `codegen_bundle.json` exists (the legacy leaf-authored source tree has none),
     so it is inert on every legacy node. Re-runs the FULL host acceptance contract
     (`codegen_bundle.pure_bundle_contract_violation`: schema + single-node shape + harness
-    capability negotiation + the state bindings of every IR snapshot variable + M3c
-    model/checks names + the fixed checks-module ABI + assembly-graph collisions) — the SAME
+    capability negotiation + the M3c model names + assembly-graph collisions) — the SAME
     layers the producer
     accepted, reconstructed from the IR + dependency sidecar — so a post-write edit that stays
     schema-valid (e.g. swapping in an unsupported `capability_requirements`) cannot slip past a
@@ -10880,7 +10775,7 @@ def _validate_post_generate_bundle(
         return
     from tools.codegen_bundle import (
         pure_bundle_contract_violation, harness_provided_capabilities, derive_build_graph,
-        published_operations_from_ir, snapshot_variable_entries_from_ir)
+        published_operations_from_ir)
     try:
         doc = _read_json(bundle_path)
     except json.JSONDecodeError:
@@ -10945,7 +10840,6 @@ def _validate_post_generate_bundle(
         doc, node_key=node_key, spec_id=spec_id,
         shape=(shape or ""), language=str(toolchain.get("language") or ""),
         runner_basename=runner_basename,
-        ir_snapshot_variables=snapshot_variable_entries_from_ir(ir),
         harness_provided=provided, harness_label=harness_nk, build_graph=_build_graph,
         ir_published_operations=published_operations_from_ir(ir))
     if contract is not None:

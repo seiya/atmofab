@@ -619,15 +619,15 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 
 # Categories the table above routes to Generate that a HOST-RENDERED-runner node (M3c, see
 # `_conductor_authors_runner`) cannot repair there. On such a node the leaf authors only
-# `<spec_id>_model.f90` + `<spec_id>_checks.f90`; `src/<spec_id>_runner.f90` is rendered by the
+# the model; the runner is rendered by the
 # conductor from the IR (`host_render.render_runner`), which emits the per-case
 # `__write_snapshot` call for every `case.test_case_set[].case_id`. A missing per-case snapshot
-# file is therefore decided entirely by the IR + the renderer — regenerating model/checks cannot
+# file is therefore decided entirely by the IR + the renderer — regenerating the model cannot
 # add one — so it is attributed to the IR and reopens Compile, instead of burning a Generate
 # attempt that provably cannot converge (the C1/C2 "regenerating one side can't fix the other"
 # pattern). `post_execute_violation` and `quality_check_mismatch` stay on the Generate route even
 # on an M3c node: the renderer captures every declared variable for every case straight from
-# the checks module's bound storage, so the key set and shapes are host-fixed by the IR, but every
+# the driver's own state, so the key set and shapes are host-fixed by the IR, but every
 # VALUE comes from the leaf's sources — a placeholder or a per-test status that differs between
 # shapes is what a warm repair fixes. An all-zero state trips neither category since issue #582
 # deleted the all-zero gate: it reaches the predicates, and a test that demands a value fails there.
@@ -649,9 +649,7 @@ GENERATE_BUNDLE_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_truncated",
     "bundle_schema_violation",
     "bundle_capability_unsatisfied",
-    "bundle_state_binding_mismatch",
     "bundle_assembly_collision",
-    "bundle_checks_abi_violation",
     "bundle_shape_unsupported",
     # A `workshop leaf`'s tree with no bundle manifest at all (issue #534): the leaf ended
     # without writing one, which its own next turn repairs like any other bundle defect.
@@ -1094,14 +1092,6 @@ _PHASE_PRIMARY_ARTIFACTS: dict[str, tuple[str, ...]] = {
 }
 
 
-# The checks-module contract's ABI half — §1 through §4 — as it reaches the pure
-# `generate.verify` reviewer (issue #142). §5 is deliberately outside the slice: it is the
-# deterministic source-legality / gate-guard section (§5's own scope note), and the verify
-# template already tells the reviewer not to re-check what `Generate.gate` settled. The title and
-# the preamble are outside it too: the preamble addresses the agentic leaf and describes how a
-# pure leaf is reached instead, which is orientation the reviewer is already living inside.
-
-
 def _numbered_section_heading_re(number: str) -> re.Pattern[str]:
     """The line anchor for a `## <number>.` section heading.
 
@@ -1109,11 +1099,6 @@ def _numbered_section_heading_re(number: str) -> re.Pattern[str]:
     section number, and a slice that started at one would be silently short.
     """
     return re.compile(rf"^## {re.escape(number)}\.(?:\s|$)")
-
-
-#: ANY `## <n>.` section heading — the same anchor as above with the number unbound. Used by the
-#: one slice that runs to the end of its document, to refuse a section appended after it.
-_ANY_NUMBERED_SECTION_RE = re.compile(r"^## \d+\.(?:\s|$)")
 
 
 def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) -> str:
@@ -1154,63 +1139,41 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
     return "\n".join(lines[start:stop]).rstrip("\n")
 
 
-def _checks_contract_abi_sections(text: str) -> str:
-    """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — or of a language's binding of
-    it (`docs/backends/language/<id>/CHECKS_ABI.md`, numbered section for section like it,
-    issue #289) — by `_numbered_section_range`, which owns the anchoring and fail-closed
-    semantics.
-
-    What is specific to these documents: the neutral contract holds no fenced block, and the
-    Fortran binding holds ONE (its two markers are the only ``` lines in it) with no line inside
-    it taking the shape of a `## 1.` / `## 5.` heading (measured), so the engine's
-    fence-unawareness has nothing to catch here — but a
-    maintainer reading "the `## 5.` heading line" would not otherwise know that a heading QUOTED
-    in an example counts. Section MEMBERSHIP is not re-derived here: what belongs to the slice is
-    pinned by `test_checks_contract_document_is_sections_1_to_4_of_the_real_doc`, which goes red
-    when §2, §3 or §4 leaves the document (measured, all three), rather than by a second
-    enumeration of the contract's structure inside this function."""
-    return _numbered_section_range(text, "1", "5", subject="checks-module contract")
+_GATE_GUARDS_HEADING_RE = re.compile(r"^## (?:\d+\.\s+)?Legality and gate guards\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 
-def _checks_contract_gate_guards_section(text: str) -> str:
-    """Return §5 of a language's checks-ABI binding (`docs/backends/language/<id>/CHECKS_ABI.md`;
-    §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` until issue #289 moved it there) — its
-    legality and gate-guard section — from that heading to the end of the document.
-
-    NOT `_numbered_section_range`, because §5 is the LAST section and that engine requires an
-    end anchor by design (a missing one is a contract change it must stop on). The same
-    fail-closed disposition is kept in the form this position allows: the heading must be
-    present, and NO later `## <n>.` heading may exist. A §6 added above this slice would
-    silently widen it, which is exactly the drift the engine's literal terminator prevents for
-    the other slices, so it raises instead.
+def _gate_guards_section(text: str) -> str:
+    """The `Legality and gate guards` section of a language's generate rules
+    (`docs/backends/language/<id>/GENERATE_RULES.md`), from that heading to the next `## ` heading
+    or the end of the document; a `## ` line inside a fenced block does not end it. `ValueError`
+    when the heading is absent, which every caller turns into a named fail-closed contract: a leaf
+    handed no gate guards is held to rules no document it receives states.
 
     WHY A LEAF NEEDS IT, and why it is the one section a pure `generate.generate` leaf on the
-    `harness` shape is shown. §5 says of itself that it applies to every leaf-authored source
-    of any `Generate` node — naming the model, the checks module, and the hand-authored runner
-    of an `infrastructure` node's self-test — and it carries the rules of the deterministic
-    `Generate.gate` lint and syntax checkers, which are this REPOSITORY's rule set rather than
-    the language's. The agentic leaf received it as a force-read must-read, from a
-    selector whose docstring named this very leaf as the reason not to gate that injection on
-    the node's shape (`orchestration_runtime.leaf_contract_doc_refs`, deleted with the force-read
-    set in Z4 — issue #171). A pure leaf force-reads nothing, so
+    `harness` shape is shown. The section applies to every leaf-authored source of any `Generate`
+    node, and it carries the rules of the deterministic `Generate.gate` lint and syntax checkers,
+    which are this REPOSITORY's rule set rather than the language's. The agentic leaf received it
+    as a force-read must-read, from a selector whose docstring named this very leaf as the reason
+    not to gate that injection on the node's shape (`orchestration_runtime.leaf_contract_doc_refs`,
+    deleted with the force-read set in Z4 — issue #171). A pure leaf force-reads nothing, so
     making that leaf pure (issue #169) cut the only carrier those rules had — found by a
     round-3 disclosure review that rendered the prompt and looked for them. Inlining the section
-    is also what keeps the rules out of a `neutral core` template
-    (`docs/BACKEND_BOUNDARY.md`): a document body is data the host resolves, not template text.
-    §1-§4 are excluded for the reason they are included for the reviewer and not the producer —
-    they are the checks-module ABI, and this shape has no checks module."""
+    is also what keeps the rules out of a `neutral core` template (`docs/BACKEND_BOUNDARY.md`): a
+    document body is data the host resolves, not template text."""
     lines = text.splitlines()
-    heading = _numbered_section_heading_re("5")
-    start = next((i for i, ln in enumerate(lines) if heading.match(ln)), None)
+    start = next((i for i, ln in enumerate(lines) if _GATE_GUARDS_HEADING_RE.match(ln)), None)
     if start is None:
-        raise ValueError("checks-module contract has no '## 5.' section heading")
+        raise ValueError("generate rules have no 'Legality and gate guards' section heading")
+    stop = len(lines)
+    fenced = False
     for index in range(start + 1, len(lines)):
-        if _ANY_NUMBERED_SECTION_RE.match(lines[index]):
-            raise ValueError(
-                "checks-module contract has a numbered section after '## 5.' "
-                f"({lines[index].strip()!r}); this slice runs to the end of the document and "
-                "would silently widen over it")
-    return "\n".join(lines[start:]).rstrip("\n")
+        if _FENCE_RE.match(lines[index]):
+            fenced = not fenced
+        elif not fenced and lines[index].startswith("## "):
+            stop = index
+            break
+    return "\n".join(lines[start:stop]).rstrip("\n")
 
 
 # The runner-output contract's evidence section — §3 (`raw/` primary evidence) — as it reaches the
@@ -1836,7 +1799,7 @@ def build_launch_request(
             # Raw-evidence deliverables are IR-driven (phase_04 §44): only require the
             # artifacts the IR's required_evidence declares. A host-rendered runner (Z6, issue
             # #255) additionally writes the case's INITIAL capture under `initial/` — the same
-            # per-case shape, taken right after `case_setup`; a hand-authored harness runner
+            # per-case shape, taken before the case's step; a hand-authored harness runner
             # writes none, so the deliverable is keyed on `runner_host_authored`.
             if "state_snapshots" in evidence_artifacts:
                 for cid in case_ids:
@@ -5711,30 +5674,30 @@ class Conductor:
         for the reason `_leaf_language` gives."""
         return str(self.target.parallel_backend) if phase == "generate" else ""
 
-    def _checks_abi_binding_text(self) -> str:
-        """The target language's binding of the checks-module contract (`checks_abi`), whole.
+    def _generate_rules_text(self) -> str:
+        """The target language's generate rules, whole, read through `prompt_fragments`.
 
-        RAISES a named `RuntimeError` on every failure — a language that declares no binding, a
-        binding document that cannot be read — for the reason the neutral contract's reader
-        does: a leaf handed half a contract is the blindness these injections remove, and the
-        caller converts the raise into a `pure_context_assembly_failed` fail_closed outcome."""
+        RAISES a named `RuntimeError` on every failure — a language that declares no fragments, a
+        document that cannot be read — because a leaf handed half a contract is the blindness
+        these injections remove, and the caller converts the raise into a
+        `pure_context_assembly_failed` fail_closed outcome."""
         language = self.target.toolchain["language"]
         try:
-            module = backend_registry.capability_module("language", language, "checks_abi")
+            module = backend_registry.capability_module("language", language, "prompt_fragments")
         except (backend_registry.UnsupportedBackend,
                 backend_registry.BackendNotExtracted) as exc:
-            raise RuntimeError(f"pure_checks_abi_binding_unavailable: {exc}") from exc
+            raise RuntimeError(f"pure_generate_rules_unavailable: {exc}") from exc
         try:
-            return str(module.document())
+            return str(module.generate_rules_document())
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
-                f"pure_checks_abi_binding_missing: language {language!r}: {exc}") from exc
+                f"pure_generate_rules_missing: language {language!r}: {exc}") from exc
 
     def _runner_output_contract_with_binding(self, contract_text: str) -> str:
         """`RUNNER_OUTPUT_CONTRACT.md` whole, followed by the target language's runner-output
         binding (the writer rules its JSON tokens follow; issue #289, R4-b PR-2 moved them out of
         the neutral document). The binding is read through `prompt_fragments`, and every failure
-        RAISES a named `RuntimeError` for the reason `_checks_abi_binding_text` gives."""
+        RAISES a named `RuntimeError` for the reason `_generate_rules_text` gives."""
         language = self.target.toolchain["language"]
         try:
             module = backend_registry.capability_module("language", language, "prompt_fragments")
@@ -5814,9 +5777,6 @@ class Conductor:
         names: set[str] = set()
         if self._conductor_authors_runner(refs):
             names.add(self._runner_basename(refs))
-            checks_header = self._checks_header(refs)
-            if checks_header is not None:
-                names.add(checks_header[0])
         if self._conductor_authors_makefile(refs):
             names.add(self._control_file_basename(refs))
         header = self._interface_header_module(refs)
@@ -5828,31 +5788,22 @@ class Conductor:
                          for nk in self._dependency_closure_nodes(refs))
         return frozenset(names)
 
-    def _checks_header(self, refs: NodeRefs) -> tuple[str, str] | None:
-        """`(basename, text)` of the checks header the host renders for a node whose runner it
-        renders (`host_render.render_checks_header`), or None for a language whose checks
-        module declares itself. Deterministic, so the name the gates attribute by and the file
-        `_write_runner` wrote are one render."""
-        from tools.host_render import render_checks_header
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        return render_checks_header(self._read_toolchain(refs)["language"], ir, refs.spec_id)
-
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
         PHYSICS node whose target toolchain the neutral core both writes a control file for and
         renders a runner for (today make with fortran or cuda_cpp — asked of the registry, see
         `_core_authors_control_file`). On such a node the runner is glue over the plumbing of
-        the TARGET's certified harness (`_leaf_harness_node_key`, issue #284) + the leaf-authored
-        `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness interface
-        (`tools/host_render.render_runner`) — the leaf authors model+checks, not the runner. An
+        the TARGET's certified harness (`_leaf_harness_node_key`, issue #284) and the operations the
+        leaf's model publishes, so it is a pure function of the IR + the harness interface
+        (`tools/host_render.render_runner`) — the leaf authors the model, not the runner. An
         `infrastructure` node authors its own self-test runner (not glue), and is the only live
         leaf-authored-runner node: a target whose toolchain the host cannot serve for a physics
         node is refused at launch (`target_profile.target_profile_violations`), so the False
         branch here is a fail-safe rather than a live path. Until R4-a PR-3 this also required
         exactly one `infrastructure` direct dependency in the IR; the harness is the target's
         now, so no dependency count enters it. Single source of truth for the live render call
-        (`_write_runner`), the write-authorization swap (`build_launch_request` /
-        `phase_required_outputs`), and the Makefile CHECKS rule, so they cannot disagree."""
+        (`_write_runner`) and the write-authorization swap (`build_launch_request` /
+        `phase_required_outputs`), so they cannot disagree."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         if not isinstance(ir, dict):
             return False
@@ -5892,7 +5843,7 @@ class Conductor:
           The leaf authors model + checks; the runner and the control file are host glue.
         * `harness` — an `infrastructure` node's self-test (issue #169). The host renders no
           runner for it, so the leaf authors model + the executable entry as a `runner`-role
-          bundle file (bundle v1.1.0), and there is no checks module.
+          bundle file (bundle v1.1.0).
         * None — no bundle representation, so the node's GENERATE substeps FAIL CLOSED
           (`run_substep` emits `node_has_no_bundle_shape`). They fell through to the shared
           agentic leaf loop until Z4 (issue #171) deleted it. Since #169 no in-tree node
@@ -5970,9 +5921,7 @@ class Conductor:
         return self._bundle_shape(refs) is not None
 
     def _write_runner(self, refs: NodeRefs) -> None:
-        """Host-render `src/<spec_id>_runner.f90` for an M3c node (see `_conductor_authors_runner`),
-        and — for a language that declares the checks ABI in a header rather than in the checks
-        source (`host_render.render_checks_header`) — that header beside it.
+        """Host-render `src/<spec_id>_runner.f90` for an M3c node (see `_conductor_authors_runner`).
 
         Resolves the TARGET's CERTIFIED harness (`_leaf_harness_node_key`) — the exact
         `<harness>_model.f90` Build stages/links (`_certified_model_source`, the harness's
@@ -6079,11 +6028,6 @@ class Conductor:
         path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
-        # The checks ABI's declarations, for a language whose checks source includes them rather
-        # than declaring itself (`host_render.render_checks_header`, issue #289, R4-b PR-6).
-        checks_header = self._checks_header(refs)
-        if checks_header is not None:
-            (path.parent / checks_header[0]).write_text(checks_header[1], encoding="utf-8")
 
     def _dependency_closure_nodes(self, refs: NodeRefs) -> list[str]:
         """Dependency node_keys in compile order (deepest first): the PIPELINE closure of this
@@ -6207,8 +6151,6 @@ class Conductor:
         # this profile field plus a run_syntax_check adapter); unset keeps the language's default.
         # A parallel backend's compiler wrapper replaces both (issue #316).
         compiler = build_compiler(tc)
-        # R1/M3c-β: a harness-backed physics node also compiles a leaf-authored checks module
-        # (which `use`s the model kernel) between the model and the host-rendered runner.
         authors_runner = self._conductor_authors_runner(refs)
         # CASES default baked from the IR; Validate.execute overrides CASES/SPEC via the env so
         # `make test` invokes the runner identically to run_program (`--cases <spec>
@@ -6222,7 +6164,6 @@ class Conductor:
             cases_default=" ".join(self.read_case_ids(refs)),
             model_stem=f"{refs.spec_id}_model",
             runner_stem=f"{refs.spec_id}_runner",
-            checks_stem=f"{refs.spec_id}_checks" if authors_runner else None,
             # Dependency closure (Model B). Empty for leaf nodes -> the leaf template.
             closure=self._dependency_closure(refs),
             initial_capture_dir=authors_runner,
@@ -6293,19 +6234,16 @@ class Conductor:
         `_build_leaf_verify_context` — because it verifies the source against it.)
 
         The runner is injected VERBATIM (no interface extraction): it is the consumer of the
-        checks-module ABI the leaf must author against, and `docs/workflow/CHECKS_MODULE_CONTRACT.md`
-        — where the agentic leaf reads that ABI — is NOT inlined into this producer context (the pure
-        `generate.verify` reviewer receives its §1-§4 as `checks_module_contract_document`, issue
-        #142; the producer takes the ABI's dynamic surface from the runner instead). Injecting
-        the rendered artifact rather than a distilled restatement keeps the ABI's dynamic surface
-        (which names the runner actually imports) exact by construction. `run_phase` renders it
-        before any generate substep runs, so it is always on disk here."""
+        operations the leaf must publish. Injecting the rendered artifact rather than a distilled
+        restatement keeps what the driver calls (which names it imports, with which actuals) exact
+        by construction. `run_phase` renders it before any generate substep runs, so it is always
+        on disk here."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
         ir_text = self._leaf_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
         tests_text = self._leaf_node_document(f"{refs.spec_path}/tests.md", "tests")
         # The runner RAISES on an unreadable file, as the ir/tests reads above do.
         # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_leaf_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
-        # that the blank would reach the leaf and ship a prompt with an empty ABI section — was
+        # that the blank would reach the leaf and ship a prompt with an empty section — was
         # false, for this site and for every other pure pair. The caller converts the raise
         # into a fail_closed transport outcome (no leaf spawned). The ir/tests reads degraded to
         # `""` under that same false rationale until issue #467 closed them.
@@ -6347,8 +6285,8 @@ class Conductor:
         """Assemble the closed context a pure `generate.generate` leaf sees on the HARNESS shape.
 
         The `m3c` producer's context (`_build_leaf_context`) shows the leaf the host-rendered
-        runner, because on that shape the runner is the CONSUMER of the checks ABI the leaf must
-        author against. Here there is no host-rendered runner and no checks module: the leaf
+        runner, because on that shape the runner is the CONSUMER of the operations the leaf must
+        publish. Here there is no host-rendered runner: the leaf
         authors the executable entry itself, so what takes the runner's place is the contract
         that entry's OUTPUT must satisfy — `docs/workflow/RUNNER_OUTPUT_CONTRACT.md`, verbatim
         and whole, which is what the agentic runner-authoring leaf force-read (the non-M3c
@@ -6365,10 +6303,9 @@ class Conductor:
         the answer is the placement that rule prescribes, and it means a code added to the
         declared set reaches the leaf in the same edit that starts enforcing it.
 
-        The SIXTH document is §5 of the target language's checks-ABI binding
-        (`docs/backends/language/<language>/CHECKS_ABI.md`, reached through the `checks_abi`
-        capability; it was §5 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` until issue #289) —
-        its legality and gate-guard section — sliced by `_checks_contract_gate_guards_section`. It is the
+        The SIXTH document is the `Legality and gate guards` section of the target language's
+        generate rules (`docs/backends/language/<language>/GENERATE_RULES.md`, reached through the
+        `prompt_fragments` capability), sliced by `_gate_guards_section`. It is the
         rule set the deterministic `Generate.gate` lint and syntax checkers apply to every
         leaf-authored source, and it reached this leaf as a force-read must-read while the leaf
         was agentic. A pure leaf force-reads nothing, so without this it would be held to seven
@@ -6392,15 +6329,14 @@ class Conductor:
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(
                 f"pure_runner_output_contract_document_missing: {contract_path}: {exc}") from exc
-        # The gate guards are the TARGET LANGUAGE's (issue #289, R4-b PR-2): §5 of its
-        # checks-ABI binding, sliced by the same engine the neutral contract's sections are.
-        guards_text = self._checks_abi_binding_text()
+        # The gate guards are the TARGET LANGUAGE's (issue #289, R4-b PR-2).
+        guards_text = self._generate_rules_text()
         try:
-            gate_guards = _checks_contract_gate_guards_section(guards_text)
+            gate_guards = _gate_guards_section(guards_text)
         except ValueError as exc:
             raise RuntimeError(
                 f"pure_gate_guards_document_unsliceable: the "
-                f"{self.target.toolchain['language']} checks-ABI binding: {exc}") from exc
+                f"{self.target.toolchain['language']} generate rules: {exc}") from exc
         lint_rules = self._lint_rules_document(refs)
         return {
             "harness_capabilities": json.dumps(
@@ -6465,21 +6401,16 @@ class Conductor:
         Fail-closed layers, in order (each stops at the first that fails so one defect is one
         report): `validate_bundle` (schema + cross-field invariants) -> single-node unit shape
         -> harness capability negotiation (the manifest MUST exist — an undeclared harness
-        satisfies nothing) -> state_variable ∈ IR algorithm.state_variables -> the M3c literal
-        name constraint the host-rendered runner glue `use`s -> the fixed checks-module ABI ->
+        satisfies nothing) -> the M3c literal
+        name constraint the host-rendered runner glue `use`s ->
         `derive_build_graph` cross-origin object/module collisions. The pure leaf has
         no repository write authority, so a corrupted bundle can only propagate as content here — these layers are what
         catch it before any file is written.
 
-        The ABI layer makes a mis-authored checks module a BOUNDED in-conversation repair instead
-        of what it was before: a `Generate.gate` syntax-checker failure that reopened the whole phase, and that
-        the producer could only answer by re-guessing an ABI it had never been shown.
-
         The layers themselves live in `codegen_bundle.pure_bundle_contract_violation` (the SINGLE
         source shared with the deterministic post-generate tamper gate, so the two cannot drift);
-        this method only assembles the conductor-side inputs (the IR snapshot variables the
-        bundle must bind, resolved harness capabilities, the build-graph derivation) and
-        delegates."""
+        this method only assembles the conductor-side inputs (the resolved harness capabilities,
+        the build-graph derivation) and delegates."""
         from tools.codegen_bundle import pure_bundle_contract_violation
         return pure_bundle_contract_violation(
             doc, **self._leaf_bundle_violation_inputs(refs),
@@ -6491,8 +6422,7 @@ class Conductor:
         pure loop above and frozen into a `workshop leaf`'s wrapper (`_freeze_wrapper_context`),
         so the contract a wrapper's `derive` reports against is the one the hand-off applies."""
         from tools.codegen_bundle import (
-            harness_provided_capabilities, published_operations_from_ir,
-            snapshot_variable_entries_from_ir)
+            harness_provided_capabilities, published_operations_from_ir)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         # Capability negotiation against the target's harness, resolved by the same
         # `_leaf_harness_node_key` that narrows the manifest the leaf is SHOWN — so a capability
@@ -6505,7 +6435,6 @@ class Conductor:
             "shape": (self._bundle_shape(refs) or ""),
             "language": self._read_toolchain(refs)["language"],
             "runner_basename": self._runner_basename(refs),
-            "ir_snapshot_variables": snapshot_variable_entries_from_ir(ir),
             "harness_provided": provided, "harness_label": harness_nk,
             "ir_published_operations": published_operations_from_ir(ir),
         }
@@ -6555,7 +6484,7 @@ class Conductor:
     def _render_leaf_makefile_from_graph(self, refs: NodeRefs, graph: dict[str, Any]) -> str:
         """Render `src/Makefile` from a bundle's derived build graph (`derive_build_graph`).
 
-        Unlike the IR-shaped `_write_makefile` (which assumes a fixed model/checks/runner set —
+        Unlike the IR-shaped `_write_makefile` (which assumes a fixed model/runner set —
         still the live Makefile author for Model B dependencies and non-M3c agentic leaves), this
         compiles EXACTLY the graph's `compile_units` — so a bundle that declares a helper /
         internal_module file is built too. The overridable FC/OBJDIR/BINDIR/RUNDIR/BIN/
@@ -6896,12 +6825,9 @@ class Conductor:
 
         Nothing here names a target (issue #284): Compile is target-free, so the admissible-
         toolchain document and the `impl_defaults` knob-name schema this context carried until
-        R4-a PR-3 are gone with the IR section they governed. The checks-module contract's ABI
-        sections (`checks_module_contract_document`) went with issue #589 PR-1a: the IR no longer
-        describes a checks module — the host-rendered driver calls the published operations from
-        the IR's `drive` block, and the phase contract states that block whole — so the producer
-        is handed no document about one. The `generate` and `validate` leaves keep theirs until
-        PR-1b deletes the module.
+        R4-a PR-3 are gone with the IR section they governed. The host-rendered driver calls the
+        published operations from the IR's `drive` block, and the phase contract states that block
+        whole (issue #589 PR-1a).
 
         The registry catalog itself is NOT inlined: the two facts a producer takes from it — the
         dependency closure and the published operation names — reach it already host-resolved, as
@@ -7807,7 +7733,7 @@ class Conductor:
         is not among them: `_spawn_workshop_turn` writes it once the prompt is rendered).
 
         On a lineage whose spec seeds host sources (`generate`): every file the host has placed
-        in the node's `src/` at this point (the runner, the checks header, each closure member's
+        in the node's `src/` at this point (the runner, each closure member's
         interface header — what `run_phase` writes before any generate substep) plus the node's
         own interface header, which the host gates read beside the bundle
         (`Conductor._freeze_wrapper_context`: a wrapper view without one of them disagrees with
@@ -9058,18 +8984,10 @@ class Conductor:
         not the reviewer's concern). All host-resolved from disk here so the closed-context prompt
         supplies the complete review input.
 
-        The FIFTH document is §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md`
-        (`CHECKS_MODULE_CONTRACT_REF`), sliced by `_checks_contract_abi_sections` (issue #142),
-        followed by §1-§4 of the target language's binding of it (`checks_abi`, issue #289). Without it the reviewer judged the checks
-        module's callbacks against its own guess at what the runner does with each result, and
-        failed a bundle that followed the contract verbatim. §5 is excluded because it is the
-        deterministic legality/gate section the template already tells the reviewer not to
-        re-check.
-
         Every document here has ONE fail-closed disposition: an unreadable file RAISES
         (`UnicodeError` included, since a decode error is a ValueError and not an OSError) —
-        the four NODE artifacts through `_leaf_node_document` since issue #467, the contract
-        slice and the rubric below — and the caller converts it into a
+        the four NODE artifacts through `_leaf_node_document` since issue #467, and the rubric
+        below — and the caller converts it into a
         `pure_context_assembly_failed` fail_closed transport outcome; no leaf is spawned. Not for
         the reason recorded here until issue #169's review measured it: a blank value does NOT
         reach the leaf — `_validate_leaf_launch_request_payload` counts a whitespace-only
@@ -9077,41 +8995,17 @@ class Conductor:
         frame later, out of `record_launch`, escaping the loop's named
         `pure_context_assembly_failed` branch and aborting the conductor.
 
-        The SIXTH document is the `#### Severity of a finding` subsection of
+        The rubric is the `#### Severity of a finding` subsection of
         `docs/workflow/phases/phase_02_generate.md` §2-2, sliced by
         `_generate_verify_severity_rubric_section` (issue #143). It carries the same RAISING
-        disposition as the contract slice, and the same CORRECTED reason: degrading would defer
+        disposition, and the same CORRECTED reason: degrading would defer
         the refusal one frame into `record_launch` rather than ship a blank rubric to the leaf.
         What a blank rubric would cost if it did arrive is why the disposition matters — the
         reviewer returns to choosing `issue_severity` by how heavy the defect looks, which is
         what terminalized a run on a contract-conforming bundle.
         The phase-doc path is taken from `WORKFLOW_PHASE_DOC_BY_STEP` rather than restated here,
         so the reviewer reads the same document the phase contract names."""
-        from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
-                                                 WORKFLOW_PHASE_DOC_BY_STEP)
-        contract_path = self.repo_root / CHECKS_MODULE_CONTRACT_REF
-        try:
-            contract_text = contract_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise RuntimeError(
-                f"pure_checks_contract_document_missing: {contract_path}: {exc}") from exc
-        try:
-            contract_abi = _checks_contract_abi_sections(contract_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"pure_checks_contract_document_unsliceable: {contract_path}: {exc}") from exc
-        # ... followed by the TARGET LANGUAGE's binding of the same four sections (issue #289,
-        # R4-b PR-2): the neutral contract says what each callback does, the binding says how
-        # the reviewer will see it spelled. One document, in that order, so the reviewer reads
-        # a section's meaning before its spelling.
-        binding_text = self._checks_abi_binding_text()
-        try:
-            binding_abi = _checks_contract_abi_sections(binding_text)
-        except ValueError as exc:
-            raise RuntimeError(
-                f"pure_checks_contract_document_unsliceable: the "
-                f"{self.target.toolchain['language']} checks-ABI binding: {exc}") from exc
-        contract_abi = f"{contract_abi}\n\n{binding_abi}"
+        from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
         phase_doc_path = self.repo_root / WORKFLOW_PHASE_DOC_BY_STEP["generate"]
         try:
             phase_doc_text = phase_doc_path.read_text(encoding="utf-8")
@@ -9131,7 +9025,6 @@ class Conductor:
             # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
             "target_profile": self._leaf_target_profile_document(),
-            "checks_module_contract_document": contract_abi,
             "severity_rubric_document": severity_rubric,
             "bundle_document": self._leaf_node_document(
                 f"{refs.source_dir()}/codegen_bundle.json", "bundle"),
@@ -9145,9 +9038,8 @@ class Conductor:
         under review — and every one raises, as the m3c reviewer's do. The severity rubric is the
         same slice, and raises for the same reason.
 
-        What differs is the fifth document. The m3c reviewer receives the checks-module ABI,
-        because the bundle it reviews carries a checks module; a harness bundle carries an
-        executable entry instead, so it receives `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` whole
+        What differs is one document: a harness bundle carries an executable entry, which the m3c
+        bundle does not, so this reviewer also receives `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` whole
         — the same document the producer wrote against, so the two are judged by one text rather
         than by the reviewer's recollection of it."""
         from tools.orchestration_runtime import (RUNNER_OUTPUT_CONTRACT_REF,
@@ -9411,7 +9303,6 @@ class Conductor:
             "tests_document": "tests.md",
             "ir_document": "spec.ir.yaml",
             "target_profile": "target_profile.json",
-            "checks_module_contract_document": "CHECKS_MODULE_CONTRACT.md",
             "severity_rubric_document": "SEVERITY_RUBRIC.md",
         }),
         ("generate", "verify", "harness"): MappingProxyType({
@@ -12074,7 +11965,7 @@ class Conductor:
         run compiles the node's model file alone (plus its host-rendered interface header, when
         the language declares one) with the staged closure — exactly what a dependent node is
         staged (issue #389). Its failure is a leaf content failure (the model reached another
-        file of its own bundle — a `helper` / `internal_module` file, or the checks file), logged
+        file of its own bundle — a `helper` / `internal_module` file), logged
         to the canonical command log and recorded as a `scope: "model_alone"` stage. Optional
         additional stages from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids — the
         future target-compiler second stage) are recorded as skipped when their compiler has no
@@ -12316,13 +12207,11 @@ class Conductor:
                 # the language declares one — and nothing else of this bundle
                 # (`_stage_dependency_sources`). The stage above compiles the WHOLE src/, so a
                 # model that reaches another file of its bundle (a `helper` / `internal_module`
-                # file, or the checks file) passes it here and
+                # file) passes it here and
                 # breaks every consumer, at a gate whose leaf cannot repair it. So once the
                 # mandatory stage passes, the same adapter and flags run over exactly what a
                 # consumer is handed: the closure, the model, and the interface header. Only
-                # `_interface_header_module` decides the header — the wider
-                # `_host_rendered_src_names` also names the checks header, which a consumer never
-                # receives. A failure is the leaf's own content (it can move what the model needs
+                # `_interface_header_module` decides the header. A failure is the leaf's own content (it can move what the model needs
                 # into the model file), so it is a `syntax_error` routed to generate.generate,
                 # never a raise. It certifies, so it logs to the canonical command log.
                 if stage_ok and compiler == mandatory:
@@ -12377,7 +12266,7 @@ class Conductor:
                                 f"where the language has one) with the dependency closure, and "
                                 f"nothing else of this bundle — so the model file may not "
                                 f"use or include any other file of this bundle (a `helper` / "
-                                f"`internal_module` file, or the checks file or its header). "
+                                f"`internal_module` file). "
                                 f"Move what it "
                                 f"needs into the model file, which may declare further modules; "
                                 f"`helper` / `internal_module` files serve the other files. The "
@@ -12451,7 +12340,7 @@ class Conductor:
                     # Residual: the OTHER staged file the leaf cannot write is the M3c
                     # host-rendered `<spec_id>_runner.f90` — it sits inside src/ (so it is a
                     # node source here) yet outside allowed_output_paths. It gets no probe:
-                    # it `use`s the leaf-authored checks module, so it is not self-contained
+                    # it `use`s the leaf-authored model, so it is not self-contained
                     # and cannot be compiled alone. It is held clean at the source instead —
                     # tools/tests/test_fortran_runner.py compiles the rendered runner under
                     # these exact promoted flags, so a renderer edit that emitted an unused
@@ -12501,9 +12390,9 @@ class Conductor:
                     # over the same argv, with the same staged closure.
                     #
                     # WHY THE ANSWER IS ONLY RECORDED, NOT ROUTED ON. The host-rendered runner
-                    # `use`s the leaf-authored checks module, so a diagnostic printed at a line
-                    # inside the runner can be caused by the LEAF having missed the fixed checks
-                    # ABI — real, common, and repairable by exactly the warm retry this gate
+                    # `use`s the leaf-authored model, so a diagnostic printed at a line
+                    # inside the runner can be caused by the LEAF having missed a published
+                    # signature — real, common, and repairable by exactly the warm retry this gate
                     # already performs. "The leaf's files pass alone" therefore does NOT mean the
                     # host is at fault; it means alone-vs-interaction cannot be told apart here,
                     # and terminalizing would convert a leaf-fixable defect into a permanent
@@ -15252,8 +15141,8 @@ class Conductor:
                 and not self._leaf_substep(refs, "generate", "generate")):
             self._write_makefile(refs)
         # R1/M3c-β: for a physics node with a harness dependency the conductor host-renders
-        # src/<spec_id>_runner.f90 (glue over the certified harness plumbing + the leaf-authored
-        # <spec_id>_checks.f90), BEFORE the substeps run — so, like the Makefile, the write is
+        # src/<spec_id>_runner.f90 (the driver over the certified harness plumbing and the
+        # leaf-authored model), BEFORE the substeps run — so, like the Makefile, the write is
         # the host's own and is never mistaken for a leaf's (it was outside the substep FS-diff
         # window while that diff existed; issue #171 PR-2 deleted it) and re-renders on
         # each attempt after the source_id rotate (_ensure_fresh_producer_id, above). An
@@ -15378,7 +15267,6 @@ class Conductor:
             "required_outputs": phase_required_outputs(
                 refs, phase,
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
-                runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs)),
                 checked_build=(phase == "build" and self._builds_checked()),
                 bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ()),
                 bundle_facts=(self._language_facts() if phase == "generate" else None),
@@ -16088,7 +15976,7 @@ class Conductor:
                         # so the next execute failure is against FRESH artifacts and must get its
                         # own Generate-retry-first cycle. Without the reset the stale count (1)
                         # would push the very next failure — typically a leaf-repairable value
-                        # defect in the regenerated checks module — straight into the
+                        # defect in the regenerated model — straight into the
                         # findings-less C2 reopen, skipping the warm repair this table exists for.
                         self._validate_execute_fail_count[refs.node_key] = 0
                         return RouteDecision(
@@ -16649,8 +16537,7 @@ PHASE_VALIDATION_STAGE: dict[str, str] = {
 
 
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
-                           *, runner_host_authored: bool = False,
-                           checked_build: bool = False,
+                           *, checked_build: bool = False,
                            bundle_sources: Sequence[str] = (),
                            bundle_facts: Any = None,
                            control_file_basename: str | None = None) -> list[str]:
@@ -16659,14 +16546,14 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
     output hash (issue #250). So this is the definition of what a phase's OUTPUT is.
 
     `bundle_facts` (generate only, REQUIRED there) is the target language's `bundle_facts`
-    module, which names the model, checks and runner sources (issue #289, R4-b PR-3; this
+    module, which names the model and runner sources (issue #289, R4-b PR-3; this
     function spelled one language's names until then). `control_file_basename` (generate only,
     REQUIRED there) is the basename of the build control file the host writes
     (`Conductor._control_file_basename`, issue #424 PR-2), for the same reason.
 
     `bundle_sources` (generate only) is every `files[].logical_path` of the ACCEPTED bundle,
-    as `Conductor._bundle_source_names` reads it off `codegen_bundle.json`: the model and the
-    checks module or the runner, plus any `helper` / `internal_module` file the producer
+    as `Conductor._bundle_source_names` reads it off `codegen_bundle.json`: the model and, on a
+    `harness` bundle, the runner, plus any `helper` / `internal_module` file the producer
     added — the bundle contract permits those, the host writes and compiles them, and a
     review measured that the fixed list below omitted them, so two generate outputs differing
     only in a helper hashed equal. Order-preserving, de-duplicated against the fixed names.
@@ -16679,8 +16566,7 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
     if phase == "generate":
         src = refs.source_dir()
         # Every source Build compiles is a Generate deliverable, whoever wrote it: the model,
-        # the checks module (on an M3c node, where the host renders the runner) and the runner
-        # itself, every other bundle file, and the build control file. Until issue #250 the
+        # the runner itself, every other bundle file, and the build control file. Until issue #250 the
         # host-authored runner and `src/Makefile` were left out because a required output had
         # to be covered by a leaf's `output_refs`; every generate leaf is pure now and the
         # phase's outputs are vouched by on-disk existence (`_validate_step_result_payload`),
@@ -16695,11 +16581,8 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
             raise ValueError(
                 "phase_required_outputs(generate) needs the build control file's basename: it "
                 "is the target build system's, not this function's")
-        checks_entry = ([f"{src}/src/{bundle_facts.checks_basename(refs.spec_id)}"]
-                        if runner_host_authored else [])
         fixed = [
             f"{src}/src/{bundle_facts.model_basename(refs.spec_id)}",
-            *checks_entry,
             f"{src}/src/{bundle_facts.runner_basename(refs.spec_id)}",
         ]
         extra = [f"{src}/src/{name.strip()}" for name in bundle_sources

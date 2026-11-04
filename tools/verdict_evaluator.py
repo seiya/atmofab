@@ -16,8 +16,8 @@ A test is declared in the IR at ``io_contract.tests``, and the host predicates t
 
 A test's ``status`` is its ``expected_outcome`` when every predicate of the test holds, else
 ``fail``; each record's value was computed by the host from the captures, with no generated code
-in the path but the captured arrays and the capture's time (issue #582, which retired the judging
-half of the checks module). ``xfail_condition`` is a case-construction fact (verified at Compile),
+in the path but the captured arrays (issue #582; the capture's time is the driver's own since
+issue #589). ``xfail_condition`` is a case-construction fact (verified at Compile),
 never an evaluated runtime predicate: a guard test is judged by the predicates its ``tests.md``
 definition states in the failure direction.
 

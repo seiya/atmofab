@@ -36,7 +36,7 @@ from typing import Any, NamedTuple
 #: Bumped when what the excerpt CONTAINS changes, so a recorded `semantic_review.json` says
 #: which window its judge was looking through. Stamped by the host into that file.
 #: 2: each snapshot case additionally carries `initial` — the summary of the host-rendered
-#: runner's capture right after `case_setup` (`raw/state_snapshots/initial/<case_id>.json`,
+#: runner's capture before the case's step (`raw/state_snapshots/initial/<case_id>.json`,
 #: Z6, issue #255) — so the judge sees both capture points of a case.
 #: `schema.min_samples` was dropped without a bump (issue #396): `phase_04_validate.md` §4-2-1,
 #: canonical for the contents, never listed it, and it echoed the IR's declaration rather than

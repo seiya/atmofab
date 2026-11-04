@@ -101,12 +101,10 @@ def render_node(
     cases_default: str,
     model_stem: str,
     runner_stem: str,
-    checks_stem: str | None,
     closure: Iterable[str],
     initial_capture_dir: bool = False,
 ) -> str:
-    """The IR-shaped Makefile: a node's model and runner (and, on a harness-backed physics node,
-    its checks module between them: model.o <- checks.o <- runner.o), plus the Model B dependency
+    """The IR-shaped Makefile: a node's model and runner, plus the Model B dependency
     closure `closure` (dependency spec_ids, deepest first) whose sources the conductor stages into
     `$(OBJDIR)` before make. An empty closure emits the leaf template byte for byte.
 
@@ -139,17 +137,6 @@ def render_node(
                 f"\t{cc} -c $(OBJDIR)/{d}_model{suffix} -o $(OBJDIR)/{d}_model.o\n")
         dep_rules = "\n" + "\n".join(parts)
 
-    # The checks-module blocks (empty for a node without one -> the template is emitted byte for
-    # byte as before). checks.o `use`s the model, so it depends on MODEL_OBJ; the runner links
-    # against it, so it is a runner prereq + link input.
-    has_checks = checks_stem is not None
-    checks_src_decl = f"CHECKS_SRC = {checks_stem}{suffix}\n" if has_checks else ""
-    checks_obj_decl = f"CHECKS_OBJ = $(OBJDIR)/{checks_stem}.o\n" if has_checks else ""
-    checks_prereq = "$(CHECKS_OBJ) " if has_checks else ""
-    checks_rule = (
-        "$(CHECKS_OBJ): $(CHECKS_SRC) $(MODEL_OBJ) | $(OBJDIR)\n"
-        f"\t{cc} -c $(CHECKS_SRC) -o $(CHECKS_OBJ)\n\n"
-        if has_checks else "")
     pin_comment = "".join(f"# {line}\n" for line in rules["compiler_pin_comment"])
 
     return f"""\
@@ -172,10 +159,10 @@ SPEC ?= spec.ir.yaml
 CASES ?= {cases_default}
 
 MODEL_SRC  = {model_stem}{suffix}
-{checks_src_decl}RUNNER_SRC = {runner_stem}{suffix}
+RUNNER_SRC = {runner_stem}{suffix}
 
 MODEL_OBJ  = $(OBJDIR)/{model_stem}.o
-{checks_obj_decl}RUNNER_OBJ = $(OBJDIR)/{runner_stem}.o
+RUNNER_OBJ = $(OBJDIR)/{runner_stem}.o
 {dep_objs_line}
 .PHONY: all test clean
 .DEFAULT_GOAL := all
@@ -185,11 +172,11 @@ all: $(BINDIR)/$(BIN)
 $(MODEL_OBJ): $(MODEL_SRC){model_dep_prereq} | $(OBJDIR)
 \t{cc} -c $(MODEL_SRC) -o $(MODEL_OBJ)
 
-{checks_rule}$(RUNNER_OBJ): $(RUNNER_SRC) {checks_prereq}$(MODEL_OBJ) | $(OBJDIR)
+$(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ) | $(OBJDIR)
 \t{cc} -c $(RUNNER_SRC) -o $(RUNNER_OBJ)
 
-$(BINDIR)/$(BIN): {link_dep_prereq}$(MODEL_OBJ) {checks_prereq}$(RUNNER_OBJ) | $(BINDIR)
-\t{cc} {link_dep_prereq}$(MODEL_OBJ) {checks_prereq}$(RUNNER_OBJ) -o $(BINDIR)/$(BIN)
+$(BINDIR)/$(BIN): {link_dep_prereq}$(MODEL_OBJ) $(RUNNER_OBJ) | $(BINDIR)
+\t{cc} {link_dep_prereq}$(MODEL_OBJ) $(RUNNER_OBJ) -o $(BINDIR)/$(BIN)
 
 # $(sort ...) dedups the target list: when OBJDIR==BINDIR (in-source make, both ".")
 # it collapses to a single target, avoiding the harmless `target '.' given more than
