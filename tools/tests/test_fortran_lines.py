@@ -584,6 +584,16 @@ class ModelHarnessIsolationScanTests(unittest.TestCase):
                     for v in fortran_source.model_harness_isolation_violations(
                         src, [model], "p", **kwargs)]
 
+    def test_a_model_starts_no_program(self) -> None:
+        for body in ("call execute_command_line('cp a b')", "call system('cp a b')",
+                     "if (.true.) call execute_command_line('x')"):
+            with self.subTest(body=body):
+                self.assertTrue(any("must not start a program" in v for v in self._scan(body)))
+        for body in ("x = 1  ! call system('x')", "call system_clock(count=n)",
+                     "call my_system(u)"):
+            with self.subTest(body=body):
+                self.assertFalse(any("must not start a program" in v for v in self._scan(body)))
+
     def test_each_spelling_of_an_open_statement_is_refused(self) -> None:
         for body in ("    open(newunit=u, file='x')", "    OPEN (unit=u, file='x')",
                      "    open &\n      (newunit=u)", "    op&\n      &en(newunit=u)",
