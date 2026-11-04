@@ -97,7 +97,8 @@ _HARNESS_TYPES = (
     "h_named",
 )
 _HARNESS_CORE_OPS = (
-    "parse_cases", "box", "write_snapshot", "write_perf", "block_size",
+    "parse_cases", "box", "write_snapshot", "write_perf", "block_size", "read_case",
+    "get_array_r4",
 )
 
 #: The target a DRY render is given: `ir_content_violations` renders only to learn whether the
@@ -177,13 +178,15 @@ def _clit(value: str) -> str:
 
 
 def _used_harness_ops(ir: dict[str, Any]) -> list[str]:
-    """Unqualified harness op names the rendered glue calls (deterministic order): the core
-    writers/plumbing plus only the emitters for the ranks in use."""
-    ranks = {rank for _v, rank in _bound_state(ir)}
-    ops = ["parse_cases"]
-    if 0 in ranks:
-        ops.append("emit_real")
-    ops += [f"emit_array_r{r}" for r in sorted(r for r in ranks if r >= 1)]
+    """Unqualified harness op names the rendered driver calls (deterministic order): the core
+    writers and readers, the emitters and getters of what the IR declares, and the rank-1 emitter
+    of the series on a `loop` node. `assert_harness_pin` compares exactly these, so a name left
+    out here is an unenforced pin."""
+    schema, _ = _snapshot_schema(ir)
+    plan = runner_ir.driver_plan(ir, schema)
+    ops = ["parse_cases", "read_case", *plan.getters, "emit_real"]
+    ranks = set(plan.array_ranks) | ({1} if plan.loop else set())
+    ops += [f"emit_array_r{r}" for r in sorted(ranks)]
     ops += ["box", "write_snapshot", "write_perf", "block_size"]
     return ops
 
@@ -268,7 +271,8 @@ def render_checks_header(ir: dict[str, Any], spec_id: str) -> tuple[str, str]:
 
 def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
                   *, target: dict[str, Any]) -> str:
-    """Render ``<spec_id>_runner.cu`` from the IR and the target. Deterministic and pure.
+    """Render ``<spec_id>_runner.cu``, the driver, from the IR and the target. Deterministic and
+    pure.
 
     ``harness_spec_id`` is the certified plumbing node's spec_id (``harness_cpp_gpu``). ``target``
     is the run's target profile document, read for the perf record's hardware class and
@@ -297,48 +301,41 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     runner_ir.case_ids(ir)   # the refusals of a case id (the runner takes the ids from argv)
     target_class = runner_ir.target_class(target)
     ranks, threads, devices = perf_parallelism(target)
-    bound = [(v, runner_ir.rank_of_shape(shape, v)) for v, shape in schema_vars.items()]
-    array_bound = any(rank >= 1 for _v, rank in bound)
+    plan = runner_ir.driver_plan(ir, schema_vars)
 
     hm = f"{harness_spec_id}_model"
-    ck = f"{spec_id}_checks"
+    md = f"{spec_id}_model"
 
     def H(sym: str) -> str:  # local shorthand, as in the Fortran renderer
         return f"hm::{_hname(harness_spec_id, sym)}"
 
     lines: list[str] = []
     a = lines.append
-
     a(f"// {bundle.runner_basename(spec_id)}: rendered by the host from the node's IR. Do not "
       "edit.")
-    a(f"// It drives the {ck} callbacks and emits the standard runner outputs THROUGH the")
-    a(f"// certified {harness_spec_id} plumbing, which owns all JSON assembly")
-    a("// (harness controlled_spec §3 / §5.1). This glue holds no serialization knowledge: it")
-    a("// builds harness records and calls the writers.")
+    a("// The driver (issue #589): per case it reads the host-written case file, allocates the")
+    a("// state, calls the published operations, owns the time loop on a loop node, and writes")
+    a(f"// every capture THROUGH the certified {harness_spec_id} plumbing, which owns all JSON")
+    a("// assembly. The state is host memory; an operation copies to and from the device itself.")
     a(f'#include "{hm}.cuh"')
-    a(f'#include "{checks_abi.checks_header_basename(spec_id)}"')
+    a(f'#include "{md}.cuh"')
     a("")
-    a("#include <chrono>")
-    a("#include <cstddef>")
-    a("#include <cstdio>")
-    a("#include <cstdlib>")
-    a("#include <iostream>")
-    a("#include <string>")
-    a("#include <type_traits>")
-    a("#include <vector>")
+    for header in ("algorithm", "chrono", "cmath", "cstddef", "cstdint", "cstdio", "cstdlib",
+                   "iostream", "limits", "string", "type_traits", "vector"):
+        a(f"#include <{header}>")
     a("")
     a("namespace {")
     a("")
     a(f"namespace hm = {hm};")
-    a(f"namespace ck = {ck};")
+    a(f"namespace md = {md};")
+    a("using dp = double;")
     a("")
-    # The two §5.1 module parameters whose VALUES this glue relies on: the checks ABI passes
-    # float64 values the harness takes as `dp`, and a declared case id is bounded by the
-    # harness's `case_id_len` (`runner_ir.CASE_ID_LEN`). The signature pin compares prototypes,
-    # which spell `dp` whatever it is; these make a drift of either value a compile error.
+    # The two §5.1 module parameters whose VALUES this glue relies on: the driver holds float64
+    # state the harness takes as `dp`, and a declared case id is bounded by the harness's
+    # `case_id_len` (`runner_ir.CASE_ID_LEN`). The signature pin compares prototypes, which spell
+    # `dp` whatever it is; these make a drift of either value a compile error.
     a("static_assert(std::is_same<hm::dp, double>::value,")
-    a(f'              "the certified {harness_spec_id} dp is not the float64 the checks ABI '
-      'passes");')
+    a(f'              "the certified {harness_spec_id} dp is not the float64 this driver holds");')
     a(f"static_assert(hm::case_id_len == {CASE_ID_LEN},")
     a(f'              "the certified {harness_spec_id} case_id_len is not the width this runner '
       'bounds case ids by");')
@@ -365,55 +362,63 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("  std::_Exit(code);")
     a("}")
     a("")
-    if array_bound:
-        a("// Stop the run when a bound array does not hold its declared data at a capture point.")
-        a("void require_bound(bool is_bound, const std::string& name, const std::string& cid) {")
-        a("  if (is_bound) {")
-        a("    return;")
-        a("  }")
-        a('  std::cerr << "error: bound state " << name << " is not allocated at capture for case "')
-        a("            << cid << std::endl;")
-        a("  finish(1);")
-        a("}")
-        a("")
-    # Z6 capture contract (zero_base_architecture.md §A4): the harness serializes the BOUND
-    # state — read straight from the checks namespace's storage — right after `case_setup` and
-    # right after `case_run`, and the snapshot cache holds the serialized STRINGS, so nothing a
-    # later callback writes into that storage can reach a snapshot.
-    a("// Every declared snapshot variable, read from the checks namespace's bound storage and")
-    a("// serialized by the harness emitters. The same set for every case: the snapshot is the")
-    a("// full declared state.")
-    a("std::vector<Named> capture_state(const std::string& cid) {")
-    if not array_bound:
-        a("  (void)cid;")
+    a("[[noreturn]] void refuse(const std::string& what, const std::string& cid) {")
+    a('  std::cerr << "error: " << what << " for case " << cid << std::endl;')
+    a("  finish(2);")
+    a("}")
+    a("")
+    _render_views(a, plan)
+    _render_storage(a, plan)
+    a("int step_c = 0;")
+    a("double t_c = 0.0;")
+    a("")
+    for proc in (p for entry in plan.entries for p in entry.procedures):
+        _render_procedure(a, plan, proc)
+    a("// Every declared state variable, `t` (the writer's) and `step`: the same set at every")
+    a("// capture point of every case.")
+    a("std::vector<Named> capture_state() {")
     a("  std::vector<Named> out;")
-    for name, rank in bound:
-        vlit = _clit(name)
-        storage = f"ck::{name}"
+    for var, rank in plan.variables.items():
+        vlit = _clit(var)
         if rank == 0:
-            a(f'  out.push_back({H("box")}("{vlit}", {H("emit_real")}({storage})));')
-        elif rank == 1:
-            a(f'  require_bound(!{storage}.empty(), "{vlit}", cid);')
-            a("  {")
-            a(f"    const atmofab::View<const double, 1> view{{{storage}.data(),")
-            a(f"                                               {{static_cast<long>({storage}.size())}}}};")
-            a(f'    out.push_back({H("box")}("{vlit}", {H("emit_array_r1")}(view)));')
-            a("  }")
+            a(f'  out.push_back({H("box")}("{vlit}", {H("emit_real")}(st_{var})));')
         else:
-            extents = [f"{storage}.extent[{k}]" for k in range(rank)]
-            product = " * ".join(f"static_cast<std::size_t>({e})" for e in extents)
-            positive = " && ".join(f"{e} > 0" for e in extents)
-            a(f"  require_bound({positive} &&")
-            a(f"                    {storage}.data.size() == {product},")
-            a(f'                "{vlit}", cid);')
-            a("  {")
-            a(f"    const atmofab::View<const double, {rank}> view{{{storage}.data.data(),")
-            a(f"                                               {{{', '.join(extents)}}}}};")
-            a(f'    out.push_back({H("box")}("{vlit}", {H(f"emit_array_r{rank}")}(view)));')
-            a("  }")
+            a(f'  out.push_back({H("box")}("{vlit}", {H(f"emit_array_r{rank}")}(cv(st_{var}))));')
+    a(f'  out.push_back({H("box")}("step", {H("emit_real")}(static_cast<double>(step_c))));')
     a("  return out;")
     a("}")
     a("")
+    a("void write_capture(const std::string& name) {")
+    a(f"  {H('write_snapshot')}(name, capture_state(), t_c);")
+    a("}")
+    a("")
+    if plan.loop:
+        a("// A committed array's extremum, NaN when any cell is non-finite: a committed non-finite")
+        a("// cell must reach the series, whose loader refuses it.")
+        a("template <class A>")
+        a("double fold(const A& state, bool want_max) {")
+        a("  double x = want_max ? -std::numeric_limits<double>::infinity()")
+        a("                      : std::numeric_limits<double>::infinity();")
+        a("  const std::size_t n = flat_size(state);")
+        a("  const double* p = flat_data(state);")
+        a("  for (std::size_t k = 0; k < n; ++k) {")
+        a("    if (!std::isfinite(p[k])) {")
+        a("      return std::numeric_limits<double>::quiet_NaN();")
+        a("    }")
+        a("    x = want_max ? std::max(x, p[k]) : std::min(x, p[k]);")
+        a("  }")
+        a("  return x;")
+        a("}")
+        a("")
+        a("// One series column; the empty list is this glue's own token, since no emitter contract")
+        a("// covers a zero-length array.")
+        a("std::string series_json(std::vector<double>& column) {")
+        a("  if (column.empty()) {")
+        a('    return "[]";')
+        a("  }")
+        a(f"  return {H('emit_array_r1')}(cv(column));")
+        a("}")
+        a("")
     a("}  // namespace")
     a("")
     a("int main(int argc, char** argv) {")
@@ -437,65 +442,341 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("  // --- the threads per block the host imposed on this run's kernels (harness §3.3) ----")
     a(f"  atmofab::launch_block_size = {H('block_size')}();")
     a("")
-    a("  std::vector<std::vector<Named>> initial_cache;")
-    a("  std::vector<double> initial_time;")
-    a("  std::vector<std::vector<Named>> snap_cache;")
-    a("  std::vector<double> final_time;")
     a("  int steps_total = 0;")
-    a("  int cells_total = 0;")
-    a("  const std::chrono::steady_clock::time_point clock0 = std::chrono::steady_clock::now();")
+    a("  std::int64_t cells_total = 0;")
+    a("  double walltime = 0.0;")
     a("")
     a("  for (int ci = 0; ci < ncases; ++ci) {")
     a("    const std::string cid = case_ids[static_cast<std::size_t>(ci)];")
-    a("    bool setup_ok = false;")
-    a("    ck::case_setup(cid, setup_ok);")
-    a("")
-    a("    // --- initial state: bound storage serialized right after case_setup, before any")
-    a("    // --- callback of this case runs (raw/state_snapshots/initial/<case_id>.json) ---")
-    a("    initial_cache.push_back(capture_state(cid));")
-    a("    double tval = 0.0;")
-    a("    ck::get_time(tval);")
-    a("    initial_time.push_back(tval);")
-    a("")
-    a("    int steps_c = 0;")
-    a("    int cells_c = 0;")
-    a("    bool run_ok = false;")
-    a("    ck::case_run(cid, steps_c, cells_c, run_ok);")
-    a("    steps_total += steps_c;")
-    a("    cells_total += cells_c;")
-    a("")
-    a("    // --- final state: the same bound storage right after case_run, before any later")
-    a("    // --- callback of this case runs (raw/state_snapshots/<case_id>.json) ---")
-    a("    snap_cache.push_back(capture_state(cid));")
-    a("    ck::get_time(tval);")
-    a("    final_time.push_back(tval);")
-    a("")
+    a(f"    {H('read_case')}(cid, ok);")
+    a("    if (!ok) {")
+    a('      refuse("no readable case file", cid);')
+    a("    }")
+    a("    step_c = 0;")
+    a("    t_c = 0.0;")
+    a("    bool case_refused = false;")
+    if plan.loop:
+        a("    int n_c = 0;")
+        a("    int every_c = 0;")
+        a("    double dt_c = 0.0;")
+        a("    double t_start_c = 0.0;")
+        a(f"    std::vector<std::vector<double>> se({len(plan.series_names)});")
+    if plan.list_form:
+        for k, entry in enumerate(plan.entries, start=1):
+            joined = " || ".join(f'cid == "{_clit(c)}"' for c in entry.cases or ())
+            a(f"    {'if' if k == 1 else '} else if'} ({joined}) {{")
+            _render_entry(a, plan, entry, H, "      ")
+        a("    } else {")
+        a('      refuse("no drive entry runs this case", cid);')
+        a("    }")
+    else:
+        _render_entry(a, plan, plan.entries[0], H, "    ")
+    a("    steps_total += step_c;")
+    sizes = [f"flat_size(st_{v})" for v in plan.arrays]
+    largest = "std::size_t{1}"
+    for size in sizes:
+        largest = f"std::max({largest}, {size})"
+    a(f"    cells_total += static_cast<std::int64_t>(step_c) * "
+      f"static_cast<std::int64_t>({largest});")
     a("  }")
     a("")
-    a("  double walltime = std::chrono::duration<double>(std::chrono::steady_clock::now() - clock0)")
-    a("                        .count();")
     a("  if (walltime <= 0.0) {")
     a("    walltime = 1.0e-9;")
     a("  }")
-    a("")
-    # EVERY harness write happens here, after the last callback of the node has returned, and
-    # `finish` follows: no code of the node's sources runs after the harness has written anything
-    # (round 5 of this change's review: a callback that ran after the per-case snapshot
-    # write replaced it through a self-declared `syscall`). The snapshots were serialized at
-    # their capture points; only the writing is deferred.
-    a("  // --- emit the run outputs, after the last callback of the node: the snapshots")
-    a("  // --- serialized at their capture points, then the perf record -------------------")
-    a("  for (int ci = 0; ci < ncases; ++ci) {")
-    a("    const std::size_t k = static_cast<std::size_t>(ci);")
-    a(f'    {H("write_snapshot")}("initial/" + case_ids[k], initial_cache[k], initial_time[k]);')
-    a(f"    {H('write_snapshot')}(case_ids[k], snap_cache[k], final_time[k]);")
-    a("  }")
+    a("  // --- emit the perf record (harness owns its envelope) --------------------------")
     a(f'  {H("write_perf")}(case_ids[static_cast<std::size_t>(ncases - 1)], '
       f'"{_clit(target_class)}", steps_total,')
-    a(f"      cells_total, walltime, {ranks}, {threads}, {devices});")
+    a("      static_cast<int>(std::min<std::int64_t>(cells_total, "
+      "std::numeric_limits<int>::max())),")
+    a(f"      walltime, {ranks}, {threads}, {devices});")
     a("  finish(0);")
     a("}")
     return "\n".join(lines) + "\n"
+
+
+def _render_views(a: Any, plan: runner_ir.DriverPlan) -> None:
+    """The small overloads the driver reaches its storage through."""
+    a("// A non-owning view of a state array: writable (`mv`) or read-only (`cv`).")
+    a("inline atmofab::View<double, 1> mv(std::vector<double>& s) {")
+    a("  return {s.data(), {static_cast<long>(s.size())}};")
+    a("}")
+    a("inline atmofab::View<const double, 1> cv(const std::vector<double>& s) {")
+    a("  return {s.data(), {static_cast<long>(s.size())}};")
+    a("}")
+    a("inline std::size_t flat_size(const std::vector<double>& s) {")
+    a("  return s.size();")
+    a("}")
+    a("inline const double* flat_data(const std::vector<double>& s) {")
+    a("  return s.data();")
+    a("}")
+    a("inline void fill(std::vector<double>& s, double x) {")
+    a("  std::fill(s.begin(), s.end(), x);")
+    a("}")
+    host_ranks = {v.rank for v in plan.hosts if v.rank}
+    for rank in sorted((set(plan.array_ranks) | host_ranks) - {1}):
+        idx = ", ".join(f"s.extent[{k}]" for k in range(rank))
+        a(f"inline atmofab::View<double, {rank}> mv(atmofab::Array<double, {rank}>& s) {{")
+        a(f"  return {{s.data.data(), {{{idx}}}}};")
+        a("}")
+        a(f"inline atmofab::View<const double, {rank}> cv(const atmofab::Array<double, {rank}>& s)"
+          " {")
+        a(f"  return {{s.data.data(), {{{idx}}}}};")
+        a("}")
+        a(f"inline std::size_t flat_size(const atmofab::Array<double, {rank}>& s) {{")
+        a("  return s.data.size();")
+        a("}")
+        a(f"inline const double* flat_data(const atmofab::Array<double, {rank}>& s) {{")
+        a("  return s.data.data();")
+        a("}")
+        a(f"inline void fill(atmofab::Array<double, {rank}>& s, double x) {{")
+        a("  std::fill(s.data.begin(), s.data.end(), x);")
+        a("}")
+    a("")
+
+
+def _render_storage(a: Any, plan: runner_ir.DriverPlan) -> None:
+    for var, rank in plan.variables.items():
+        a(f"{_state_type(rank)} st_{var}{{}};")
+    for var in plan.work_vars:
+        a(f"{_state_type(plan.variables[var])} wk_{var}{{}};")
+    for var in plan.logical_states:
+        a(f"bool lg_{var} = false;")
+    for var in plan.integer_states:
+        a(f"int iv_{var} = 0;")
+    for value in plan.hosts:
+        cpp = (_state_type(value.rank) if value.rank else
+               {"real": "double", "integer": "int", "logical": "bool"}[value.kind])
+        a(f"{cpp} {value.local}{{}};")
+
+
+def _real_literal(value: float) -> str:
+    text = format(float(value), ".17g")
+    return text if any(ch in text for ch in ".e") else f"{text}.0"
+
+
+def _render_procedure(a: Any, plan: runner_ir.DriverPlan, proc: runner_ir.ProcedurePlan) -> None:
+    """A host-rendered procedure of the prototype (D11): the elementwise assignment of its one
+    array `out`, then the driver's call records. Rendered with the prototype's own lowering, so
+    the operation's `{type: procedure}` argument takes it."""
+    args = {x["name"]: x for x in proc.prototype.get("args") or []}
+
+    def name(token: str) -> str:
+        if token in proc.hosts:
+            return proc.hosts[token]
+        if token not in args:
+            raise RenderError(f"procedure expression names {token!r}, not a dummy of its "
+                              "prototype")
+        return f"{token}.data[p]" if runner_ir._dummy_rank(args[token]) else token
+
+    def function(fn: str, xs: list[str]) -> str:
+        if fn in ("min", "max"):
+            out = xs[0]
+            for x in xs[1:]:
+                out = f"std::{fn}<double>({out}, {x})"
+            return out
+        return f"std::{'fabs' if fn == 'abs' else fn}({', '.join(xs)})"
+
+    expr = runner_ir.lower_expression(
+        proc.tree, name=name, number=_real_literal,
+        power=lambda x, y: f"std::pow({x}, {y})", function=function)
+    params = cpp_signatures._render_params(proc.prototype.get("args") or [], proc.name)
+    a(f"void {proc.name}(")
+    for i, param in enumerate(params):
+        a(f"    {param}{',' if i < len(params) - 1 else ') {'}")
+    out = proc.out
+    rank = runner_ir._dummy_rank(args[out])
+    size = " * ".join(f"static_cast<std::size_t>({out}.extent[{k}])" for k in range(rank))
+    a(f"  const std::size_t n = {size};")
+    a("  for (std::size_t p = 0; p < n; ++p) {")
+    a(f"    {out}.data[p] = {expr};")
+    a("  }")
+    for param_name, spec in args.items():
+        used = (param_name == out or any(d == param_name for d, _ in proc.record)
+                or param_name in _names_of(proc.tree))
+        if not used:
+            a(f"  (void){param_name};")
+        del spec
+    if proc.calls:
+        a(f"  st_{proc.calls} += 1.0;")
+    if proc.record:
+        a(f"  const int call_no = {f'static_cast<int>(st_{proc.calls})' if proc.calls else '1'};")
+    for dummy, refs in proc.record:
+        if runner_ir._dummy_rank(args[dummy]) == 0:
+            sv = f"st_{refs[0]}"
+            a(f"  if (static_cast<std::size_t>(call_no) <= {sv}.size()) {{")
+            a(f"    {sv}[static_cast<std::size_t>(call_no - 1)] = {dummy};")
+            a("  }")
+            continue
+        for k, ref in enumerate(refs, start=1):
+            a(f"  if (call_no == {k}) {{")
+            data = f"st_{ref}.data" if plan.variables[ref] >= 2 else f"st_{ref}"
+            a(f"    {data}.assign({dummy}.data, {dummy}.data + n);")
+            a("  }")
+    a("}")
+    a("")
+
+
+def _names_of(tree: Any) -> set[str]:
+    import ast as _ast
+    return {n.id for n in _ast.walk(tree) if isinstance(n, _ast.Name)}
+
+
+def _actual(plan: runner_ir.DriverPlan, actual: runner_ir.Actual) -> str:
+    form, ref = actual.form, actual.ref
+    if form == "host":
+        return f"cv({ref.local})" if ref.rank else ref.local
+    if form == "state":
+        if plan.variables[ref] == 0:
+            return f"st_{ref}"
+        return f"{'mv' if actual.writes else 'cv'}(st_{ref})"
+    if form == "work":
+        return f"mv(wk_{ref})"
+    if form == "logical":
+        return f"lg_{ref}"
+    if form == "integer":
+        return f"iv_{ref}"
+    if form == "state_int":
+        return f"static_cast<int>(std::lround(st_{ref}))"
+    if form == "time":
+        return "t_c"
+    if form == "step":
+        return "step_c"
+    if form == "literal":
+        kind, value = ref
+        if kind == "logical":
+            return "true" if value else "false"
+        return str(int(value)) if kind == "integer" else _real_literal(float(value))
+    return ref.name
+
+
+def _render_call(a: Any, plan: runner_ir.DriverPlan, call: runner_ir.CallPlan, indent: str, *,
+                 timed: bool = False) -> None:
+    """Every logical `out` false before the call and written as 1 / 0 after it (D1)."""
+    for var in call.logical:
+        a(f"{indent}lg_{var} = false;")
+    for var in call.integer:
+        a(f"{indent}iv_{var} = 0;")
+    if timed:
+        a(f"{indent}const auto clock0 = std::chrono::steady_clock::now();")
+    actuals = ", ".join(_actual(plan, x) for x in call.actuals)
+    a(f"{indent}md::{call.operation}({actuals});")
+    if timed:
+        a(f"{indent}walltime += std::chrono::duration<double>(")
+        a(f"{indent}    std::chrono::steady_clock::now() - clock0).count();")
+    for var in call.logical:
+        a(f"{indent}st_{var} = lg_{var} ? 1.0 : 0.0;")
+    for var in call.integer:
+        a(f"{indent}st_{var} = static_cast<double>(iv_{var});")
+
+
+def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
+                  ind: str) -> None:
+    a(f"{ind}// --- the case file, read whole before any capture ---")
+    for value in entry.hosts:
+        key = _clit(value.key)
+        if value.rank:
+            a(f'{ind}{H(f"get_array_r{value.rank}")}("{key}", {value.local});')
+        else:
+            a(f'{ind}{value.local} = {H(runner_ir.GETTERS[value.kind])}("{key}");')
+    for var in entry.from_file:
+        rank = plan.variables[var]
+        if rank:
+            a(f'{ind}{H(f"get_array_r{rank}")}("{_clit(var)}", st_{var});')
+        else:
+            a(f'{ind}st_{var} = {H("get_real")}("{_clit(var)}");')
+    for var in entry.zero_scalars:
+        a(f"{ind}st_{var} = 0.0;")
+    for var, extents in entry.zero_arrays.items():
+        if plan.variables[var] == 1:
+            a(f"{ind}st_{var}.assign(static_cast<std::size_t>({extents[0]}), 0.0);")
+            continue
+        a(f"{ind}{{")
+        size = " * ".join(f"static_cast<std::size_t>({e})" for e in extents)
+        a(f"{ind}  st_{var}.data.assign({size}, 0.0);")
+        for k, e in enumerate(extents):
+            a(f"{ind}  st_{var}.extent[{k}] = {e};")
+        a(f"{ind}}}")
+    for var in plan.work_vars:
+        a(f"{ind}wk_{var} = st_{var};")
+    if plan.loop:
+        for key, target in (("t_start", "t_start_c"), ("dt", "dt_c")):
+            form, ref = entry.loop_values[key]
+            a(f"{ind}{target} = {ref.local if form == 'host' else '0.0'};")
+        form, ref = entry.loop_values["n_step"]
+        a(f"{ind}n_c = "
+          f"{'static_cast<int>(std::lround(' + ref.local + '))' if form == 'host' else '0'};")
+        a(f"{ind}every_c = static_cast<int>(std::lround({entry.loop_values['every'][1].local}));")
+        a(f"{ind}t_c = t_start_c;")
+    if entry.init is not None:
+        a(f"{ind}// --- init, on the state itself; a false result refuses the case ---")
+        _render_call(a, plan, entry.init, ind)
+        a(f"{ind}case_refused = !lg_{entry.init.result_state};")
+        if plan.loop:
+            state_loop = {k: v[1] for k, v in entry.loop_values.items() if v[0] == "state"}
+            if state_loop:
+                a(f"{ind}if (!case_refused) {{")
+                if "t_start" in state_loop:
+                    a(f"{ind}  t_start_c = st_{state_loop['t_start']};")
+                    a(f"{ind}  t_c = t_start_c;")
+                if "dt" in state_loop:
+                    a(f"{ind}  dt_c = st_{state_loop['dt']};")
+                    a(f"{ind}  if (!(dt_c > 0.0)) {{")
+                    a(f'{ind}    refuse("init wrote a dt <= 0", cid);')
+                    a(f"{ind}  }}")
+                if "n_step" in state_loop:
+                    a(f"{ind}  n_c = static_cast<int>(std::lround(st_{state_loop['n_step']}));")
+                    a(f"{ind}  if (n_c < 1) {{")
+                    a(f'{ind}    refuse("init wrote n_step < 1", cid);')
+                    a(f"{ind}  }}")
+                a(f"{ind}}}")
+            a(f"{ind}if (case_refused) {{")
+            a(f"{ind}  n_c = 0;")
+            a(f"{ind}}}")
+    a(f"{ind}// --- the initial capture (raw/state_snapshots/initial/<case_id>.json) ---")
+    a(f'{ind}write_capture("initial/" + cid);')
+    if plan.loop:
+        a(f"{ind}for (int n = 1; n <= n_c; ++n) {{")
+        in1 = ind + "  "
+        for var in entry.work_copy:
+            a(f"{in1}wk_{var} = st_{var};")
+        for var in entry.work_nan:
+            a(f"{in1}fill(wk_{var}, std::numeric_limits<double>::quiet_NaN());")
+        _render_call(a, plan, entry.step, in1, timed=True)
+        a(f"{in1}if (!lg_{entry.step.result_state}) {{")
+        a(f"{in1}  break;")
+        a(f"{in1}}}")
+        a(f"{in1}// --- committed: the state, step, t, the series entry, the sample ---")
+        for var in (*entry.work_copy, *entry.work_nan):
+            a(f"{in1}st_{var} = wk_{var};")
+        a(f"{in1}step_c = n;")
+        a(f"{in1}t_c = t_start_c + static_cast<double>(n) * dt_c;")
+        a(f"{in1}se[0].push_back(static_cast<double>(n));")
+        col = 1
+        for var in plan.arrays:
+            a(f"{in1}se[{col}].push_back(fold(st_{var}, false));")
+            a(f"{in1}se[{col + 1}].push_back(fold(st_{var}, true));")
+            col += 2
+        a(f"{in1}if (every_c > 0 && n % every_c == 0) {{")
+        a(f'{in1}  write_capture("history/" + cid + "__" + std::to_string(n));')
+        a(f"{in1}}}")
+        a(f"{ind}}}")
+    else:
+        a(f"{ind}if (!case_refused) {{")
+        a(f"{ind}  // --- one call on the state itself: what it leaves is the captured state ---")
+        _render_call(a, plan, entry.step, ind + "  ", timed=True)
+        a(f"{ind}  if (lg_{entry.step.result_state}) {{")
+        a(f"{ind}    step_c = 1;")
+        a(f"{ind}  }}")
+        a(f"{ind}}}")
+    a(f"{ind}// --- the final capture (raw/state_snapshots/<case_id>.json) ---")
+    a(f"{ind}write_capture(cid);")
+    if plan.loop:
+        a(f"{ind}{{")
+        a(f"{ind}  std::vector<Named> series;")
+        for col, name in enumerate(plan.series_names):
+            a(f'{ind}  series.push_back({H("box")}("{_clit(name)}", series_json(se[{col}])));')
+        a(f'{ind}  {H("write_snapshot")}("series/" + cid, series, t_c);')
+        a(f"{ind}}}")
 
 
 # --- harness interface signature pin (fail-closed, run before rendering) -----------------------

@@ -2061,7 +2061,6 @@ io_contract:
     - artifact: state_history
     - artifact: step_series
       names:
-      - t
       - step
       - h_min
       - h_max

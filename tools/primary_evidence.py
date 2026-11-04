@@ -18,7 +18,7 @@ leaf writes: `final.<v>` of a variable an operation WRITES (an `out` / `inout` d
 `history.<v>` and `series.<v>_min` / `_max` of a variable `final.<v>` counts for. `initial.<v>`
 of a variable the host materialised from the case's `initial_state`, `final.<v>` of a variable
 nothing writes (and its history), `final.step` / `final.t` and `history.t` / `history.step` /
-`series.t` / `series.step` (the driver's counters), a logical `out` state (of `step` or `init`,
+`series.step` (the driver's counter), a logical `out` state (of `step` or `init`,
 per case: a flag, so under a physics quantity it would value that judgment alone — review round
 5, R5-2), `derived.*` and `inputs.*` are not (`predicate_reads_state`); a flag stands only as a
 flag predicate (`fixed_form`). An IR with no `drive` (an
@@ -480,7 +480,7 @@ class StateReads(NamedTuple):
     variables whose `final.<v>` counts (those an operation writes, the logical `out` states aside),
     ``initial`` — those whose `initial.<v>` counts (those `init` writes, the logical ones aside).
     `history.<v>` and `series.<v>_min` / `_max` count for a ``final`` variable, the driver's
-    counters (`history.t`, `history.step`, `series.t`, `series.step`) never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
+    counters (`history.t`, `history.step`, `series.step`) never. ``loop`` — the IR declares `drive.loop`; ``closure_refs`` — the
     `<ref>`s gate (l) accepts in `final.step - <ref>` (`_zero_step_refs`: the counterpart of
     `loop.n_step`; None while gate (e) refuses `loop.n_step` itself — the IR is refused there,
     and any ref is then exempt so the refusal is not restated per predicate); ``closure_tests`` — the `test_id`s of the `expected_outcome: pass` tests gate
@@ -537,7 +537,7 @@ def is_state_read(ref: NameRef, state: StateReads | set[str] | frozenset[str],
     is kernel state in a case only when an entry that runs that case writes it
     (`StateReads.sets_for`, R2-2 / R2-3); None asks the node's classes. `history.<v>` and `series.<v>_min` / `_max` do when
     `final.<v>` does — the samples and the per-step folds of a variable the kernel writes; the
-    DRIVER's counters `history.t`, `history.step`, `series.t` and `series.step`, like
+    DRIVER's counters `history.t`, `history.step` and `series.step`, like
     `final.t` / `final.step`, never do (review round 2, R2-1: `max(series.step) ge 0` judged
     nothing the kernel produced), and neither does the history of a variable nothing writes
     (host data echoed per sample). A time or step capture, an input, a coordinate, a
@@ -1195,7 +1195,10 @@ def _load_history(sdir: Path, case_id: str, variables: dict[str, list[str]],
 def _load_series(sdir: Path, case_id: str) -> dict[str, np.ndarray]:
     """`series/<case_id>.json`: one rank-1 numeric list per name, all of one length — zero
     admitted (no committed step) — and every entry finite (the driver's fold carries a
-    non-finite committed cell into the entry; it is refused here, never laundered)."""
+    non-finite committed cell into the entry; it is refused here, never laundered). The file is
+    written through the harness's `__write_snapshot`, which adds the scalar time of the last
+    committed state under `t` (no boxed name can take that key: the JSON would hold it twice,
+    the writer's last): that one number is required and is not a series name."""
     path = sdir / _SERIES / f"{case_id}.json"
     if not path.is_file():
         raise PrimaryEvidenceError(f"series file {_SERIES}/{path.name} is absent")
@@ -1205,6 +1208,10 @@ def _load_series(sdir: Path, case_id: str) -> dict[str, np.ndarray]:
         raise PrimaryEvidenceError(f"series file {path.name} is unreadable: {exc}") from None
     if not isinstance(doc, dict):
         raise PrimaryEvidenceError(f"series file {path.name} is not a JSON object")
+    envelope = doc.pop("t", None)
+    if isinstance(envelope, bool) or not isinstance(envelope, (int, float)):
+        raise PrimaryEvidenceError(
+            f"series file {path.name}: 't' is {envelope!r}, not the number the writer adds")
     out: dict[str, np.ndarray] = {}
     for name, raw in doc.items():
         if not isinstance(raw, list) or _contains_non_number(raw):
@@ -2311,7 +2318,7 @@ def validate_primary_predicate_schema(
                      "history.<v> / series.<v>_min|_max of a written v) in expr or a "
                      "bind expr reaches: a predicate values the state the kernel produced (the "
                      "host's own initial_state read back, a derived.* value, final.step / "
-                     "final.t, the driver's history.t / history.step / series.t / series.step, "
+                     "final.t, the driver's history.t / history.step / series.step, "
                      "and a comparand.<point>.<var> — another target's state — are not "
                      f"this run's kernel state). {FLAG_FORM_STATEMENT}")
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
@@ -2541,9 +2548,14 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 class Binding(NamedTuple):
     """One `arguments` value: ``kind`` is ``inputs`` (``ref`` the dotted path), ``derived`` /
     ``state`` (``ref`` the name), ``time`` / ``step`` (``ref`` None), ``literal`` (``ref`` the
-    number or bool) or ``procedure`` (``ref`` the expression text, D11)."""
+    number or bool) or ``procedure`` (``ref`` the expression text, D11; ``calls`` the state
+    the driver counts the calls of the procedure in, ``record`` (prototype `in` dummy, states)
+    the states holding what the operation passed at its first calls, one state per call,
+    or one rank-1 state for a rank-0 dummy)."""
     kind: str
     ref: Any
+    calls: str | None = None
+    record: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def text(self) -> str:
         if self.kind in ("inputs", _DERIVED, _STATE_ROOT):
@@ -2553,9 +2565,19 @@ class Binding(NamedTuple):
         return self.kind if self.kind in _BINDING_WORDS else repr(self.ref)
 
 
+def _state_ref(raw: Any, whole: Any) -> str:
+    """The `<var>` of a `state.<var>` reference inside a procedure binding."""
+    text = raw.strip() if isinstance(raw, str) else ""
+    root, _, rest = text.partition(".")
+    if root != _STATE_ROOT or not _IDENT.fullmatch(rest):
+        raise PrimaryEvidenceError(f"binding {whole!r}: {raw!r} is not state.<var>")
+    return rest
+
+
 def parse_binding(value: Any) -> Binding:
     """Read one `drive` `arguments` value (SHAPE §2): `"inputs.<path>"`, `"derived.<name>"`,
-    `"state.<var>"`, `"time"`, `"step"`, a finite number or a bool, or `{procedure: "<expr>"}`.
+    `"state.<var>"`, `"time"`, `"step"`, a finite number or a bool, or `{procedure: "<expr>"}`
+    with optional `calls: "state.<var>"` and `record: {<dummy>: "state.<var>" | [...]}`.
     Raises `PrimaryEvidenceError` on anything else."""
     if isinstance(value, bool):
         return Binding("literal", value)
@@ -2565,10 +2587,21 @@ def parse_binding(value: Any) -> Binding:
         return Binding("literal", value)
     if isinstance(value, dict):
         text = value.get("procedure")
-        if set(value) == {"procedure"} and isinstance(text, str) and text.strip():
-            return Binding("procedure", text.strip())
+        if set(value) <= {"procedure", "calls", "record"} and isinstance(text, str) \
+                and text.strip():
+            calls = None if value.get("calls") is None else _state_ref(value["calls"], value)
+            raw = value.get("record", {})
+            if not isinstance(raw, dict):
+                raise PrimaryEvidenceError(f"binding {value!r}: record is a mapping of a "
+                                           "prototype in dummy -> state.<var> or a list of them")
+            record = tuple(
+                (str(dummy), tuple(_state_ref(r, value)
+                                   for r in (refs if isinstance(refs, list) else [refs])))
+                for dummy, refs in raw.items())
+            return Binding("procedure", text.strip(), calls, record)
         raise PrimaryEvidenceError(
-            f"binding {value!r}: the one mapping form is {{procedure: \"<expression>\"}}")
+            f"binding {value!r}: the one mapping form is {{procedure: \"<expression>\", "
+            "calls?, record?}")
     if isinstance(value, str):
         text = value.strip()
         if text in _BINDING_WORDS:
@@ -2822,7 +2855,10 @@ class DriveModel(NamedTuple):
     by `step`, read by no `step` dummy, not init-written, not logical (its `initial_state` is
     a number, the pre-call content); ``one_call_scalars`` — on a node without `loop`, a scalar
     bound to a rank-0 real / integer `out` of a `step` entry -> the array states the entries
-    binding it write (D7); ``types`` — the `spec.type` of the dummies bound to each state."""
+    binding it write (D7); ``types`` — the `spec.type` of the dummies bound to each state;
+    ``records`` — the states of a procedure binding's `calls` / `record` (D11): written by the
+    driver from what the operation passed, zero before the first call, no `initial_state`
+    entry."""
     block: DriveBlock
     variables: dict[str, list[str]]
     init_written: frozenset[str]
@@ -2833,11 +2869,12 @@ class DriveModel(NamedTuple):
     operation_only: frozenset[str]
     one_call_scalars: dict[str, frozenset[str]]
     types: dict[str, str]
+    records: frozenset[str] = frozenset()
 
     def needs_initial(self) -> frozenset[str]:
         """The variables a case gives an `initial_state` entry (gate (f)) — of a model
         `for_case`, that case's."""
-        return frozenset(self.variables) - self.init_written - self.logical
+        return frozenset(self.variables) - self.init_written - self.logical - self.records
 
     def for_case(self, case_id: str) -> DriveModel:
         """The classes IN ONE CASE (review round 2, R2-2 / R2-3): computed from the entries
@@ -2862,7 +2899,12 @@ def _model_from_block(block: DriveBlock, variables: dict[str, list[str]],
     read: set[str] = set()
     one_call: dict[str, set[str]] = {}
     types: dict[str, str] = {}
+    records: set[str] = set()
     for entry in (block.entries() if entries is None else entries):
+        for binding in entry.arguments.values():
+            if binding.kind == "procedure":
+                records.update([binding.calls] if binding.calls else [])
+                records.update(r for _dummy, refs in binding.record for r in refs)
         entry_arrays = {b.ref for name, b in entry.arguments.items()
                         if b.kind == _STATE_ROOT and (d := entry.dummy(name)) is not None
                         and d.get("intent") in ("out", "inout") and _dummy_rank(d) >= 1}
@@ -2891,7 +2933,9 @@ def _model_from_block(block: DriveBlock, variables: dict[str, list[str]],
                 one_call.setdefault(var, set()).update(entry_arrays)
     operation_only = step_written - read - init_written - logical
     return DriveModel(block=block, variables=dict(variables),
-                      init_written=frozenset(init_written), written=frozenset(written),
+                      init_written=frozenset(init_written),
+                      written=frozenset(written | records),
+                      records=frozenset(records),
                       result_states=frozenset(result_states), logical=frozenset(logical),
                       read=frozenset(read), operation_only=frozenset(operation_only),
                       one_call_scalars={s: frozenset(a) for s, a in one_call.items()},
@@ -3152,6 +3196,10 @@ def _input_paths(block: DriveBlock, entries: list[DriveEntry]) -> list[str]:
     paths: list[str] = []
     for entry in entries:
         paths.extend(b.ref for b in entry.arguments.values() if b.kind == "inputs")
+        # what a host-rendered procedure reads is the driver's to read too (issue #589 PR-1b)
+        for b in entry.arguments.values():
+            if b.kind == "procedure":
+                paths.extend(r.name for r in expr_names(parse_expr(b.ref)) if r.kind == "inputs")
     paths.extend(b.ref for b in (block.loop or {}).values() if b.kind == "inputs")
     if block.history_every is not None:
         paths.append(block.history_every)
@@ -3240,10 +3288,11 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
     for key in initial_raw:
         if key not in model.variables:
             raise PrimaryEvidenceError(f"initial_state.{key} is not a snapshot schema variable")
-        if key in cm.init_written or key in cm.logical:
+        if key in cm.init_written or key in cm.logical or key in cm.records:
             raise PrimaryEvidenceError(
-                f"initial_state.{key}: a variable init writes, or a logical result the driver "
-                "writes, takes no initial_state entry (the driver starts it at 0)")
+                f"initial_state.{key}: a variable init writes, a logical result or a call "
+                "record the driver writes, takes no initial_state entry (the driver starts it "
+                "at 0)")
     missing = sorted(cm.needs_initial() - set(initial_raw))
     if missing:
         raise PrimaryEvidenceError(f"initial_state has no entry for {missing}")
@@ -3391,6 +3440,14 @@ def _evaluate_case(model: DriveModel, schema: dict[str, Any],
     for path in _input_paths(block, entries):
         resolve_input_value(inputs, path)   # refuses an absent, non-numeric or non-finite one
         used[path] = _lookup_input(inputs, path)[1]
+    for entry in entries:
+        for name, binding in entry.arguments.items():
+            if binding.kind == "procedure":
+                for ref in expr_names(parse_expr(binding.ref)):
+                    if ref.kind == "inputs" and np.ndim(used[ref.name]) != 0:
+                        raise PrimaryEvidenceError(
+                            f"{entry.loc}.arguments.{name}: inputs.{ref.name} is an array: a "
+                            "procedure expression reads scalar inputs")
     return CaseValues(shapes=shapes, initial=initial, derived=derived, inputs=used,
                       derived_ints=frozenset(ints))
 
@@ -3686,8 +3743,78 @@ def scalar_pairing_violations(ir: dict[str, Any]) -> list[str]:
     return v
 
 
-def _binding_violations(model: DriveModel, schema_vars: dict[str, list[str]],
-                        v: list[str]) -> None:
+#: The functions a `{procedure: expr}` may call: elementwise over its array argument, each with
+#: a spelling in every language backend that lowers the expression (`runner_ir`).
+PROCEDURE_FUNCTIONS: frozenset[str] = frozenset(
+    {"abs", "sqrt", "exp", "log", "sin", "cos", "min", "max"})
+
+
+def _procedure_violations(ir: dict[str, Any], binding: Binding, dummy: dict[str, Any], loc: str,
+                          schema_vars: dict[str, list[str]], bound: set[str],
+                          v: list[str]) -> None:
+    """Gate (b) of a `{procedure: expr}` binding (D11): the dummy names a `public_api.interfaces`
+    prototype with exactly one array `out`; the expression is of the grammar, calls only
+    `PROCEDURE_FUNCTIONS`, and reads only the prototype's rank-0 real and array `in` dummies,
+    `inputs.*` and the constants; `calls` is a scalar state; each `record` key is an `in` dummy,
+    a rank-0 dummy naming one rank-1 state and an array dummy a list of states of its rank."""
+    spec = dummy.get("spec") if isinstance(dummy.get("spec"), dict) else {}
+    api = ir.get("public_api") if isinstance(ir.get("public_api"), dict) else {}
+    proto = None
+    for item in (api.get("interfaces") if isinstance(api.get("interfaces"), list) else []):
+        if isinstance(item, dict) and item.get("name") == spec.get("interface"):
+            proto = item.get("signature")
+    args = proto.get("args") if isinstance(proto, dict) else None
+    if not isinstance(args, list) or not all(isinstance(a, dict) for a in args):
+        v.append(f"{loc}: the dummy names no public_api.interfaces prototype with its args")
+        return
+    outs = [a for a in args if a.get("intent") == "out"]
+    if len(outs) != 1 or _dummy_rank(outs[0]) < 1 or _dummy_type(outs[0]) != "real":
+        v.append(f"{loc}: a host-rendered procedure assigns one real array out of its prototype "
+                 f"({[a.get('name') for a in outs]})")
+        return
+    readable = {a.get("name") for a in args if a.get("intent") == "in" and _dummy_type(a) == "real"
+                and _dummy_rank(a) in (0, _dummy_rank(outs[0]))}
+    try:
+        tree = parse_expr(binding.ref)
+        refs = expr_names(tree)
+    except PrimaryEvidenceError as exc:
+        v.append(f"{loc}: {exc}")
+        return
+    for ref in refs:
+        if ref.kind == "inputs" or (ref.kind == "name" and (ref.name in readable
+                                                            or ref.name in CONSTANTS)):
+            continue
+        v.append(f"{loc}: the expression reads {ref.name!r}; a procedure expression reads the "
+                 f"prototype's real in dummies {sorted(readable)}, inputs.* and constants")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = node.func.id if isinstance(node.func, ast.Name) else None
+            if name not in PROCEDURE_FUNCTIONS:
+                v.append(f"{loc}: {name}() is not elementwise; a procedure expression calls "
+                         f"{sorted(PROCEDURE_FUNCTIONS)}")
+    if binding.calls is not None:
+        bound.add(binding.calls)
+        if schema_vars.get(binding.calls) != []:
+            v.append(f"{loc}: calls: state.{binding.calls} is not a scalar schema variable")
+    ins = {a.get("name"): a for a in args if a.get("intent") == "in"}
+    for name, refs_ in binding.record:
+        if name not in ins:
+            v.append(f"{loc}: record.{name} is not an in dummy of the prototype")
+            continue
+        rank = _dummy_rank(ins[name])
+        bound.update(refs_)
+        for ref_ in refs_:
+            if ref_ not in schema_vars:
+                v.append(f"{loc}: record.{name}: state.{ref_} is not a snapshot schema variable")
+            elif rank == 0 and (len(refs_) != 1 or len(schema_vars[ref_]) != 1):
+                v.append(f"{loc}: record.{name}: a rank-0 dummy is recorded into one rank-1 state")
+            elif rank >= 1 and len(schema_vars[ref_]) != rank:
+                v.append(f"{loc}: record.{name}: state.{ref_} has rank "
+                         f"{len(schema_vars[ref_])}, the dummy {rank}")
+
+
+def _binding_violations(ir: dict[str, Any], model: DriveModel,
+                        schema_vars: dict[str, list[str]], v: list[str]) -> None:
     """Gate (b): each binding admitted for its dummy's intent, rank and type (SHAPE §2)."""
     block = model.block
     bound: set[str] = set()
@@ -3707,6 +3834,8 @@ def _binding_violations(model: DriveModel, schema_vars: dict[str, list[str]],
                 if dtype != "procedure" or binding.kind != "procedure":
                     v.append(f"{loc}: {{procedure: ...}} binds a procedure-typed dummy, and a "
                              "procedure-typed dummy takes nothing else (D11)")
+                else:
+                    _procedure_violations(ir, binding, dummy, loc, schema_vars, bound, v)
                 continue
             if binding.kind == _STATE_ROOT:
                 var = binding.ref
@@ -3880,7 +4009,7 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                          f"init is {spec_id}__init")
 
     # (b) the bindings
-    _binding_violations(model, schema_vars, v)
+    _binding_violations(ir, model, schema_vars, v)
 
     # (d) the result names a logical out of the operation
     for entry in block.entries():
@@ -3939,9 +4068,10 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
             if key not in schema_vars:
                 v.append(f"(f) case {cid!r}: initial_state.{key} is not a snapshot schema "
                          "variable")
-            elif key in cm.init_written or key in cm.logical:
-                v.append(f"(f) case {cid!r}: initial_state.{key} — a variable init writes, or a "
-                         "logical result the driver writes, takes no initial_state entry")
+            elif key in cm.init_written or key in cm.logical or key in cm.records:
+                v.append(f"(f) case {cid!r}: initial_state.{key} — a variable init writes, a "
+                         "logical result or a call record the driver writes, takes no "
+                         "initial_state entry")
             elif key in cm.operation_only and not _is_number(initial[key]):
                 v.append(f"(f) case {cid!r}: initial_state.{key} — an output the operation only "
                          "writes takes a number literal (its pre-call content)")
@@ -4010,7 +4140,7 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
 
     # (h) the history artifacts
     arrays = sorted(n for n, d in schema_vars.items() if d)
-    expected = {"t", STEP_CAPTURE} | {f"{a}_{m}" for a in arrays for m in ("min", "max")}
+    expected = {STEP_CAPTURE} | {f"{a}_{m}" for a in arrays for m in ("min", "max")}
     series = entries.get("step_series")
     if (series is not None) != (block.loop is not None):
         v.append("(h) the step_series evidence entry is declared iff drive.loop is")
@@ -4019,7 +4149,7 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
         listed = [n for n in (names if isinstance(names, list) else []) if isinstance(n, str)]
         if not isinstance(names, list) or len(listed) != len(names) \
                 or len(set(listed)) != len(listed) or set(listed) != expected:
-            v.append(f"(h) step_series.names must be exactly {sorted(expected)} (t, step and the "
+            v.append(f"(h) step_series.names must be exactly {sorted(expected)} (step and the "
                      f"min / max of every array state); got {names!r}")
     if ("state_history" in entries) != (block.history_every is not None):
         v.append("(h) the state_history evidence entry is declared iff drive.history is")

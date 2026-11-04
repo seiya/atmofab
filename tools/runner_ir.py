@@ -21,7 +21,11 @@ Pure; imports only the seam's error class and the neutral case-id token grammar.
 
 from __future__ import annotations
 
+import ast
+import math
+import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from tools.host_render import RenderError
@@ -182,8 +186,7 @@ def infra_dep_count(ir: dict[str, Any]) -> int:
 # ------------------------------------------------------------------------------------- drive
 #
 # The `drive` block (issue #589, PR-1a): what the host-rendered driver calls per case, on what,
-# and how often. These readers are what the PR-1b renderers will call; no renderer calls them
-# yet. They are stated HERE, not imported from `tools/primary_evidence.py` (which models the
+# and how often. The renderers call these readers through `driver_plan` below. They are stated HERE, not imported from `tools/primary_evidence.py` (which models the
 # same block for the verdict and the case-file writer): this module is digested into the render
 # tuple and that one into the verdict tuple, and an import across would let a render-time
 # behaviour change ride on a digest that does not cover it. The two readings are held equal by
@@ -197,17 +200,32 @@ def _ident(text: str) -> bool:
     return bool(text) and not text[0].isdigit() and set(text) <= _IDENT_CHARS
 
 
+def _state_ref(raw: Any) -> str:
+    root, _, rest = str(raw).strip().partition(".")
+    if root != "state" or not _ident(rest):
+        raise RenderError(f"procedure binding: {raw!r} is not state.<var>")
+    return rest
+
+
 def drive_binding(value: Any) -> tuple[str, Any]:
     """One `arguments` value as ``(kind, ref)``: ``("inputs", "<dotted path>")``,
     ``("derived", name)``, ``("state", var)``, ``("time", None)``, ``("step", None)``,
-    ``("literal", value)`` or ``("procedure", "<expression>")``. RenderError otherwise."""
+    ``("literal", value)`` or ``("procedure", ("<expression>", calls, record))``. RenderError
+    otherwise."""
     if isinstance(value, bool) or (isinstance(value, (int, float)) and value == value
                                    and value not in (float("inf"), float("-inf"))):
         return ("literal", value)
     if isinstance(value, dict):
         text = value.get("procedure")
-        if set(value) == {"procedure"} and isinstance(text, str) and text.strip():
-            return ("procedure", text.strip())
+        if set(value) <= {"procedure", "calls", "record"} and isinstance(text, str) \
+                and text.strip():
+            calls = value.get("calls")
+            raw = value.get("record") or {}
+            record = tuple(
+                (str(k), tuple(_state_ref(r) for r in (refs if isinstance(refs, list) else [refs])))
+                for k, refs in (raw.items() if isinstance(raw, dict) else ()))
+            return ("procedure", (text.strip(), None if calls is None else _state_ref(calls),
+                                  record))
     if isinstance(value, str):
         text = value.strip()
         if text in ("time", "step"):
@@ -361,3 +379,420 @@ def drive_state_classes(ir: dict[str, Any]) -> dict[str, frozenset[str]]:
     classes["operation_only"] = (step_written - classes["read"] - classes["init_written"]
                                  - classes["logical"])
     return {k: frozenset(v) for k, v in classes.items()}
+
+
+# ------------------------------------------------------------------------------- driver plan
+#
+# What both language renderers spell: the host-rendered driver of one IR, as data (issue #589
+# PR-1b). A renderer adds names and syntax and decides nothing the plan states.
+
+#: The functions a procedure expression may call (the verdict tuple's
+#: `primary_evidence.PROCEDURE_FUNCTIONS`, held equal by `test_runner_ir.py`).
+PROCEDURE_FUNCTIONS = frozenset({"abs", "sqrt", "exp", "log", "sin", "cos", "min", "max"})
+_PROCEDURE_CONSTANTS = {"pi": math.pi, "e": math.e}
+
+
+#: The harness's rank-0 reading operation of each driven type.
+GETTERS = {"real": "get_real", "integer": "get_int", "logical": "get_bool"}
+
+
+@dataclass(frozen=True)
+class HostValue:
+    """One value a case file holds that a call or the loop reads. ``key`` is its key in the
+    file, ``local`` the driver's variable. ``kind`` is real / integer / logical (the getter)."""
+    key: str
+    kind: str
+    rank: int
+    local: str
+
+
+@dataclass(frozen=True)
+class Actual:
+    """How one dummy is passed. ``form``: ``host`` (``ref`` a `HostValue`), ``state`` (the state
+    itself), ``work`` (its work copy on a `loop` node), ``logical`` / ``integer`` (a temporary
+    the driver writes into the scalar state after the call), ``state_int`` (a rank-0 integer
+    `in` read from a scalar state), ``time``, ``step``, ``literal``, ``procedure`` (``ref`` a
+    `ProcedurePlan`); ``writes`` — the dummy's intent is not `in`."""
+    form: str
+    ref: Any = None
+    writes: bool = False
+
+
+@dataclass(frozen=True)
+class ProcedurePlan:
+    """A host-rendered procedure of a prototype: the local ``name``, the ``prototype`` signature,
+    ``out`` the dummy it assigns, ``tree`` the expression, ``calls`` / ``record`` the states the
+    driver writes at each call (``record``: prototype dummy -> states, one per call, or one
+    rank-1 state for a rank-0 dummy)."""
+    name: str
+    prototype: dict[str, Any]
+    out: str
+    tree: ast.expr
+    hosts: dict[str, str]
+    calls: str | None
+    record: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+@dataclass(frozen=True)
+class CallPlan:
+    operation: str
+    result: str
+    actuals: tuple[Actual, ...]
+    #: state -> the temporary kind, for the scalars written back after the call.
+    logical: tuple[str, ...]
+    integer: tuple[str, ...]
+    result_state: str
+
+
+@dataclass(frozen=True)
+class EntryPlan:
+    """What one `drive.step` entry's cases do. ``cases`` None: every case. ``hosts`` is read
+    from the case file before any capture; ``from_file`` the states with an `initial_state`
+    entry; ``zero_arrays`` state -> extent tokens over the entry's integer locals (allocated and
+    zeroed by the driver); ``zero_scalars`` likewise; ``extent_exprs`` of the state arrays in
+    schema order are what the perf record multiplies at run time."""
+    cases: tuple[str, ...] | None
+    hosts: tuple[HostValue, ...]
+    from_file: tuple[str, ...]
+    zero_arrays: dict[str, tuple[str, ...]]
+    zero_scalars: tuple[str, ...]
+    init: CallPlan | None
+    step: CallPlan
+    work_nan: tuple[str, ...]
+    work_copy: tuple[str, ...]
+    loop_values: dict[str, Any]
+    procedures: tuple[ProcedurePlan, ...]
+
+
+@dataclass(frozen=True)
+class DriverPlan:
+    variables: dict[str, int]
+    arrays: tuple[str, ...]
+    scalars: tuple[str, ...]
+    entries: tuple[EntryPlan, ...]
+    list_form: bool
+    loop: bool
+    array_ranks: tuple[int, ...]
+    getters: tuple[str, ...]
+    series_names: tuple[str, ...]
+    work_vars: tuple[str, ...]
+    logical_states: tuple[str, ...]
+    integer_states: tuple[str, ...]
+    record_states: tuple[str, ...]
+    hosts: tuple[HostValue, ...]
+    procedure_hosts: tuple[HostValue, ...]
+
+
+def _dummy_rank(dummy: dict[str, Any]) -> int:
+    rank = dummy.get("rank")
+    return rank if isinstance(rank, int) and not isinstance(rank, bool) else len(
+        dummy.get("dims") or [])
+
+
+def _dummy_type(dummy: dict[str, Any]) -> Any:
+    return dget(dget(dummy, "spec", {}), "type")
+
+
+def _interface(ir: dict[str, Any], name: Any) -> dict[str, Any]:
+    for item in dget(dget(ir, "public_api", {}), "interfaces", []) or []:
+        if dget(item, "name") == name and isinstance(dget(item, "signature"), dict):
+            return item["signature"]
+    raise RenderError(f"procedure dummy names no public_api.interfaces prototype {name!r}")
+
+
+def _procedure_tree(text: str) -> ast.expr:
+    try:
+        return ast.parse(text, mode="eval").body
+    except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
+        raise RenderError(f"procedure expression {text!r} does not parse: {exc}") from None
+
+
+def procedure_input_paths(tree: ast.expr) -> list[str]:
+    """The `inputs.<path>` an expression reads, each once, in source order."""
+    paths: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            parts: list[str] = []
+            cur: ast.expr = node
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name) and cur.id == "inputs":
+                path = ".".join(reversed(parts))
+                if not any(p == path or p.startswith(path + ".") for p in paths):
+                    paths = [p for p in paths if not path.startswith(p + ".")] + [path]
+    return paths
+
+
+def lower_expression(node: ast.expr, *, name: Callable[[str], str],
+                     number: Callable[[float], str],
+                     power: Callable[[str, str], str],
+                     function: Callable[[str, list[str]], str]) -> str:
+    """A procedure expression as source text, spelled by the renderer's four callbacks. Every
+    number is lowered as a real (a `1 / 2` is a half), every operand parenthesised. Anything but
+    `+ - * / **`, unary `+ -`, a number, a name, an `inputs.*` path and `PROCEDURE_FUNCTIONS` is
+    refused."""
+    def go(n: ast.expr) -> str:
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) \
+                and not isinstance(n.value, bool):
+            return number(float(n.value))
+        if isinstance(n, ast.Name):
+            if n.id in _PROCEDURE_CONSTANTS:
+                return number(_PROCEDURE_CONSTANTS[n.id])
+            return name(n.id)
+        if isinstance(n, ast.Attribute):
+            parts: list[str] = []
+            cur: ast.expr = n
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name) and cur.id == "inputs":
+                return name("inputs." + ".".join(reversed(parts)))
+            raise RenderError("a procedure expression's dotted name is inputs.<path>")
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.USub, ast.UAdd)):
+            return f"({'-' if isinstance(n.op, ast.USub) else '+'}{go(n.operand)})"
+        if isinstance(n, ast.BinOp):
+            if isinstance(n.op, ast.Pow):
+                return power(go(n.left), go(n.right))
+            ops = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}
+            if type(n.op) in ops:
+                return f"({go(n.left)} {ops[type(n.op)]} {go(n.right)})"
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+                and n.func.id in PROCEDURE_FUNCTIONS and not n.keywords:
+            return function(n.func.id, [go(a) for a in n.args])
+        raise RenderError(f"a procedure expression cannot lower {ast.dump(n)[:60]}")
+    return go(node)
+
+
+def _extent_tokens(dummy: dict[str, Any], fallback: list[str] | None, dummy_local: Any) -> tuple[
+        str, ...]:
+    dims = dummy.get("dims")
+    tokens = (dims if isinstance(dims, list) and dims
+              and all(isinstance(t, str) and t.strip() != ":" for t in dims) else fallback)
+    if tokens is None:
+        raise RenderError(f"array dummy {dummy.get('name')!r} has no dims and no shape_expr")
+    return tuple(_IDENT_RE.sub(lambda m: dummy_local(m.group(0)), str(t)) for t in tokens)
+
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _shape_tokens(shape_expr: Any) -> list[str]:
+    text = str(shape_expr).strip()
+    if text.lower() == "scalar":
+        return []
+    return [t.strip() for t in text[1:-1].split(",") if t.strip()]
+
+
+def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
+    """The driver of ``ir`` (``variables``: the snapshot schema, name -> shape_expr), or
+    RenderError for a shape the renderers have no spelling for: an `init` or `step` dummy that is
+    neither a real, an integer, a logical nor a procedure, a logical `in` bound to a state, an
+    integer array, a real `in` scalar bound to `step`."""
+    ranks = {v: rank_of_shape(shape, v) for v, shape in variables.items()}
+    init = drive_init(ir)
+    steps = drive_steps(ir)
+    loop = drive_loop(ir)
+    every = drive_history_every(ir)
+    if (loop is None) != (every is None):
+        raise RenderError("drive.history is declared exactly when drive.loop is")
+    if loop is not None and len(steps) != 1:
+        raise RenderError("a loop node's drive.step is one mapping entry")
+    hosts: dict[tuple[str, str, int], HostValue] = {}
+
+    def host(key: str, kind: str, rank: int) -> HostValue:
+        found = hosts.get((key, kind, rank))
+        if found is None:
+            found = HostValue(key, kind, rank, f"h{len(hosts) + 1}")
+            hosts[(key, kind, rank)] = found
+        return found
+
+    logical_states: set[str] = set()
+    integer_states: set[str] = set()
+    record_states: set[str] = set()
+    procedure_hosts: dict[str, HostValue] = {}
+    work_vars: set[str] = set()
+
+    def call_plan(call: dict[str, Any], role: str, used: list[HostValue],
+                  procedures: list[ProcedurePlan]) -> tuple[CallPlan, dict[str, str]]:
+        """The call, and dummy -> extent term for the rank-0 dummies of an extent."""
+        actuals: list[Actual] = []
+        logical: list[str] = []
+        integer: list[str] = []
+        locals_: dict[str, str] = {}
+        for dummy in call["dummies"]:
+            name = dummy["name"]
+            kind, ref = call["bindings"][name]
+            dtype, rank, intent = _dummy_type(dummy), _dummy_rank(dummy), dummy.get("intent")
+            if dtype == "procedure":
+                if kind != "procedure":
+                    raise RenderError(f"procedure dummy {name!r} takes {{procedure: <expr>}}")
+                proto = _interface(ir, dget(dummy["spec"], "interface"))
+                plan = _procedure_plan(call, name, proto, ref, len(procedures) + 1, host,
+                                       procedure_hosts, used)
+                procedures.append(plan)
+                actuals.append(Actual("procedure", plan))
+                record_states.update([plan.calls] if plan.calls else [])
+                record_states.update(r for _d, refs in plan.record for r in refs)
+                continue
+            if dtype not in ("real", "integer", "logical"):
+                raise RenderError(f"dummy {name!r} of type {dtype!r} cannot be driven")
+            if rank >= 1 and dtype != "real":
+                raise RenderError(f"dummy {name!r}: a non-real array has no driver storage")
+            if kind in ("inputs", "derived"):
+                value = host(f"{kind}.{ref}", dtype, rank)
+                used.append(value)
+                actuals.append(Actual("host", value))
+                if rank == 0:
+                    locals_[name] = value.local
+            elif kind == "literal":
+                actuals.append(Actual("literal", (dtype, ref)))
+                if rank == 0:
+                    locals_[name] = str(ref)
+            elif kind == "time":
+                actuals.append(Actual("time"))
+            elif kind == "step":
+                actuals.append(Actual("step"))
+            elif kind == "state":
+                if rank == 0 and intent == "out":
+                    if dtype == "logical":
+                        logical.append(ref)
+                        logical_states.add(ref)
+                        actuals.append(Actual("logical", ref))
+                    elif dtype == "integer":
+                        integer.append(ref)
+                        integer_states.add(ref)
+                        actuals.append(Actual("integer", ref))
+                    else:
+                        actuals.append(Actual("state", ref, True))
+                elif rank == 0 and dtype == "logical":
+                    raise RenderError(f"logical in dummy {name!r} bound to a state")
+                elif rank == 0 and dtype == "integer":
+                    actuals.append(Actual("state_int", ref))
+                elif role == "step" and loop is not None and intent in ("out", "inout"):
+                    work_vars.add(ref)
+                    actuals.append(Actual("work", ref, True))
+                else:
+                    actuals.append(Actual("state", ref, intent != "in"))
+            else:
+                raise RenderError(f"dummy {name!r} is bound to {kind!r}")
+        result = call["bindings"].get(call["result"])
+        if result is None or result[0] != "state" or result[1] not in logical:
+            raise RenderError(f"{call['operation']}: result {call['result']!r} is not a logical "
+                              "out bound to a scalar state")
+        return (CallPlan(call["operation"], call["result"], tuple(actuals), tuple(logical),
+                         tuple(integer), result[1]), locals_)
+
+    entries: list[EntryPlan] = []
+    for step in steps:
+        used: list[HostValue] = []
+        procedures: list[ProcedurePlan] = []
+        init_plan, init_locals = (call_plan(init, "init", used, procedures)
+                                  if init is not None else (None, {}))
+        step_plan, step_locals = call_plan(step, "step", used, procedures)
+        locals_ = {**step_locals, **init_locals}
+        classes = _case_classes(init, step)
+        written_by_init = classes["init_written"]
+        driver_written = written_by_init | frozenset(step_plan.logical) \
+            | frozenset(init_plan.logical if init_plan else ()) | frozenset(record_states)
+        from_file = tuple(v for v in variables if v not in driver_written)
+        zero_scalars = tuple(v for v in variables if v in driver_written and ranks[v] == 0)
+        zero_arrays: dict[str, tuple[str, ...]] = {}
+
+        def dummy_local(token: str) -> str:
+            if token not in locals_:
+                raise RenderError(f"extent token {token!r} names no rank-0 dummy bound to an "
+                                  "input, a derived value or a literal")
+            return locals_[token]
+
+        for var in variables:
+            if var in driver_written and ranks[var] >= 1:
+                bound = _dummy_bound_to(init, step, var)
+                zero_arrays[var] = _extent_tokens(
+                    bound if bound is not None else {}, _shape_tokens(variables[var]),
+                    dummy_local)
+        loop_values: dict[str, Any] = {}
+        if loop is not None:
+            for key in ("n_step", "dt", "t_start"):
+                kind, ref = loop[key]
+                if kind == "state":
+                    loop_values[key] = ("state", ref)
+                else:
+                    value = host(f"{kind}.{ref}", "real", 0)
+                    used.append(value)
+                    loop_values[key] = ("host", value)
+            value = host(f"inputs.{every}", "real", 0)
+            used.append(value)
+            loop_values["every"] = ("host", value)
+        work_nan = tuple(a.ref for a, d in zip(step_plan.actuals, step["dummies"])
+                         if a.form == "work" and d.get("intent") == "out")
+        work_copy = tuple(a.ref for a, d in zip(step_plan.actuals, step["dummies"])
+                          if a.form == "work" and d.get("intent") == "inout")
+        entries.append(EntryPlan(
+            cases=tuple(step["cases"]) if step["cases"] is not None else None,
+            hosts=tuple(dict.fromkeys(used)), from_file=from_file, zero_arrays=zero_arrays,
+            zero_scalars=zero_scalars, init=init_plan, step=step_plan, work_nan=work_nan,
+            work_copy=work_copy, loop_values=loop_values, procedures=tuple(procedures)))
+    arrays = tuple(v for v in variables if ranks[v] >= 1)
+    scalars = tuple(v for v in variables if ranks[v] == 0)
+    getters: set[str] = set()
+    for value in hosts.values():
+        getters.add(f"get_array_r{value.rank}" if value.rank else GETTERS[value.kind])
+    for entry in entries:
+        for var in entry.from_file:
+            getters.add(f"get_array_r{ranks[var]}" if ranks[var] else "get_real")
+    for var in record_states:
+        if var not in variables:
+            raise RenderError(f"record state {var!r} is not a snapshot variable")
+    return DriverPlan(
+        variables=ranks, arrays=arrays, scalars=scalars, entries=tuple(entries),
+        list_form=steps[0]["cases"] is not None, loop=loop is not None,
+        array_ranks=tuple(sorted({ranks[v] for v in arrays})),
+        getters=tuple(sorted(getters)),
+        series_names=("step", *(f"{v}_{m}" for v in arrays for m in ("min", "max")))
+        if loop is not None else (),
+        work_vars=tuple(v for v in variables if v in work_vars),
+        logical_states=tuple(v for v in variables if v in logical_states),
+        integer_states=tuple(v for v in variables if v in integer_states),
+        record_states=tuple(v for v in variables if v in record_states),
+        hosts=tuple(hosts.values()), procedure_hosts=tuple(procedure_hosts.values()))
+
+
+def _procedure_plan(call: dict[str, Any], dummy: str, proto: dict[str, Any], binding: Any,
+                    index: int, host: Callable[[str, str, int], HostValue],
+                    procedure_hosts: dict[str, HostValue], used: list[HostValue],
+                    ) -> ProcedurePlan:
+    text, calls, record = binding
+    args = proto.get("args") or []
+    outs = [a for a in args if a.get("intent") == "out"]
+    if len(outs) != 1 or _dummy_rank(outs[0]) < 1:
+        raise RenderError(f"procedure {dummy!r}: its prototype has no one array out")
+    tree = _procedure_tree(text)
+    hosts: dict[str, str] = {}
+    for path in procedure_input_paths(tree):
+        value = host(f"inputs.{path}", "real", 0)
+        used.append(value)
+        procedure_hosts[path] = value
+        hosts[f"inputs.{path}"] = value.local
+    return ProcedurePlan(name=f"driver_{dummy}_{index}", prototype=proto, out=outs[0]["name"],
+                         tree=tree, hosts=hosts, calls=calls, record=record)
+
+
+def _dummy_bound_to(init: dict[str, Any] | None, step: dict[str, Any], var: str
+                    ) -> dict[str, Any] | None:
+    for call in ([init] if init is not None else []) + [step]:
+        for dummy in call["dummies"]:
+            kind, ref = call["bindings"][dummy["name"]]
+            if kind == "state" and ref == var:
+                return dummy
+    return None
+
+
+def _case_classes(init: dict[str, Any] | None, step: dict[str, Any]) -> dict[str, frozenset[str]]:
+    written: set[str] = set()
+    for dummy in (init["dummies"] if init is not None else ()):
+        kind, ref = init["bindings"][dummy["name"]]
+        if kind == "state" and dummy.get("intent") == "out":
+            written.add(ref)
+    del step
+    return {"init_written": frozenset(written)}
