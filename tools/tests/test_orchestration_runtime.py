@@ -22118,7 +22118,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # 103400->105800; measured 105312 the same way at the commit that takes this bump.
         # Issue #589 PR-1b (`series.t` out, the procedure binding's `calls` / `record`): bumped
         # 105800->107200; measured 106733 at this commit.
-        "docs/workflow/phases/phase_01_compile.md": 107200,
+        # Issue #589 PR-3 (the zero extent, a `derived` dims token, the one-cell reduction): bumped
+        # 107200->107400; measured 107300 at this commit.
+        "docs/workflow/phases/phase_01_compile.md": 107400,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

@@ -1750,7 +1750,8 @@ def _validate_raw_evidence(
             snapshot_data_files = [p for p in files
                                    if p != schema_path and p.parent != series_dir]
             _validate_series_files(repo_root, execution, snapshots_dir, violations)
-            if _ir_drives_the_runner(repo_root, execution):
+            driver_wrote_snapshots = _ir_drives_the_runner(repo_root, execution)
+            if driver_wrote_snapshots:
                 _validate_driver_step_key(snapshot_data_files, violations)
             for snapshot in files:
                 text = snapshot.read_text(encoding="utf-8", errors="ignore")
@@ -1864,9 +1865,12 @@ def _validate_raw_evidence(
                                         f"{snapshot}:{name} has unsupported or ragged shape"
                                     )
                                     continue
-                                # A zero-extent guard case's state: nested lists cannot spell
-                                # the extents after the zero (issue #589 PR-3).
-                                if 0 not in value_shape and not _shape_matches_expr(shape_expr, value_shape):
+                                # A zero-extent guard case's state, the host-rendered driver's:
+                                # nested lists cannot spell the extents after the zero (issue
+                                # #589 PR-3). A harness self-test's own runner has no such case.
+                                if 0 in value_shape and driver_wrote_snapshots:
+                                    continue
+                                if not _shape_matches_expr(shape_expr, value_shape):
                                     violations.append(
                                         f"{snapshot}:{name} shape {value_shape} does not match declared shape_expr {shape_expr}"
                                     )

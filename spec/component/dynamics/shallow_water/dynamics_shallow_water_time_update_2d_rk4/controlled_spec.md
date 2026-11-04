@@ -170,7 +170,7 @@ Forbid automatic switching of the time-integration method, a change of the numbe
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4/tests.md`, with `test_profile_version` of `0.4.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4/tests.md`, with `test_profile_version` of `0.5.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The update is a fixed composition of four tendency evaluations and holds no non-differentiable operation of its own; the differentiability of the step is that of the tendency the caller supplies.

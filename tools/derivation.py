@@ -73,7 +73,7 @@ SELECTION_POLICY_VERSION = 1
 #: offering earlier-version exemplars and refuses `--resume` across it — the reason the prompt
 #: drift test refuses to pin these four); a bump HERE costs exactly one re-derivation of every
 #: node's Compile, and nothing downstream whose IR comes out byte-identical.
-COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-26"
+COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-27"
 
 #: The versions of the DETERMINISTIC transformations. Each is the identity of the implementing
 #: code, pinned by `tools/tests/test_derivation_transformation_drift.py` as a digest of the
@@ -81,7 +81,7 @@ COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-26"
 #: either re-pins (behaviour-preserving) or bumps the constant (every key of that phase moves).
 RENDER_VERSION = "render-15"     # host-rendered runner + build control file (Generate)
 BUILD_VERSION = "build-4"        # build-runtime library `compile_project` + the in-process build
-EXECUTE_VERSION = "execute-15"   # `run_program` / `run_quality_checks` + the in-process execute
+EXECUTE_VERSION = "execute-16"   # `run_program` / `run_quality_checks` + the in-process execute
 VERDICT_VERSION = "verdict-15"   # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author
 
 #: The phases that ARE derivations, in pipeline order.

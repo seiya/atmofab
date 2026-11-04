@@ -256,7 +256,8 @@ io_contract:
   #               or coarsen the finer of the two by the extent ratio). A coordinate carries the state's shape, so a field
   #               built from one reduces over every cell; a reduction over a field with an extent-1 axis (a
   #               coordinate the host could not expand, because the captured arrays of the state's rank disagree
-  #               on shape — or a state with an axis of extent 1) is refused until the field is paired with a state array
+  #               on shape) is refused until the field is paired with a state array; a captured array's own extents
+  #               reduce, one cell included; a state with no cell does not
   #   errors      a non-finite intermediate (a division by zero, a literal `1e400` included), an unpaired operand
   #               extent, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank, a variable the
   #               case's capture does not hold, a flip / transpose axis outside the rank or a coarsen factor that does
@@ -401,8 +402,9 @@ drive:
   #   publishes `<spec_id>__step` and every `step` entry names it; (b) the intent rules above, and the
   #   procedure binding as stated above; (c) each array
   #   dummy's `dims` (a dims-less one: its state's `shape_expr`) EVALUATE PER CASE under the entry's bindings
-  #   — a token naming a rank-0 dummy bound to an input, a `derived` value or a literal resolves, `nx + 1`
-  #   arithmetic included, any other token is refused; an array no entry running the case binds: as the
+  #   — a token naming a rank-0 dummy bound to an input, a `derived` value or a literal, or naming a scalar
+  #   `derived` value, resolves, `nx + 1` arithmetic included, any other token is refused; an extent of 0 only on a case only `xfail` tests target
+  #   (the flag judges it); an array no entry running the case binds: as the
   #   driver block states — every dummy bound to one state gives the same
   #   extents, a numeric `shape_expr` extent agrees, and an array input or `derived` value has its dummy's
   #   extents; (d) `result` above; (e) `loop` references resolve (`state.<var>` only to a scalar `init`

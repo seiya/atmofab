@@ -390,6 +390,54 @@ class EvaluationTest(unittest.TestCase):
         [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
         self.assertTrue(rec["satisfied"], rec)
 
+    def test_a_state_with_no_cell_loads_only_from_the_driver(self) -> None:
+        """Issue #589 PR-3: nested lists cannot spell the extents after a zero, so the rank of a
+        driver-written capture with no cell is not asked. A harness self-test's own runner writes
+        its captures, and has no zero-extent case: there it stays refused
+        (`test_capture_file_defects_are_structural`), through `load_case_env` too."""
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        run.write("z", initial={"h": [[]] * 4, "s": 0.0, "t": 0.0},
+                  final={"h": [[]] * 4, "s": 0.0, "t": 0.0})
+        schema = {"variables": [{"name": "h", "shape_expr": "[nx, ny, nz]"},
+                                {"name": "s", "shape_expr": "scalar"}],
+                  "time_variable": "t", "time_shape_expr": "scalar"}
+        env = pe.load_case_env(run.root, _case("z"), schema, empty_state=True)
+        self.assertEqual(env.final["h"].size, 0)
+        self.assertEqual(env.final["s"], 0.0)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "has rank 2"):
+            pe.load_case_env(run.root, _case("z"), schema)
+        schema["variables"][0]["shape_expr"] = "[nx, ny]"
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "has no elements"):
+            pe.load_case_env(run.root, _case("z"), schema)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "empty array"):
+            pe._reducible("max", np.zeros((4, 0)))
+
+    def test_a_one_cell_state_reduces_over_its_own_extents(self) -> None:
+        """Issue #589 PR-3: a case at the smallest valid grid. The extent-1 refusal is for a field
+        the coordinates did not expand, and a field of the state's own shape is the state's."""
+        run = _RunDir()
+        self.addCleanup(run.cleanup)
+        one = np.array([[3.0]])
+        run.write_state("c", one, one)
+        ir = _ir([{"test_id": "t", "quantity": "q", "target_cases": ["c"], "per_case": True,
+                   "expr": "max(abs(final.h)) + norm2(final.h) + sum(final.h)",
+                   "op": "eq", "value": 9.0}], cases=[_case("c")])
+        [rec] = pe.evaluate_primary_predicates(ir, run.root)
+        self.assertEqual(rec["kind"], "pass", rec)
+        self.assertEqual(rec["evaluated"][0]["value"], 9.0)
+
+    def test_an_extent_1_field_that_is_not_the_state_s_shape_is_still_refused(self) -> None:
+        """The other side of the one-cell admission: `final.s` of shape [NX, ...] against a field
+        of extent 1 on another axis."""
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "extent-1 axis"):
+            pe._reducible("sum", np.ones((4, 1)), None, frozenset({(4, 3)}))
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "extent-1 axis"):
+            pe._reducible("sum", np.ones((4, 1)))
+        # one of several captured shapes: `U_L` beside `U_in` on a one-cell reconstruction
+        self.assertEqual(
+            pe._reducible("sum", np.ones((4, 1)), None, frozenset({(5, 5), (4, 1)})).shape, (4, 1))
+
     def test_a_coordinate_count_must_match_the_captured_extent(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": NX + 1, "length": 1.0,
                    "placement": "cell_center"}]
@@ -873,11 +921,14 @@ class EvaluationTest(unittest.TestCase):
             ([{**base, "axis": 2}], "axis must be an integer in [0, 2)"),
             ([{**base, "axis": True}], "axis must be an integer"),
             ([{**base, "axis": 0, "placement": "node"}], "placement must be one of"),
-            ([{**base, "axis": 0, "count": 2.5}], "not a positive integer"),
+            ([{**base, "axis": 0, "count": 2.5}], "not a non-negative integer"),
+            ([{**base, "axis": 0, "count": -1}], "not a non-negative integer"),
             ([{**base, "axis": 0, "length": 0}], "not a positive number"),
             ([{**base, "axis": 0, "count": "inputs.grid.arrangement"}], "not a number"),
             ([{**base, "axis": 0, "count": "nx"}], "must be a number or inputs.<path>"),
-            ([{**base, "axis": 0, "count": 0}], "not a positive integer"),
+            # a coordinate of no cells beside a state with cells (a zero-extent guard case's
+            # coordinate is admitted, and only there does the state agree)
+            ([{**base, "axis": 0, "count": 0}], "does not match the captured state shape"),
             ([{**base, "axis": 0, "name": "pi"}], "not a grammar name"),
             ([{**base, "axis": 0, "name": "sum"}], "not a grammar name"),
             ([{**base, "axis": 0, "name": "initial"}], "not a grammar name"),
@@ -4499,6 +4550,54 @@ class DriveViolationsTest(unittest.TestCase):
         self.assertEqual(self._v(ir), [
             "(c) case 'a': drive.step.arguments.w (inputs.w): an input of shape [3], the "
             "dummy's dims evaluate to [4]"])
+
+    def test_a_dims_less_array_s_extent_may_name_a_scalar_derived_value(self) -> None:   # (c)
+        """A `shape_expr` admits a name and no arithmetic, so a dims-less dummy with a ghost width
+        takes its extent from `derived` (issue #589 PR-3, the 1-D periodic copy)."""
+        ir = _toy()
+        sig = self._sig(ir, "toy__step")
+        next(a for a in sig if a["name"] == "h").pop("dims")
+        for variable in ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:
+            if variable["name"] == "h":
+                variable["shape_expr"] = "[n_total]"
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["n_total"] = "inputs.grid.nx"
+        self.assertEqual([v for v in self._v(ir) if "(c)" in v], [])
+        for case in ir["case"]["test_case_set"]:
+            del case["derived"]["n_total"]
+        self.assertTrue(any("neither a rank-0 dummy" in v for v in self._v(ir)), self._v(ir))
+
+    def _zero_nx(self) -> dict:
+        ir = _toy()
+        ir["case"]["test_case_set"][1]["inputs"]["grid"]["nx"] = 0
+        return ir
+
+    def test_a_zero_extent_on_a_case_a_pass_test_targets_is_refused(self) -> None:   # (c)
+        """Issue #589 PR-3: every reduction over the state would read nothing."""
+        self.assertIn("an extent of 0 on a case a test other than an `xfail` one targets",
+                      "\n".join(self._v(self._zero_nx())))
+
+    def test_a_zero_extent_is_admitted_on_a_case_only_xfail_tests_target(self) -> None:   # (c)
+        ir = self._zero_nx()
+        cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+        zero = ir["case"]["test_case_set"][1]["case_id"]
+        for test in ir["io_contract"]["tests"]:
+            test["target_cases"] = [c for c in test["target_cases"] if c != zero]
+        ir["io_contract"]["tests"].append(
+            {"test_id": "t_zero_xfail", "expected_outcome": "xfail", "target_cases": [zero],
+             "quantities": ["ok"]})
+        ir["io_contract"]["predicates"] = [
+            {**p, "target_cases": [c for c in p["target_cases"] if c != zero]}
+            for p in ir["io_contract"]["predicates"]] + [
+            {"test_id": "t_zero_xfail", "quantity": "ok", "target_cases": [zero],
+             "per_case": True, "expr": "final.ok", "op": "eq", "value": 0}]
+        self.assertTrue(cases)
+        self.assertEqual([v for v in self._v(ir) if "extent" in v or "count" in v], [])
+
+    def test_a_negative_extent_is_refused(self) -> None:   # (c)
+        ir = _toy()
+        ir["case"]["test_case_set"][1]["inputs"]["grid"]["nx"] = -1
+        self.assertTrue(self._v(ir))
 
     def test_a_derived_array_cannot_bind_a_rank_0_dummy(self) -> None:   # (c)
         ir = _toy()

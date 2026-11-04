@@ -21504,6 +21504,20 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("the driver's capture carries no 'step'", v[0])
 
+    def _empty_h(self, snapshots: Path) -> None:
+        path = snapshots / "snapshot000.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["h"] = [[], []]
+        _write_json(path, doc)
+
+    def test_a_driver_state_with_no_cell_is_admitted_and_a_harness_s_is_not(self) -> None:
+        # A zero-extent guard case (issue #589 PR-3): nested lists cannot spell the extents
+        # after a zero, and only the driver has such a case.
+        self.assertEqual(self._violations(self._empty_h), [])
+        v = self._violations(self._empty_h, step_series=False, driver=False)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("does not match declared shape_expr", v[0])
+
     def test_a_series_with_a_subset_of_the_names_is_refused(self) -> None:
         v = self._violations(self._series(hv_max=None))
         self.assertEqual(len(v), 1, v)
@@ -22101,13 +22115,6 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     _REPO = Path(__file__).resolve().parents[2]
     _CATALOG = _REPO / "spec" / "registry" / "spec_catalog.yaml"
 
-    #: The `problem` specs whose §5 / §5.1 publish no `__step` yet (issue #589): `problem` joined
-    #: `_EXACT_PUBLISHED_SURFACE_KINDS` in PR-1a, and the three corpus problems are rewritten into
-    #: that shape in PR-3. Asserted EXACTLY (no skip): a problem converted before then, or a new
-    #: one added without §5.1, reddens `_pinned_entries`, and PR-3 empties this set.
-    _TRANSITIONAL_PROBLEMS = frozenset({"shallow_water2d_channel", "shallow_water2d",
-                                        "advdiff1d_linear"})
-
     def _pinned_entries(self) -> list[dict]:
         doc = yaml.safe_load(self._CATALOG.read_text(encoding="utf-8"))
         rows = [e for e in doc["specs"]
@@ -22115,12 +22122,7 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
         # Derived from the same constant the gate uses, so adding a kind to the set puts its specs
         # under this check automatically rather than silently leaving them out.
         self.assertTrue(rows, "no spec of a surface-publishing kind in the catalog")
-        unmigrated = {
-            e["spec_id"] for e in rows
-            if e["spec_kind"] == "problem" and vps._section51_fence_body(
-                self._REPO / Path(e["deps_path"]).parent / "controlled_spec.md")[1] is not None}
-        self.assertEqual(unmigrated, set(self._TRANSITIONAL_PROBLEMS))
-        return [e for e in rows if e["spec_id"] not in self._TRANSITIONAL_PROBLEMS]
+        return rows
 
     def test_every_pinned_spec_declares_a_section51_matching_its_section5(self) -> None:
         for entry in self._pinned_entries():
@@ -29730,7 +29732,7 @@ class DriveGateStageTests(unittest.TestCase):
         self.assertEqual(_drive_stage("coriolis", listed(
             [lambda ids: ids[:2], lambda ids: ids[2:]])), [])
         v = _drive_stage("coriolis", listed([lambda ids: ids[:-1]]))
-        self.assertEqual(v, ["<ir>:(f') drive.step[].cases leaves ['l0_ncomp4'] to no entry"])
+        self.assertEqual(v, ["<ir>:(f') drive.step[].cases leaves ['l0_ny0'] to no entry"])
         v = _drive_stage("coriolis", listed([lambda ids: ids, lambda ids: ids[:1]]))
         self.assertEqual(v, ["<ir>:(f') drive.step[].cases lists ['l0_zero_f'] more than once"])
         # a loop node takes one mapping entry
