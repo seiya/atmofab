@@ -395,6 +395,13 @@ when a rule does not obviously apply:
     exemptions — so an input added later is either given a row or an exemption, and never
     silently neither. **Trigger**: any assertion of the form "all of X are well-formed" whose
     fixture supplies all of X
+  - **a witness built at flags where the defect does not show pins nothing, and it looks exactly
+    like a pin.** Issue #589 PR-1b's `volatile` had rows, and a reviewer's mutant dropping it
+    survived them: at `-O2` the never-assigned result read `0` by luck, at `-O2 -fcheck=bounds`
+    and `-O3` it read `1`. **Trigger: a fix whose reason names an optimisation, a compiler or a
+    flag. Build the witness under every flag set the host really uses, and make the fixture
+    leave the wrong answer available** (there, a true result in the case before, or a reset
+    mutant also reads `0`)
   - **when the code applies a THRESHOLD, the fixture must straddle it too, and the straddle is
     usually a LENGTH** — the same shape, and the one that hides best because the fixture looks
     realistic. Issue #168 again: a class whose subject is how a failure reason is composed
