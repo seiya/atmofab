@@ -160,7 +160,7 @@ io_contract:
     # run.n_step`), one per test, and a FLAG PREDICATE, one per point and `<f>` per test: `expr` exactly `final.<f>`
     # or `initial.<f>` (`<f>` written in every target case at that point; `initial.` for one `init` writes),
     # `op: eq`, `value` 0 or 1, no `bind`, `quantity: <f>`. It values its cases only on an `xfail` test with `value: 0`.
-    # whether the value depends on the state in any other way, and is the test's own quantity, is V3's judgment. On an `expected_outcome: xfail`
+    # Whether an entry's value depends on the state in any other way, and is the test's own quantity, is V3's judgment. On an `expected_outcome: xfail`
     # test the entries state, in the failure direction, what the guard leaves behind (the state did not advance,
     # `final.guard_pass == 0`), and must hold for the test to certify `xfail`; `expected_outcome`
     # is no predicate key.

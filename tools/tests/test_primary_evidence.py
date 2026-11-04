@@ -3057,7 +3057,7 @@ class ClosureExemptionTest(unittest.TestCase):
     #: author.
     _FLAG_SITES = (
         ("docs/workflow/phases/phase_01_compile.md", "Every entry READS STATE",
-         "whether the value depends on the state",
+         "depends on the state in any other way",
          ("a logical `out` state `<f>` of `step` or `init`\n    # (a flag, `result:` or not)",
           "a FLAG PREDICATE, one per point and `<f>` per test: `expr` exactly `final.<f>`",
           "`op: eq`, `value` 0 or 1, no `bind`, `quantity: <f>`. It values its cases only on an "
