@@ -902,13 +902,13 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                 found = gate(bad, "void c() {}\n", plan_model)
                 self.assertTrue(any("c_model.cu" in v and "launch_block_size" in v
                                     for v in found), found)
+        # A parallel backend that states no launch floor is not asked.
+        self.assertEqual([], gate(bad, bad, "none", backend="none"))
         # A bundle's private file launches too. RED: the floor reads the model file alone, so a
         # literal block in a `helper` clears it (reported, issue #589 PR-1b; the checks module
         # was the one other file it read).
         found = gate(good, "void c(double* d, long n) {\n" + literal + "}\n", "cuda")
         self.assertTrue(any("c_helper.cu" in v for v in found), found)
-        # A parallel backend that states no launch floor is not asked.
-        self.assertEqual([], gate(bad, bad, "none", backend="none"))
 
     def test_a_consumer_is_shown_the_pair_unqualified(self) -> None:
         facts = cs.published_interface(_POINTWISE_MODEL, "c__flux")
