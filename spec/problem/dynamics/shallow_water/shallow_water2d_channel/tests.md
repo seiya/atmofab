@@ -10,7 +10,7 @@
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies, for the discrete implementation of the 2D shallow water equation on a channel with the Coriolis force, the discrete initial state against the analytic profiles, the error against the analytic solution — the steady solution of Williamson et al. (1992) Test Cases 2 and 3 and the forced translating low of Test Case 4, on the channel — in three norms over every state variable, bounded on both sides, since the fully fixed `p1` discretization makes it a property of the scheme, and its second-order decrease with refinement, the error of the unforced `x`-perturbed family against a restricted reference (`docs/TESTS.md` §Refinement judgment), the time integration through a pair of runs that differ only in `dt`, mass conservation, depth positivity, the wall-normal velocity, a long-time integration, the along-channel dynamics through an `x`-perturbed pair (translation equivariance and the decay of the perturbation's along-channel structure, which an update without the along-channel interface flux leaves unchanged), a rectangular grid, on which an exchange of the two extents, the two domain lengths or the two spacings is not the identity, the symmetry pairs of the Controlled Spec §5 — the axis exchange (the channel computed along `y`), the mirror along the channel and the mirror across it (`docs/TESTS.md` §Symmetry pairs) — the `CFL` guard, and the refusals of `shallow_water2d_channel__init`. The judgment targets are `L0` to `L3`, and include an expected failure (`xfail`). Every transformation `docs/TESTS.md` §Symmetry pairs names is admitted by the equations of this `problem` and carries a pair: the translation along the channel (6-6), the axis exchange (6-14), and the two mirrors (6-15, 6-16); a translation across the channel is not a transformation of a walled domain.
+This suite verifies, for the discrete implementation of the 2D shallow water equation on a channel with the Coriolis force, the discrete initial state against the analytic profiles, the error against the analytic solution — the steady solution of Williamson et al. (1992) Test Cases 2 and 3 and the forced translating low of Test Case 4, on the channel — in three norms over every state variable, bounded on both sides, since the fully fixed `p1` discretization makes it a property of the scheme, and its second-order decrease with refinement, the error of the unforced `x`-perturbed family against a restricted reference (`docs/TESTS.md` §Refinement judgment), the time integration through a pair of runs that differ only in `dt`, mass conservation, depth positivity, the wall-normal velocity, a long-time integration, the along-channel dynamics through an `x`-perturbed pair (translation equivariance and the decay of the perturbation's along-channel structure, which an update without the along-channel interface flux leaves unchanged), a rectangular grid, on which an exchange of the two extents, the two domain lengths or the two spacings is not the identity, the symmetry pairs of the Controlled Spec §5 — the axis exchange (the channel computed along `y`), the mirror along the channel and the mirror across it (`docs/TESTS.md` §Symmetry pairs) — the `CFL` guard, the refusals of `shallow_water2d_channel__init`, the `false` result of `shallow_water2d_channel__step`, and the independence of a case from the cases run before it. The judgment targets are `L0` to `L3`, and include an expected failure (`xfail`). Every transformation `docs/TESTS.md` §Symmetry pairs names is admitted by the equations of this `problem` and carries a pair: the translation along the channel (6-6), the axis exchange (6-14), and the two mirrors (6-15, 6-16); a translation across the channel is not a transformation of a walled domain.
 
 The plan of the run is the kernel's: `shallow_water2d_channel__init` writes `n_step_plan` and `dt`, and the driver's loop runs by them. `init.n_step_plan` and `init.dt` (5-4) compare the two with the procedure of §3 over the initial arrays the kernel wrote. The Compile gate asks of such a predicate only that it read one of those arrays, which an inert term satisfies, so what pins the predicate to the §3 procedure is `Compile.verify`'s judgment that it transcribes the procedure; no deterministic check does. This is accepted.
 
@@ -51,7 +51,17 @@ The error against the reference at $t_{end}$ is dominated by the spatial discret
 `chan_guard_n032_dts240` carries `dt_scale=2.40`, so the §3 procedure gives $\mathrm{n\_step}=184$ and $dt=469.57$ (`s`), and the stability index of the Controlled Spec §5 is `1.077` at the initial state, `1.0769` at the sampled state of step `92`, `1.07453` at the final state and `1.080` at its maximum over the committed states — above the threshold `1.0` of the `CFL` judgment, which is what 6-7 detects, over the sampled and the final state. The case performs all of its §3 steps and stays wet: the depth minimum over the initial state and every committed state is the initial minimum, `1548.9` (`m`), against the positivity threshold `1.0e3` of 5-5, measured on the reference implementation of 5-5. The wet-domain error of the Controlled Spec §5 is not reached by this case. A run of this case that reaches that error commits fewer steps, its final state is the last committed one, and 6-7 does not judge the step count. The step count and the depth minimum stated here are properties of the fixed discretization at the case's inputs; 6-7 judges the `CFL` alone.
 
 ### 2-9-1. The refusal cases
-A refusal of the Controlled Spec §6 writes `init_ok` as `false`. The driver then runs no step and still takes both captures, with `h`, `hu`, `hv`, `dt` and `n_step_plan` as `__init` left them, so the judgment of 6-17 is the flag alone. Each of the three cases of 4-3 carries one invalid input and is otherwise valid: `flow_profile_id=0`, `along_axis=0`, `ng=1`.
+A refusal of the Controlled Spec §6 writes `init_ok` as `false`. The driver then runs no step and still takes both captures, with `h`, `hu`, `hv`, `dt` and `n_step_plan` as `__init` left them, so the judgment of 6-17 is the flag alone. Each of the seven cases of 4-3 carries one invalid input and is otherwise valid: `flow_profile_id=0`, `along_axis=0`, `ng=1`, `zonal_sign=0`, `Omega=0.0`, `theta0=0.0`, and `L_y=1.2e7`, outside the width bound of the Controlled Spec §6, whose depth is negative at the wall.
+
+### 2-9-2. The `false` result of the step
+`chan_dry_n032_dts800` carries `dt_scale=8.00`, so the §3 procedure gives $\mathrm{n\_step}=56$ and $dt=1542.86$ (`s`), and the stability index of the initial state is `3.54`. The run is unstable until a stage depth reaches $h\le0$. Measured at `dt_scale` `3`, `4`, `5` and `6` the run completes every step, and at `8` the step returns `false` after `11` committed steps; the last committed state differs from the initial one by `542.2` (`m`) in `h`. The step at which the result comes is a property of the build and is not judged; 6-18 judges the result and that the state moved.
+
+Measured on the reference implementation: the wet-domain check of the Controlled Spec §5 removed alone and the flux `component`'s guard ignored alone each return `false` on this case, because either stands in for the other, and 6-18 holds on both; with the two removed together, or with a `false` result of the right-hand side ignored in the step, or with the wet-domain check returning a zero tendency and no error, the run goes on and 6-18 fails.
+
+`chan_tc4_ref_n032_dts100_badradius` carries `a=-6.37122e6`, so $R_{low}<0$. The Controlled Spec §6 states no refusal for it, so `__init` accepts the case, and the forcing `component` refuses it at the first stage (that `component`'s §4). The step returns `false` with `0` committed steps; 6-19 judges the flag alone, and it fails on a kernel that ignores the forcing `component`'s guard.
+
+### 2-9-3. The repeated case
+The driver does not reset the kernel's private state between cases (Controlled Spec §5), and the cases run in sorted order, so a case can only see what the cases before it left. `chan_zrepeat_n032_dts100` sorts after every other case and repeats `chan_tc2_ref_n032_dts100` exactly: a kernel whose `__init` establishes every private field gives the same binary the same state. The residuals `errors.repeat.<v>_l2_rel` (5-4) read `0` on all three variables, and the bound is `1.0e-12`. A kernel that sets its forcing switch only when the profile is `tc4_translating_low`, and never clears it, reads `7.4e-6`, `1.9e-5` and `1.7e-5` on `h`, `hu`, `hv`.
 
 ### 2-10. The rectangular case
 Every case of §4 but five carries $nx=ny$ and `L_x=L_y`, so an implementation that exchanges the two extents, the two domain lengths or the two spacings — an array declared `(ny, nx)`, a loop bounded by `ny` where `nx` is meant, `dx` where `dy` is meant, an `rhs` that reads its stage state as `(ncomp, ny, nx)` — gives the numbers of a correct one on those cases. `chan_tc4_ref_n064_dts100_rect` (4-3) carries `nx=64`, `ny=48`, `L_x=6.0e6` and `L_y=8.0e6`, so $dx=93750$ and $dy=166666.\overline{6}$ (`m`), and no exchange within any of the three pairs is the identity on a derived quantity; its two transformed cases (`_rectaxis`, `_rectxmir`, 4-3) carry the same property in the other orientation and under the mirror, and the rectangular `tc3_compact_jet` pair (`chan_tc3_ref_n064_dts100_rect`, `_rectaxis`, 2-11) carries it for the unforced initial state computed along `y`. The §3 procedure gives $\mathrm{n\_step}=1152$ and $dt=75.00$ (`s`). The reference value of `errors.mms_h.l2_rel_tend` is `9.591e-4` (the absolute error of `h` `74.8`, the velocity error `6.50e-2`, `extrema.v_cross.max_abs` `20.1`, `extrema.h.min` `9197.0`), measured on the reference implementation of 5-5; a state left at its initial value gives `7.290e-3`. Measured on the same implementation with one substitution at a time: `dx` and `dy` exchanged in the interface-flux difference gives `3.87e-2`; exchanged in the dt rule alone, the kernel plans 1114 steps against the 1152 of §3 with the error unchanged, so that substitution is detected by the `init.n_step_plan` judgment and by no band; the cell centres evaluated with the spacings exchanged gives `9.5e-2` in `errors.initial_h.linf_rel` and `6.73e-2`; `L_x` and `L_y` exchanged gives `2.6e-2` in `errors.initial_h.linf_rel` and `1.70e-2`; an `rhs` that reads the stage state as `(ncomp, ny, nx)` through an explicit-shape declaration gives `2.38e-2` and `2.0e-2` in `metrics.mass_drift_rel`; an `x` loop bounded by `ny` gives `2.1e-3` in `metrics.mass_drift_rel` and `5.36e-3`; the forcing omitted or frozen at $t=0$ gives `2.30e-3` and `2.68e-3`. Each lies outside the band of 5-5 or fails the judgment named. With `L_x=L_y=8.0e6` and `ny=48`, the exchange of `L_x` and `L_y` gives the reference value (`9.323e-4` both). The streamfunction of the low at half the along-channel period is `2.6e-2` of $|\psi_0|$ on this channel (`1.5e-3` at `L_x=8.0e6`); the prescribed flow is an exact solution of the forced equations at every `L_x` (the Controlled Spec §6), and the sum of the forcing's depth component over the grid is below $10^{-15}$ of the sum of its magnitude at every time of the run.
@@ -87,7 +97,7 @@ The error of every judged level of `chan_tc2_ref`, `chan_tc3_ref` and `chan_tc4_
 - The stop condition is $n=\mathrm{n\_step}$: the driver's loop runs `n_step_plan` steps with the time step `dt`, both as `__init` wrote them, from `t_start` to the declared `t_end`, and a `false` result of `__step` ends it on the last committed state. The driver's `step` is the count of committed steps, `0` at the initial capture.
 - The driver folds the extrema of `h`, `hu` and `hv` over every committed state into `series.<v>_min` and `series.<v>_max`, and samples the whole state every `history.every` committed steps. The stride is about half of each case's step count, so a case takes one or two samples:
 
-history: every = (history.every) chan_guard_n032_dts240 = 92, chan_tc2_ref_n032_dts100_badaxis = 0, chan_tc2_ref_n032_dts100_badng = 0, chan_tc2_ref_n032_dts100_badprofile = 0, chan_tc2_ref_n032_dts100 = 221, chan_tc2_ref_n064_dts100 = 442, chan_tc2_ref_n064_dts100_axis = 442, chan_tc2_ref_n064_dts100_xmir = 442, chan_tc2_ref_n064_dts100_ymir = 442, chan_tc2_ref_n128_dts100 = 883, chan_tc2_ref_n128_dts100_tend5d = 4413, chan_tc2_xpert_n032_dts100 = 222, chan_tc2_xpert_n064_dts100 = 443, chan_tc2_xpert_n064_dts100_sx025 = 443, chan_tc2_xpert_n064_dts100_sx025_axis = 443, chan_tc2_xpert_n064_dts100_xmir = 443, chan_tc2_xpert_n064_dts100_ymir = 443, chan_tc2_xpert_n128_dts100 = 886, chan_tc2_xpert_n256_dts100 = 1772, chan_tc3_ref_n032_dts100 = 142, chan_tc3_ref_n064_dts100 = 284, chan_tc3_ref_n064_dts100_axis = 284, chan_tc3_ref_n064_dts100_rect = 303, chan_tc3_ref_n064_dts100_rectaxis = 303, chan_tc3_ref_n064_dts100_xmir = 284, chan_tc3_ref_n064_dts100_ymir = 284, chan_tc3_ref_n128_dts100 = 567, chan_tc4_ref_n032_dts100 = 272, chan_tc4_ref_n032_dts100_half = 543, chan_tc4_ref_n064_dts100 = 544, chan_tc4_ref_n064_dts100_rect = 576, chan_tc4_ref_n064_dts100_rectaxis = 576, chan_tc4_ref_n064_dts100_rectxmir = 576, chan_tc4_ref_n064_dts100_xmir = 544, chan_tc4_ref_n064_dts100_ymir = 544, chan_tc4_ref_n128_dts100 = 1087, chan_tc4_ref_n128_dts100_tend5d = 5433
+history: every = (history.every) chan_dry_n032_dts800 = 0, chan_guard_n032_dts240 = 92, chan_tc2_ref_n032_dts100_badaxis = 0, chan_tc2_ref_n032_dts100_baddepth = 0, chan_tc2_ref_n032_dts100_badng = 0, chan_tc2_ref_n032_dts100_badomega = 0, chan_tc2_ref_n032_dts100_badprofile = 0, chan_tc2_ref_n032_dts100_badtheta = 0, chan_tc2_ref_n032_dts100_badzonal = 0, chan_tc4_ref_n032_dts100_badradius = 0, chan_zrepeat_n032_dts100 = 221, chan_tc2_ref_n032_dts100 = 221, chan_tc2_ref_n064_dts100 = 442, chan_tc2_ref_n064_dts100_axis = 442, chan_tc2_ref_n064_dts100_xmir = 442, chan_tc2_ref_n064_dts100_ymir = 442, chan_tc2_ref_n128_dts100 = 883, chan_tc2_ref_n128_dts100_tend5d = 4413, chan_tc2_xpert_n032_dts100 = 222, chan_tc2_xpert_n064_dts100 = 443, chan_tc2_xpert_n064_dts100_sx025 = 443, chan_tc2_xpert_n064_dts100_sx025_axis = 443, chan_tc2_xpert_n064_dts100_xmir = 443, chan_tc2_xpert_n064_dts100_ymir = 443, chan_tc2_xpert_n128_dts100 = 886, chan_tc2_xpert_n256_dts100 = 1772, chan_tc3_ref_n032_dts100 = 142, chan_tc3_ref_n064_dts100 = 284, chan_tc3_ref_n064_dts100_axis = 284, chan_tc3_ref_n064_dts100_rect = 303, chan_tc3_ref_n064_dts100_rectaxis = 303, chan_tc3_ref_n064_dts100_xmir = 284, chan_tc3_ref_n064_dts100_ymir = 284, chan_tc3_ref_n128_dts100 = 567, chan_tc4_ref_n032_dts100 = 272, chan_tc4_ref_n032_dts100_half = 543, chan_tc4_ref_n064_dts100 = 544, chan_tc4_ref_n064_dts100_rect = 576, chan_tc4_ref_n064_dts100_rectaxis = 576, chan_tc4_ref_n064_dts100_rectxmir = 576, chan_tc4_ref_n064_dts100_xmir = 544, chan_tc4_ref_n064_dts100_ymir = 544, chan_tc4_ref_n128_dts100 = 1087, chan_tc4_ref_n128_dts100_tend5d = 5433
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
@@ -100,8 +110,10 @@ The `sweep` and fixed values per `family` are defined below.
 | `chan_tc4_ref` | refinement_for_forced_translating_low | $nx=ny\in\{32,64,128\}$ | `flow_profile=tc4_translating_low`, `coriolis_profile=beta_plane`, `channel_axis=x`, `zonal_sign=+1`, `L_x=L_y=8.0e6`, `gh0=1.0e5`, `u_jet=40.0`, `dt_scale=1.0` |
 | `chan_tc2_xpert` | x_translation_equivariance_wave_decay_and_restricted_refinement | $nx=ny\in\{32,64,128,256\}$ | `flow_profile=tc2_zonal_perturbed`, `coriolis_profile=beta_plane`, `channel_axis=x`, `zonal_sign=+1`, `L_x=L_y=6.0e6`, `gh0=2.94e4`, `eta0=30.0`, `shift_x_fraction=0.0`, `dt_scale=1.0` |
 | `chan_guard` | expected_failure_for_cfl | $nx=ny=32,\ \mathrm{dt\_scale}=2.40$ | `flow_profile=tc2_zonal_uniform`, `coriolis_profile=beta_plane`, `channel_axis=x`, `zonal_sign=+1`, `L_x=L_y=6.0e6`, `gh0=2.94e4` |
+| `chan_dry` | expected_failure_for_the_wet_domain_invariant | $nx=ny=32,\ \mathrm{dt\_scale}=8.00$ | `flow_profile=tc2_zonal_uniform`, `coriolis_profile=beta_plane`, `channel_axis=x`, `zonal_sign=+1`, `L_x=L_y=6.0e6`, `gh0=2.94e4` |
+| `chan_zrepeat` | case_independence | $nx=ny=32,\ \mathrm{dt\_scale}=1.0$ | the inputs of `chan_tc2_ref_n032_dts100`, exactly |
 
-Every case carries `ng=2` (the Controlled Spec §3), the constants `g`, `Omega`, `a`, `theta0` of 2-1, the numbers of 2-1 that follow from its `channel_axis` and `flow_profile`, and the `history.every` of §3.
+Every case but the refusal cases carries `ng=2` (the Controlled Spec §3), the constants `g`, `Omega`, `a`, `theta0` of 2-1, the numbers of 2-1 that follow from its `channel_axis` and `flow_profile`, and the `history.every` of §3.
 
 ### 4-2. `case_id` generation rule
 - The template is `{family}_n{nx:03d}_dts{dts_pct:03d}`.
@@ -127,6 +139,12 @@ The refusal cases of 2-9-1. The `base_case_id` of each references `chan_tc2_ref_
 - `chan_tc2_ref_n032_dts100_badprofile` overrides only `flow_profile_id` to `0`.
 - `chan_tc2_ref_n032_dts100_badaxis` overrides only `along_axis` to `0`.
 - `chan_tc2_ref_n032_dts100_badng` overrides only `ng` to `1`.
+- `chan_tc2_ref_n032_dts100_badzonal` overrides only `zonal_sign` to `0`.
+- `chan_tc2_ref_n032_dts100_badomega` overrides only `Omega` to `0.0`.
+- `chan_tc2_ref_n032_dts100_badtheta` overrides only `theta0` to `0.0`.
+- `chan_tc2_ref_n032_dts100_baddepth` overrides only `L_y` to `1.2e7`.
+
+The forcing refusal case of 2-9-2. `chan_tc4_ref_n032_dts100_badradius`: the `base_case_id` references `chan_tc4_ref_n032_dts100`; overrides only `a` to `-6.37122e6` and `history.every` to `0`.
 
 The symmetry-pair cases of 2-11. The `base_case_id` of each is the base whose final state it reads (2-11, 5-4), and the overrides are relative to that base; `-7.292e-5` is `-Omega` and `-0.7853981633974483` is the double-precision value of `-pi/4`.
 - Axis exchange (`channel_axis=y`, `Omega=-7.292e-5`, the extents and lengths exchanged):
@@ -176,6 +194,9 @@ The names, each a scalar. `<v>` stands for each of `h`, `hu`, `hv`; `<k>` for ea
 - `convergence.<pair>.hu_<k>_order`, `convergence.<pair>.hv_<k>_order` (twelve)
 - `errors.restricted.<n>.<v>_<k>_rel` (twenty-seven)
 - `convergence.restricted.<pair>.<v>_<k>_order` (eighteen)
+- `ok`
+- `run.state_moved`
+- `errors.repeat.<v>_l2_rel` (three)
 - `errors.axis_exchange.<v>_l2_rel` (three)
 - `errors.mirror_x.<v>_l2_rel` (three)
 - `errors.mirror_y.<v>_l2_rel` (three)
@@ -188,7 +209,8 @@ The names, each a scalar. `<v>` stands for each of `h`, `hu`, `hv`; `<k>` for ea
 - `errors.symmetry_h.l2_rel` is `N/A` for anything other than the shifted case of the translation pair; it is carried by `chan_tc2_xpert_n064_dts100_sx025`, which sorts after its base case, and reads the base case's final state.
 - `xstructure.decay_ratio` is `N/A` for anything other than `flow_profile=tc2_zonal_perturbed`.
 - `errors.time_pair.h_l2_rel` is `N/A` for anything other than the halved-`dt` case of the time-refinement pair; it is carried by `chan_tc4_ref_n032_dts100_half`, which sorts after its base case, and reads the base case's final state.
-- `run.n_step`, `init_ok`, `init.n_step_plan` and `init.dt` are computed for every case but the three refusal cases of 2-9-1, which judge `init_ok` alone.
+- `run.n_step`, `init_ok`, `init.n_step_plan` and `init.dt` are computed for every case but the refusal cases of 2-9-1 and 2-9-2, which judge their flag and, on `chan_dry_n032_dts800`, `run.state_moved`.
+- `errors.repeat.*` is carried by `chan_zrepeat_n032_dts100`, which reads the final state of `chan_tc2_ref_n032_dts100`; no other case evaluates them.
 - The steady-solution quantities `errors.steady_*` are computed for `flow_profile=tc2_zonal_uniform` and `tc3_compact_jet` and are `N/A` for `tc2_zonal_perturbed`, which has no steady reference, and for `tc4_translating_low`, which is not steady. The manufactured-solution quantities `errors.mms_*` are computed for `flow_profile=tc4_translating_low` only and are `N/A` for every other profile.
 - The `convergence.n032_to_n064.*` quantities (the three of `h`, the three of `hu`, the three of `hv`) are carried by `chan_tc2_ref_n064_dts100`, `chan_tc3_ref_n064_dts100` and `chan_tc4_ref_n064_dts100`, and the `convergence.n064_to_n128.*` quantities by `chan_tc2_ref_n128_dts100`, `chan_tc3_ref_n128_dts100` and `chan_tc4_ref_n128_dts100`; no other case evaluates them (5-4).
 - The `errors.restricted.*` and `convergence.restricted.*` quantities are carried by `chan_tc2_xpert_n256_dts100`, which sorts after the three coarser levels of its family and reads their final states; no other case evaluates them (5-4).
@@ -274,6 +296,10 @@ $$
 $$
 They are named `errors.axis_exchange.{h,hu,hv}_l2_rel`, `errors.mirror_x.{h,hu,hv}_l2_rel` and `errors.mirror_y.{h,hu,hv}_l2_rel` on the transformed case.
 
+`ok` is the result of `shallow_water2d_channel__step` at the final capture, `final.ok`. `run.state_moved` is $\max_{i,j}|h_{i,j}(t_{final})-h_{i,j}(0)|$, `maxabs(final.h - initial.h)`.
+
+The repeat residuals are defined with $q'$ the final state of `chan_zrepeat_n032_dts100`, $q$ that of `chan_tc2_ref_n032_dts100`, $N_h=\|h\|_2$ and $N_m=\max(\|hu\|_2,\|hv\|_2)$: $\|h'-h\|_2/N_h$, $\|hu'-hu\|_2/N_m$, $\|hv'-hv\|_2/N_m$, named `errors.repeat.{h,hu,hv}_l2_rel`.
+
 `cross_target_state_agreement` compares this target's numerical solution with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment). For each of the state variables `h`, `hu`, and `hv` at $t_{end}$ of a case, with $q$ that variable and $q^{ref}$ the same variable at $t_{end}$ of the same case in the other variant,
 $$
 \mathrm{cross\_target\_state\_agreement}=\frac{\max_{i,j} |q_{i,j}-q^{ref}_{i,j}|}{N_q}
@@ -282,7 +308,7 @@ The normaliser of `h` is $N_h=\max(\max_{i,j}|h_{i,j}|,\ \max_{i,j}|h^{ref}_{i,j
 
 ### 5-5. Default thresholds
 The thresholds are calibrated against an independent reference implementation of the Controlled Spec §5 scheme (issue #265, phase-2 calibration comment; for the rectangular case of 2-10, issue #490, calibration comment; for the three norms, the restricted family, the symmetry pairs and the `tc4_translating_low` depth referred to the channel centre, issue #514, calibration comment). An error is judged by a two-sided band; the bands introduced in this version are $[\lfloor 0.5\,e\rfloor,\ \lceil 1.5\,e\rceil]$ of the reference value $e$, rounded outward to two significant digits, and the `l2` bands of `h` kept from the previous version for `tc2_zonal_uniform` and `tc3_compact_jet` (the three levels of each family and `chan_tc2_ref_n128_dts100_tend5d`) are about 0.5 and 1.5 times the reference. An order is judged by a lower bound, the reference order minus `0.3` rounded down to one decimal (`0.4` where the reference order is below `0.7`), except the `l2` orders of `h` kept from the previous version. The `v_cross_max_abs` bounds are 1.49 to 1.73 times the reference values.
-- $\mathrm{cfl.max} \le 1.0$, `run.n_step` $= 0$, `init_ok` $= 1$, `init.n_step_plan` $\le 0.5$ (both operands are integers) and `init.dt` $\le 1.0e{-12}$; on the refusal cases of 6-17, `init_ok` $= 0$
+- $\mathrm{cfl.max} \le 1.0$, `run.n_step` $= 0$, `init_ok` $= 1$, `init.n_step_plan` $\le 0.5$ (both operands are integers) and `init.dt` $\le 1.0e{-12}$; on the refusal cases of 6-17, `init_ok` $= 0$; on 6-18, `ok` $= 0$ and `run.state_moved` $> 0$; on 6-19, `ok` $= 0$; `errors.repeat.*` $\le 1.0e{-12}$ (2-9-3)
 - `extrema.h.min` is $\ge 1.0e3$ for `tc2_zonal_uniform` and `tc2_zonal_perturbed`, $\ge 2.0e3$ for `tc3_compact_jet`, and $\ge 9.0e3$ for `tc4_translating_low` (`m`; the reference minimum over every `tc4_translating_low` case is `9193.9`)
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$ ($\le 5.0e{-10}$ for the two five-day cases)
 - `initial_h_linf_rel` $\le 1.0e{-9}$, `initial_h_below_jet_rel` $\le 1.0e{-9}$, `initial_h_above_jet_rel` $\le 1.0e{-9}$, `initial_u_linf_rel` $\le 1.0e{-9}$, `initial_v_linf_rel` $\le 1.0e{-9}$, `initial_vel_cross_linf` $\le 1.0e{-12}$ (`m/s`)
@@ -690,11 +716,15 @@ In every test, a judgment this section does not name as applied is not applied, 
 
 ### 6-17. `l0_init_refusal_xfail`
 - `level`: `L0`
-- `objective`: confirm that `shallow_water2d_channel__init` refuses an invalid `flow_profile_id`, `along_axis` and `ng` of the Controlled Spec §6 (expected failure, 2-9-1).
+- `objective`: confirm that `shallow_water2d_channel__init` refuses each invalid input of the Controlled Spec §6: `flow_profile_id`, `along_axis`, `ng`, `zonal_sign`, `Omega`, `theta0` and a channel outside the depth bound (expected failure, 2-9-1).
 - target cases:
   - `chan_tc2_ref_n032_dts100_badprofile`
   - `chan_tc2_ref_n032_dts100_badaxis`
   - `chan_tc2_ref_n032_dts100_badng`
+  - `chan_tc2_ref_n032_dts100_badzonal`
+  - `chan_tc2_ref_n032_dts100_badomega`
+  - `chan_tc2_ref_n032_dts100_badtheta`
+  - `chan_tc2_ref_n032_dts100_baddepth`
 - `expected_outcome`: `xfail`
 - `xfail_condition`: `init_ok == 0`
 - `quantities`: `init_ok`
@@ -702,6 +732,45 @@ In every test, a judgment this section does not name as applied is not applied, 
   - The refusal judgment is applied to every case. The evaluation expression is `init_ok`, the flag `initial.init_ok`, and it is judged $= 0$.
   - Every other judgment is not applied. The non-application basis is "because a refused case runs no step and states no initial state".
   - The cross-target judgment is not applied. The non-application basis is "because the state a refused case leaves is not a result two variants must agree on".
+
+### 6-18. `l0_wet_domain_refusal_xfail`
+- `level`: `L0`
+- `objective`: confirm that the step returns `false` when a stage depth reaches $h\le0$ within the run, after state was committed (expected failure, 2-9-2).
+- target cases:
+  - `chan_dry_n032_dts800`
+- `expected_outcome`: `xfail`
+- `xfail_condition`: `h <= 0` within the run
+- `quantities`: `ok`, `run.state_moved`
+- judgment conditions:
+  - The refusal judgment is applied. `ok` is judged $= 0$ over the final state, and `run.state_moved` $> 0$: a kernel that refuses its first step leaves the state at its initial value, and a kernel that ignores the invariant runs on to `ok` $= 1$.
+  - Every other judgment is not applied. The non-application basis is "because the case is unstable by construction and the step refuses before $\mathrm{n\_step}$".
+  - The cross-target judgment is not applied. The non-application basis is "because the step at which an unstable case refuses is not a result two variants must agree on".
+
+### 6-19. `l0_forcing_refusal_xfail`
+- `level`: `L0`
+- `objective`: confirm that a `false` result of the forcing `component` reaches the result of the step (expected failure, 2-9-2).
+- target cases:
+  - `chan_tc4_ref_n032_dts100_badradius`
+- `expected_outcome`: `xfail`
+- `xfail_condition`: `R_low <= 0`
+- `quantities`: `ok`
+- judgment conditions:
+  - The refusal judgment is applied. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$.
+  - Every other judgment is not applied. The non-application basis is "because the case is refused at its first step".
+  - The cross-target judgment is not applied. The non-application basis is "because the state a refused case leaves is not a result two variants must agree on".
+
+### 6-20. `l3_case_independence_repeat`
+- `level`: `L3`
+- `objective`: confirm that a case does not depend on the cases run before it: `chan_zrepeat_n032_dts100`, which sorts after every other case, equals its base to round-off (2-9-3).
+- pair cases (base → repeat; the repeat reads its base's final state):
+  - `chan_tc2_ref_n032_dts100` → `chan_zrepeat_n032_dts100`
+- `expected_outcome`: `pass`
+- `quantities`: `errors.repeat.h_l2_rel`, `errors.repeat.hu_l2_rel`, `errors.repeat.hv_l2_rel`, `init.dt`, `init.n_step_plan`, `init_ok`, `run.n_step`
+- judgment conditions:
+  - The repeat judgment is applied to the repeat. The evaluation expressions are `errors.repeat.h_l2_rel`, `errors.repeat.hu_l2_rel` and `errors.repeat.hv_l2_rel`, each with the threshold $\le 1.0e{-12}$.
+  - Over every target case of the test, `init_ok` is judged $= 1$, `run.n_step` $= 0$, `init.n_step_plan` $\le 0.5$ and `init.dt` $\le 1.0e{-12}$.
+  - Every other judgment is not applied. The non-application basis is "because the repeat equals its base, whose judgments belong to 6-3, to the round-off this test bounds".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when every predicate of the test holds.
