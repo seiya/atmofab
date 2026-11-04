@@ -11,9 +11,12 @@ reproducers live with their gates in `test_orchestration_runtime` /
 
 from __future__ import annotations
 
+import tempfile
 import time
 import unittest
+from pathlib import Path
 
+from tools.backends.language.fortran import source as fortran_source
 from tools.backends.language.fortran.lines import (
     _split_top_level,
     fortran_logical_line_texts,
@@ -554,6 +557,101 @@ class Section51NormalizationTests(unittest.TestCase):
         line = strip_fortran_comment_tracking_quotes(
             "s = '! not a comment' ! real comment", None)[0]
         self.assertEqual(normalize_fortran_line(line), "s='!notacomment'")
+
+
+class ModelHarnessIsolationScanTests(unittest.TestCase):
+    """`model_harness_isolation_violations`, the one gate over a physics node's own sources that
+    reads statements rather than structure: its three scans over the view the scanner above
+    produces, each in both polarities, and which files it reads (issue #589 PR-1b)."""
+
+    _OPEN = "a physics source must not do file I/O (`open`)"
+    _USE = "a physics source must not `use` the harness module"
+    _FILE = "forbidden judge-artifact filename detected"
+
+    def _scan(self, body: str, *, helper: str | None = None, runner: str | None = None,
+              **kwargs: object) -> list[str]:
+        """The gate over `p_model.f90`, whose one subroutine's body is `body`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            model = src / "p_model.f90"
+            model.write_text("module p_model\n  implicit none\ncontains\n  subroutine p__s(u)\n"
+                             f"    integer :: u\n{body}\n  end subroutine p__s\nend module p_model\n")
+            if helper is not None:
+                (src / "p_helper.f90").write_text(helper)
+            if runner is not None:
+                (src / "p_runner.f90").write_text(runner)
+            return [v.replace(str(src) + "/", "")
+                    for v in fortran_source.model_harness_isolation_violations(
+                        src, [model], "p", **kwargs)]
+
+    def test_each_spelling_of_an_open_statement_is_refused(self) -> None:
+        for body in ("    open(newunit=u, file='x')", "    OPEN (unit=u, file='x')",
+                     "    open &\n      (newunit=u)", "    op&\n      &en(newunit=u)",
+                     "    if (u > 0) open(newunit=u)", "10  open(newunit=u)",
+                     "    u = 1; open(newunit=u)", "    open(newunit=u); u = 1",
+                     "    if (u > 0) then; open(newunit=u); end if",
+                     "    b: block\n      open(newunit=u)\n    end block b"):
+            with self.subTest(body=body):
+                found = self._scan(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(self._OPEN, found[0])
+
+    def test_a_name_that_merely_spells_open_is_admitted(self) -> None:
+        for body in ("    call open(u)", "    if (u > 0) call open(u)", "    ! open(u)",
+                     "    u = open(u)", "    open(u) = 2", "    call reopen(u)",
+                     "    open_all = 1", "    call report('open(u)')"):
+            with self.subTest(body=body):
+                self.assertEqual([], self._scan(body))
+
+    def test_a_forbidden_filename_is_refused_in_a_literal_and_only_there(self) -> None:
+        forbidden = ("verdict.json", "summary.json")
+        for body in ("    call report('verdict.json')", "    call report('run/SUMMARY.JSON')",
+                     '    call report("verdict.json")'):
+            with self.subTest(body=body):
+                found = self._scan(body, forbidden_outputs=forbidden)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(self._FILE, found[0])
+        for body in ("    ! verdict.json", "    call report('verdict')", "    verdict = 1"):
+            with self.subTest(body=body):
+                self.assertEqual([], self._scan(body, forbidden_outputs=forbidden))
+        # The list is the caller's: with none, a literal is only a literal.
+        self.assertEqual([], self._scan("    call report('verdict.json')"))
+
+    def test_the_model_side_harness_use_is_refused_in_every_form(self) -> None:
+        for body in ("    use harness_fortran_cpu_model, only: harness_fortran_cpu__box",
+                     "    use :: harness_x", "    use, non_intrinsic :: harness_x",
+                     "    use iso_c_binding; use harness_x", "    USE HARNESS_X",
+                     "    u&\n    &se harness_x"):
+            with self.subTest(body=body):
+                found = self._scan(body)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(self._USE, found[0])
+        for body in ("    ! use harness_x", "    use my_harness_model", "    call use_harness(u)"):
+            with self.subTest(body=body):
+                self.assertEqual([], self._scan(body))
+
+    def test_a_harness_that_admits_operations_admits_only_those_through_only(self) -> None:
+        allowed = {"harness_d_model": {"harness_d__partition"}}
+        for body in ("    use harness_d_model, only: harness_d__partition",
+                     "    use harness_d_model, only: part => harness_d__partition"):
+            with self.subTest(body=body):
+                self.assertEqual([], self._scan(body, allowed_harness_uses=allowed))
+        for body, cue in (("    use harness_d_model", "no `only:` list"),
+                          ("    use harness_d_model, only: harness_d__box", "not one of them"),
+                          ("    use harness_d_model, only: harness_d__partition, x", "not one of them"),
+                          ("    use harness_other_model, only: harness_d__partition",
+                           "is not a harness module a physics source may use")):
+            with self.subTest(body=body):
+                found = self._scan(body, allowed_harness_uses=allowed)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(cue, found[0])
+
+    def test_every_leaf_source_is_read_and_the_host_rendered_runner_is_not(self) -> None:
+        opening = "subroutine h(u)\n  integer :: u\n  open(newunit=u)\nend subroutine h\n"
+        found = self._scan("    u = 1", helper=opening)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0].startswith("p_helper.f90: "), found)
+        self.assertEqual([], self._scan("    u = 1", runner=opening))
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

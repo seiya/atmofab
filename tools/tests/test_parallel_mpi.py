@@ -244,35 +244,48 @@ class PromptFragmentTests(unittest.TestCase):
 
 class HarnessUseStatementTests(unittest.TestCase):
     """Issue #316 round 1: the prohibition on a physics source naming the harness was stated
-    absolutely to both the producer (the Fortran fragment's rule (a)) and the reviewer (the
-    checks contract's §4 and its Fortran binding's §4) while the MPI rules required a harness
-    `use`. Each statement now carries the exception, and this holds them to it: a reversal to
-    the absolute form reddens it."""
+    absolutely to the producer and the reviewer while the MPI rules required a harness `use`. Each
+    statement now carries the exception, and this holds them to it: a reversal to the absolute
+    form reddens it."""
 
-    def test_the_producer_is_told_the_exception_where_it_is_told_the_rule(self) -> None:
+    @staticmethod
+    def _composed(key: str) -> str:
         from tools import orchestration_runtime as ort
-        key = "workshop generate.generate"
-        composed = ort._compose_fragments(
+        return ort._compose_fragments(
             ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
             {"pure_language": "fortran", "pure_parallel": "mpi"})
-        rule_a = composed[composed.index("(a) NEITHER your checks NOR your model source"):]
+
+    def test_the_producer_is_told_the_exception_where_it_is_told_the_rule(self) -> None:
+        composed = self._composed("workshop generate.generate")
+        opening = "(a) No source of yours may `use` the harness module"
+        rule_a = composed[composed.index(opening):]
         rule_a = rule_a[:rule_a.index("(b) ")]
         self.assertIn("with ONE exception", rule_a)
         self.assertIn("parallel rules in rule (7) name harness operations", rule_a)
         # ...and rule (7), which it points at, precedes it and names the operations.
         self.assertLess(composed.index("For a `cpu` target whose `parallel.backend` is `mpi`"),
-                        composed.index("(a) NEITHER your checks NOR your model source"))
+                        composed.index(opening))
 
-    def test_the_reviewer_is_told_the_exception_in_both_prohibitions(self) -> None:
+    def test_the_reviewer_is_told_no_absolute_prohibition(self) -> None:
+        """The checks contract and its Fortran binding, where the reviewer's two statements stood,
+        went with the checks module; what a reviewer reads now must not bring the absolute form
+        back beside the producer's exception."""
+        composed = self._composed("workshop generate.verify").lower()
+        for absolute in ("must not `use` the harness", "may not `use` the harness",
+                         "never `use`s the harness", "no source may `use` the harness"):
+            self.assertNotIn(absolute, composed)
+
+    def test_the_rules_the_gate_is_documented_by_carry_the_exception(self) -> None:
         from pathlib import Path
 
-        from tools.workflow_conductor import _checks_contract_abi_sections
         root = Path(__file__).resolve().parents[2]
-        for rel, needle in (
-                ("docs/workflow/CHECKS_MODULE_CONTRACT.md",
-                 "except to\n  the operations the harness offers a physics source"),
-                ("docs/backends/language/fortran/CHECKS_ABI.md",
-                 "except §1-c's `use <harness>_model, only: <distributed-state operations>`")):
-            with self.subTest(document=rel):
-                sections = _checks_contract_abi_sections((root / rel).read_text(encoding="utf-8"))
-                self.assertIn(needle, sections)
+        rules = (root / "docs/backends/language/fortran/GENERATE_RULES.md").read_text(
+            encoding="utf-8")
+        statement = rules[rules.index("- **Source isolation (every M3c node).**"):]
+        statement = statement[:statement.index("\n")]
+        self.assertIn("refuses a `use` of a harness module (a distributed harness's own operations "
+                      "through `only:` excepted, `docs/backends/parallel/mpi/GENERATE_RULES.md`)",
+                      statement)
+        table = (root / "docs/backends/parallel/mpi/GENERATE_RULES.md").read_text(encoding="utf-8")
+        self.assertIn("a physics `use` of the harness module without `only:`, or naming a harness "
+                      "name other than the distributed-state operations", table)
