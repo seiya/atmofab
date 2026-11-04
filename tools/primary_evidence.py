@@ -3449,6 +3449,20 @@ def _zero_step_refs(n_step: Binding | None) -> list[str]:
     return [n_step.text()]
 
 
+def _init_result_state(block: DriveBlock) -> str | None:
+    """The state `init`'s `result:` dummy binds, when `drive.loop.n_step` is a `state.<n>` (a
+    scalar `init` writes): gate (l) then also requires `initial.<that state> eq 1` on every
+    `pass` test, since a refused `init` that plans 0 steps leaves the planned count and the
+    committed steps both 0 and `final.step - initial.<n>` would hold. None otherwise (or when `init` is malformed,
+    which the structural gates report)."""
+    n_step = (block.loop or {}).get("n_step")
+    init = block.init
+    if n_step is None or n_step.kind != _STATE_ROOT or init is None:
+        return None
+    binding = init.arguments.get(init.result)
+    return binding.ref if binding is not None and binding.kind == _STATE_ROOT else None
+
+
 def _or_list(refs: list[str]) -> str:
     return " or ".join(repr(r) for r in refs) if refs else "none (drive.loop.n_step is absent)"
 
@@ -3668,6 +3682,17 @@ def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                          "<ref>\"`, `op: eq`, `value: 0`, `per_case: true` over all its target "
                          "cases whose <ref> is the closure counterpart of drive.loop.n_step: "
                          f"for this IR {_or_list(accepted)} (the zero-step closure)")
+            init_result = _init_result_state(block)
+            if init_result is not None and not any(
+                    _norm(p.get("expr")) == f"initial.{init_result}" and p.get("op") == "eq"
+                    and _is_number(p.get("value")) and p.get("value") == 1
+                    and not p.get("bind") for p in mine):
+                v.append(f"(l) test {tid!r} (pass) carries no predicate `expr: \"initial."
+                         f"{init_result}\"`, `op: eq`, `value: 1`, `per_case: true` over all its "
+                         "target cases: drive.loop.n_step is a scalar init writes, so the "
+                         "closure counts the steps against init's own plan, which a refused "
+                         "init (result 0) planning 0 steps satisfies with 0 - 0; the init "
+                         "result closes it")
         else:
             covering = [e for e in block.step
                         if e.cases is None or set(e.cases) & set(targets)]

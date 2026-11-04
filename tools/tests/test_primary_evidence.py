@@ -3346,6 +3346,30 @@ class DriveViolationsTest(unittest.TestCase):
                          [])
         self.assertTrue(l_findings(closure_expr(rk, "final.step - inputs.grid.nx")))
 
+    def test_an_init_planned_loop_also_closes_the_init_result(self) -> None:   # (l)
+        """R1-3: with `loop.n_step: state.n_plan` (init-written) a refused `init` planning 0
+        steps satisfies `final.step - initial.n_plan` with 0 - 0, so every `pass` test also
+        carries `initial.init_ok eq 1` per case over all its targets. The init-written logical
+        is itself a state read (`state_reads(...).initial`), so it needs no exemption."""
+        msg = ("(l) test 't_run' (pass) carries no predicate `expr: \"initial.init_ok\"`, "
+               "`op: eq`, `value: 1`, `per_case: true` over all its target cases: "
+               "drive.loop.n_step is a scalar init writes, so the closure counts the steps "
+               "against init's own plan, which a refused init (result 0) planning 0 steps "
+               "satisfies with 0 - 0; the init result closes it")
+        self.assertIn("init_ok", pe.state_reads(_toyi()).initial)
+        self.assertEqual(self._v(_toyi()), [])
+        for bad in ({"value": 0}, {"op": "ge"}, {"expr": "initial.init_ok + 0"},
+                    {"target_cases": ["a"]}, {"per_case": None, "case": "a"}):
+            with self.subTest(bad=bad):
+                ir = _toyi()
+                ir["io_contract"]["predicates"][0].update(bad)
+                self.assertIn(msg, self._v(ir))
+        ir = _toyi()   # init_ok still read (gate (k)) but not in the fixed form
+        ir["io_contract"]["predicates"][0]["expr"] = "initial.init_ok * 1"
+        self.assertIn(msg, self._v(ir))
+        # A host-data count needs no init result.
+        self.assertFalse([m for m in self._v(_toy()) if "initial.init_ok" in m])
+
     def test_the_swe_fixture_closure_is_its_loop_count(self) -> None:   # (l)
         import yaml
         swe = yaml.safe_load((_DRIVE_DIR / "shallow_water2d_0.4.7" / "spec.ir.yaml").read_text())

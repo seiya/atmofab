@@ -381,8 +381,10 @@ drive:
   #   whitespace normalisation, not inferred: on a `loop` node every `expected_outcome: pass` test carries
   #   `expr: "final.step - <ref>"`, `op: eq`, `value: 0`, <ref> being the counterpart of `loop.n_step`'s
   #   binding and nothing else: that `derived.<n>` / `inputs.<path>` verbatim, or, for `n_step: state.<n>`
-  #   (a scalar `init` writes), `initial.<n>` or `final.<n>`; on a node without `loop` every `pass` test
-  #   carries `expr: "final.<result state>"`, `op: eq`, `value: 1` for the result state of each entry
+  #   (a scalar `init` writes), `initial.<n>` or `final.<n>` — and then also `expr: "initial.<init result
+  #   state>"`, `op: eq`, `value: 1` (a refused `__init` planning 0 steps satisfies `0 - 0`); on a node
+  #   without `loop` every `pass` test carries `expr: "final.<result state>"`, `op: eq`, `value: 1` for
+  #   the result state of each entry
   #   covering its cases; either over ALL the test's target cases; (m) a `loop` node's tests.md carries ONE
   #   `history:` line (docs/TESTS.md §Description format) whose input name is `history.every` without
   #   `inputs.` and whose number each case's input equals; a node without `loop` carries none. The host also
