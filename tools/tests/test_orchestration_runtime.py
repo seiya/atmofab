@@ -28646,7 +28646,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/workshop_compile_generate.txt:f69f8730d9291cff":
+        "tools/prompt_templates/workshop_compile_generate.txt:92856f9a31b52a34":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28664,7 +28664,10 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "every-case condition and the weight left to the reviewer, review round 2 R2-2 / "
             "R2-3 / R2-4 — rule 3 unchanged; re-keyed again 2026-11-04 when rule 5's closure "
             "sentence named the loop node's quantity `run.n_step` (review round 3, R3-1) and its "
-            "D7 sentence took \"in each of those cases\" (R3-3) — rule 3 unchanged)",
+            "D7 sentence took \"in each of those cases\" (R3-3) — rule 3 unchanged; re-keyed "
+            "again 2026-11-04 when rule 5's closure sentence named the result flag's quantity "
+            "and its xfail sentence the flag eq 0 under it (review round 4, R4-3) — rule 3 "
+            "unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",
