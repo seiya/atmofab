@@ -87,7 +87,7 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   does not exist.
   **A row you add behind a host tool is a skip only CI will see.** Issue #589 PR-1b added C++
   rows with a bare `skipUnless(NVCC, ...)`: `nvcc` is on the operator's PATH, so the suite and the
-  empty-`HOME` run were green and CI refused 38 of them. Use `skip_probes.skip_unless_installed`,
+  empty-`HOME` run were green and CI refused 37 of them. Use `skip_probes.skip_unless_installed`,
   and before the push run once with every tool CI lacks hidden, under `--junitxml`, then the
   report check over that file (`refused=0`). And read a CI run's result from a fresh
   `gh pr view --json statusCheckRollup`: on the installed `gh` 2.4.0, `gh run watch --exit-status`
