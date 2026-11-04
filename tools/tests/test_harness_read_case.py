@@ -80,6 +80,38 @@ class SpecSurfaceTests(unittest.TestCase):
                 self.assertIn("l0_read_case_roundtrip_pass", ids)
                 self.assertIn("l0_missing_case_file_xfail", ids)
 
+    def test_the_reading_contract_is_one_text_across_the_three_harnesses(self) -> None:
+        """The case-file paragraph of §2 and the operation bullets of §3.2 are stated once per
+        harness and must not drift apart; only the harness's name, its stop spelling and the
+        distributed harness's one sentence on who reads differ."""
+        texts: dict[str, tuple[str, str]] = {}
+        for spec_id in HARNESSES:
+            text = (_HARNESS_DIR / spec_id / "controlled_spec.md").read_text(encoding="utf-8")
+            paragraph = re.search(r"^Input \(to `__read_case`\):[^\n]*$", text, re.M).group(0)
+            bullets = re.search(rf"^- `{spec_id}__read_case\(.*?^- Each getter[^\n]*$", text,
+                                re.M | re.S).group(0)
+            paragraph = paragraph.replace(
+                " Every rank reads the file itself: the reading is no collective operation and"
+                " it communicates nothing.", "")
+            bullets = bullets.replace(spec_id, "H")
+            bullets = re.sub(r"\(`(error stop|std::exit\(2\))`\)", "(STOP)", bullets)
+            texts[spec_id] = (paragraph, bullets)
+            self.assertIn("`__parse_cases` keeps it", text)
+            self.assertIn("keep the following token as the spec path", text)
+        self.assertEqual(len(set(texts.values())), 1, sorted(texts))
+
+    def test_section_2_declares_each_sentinel_array_at_its_tests_md_shape(self) -> None:
+        for spec_id in HARNESSES:
+            text = (_HARNESS_DIR / spec_id / "controlled_spec.md").read_text(encoding="utf-8")
+            for name in ("rc_r1", "rc_r2", "rc_r3", "rc_r4"):
+                with self.subTest(spec_id=spec_id, name=name):
+                    declared = re.search(rf"`{name}` \(`\[([0-9,]+)\]`\)", text).group(1)
+                    self.assertEqual(tuple(int(e) for e in declared.split(",")),
+                                     np.array(SENTINELS[name]).shape)
+                    # `maxabs` refuses an extent-1 axis, so a sentinel with one fails a correct
+                    # harness (measured on `[2,1,2,3]`).
+                    self.assertNotIn(1, np.array(SENTINELS[name]).shape)
+
     def test_the_fortran_pins_carry_the_operations_under_each_harness_name(self) -> None:
         for spec_id, pin in fortran_runner._HARNESS_PINS.items():
             for op in NEW_OPERATIONS:
