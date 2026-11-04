@@ -1555,7 +1555,7 @@ class StaticRankTest(unittest.TestCase):
         history = {"h": np.stack([h, 2 * h, 3 * h]), "v": np.stack([v, v]),
                    "s": np.array([0.5, 0.7]), "t": np.array([0.1, 0.2]),
                    "step": np.array([1.0, 2.0])}
-        series = {"t": np.array([0.1, 0.2, 0.3]), "h_max": np.array([1.0, 1.1, 1.2])}
+        series = {"step": np.array([1.0, 2.0, 3.0]), "h_max": np.array([1.0, 1.1, 1.2])}
         derived = {"dt": 0.01, "f": h * 0 + 1.0, "w": v.copy()}
         env = pe.CaseEnv(case_id="a", initial=dict(cap), final=dict(cap), inputs=inputs,
                          coordinates={"x": h * 0 + 0.25}, history=history, series=series,

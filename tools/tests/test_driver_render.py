@@ -494,6 +494,34 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
         self.assertEqual((perf["steps"], perf["cells_updated"]), (9546, 89930752))
 
 
+@unittest.skipUnless(NVCC, "nvcc is not on PATH")
+class CppGpuPackageCompilesTest(unittest.TestCase):
+    """The package the `cpp_gpu` end to end runs at a site (`data/driver_e2e/package_cpp_gpu.py`)
+    compiles here. Compiled for the device with no device: the run itself is the site's, recorded
+    on the pull request."""
+
+    def test_each_node_compiles(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("package_cpp_gpu",
+                                                      DATA / "package_cpp_gpu.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for node in module.NODES:
+            with self.subTest(node=node), tempfile.TemporaryDirectory() as tmp:
+                out = Path(tmp)
+                stems = module.package(out, node)
+                build = subprocess.run(
+                    ["nvcc", "-std=c++17", "-O1", "-rdc=true", "-I.", "-c", f"{stems[-1]}.cu", "-o", "r.o"],
+                    cwd=out, capture_output=True, text=True)
+                self.assertEqual(build.returncode, 0, build.stdout[-1500:] + build.stderr[-1500:])
+                for stem in stems[:-1]:
+                    built = subprocess.run(
+                        ["nvcc", "-std=c++17", "-O1", "-rdc=true", "-I.", "-c", f"{stem}.cu", "-o",
+                         f"{stem}.o"], cwd=out, capture_output=True, text=True)
+                    self.assertEqual(built.returncode, 0, stem + built.stderr[-1500:])
+
+
 class ProblemModelGateTest(unittest.TestCase):
     """The canonical `__step` shape passes the `problem` dataflow gates: `intent(inout)` state and
     one logical `intent(out)` result set from literals (issue #589 D3)."""
