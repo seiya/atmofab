@@ -4595,9 +4595,20 @@ class DriveViolationsTest(unittest.TestCase):
         self.assertEqual([v for v in self._v(ir) if "extent" in v or "count" in v], [])
 
     def test_a_negative_extent_is_refused(self) -> None:   # (c)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "not an extent >= 0"):
+            pe._extent_by("nx", lambda _name: -1, "w")
+        self.assertEqual(pe._extent_by("nx", lambda _name: 0, "w"), 0)
+
+    def test_a_dims_token_refuses_a_derived_array(self) -> None:   # (c)
         ir = _toy()
-        ir["case"]["test_case_set"][1]["inputs"]["grid"]["nx"] = -1
-        self.assertTrue(self._v(ir))
+        sig = self._sig(ir, "toy__step")
+        next(a for a in sig if a["name"] == "h").pop("dims")
+        for variable in ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:
+            if variable["name"] == "h":
+                variable["shape_expr"] = "[n_total]"
+        for case in ir["case"]["test_case_set"]:
+            case["derived"]["n_total"] = "x"
+        self.assertTrue(any("neither a rank-0 dummy" in v for v in self._v(ir)), self._v(ir))
 
     def test_a_derived_array_cannot_bind_a_rank_0_dummy(self) -> None:   # (c)
         ir = _toy()
