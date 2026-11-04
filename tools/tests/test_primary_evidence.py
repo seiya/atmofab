@@ -3450,6 +3450,59 @@ class ResultFlagFormTest(unittest.TestCase):
                                         "target case(s) ['s_a']"), v)
 
     # --- what is not a fixed form ----------------------------------------------------------------
+    def test_the_outcome_is_read_as_the_schema_gate_and_the_verdict_read_it(self) -> None:
+        """R6-4: `validate_tests_schema` and `evaluate_verdict` both admit any case and padding
+        (executed: ` XFAIL ` clears every gate, so the normalisation stays), and an unnormalised
+        read here would drop the flag's value on such an xfail test and gate (l)'s exemption on
+        such a pass test while the verdict still certified it."""
+        for spelling in ("XFAIL", " xfail ", "Xfail"):
+            with self.subTest(spelling=spelling):
+                rus = self._rus_xfail()
+                rus["io_contract"]["tests"][0]["expected_outcome"] = spelling
+                self.assertEqual(_all_gates(rus), [])
+                self.assertEqual(pe.state_reads(rus).outcomes, {"t_flux": "xfail"})
+                self.assertEqual(pe.cases_read(rus["io_contract"]["predicates"][0],
+                                               pe.state_reads(rus)), {"a"})
+        toy = _toy()
+        toy["io_contract"]["tests"][0]["expected_outcome"] = " PASS "
+        self.assertEqual(pe.state_reads(toy).closure_tests, frozenset({"t_run"}))
+        self.assertEqual(_all_gates(toy), [])
+        rus = _rus()
+        rus["io_contract"]["tests"][0]["expected_outcome"] = "PASS"
+        self.assertEqual(pe.state_reads(rus).outcomes, {"t_flux": "pass"})
+        self.assertEqual(_all_gates(rus), [])
+
+    def test_one_closure_per_test_whichever_spelling_of_the_ref(self) -> None:
+        """R6-4: `n_step: state.<n>` admits `initial.<n>` and `final.<n>` as the closure's ref, and
+        `exempt_once` keys a closure by its form (a flag by its expression), so a test's second
+        closure in the other spelling is not exempt. Each of those spellings also reads the kernel
+        scalar `n`, so the schema gate admits the pair on that read (executed); a second closure
+        that reads no state is reachable where the ref is unchecked, `closure_refs` None, while
+        gate (e) refuses `loop.n_step`, and there it draws the entry's own refusal."""
+        ir = _toyi()
+        reads = pe.state_reads(ir)
+        common = ir["io_contract"]["predicates"][-1]
+        first, second = ({**common, "expr": f"final.step - {ref}"}
+                         for ref in ("initial.n_plan", "final.n_plan"))
+        for one, other in ((first, second), (second, first)):
+            with self.subTest(first=one["expr"]):
+                exempted: set[tuple[str, str]] = set()
+                self.assertEqual(pe.fixed_form(other, reads), pe.FORM_CLOSURE)
+                self.assertTrue(pe.exempt_once(one, reads, exempted))
+                self.assertFalse(pe.exempt_once(other, reads, exempted))
+                self.assertEqual(exempted, {("t_run", pe.FORM_CLOSURE)})
+        ir["io_contract"]["predicates"].append(second)
+        self.assertEqual(_all_gates(ir), [])
+        # the unchecked ref: two closures, the second over an input alone
+        toy = _toy()
+        toy["drive"]["loop"]["n_step"] = "state.h"
+        preds = toy["io_contract"]["predicates"]
+        preds.append({**preds[-1], "expr": "final.step - inputs.grid.nx"})
+        self.assertIsNone(pe.state_reads(toy).closure_refs)
+        self.assertEqual(pe.fixed_form(preds[-1], pe.state_reads(toy)), pe.FORM_CLOSURE)
+        v = [m for m in self._schema(toy) if self._NO_STATE in m]
+        self.assertEqual([m.split(":")[0] for m in v], ["predicates[2]"], v)
+
     def test_a_second_copy_of_a_form_in_one_test_is_not_exempt(self) -> None:
         rus = _rus()
         rus["io_contract"]["predicates"].append(copy.deepcopy(rus["io_contract"]["predicates"][0]))
