@@ -22405,6 +22405,9 @@ class DeterministicCompileStaticTest(unittest.TestCase):
             meta = self._meta(repo, refs)
             self.assertEqual(meta["status"], "pass")
             self.assertIsNone(meta["failure_category"])
+            # The case files are Validate.execute's (issue #589 D2): Compile.static evaluates
+            # every case and writes none.
+            self.assertFalse((repo / refs.ir_ref / "case_inputs").exists())
 
     def test_compile_static_inproc_compile_stage_violation_is_content_fail(self) -> None:
         import tempfile
@@ -25242,6 +25245,43 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         return run
 
     # --- site A: compile.static -----------------------------------------------------------
+
+    def test_the_real_compile_stage_evaluates_the_cases_and_writes_no_case_file(self) -> None:
+        # Issue #589 D2, through the real validator: its refusal of a case that cannot be
+        # evaluated is the reason a writer refusal at Validate.execute is the host's, and
+        # the evaluation leaves nothing behind in an IR directory every target's run shares.
+        from unittest import mock
+
+        from tools.tests.test_validate_pipeline_semantics import (
+            _FIXTURE_IR_REL,
+            _create_minimal_execution_tree,
+            _seed_shape_expr_schema_into,
+        )
+
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
+            node_key="problem/shallow_water2d@0.3.0",
+            spec_path="spec/problem/mock_domain/mock_family/mock_spec",
+            ir_id="shallow-water2d_20260415_001",
+            pipeline_id="shallow-water2d_20260415_001",
+            source_id="src_20260415_001",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _seed_shape_expr_schema_into(repo)
+            _create_minimal_execution_tree(
+                repo,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            self.assertTrue((repo / _FIXTURE_IR_REL).is_file())
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            with mock.patch.object(wc.subprocess, "run", self._shim(repo)):
+                c._compile_static_inproc(refs, "child-1")
+            self.assertTrue((repo / refs.ir_ref / "compile_static_meta.json").is_file())
+            self.assertFalse((repo / refs.ir_ref / "case_inputs").exists())
 
     def test_compile_static_inproc_real_stage_compile_refuses_a_non_mapping_ir(self) -> None:
         from unittest import mock

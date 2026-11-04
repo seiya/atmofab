@@ -13335,7 +13335,7 @@ class DependencyFactsLanguageTests(unittest.TestCase):
         from tools.orchestration_runtime import _build_exemplar
         request = {"step": "generate", "substep": "generate",
                    "exemplar": {"node_key": "component/sib@0.1.0",
-                                "sources": [{"filename": "sib_checks.zz", "text": "x"}]}}
+                                "sources": [{"filename": "sib_model.zz", "text": "x"}]}}
         with self._second_language():
             block = _build_exemplar(dict(request, pure_language="zz_dep"))
         self.assertIn("the contract wins. ZZ-GATE-NOTE.", block)
@@ -21520,6 +21520,125 @@ class TerseResultProjectionTests(unittest.TestCase):
         self.assertNotIn("--verbose", _help("set-status"))
 
 
+class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
+    """Issue #589 PR-1b, the three places a deterministic substep's outputs are named
+    (`atmofab-enforcement-change` §"Adding a DELIVERABLE"), for what the host-rendered driver adds
+    under `raw/state_snapshots/`:
+
+    1. `build_launch_request`'s list names `initial/<case_id>.json` and neither of the new two: no
+       `history/` sample count is knowable there, and a `series/` file is the deliverable gap's
+       (`_snapshot_deliverable_gap`), not freshness's.
+    2. `_matches_phase_contract` admits both anyway, by the `raw/` prefix of its execute branch, so
+       `record_launch` refuses none of it, listed or not.
+    3. `phase_required_outputs("validate")` names no raw evidence at all, so `artifact_hashes` pins
+       neither, like the final captures beside them: what binds them to a verdict is the
+       post-execute gate's read of the run directory."""
+
+    _ROOT = "orch_deliverable"
+
+    def _recorded(self) -> dict:
+        fixture = (Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+                   / "validate_execute.request.json")
+        return json.loads(fixture.read_text(encoding="utf-8"))
+
+    def _record_launch(self, repo_root: Path, request: dict) -> dict:
+        init_orchestration(
+            repo_root=repo_root, orchestration_id=self._ROOT,
+            spec_ref="spec/problem/shallow_water2d/controlled_spec.md",
+            source_dependency_ref="spec/problem/shallow_water2d/deps.yaml")
+        _mark_dependencies_ready(repo_root, self._ROOT)
+        write_preflight(
+            repo_root=repo_root, orchestration_id=self._ROOT,
+            payload={"status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
+                     "can_launch_step_agents": True, "can_launch_substep_agents": True,
+                     "backend": "claude", "checks": [*claude_launch_checks()]})
+        record_agent_run(
+            repo_root=repo_root, orchestration_id=self._ROOT,
+            payload={"agent_run_id": "orch_run_001", "agent_role": "orchestration",
+                     "status": "running", "agent_backend": "claude",
+                     "started_at": "2026-03-11T00:00:00Z"})
+        child = "substep_run_execute_001"
+        # What the launch refuses without: the binary it runs (`source_binary_id`) was built.
+        meta = (repo_root / request["pipeline_ref"] / "binary" / request["source_binary_id"]
+                / "binary_meta.json")
+        meta.parent.mkdir(parents=True)
+        meta.write_text(json.dumps({"binary_id": request["source_binary_id"],
+                                    "source_source_id": request["source_id"]}), encoding="utf-8")
+        source_meta = (repo_root / request["pipeline_ref"] / "source" / request["source_id"]
+                       / "source_meta.json")
+        source_meta.parent.mkdir(parents=True)
+        source_meta.write_text(json.dumps({"source_id": request["source_id"],
+                                           "verification_status": "pass"}), encoding="utf-8")
+        request = {**request, "agent_run_id": child, "orchestration_id": self._ROOT,
+                   "parent_agent_run_id": "orch_run_001",
+                   "derivation_key": "sha256:" + "d" * 64}
+        for key in ("launch_prompt_full", "launch_prompt_ref", "child_launch_prompt_ref",
+                    "child_launch_request_ref", "_capture_source"):
+            request.pop(key, None)
+        # The readiness of the upstream phases is not this row's subject: this tree holds no
+        # certified Build. The contract matcher and the binary binding below it run for real.
+        with mock.patch.object(ort, "pre_phase_launch", return_value={"status": "pass"}):
+            return ort.record_launch(
+                repo_root=repo_root, orchestration_id=self._ROOT,
+                parent_agent_run_id="orch_run_001", child_agent_run_id=child,
+                request_payload=ort.prepare_launch_request_payload(request),
+                response_payload={"agent_run_id": child, "agent_session_id": child,
+                                  "started_at": "2026-03-11T00:00:01Z", "backend": "claude",
+                                  "agent_model": "m", "status": "running"},
+                netns_socket_dir=netns_socket_dir())
+
+    def test_record_launch_takes_the_recorded_request_with_and_without_them(self) -> None:
+        base = self._recorded()
+        node = next(p.rsplit("/raw/state_snapshots/", 1)[0] for p in base["allowed_output_paths"]
+                    if "/raw/state_snapshots/" in p)
+        added = [f"{node}/raw/state_snapshots/history/l0_still_water__1.json",
+                 f"{node}/raw/state_snapshots/series/l0_still_water.json"]
+        for label, paths in (("as recorded", base["allowed_output_paths"]),
+                             ("with them", [*base["allowed_output_paths"], *added])):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                refs = self._record_launch(Path(tmp), {**base, "allowed_output_paths": paths})
+                recorded = json.loads((Path(tmp) / refs["launch_request_ref"]).read_text())
+                self.assertEqual(recorded["allowed_output_paths"], paths)
+
+    def test_the_matcher_admits_them_by_the_raw_prefix_and_no_sibling_of_it(self) -> None:
+        base = self._recorded()
+        node = next(p.rsplit("/raw/state_snapshots/", 1)[0] for p in base["allowed_output_paths"]
+                    if "/raw/state_snapshots/" in p)
+        for rel in ("raw/state_snapshots/history/c__1.json", "raw/state_snapshots/series/c.json"):
+            with self.subTest(rel=rel):
+                payload = dict(base, allowed_output_paths=[*base["allowed_output_paths"],
+                                                           f"{node}/{rel}"])
+                ort._validate_launch_request_payload(payload)
+                self.assertIn(f"{node}/{rel}",
+                              ort._allowed_output_paths_for_launch(request_payload=payload))
+        for rel in ("history/c__1.json", "series/c.json"):
+            with self.subTest(rel=rel), self.assertRaisesRegex(
+                    ValueError, "outside phase contract outputs"):
+                ort._allowed_output_paths_for_launch(request_payload=dict(
+                    base, allowed_output_paths=[*base["allowed_output_paths"], f"{node}/{rel}"]))
+
+    def test_the_builder_lists_initial_and_neither_new_file_and_the_stamp_pins_no_raw(self) -> None:
+        import tools.workflow_conductor as wc
+        from tools.tests.test_workflow_conductor import _refs_from_request
+        base = self._recorded()
+        refs = _refs_from_request(base)
+        built = wc.build_launch_request(
+            refs, step="validate", substep="execute",
+            orchestration_id=base["orchestration_id"],
+            orchestration_agent_run_id=base["parent_agent_run_id"],
+            child_agent_run_id=base["agent_run_id"], agent_model=base["agent_model"],
+            workflow_mode=base["workflow_mode"], case_ids=("c_a",), runner_host_authored=True,
+            evidence_artifacts=("state_snapshots", "state_history", "step_series"))
+        ort._validate_launch_request_payload(built)
+        listed = ort._allowed_output_paths_for_launch(request_payload=built)
+        self.assertTrue(any(p.endswith("/raw/state_snapshots/initial/c_a.json") for p in listed))
+        self.assertFalse([p for p in listed if "/history/" in p or "/series/" in p], listed)
+        required = wc.phase_required_outputs(refs, "validate")
+        self.assertFalse([p for p in required if "/raw/" in p], required)
+        pinned = ort._certifiable_artifact_refs(required, f"{refs.run_node_dir()}/validate_meta.json")
+        self.assertFalse([p for p in pinned if "/raw/" in p], pinned)
+
+
 class ChildContextDocSizeTests(unittest.TestCase):
     """Regression guard: the documents the host INLINES into a leaf's launch prompt are
     resident for every turn of that leaf, and the leaves are the majority of a node's token
@@ -21539,12 +21658,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
     # The guarded set, and where each one enters a prompt (Z4, issue #171):
     #   - RUNNER_OUTPUT_CONTRACT.md  (`runner_output_contract_document`: the `harness` shape's
     #                                 producer and reviewer, whole; the pure judge, sliced)
-    #   - CHECKS_MODULE_CONTRACT.md  (§1-4 as `checks_module_contract_document` to the `m3c`
-    #                                 reviewer; the compile producer's ABI slice went with
-    #                                 issue #589 PR-1a)
-    #   - backends/language/fortran/CHECKS_ABI.md (issue #289: its §1-4 after the contract's in
-    #                                 the `m3c` reviewer's document; its §5 as
-    #                                 `gate_guards_document` to the `harness` producer)
+    #   - backends/language/<id>/GENERATE_RULES.md (issue #589, which deleted the checks module's
+    #                                 contract and bindings: its `Legality and gate guards`
+    #                                 section as `gate_guards_document` to the `harness` producer)
     #   - backends/language/fortran/RUNNER_OUTPUT.md (issue #289: after RUNNER_OUTPUT_CONTRACT.md
     #                                 in the `harness` shape's two prompts)
     #   - phase_01_compile.md        (`phase_contract_document`: both compile leaves, whole)
@@ -21590,102 +21706,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 12300->12700 (issue #368): §3 states the directories the host pre-creates in a
         # run directory (`initial/` only for a host-rendered runner), which a harness leaf
         # writing a strict fan-out check must read. Measured 12487.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 12700,
-        # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
-        # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
-        # every generate LLM leaf (its SKILL branches on whether the node is M3c).
-        # 8300->8500: metrics-basis first-target-case scope note (review round 2).
-        # Bumped 8500->9900: (a) how `_validate_checks_source_files` resolves the published ABI
-        # set (the module's own `public` statements, plus module-level definitions only while the
-        # default accessibility is public, minus `private`) — a bare module-level `private`
-        # without the three `public ::` lines publishes nothing and failed the gate silently;
-        # (b) §2 gains the `_validate_metrics_basis_not_trivial` rule, because the harness fills
-        # metrics_basis.json from THIS module's getters yet an M3c leaf never reads
-        # RUNNER_OUTPUT_CONTRACT.md (its scope note excludes it), so §3's copy was unreachable.
-        # Bumped 9900->11100: R3-core replaces the M3c-β "single case per test" scope note with
-        # the three rules a multi-target node's checks module cannot be written without —
-        # metrics_basis is the (test_id, case_id) matrix; a cross-case reduction is emitted as a
-        # per-case metric of the case that completes it (read by a `case:` predicate); and the
-        # accumulator may only consume cases whose case_id sorts BEFORE the emitting case's
-        # (argv is sorted). All three lived only in tool code, and an M3c leaf reads this doc,
-        # not RUNNER_OUTPUT_CONTRACT.md.
-        # Bumped 11100->13700: §5 gains the intentionally-unused dummy-argument rule (bind an
-        # inert / ABI-fixed dummy with `associate (unused_x => x); end associate`; no `0*x`, no
-        # `! allow(...)`). The idiom is a language convention, not spec-local, so it belongs in
-        # a generate force-read doc rather than travelling through the IR — a Compile authoring
-        # wobble dropped it from the IR and the leaf, which never reads controlled_spec, then
-        # emitted a dead dummy (orch_20260711T002216Z_5abd1c53). The same bump widens §5's
-        # scope banner to every generate leaf that authors Fortran (sections 1-4 stay
-        # M3c-only) — the doc is force-read by EVERY generate leaf, and a non-M3c leaf that
-        # hand-authors its runner is exactly the one with ABI-fixed unused dummies — and adds
-        # the unset-`intent(out)` case, which `-Werror=unused-dummy-argument` promotes too,
-        # and the delete-don't-bind rule for a dummy no interface fixes (binding one in the
-        # leaf's own private helper would freeze dead surface).
-        # Bumped 13700->14000: the pure-leaf note block records that §2/§3 is distilled into
-        # `pure_generate_generate.txt`. (The former check-id literal-presence acceptance gate is
-        # gone as of pure-8: the runner-driven per-id checks ABI supplies each id as a literal, so
-        # a dropped id is structurally impossible; `post_execute` stays the status backstop.)
-        # Bumped 14000->14600: issue #25 — §5 gains the third promoted syntax-gate class,
-        # `-Werror=ampersand`. A continued character literal must resume with a leading `&`;
-        # gfortran accepts a resume line without one as an extension, and that shape put a
-        # counted-`do` spelling written inside a string at a physical line start, where the
-        # line-anchored `!$omp` presence floor counted it and falsely rejected the node. This doc
-        # is the canonical target every other copy of the promoted-class list points at, so the
-        # rule cannot live anywhere else. The doc measures 14500.
-        # Bumped 14600->14700: issue #111 — the lint bullet had to say what a leaf must write
-        # instead of the directive it used to mandate (a plain `implicit none`, no allow
-        # comment, lines UNDER 100 with the reason), and the allow paragraph had to stop
-        # promising a diagnostic that does not always arrive. Both are text a leaf ACTS on,
-        # and the shorter versions were the ones that were wrong. Measured 14661 at the end of the loop.
-        # Bumped 14700->14900: issue #142 — the preamble said a `pure` leaf "cannot read this",
-        # which stopped being true once the pure `generate.verify` reviewer began receiving §1-4
-        # inlined; it now names both pure routes (producer: ten names + rendered runner;
-        # reviewer: the inlined slice). The agentic leaf's force-read cost is what this ceiling
-        # guards, and the preamble is the first thing that leaf reads to know which half binds
-        # it. Measured 14865 at the end of the loop.
-        # Bumped for issue #171 round 2: the banner said "Force-read by the **agentic** leaf",
-        # and this document reaches its two leaves INLINED (§1-4 to the `m3c` reviewer, §5 to the
-        # `harness` producer) — so the sentence was read, inside a prompt, by a leaf that force-
-        # reads nothing. Replacing it cost ~120 bytes.
-        # Bumped 15100->17600 (Z6, issue #255): the five snapshot getters leave §1 and §1-b
-        # arrives — the bound-state convention (`sb_<var> => <var>`, the two capture points,
-        # the publication rule, the allocate-on-every-path rule) the `m3c` reviewer judges the
-        # checks module against; §2 gains the "a callback cannot reach the snapshot" bullet.
-        # Measured 17441; 17673 after round 1 scoped the §2 bullet to the state (the file is
-        # the §4 prohibition's, with the record pointer); 18043 after round 2 stated where
-        # `get_time` sits relative to each capture. Ceiling 18200.
-        # Bumped 18200->18600 (issue #261): §5 gains the bullet that `metric_compute`'s
-        # `reason_na` carries `allocatable` on every node and that the bundle acceptance gate
-        # refuses a non-allocatable one — the one §1 declaration no compiler check sees.
-        # Measured 18464 at ee09daf6; 18571 after the round-1 and round-3 rewordings of that
-        # bullet.
-        # Lowered 18600->13600 (issue #289, R4-b PR-2): §1-4 became language-neutral and §5 moved
-        # to the Fortran binding below. Measured 13223 at 33dacd5c.
-        # Raised 13600->13900 (issue #315): the NA-metrics bullet says a computed non-finite
-        # metric is not N/A and cites §4 of the runner-output contract. Measured 13697.
-        # Raised 13900->14600 (issue #314): the §1 `case_run` row says it reaches the model's
-        # published operation, and §4 gains the no-shadow-definition item. Measured 14233; 14310
-        # after round 1 widened §4 to every local entity of that name; 14418 after round 1 told
-        # the §1 row's reader the check is a reach, not a use; 14506 after round 2 stated §4 by
-        # where the name may appear rather than by declaration form; 14485 after round 3 left
-        # the positions to the binding's §4.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14600,
-        # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
-        # 11479 and 4418 at 33dacd5c.
-        # Raised 11900->13200 (issue #316, R4-c PR-4): §1-c, the distributed binding — the four
-        # partition variables a checks module publishes beside each bound array on a harness
-        # that runs the program as several ranks. It is inlined into the `m3c` reviewer, which
-        # cannot judge a distributed checks module without it. Measured 12759 on the branch.
-        # Raised 13200->13500 in the same PR's round 2: which cells a rank contributes when the
-        # IR's shape includes the domain's boundary ghost cells. Measured 13216.
-        # Raised 13500->14000 (issue #314): `case_run`'s comment says it calls the operation, and
-        # §4 states where the operation's name may appear — the Fortran verify reviewer receives
-        # no other statement of it. Measured 13821.
-        # Raised 14000->15500 (issue #442): §5 gains the recursive-allocatable-component bullet,
-        # the harness producer's only statement of it. Measured 15344.
-        # Raised 15500->17500 (issue #477): §5 gains the deferred-length-component constructor
-        # bullet, the harness producer's only statement of it. Measured 17277.
-        "docs/backends/language/fortran/CHECKS_ABI.md": 17500,
+        # Raised 12700->15500 (issue #589 PR-1b): §3 gains what the driver writes (`initial/`,
+        # `history/`, `series/`), and §2 and §6 what it computes. Measured 15150.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 15500,
+        # New (issue #589 PR-1b): the gate guards moved here with the checks ABI bindings' deletion.
+        # Measured 39235 and 30421 at this commit.
+        "docs/backends/language/fortran/GENERATE_RULES.md": 40000,
+        "docs/backends/language/cuda_cpp/GENERATE_RULES.md": 31000,
         # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
         # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727; 5742 after the
         # #315 follow-up scoped the no-stop sentence to the emitter.
@@ -22089,7 +22116,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # extents and the reads-a-capture rule PER CASE on a list-form `drive.step`; R2-4: D7
         # claims only what it closes; R2-5: a snapshot variable is a driver state): bumped
         # 103400->105800; measured 105312 the same way at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 105800,
+        # Issue #589 PR-1b (`series.t` out, the procedure binding's `calls` / `record`): bumped
+        # 105800->107200; measured 106733 at this commit.
+        "docs/workflow/phases/phase_01_compile.md": 107200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -22312,7 +22341,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
 
     def _seed_certified_sibling(self, repo: Path, kind: str, sid: str, ver: str, *,
                                 certified: bool = True, date: str = "20260101",
-                                with_checks: bool = False,
+                                with_bundle_meta: bool = False,
                                 contract_version: str | None = None) -> None:
         safe = f"{kind}__{sid}__{ver}"
         # the pipeline dir id must match the canonical `<hyphen-slug>_<date>_<seq>` grammar
@@ -22329,11 +22358,9 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                      model_text=f"! model for {sid}\nmodule {sid}\nend module\n")
         src = pipe / "source" / src_id / "src"
         self._write(src / f"{sid}_runner.f90", f"! runner for {sid}\nprogram {sid}_r\nend program\n")
-        if with_checks:
-            self._write(src / f"{sid}_checks.f90",
-                        f"! checks for {sid}\nmodule {sid}_checks\nend module\n")
-            # An M3c checks exemplar is gated on its recorded contract version matching the
-            # current one; seed a matching `bundle_meta.json` by default (None => current).
+        if with_bundle_meta:
+            # An M3c exemplar is gated on its recorded contract version matching the current
+            # one; seed a matching `bundle_meta.json` by default (None => current).
             from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
             version = contract_version if contract_version is not None else LEAF_PROMPT_CONTRACT_VERSION
             self._write(src.parent / "bundle_meta.json",
@@ -22349,14 +22376,13 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "swe_flux", "0.1.0", "shallow_water")])  # different family
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
-                                         with_checks=True)
+                                         with_bundle_meta=True)
             self._seed_certified_sibling(repo, "component", "swe_flux", "0.1.0",
-                                         with_checks=True)  # wrong family
+                                         with_bundle_meta=True)  # wrong family
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertIsNotNone(ex)
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
-            self.assertEqual({s["filename"] for s in ex["sources"]},
-                             {"adv_bndry_model.f90", "adv_bndry_checks.f90"})
+            self.assertEqual({s["filename"] for s in ex["sources"]}, {"adv_bndry_model.f90"})
             # A sibling is certified per target (issue #284): no target, no exemplar.
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
             # WHICH source directory the exemplar was read from (issue #250): the attempt
@@ -22368,7 +22394,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
 
     def test_an_infrastructure_target_selects_model_and_runner(self) -> None:
         """The non-M3c branch: an `infrastructure` node authors its own runner, so its
-        exemplar is a sibling harness's model + runner, and a checks module is not asked for.
+        exemplar is a sibling harness's model + runner.
         (Until issue #284 a physics node without an infrastructure dependency took this
         branch; the harness is the target's now, so every physics node is M3c.)"""
         from tools.orchestration_runtime import _resolve_exemplar_source
@@ -22385,9 +22411,10 @@ class R5ExemplarSelectorTests(unittest.TestCase):
             self.assertEqual({s["filename"] for s in ex["sources"]},
                              {"harness_b_model.f90", "harness_b_runner.f90"})
 
-    def test_m3c_target_selects_model_and_checks(self) -> None:
-        # R1/M3c-β: an M3c target (a physics node under a runner-rendering target) exemplifies a sibling's
-        # model + checks (NOT model + runner — the runner is host-rendered).
+    def test_m3c_target_selects_the_model_alone(self) -> None:
+        # R1/M3c-β, issue #589: an M3c target (a physics node under a runner-rendering target)
+        # exemplifies a sibling's model (NOT its runner, which is host-rendered, and no file a
+        # retired sibling still holds beside it).
         from tools.orchestration_runtime import _resolve_exemplar_source
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -22396,15 +22423,21 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
-                                         with_checks=True)
+                                         with_bundle_meta=True)
+            safe = "component__adv_bndry__0.1.0"
+            src = (repo / "workspace" / "pipelines" / safe / _TARGET_ID
+                   / "adv-bndry_20260101_001" / "source" / "src_20260101_001" / "src")
+            self._write(src / "adv_bndry_checks.f90", "module adv_bndry_checks\nend module\n")
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertIsNotNone(ex)
-            self.assertEqual({s["filename"] for s in ex["sources"]},
-                             {"adv_bndry_model.f90", "adv_bndry_checks.f90"})
+            self.assertEqual({s["filename"] for s in ex["sources"]}, {"adv_bndry_model.f90"})
+            # A sibling with no model has nothing to show, and its runner is not shown instead.
+            (src / "adv_bndry_model.f90").unlink()
+            self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
-    def test_m3c_target_skips_sibling_without_checks(self) -> None:
-        # An M3c target must NOT inject a pre-M3c sibling's legacy runner: a sibling lacking
-        # a checks.f90 is skipped entirely (both model + checks required).
+    def test_m3c_target_skips_a_pre_m3c_sibling(self) -> None:
+        # An M3c target must NOT inject a pre-M3c sibling's legacy runner: a sibling with no
+        # recorded contract version (it was never a bundle) is skipped entirely.
         from tools.orchestration_runtime import _resolve_exemplar_source
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -22413,13 +22446,13 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
-                                         with_checks=False)  # pre-M3c: model+runner only
+                                         with_bundle_meta=False)  # pre-M3c: model+runner only
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
     def test_m3c_skips_sibling_with_stale_contract_version(self) -> None:
-        # ABI-drift guard: an M3c checks exemplar authored under an OLDER contract may carry a
-        # retired checks ABI (e.g. the pre-pure-8 buffered `checks_compute`), which the bundle
-        # acceptance gate (name/kind only) would admit but Generate.syntax then rejects. A sibling
+        # Surface-drift guard: an M3c exemplar authored under an OLDER contract may carry a
+        # retired operation shape (issue #589's checks-era model), which the bundle
+        # acceptance gate (names only) would admit but Generate.gate then rejects. A sibling
         # whose recorded `prompt_contract_version` != the current one is skipped entirely.
         from tools.orchestration_runtime import _resolve_exemplar_source
         with tempfile.TemporaryDirectory() as td:
@@ -22429,7 +22462,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
-                                         with_checks=True, contract_version="pure-STALE")
+                                         with_bundle_meta=True, contract_version="pure-STALE")
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=_TP))
 
     def test_m3c_skips_sibling_missing_bundle_meta(self) -> None:
@@ -22442,8 +22475,8 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_flux", "0.1.0", "advection_diffusion"),
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
-            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", with_checks=True)
-            # Remove the bundle_meta the seed wrote, leaving model+checks but no version record.
+            self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", with_bundle_meta=True)
+            # Remove the bundle_meta the seed wrote, leaving the model but no version record.
             safe = "component__adv_bndry__0.1.0"
             (repo / "workspace" / "pipelines" / safe / _TARGET_ID / "adv-bndry_20260101_001"
              / "source" / "src_20260101_001" / "bundle_meta.json").unlink()
@@ -22468,9 +22501,9 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_flux", "0.1.0", date="20260303",
-                                         with_checks=True)  # self, fresher
+                                         with_bundle_meta=True)  # self, fresher
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0", date="20260101",
-                                         with_checks=True)  # sibling, older
+                                         with_bundle_meta=True)  # sibling, older
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertEqual(ex["node_key"], "component/adv_bndry@0.1.0")
 
@@ -22513,7 +22546,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_bndry", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_bndry", "0.1.0",
-                                         with_checks=True)
+                                         with_bundle_meta=True)
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref, target=SECOND_TARGET))
             self.assertIsNone(_resolve_exemplar_source(repo, ir_ref))
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
@@ -22530,9 +22563,9 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                 ("component", "adv_new", "0.1.0", "advection_diffusion")])
             ir_ref = self._target_ir(repo, "component", "adv_flux", "0.1.0")
             self._seed_certified_sibling(repo, "component", "adv_old", "0.1.0", date="20260101",
-                                         with_checks=True)
+                                         with_bundle_meta=True)
             self._seed_certified_sibling(repo, "component", "adv_new", "0.1.0", date="20260202",
-                                         with_checks=True)
+                                         with_bundle_meta=True)
             ex = _resolve_exemplar_source(repo, ir_ref, target=_TP)
             self.assertEqual(ex["node_key"], "component/adv_new@0.1.0")
 
@@ -22568,11 +22601,11 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         out = _build_exemplar({
             "step": "generate", "substep": "generate", "pure_language": "fortran",
             "exemplar": {"node_key": "component/sib@0.1.0", "spec_id": "sib",
-                         "sources": [{"filename": "sib_checks.f90", "text": "module x\nend"}]},
+                         "sources": [{"filename": "sib_model.f90", "text": "module x\nend"}]},
         })
         self.assertIn("the contract wins", out)
         self.assertIn("associate (unused_<name> => <name>)", out)
-        self.assertNotIn("CHECKS_ABI.md", out)
+        self.assertNotIn("GENERATE_RULES.md", out)
 
     def test_build_launch_request_attaches_exemplar_only_for_generate_generate(self) -> None:
         import tools.workflow_conductor as wc
@@ -28646,7 +28679,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/workshop_compile_generate.txt:43aca60944dcc560":
+        # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
+        # paragraph gained the procedure binding. READ.
+        "tools/prompt_templates/workshop_compile_generate.txt:98aae3a61672474c":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "

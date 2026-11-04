@@ -1172,7 +1172,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
 
     DERIVED, not listed. The document set comes from the AST of
     `Conductor._build_leaf_*_context` — the same three spellings those builders use, resolved:
-    a literal `docs/**.md` path, `CHECKS_MODULE_CONTRACT_REF` / `RUNNER_OUTPUT_CONTRACT_REF`,
+    a literal `docs/**.md` path, `RUNNER_OUTPUT_CONTRACT_REF`,
     and a `WORKFLOW_PHASE_DOC_BY_STEP[...]` subscript. A builder added later is scanned without
     an edit here, which is the whole point; a fourth SPELLING would not be, and that bound is
     self-tested below.
@@ -1199,8 +1199,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
         repo_root = Path(ort.__file__).resolve().parents[1]
         tree = ast.parse((repo_root / "tools" / "workflow_conductor.py").read_text(
             encoding="utf-8"))
-        consts = {"CHECKS_MODULE_CONTRACT_REF": ort.CHECKS_MODULE_CONTRACT_REF,
-                  "RUNNER_OUTPUT_CONTRACT_REF": ort.RUNNER_OUTPUT_CONTRACT_REF}
+        consts = {"RUNNER_OUTPUT_CONTRACT_REF": ort.RUNNER_OUTPUT_CONTRACT_REF}
         doc_re = re.compile(r"docs/[\w./-]+\.md")
         found: set[str] = set()
         builders = 0
