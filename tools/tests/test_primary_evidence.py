@@ -3352,7 +3352,8 @@ class ResultFlagFormTest(unittest.TestCase):
         for bad in ({"target_cases": []}, {"per_case": None, "case": "a"}, {"op": "ge"},
                     {"bind": {"z": "final.F"}}, {"expr": "final.ok + 0"},
                     {"expr": "initial.ok"}, {"quantity": " ok"}, {"value": 2}, {"value": True},
-                    {"value": 0.5}, {"value": "1"}):
+                    {"value": 0.5}, {"value": "1"}, {"per_case": False},
+                    {"per_case": True, "case": "a"}):
             with self.subTest(bad=bad):
                 rus = _rus()
                 rus["io_contract"]["predicates"][0].update(bad)
@@ -3438,8 +3439,8 @@ class ResultFlagFormTest(unittest.TestCase):
                  if p["expr"] == "initial.init_ok")
         ir["io_contract"]["predicates"][i]["quantity"] = "flux"
         self._refused_at(ir, i)
-        self.assertTrue(pe.cases_read(_rus_with_init()["io_contract"]["predicates"][i],
-                                      reads) == set())
+        self.assertEqual(pe.cases_read(_rus_with_init()["io_contract"]["predicates"][i], reads),
+                         set())
 
     def test_only_an_xfail_flag_values_its_cases(self) -> None:
         """A design decision of R4-3, kept by R5-2: an `xfail` test's judgment IS the flag, so a
@@ -3547,6 +3548,35 @@ class ResultFlagFormTest(unittest.TestCase):
         rows.append(("initial. of a step flag", toyi, last(toyi), None))
         x = self._toyi_xfail()
         rows.append(("xfail init flag values", x, last(x), ["a", "b"]))
+        # a flag written in only SOME of the test's cases: every target case, not any
+        ir = _saturation()
+        ir["io_contract"]["tests"].append({"test_id": "t_mix", "expected_outcome": "xfail",
+                                           "target_cases": ["q_a", "s_a"],
+                                           "quantities": ["converged"]})
+        ir["io_contract"]["predicates"].append(
+            {"test_id": "t_mix", "quantity": "converged", "target_cases": ["q_a", "s_a"],
+             "per_case": True, "expr": "final.converged", "op": "eq", "value": 0})
+        rows.append(("a flag written in some of its cases", ir, last(ir), None))
+        # per case on a list-form node with `init`: its flag beside a state one entry writes
+        # reads kernel state in that entry's case alone, so the other case is unread
+        ir = _saturation()
+        ir["public_api"]["published_operations"].append({"operation_id": f"{_SAT}__init"})
+        ir["public_api"]["signatures"].append(
+            {"symbol": f"{_SAT}__init", "signature": {
+                "kind": "subroutine", "name": f"{_SAT}__init",
+                "args": [_arg("init_ok", "out", "logical")]}})
+        ir["drive"]["init"] = {"operation": f"{_SAT}__init", "result": "init_ok",
+                               "arguments": {"init_ok": "state.init_ok"}}
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"].append({"name": "init_ok", "shape_expr": "scalar"})
+        ir["io_contract"]["tests"].append({"test_id": "t_mix", "expected_outcome": "pass",
+                                           "target_cases": ["q_a", "s_a"],
+                                           "quantities": ["mixed"]})
+        ir["io_contract"]["predicates"].append(
+            {"test_id": "t_mix", "quantity": "mixed", "target_cases": ["q_a", "s_a"],
+             "per_case": True, "expr": "initial.init_ok + maxabs(final.qsat)", "op": "ge",
+             "value": 0})
+        rows.append(("a list-form init flag reads no case", ir, last(ir), None))
         return rows
 
     @staticmethod
@@ -3587,6 +3617,23 @@ class ResultFlagFormTest(unittest.TestCase):
                 record = pe.evaluate_primary_predicates(ir, run.root)[idx]
                 self.assertEqual(record["expr"], ir["io_contract"]["predicates"][idx]["expr"])
                 self.assertEqual(record["cases_read"], values)
+
+    def test_gate_l_asks_the_flag_it_names_not_any_flag(self) -> None:
+        """A `pass` test's other flag predicate does not stand for the one gate (l) requires, at
+        either point (mutation M15, this round's sweep)."""
+        ir = _saturation()
+        io = ir["io_contract"]
+        io["predicates"] = [p for p in io["predicates"]
+                            if not (p["test_id"] == "t_s" and p["quantity"] == "guard_pass")]
+        next(t for t in io["tests"] if t["test_id"] == "t_s")["quantities"].remove("guard_pass")
+        self.assertTrue([m for m in pe.drive_violations(ir, kind="component") if m.startswith(
+            "(l) test 't_s' (pass) carries no predicate `expr: \"final.guard_pass\"`")])
+        toyi = _toyi()
+        toyi["io_contract"]["predicates"][0]["expr"] = "final.init_ok"
+        self.assertEqual(pe.fixed_form(toyi["io_contract"]["predicates"][0],
+                                       pe.state_reads(toyi)), pe.FORM_FLAG)
+        self.assertTrue([m for m in pe.drive_violations(toyi, kind="problem") if m.startswith(
+            "(l) test 't_run' (pass) carries no predicate `expr: \"initial.init_ok\"`")])
 
     def test_the_nonconverged_repro_is_judged_end_to_end(self) -> None:
         """Finding (i): every spelling of `guard_pass == 1` on an xfail test was refused, so a
