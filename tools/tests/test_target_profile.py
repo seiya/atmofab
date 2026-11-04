@@ -1018,6 +1018,17 @@ class DriverDistributedPendingTests(unittest.TestCase):
             with self.assertRaises(tp.TargetProfileError) as cm:
                 self._resolve(repo)
             self.assertEqual(cm.exception.reason, "driver_distributed_pending")
+            # ... ahead of a hardware reason too, the one list entry that precedes the insert (a
+            # mutant appending instead survived every row above: none had a hardware reason).
+            with mock.patch.object(tp, "hardware_violations", return_value=["hardware: refused"]):
+                self.assertEqual(
+                    tp.target_profile_violations(repo.root, profile)[:2],
+                    [tp.target_profile_violations(repo.root, profile)[0], "hardware: refused"])
+                self.assertTrue(tp.target_profile_violations(repo.root, profile)[0].startswith(
+                    "driver_distributed_pending"))
+                with self.assertRaises(tp.TargetProfileError) as cm:
+                    self._resolve(repo)
+                self.assertEqual(cm.exception.reason, "driver_distributed_pending")
 
     def test_a_backend_that_declares_no_launcher_is_not_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
