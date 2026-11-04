@@ -3668,8 +3668,15 @@ def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                      f"over initial.{var} also reads initial.<a> of an array init writes "
                      f"({sorted(init_arrays)})")
 
-    # (l) the zero-step closure, in its fixed form
+    # (l) the zero-step closure, in its fixed form — not asked while (e) refuses
+    # `loop.n_step` itself (a `state.<var>` that is no scalar `init` writes): the accepted ref
+    # follows from that binding, so the finding would only restate (e)'s
+    n_step = (block.loop or {}).get("n_step")
+    n_step_refused = n_step is not None and n_step.kind == _STATE_ROOT and (
+        n_step.ref not in model.init_written or schema_vars.get(n_step.ref) != [])
     for test in _test_entries(ir):
+        if n_step_refused:
+            break
         if str(test.get("expected_outcome") or "").strip().lower() != "pass":
             continue
         tid = test["test_id"].strip()
