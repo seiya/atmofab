@@ -3140,12 +3140,18 @@ def _validate_parallel_presence_floor(
         return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
     if not isinstance(bundle, dict):
         return
-    # The launch-configuration half (issue #512, the CUDA backend's): asked of the model sources,
-    # whatever the plan and the loop count, before anything below may return.
+    # The launch-configuration half (issue #512, the CUDA backend's): asked of every leaf source,
+    # whatever the plan and the loop count, before anything below may return. A kernel launched
+    # from a helper the model reaches at link time is the same launch.
     launch_violations = getattr(floor, "launch_violations", None)
     if launch_violations is not None:
+        spec_id = _spec_id_from_node_key(execution.node_key)
+        runner_stem = f"{spec_id}_runner"
+        launch_files = [*model_files, *(
+            p for p in source_reading.leaf_sources(src_dir)
+            if p not in model_files and not (p.parent == src_dir and p.stem == runner_stem))]
         violations.extend(launch_violations(
-            {f: f.read_text(encoding="utf-8", errors="ignore") for f in model_files}))
+            {f: f.read_text(encoding="utf-8", errors="ignore") for f in launch_files}))
     # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: a forbidden direct use of the
     # library does not depend on the plan) states its findings itself, and decides for itself what
     # a declining plan exempts. `checks_texts` is that floor's keyword until the distributed

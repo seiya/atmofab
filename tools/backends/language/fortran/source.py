@@ -2639,6 +2639,12 @@ def _is_open_statement(statement: str) -> bool:
                       ].strip()
 
 
+#: The intrinsic and the common extension that run a program: a child can rewrite a capture after
+#: the driver has written it, which no later gate can tell from the driver's own write. The C++
+#: backend's I/O scan refuses the same by name.
+_COMMAND_CALL_RE = re.compile(r"\bcall\s+(?:execute_command_line|system)\b")
+
+
 def _leaf_sources(src_dir: Path, model_files: list[Path], spec_id: str) -> list[Path]:
     """The model files, then every other regular source under `src_dir` at any depth, symbolic
     links not followed, but the host-rendered runner by its full path (a leaf file of that NAME
@@ -2708,6 +2714,10 @@ def model_harness_isolation_violations(
             violations.append(
                 f"{f}: a physics source must not do file I/O (`open`) — emission is the "
                 "harness's job, through the host-rendered driver; the model only computes")
+        if any(_COMMAND_CALL_RE.search(mask_string_contents(stmt).lower()) for stmt in stmts):
+            violations.append(
+                f"{f}: a physics source must not start a program (`execute_command_line`, "
+                "`system`) — a child can rewrite what the host-rendered driver captured")
         lowered = [stmt.lower() for stmt in stmts]
         violations.extend(
             f"{f}: forbidden judge-artifact filename detected ({output_name})"

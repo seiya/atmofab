@@ -101,13 +101,6 @@ std::string emit_view(const atmofab::View<const dp, R>& a) {
 }
 
 // Trailing blanks removed ('na  ' -> "na").
-std::string trim_trailing(const std::string& s) {
-    std::string::size_type end = s.size();
-    while (end > 0 && s[end - 1] == ' ') {
-        --end;
-    }
-    return s.substr(0, end);
-}
 
 }  // namespace
 
