@@ -68,9 +68,9 @@
       "fortran": 1
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
-      "fortran": 14,
+      "fortran": 13,
       "fortran-kind": 1,
-      "fortran-suffix": 3,
+      "fortran-suffix": 2,
       "make-control-file": 5
     },
     "docs/workflow/COMMAND_LOG_PLACEMENT.md": {
@@ -83,7 +83,7 @@
       "fortran-subroutine": 1
     },
     "docs/workflow/phases/phase_02_generate.md": {
-      "fortran": 31,
+      "fortran": 29,
       "fortran-intent": 1,
       "fortran-subroutine": 1,
       "make-control-file": 1,
@@ -118,8 +118,7 @@
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
-      "fortran": 12,
-      "fortran-subroutine": 6,
+      "fortran": 11,
       "fortran-suffix": 1,
       "make-control-file": 2
     },
@@ -129,7 +128,7 @@
     "tools/orchestration_runtime.py": {
       "fortran": 8,
       "fortran-subroutine": 4,
-      "fortran-suffix": 10,
+      "fortran-suffix": 6,
       "make-control-file": 6
     },
     "tools/structured_signatures.py": {
@@ -139,17 +138,17 @@
       "compiler-driver": 1,
       "fortran": 9,
       "fortran-subroutine": 3,
-      "fortran-suffix": 4,
+      "fortran-suffix": 3,
       "make-control-file": 2,
       "parallel-directive": 1
     },
     "tools/workflow_conductor.py": {
       "compiler-driver": 3,
-      "fortran": 18,
+      "fortran": 17,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
-      "fortran-suffix": 17,
-      "make-control-file": 56,
+      "fortran-suffix": 12,
+      "make-control-file": 55,
       "make-variable": 9
     }
   }
