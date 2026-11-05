@@ -3,21 +3,21 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `advdiff1d_linear_baseline`
-- `test_profile_version`: `0.7.0`
+- `test_profile_version`: `0.8.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
-- `spec_ref.spec_version`: `0.5.0`
+- `spec_ref.spec_version`: `0.5.1`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies, for the discrete implementation of the 1D linear advection-diffusion equation, accuracy in three norms with the order of each, conservation, translation equivariance, the mirror equivariance of the Controlled Spec §5 by a symmetry pair, agreement with the theoretical solution at a `dt` the advective bound decides, and the CFL guard (`docs/TESTS.md` §Refinement judgment, §Symmetry pairs). A one-dimensional problem has no axis exchange, so the suite carries no axis-exchange pair. The judgment targets are `L0` to `L3`, and include an expected failure (`xfail`).
+This suite verifies, for the discrete implementation of the 1D linear advection-diffusion equation, accuracy in three norms with the order of each, conservation, translation equivariance, the mirror equivariance of the Controlled Spec §5 by a symmetry pair, agreement with the theoretical solution at a `dt` the advective bound decides, the CFL guard, and the result of the step on the refusal of a `component` (`docs/TESTS.md` §Refinement judgment, §Symmetry pairs). A one-dimensional problem has no axis exchange, so the suite carries no axis-exchange pair. The judgment targets are `L0` to `L3`, and include expected failures (`xfail`).
 
 The step count and `dt` of 3 are the host's, evaluated from the case's inputs by the `derived` expressions a Compile leaf transcribes from that procedure; the kernel computes and reports neither. `run.n_step` therefore compares the driver's committed step count with the count the same transcription gives, and no second author computes the procedure. Its value rests on the review of that transcription (`Compile.verify`); the host pins its consistency alone, by the `t_end` check and the zero-step closure. This suite accepts that gap on the kernel side. A defect in the procedure itself is not a kernel defect: it has no kernel line to mutate, and it shows in the judgments as a wrong `dt`.
 
 ## 2. Input-defaulting rules
 ### 2-1. Input instance
 - The domain length `L` is `1.0`.
-- The advection velocity is `a=1.0` on every case but the mirror case of 2-2, which carries `a=-1.0`, and the advection-limited case of 4-3, which carries `a=2.0`.
+- The advection velocity is `a=1.0` on every case but the mirror case of 2-2, which carries `a=-1.0`, the advection-limited case of 4-3, which carries `a=2.0`, and the refusal case of 2-3 that carries `a=0.0`.
 - The initial condition is parameterized by `shift_fraction`, and is defined by the following.
   $$
   u(x,0)=\sin\left(2\pi\left(\frac{x}{L}-\text{shift\_fraction}\right)\right)+0.5\sin\left(4\pi\left(\frac{x}{L}-\text{shift\_fraction}\right)\right)
@@ -36,18 +36,34 @@ The step count and `dt` of 3 are the host's, evaluated from the case's inputs by
 ### 2-2. The mirror pair
 The Controlled Spec §5 states the mirror equivariance: the case with `a` → `-a` and the initial state reflected, $u'(x,0)=u(L-x,0)$, has the reflected state at every step. The initial condition of 2-1 at `shift_fraction=0.0` is odd under the reflection, $u(L-x,0)=-u(x,0)$, so the equation's sign reversal (`docs/TESTS.md` §Symmetry pairs) lets the mirror case keep the base's initial condition: `advdiff1d_ref_nx128_shift000_dts100_amir` (4-3) is `advdiff1d_ref_nx128_shift000_dts100` with `a=-1.0` alone, and its state at $t_{end}$ is $u'_i=-u_{nx-1-i}$ of the base's (the array reversed, the grammar's `flip(·, 0)`, with the sign reversed). The pair is judged by `errors.mirror.l2_rel` (5-4) with the bound `1.0e-12`, the suite's own round-off bound (that of `symmetry_l2_rel` and the cross-target judgment): the update for $a<0$ is the update for $a>0$ with the two neighbours exchanged, so a conforming kernel gives round-off. On the reference implementation of the Controlled Spec §5 update it reads `5.6e-16` (`2.0e-16` and `3.4e-16` at `nx=64` and `256`), with the same `n_step`, `328`. A kernel that takes the upwind cell from the left whatever the sign of `a` reads `0.25` (its mirror case alone reads `0.151` in `errors.analytic.l2_rel_tend`, against `0.0826` for its base; 6-5 judges the pair and not that band). The mirror case also judges `mode_scheme_fidelity` with the amplification rate of the $a<0$ update (5-4), which fixes its update to round-off on its own.
 
+### 2-3. The refusal cases
+The Controlled Spec §5 makes `ok` false when the `guard_pass` of a `component` is false. A refusal case carries one input that a `component` refuses and is otherwise valid. Only `xfail` tests target it, so the host admits an invalid `dt` on it (`docs/workflow/phases/phase_01_compile.md`, the host's evaluation of a case). The driver ends the loop on the first false result, so a conforming kernel leaves `0` committed steps. The judgment of a refusal case is the flag alone, and its `history.every` is `0`.
+
+| case | input | $\text{dt\_raw}$ | $\text{n\_step}$ | $dt$ | refused by |
+| --- | --- | --- | --- | --- | --- |
+| `advdiff1d_ref_nx064_shift000_dts100_a000` | $a=0.0$ | $6.1035e{-3}$ | $82$ | $6.0976e{-3}$ | the flux `component` |
+| `advdiff1d_ref_nx064_shift000_dts100_dtneg` | $\text{dt\_scale}=-1.0,\ t_{end}=-0.5$ | $-6.1035e{-3}$ | $82$ | $-6.0976e{-3}$ | the flux and time-update `component`s |
+| `advdiff1d_refuse_nx001_shift000_dts100` | $\text{nx}=1$ | $6.0e{-1}$ | $1$ | $5.0e{-1}$ | the boundary and flux `component`s |
+
+`a=0` leaves the advective bound of 3 without a value, so step 1 of the procedure on that case is $\text{dt\_raw}=\text{dt\_scale}\cdot\text{cfl\_dif}\cdot dx^2/\nu$. `t_end` is negative on the `dt<0` case because a negative $\text{dt\_raw}$ and a positive `t_end` give $\text{n\_step}\le 0$, which the host refuses.
+
+Measured on the certified `fortran_cpu` kernel of version `0.5.0` of this node, which returns false on all three: the flux guard's false result returned as true gives `ok` `1` and `82` steps on the `a=0` and `dt<0` cases, and the boundary guard's false result returned as true gives `ok` `1` and `1` step on the `nx=1` case. A kernel that does not read the flux guard and combines the other two gives `ok` `1` and `82` steps on the `a=0` case alone, because the time-update `component` refuses the `dt<0` case.
+
+No test separates three kernel changes, because the guards overlap: `nx<2` fails the boundary and flux guards, and `dt<=0` fails the flux and time-update guards. A kernel that does not read the time-update guard, and one that does not read the boundary guard, each return the flux guard's false result. In a kernel whose final result combines the guards, removing the return after a false guard leaves the result false. Each moves no capture on any input the host admits.
+
 ## 3. Execution-control rules
-- $t_{start}=0.0$ and $t_{end}=0.5$.
+- $t_{start}=0.0$, and $t_{end}=0.5$ on every case but those of 4-3 that override `t_end`.
 - `dt` is decided by the following procedure.
   1. $\text{dt\_raw} = \text{dt\_scale}\cdot\min(\text{cfl\_adv}\cdot dx/|a|,\ \text{cfl\_dif}\cdot dx^2/\nu)$
   2. $\text{n\_step} = \lceil t_{end}/\text{dt\_raw}\rceil$
   3. $dt = t_{end}/\text{n\_step}$
 - $\text{cfl\_adv}=0.6$ and $\text{cfl\_dif}=0.25$.
-- The default of `dt_scale` is `1.0`, and the case value is fixed by the 4-1 table. `dt_scale` enters the procedure only at step 1; it does not scale $dt$ or $\text{n\_step}$ directly, so the integration still lands on $t_{end}$ up to round-off: the host checks $|t_{start}+\text{n\_step}\cdot dt-t_{end}|$ against 4 ulp of $t_{end}$.
-- The stop condition is $n = \text{n\_step}$. The host evaluates $dx$, $\text{dt\_raw}$, $\text{n\_step}$ and $dt$ of this procedure for each case, in this form; the host's driver calls `advdiff1d_linear__step` once per step for $n=1,\dots,\text{n\_step}$ and commits each step whose result `ok` is true.
-- The state the host captures before the first step and after the last consists of `u` and `ok`, with the time `t` and the committed step count `step`. The state captured after the last step is at $t_{end}$, which is the evaluation time of every metric of 5-4.
-- history: every = (history.every) advdiff1d_guard_nx064_shift000_dts120 = 35, advdiff1d_ref_nx064_shift000_dts100 = 41, advdiff1d_ref_nx064_shift000_dts100_a200 = 54, advdiff1d_ref_nx128_shift000_dts100 = 164, advdiff1d_ref_nx128_shift000_dts100_amir = 164, advdiff1d_ref_nx128_shift000_dts100_tend200 = 656, advdiff1d_ref_nx256_shift000_dts100 = 656, advdiff1d_sym_nx128_shift025_dts100 = 164
-- The driver takes a state sample every `history.every` committed steps, about half of each case's $\text{n\_step}$. No judgment of 5-4 reads a state between two samples: the metrics read the states at $t_{start}$ and $t_{end}$.
+- The default of `dt_scale` is `1.0`, and the case value is fixed by the 4-1 table. `dt_scale` enters the procedure only at step 1; it does not scale $dt$ or $\text{n\_step}$ directly, so the integration still lands on $t_{end}$ up to round-off: the host checks $|t_{start}+\text{n\_step}\cdot dt-t_{end}|$ against 4 ulp of $t_{end}$, on every case but the `dt<0` case of 2-3.
+- The `a=0` case of 2-3 evaluates step 1 of the procedure as that section states it.
+- The stop condition is $n = \text{n\_step}$. The host evaluates $dx$, $\text{dt\_raw}$, $\text{n\_step}$ and $dt$ of this procedure for each case, in this form (the `a=0` case of 2-3 in the form that section states); the host's driver calls `advdiff1d_linear__step` once per step for $n=1,\dots,\text{n\_step}$ and commits each step whose result `ok` is true.
+- The state the host captures before the first step and after the last consists of `u` and `ok`, with the time `t` and the committed step count `step`. The state captured after the last step is at $t_{end}$, which is the evaluation time of every metric of 5-4. On a refusal case of 2-3 no step commits, and the final capture is at $t_{start}$ with `step` `0`.
+- history: every = (history.every) advdiff1d_guard_nx064_shift000_dts120 = 35, advdiff1d_ref_nx064_shift000_dts100 = 41, advdiff1d_ref_nx064_shift000_dts100_a000 = 0, advdiff1d_ref_nx064_shift000_dts100_a200 = 54, advdiff1d_ref_nx064_shift000_dts100_dtneg = 0, advdiff1d_ref_nx128_shift000_dts100 = 164, advdiff1d_ref_nx128_shift000_dts100_amir = 164, advdiff1d_ref_nx128_shift000_dts100_tend200 = 656, advdiff1d_ref_nx256_shift000_dts100 = 656, advdiff1d_refuse_nx001_shift000_dts100 = 0, advdiff1d_sym_nx128_shift025_dts100 = 164
+- The driver takes a state sample every `history.every` committed steps, about half of each case's $\text{n\_step}$; a refusal case of 2-3 takes no sample. No judgment of 5-4 reads a state between two samples: the metrics read the states at $t_{start}$ and $t_{end}$.
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
@@ -58,6 +74,7 @@ The sweep and fixed values per `family` are defined below.
 | `advdiff1d_ref` | refinement_for_accuracy | $nx \in \{64,128,256\}$ | $a=1.0,\ \text{shift\_fraction}=0.0,\ \text{dt\_scale}=1.0$ |
 | `advdiff1d_sym` | translation_symmetry | $\text{nx}=128,\ \text{shift\_fraction}=0.25$ | $a=1.0,\ \text{dt\_scale}=1.0$ |
 | `advdiff1d_guard` | expected_failure_for_cfl | $\text{nx}=64,\ \text{dt\_scale}=1.2$ | $a=1.0,\ \text{shift\_fraction}=0.0$ |
+| `advdiff1d_refuse` | refusal_of_a_component | $\text{nx}=1$ | $a=1.0,\ \text{shift\_fraction}=0.0,\ \text{dt\_scale}=1.0$ |
 
 ### 4-2. `case_id` generation rule
 - The template is `{family_id}_nx{nx:03d}_shift{shift_pct:03d}_dts{dts_pct:03d}`.
@@ -72,7 +89,11 @@ The sweep and fixed values per `family` are defined below.
 - Add the `case_id` `advdiff1d_ref_nx128_shift000_dts100_amir`.
 - The `base_case_id` references `advdiff1d_ref_nx128_shift000_dts100`, and overrides only `a` to $-1.0$ (the mirror case of 2-2; the `case_id` keeps its base's and carries the suffix `_amir`, so it sorts after its base case and reads the base's final state).
 - Add the `case_id` `advdiff1d_ref_nx064_shift000_dts100_a200`.
-- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `a` to $2.0$ (the advection-limited case). The advective bound of 3 is the smaller of the two exactly when $|a|>\text{cfl\_adv}\,\nu/(\text{cfl\_dif}\,dx)$, so this case, alone in the suite, has its `dt` decided by the advective bound: its $\text{dt\_raw}$ is $4.6875e{-3}$ against a diffusive bound of $6.1035e{-3}$. Every other case has $|a|=1$ and a `dt` the diffusive bound decides, the guard included.
+- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `a` to $2.0$ (the advection-limited case). The advective bound of 3 is the smaller of the two exactly when $|a|>\text{cfl\_adv}\,\nu/(\text{cfl\_dif}\,dx)$, so this case, alone among the cases that commit a step, has its `dt` decided by the advective bound: its $\text{dt\_raw}$ is $4.6875e{-3}$ against a diffusive bound of $6.1035e{-3}$. Every other case that commits a step has $|a|=1$ and a `dt` the diffusive bound decides, the guard included.
+- Add the `case_id` `advdiff1d_ref_nx064_shift000_dts100_a000`.
+- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `a` to $0.0$ and `history.every` to $0$ (a refusal case of 2-3, with the $\text{dt\_raw}$ that section states).
+- Add the `case_id` `advdiff1d_ref_nx064_shift000_dts100_dtneg`.
+- The `base_case_id` references `advdiff1d_ref_nx064_shift000_dts100`, and overrides only `dt_scale` to $-1.0$, `t_end` to $-0.5$ and `history.every` to $0$ (a refusal case of 2-3).
 
 ## 5. Judged quantities
 ### 5-1. How a quantity is judged
@@ -89,12 +110,14 @@ The names, each a scalar.
 - `errors.mode_scheme_fidelity`
 - `errors.symmetry_l2_rel`
 - `errors.mirror.l2_rel`
+- `ok`
 - `convergence.nx64_to_nx128.l1_order`, `convergence.nx64_to_nx128.l2_order`, `convergence.nx64_to_nx128.linf_order`
 - `convergence.nx128_to_nx256.l1_order`, `convergence.nx128_to_nx256.l2_order`, `convergence.nx128_to_nx256.linf_order`
 
 ### 5-3. Cases of each quantity
 - A quantity is evaluated on the target cases of the tests that list it. `N/A` below means it is not defined on that case, so no test judges it there.
-- `run.n_step` is judged on every target case of every `pass` test and is `N/A` on the guard of 6-4.
+- `run.n_step` is judged on every target case of every `pass` test and is `N/A` on the guard of 6-4 and on the refusal cases of 6-7, 6-8 and 6-9.
+- `ok` is judged on the refusal cases of 6-7, 6-8 and 6-9 alone.
 - `errors.symmetry_l2_rel` is `N/A` for anything other than a translation-pair evaluation, and is evaluated on the `shifted` case of the pair.
 - `errors.mirror.l2_rel` is `N/A` for anything other than the mirror case of 2-2; it is carried by `advdiff1d_ref_nx128_shift000_dts100_amir`, which sorts after its base case and reads the base case's final state.
 - The threshold-definition source is this file, and a per-test threshold override is permitted.
@@ -111,6 +134,8 @@ $$
 with $C=a\,dt/dx$, $D=\nu\,dt/dx^2$, $dx=L/nx$, and $dt$ the time step the procedure of 3 fixes from the case inputs, the value the driver passes to each call. Here $a$ is the case's advection velocity and $\nu$ the constant of `controlled_spec.md` §6. The second term is the only state term; it rests on the max-norm bound of `controlled_spec.md` §5, under which it does not exceed 1 (up to round-off) whenever $|C|+2D\le 1$. In a `pass` test both terms are therefore at most 1, and a state whose maximum grew exceeds the threshold. In 6-4 the guard leaves no state fact, and the first term decides the judgment: the guard case has $|C|+2D>1$, but the discrete modes that $|C|+2D>1$ makes unstable lie around $m=nx/2$, where the rate is largest, $|G_{num}(nx/2)|=|1-2|C|-4D|>1$ ($G_{num}$ as defined for `mode_scheme_fidelity` below, taken at any $m$). They are seeded at round-off only and grow by at most $|G_{num}(nx/2)|^{n_{step}}$ (of order $10^3$ for the guard case of 4-1) within the case, so the second term stays below 1. Each test applies its CFL threshold to this evidence as it applies it to `cfl_combined_max`: in 6-1 to 6-3 the evidence is at most $1.0$, and in 6-4, whose `xfail_condition` is `cfl.combined_max > 1.0`, the evidence is greater than $1.0$.
 
 `run.n_step` is the driver's committed step count `step` after the run, judged in the fixed form `final.step - derived.n_step == 0` against the $\text{n\_step}$ the host evaluates from the case's inputs by the procedure of 3. A kernel that returns `ok = false` at some step leaves `step` below it.
+
+`ok` is the logical result of `advdiff1d_linear__step` as the driver captured it (2-1), `final.ok`.
 
 The relative mass-drift value is defined by the following.
 $$
@@ -189,6 +214,7 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
 - $\text{mode\_scheme\_fidelity} \le 1.0e{-10}$
 - $\text{symmetry\_l2\_rel} \le 1.0e{-12}$
 - $\text{cross\_target\_state\_agreement} \le 1.0e{-12}$
+- `ok` $=0$ on the refusal cases of 6-7, 6-8 and 6-9
 
 ## 6. Test definitions
 ### 6-1. `l1_refinement_against_analytic`
@@ -289,6 +315,45 @@ Here $u^{ref}$ is `u` at $t_{end}$ of the same case in the other variant. It is 
     - Each of `l1_rel_error_to_analytic_tend`, `l2_rel_error_to_analytic_tend` and `linf_rel_error_to_analytic_tend` applies its band of 5-5 as two judged quantities.
     - `mode_scheme_fidelity` uses the discrete-mode evaluation expression defined in 5-4, and requires $\le 1.0e{-10}$.
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `u`, and the threshold is $\le 1.0e{-12}$.
+
+### 6-7. `l0_dt_refusal_xfail`
+- `level`: `L0`
+- `objective`: confirm that the refusal of `dt<0` by a `component` reaches the result of the step (expected failure, 2-3).
+- target cases:
+  - `advdiff1d_ref_nx064_shift000_dts100_dtneg`
+- `expected_outcome`: `xfail`
+- `xfail_condition`: `dt<0`
+- `quantities`: `ok`
+- judgment conditions:
+  - The refusal judgment is applied. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$.
+  - Every other judgment is not applied. The non-application basis is "because the case is refused at its first step".
+  - The cross-target judgment is not applied. The non-application basis is "because the state a refused case leaves is not a result two variants must agree on".
+
+### 6-8. `l0_boundary_refusal_xfail`
+- `level`: `L0`
+- `objective`: confirm that the refusal of `nx<2` by the boundary `component` reaches the result of the step (expected failure, 2-3).
+- target cases:
+  - `advdiff1d_refuse_nx001_shift000_dts100`
+- `expected_outcome`: `xfail`
+- `xfail_condition`: `nx<2`
+- `quantities`: `ok`
+- judgment conditions:
+  - The refusal judgment is applied. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$.
+  - Every other judgment is not applied. The non-application basis is "because the case is refused at its first step".
+  - The cross-target judgment is not applied. The non-application basis is "because the state a refused case leaves is not a result two variants must agree on".
+
+### 6-9. `l0_flux_refusal_xfail`
+- `level`: `L0`
+- `objective`: confirm that the refusal of `a=0` by the flux `component`, the only `component` that refuses it, reaches the result of the step (expected failure, 2-3).
+- target cases:
+  - `advdiff1d_ref_nx064_shift000_dts100_a000`
+- `expected_outcome`: `xfail`
+- `xfail_condition`: `a=0`
+- `quantities`: `ok`
+- judgment conditions:
+  - The refusal judgment is applied. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$.
+  - Every other judgment is not applied. The non-application basis is "because the case is refused at its first step".
+  - The cross-target judgment is not applied. The non-application basis is "because the state a refused case leaves is not a result two variants must agree on".
 
 ## 7. Pass/fail aggregation rules
 - `per_test.pass_rule`: `pass` when every predicate of the test holds.
