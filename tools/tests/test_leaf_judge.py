@@ -703,6 +703,10 @@ class PureJudgeTableTests(unittest.TestCase):
         self.assertIn("reported `[3, 0]` with `min` and `max` null", rule)
         self.assertIn("a state array of `count` 0 on a case where that document gives all of the "
                       "array's extents non-zero stays a defect", rule)
+        # A document silent on the extents is no finding, or a sound row fails again; and the
+        # seeded runner-output contract's "any capture" needs the sentence that bounds it.
+        self.assertIn("record that in `notes` and report nothing", rule)
+        self.assertIn("is the rule for a runner a leaf writes", rule)
         # A guard that refuses at its first step leaves `series` empty at non-zero extents, on
         # 10 cases of the R1-R4 runs: the bound must not reach those rows.
         self.assertIn("a row with a `declared_shape_expr`", rule)
