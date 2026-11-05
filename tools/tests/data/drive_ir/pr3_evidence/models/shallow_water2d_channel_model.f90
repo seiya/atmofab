@@ -1,4 +1,4 @@
-! 2D shallow water channel (problem/shallow_water2d_channel@0.3.0): a hand edit of the certified
+! 2D shallow water channel (problem/shallow_water2d_channel@0.3.1): a hand edit of the certified
 ! 0.2.5 model (issue #589 D3). The setup is __init; the loop and the run reductions are the
 ! host-rendered driver's; __step is one committed step of the certified loop body.
 ! Periodic along the channel, free-slip mirror walls across it, beta-plane Coriolis,
