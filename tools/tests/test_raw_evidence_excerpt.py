@@ -99,7 +99,12 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(_SnapshotRow, unittest.TestCase
     def test_a_zero_extent_capture_reports_only_the_extents_its_json_spells(self):
         """The premise of the judge's zero-extent row (issue #602): a rank-3 `[3, 0, 3]` is
         `[[],[],[]]`, so the excerpt reports rank 2 at `count` 0. A trailing zero keeps the rank,
-        so the row cannot be read as "every zero-extent array loses rank"."""
+        so the row cannot be read as "every zero-extent array loses rank". The rows carry the declared
+        `[ncomp, nx, ny]` beside the shape found, which is the pair the judge's row reads."""
+        declared = "[ncomp, nx, ny]"
+        self.raw.write("state_snapshots/snapshot_schema.json", {
+            "variables": [{"name": name, "shape_expr": declared} for name in ("U", "V", "W")],
+            "time_variable": "t"})
         self.raw.write("state_snapshots/case_a.json", json.dumps(
             {"U": [[], [], []], "V": [[[], [], []], [[], [], []], [[], [], []]], "W": [], "t": 0.0}))
         rows = {row["name"]: row for row in
@@ -108,6 +113,10 @@ class MalformedEvidenceIsAFactNotAnExceptionTest(_SnapshotRow, unittest.TestCase
         self.assertEqual((rows["V"]["shape"], rows["V"]["count"]), ([3, 3, 0], 0))
         self.assertEqual((rows["W"]["shape"], rows["W"]["count"]), ([0], 0))
         self.assertFalse(rows["U"]["ragged"])
+        for name in ("U", "V", "W"):
+            self.assertEqual(rows[name]["declared_shape_expr"], declared)
+            self.assertIsNone(rows[name]["min"])
+            self.assertIsNone(rows[name]["max"])
 
     def test_unparseable_snapshot(self):
         self.raw.write("state_snapshots/case_a.json", "{not json")
