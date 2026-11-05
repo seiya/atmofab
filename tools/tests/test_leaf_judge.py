@@ -689,7 +689,8 @@ class PureJudgeTableTests(unittest.TestCase):
         zero-extent capture, so a judge told every rank disagreement is a defect fails a sound
         run. Each statement is read at its own position, because "zero extent" also occurs in
         the other: restoring either old sentence reds its own half. The bound on the row keeps
-        a `count` of 0 on non-zero extents a defect."""
+        a state array of `count` 0 on non-zero extents a defect. These pin the statements, not
+        their meaning: a contradicting sentence added beside them stays green."""
         template = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
                     / "workshop_validate_judge.txt").read_text(encoding="utf-8")
         rule = template.split("reported with two dimensions) are defects", 1)[1]
@@ -697,8 +698,14 @@ class PureJudgeTableTests(unittest.TestCase):
         self.assertIn("One row is not that defect", rule)
         self.assertIn("`[3, 0]`", rule)
         self.assertIn("only on a case only `xfail` tests target", rule)
-        self.assertIn("A `count` of 0 on a case whose declared extents are all non-zero stays a "
-                      "defect.", rule)
+        self.assertIn("a state array of `count` 0 on a case that document gives non-zero extents "
+                      "stays a defect", rule)
+        # A guard that refuses at its first step leaves `series` empty at non-zero extents, on
+        # 10 cases of the R1-R4 runs: the bound must not reach those rows.
+        self.assertIn("a row with a `declared_shape_expr`", rule)
+        self.assertIn("A `series` name of `count` 0", rule)
+        # The judge is seeded the IO contract and no case's inputs.
+        self.assertIn("read its extents from the tests document", rule)
         gate = template.split("deterministic `post_execute` gate refuses", 1)[1]
         gate = gate.split("or that is ragged or of unsupported shape", 1)[0]
         self.assertIn("an array holding a zero extent in a capture the host's driver wrote is "

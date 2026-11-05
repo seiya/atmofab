@@ -564,7 +564,7 @@ An orchestration's `pass` is as of its vouch. A target that validates later and 
 
 ## 3-1. Resuming a failed workflow (`--resume`)
 
-**One-time cost of the judge's zero-extent row ([issue #602](https://github.com/seiya/atmofab/issues/602)).** `VALIDATE_JUDGE_CONTRACT_VERSION` moved to `validate-judge-5`, so every certified node re-derives `Validate` on its next run; `Compile`, `Generate` and `Build` stay certified. The cost is one `Validate.judge` per node.
+**One-time cost of the judge's zero-extent row ([issue #602](https://github.com/seiya/atmofab/issues/602)).** `VALIDATE_JUDGE_CONTRACT_VERSION` moved to `validate-judge-5`, so every certified node re-derives `Validate` on its next run: the binary runs again at its site and one `Validate.judge` is paid per node, while `Compile`, `Generate` and `Build` stay certified. `LEAF_PROMPT_CONTRACT_VERSION` moved to `leaf-92` with it, so a run that failed before the change does not `--resume` across it: start it again, and its certified phases are reused.
 
 **One-time cost when resuming onto sources written before the declared lint rule set landed
 (issue #111).** A `source/<source_id>/src/` produced by an earlier run carries the
