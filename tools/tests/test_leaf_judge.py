@@ -697,9 +697,12 @@ class PureJudgeTableTests(unittest.TestCase):
         rule = rule.split("A symbolic EXTENT", 1)[0]
         self.assertIn("One row is not that defect", rule)
         self.assertIn("`[3, 0]`", rule)
-        self.assertIn("only on a case only `xfail` tests target", rule)
-        self.assertIn("a state array of `count` 0 on a case that document gives non-zero extents "
-                      "stays a defect", rule)
+        self.assertIn("refuses a zero extent among a case's inputs unless only `xfail` tests target "
+                      "that case", rule)
+        # The row reads `min` and `max` null, which is not a malformed capture.
+        self.assertIn("reported `[3, 0]` with `min` and `max` null", rule)
+        self.assertIn("a state array of `count` 0 on a case where that document gives all of the "
+                      "array's extents non-zero stays a defect", rule)
         # A guard that refuses at its first step leaves `series` empty at non-zero extents, on
         # 10 cases of the R1-R4 runs: the bound must not reach those rows.
         self.assertIn("a row with a `declared_shape_expr`", rule)

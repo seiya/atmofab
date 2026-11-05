@@ -1141,7 +1141,7 @@ PINNED: dict[str, str] = {
     # generate fragments, the runner-output contract (whole and §1+§3) and the severity rubric.
     "leaf-91": "e0a0d4dc0837e80a4bbb4e9f652c930a4983790b47a545ff44a276989ac2f63f",
     # leaf-92 (issue #602): the judge template states the zero-extent row. Moved: that template alone.
-    "leaf-92": "d499bf76b1450002bed0ddaa89ab97d3550dc7f7d213dba9eb9905e28620e99c",
+    "leaf-92": "1e48fd1c71971b7fd7c7c3b77e2c85a480862cbc07964f92dfcf65987336f371",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1172,7 +1172,7 @@ PINNED_READER: dict[str, str] = {
     # contract follow the driver; `checks_public_names` is gone with the module.
     "validate-judge-4": "67e52883deef5f306c1128e6f9276171f8c11b6599bfee39b99a5ce1cef1cf63",
     # validate-judge-5 (issue #602): the rank rule and the gate sentence state the zero-extent row.
-    "validate-judge-5": "fae2e3bbc70fe6ae2757eda1c741b09d0b24d2189fd7873abbdea79eaf2f6b27",
+    "validate-judge-5": "809aa51ea05643a0525adbc1cedf9f3f60cd04dd63126dbae1cfe7a22397ade6",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
