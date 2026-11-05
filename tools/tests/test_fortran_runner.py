@@ -75,6 +75,7 @@ def _require_declared_linter() -> None:
 
 REAL = {"type": "real", "kind": "dp"}
 DRIVER_E2E = Path(__file__).parent / "data" / "driver_e2e"
+DRIVE_IR_EVIDENCE = Path(__file__).parent / "data" / "drive_ir" / "pr3_evidence"
 
 
 def _dummy(name: str, intent: str, spec: dict, rank: int = 0) -> dict:
@@ -1620,6 +1621,26 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
                           ("procedure", procedure_ir())):
             with self.subTest(label):
                 self._assert_runner_clean_under_the_declared_lint_rules(ir, "drv_toy")
+
+    def test_a_list_form_driver_is_clean_under_the_declared_lint_rules(self) -> None:
+        # Both `select case` blocks of the list form need their default arm (C011). Without the
+        # second one, `generate.gate` terminated the saturation node of a billed run.
+        ir = copy.deepcopy(_boundary_ir())
+        step = ir["drive"]["step"]
+        ir["drive"]["step"] = [
+            {**step, "cases": ["l0_periodic_x_wrap_pass", "l0_periodic_y_wrap_pass"]},
+            {**step, "cases": ["l0_invalid_ny_xfail"]}]
+        self._assert_runner_clean_under_the_declared_lint_rules(ir, BOUNDARY_SID)
+
+    def test_every_evidence_ir_renders_a_clean_runner(self) -> None:
+        # The evidence bench builds and runs these runners and never lints them, so the shape of
+        # a real physics node reached the gate first in a billed run.
+        paths = sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml"))
+        self.assertEqual(len(paths), 17)
+        for path in paths:
+            with self.subTest(path.stem):
+                self._assert_runner_clean_under_the_declared_lint_rules(
+                    yaml.safe_load(path.read_text()), path.stem)
 
 
 def _build_and_run(d: Path, ir: dict, sid: str, model: str, flags: list[str] | None = None,

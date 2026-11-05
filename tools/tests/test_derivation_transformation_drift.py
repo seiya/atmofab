@@ -1116,7 +1116,14 @@ PINNED_RENDER: dict[str, str] = {
     # `host_render`, `host_execution`, `fortran/lines.py`, `fortran/signatures.py`,
     # `make/control_file.py`, `ROLE_BUILD_PRECEDENCE`, `_write_runner`, `_write_makefile`,
     # `_render_leaf_makefile_from_graph`.
-    "render-15": "0e4cb18fd5c9e038c0f0a43e7d146cd4dd14d3efcedb20a683ce8f9da2e68aa7",
+    # Re-pinned, NOT bumped: the list form's `select case (entry_no)` gains the `case default` the
+    # lint gate requires. Only a list-form runner's text changes, and at this pin no list-form
+    # node holds a certified output: every certified node keeps its bytes, and no key names two
+    # certified texts. On `fortran_cpu`, the only target with `render-15` certificates, the
+    # list-form nodes are saturation (its one `render-15` run stopped at this finding) and Kessler
+    # (no `render-15` run). The digest `render-15` shipped with at 8dbba52f:
+    "render-15": "2a0ca8d3d95293acd135a46595f29fe7dcb3852e3fea4ffb7726c4ce4573e543",
+    "render-15@8dbba52f": "0e4cb18fd5c9e038c0f0a43e7d146cd4dd14d3efcedb20a683ce8f9da2e68aa7",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

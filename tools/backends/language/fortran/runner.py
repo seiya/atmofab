@@ -686,6 +686,9 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         for k, entry in enumerate(plan.entries, start=1):
             a(f"    case ({k})")
             _render_entry(a, plan, entry, H, "      ")
+        a("    case default")
+        a("      write(error_unit, '(A)') 'error: no drive entry numbered for case '//cid")
+        a("      error stop 2")
         a("    end select")
     else:
         _render_entry(a, plan, plan.entries[0], H, "    ")
