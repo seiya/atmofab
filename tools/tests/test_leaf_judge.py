@@ -684,6 +684,40 @@ class PureJudgeTableTests(unittest.TestCase):
         # Self-test the search: the assertion above must be able to fail.
         self.assertNotIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS + 1} characters", template)
 
+    def test_the_rank_rule_and_the_gate_sentence_state_the_zero_extent_row(self) -> None:
+        """A dual-read pair (issue #602): the gate and the host verdict admit a driver-written
+        zero-extent capture, so a judge told every rank disagreement is a defect fails a sound
+        run. Each statement is read at its own position, because "zero extent" also occurs in
+        the other: restoring either old sentence reds its own half. The bound on the row keeps
+        a state array of `count` 0 on non-zero extents a defect. These pin the statements, not
+        their meaning: a contradicting sentence added beside them stays green."""
+        template = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
+                    / "workshop_validate_judge.txt").read_text(encoding="utf-8")
+        rule = template.split("reported with two dimensions) are defects", 1)[1]
+        rule = rule.split("A symbolic EXTENT", 1)[0]
+        self.assertIn("One row is not that defect", rule)
+        self.assertIn("`[3, 0]`", rule)
+        self.assertIn("refuses a zero extent among a case's inputs unless only `xfail` tests target "
+                      "that case", rule)
+        # The row reads `min` and `max` null, which is not a malformed capture.
+        self.assertIn("reported `[3, 0]` with `min` and `max` null", rule)
+        self.assertIn("a state array of `count` 0 on a case where that document gives all of the "
+                      "array's extents non-zero stays a defect", rule)
+        # A document silent on the extents is no finding, or a sound row fails again; and the
+        # seeded runner-output contract's "any capture" needs the sentence that bounds it.
+        self.assertIn("record that in `notes` and report nothing", rule)
+        self.assertIn("is the rule for a runner a leaf writes", rule)
+        # A guard that refuses at its first step leaves `series` empty at non-zero extents, on
+        # 10 cases of the R1-R4 runs: the bound must not reach those rows.
+        self.assertIn("a row with a `declared_shape_expr`", rule)
+        self.assertIn("A `series` name of `count` 0", rule)
+        # The judge is seeded the IO contract and no case's inputs.
+        self.assertIn("read its extents from the tests document", rule)
+        gate = template.split("deterministic `post_execute` gate refuses", 1)[1]
+        gate = gate.split("or that is ragged or of unsupported shape", 1)[0]
+        self.assertIn("an array holding a zero extent in a capture the host's driver wrote is "
+                      "not compared", gate)
+
     def test_the_judge_has_a_template_and_required_keys(self) -> None:
         self.assertIn(("validate", "judge"), ort.PURE_CONTEXT_REQUIRED_KEYS)
         self.assertEqual(ort._PROMPT_TEMPLATE_FILES["workshop validate.judge"],

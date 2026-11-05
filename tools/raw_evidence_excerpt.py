@@ -271,7 +271,8 @@ def _summarize(value: Any) -> dict[str, Any]:
     because a non-finite entry invalidates whatever metric was computed from it, `all_zero`
     and a collapsed extent because an array that was never written looks like that, and
     `shape` because an array of the wrong rank is a runner defect no numeric check would
-    notice.
+    notice. An empty array reports only the extents its JSON spells: nested lists stop at a zero,
+    so `[[],[],[]]` reads `[3, 0]` whatever rank was declared (issue #602).
 
     `all_zero` IS NOT EVIDENCE OF FABRICATION, and an earlier version of this docstring said it
     was ("the shape an array takes when it was never written", full stop). MEASURED against the

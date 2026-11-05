@@ -37,7 +37,7 @@ from typing import Any, NamedTuple
 # PR-J4, and `leaf-85` is the first bump after it (the leaf-read text PR-J4 deferred, the
 # `inlined`-to-seed wording, and issue #545's judge sentence). It is in no derivation key since
 # issue #574, whose `leaf-86` deleted the certified refs from `DEPENDENCIES.md`.
-LEAF_PROMPT_CONTRACT_VERSION = "leaf-91"
+LEAF_PROMPT_CONTRACT_VERSION = "leaf-92"
 
 # The keyed half of the contract (issue #574): what one phase's READING leaf reads, which is what
 # "valid" means for that phase. Each is a member of its phase's transformation tuple
@@ -45,7 +45,7 @@ LEAF_PROMPT_CONTRACT_VERSION = "leaf-91"
 # advisory and moves `LEAF_PROMPT_CONTRACT_VERSION` alone. The drift pin names each one's members.
 COMPILE_VERIFY_CONTRACT_VERSION = "compile-verify-3"
 GENERATE_VERIFY_CONTRACT_VERSION = "generate-verify-5"
-VALIDATE_JUDGE_CONTRACT_VERSION = "validate-judge-4"
+VALIDATE_JUDGE_CONTRACT_VERSION = "validate-judge-5"
 
 # Schema-violation repair is a bounded in-conversation continuation (warm `--resume
 # --fork-session`): the producer sees its own prior answer plus the violation excerpt and
