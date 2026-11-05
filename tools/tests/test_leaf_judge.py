@@ -684,6 +684,26 @@ class PureJudgeTableTests(unittest.TestCase):
         # Self-test the search: the assertion above must be able to fail.
         self.assertNotIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS + 1} characters", template)
 
+    def test_the_rank_rule_and_the_gate_sentence_state_the_zero_extent_row(self) -> None:
+        """A dual-read pair (issue #602): the gate and the host verdict admit a driver-written
+        zero-extent capture, so a judge told every rank disagreement is a defect fails a sound
+        run. Each statement is read at its own position, because "zero extent" also occurs in
+        the other: restoring either old sentence reds its own half. The bound on the row keeps
+        a `count` of 0 on non-zero extents a defect."""
+        template = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
+                    / "workshop_validate_judge.txt").read_text(encoding="utf-8")
+        rule = template.split("reported with two dimensions) are defects", 1)[1]
+        rule = rule.split("A symbolic EXTENT", 1)[0]
+        self.assertIn("One row is not that defect", rule)
+        self.assertIn("`[3, 0]`", rule)
+        self.assertIn("only on a case only `xfail` tests target", rule)
+        self.assertIn("A `count` of 0 on a case whose declared extents are all non-zero stays a "
+                      "defect.", rule)
+        gate = template.split("deterministic `post_execute` gate refuses", 1)[1]
+        gate = gate.split("or that is ragged or of unsupported shape", 1)[0]
+        self.assertIn("an array holding a zero extent in a capture the host's driver wrote is "
+                      "not compared", gate)
+
     def test_the_judge_has_a_template_and_required_keys(self) -> None:
         self.assertIn(("validate", "judge"), ort.PURE_CONTEXT_REQUIRED_KEYS)
         self.assertEqual(ort._PROMPT_TEMPLATE_FILES["workshop validate.judge"],
