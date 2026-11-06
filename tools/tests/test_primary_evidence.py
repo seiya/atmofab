@@ -406,6 +406,15 @@ class EvaluationTest(unittest.TestCase):
         np.testing.assert_array_equal(env.derived.get()["w"], whole)
         self.assertEqual(env.derived.get()["dt"], 0.5)
 
+    def test_a_case_loaded_with_no_derived_values_still_has_none(self) -> None:
+        """`None` is how `_sampled_value` says a case has no `derived` table to read; wrapping it
+        would turn that named evaluation error into an `AttributeError` on first read."""
+        schema = pe.snapshot_schema(self._derived_ir("final.s", 0.0))
+        env = pe.load_case_env(self.run.root, self.cases[1], schema)
+        self.assertIsNone(env.derived)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "has no derived to read"):
+            pe._sampled_value(env, "derived", "f")
+
     def test_a_derived_array_that_does_not_fit_the_state_is_left_as_it_is(self) -> None:
         """Expansion must not turn a wrong field into a well-shaped one. An extent that is neither
         the state's nor 1 keeps its shape, and so does an array of another rank; each then
