@@ -75,7 +75,8 @@ Names, and where each resolves:
   are loaded only when a predicate names them; zero samples / zero committed steps is admitted,
   a non-finite entry is refused, and a reduction over an empty one is an evaluation error of that
   predicate. ``derived.<name>`` — the case's `derived` value as the host evaluated it
-  (`evaluate_case_inputs`): host data, never a state read. None of the three combines with
+  (`evaluate_case_inputs`), an array taking the state's shape as a coordinate does
+  (`_state_shaped_derived`): host data, never a state read. None of the three combines with
   `at('<case>')` or `comparand`.
 - ``smax(a)`` / ``smin(a)`` / ``ssum(a)`` reduce every axis of ``a`` but the leading one (the
   identity on rank 1); a coordinate NAMED directly as an operand of a binary operator broadcasts
@@ -1089,6 +1090,29 @@ def state_shape_of(captures: dict[str, Any], rank: int) -> tuple[int, ...] | Non
     return next(iter(shapes)) if len(shapes) == 1 else None
 
 
+def _state_shaped_derived(derived: Any, shape: tuple[int, ...] | None) -> Any:
+    """The case's `derived` values as a predicate reads them: an array of the state's rank whose
+    every extent equals the state's or is 1 takes the state's shape, as a coordinate does. They
+    are evaluated before any capture exists (`_evaluate_case`), so a field of one coordinate
+    alone arrives with extent 1 on the other axes, and a reduction over it would be refused
+    (issue #607). Any other array is left as it is, and pairs or reduces as it would; with no
+    one state shape (``shape`` None) nothing is expanded, as for the coordinates."""
+    if shape is None or derived is None:
+        return derived
+
+    def expanded() -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for name, value in _table(derived).items():
+            extents = np.shape(value)
+            if (extents != shape and len(extents) == len(shape)
+                    and all(e == s or e == 1 for e, s in zip(extents, shape))):
+                value = np.ascontiguousarray(np.broadcast_to(value, shape))
+            out[name] = value
+        return out
+
+    return Lazy(expanded)
+
+
 def _load_capture(path: Path, variables: dict[str, list[str]],
                   time_variable: str | None, *, empty_state: bool = False) -> dict[str, Any]:
     """One capture file as `variable -> float | float64 ndarray`, each checked against its
@@ -1276,7 +1300,7 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
                    coordinates=coordinate_arrays(schema, inputs, shape),
                    history=Lazy(lambda: _load_history(sdir, case_id, variables, tv, final)),
                    series=Lazy(lambda: _load_series(sdir, case_id)),
-                   derived=derived, state_rank=rank,
+                   derived=_state_shaped_derived(derived, shape), state_rank=rank,
                    captured_shapes=frozenset(np.shape(v) for v in final.values()))
 
 

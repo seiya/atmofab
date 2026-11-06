@@ -368,6 +368,94 @@ class EvaluationTest(unittest.TestCase):
             rec["evaluated"][0]["value"],
             float(np.linalg.norm(self.h - h_ref) / np.linalg.norm(h_ref[:, :1])), places=6)
 
+    def _derived_ir(self, expr: str, value: float) -> dict:
+        return _ir([{"test_id": "t_mass", "quantity": "q", "target_cases": ["b"], "case": "b",
+                     "expr": expr, "op": "eq", "value": value}],
+                   coordinates=[{"name": "y", "axis": 1, "count": NY, "length": 1.0,
+                                 "placement": "cell_center"}], cases=self.cases)
+
+    def _eval_derived(self, ir: dict, derived: dict) -> dict:
+        """Through the entry point, with the case's evaluated `derived` values as given: what
+        `_evaluate_cases` returns for a field of one coordinate is that coordinate's shape,
+        because it runs with no capture (issue #607)."""
+        values = {"b": unittest.mock.Mock(derived=derived)}
+        with unittest.mock.patch.object(pe, "_evaluate_cases", return_value=values):
+            [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        return rec
+
+    def test_a_derived_field_of_one_coordinate_reduces_over_every_cell(self) -> None:
+        """Issue #607: `sum(abs(final.h - derived.f)) / sum(abs(derived.f))` compares two sums
+        over the state's cells, so the denominator counts NX rows, not one."""
+        y = ((np.arange(NY) + 0.5) / NY).reshape(1, NY)
+        for expr, expected in (("sum(derived.f) + maxabs(final.h - final.h)", NX * float(y.sum())),
+                               ("mean(derived.f) + maxabs(final.h - final.h)", float(y.mean())),
+                               ("norm2(derived.f) + maxabs(final.h - final.h)",
+                                float(np.sqrt(NX * (y ** 2).sum()))),
+                               ("maxabs(derived.f) + maxabs(final.h - final.h)", float(y.max()))):
+            rec = self._eval_derived(self._derived_ir(expr, expected), {"f": y.copy()})
+            self.assertEqual(rec["kind"], "pass", (expr, rec))
+            self.assertAlmostEqual(rec["evaluated"][0]["value"], expected, places=12)
+        # the other axis, and the state's own shape and a scalar pass through by value
+        x = ((np.arange(NX) + 0.5) / NX).reshape(NX, 1)
+        whole = np.arange(float(NX * NY)).reshape(NX, NY)
+        env = pe.load_case_env(self.run.root, self.cases[1],
+                               pe.snapshot_schema(self._derived_ir("final.s", 0.0)),
+                               {"x": x, "w": whole, "dt": 0.5})
+        self.assertEqual(env.derived.get()["x"].shape, (NX, NY))
+        np.testing.assert_array_equal(env.derived.get()["x"][:, NY - 1], x[:, 0])
+        np.testing.assert_array_equal(env.derived.get()["w"], whole)
+        self.assertEqual(env.derived.get()["dt"], 0.5)
+
+    def test_a_derived_array_that_does_not_fit_the_state_is_left_as_it_is(self) -> None:
+        """Expansion must not turn a wrong field into a well-shaped one. An extent that is neither
+        the state's nor 1 keeps its shape, and so does an array of another rank; each then
+        pairs or reduces as it did before issue #607."""
+        wrong_extent = np.ones((1, NY + 1))
+        rec = self._eval_derived(
+            self._derived_ir("sum(derived.f) + maxabs(final.h - final.h)", 0.0), {"f": wrong_extent})
+        self.assertEqual(rec["kind"], "structural", rec)
+        self.assertIn("extent-1 axis", rec["evaluated"][-1]["error"])
+        rec = self._eval_derived(self._derived_ir("sum(final.h - derived.f)", 0.0),
+                                 {"f": wrong_extent})
+        self.assertEqual(rec["kind"], "structural", rec)
+        self.assertIn("do not pair", rec["evaluated"][-1]["error"])
+        for shape in ((NX,), (1, 1, NY)):
+            rec = self._eval_derived(self._derived_ir("final.h - final.h + derived.f", 0.0),
+                                     {"f": np.ones(shape)})
+            self.assertEqual(rec["kind"], "structural", (shape, rec))
+            env = pe.load_case_env(self.run.root, self.cases[1],
+                                   pe.snapshot_schema(self._derived_ir("final.s", 0.0)),
+                                   {"f": np.ones(shape)})
+            self.assertEqual(env.derived.get()["f"].shape, shape)
+
+    def test_a_derived_field_keeps_extent_1_when_the_state_has_no_one_shape(self) -> None:
+        """The same condition as the coordinates: arrays of the state's rank that disagree name
+        no shape to expand to, and the reduction stays refused."""
+        ir = self._derived_ir("sum(derived.f) + maxabs(final.h - final.h)", 0.0)
+        ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] \
+            .append({"name": "w", "shape_expr": "[nx, nw]"})
+        for path in (self.run.sdir / "initial" / "b.json", self.run.sdir / "b.json"):
+            doc = json.loads(path.read_text())
+            doc["w"] = [[1.0] * 2] * NX
+            path.write_text(json.dumps(doc))
+        rec = self._eval_derived(ir, {"f": np.ones((1, NY))})
+        self.assertEqual(rec["kind"], "structural", rec)
+        self.assertIn("extent-1 axis", rec["evaluated"][-1]["error"])
+
+    def test_a_derived_evaluation_failure_stays_that_predicate_s_error(self) -> None:
+        """Expansion reads the table lazily, so a case input that does not evaluate is still an
+        error of the predicate naming `derived`, and a predicate naming none does not pay."""
+        ir = self._derived_ir("sum(derived.f) + maxabs(final.h - final.h)", 0.0)
+        ir["io_contract"]["predicates"].append(
+            {"test_id": "t_sym", "quantity": "r", "target_cases": ["b"], "case": "b",
+             "expr": "maxabs(final.h - final.h)", "op": "eq", "value": 0.0})
+        with unittest.mock.patch.object(pe, "_evaluate_cases",
+                                         side_effect=pe.PrimaryEvidenceError("derived broke")):
+            first, second = pe.evaluate_primary_predicates(ir, self.run.root)
+        self.assertEqual(first["kind"], "structural", first)
+        self.assertIn("derived broke", first["evaluated"][-1]["error"])
+        self.assertEqual(second["kind"], "pass", second)
+
     def test_a_reduction_over_an_unexpanded_coordinate_field_is_refused(self) -> None:
         """When the captured arrays of the state's rank disagree on shape, a coordinate keeps
         extent 1 on the other axes and reducing over a field built from it is refused."""

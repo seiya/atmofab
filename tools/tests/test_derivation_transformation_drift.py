@@ -1727,7 +1727,11 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-15": "4f68805600577b99bbac3d4640cde317f8337726ae3e1a1bc57b77dffc3e14bb",
     # execute-16 (issue #589, PR-3): `write_case_inputs` admits a zero extent on a case only `xfail`
     # tests target, and a dims token naming a scalar `derived` value.
-    "execute-16": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
+    "execute-16": "44084fd462f7a714247b3d5986677521367eeca3c779d1d10757e23a471507c2",
+    # Re-pinned for issue #607: the file member moved, and `load_case_env`, the one
+    # thing that changed, is reached by the predicate evaluator alone, so no case
+    # file or run differs.
+    "execute-16@719970bc": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -1917,6 +1921,9 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-15 (issue #589, PR-3): a one-cell state reduces, and a driver capture with no cell
     # loads; the post-execute gate admits the same capture.
     "verdict-15": "1929577324c3948284fae07a3568ecf1814f88bbb18c2f4c25caf4f74af80d36",
+    # verdict-16 (issue #607): a `derived` array takes the state's shape when a predicate reads
+    # it, so a reduction over a field of one coordinate values every cell, not refused.
+    "verdict-16": "67ca91d9f6b7012ef1ce98bfe2244d522e09c488fb8f7d322019b44c660b7ca7",
 }
 
 
