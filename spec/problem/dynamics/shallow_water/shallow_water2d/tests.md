@@ -157,8 +157,8 @@ The Controlled Spec §5 makes `ok` false when a guard of a dependency `component
 | case | input | $\lambda_0$ | $\mathrm{dt\_raw}$ | $\mathrm{n\_step}$ | $dt$ | refused by |
 | --- | --- | --- | --- | --- | --- | --- |
 | `swe2d_flat_ref_n032_sx000_sy000_dts100_dtneg` | $\mathrm{dt\_scale}=-1.0,\ t_{end}=-0.2$ | $2.0065e{+2}$ | $-2.2427e{-3}$ | $90$ | $-2.2222e{-3}$ | the time-update `component` |
-| `swe2d_flat_ref_n032_sx000_sy000_dts100_nx001` | $nx=1$ | $1.0336e{+2}$ | $4.3537e{-3}$ | $46$ | $4.3478e{-3}$ | the boundary `component` |
-| `swe2d_flat_ref_n032_sx000_sy000_dts100_ny001` | $ny=1$ | $1.0336e{+2}$ | $4.3537e{-3}$ | $46$ | $4.3478e{-3}$ | the boundary `component` |
+| `swe2d_flat_ref_n032_sx000_sy000_dts100_nx001` | $nx=1$ | $1.0336e{+2}$ | $4.3538e{-3}$ | $46$ | $4.3478e{-3}$ | the boundary `component` |
+| `swe2d_flat_ref_n032_sx000_sy000_dts100_ny001` | $ny=1$ | $1.0336e{+2}$ | $4.3538e{-3}$ | $46$ | $4.3478e{-3}$ | the boundary `component` |
 
 The host refuses a reduction over an array with an axis of extent `1`, so on the `nx=1` and `ny=1` cases step 1 of the procedure of §3 is $\lambda_0=\sqrt{g H_0}\,(1/dx+1/dy)$, with no maximum. `t_end` is negative on the `dt<0` case because a negative $\mathrm{dt\_raw}$ and a positive `t_end` give $\mathrm{n\_step}\le 0$, which the host refuses.
 
