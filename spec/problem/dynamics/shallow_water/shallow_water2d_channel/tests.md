@@ -58,9 +58,9 @@ A refusal of the Controlled Spec §6 writes `init_ok` as `false`. The driver the
 
 Measured on the reference implementation: the wet-domain check of the Controlled Spec §5 removed alone and the flux `component`'s guard ignored alone each return `false` on this case, because either stands in for the other, and 6-18 holds on both; with the two removed together, or with a `false` result of the right-hand side ignored in the step, or with the wet-domain check returning a zero tendency and no error, the run goes on and 6-18 fails.
 
-`chan_tc4_ref_n032_dts100_badradius` carries `a=-6.37122e6`, so $R_{low}<0$. The Controlled Spec §6 states no refusal for it, so `__init` accepts the case, and the forcing `component` refuses it at the first stage (that `component`'s §4). The step returns `false` with `0` committed steps; 6-19 judges the flag alone, and it fails on a kernel that ignores the forcing `component`'s guard.
+`chan_tc4_ref_n032_dts100_badradius` carries `a=-6.37122e6`, so $R_{low}<0$. The Controlled Spec §6 states no refusal for it, so `__init` accepts the case, and the forcing `component` refuses it at the first stage (that `component`'s §4). The step returns `false` with `0` committed steps; 6-19 judges the flags `ok` and `init_ok`, and it fails on a kernel that ignores the forcing `component`'s guard.
 
-`chan_tc2_ref_n032_dts100_badnx` carries `nx=1` and `chan_tc2_ref_n032_dts100_badny` carries `ny=1`. The Controlled Spec §6 states no refusal for either, so `__init` accepts each case, and the boundary `component` refuses it at the first stage (that `component`'s §4). The step returns `false` with `0` committed steps, and 6-21 judges the flag alone. Measured on the certified `fortran_cpu` kernel of version `0.3.0` of this node: the boundary guard's false result reported by the right-hand side as a success gives `ok` `1` with `208` steps on the first case and `221` on the second, and no other test moves.
+`chan_tc2_ref_n032_dts100_badnx` carries `nx=1` and `chan_tc2_ref_n032_dts100_badny` carries `ny=1`. The Controlled Spec §6 states no refusal for either, so `__init` accepts each case, and the boundary `component` refuses it at the first stage (that `component`'s §4). The step returns `false` with `0` committed steps, and 6-21 judges the flags `ok` and `init_ok`. Measured on the certified `fortran_cpu` kernel of version `0.3.0` of this node: the boundary guard's false result reported by the right-hand side as a success gives `ok` `1` with `208` steps on the first case and `221` on the second, and no other test moves.
 
 No test separates the results of the other `component`s. The flux guard and the wet-domain check stand in for each other, as measured above. The reconstruction guard and the Coriolis guard fail on no input the boundary guard accepts. `dt` is the value `__init` writes, and the driver stops the run on a non-positive one, so the time-update guard has no case. A kernel that does not read the boundary guard continues from ghost cells that `component`'s §4 does not make a valid mapping, so its `ok` on these cases is not determined: 6-21 may fail or hold on it, and this suite does not claim to judge that kernel.
 
@@ -217,7 +217,7 @@ The names, each a scalar. `<v>` stands for each of `h`, `hu`, `hv`; `<k>` for ea
 - `errors.symmetry_h.l2_rel` is `N/A` for anything other than the shifted case of the translation pair; it is carried by `chan_tc2_xpert_n064_dts100_sx025`, which sorts after its base case, and reads the base case's final state.
 - `xstructure.decay_ratio` is `N/A` for anything other than `flow_profile=tc2_zonal_perturbed`.
 - `errors.time_pair.h_l2_rel` is `N/A` for anything other than the halved-`dt` case of the time-refinement pair; it is carried by `chan_tc4_ref_n032_dts100_half`, which sorts after its base case, and reads the base case's final state.
-- `run.n_step`, `init_ok`, `init.n_step_plan` and `init.dt` are computed for every case but the refusal cases of 2-9-1 and 2-9-2, which judge their flag and, on `chan_dry_n032_dts800`, `run.state_moved`.
+- `run.n_step`, `init_ok`, `init.n_step_plan` and `init.dt` are computed for every case but the refusal cases of 2-9-1 and 2-9-2, which judge their flag and, on `chan_dry_n032_dts800`, `run.state_moved`; 6-19 and 6-21 also judge `init_ok`.
 - `errors.repeat.*` is carried by `chan_zrepeat_n032_dts100`, which reads the final state of `chan_tc2_ref_n032_dts100`; no other case evaluates them.
 - The steady-solution quantities `errors.steady_*` are computed for `flow_profile=tc2_zonal_uniform` and `tc3_compact_jet` and are `N/A` for `tc2_zonal_perturbed`, which has no steady reference, and for `tc4_translating_low`, which is not steady. The manufactured-solution quantities `errors.mms_*` are computed for `flow_profile=tc4_translating_low` only and are `N/A` for every other profile.
 - The `convergence.n032_to_n064.*` quantities (the three of `h`, the three of `hu`, the three of `hv`) are carried by `chan_tc2_ref_n064_dts100`, `chan_tc3_ref_n064_dts100` and `chan_tc4_ref_n064_dts100`, and the `convergence.n064_to_n128.*` quantities by `chan_tc2_ref_n128_dts100`, `chan_tc3_ref_n128_dts100` and `chan_tc4_ref_n128_dts100`; no other case evaluates them (5-4).
@@ -316,7 +316,7 @@ The normaliser of `h` is $N_h=\max(\max_{i,j}|h_{i,j}|,\ \max_{i,j}|h^{ref}_{i,j
 
 ### 5-5. Default thresholds
 The thresholds are calibrated against an independent reference implementation of the Controlled Spec §5 scheme (issue #265, phase-2 calibration comment; for the rectangular case of 2-10, issue #490, calibration comment; for the three norms, the restricted family, the symmetry pairs and the `tc4_translating_low` depth referred to the channel centre, issue #514, calibration comment). An error is judged by a two-sided band; the bands introduced in this version are $[\lfloor 0.5\,e\rfloor,\ \lceil 1.5\,e\rceil]$ of the reference value $e$, rounded outward to two significant digits, and the `l2` bands of `h` kept from the previous version for `tc2_zonal_uniform` and `tc3_compact_jet` (the three levels of each family and `chan_tc2_ref_n128_dts100_tend5d`) are about 0.5 and 1.5 times the reference. An order is judged by a lower bound, the reference order minus `0.3` rounded down to one decimal (`0.4` where the reference order is below `0.7`), except the `l2` orders of `h` kept from the previous version. The `v_cross_max_abs` bounds are 1.49 to 1.73 times the reference values.
-- $\mathrm{cfl.max} \le 1.0$, `run.n_step` $= 0$, `init_ok` $= 1$, `init.n_step_plan` $\le 0.5$ (both operands are integers) and `init.dt` $\le 1.0e{-12}$; on the refusal cases of 6-17, `init_ok` $= 0$; on 6-18, `ok` $= 0$ and `run.state_moved` $> 0$; on 6-19 and 6-21, `ok` $= 0$; `errors.repeat.*` $\le 1.0e{-12}$ (2-9-3)
+- $\mathrm{cfl.max} \le 1.0$, `run.n_step` $= 0$, `init_ok` $= 1$, `init.n_step_plan` $\le 0.5$ (both operands are integers) and `init.dt` $\le 1.0e{-12}$; on the refusal cases of 6-17, `init_ok` $= 0$; on 6-18, `ok` $= 0$ and `run.state_moved` $> 0$; on 6-19 and 6-21, `ok` $= 0$ and `init_ok` $= 1$; `errors.repeat.*` $\le 1.0e{-12}$ (2-9-3)
 - `extrema.h.min` is $\ge 1.0e3$ for `tc2_zonal_uniform` and `tc2_zonal_perturbed`, $\ge 2.0e3$ for `tc3_compact_jet`, and $\ge 9.0e3$ for `tc4_translating_low` (`m`; the reference minimum over every `tc4_translating_low` case is `9193.9`)
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$ ($\le 5.0e{-10}$ for the two five-day cases)
 - `initial_h_linf_rel` $\le 1.0e{-9}$, `initial_h_below_jet_rel` $\le 1.0e{-9}$, `initial_h_above_jet_rel` $\le 1.0e{-9}$, `initial_u_linf_rel` $\le 1.0e{-9}$, `initial_v_linf_rel` $\le 1.0e{-9}$, `initial_vel_cross_linf` $\le 1.0e{-12}$ (`m/s`)
@@ -761,9 +761,9 @@ In every test, a judgment this section does not name as applied is not applied, 
   - `chan_tc4_ref_n032_dts100_badradius`
 - `expected_outcome`: `xfail`
 - `xfail_condition`: `R_low <= 0`
-- `quantities`: `ok`
+- `quantities`: `init_ok`, `ok`
 - judgment conditions:
-  - The refusal judgment is applied. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$.
+  - The refusal judgment is applied. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$; `init_ok`, the flag `initial.init_ok`, is judged $= 1$, because a case `__init` refuses runs no step and leaves `ok` at `0` whatever the step would return.
   - Every other judgment is not applied. The non-application basis is "because the case is refused at its first step".
   - The cross-target judgment is not applied. The non-application basis is "because the state a refused case leaves is not a result two variants must agree on".
 
@@ -788,9 +788,9 @@ In every test, a judgment this section does not name as applied is not applied, 
   - `chan_tc2_ref_n032_dts100_badny`
 - `expected_outcome`: `xfail`
 - `xfail_condition`: `nx<2` or `ny<2`
-- `quantities`: `ok`
+- `quantities`: `init_ok`, `ok`
 - judgment conditions:
-  - The refusal judgment is applied to every case. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$.
+  - The refusal judgment is applied to every case. The evaluation expression is `ok`, the flag `final.ok`, and it is judged $= 0$; `init_ok`, the flag `initial.init_ok`, is judged $= 1$, because a case `__init` refuses runs no step and leaves `ok` at `0` whatever the step would return.
   - Every other judgment is not applied. The non-application basis is "because the case is refused at its first step".
   - The cross-target judgment is not applied. The non-application basis is "because the state a refused case leaves is not a result two variants must agree on".
 

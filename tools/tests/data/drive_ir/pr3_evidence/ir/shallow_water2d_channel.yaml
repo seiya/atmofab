@@ -3235,6 +3235,7 @@ io_contract:
     target_cases:
     - chan_tc4_ref_n032_dts100_badradius
     quantities:
+    - init_ok
     - ok
   - test_id: l3_case_independence_repeat
     expected_outcome: pass
@@ -3255,6 +3256,7 @@ io_contract:
     - chan_tc2_ref_n032_dts100_badnx
     - chan_tc2_ref_n032_dts100_badny
     quantities:
+    - init_ok
     - ok
   predicates:
   - test_id: l0_tc2_initial_state_matches_analytic
@@ -19659,6 +19661,14 @@ io_contract:
     per_case: true
     target_cases:
     - chan_tc4_ref_n032_dts100_badradius
+  - test_id: l0_forcing_refusal_xfail
+    quantity: init_ok
+    expr: initial.init_ok
+    op: eq
+    value: 1
+    per_case: true
+    target_cases:
+    - chan_tc4_ref_n032_dts100_badradius
   - test_id: l3_case_independence_repeat
     quantity: run.n_step
     expr: final.step - initial.n_step_plan
@@ -19753,6 +19763,15 @@ io_contract:
     expr: final.ok
     op: eq
     value: 0
+  - test_id: l0_boundary_refusal_xfail
+    quantity: init_ok
+    expr: initial.init_ok
+    op: eq
+    value: 1
+    per_case: true
+    target_cases:
+    - chan_tc2_ref_n032_dts100_badnx
+    - chan_tc2_ref_n032_dts100_badny
 public_api:
   module_parameters:
   - name: dp
