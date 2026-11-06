@@ -149,7 +149,7 @@ The runtime input requires the following.
 
 `dt_rule` decides the step count and `dt`. The host evaluates it for each case and passes `dt` to each call, and the operation of §5.1 does not compute either. `history.every` is the number of committed steps between two state samples of the host's driver; `tests.md` §3 fixes its value.
 
-`a=0` and `nx<2` are not allowed. An undefined parameter is an error without implicit completion.
+`a=0` and `nx<2` are not allowed on a case that is to pass; `tests.md` 2-3 carries them on refusal cases, to judge the `false` result of §5. An undefined parameter is an error without implicit completion.
 
 ## 7. Prohibitions
 Forbid non-periodic boundary. Forbid the addition of `limiter` / `clip` / `filter`. Forbid the runtime automatic switching of the discretization scheme. Forbid computing a case with $a<0$ by reflecting its state to $a>0$, computing there and reflecting the result back: the kernel evaluates `a` as given, and the flux `component` chooses the upwind side by its sign. `tests.md` compares the reflected case of §5 with its original as a symmetry pair (`docs/TESTS.md` §Symmetry pairs), and a kernel that maps one onto the other compares a code path with itself.
