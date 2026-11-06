@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `advdiff1d_linear`
-- `spec_version`: `0.5.0`
+- `spec_version`: `0.5.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -48,7 +48,7 @@ $$
 In the flux arrays, $F_{i+1/2}$ is element `i + 2` and $F_{i-1/2}$ is element `i + 1`; $L_i$ is element `i + 1` of the tendency array.
 4. Execute the forward Euler update with `dynamics_advection_diffusion_time_update_1d_euler1__advance`, passing `nx`, this `node`'s own interior state $u^n$ (`nx` values) as its `u_n`, the $L$ of step 3 as its `L_flux`, and the `dt` of the current step. Its `u_np1` is $u^{n+1}$.
 
-The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule. The inputs §6 admits satisfy every `component` guard (`ng = 1`, `nx>=2`, `a\ne0`, `dt>0`). A caller treats the other outputs of a `component` that returns `guard_pass` false as undefined, and no later step consumes them: the update step then returns `ok = false` (§5.1).
+The field outputs of steps 1–3 (the ghost-extended field, the face fluxes, the tendency) are each consumed by the next step, and an `IR` in which one of them is not consumed contradicts this section. The `guard_pass` output of each `component` is an input guard, not a field, and is outside this rule. The inputs §6 allows on a case that is to pass satisfy every `component` guard (`ng = 1`, `nx>=2`, `a\ne0`, `dt>0`). A caller treats the other outputs of a `component` that returns `guard_pass` false as undefined, and no later step consumes them: the update step then returns `ok = false` (§5.1).
 
 The flux `component` takes the upwind cell from the side the flow comes from, so the composition is equivalent to the discrete update
 $$
@@ -149,7 +149,7 @@ The runtime input requires the following.
 
 `dt_rule` decides the step count and `dt`. The host evaluates it for each case and passes `dt` to each call, and the operation of §5.1 does not compute either. `history.every` is the number of committed steps between two state samples of the host's driver; `tests.md` §3 fixes its value.
 
-`a=0` and `nx<2` are not allowed. An undefined parameter is an error without implicit completion.
+`a=0`, `nx<2` and `dt<=0` are not allowed on a case that is to pass; `tests.md` 2-3 carries `a=0`, `nx=1` and `dt<0` on refusal cases, to judge the `false` result of §5. An undefined parameter is an error without implicit completion.
 
 ## 7. Prohibitions
 Forbid non-periodic boundary. Forbid the addition of `limiter` / `clip` / `filter`. Forbid the runtime automatic switching of the discretization scheme. Forbid computing a case with $a<0$ by reflecting its state to $a>0$, computing there and reflecting the result back: the kernel evaluates `a` as given, and the flux `component` chooses the upwind side by its sign. `tests.md` compares the reflected case of §5 with its original as a symmetry pair (`docs/TESTS.md` §Symmetry pairs), and a kernel that maps one onto the other compares a code path with itself.
@@ -160,7 +160,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is LeVeque (2002). The signed advection velocity and the equivariance of §5 are those of [issue #513](https://github.com/seiya/atmofab/issues/513).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.7.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.8.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $u_{next}=F(u_{now}, params)$, and the periodic-index wrap is made explicit as a non-differentiable operation. The `ceil` of the step rule is the host's (`tests.md` §3), outside the operation of §5.1.

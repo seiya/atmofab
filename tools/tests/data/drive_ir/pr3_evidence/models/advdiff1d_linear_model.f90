@@ -1,4 +1,4 @@
-! Model of problem/advdiff1d_linear@0.5.0: ONE step of the 1D linear advection-diffusion
+! Model of problem/advdiff1d_linear@0.5.1: ONE step of the 1D linear advection-diffusion
 ! update, composed from the boundary, flux and time-update components (issue #589 D3, a hand
 ! edit of the certified `advdiff1d_linear@0.4.5` model: its loop body; the dt rule, the loop and
 ! the initial state are the host's).

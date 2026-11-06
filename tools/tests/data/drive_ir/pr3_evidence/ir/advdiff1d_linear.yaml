@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/advdiff1d_linear@0.5.0
+  node_key: problem/advdiff1d_linear@0.5.1
   spec_kind: problem
   spec_id: advdiff1d_linear
-  spec_version: 0.5.0
+  spec_version: 0.5.1
   source_refs:
     controlled_spec: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md
     tests: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md
@@ -37,7 +37,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -73,7 +73,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -109,7 +109,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -145,7 +145,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -181,7 +181,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -217,7 +217,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -253,7 +253,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -289,7 +289,114 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.7.0
+      test_profile_version: 0.8.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx064_shift000_dts100_a000
+    inputs:
+      grid:
+        L: 1.0
+        nx: 64
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 0
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 0.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.8.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_dif * derived.dx * derived.dx / inputs.constants.nu
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx064_shift000_dts100_dtneg
+    inputs:
+      grid:
+        L: 1.0
+        nx: 64
+      time:
+        t_start: 0.0
+        t_end: -0.5
+      history:
+        every: 0
+      dt_rule:
+        dt_scale: -1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.8.0
+    initial_state:
+      u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a), inputs.dt_rule.cfl_dif
+        * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_refuse_nx001_shift000_dts100
+    inputs:
+      grid:
+        L: 1.0
+        nx: 1
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 0
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.8.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -330,6 +437,15 @@ case:
       fixed:
         a: 1.0
         shift_fraction: 0.0
+    advdiff1d_refuse:
+      purpose: refusal_of_a_component
+      sweep:
+        nx:
+        - 1
+      fixed:
+        a: 1.0
+        shift_fraction: 0.0
+        dt_scale: 1.0
     explicit_overrides:
     - case_id: advdiff1d_ref_nx128_shift000_dts100_tend200
       base_case_id: advdiff1d_ref_nx128_shift000_dts100
@@ -343,6 +459,15 @@ case:
       base_case_id: advdiff1d_ref_nx064_shift000_dts100
       override:
         a: 2.0
+    - case_id: advdiff1d_ref_nx064_shift000_dts100_a000
+      base_case_id: advdiff1d_ref_nx064_shift000_dts100
+      override:
+        a: 0.0
+    - case_id: advdiff1d_ref_nx064_shift000_dts100_dtneg
+      base_case_id: advdiff1d_ref_nx064_shift000_dts100
+      override:
+        dt_scale: -1.0
+        t_end: -0.5
     case_id_template: '{family_id}_nx{nx:03d}_shift{shift_pct:03d}_dts{dts_pct:03d}'
   refinements:
     advdiff1d_ref:
@@ -712,6 +837,24 @@ io_contract:
     - errors.mode_scheme_fidelity
     - metrics.mass_drift_rel
     - run.n_step
+  - test_id: l0_dt_refusal_xfail
+    expected_outcome: xfail
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_dtneg
+    quantities:
+    - ok
+  - test_id: l0_boundary_refusal_xfail
+    expected_outcome: xfail
+    target_cases:
+    - advdiff1d_refuse_nx001_shift000_dts100
+    quantities:
+    - ok
+  - test_id: l0_flux_refusal_xfail
+    expected_outcome: xfail
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a000
+    quantities:
+    - ok
   predicates:
   - test_id: l1_refinement_against_analytic
     quantity: cfl.combined_max
@@ -1539,8 +1682,32 @@ io_contract:
     expr: final.step - derived.n_step
     op: eq
     value: 0
+  - test_id: l0_dt_refusal_xfail
+    quantity: ok
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_dtneg
+    per_case: true
+    expr: final.ok
+    op: eq
+    value: 0
+  - test_id: l0_boundary_refusal_xfail
+    quantity: ok
+    target_cases:
+    - advdiff1d_refuse_nx001_shift000_dts100
+    per_case: true
+    expr: final.ok
+    op: eq
+    value: 0
+  - test_id: l0_flux_refusal_xfail
+    quantity: ok
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100_a000
+    per_case: true
+    expr: final.ok
+    op: eq
+    value: 0
 dependency:
-  node_key: problem/advdiff1d_linear@0.5.0
+  node_key: problem/advdiff1d_linear@0.5.1
   direct_deps:
   - node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.4.0
     kind: component
@@ -1564,6 +1731,9 @@ public_api:
     - l0_cfl_guard_xfail
     - l3_mirror_pair
     - l1_advection_limited_bands
+    - l0_dt_refusal_xfail
+    - l0_boundary_refusal_xfail
+    - l0_flux_refusal_xfail
   published_types: []
   module_parameters:
   - name: dp
