@@ -108,9 +108,10 @@ One fact has one canonical home. A restatement elsewhere is a twin document, and
 | open work, with the evidence that it is open | `TODO.md` |
 | a decision about one named technology | `docs/design/`; the note states its `Status` |
 | what a review loop taught about reviewing | the relevant skill's `references/` under `.claude/skills/` |
-| a measurement episode, and a design that was rejected | a comment on the GitHub issue it belongs to |
-| a plan the operator approved | a comment on the GitHub issue it belongs to |
+| a measurement episode, a design that was rejected, and the decisions of a plan the operator approved | a comment on the GitHub issue it belongs to |
 | the history of a change that is finished | its pull request |
+
+**A plan is not recorded whole.** The comment carries what the plan alone holds: the decisions taken and who took them, the alternatives rejected with the measurement that rejected them, the measurements and executed premises the plan rests on, and what it leaves unverified. A plan with none of these posts no comment, and an issue that shares a plan with another cites the one comment rather than repeating it. The procedure of a plan (implementation steps, `file:line` anchors, test names, verification commands) stays in the plan file, where the implementing session reads it, and the pull request records what was done and where it departed from the plan. Work a plan leaves open after its pull request goes in `TODO.md`.
 
 **An agent's own memory and plan files are not a home on this list.** Auto-memory, scratch plan files, and anything else that lives in a personal home directory are a working aid for one session on one machine. A fact that a second person would need is not recorded until it is in this repository or on GitHub, and a task is not finished while such a fact exists only in a home directory. `AGENTS.md` §"Canonical record placement" states that rule for every agent on either backend; this table is where it says WHERE.
 
