@@ -1271,8 +1271,8 @@ def load_case_env(run_dir: Path, case: dict[str, Any], schema: dict[str, Any],
                   derived: Any = None, *, empty_state: bool = False) -> CaseEnv:
     """The environment of one case: both captures under ``run_dir/raw/state_snapshots``, the
     case's inputs and its coordinate arrays; `history/` and `series/` as `Lazy` loaders,
-    read only when a predicate names them; ``derived`` (a mapping or a `Lazy` of one) as
-    given. ``empty_state``: the host-rendered driver wrote the captures, so a state with no
+    read only when a predicate names them; ``derived`` (a mapping or a `Lazy` of one) through
+    `_state_shaped_derived`. ``empty_state``: the host-rendered driver wrote the captures, so a state with no
     elements is a zero-extent case's; a harness self-test's own runner has no such case."""
     case_id = str(case.get("case_id") or "").strip()
     if not case_id:

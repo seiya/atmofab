@@ -1727,10 +1727,11 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-15": "4f68805600577b99bbac3d4640cde317f8337726ae3e1a1bc57b77dffc3e14bb",
     # execute-16 (issue #589, PR-3): `write_case_inputs` admits a zero extent on a case only `xfail`
     # tests target, and a dims token naming a scalar `derived` value.
-    "execute-16": "44084fd462f7a714247b3d5986677521367eeca3c779d1d10757e23a471507c2",
+    "execute-16": "0ed726abf3542050c341c1a20529fa31d2e3f73bcc87d28392a887d0b585211b",
     # Re-pinned for issue #607: the file member moved, and `load_case_env`, the one
-    # thing that changed, is reached by the predicate evaluator alone, so no case
-    # file or run differs.
+    # thing that changed, is reached by the predicate evaluator alone, so no case file
+    # or binary run differs. A verdict `quality_check.json` carries can, and the
+    # `verdict-16` bump moves the same Validate key.
     "execute-16@719970bc": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
 }
 PINNED_VERDICT: dict[str, str] = {
@@ -1923,7 +1924,7 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-15": "1929577324c3948284fae07a3568ecf1814f88bbb18c2f4c25caf4f74af80d36",
     # verdict-16 (issue #607): a `derived` array takes the state's shape when a predicate reads
     # it, so a reduction over a field of one coordinate values every cell, not refused.
-    "verdict-16": "67ca91d9f6b7012ef1ce98bfe2244d522e09c488fb8f7d322019b44c660b7ca7",
+    "verdict-16": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 
 
