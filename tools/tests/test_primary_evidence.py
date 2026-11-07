@@ -5639,6 +5639,18 @@ class DistributeGateTests(unittest.TestCase):
         self.assertEqual(pe.distribute_layouts(_bench(_MUSCL))["U_in"],
                          ((0, "ghost"), (1, "ghost")))
 
+    def test_a_ghost_layout_along_an_axis_without_a_ghost_is_refused(self) -> None:
+        """`ng` serves as a ghost width of axis x only: `ny + 2*ng` then derives a ghost layout
+        along y, whose margin the driver has no width to slice by."""
+        ir = _bench(_MUSCL)
+        args = ir["public_api"]["signatures"][0]["signature"]["args"]
+        next(a for a in args if a["name"] == "U_in")["dims"] = ["nx + 2*ng", "ny + 2*ng"]
+        self.assertEqual(_gate_n(ir), [])
+        y = ir["drive"]["distribute"]["axes"][1]
+        del y["ghost"], y["extended"]
+        self.assertEqual(_gate_n(ir), [
+            "(n) U_in: a ghost-extended layout along axis 'y', which declares no ghost input"])
+
     def test_layout_extents_are_checked_per_case(self) -> None:
         """The per-case check compares each derived extent with `cells`, `cells + 1` or
         `cells + 2*ghost`; on a consistent case gate (c)'s extents agree by construction, so the

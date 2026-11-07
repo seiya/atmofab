@@ -285,7 +285,9 @@ class DistributeBlockTests(unittest.TestCase):
                         "ng": "ghost", "dx": "derived"})
         for token in ("nx*ny", "nx + 2", "nx - 1", "2*nx", "nx + ng", "nx + 3*ng", "nxt + 1",
                       "nx + nxt", "nx + dx", "dx", "nx + ncomp", "nx/2", "nx**2", "nxt - 2*ng",
-                      "nx +"):
+                      "nx +",
+                      # twice a name that is no declared ghost width
+                      "nx + 2*ncomp"):
             with self.subTest(token=token):
                 layouts, refusals = r.array_layouts({"a": ["ncomp", token]}, roles, 2)
                 self.assertEqual(layouts, {})
