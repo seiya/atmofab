@@ -5549,6 +5549,16 @@ class DistributeGateTests(unittest.TestCase):
                            "min_block must be a positive integer"),
                           ({"axes": [{"name": "x", "cells": "inputs.grid.nx"},
                                      {"name": "x", "cells": "inputs.grid.ny"}]}, "twice"),
+                          # one input counting the cells of two axes, or the cells of one and
+                          # the ghost-extended count of another: a token naming it has no axis
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx"},
+                                     {"name": "y", "cells": "inputs.grid.nx"}]},
+                           "cells / extended count of two roles"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx",
+                                      "ghost": "inputs.grid.ng",
+                                      "extended": "inputs.grid.ny"},
+                                     {"name": "y", "cells": "inputs.grid.ny"}]},
+                           "cells / extended count of two roles"),
                           ({"axes": [{"name": n, "cells": f"inputs.grid.n{n}"}
                                      for n in "xyz"]}, "at most 2")):
             with self.subTest(raw=raw):
