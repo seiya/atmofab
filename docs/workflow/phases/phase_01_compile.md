@@ -370,11 +370,10 @@ drive:
   distribute:                              # REQUIRED (issue #610): the spatial axes, `axes: []` for `distribute: none`
     axes:                                  # grid-dimension order (axis k splits along grid dimension k+1); at most 2
       - {name: x, cells: "inputs.<path>", ghost: "inputs.<path>", extended: "inputs.<path>", min_block: 2}
-  # `distribute` TRANSCRIBES the tests.md `distribute:` line (docs/TESTS.md §Description format) member for
-  #   member: the line's paths ARE the case inputs' paths without `inputs.`, as `history:`'s is. `cells` is the
-  #   cell count along the axis; `ghost` the ghost width and `extended` the ghost-extended count (cells +
-  #   2*ghost; `extended` requires `ghost`), present iff the line names them; `min_block` (1 when absent) the
-  #   smallest block the kernel's guard admits. The layout of every array is DERIVED from its dims tokens.
+  # `distribute` TRANSCRIBES the tests.md `distribute:` line member for member (its form and what each
+  #   member means: docs/TESTS.md §Description format): each `cells` / `ghost` / `extended` is the line's
+  #   path with `inputs.` prefixed, present iff the line names it (`extended` requires `ghost`), and
+  #   `min_block` the line's (1 when absent). The layout of every array is DERIVED from its dims tokens.
   # BINDINGS (an `arguments` value): "inputs.<dotted path>" (the case input, a nested list for an array),
   #   "derived.<name>", "state.<var>" (a schema variable), "time" (the driver's t), "step" (the committed
   #   step count), "block.<axis>.first" (a rank-0 integer `in` only: the global index of the first owned cell

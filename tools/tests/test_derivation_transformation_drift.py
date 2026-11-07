@@ -827,7 +827,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-27": "e2f6af75c30ef32ce2a57293ef55abe728b2f7613efd528c7bde25980a068390",
     # compile-docs-28 (issue #610, PR-B1): `phase_01_compile.md` states `drive.distribute`, the
     # `block.<axis>.first` binding, gates (n) and (o) and V3 (iv)'s `distribute:` clause.
-    "compile-docs-28": "d1a034affd05d806efe1b980d992e0b3bb946059bed43379cacf452ede5139f3",
+    "compile-docs-28": "8a8eb609c64741c4ca74eff37fcbb8d9e19e21ecf5b5aaac587c58c3e5a7d57c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

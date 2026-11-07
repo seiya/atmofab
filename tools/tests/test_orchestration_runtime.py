@@ -22121,8 +22121,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Issue #589 PR-3 (the zero extent, a `derived` dims token, the one-cell reduction): bumped
         # 107200->107500; measured 107438 after V3 (iv) gained the procedure binding.
         # Issue #610 PR-B1 (`drive.distribute`, `block.<axis>.first`, gates (n) / (o), V3 (iv)'s
-        # `distribute:` clause): bumped 107500->110200; measured 109989 at this commit.
-        "docs/workflow/phases/phase_01_compile.md": 110200,
+        # `distribute:` clause): bumped 107500->110050; measured 109989 after review round 1
+        # stated the `distribute:` line's form once, in docs/TESTS.md (110117 before that).
+        "docs/workflow/phases/phase_01_compile.md": 110050,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
