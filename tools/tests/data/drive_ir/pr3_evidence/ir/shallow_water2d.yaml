@@ -7294,6 +7294,10 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes:
+    - {name: x, cells: inputs.grid.nx, min_block: 2}
+    - {name: y, cells: inputs.grid.ny, min_block: 2}
   step:
     operation: shallow_water2d__step
     result: ok

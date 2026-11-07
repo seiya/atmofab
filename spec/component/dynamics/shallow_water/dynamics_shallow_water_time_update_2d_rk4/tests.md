@@ -31,6 +31,8 @@ This `component` advances a single step for a given `dt` and does not control a 
 
 history: every = (history.every) l0_zero_rhs = 1, l0_linear_one_step = 1, l0_linear_one_step_axis = 1, l0_min_extent = 1, l0_large_dt = 1, l0_ncomp4 = 1, l0_linear_convergence_n10 = 5, l0_linear_convergence_n20 = 10, l0_invalid_dt_zero = 1, l0_invalid_dt_negative = 1, l0_ncomp0 = 1, l0_nx0 = 1, l0_ny0 = 1
 
+distribute: x = grid.nx, y = grid.ny
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 

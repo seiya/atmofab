@@ -1,4 +1,8 @@
-"""`verify_spec.py` over every IR in `ir/`, each with its certified kernel (issue #589 PR-3). Run from the repository root."""
+"""`verify_spec.py` over every IR in `ir/`, each with its certified kernel (issue #589 PR-3). Run from the repository root.
+
+The flux at `0.5.0` (issue #610 PR-B1: §5.1 `u` gained `dims`) has no certified kernel until a run
+certifies it, so `latest` answers None for the flux and `deps_of` asserts for `advdiff1d_linear`:
+run `verify_spec.py <ir> --gate-only` for those two until then."""
 import glob,os,subprocess,sys,yaml,concurrent.futures as cf
 S=os.path.dirname(os.path.abspath(__file__))
 def latest(kind,sid):

@@ -1142,6 +1142,9 @@ PINNED: dict[str, str] = {
     "leaf-91": "e0a0d4dc0837e80a4bbb4e9f652c930a4983790b47a545ff44a276989ac2f63f",
     # leaf-92 (issue #602): the judge template states the zero-extent row. Moved: that template alone.
     "leaf-92": "1e48fd1c71971b7fd7c7c3b77e2c85a480862cbc07964f92dfcf65987336f371",
+    # leaf-93 (issue #610, PR-B1): the compile producer template names `drive.distribute`, which
+    # transcribes the tests document's `distribute:` line. Moved: that template alone.
+    "leaf-93": "4b6083a6d08bdf8f6e6f9cccff6c961d11ea5995c74fa531f675023a503b5767",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same

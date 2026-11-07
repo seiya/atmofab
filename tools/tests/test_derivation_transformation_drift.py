@@ -825,6 +825,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # case, a dims token naming a scalar `derived` value and the one-cell reduction, and
     # `docs/TESTS.md` the extent guards and the host-rendered tendency.
     "compile-docs-27": "e2f6af75c30ef32ce2a57293ef55abe728b2f7613efd528c7bde25980a068390",
+    # compile-docs-28 (issue #610, PR-B1): `phase_01_compile.md` states `drive.distribute`, the
+    # `block.<axis>.first` binding, gates (n) and (o) and V3 (iv)'s `distribute:` clause.
+    "compile-docs-28": "8a8eb609c64741c4ca74eff37fcbb8d9e19e21ecf5b5aaac587c58c3e5a7d57c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1122,7 +1125,20 @@ PINNED_RENDER: dict[str, str] = {
     # certified texts. On `fortran_cpu`, the only target with `render-15` certificates, the
     # list-form nodes are saturation (its one `render-15` run stopped at this finding) and Kessler
     # (no `render-15` run). The digest `render-15` shipped with at 8dbba52f:
-    "render-15": "2a0ca8d3d95293acd135a46595f29fe7dcb3852e3fea4ffb7726c4ce4573e543",
+    # Re-pinned for issue #610 PR-B1, NOT bumped: `runner_ir` admits `drive.distribute` and the
+    # `block.<axis>.first` binding (both runners spell it `1`) and gains `array_layouts`,
+    # `distribute_layouts` and `distribute_plan`, which no render calls yet. Method (taken at
+    # 51ae4f81, re-taken at f205d406): the 19 IRs as they stand at 33eaeec8 (the 17 under
+    # `data/drive_ir/pr3_evidence/ir/` and the coriolis / shallow_water2d_0.4.7 fixtures) are
+    # rendered by each language's `render_runner` for `fortran_cpu` and `cpp_gpu` by a
+    # `git archive 33eaeec8` tree, by this tree, and by this tree with this tree's
+    # `drive.distribute` added to each IR (the 33eaeec8 tree refuses that key), and every
+    # runner's sha256 is equal across the three. The comparison is from the same IR: this
+    # tree's flux and euler1 bench IRs render other bytes, because fd895868 flattened their
+    # `inputs.grid.*` to `inputs.*`. No certified IR carries `block.*`. The digest `render-15`
+    # shipped with at 33eaeec8:
+    "render-15": "163c4233eed104015d16a8ac727c6b474b6ed33c94f8b046092b1b2c5ce73d7c",
+    "render-15@33eaeec8": "2a0ca8d3d95293acd135a46595f29fe7dcb3852e3fea4ffb7726c4ce4573e543",
     "render-15@8dbba52f": "0e4cb18fd5c9e038c0f0a43e7d146cd4dd14d3efcedb20a683ce8f9da2e68aa7",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
@@ -1727,7 +1743,19 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-15": "4f68805600577b99bbac3d4640cde317f8337726ae3e1a1bc57b77dffc3e14bb",
     # execute-16 (issue #589, PR-3): `write_case_inputs` admits a zero extent on a case only `xfail`
     # tests target, and a dims token naming a scalar `derived` value.
-    "execute-16": "0ed726abf3542050c341c1a20529fa31d2e3f73bcc87d28392a887d0b585211b",
+    # Re-pinned for issue #610 PR-B1, NOT bumped: `primary_evidence.py` (a member) gains gate (n),
+    # which runs at `Compile.static` and in the gate body, never inside `_evaluate_cases`, and
+    # reads `block.<axis>.first`, which the case evaluator skips. Method (taken at 51ae4f81,
+    # re-taken at f205d406): `evaluate_case_inputs` over the same 19 IRs as `render-15`'s, as
+    # they stand at 33eaeec8, by a `git archive 33eaeec8` tree, by this tree, and by this tree
+    # with `drive.distribute` added, gives case files whose sha256 (sorted-key JSON) is equal
+    # across the three. Taken three times on this branch, each in place (unshipped): 51ae4f81
+    # (the measurement); 9ec02e88 (the gate-range docstrings of `drive_violations` and
+    # `_drive_kind_violations`); 93a732f1 (review round 1: the untargeted-case refusal deleted
+    # inside `_distribute_violations`, gate (n)'s body, which `drive_violations` and
+    # `distribute_layouts` alone call). The digest `execute-16` shipped with at 33eaeec8:
+    "execute-16": "51938898b5d9415f1e27468e48aa1f28e1936efabb13067f0b20946041ecd7d0",
+    "execute-16@33eaeec8": "0ed726abf3542050c341c1a20529fa31d2e3f73bcc87d28392a887d0b585211b",
     # Re-pinned for issue #607: the file member moved, and `load_case_env`, the one
     # thing that changed, is reached by the predicate evaluator alone, so no case file
     # or binary run differs. A verdict `quality_check.json` carries can, and the
@@ -1924,7 +1952,20 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-15": "1929577324c3948284fae07a3568ecf1814f88bbb18c2f4c25caf4f74af80d36",
     # verdict-16 (issue #607): a `derived` array takes the state's shape when a predicate reads
     # it, so a reduction over a field of one coordinate values every cell, not refused.
-    "verdict-16": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
+    # Re-pinned for issue #610 PR-B1, NOT bumped: `primary_evidence.py` gains gate (n) and the
+    # `distribute` parse, read by `drive_violations` alone. Method (taken at 51ae4f81, re-taken
+    # at f205d406): over the same 19 IRs as `render-15`'s, as they stand at 33eaeec8, the
+    # reprs of the `drive_model` classes, `state_reads`, `step_series_names` and
+    # `predicate_schema_context` the verdict evaluates under are equal by a `git archive
+    # 33eaeec8` tree, by this tree, and by this tree with `drive.distribute` added, all under
+    # `PYTHONHASHSEED=0` (the set reprs depend on it). Taken three times on this branch, each in
+    # place (unshipped): 51ae4f81 (the measurement); 9ec02e88 (the gate-range docstrings of
+    # `drive_violations` and `_drive_kind_violations`); 93a732f1 (review round 1: the
+    # untargeted-case refusal deleted inside `_distribute_violations`, gate (n)'s body, which
+    # `drive_violations` and `distribute_layouts` alone call). The digest `verdict-16` shipped
+    # with at 33eaeec8:
+    "verdict-16": "06a855ebb07aa7568f0beddee7192811d6b7a9f0294e8e74dfe486b66e18e633",
+    "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 
 

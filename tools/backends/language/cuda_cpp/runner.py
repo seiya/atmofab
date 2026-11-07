@@ -563,6 +563,8 @@ def _actual(plan: runner_ir.DriverPlan, actual: runner_ir.Actual) -> str:
         if kind == "logical":
             return "true" if value else "false"
         return str(int(value)) if kind == "integer" else _real_literal(float(value))
+    if form == "block_first":
+        return "1"   # the device driver's block is the whole case (issue #610, B5)
     return ref.name
 
 

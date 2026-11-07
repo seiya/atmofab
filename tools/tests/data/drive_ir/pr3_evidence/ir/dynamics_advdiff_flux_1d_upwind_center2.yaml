@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.4.0
+  node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.5.0
   spec_kind: component
   spec_id: dynamics_advdiff_flux_1d_upwind_center2
-  spec_version: 0.4.0
+  spec_version: 0.5.0
   source_refs:
     controlled_spec: spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/controlled_spec.md
     tests: spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/tests.md
@@ -14,10 +14,9 @@ case:
   test_case_set:
   - case_id: l0_constant_state
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: 0.25
+      nx: 4
+      ng: 1
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -39,13 +38,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_linear_state
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: 0.25
+      nx: 4
+      ng: 1
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -66,13 +64,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_face_formula
     inputs:
-      grid:
-        nx: 4
-        ng: 2
-        dx: 0.5
+      nx: 4
+      ng: 2
+      dx: 0.5
       time:
         dt: 0.1
       constants:
@@ -108,13 +105,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_face_formula_amir
     inputs:
-      grid:
-        nx: 4
-        ng: 2
-        dx: 0.5
+      nx: 4
+      ng: 2
+      dx: 0.5
       time:
         dt: 0.1
       constants:
@@ -137,13 +133,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_face_formula_aneg
     inputs:
-      grid:
-        nx: 5
-        ng: 2
-        dx: 0.25
+      nx: 5
+      ng: 2
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -182,13 +177,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_face_formula_aneg_amir
     inputs:
-      grid:
-        nx: 5
-        ng: 2
-        dx: 0.25
+      nx: 5
+      ng: 2
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -212,13 +206,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_periodic_seam
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: 0.25
+      nx: 4
+      ng: 1
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -252,13 +245,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_invalid_a
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: 0.25
+      nx: 4
+      ng: 1
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -279,13 +271,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_invalid_ng
     inputs:
-      grid:
-        nx: 4
-        ng: 0
-        dx: 0.25
+      nx: 4
+      ng: 0
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -304,13 +295,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_invalid_nx
     inputs:
-      grid:
-        nx: 1
-        ng: 1
-        dx: 0.25
+      nx: 1
+      ng: 1
+      dx: 0.25
       time:
         dt: 0.1
       constants:
@@ -328,13 +318,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_min_extent
     inputs:
-      grid:
-        nx: 2
-        ng: 1
-        dx: 0.5
+      nx: 2
+      ng: 1
+      dx: 0.5
       time:
         dt: 0.1
       constants:
@@ -362,13 +351,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_invalid_dx_zero
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: 0.0
+      nx: 4
+      ng: 1
+      dx: 0.0
       time:
         dt: 0.1
       constants:
@@ -389,13 +377,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_invalid_dx_negative
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: -0.25
+      nx: 4
+      ng: 1
+      dx: -0.25
       time:
         dt: 0.1
       constants:
@@ -416,13 +403,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_invalid_dt_zero
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: 0.25
+      nx: 4
+      ng: 1
+      dx: 0.25
       time:
         dt: 0.0
       constants:
@@ -443,13 +429,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_invalid_dt_negative
     inputs:
-      grid:
-        nx: 4
-        ng: 1
-        dx: 0.25
+      nx: 4
+      ng: 1
+      dx: 0.25
       time:
         dt: -0.1
       constants:
@@ -470,13 +455,12 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
   - case_id: l0_constant_state_large
     inputs:
-      grid:
-        nx: 64
-        ng: 1
-        dx: 0.015625
+      nx: 64
+      ng: 1
+      dx: 0.015625
       time:
         dt: 0.0061
       constants:
@@ -491,7 +475,7 @@ case:
       flux_adv: -999.0
       flux_dif: -999.0
     derived:
-      n_u: inputs.grid.nx + 2 * inputs.grid.ng
+      n_u: inputs.nx + 2 * inputs.ng
 algorithm:
   algorithm_id: advdiff_flux_1d_upwind_center2
   execution_mode: sequence
@@ -605,15 +589,15 @@ io_contract:
   - name: nx
     shape_expr: scalar
     evidence_ref: spec.ir.yaml
-    description: Interior cell count; case.test_case_set[].inputs.grid.nx.
+    description: Interior cell count; case.test_case_set[].inputs.nx.
   - name: ng
     shape_expr: scalar
     evidence_ref: spec.ir.yaml
-    description: Ghost width at each end; inputs.grid.ng.
+    description: Ghost width at each end; inputs.ng.
   - name: dx
     shape_expr: scalar
     evidence_ref: spec.ir.yaml
-    description: Cell width; inputs.grid.dx.
+    description: Cell width; inputs.dx.
   - name: dt
     shape_expr: scalar
     evidence_ref: spec.ir.yaml
@@ -1161,7 +1145,7 @@ io_contract:
     op: eq
     value: 0
 dependency:
-  node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.4.0
+  node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.5.0
   direct_deps: []
 public_api:
   published_operations:
@@ -1207,6 +1191,8 @@ public_api:
         spec:
           type: real
           kind: dp
+        dims:
+        - nx + 2*ng
       - name: a
         rank: 0
         intent: in
@@ -1253,16 +1239,19 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes:
+    - {name: x, cells: inputs.nx, ghost: inputs.ng, min_block: 2}
   step:
     operation: dynamics_advdiff_flux_1d_upwind_center2__compute_flux
     result: guard_pass
     arguments:
-      nx: inputs.grid.nx
-      ng: inputs.grid.ng
+      nx: inputs.nx
+      ng: inputs.ng
       u: state.u
       a: inputs.constants.a
       nu: inputs.constants.nu
-      dx: inputs.grid.dx
+      dx: inputs.dx
       dt: inputs.time.dt
       flux_adv: state.flux_adv
       flux_dif: state.flux_dif

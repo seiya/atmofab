@@ -2624,7 +2624,8 @@ def _toy() -> dict:
                                          "t": "time", "h": "state.h", "ok": "state.ok"}},
                   "loop": {"n_step": "derived.n_step", "dt": "derived.dt",
                            "t_start": "inputs.time.t_start", "t_end": "inputs.time.t_end"},
-                  "history": {"every": "inputs.history.every"}},
+                  "history": {"every": "inputs.history.every"},
+                  "distribute": {"axes": []}},
         "case": {"test_case_set": [_toy_case("a", 4), _toy_case("b", 8)]},
         "io_contract": {
             "raw_requirements": {"required_evidence": _evidence(
@@ -2660,7 +2661,8 @@ def _toyi() -> dict:
                                "h": "state.h", "ok": "state.ok"}},
         "loop": {"n_step": "state.n_plan", "dt": "state.dt", "t_start": "inputs.time.t_start",
                  "t_end": "inputs.time.t_end"},
-        "history": {"every": "inputs.history.every"}}
+        "history": {"every": "inputs.history.every"},
+        "distribute": {"axes": []}}
     for case in ir["case"]["test_case_set"]:
         del case["initial_state"], case["derived"]
     io = ir["io_contract"]
@@ -2696,7 +2698,8 @@ def _rus() -> dict:
         "drive": {"step": {"operation": "rus__flux", "result": "ok",
                            "arguments": {"nx": "inputs.grid.nx", "q": "state.q",
                                          "F": "state.F", "a_x": "state.a_x",
-                                         "ok": "state.ok"}}},
+                                         "ok": "state.ok"}},
+                  "distribute": {"axes": []}},
         "case": {"test_case_set": [{"case_id": "a", "inputs": {"grid": {"nx": 4}},
                                     "initial_state": {"q": "x", "F": -999.0, "a_x": -999.0}}]},
         "io_contract": {
@@ -4976,7 +4979,7 @@ def _list_form_ir(spec_id: str, rel: str, partition: dict[str, list[str]],
     return {
         "meta": {"spec_id": spec_id, "spec_kind": "component"},
         "public_api": _api({op: procs[op] for op in (e["operation"] for e in step)}),
-        "drive": {"step": step},
+        "drive": {"step": step, "distribute": {"axes": []}},
         "case": {"test_case_set": cases},
         "io_contract": {"raw_requirements": {"required_evidence": [
             {"artifact": "state_snapshots", "required": True, "schema": schema}]},
@@ -5488,6 +5491,368 @@ class ShippedFixturesTest(unittest.TestCase):
         reader = next(p for p in io["predicates"] if "derived." in str(p.get("expr")))
         bad = dict(reader, expr=str(reader["expr"]).replace("derived.", "derived.no_such_", 1))
         self.assertTrue(any("derived.no_such_" in m for m in schema_v([bad])))
+
+
+_BENCH_DIR = _DRIVE_DIR / "pr3_evidence" / "ir"
+_MUSCL = "dynamics_shallow_water_reconstruction_2d_muscl_mc"
+_RK4 = "dynamics_shallow_water_time_update_2d_rk4"
+_FLUX = "dynamics_advdiff_flux_1d_upwind_center2"
+_CELL_CELL = (None, (0, "cell"), (1, "cell"))
+
+
+def _bench(spec_id: str) -> dict:
+    import yaml
+    return yaml.safe_load((_BENCH_DIR / f"{spec_id}.yaml").read_text())
+
+
+def _gate_n(ir: dict) -> list[str]:
+    return [m for m in pe.drive_violations(ir, kind=ir["meta"]["spec_kind"])
+            if m.startswith("(n)")]
+
+
+def _rk4_renamed(new: str) -> dict:
+    """rk4's bench IR with the prototype's rank-3 `in` dummy `U` renamed to ``new`` throughout
+    (the interface arg, the procedure expression, the `record` key): the record states then
+    record a dummy named like no state (`V`) or like a state of another shape (`stage_t`)."""
+    ir = _bench(_RK4)
+    proto = ir["public_api"]["interfaces"][0]["signature"]["args"]
+    next(a for a in proto if a["name"] == "U")["name"] = new
+    rhs = ir["drive"]["step"]["arguments"]["rhs"]
+    rhs["procedure"] = rhs["procedure"].replace("* U", f"* {new}")
+    rhs["record"][new] = rhs["record"].pop("U")
+    return ir
+
+
+class DistributeGateTests(unittest.TestCase):
+    """Gate (n) (issue #610, plan §3.1): `drive.distribute` against the IR's own entries and
+    cases, driven through `drive_violations` (and `distribute_layouts`, its derivation)."""
+
+    def test_distribute_is_required_and_axes_may_be_empty(self) -> None:
+        ir = _toy()
+        self.assertEqual(_gate_n(ir), [])
+        del ir["drive"]["distribute"]
+        self.assertEqual(_gate_n(ir), [
+            "(n) drive.distribute is required on a component / problem node: {axes: [...]} "
+            "transcribes the tests.md `distribute:` line (`axes: []` for `distribute: none`)"])
+        # an absent block does not mask the other gates' findings (appended, not returned)
+        ir["drive"]["step"]["result"] = "h"
+        self.assertTrue(any(m.startswith("(d)") for m in pe.drive_violations(ir, kind="problem")))
+        for raw, want in (({"axes": "x"}, "must be {axes: [...]}"),
+                          ({"axes": [], "extra": 1}, "must be {axes: [...]}"),
+                          ({"axes": [{"name": "x"}]}, "cells is required"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx", "halo": 1}]},
+                           "halo is not a key of an axis"),
+                          ({"axes": [{"name": "x", "cells": "grid.nx"}]}, "inputs.<path>"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx",
+                                      "extended": "inputs.grid.nx"}]}, "extended requires ghost"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx", "min_block": 0}]},
+                           "min_block must be a positive integer"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx", "min_block": True}]},
+                           "min_block must be a positive integer"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx"},
+                                     {"name": "x", "cells": "inputs.grid.ny"}]}, "twice"),
+                          # one input counting the cells of two axes, or the cells of one and
+                          # the ghost-extended count of another: a token naming it has no axis
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx"},
+                                     {"name": "y", "cells": "inputs.grid.nx"}]},
+                           "cells / extended count of two roles"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx",
+                                      "ghost": "inputs.grid.ng",
+                                      "extended": "inputs.grid.ny"},
+                                     {"name": "y", "cells": "inputs.grid.ny"}]},
+                           "cells / extended count of two roles"),
+                          ({"axes": [{"name": n, "cells": f"inputs.grid.n{n}"}
+                                     for n in "xyz"]}, "at most 2")):
+            with self.subTest(raw=raw):
+                ir = _toy()
+                ir["drive"]["distribute"] = raw
+                got = _gate_n(ir)
+                self.assertTrue(got and all(m.startswith("(n) drive.distribute") for m in got), got)
+                self.assertTrue(any(want in m for m in got), got)
+
+    def test_an_array_dummy_without_dims_is_refused_on_a_node_with_axes(self) -> None:
+        ir = _bench(_FLUX)
+        self.assertEqual(_gate_n(ir), [])
+        args = ir["public_api"]["signatures"][0]["signature"]["args"]
+        del next(a for a in args if a["name"] == "u")["dims"]
+        self.assertEqual(_gate_n(ir), [
+            "(n) drive.step.arguments.u (state.u): an array dummy without dims on a node with "
+            "axes (its dims derive the layout the driver slices it by)"])
+        ir["drive"]["distribute"] = {"axes": []}
+        self.assertEqual(_gate_n(ir), [])
+
+    def test_every_axis_input_is_bound_to_a_rank0_integer_dummy(self) -> None:
+        ir = _toy()
+        ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"}]}
+        self.assertEqual(_gate_n(ir), [])
+        self.assertEqual(pe.distribute_layouts(ir), {"h": ((0, "cell"),)})
+        # an integer input no dummy binds (the stride `drive.history` reads)
+        ir["drive"]["distribute"]["axes"][0]["ghost"] = "inputs.history.every"
+        self.assertEqual(_gate_n(ir), [
+            "(n) drive.distribute names inputs.history.every, which no rank-0 integer dummy of an "
+            "entry running case(s) ['a', 'b'] binds: the case file holds bound inputs only"])
+        # a value that is not an integer in one case
+        ir = _toy()
+        ir["case"]["test_case_set"][1]["inputs"]["grid"]["nx"] = 8.5
+        ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"}]}
+        self.assertIn("(n) drive.distribute names inputs.grid.nx, which is not an integer in "
+                      "case(s) ['b']", _gate_n(ir))
+        # bound to a REAL dummy is not bound to an integer one
+        ir = _toy()
+        ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx",
+                                               "ghost": "inputs.time.t_end"}]}
+        ir["drive"]["step"]["arguments"]["t"] = "inputs.time.t_end"
+        self.assertTrue(any("inputs.time.t_end, which no rank-0 integer dummy" in m
+                            for m in _gate_n(ir)), _gate_n(ir))
+
+    def test_a_rank0_dummy_bound_to_an_axis_input_in_one_entry_only_is_refused(self) -> None:
+        """A dims token resolves a name through every entry's rank-0 dummies, so a name bound to
+        an axis input in one entry and to another value in another has no one role: the gate
+        names the dummy, and `role_of_name` reads the ambiguous name as `derived`, so the token
+        naming it derives no layout. Case `a` has `nx == 4`, so gate (c)'s per-case extents
+        agree there and only case `b` is (c)'s."""
+        ir = _toyi()
+        ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"}]}
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        ir["drive"]["init"]["arguments"]["nx"] = 4
+        self.assertEqual(_gate_n(ir), [
+            "(n) the rank-0 dummy 'nx' is bound to an axis input in one entry and to another "
+            "value in another ([\"('cells', 0)\", 'None']): a dims token names a dummy by name, "
+            "so every entry binds it alike",
+            "(n) h: dims token 'nx' names ['nx'], bound to a derived value: an extent on a node "
+            "with axes names a case input"])
+        self.assertNotIn("h", pe.distribute_layouts(ir))
+
+    def test_two_dummies_on_one_state_deriving_different_layouts_are_refused(self) -> None:
+        """`init` and `step` bind one state `h` with dims `[nx, ny]` and `[ny, nx]`. Every case
+        is square, so gate (c)'s per-case extents agree (the issue #490 class) and only the
+        layout comparison tells the two dummies apart."""
+        def toyi_2d(step_dims: list[str]) -> dict:
+            ir = _toyi()
+            for sig, dims in zip(ir["public_api"]["signatures"], (["nx", "ny"], step_dims)):
+                args = sig["signature"]["args"]
+                args.insert(1, _arg("ny", "in", "integer"))
+                h = next(a for a in args if a["name"] == "h")
+                h["rank"], h["dims"] = 2, dims
+            for role in ("init", "step"):
+                ir["drive"][role]["arguments"]["ny"] = "inputs.grid.ny"
+            for case in ir["case"]["test_case_set"]:
+                case["inputs"]["grid"]["ny"] = case["inputs"]["grid"]["nx"]
+            ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+                "variables"][0]["shape_expr"] = "[nx, ny]"
+            ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"},
+                                                  {"name": "y", "cells": "inputs.grid.ny"}]}
+            return ir
+
+        self.assertEqual(pe.drive_violations(toyi_2d(["nx", "ny"]), kind="problem"), [])
+        self.assertEqual(pe.drive_violations(toyi_2d(["ny", "nx"]), kind="problem"), [
+            "(n) h (drive.step.arguments.h): its dims derive [y:cell, x:cell], another dummy "
+            "bound to it [x:cell, y:cell]"])
+
+    def test_a_case_no_entry_runs_is_skipped_by_the_bound_input_rule(self) -> None:
+        import yaml
+        ir = yaml.safe_load((_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml").read_text())
+        ids = [c["case_id"] for c in ir["case"]["test_case_set"]]
+        step = ir["drive"]["step"]
+        ir["drive"]["step"] = [{**step, "cases": ids[:-1]}]
+        got = pe.drive_violations(ir, kind="component")
+        self.assertEqual(got, [f"(f') drive.step[].cases leaves {ids[-1:]} to no entry"])
+        # the same case, run by an entry whose `ny` is not bound to the axis input: refused
+        ir["drive"]["step"].append({**step, "cases": ids[-1:],
+                                    "arguments": {**step["arguments"], "ny": 4}})
+        self.assertTrue(any(f"inputs.grid.ny, which no rank-0 integer dummy of an entry running "
+                            f"case(s) {ids[-1:]}" in m for m in _gate_n(ir)), _gate_n(ir))
+
+    def test_an_out_array_with_a_ghost_layout_is_refused(self) -> None:
+        ir = _bench("dynamics_shallow_water_boundary_2d_periodic_copy")
+        self.assertEqual(_gate_n(ir), [])
+        ir["drive"]["distribute"] = _bench(_MUSCL)["drive"]["distribute"]
+        got = _gate_n(ir)
+        self.assertEqual(len(got), 1, got)
+        self.assertTrue(got[0].startswith(
+            "(n) U_out: written by ['drive.step.arguments.U_out'] with the ghost-extended layout "
+            "[x:ghost, y:ghost]: an out / inout array with a ghost margin is refused"), got)
+        # the same array as `in` only (the muscl shape) is admitted
+        self.assertEqual(_gate_n(_bench(_MUSCL)), [])
+        self.assertEqual(pe.distribute_layouts(_bench(_MUSCL))["U_in"],
+                         ((0, "ghost"), (1, "ghost")))
+
+    def test_a_ghost_layout_along_an_axis_without_a_ghost_is_refused(self) -> None:
+        """`ng` serves as a ghost width of axis x only: `ny + 2*ng` then derives a ghost layout
+        along y, whose margin the driver has no width to slice by."""
+        ir = _bench(_MUSCL)
+        args = ir["public_api"]["signatures"][0]["signature"]["args"]
+        next(a for a in args if a["name"] == "U_in")["dims"] = ["nx + 2*ng", "ny + 2*ng"]
+        self.assertEqual(_gate_n(ir), [])
+        y = ir["drive"]["distribute"]["axes"][1]
+        del y["ghost"], y["extended"]
+        self.assertEqual(_gate_n(ir), [
+            "(n) U_in: a ghost-extended layout along axis 'y', which declares no ghost input"])
+
+    def test_layout_extents_are_checked_per_case(self) -> None:
+        """The per-case check compares each derived extent with `cells`, `cells + 1` or
+        `cells + 2*ghost`; on a consistent case gate (c)'s extents agree by construction, so the
+        check is driven by handing the gate body an evaluated extent that differs."""
+        ir = _bench(_MUSCL)
+        model = pe.drive_model(ir)
+        cases = pe._cases_by_id(ir)
+        evaluated = pe._evaluate_cases(ir)
+        self.assertEqual(pe._distribute_violations(ir, model, model.variables, cases,
+                                                   evaluated), [])
+        cv = evaluated["l0_bilinear"]
+        shapes = dict(cv.shapes)
+        for var, bad, want in (("U_L", (8, 4), "U_L dimension 1 derives the face layout of axis "
+                                               "'x', extent 7, and evaluates to 8"),
+                               ("U_B", (6, 6), "U_B dimension 2 derives the face layout of axis "
+                                               "'y', extent 5, and evaluates to 6"),
+                               ("U_in", (10, 9), "U_in dimension 2 derives the ghost layout of "
+                                                 "axis 'y', extent 8, and evaluates to 9"),
+                               ("U_T", (5, 5), "U_T dimension 1 derives the cell layout of axis "
+                                               "'x', extent 6, and evaluates to 5")):
+            with self.subTest(var=var):
+                broken = {**evaluated, "l0_bilinear": cv._replace(shapes={**shapes, var: bad})}
+                self.assertEqual(pe._distribute_violations(ir, model, model.variables, cases,
+                                                           broken),
+                                 [f"(n) case 'l0_bilinear': {want}"])
+
+    def test_an_inconsistent_extended_input_replicates_the_case_unless_pass_only(self) -> None:
+        ir = _bench(_MUSCL)
+        self.assertEqual(_gate_n(ir), [])   # the four l0_invalid_*_total_* cases: xfail
+        model = pe.drive_model(ir)
+        evaluated = pe._evaluate_cases(ir)
+        test = next(t for t in ir["io_contract"]["tests"]
+                    if t["test_id"] == "l0_invalid_nx_total_above_xfail")
+        test["expected_outcome"] = "pass"
+        got = pe._distribute_violations(ir, model, model.variables, pe._cases_by_id(ir),
+                                        evaluated)
+        case = pe._cases_by_id(ir)["l0_invalid_nx_total_above"]["inputs"]["grid"]
+        self.assertEqual(got, [
+            f"(n) case 'l0_invalid_nx_total_above': inputs.grid.nx_total = {case['nx_total']} is "
+            f"not inputs.grid.nx + 2*inputs.grid.ng = {case['nx'] + 2 * case['ng']} along axis "
+            "'x', and only `pass` tests target the case (the driver replicates an inconsistent "
+            "case with its raw inputs: an `xfail` test's input)"])
+        # a case a `pass` test and an `xfail` test both target: replicated, never refused
+        import copy
+        ir = _bench(_MUSCL)
+        tests = ir["io_contract"]["tests"]
+        mixed = copy.deepcopy(next(t for t in tests
+                                   if t["test_id"] == "l0_invalid_nx_total_above_xfail"))
+        mixed["test_id"] = "l0_invalid_nx_total_above_pass"
+        mixed["expected_outcome"] = "pass"
+        tests.append(mixed)
+        self.assertEqual(pe._distribute_violations(ir, model, model.variables,
+                                                   pe._cases_by_id(ir), evaluated), [])
+        # a case no test targets feeds no predicate: replicated, never refused
+        from tools import runner_ir
+        ir = _bench(_MUSCL)
+        cases = ir["case"]["test_case_set"]
+        orphan = copy.deepcopy(next(c for c in cases
+                                    if c["case_id"] == "l0_invalid_nx_total_above"))
+        orphan["case_id"] = "l0_no_test"
+        cases.append(orphan)
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+        self.assertFalse(runner_ir.distribute_plan(ir, orphan, (2, 2)))
+
+    def test_a_scalar_out_with_axes_is_refused(self) -> None:
+        ir = _rus()
+        self.assertEqual(_gate_n(ir), [])   # admitted on a node with no axis (Rusanov's a_x)
+        ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"}]}
+        self.assertEqual(_gate_n(ir), [
+            "(n) state.a_x: a rank-0 real / integer out of a one-call step on a node with axes "
+            "is refused (a block-local scalar has no global value the driver can gather)"])
+
+    def test_the_gate_reads_no_target_profile_and_no_document(self) -> None:
+        """The gate takes no path (its signature is `(ir, kind)`) and opens no file while it
+        runs: every opener a module reaches through an attribute lookup at call time is
+        refused — `open` (builtins and `io`), `os.open`, and `Path`'s readers and `open`.
+        Out of reach: an opener a module bound to a name of its own at import (`from io import
+        open as _o`) before the patch; no module the gate imports does (by reading)."""
+        import builtins
+        import inspect
+        import io
+        import os
+        from unittest import mock
+        self.assertEqual(list(inspect.signature(pe.drive_violations).parameters), ["ir", "kind"])
+        irs = [_bench(s) for s in (_MUSCL, _RK4, _FLUX)]
+
+        def refuse(*_a, **_k):
+            raise AssertionError("gate (n) opened a file")
+
+        with mock.patch.object(builtins, "open", refuse), \
+                mock.patch.object(io, "open", refuse), \
+                mock.patch.object(os, "open", refuse), \
+                mock.patch.object(Path, "read_text", refuse), \
+                mock.patch.object(Path, "read_bytes", refuse), \
+                mock.patch.object(Path, "open", refuse):
+            for ir in irs:
+                self.assertEqual(_gate_n(ir), [])
+
+    def test_a_record_state_takes_the_recorded_dummys_layout_and_its_tokens_must_agree(
+            self) -> None:
+        ir = _bench(_RK4)
+        self.assertEqual(_gate_n(ir), [])
+        layouts = pe.distribute_layouts(ir)
+        for var in ("stage_U1", "stage_U2", "stage_U3", "stage_U4", "U"):
+            self.assertEqual(layouts[var], _CELL_CELL, var)
+        self.assertEqual(layouts["stage_t"], (None,))   # a record of the rank-0 `t`: its own
+        variables = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+            "variables"]
+        next(v for v in variables if v["name"] == "stage_U1")["shape_expr"] = "[ncomp, nx, 4]"
+        got = _gate_n(ir)
+        self.assertEqual(got[0],
+            "(n) state.stage_U1: its shape_expr derives [null, x:cell, null], and the prototype "
+            "in dummy 'U' it records [null, x:cell, y:cell]: a record state takes the layout of "
+            "the dummy it records, and its shape_expr tokens agree with it")
+        # and the per-case check sees the block extent the driver would allocate disagree
+        # wherever `ny` is not 4
+        self.assertTrue(got[1:] and all(
+            m.startswith("(n) case ") and "stage_U1 dimension 3 derives the cell layout of axis "
+            "'y'" in m for m in got[1:]), got)
+
+    def test_a_record_of_a_ghost_layout_dummy_is_refused(self) -> None:
+        ir = _bench(_RK4)
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["grid"]["ng"] = 1
+        sig = ir["public_api"]["signatures"][0]["signature"]["args"]
+        sig.insert(3, {"name": "ng", "rank": 0, "intent": "in", "spec": {"type": "integer"}})
+        ir["drive"]["step"]["arguments"]["ng"] = "inputs.grid.ng"
+        ir["drive"]["distribute"]["axes"][0]["ghost"] = "inputs.grid.ng"
+        proto = ir["public_api"]["interfaces"][0]["signature"]["args"]
+        next(a for a in proto if a["name"] == "U")["dims"] = ["ncomp", "nx + 2*ng", "ny"]
+        for var in ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+                "variables"]:
+            if var["name"].startswith("stage_U"):
+                var["shape_expr"] = "[ncomp, nx + 2*ng, ny]"
+        got = _gate_n(ir)
+        self.assertEqual(sorted(got), sorted(
+            f"(n) state.stage_U{i}: it records 'U', whose layout [null, x:ghost, y:cell] is "
+            "ghost-extended: only the cell and face layouts are gathered, so a record of a "
+            "ghost layout is refused" for i in range(1, 5)))
+
+    def test_a_recorded_dummy_resolves_in_the_prototype_not_among_the_states(self) -> None:
+        """Plan §6 PR-B1 / §8 (m): the bench cannot tell a lookup of the recorded dummy's name
+        among the states from the prototype's dummy, since rk4's state `U` shares the name. The
+        rename to `V` names no state; to `stage_t` a state of shape `[4]`."""
+        for new in ("V", "stage_t"):
+            with self.subTest(new=new):
+                ir = _rk4_renamed(new)
+                self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+                layouts = pe.distribute_layouts(ir)
+                for i in range(1, 5):
+                    self.assertEqual(layouts[f"stage_U{i}"], _CELL_CELL)
+        # the prototype's extent dummies named unlike the entry's derive no axis: refused by the
+        # shape_expr comparison
+        ir = _bench(_RK4)
+        proto = ir["public_api"]["interfaces"][0]["signature"]["args"]
+        for a in proto:
+            if a["name"] in ("nx", "ny"):
+                a["name"] = "m" + a["name"][1]
+            if a.get("dims"):
+                a["dims"] = ["ncomp", "mx", "my"]
+        got = _gate_n(ir)
+        self.assertEqual(len(got), 4, got)
+        self.assertTrue(all("its shape_expr derives [null, x:cell, y:cell], and the prototype "
+                            "in dummy 'U' it records [null, null, null]" in m for m in got), got)
 
 
 if __name__ == "__main__":

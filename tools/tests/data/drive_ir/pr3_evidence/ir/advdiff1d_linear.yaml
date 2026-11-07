@@ -1709,7 +1709,7 @@ io_contract:
 dependency:
   node_key: problem/advdiff1d_linear@0.5.1
   direct_deps:
-  - node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.4.0
+  - node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.5.0
     kind: component
     operations:
     - dynamics_advdiff_flux_1d_upwind_center2__compute_flux
@@ -1793,6 +1793,9 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes:
+    - {name: x, cells: inputs.grid.nx, min_block: 2}
   step:
     operation: advdiff1d_linear__step
     result: ok

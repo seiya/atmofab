@@ -59,6 +59,8 @@ The host-rendered driver calls the `operation` once per case at the case's own a
 ## 3. Execution-control rules
 `N/A`: this `component` evaluates a forcing at a supplied time and defines no time-stepping or iteration. The driver calls the `operation` once per case; the two times of the translation judgment are two cases of §2. Execution control belongs to the `problem` that composes this `operation`.
 
+distribute: x = grid.nx, y = grid.ny
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 

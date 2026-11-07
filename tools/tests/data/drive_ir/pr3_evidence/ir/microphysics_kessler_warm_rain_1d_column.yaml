@@ -8189,6 +8189,8 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes: []
   step:
   - operation: microphysics_kessler_warm_rain_1d_column__adjustment
     result: guard_pass

@@ -156,7 +156,10 @@ def _with_outcome_lines(body: str, outcome: str = "pass") -> str:
         if vps.TEST_ID_HEADING_PATTERN.match(stripped) or vps.TEST_ID_BULLET_PATTERN.match(stripped):
             out.append(("" if line.endswith("\n") else "\n")
                        + f"- `expected_outcome`: `{outcome}`\n")
-    return "".join(out)
+    # gate (o) (issue #610): a physics tests.md carries one `distribute:` line; APPENDED, so the
+    # line numbers a row pins in the body above stay as written
+    text = "".join(out)
+    return text + ("\n" if text and not text.endswith("\n") else "") + "distribute: none\n"
 
 
 # A real full-fidelity IR in the issue #589 shape: the certified IR of
@@ -507,7 +510,8 @@ def _mock_drive(extra_args: tuple = ()) -> dict:
     every dummy bound to the state of its name."""
     return {"step": {"operation": "shallow_water2d__step", "result": "ok",
                      "arguments": {a["name"]: f"state.{a['name']}"
-                                   for a in _mock_step_signature(extra_args)["args"]}}}
+                                   for a in _mock_step_signature(extra_args)["args"]}},
+            "distribute": {"axes": []}}
 
 
 def _mock_public_api(extra_args: tuple = ()) -> dict:
@@ -25189,7 +25193,7 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
                         {"name": "ok", "intent": "out", "spec": {"type": "logical"}}]}}]},
             "drive": {"step": {"operation": "bx__step", "result": "ok", "arguments": {
                 "nx": "inputs.grid.nx", "ny": "inputs.grid.ny", "U": "state.U",
-                "ok": "state.ok"}}},
+                "ok": "state.ok"}}, "distribute": {"axes": []}},
             "case": {"test_case_set": [{"case_id": "c_a", "inputs": {"grid": {"nx": 2, "ny": 2}},
                                         "initial_state": {"U": 0.0}}]},
             "io_contract": {
@@ -29594,8 +29598,12 @@ class DriveGateStageTests(unittest.TestCase):
         def infra(ir):
             ir["meta"]["spec_kind"] = "infrastructure"
         v = _drive_stage("coriolis", infra, catalog=catalog)
+        # the seeded tests.md is the component's, so its `distribute:` line is gate (o)'s on a
+        # node the catalog calls infrastructure, whatever the IR holds
         self.assertEqual(v, ["<ir>:drive: an infrastructure node carries no drive block (its "
-                             "own runner runs its cases)"])
+                             "own runner runs its cases)",
+                             "<ir>:(o) tests.md line 31: a `distribute:` line is refused on an "
+                             "infrastructure node (it runs its own cases)"])
         # an EMPTY block is a block: the same refusal, and the loop artifacts are no driver's
         def empty(ir):
             infra(ir)
@@ -29964,6 +29972,278 @@ class DriveGateStageTests(unittest.TestCase):
         self.assertIsNotNone(seen[0]["case_inputs"])
         self.assertTrue(seen[0]["history_declared"])
         self.assertEqual(seen[0]["series_names"], context["series_names"])
+
+
+class DistributeLineGateTests(unittest.TestCase):
+    """Gate (o) (issue #610, B14): the `tests.md` `distribute:` line against `drive.distribute`,
+    driven through the `Compile.static` body over the converted fixtures (`_drive_stage`); the
+    coriolis fixture is seeded with the REAL `tests.md`, whose line is `x = grid.nx, y =
+    grid.ny`."""
+
+    _COR = "distribute: x = grid.nx, y = grid.ny"
+    _SWE = "- distribute: x = grid.nx (min_block 2), y = grid.ny (min_block 2)"
+
+    @staticmethod
+    def _cor_tests(line: str | None = None, extra: str = "") -> str:
+        real = Path(__file__).resolve().parents[2] / _drive_fixture("coriolis")["meta"][
+            "source_refs"]["tests"]
+        text = real.read_text(encoding="utf-8")
+        assert text.count(DistributeLineGateTests._COR) == 1
+        if line is not None:
+            text = text.replace(DistributeLineGateTests._COR, line)
+        return text + extra
+
+    @staticmethod
+    def _axes(*axes: dict):
+        def mutate(ir: dict) -> None:
+            ir["drive"]["distribute"] = {"axes": list(axes)}
+        return mutate
+
+    _X = {"name": "x", "cells": "inputs.grid.nx"}
+    _Y = {"name": "y", "cells": "inputs.grid.ny"}
+
+    def _one(self, v: list[str], fragment: str) -> None:
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(fragment, v[0])
+
+    def test_the_line_is_required_on_a_physics_node_and_refused_on_a_harness(self) -> None:
+        self.assertEqual(_drive_stage("coriolis"), [])
+        self.assertEqual(_drive_stage("swe"), [])
+        self._one(_drive_stage("coriolis", tests_md=self._cor_tests("")),
+                  "(o) tests.md carries 0 `distribute:` lines; a component / problem node "
+                  "carries exactly one")
+        # the CATALOG's kind decides, never the IR: on an infrastructure node every line is
+        # refused and none is asked, whatever its IR holds
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text("# harness\n\ndistribute: none\n", encoding="utf-8")
+            for ir in ({"meta": {}}, _drive_fixture("coriolis")):
+                self.assertEqual(vps._distribute_line_violations(path, ir,
+                                                                 kind="infrastructure"), [
+                    "(o) tests.md line 3: a `distribute:` line is refused on an infrastructure "
+                    "node (it runs its own cases)"])
+            # a component / problem IR that dropped `drive` is gate (a)'s finding, not the
+            # line's: the line is still read, and compared with nothing
+            for kind in ("component", "problem"):
+                self.assertEqual(vps._distribute_line_violations(path, {"meta": {}},
+                                                                 kind=kind), [])
+            # no catalog answer: `_validate_catalog_spec_kind`'s refusal, this gate reads nothing
+            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}}, kind=None), [])
+            path.write_text("# harness\n", encoding="utf-8")
+            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}},
+                                                             kind="infrastructure"), [])
+            self.assertTrue(vps._distribute_line_violations(path, {"meta": {}},
+                                                            kind="component"))
+            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}}, kind=None), [])
+        v = _drive_stage("coriolis", lambda ir: ir.pop("drive"))
+        self.assertTrue(v, v)
+        self.assertFalse([m for m in v if ":(o) " in m], v)
+        # the stage hands the gate the catalog's kind, not a constant
+        real, seen = vps._distribute_line_violations, []
+
+        def spy(*args, **kwargs):
+            seen.append(kwargs.get("kind"))
+            return real(*args, **kwargs)
+        with unittest.mock.patch.object(vps, "_distribute_line_violations", spy):
+            self.assertEqual(_drive_stage("coriolis") + _drive_stage("swe"), [])
+        self.assertEqual(seen, ["component", "problem"])
+        # the corpus: one line on each of the 17 physics nodes, none on the 3 harnesses
+        repo = Path(__file__).resolve().parents[2]
+        catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+        catalog = [e for e in catalog if e.get("tests_path")]   # a profile has no tests.md
+        counts = {e["spec_kind"]: [] for e in catalog}
+        for entry in catalog:
+            text = (repo / entry["tests_path"]).read_text(encoding="utf-8")
+            counts[entry["spec_kind"]].append(sum(
+                1 for ln in text.splitlines() if vps.TEST_DISTRIBUTE_LINE.match(ln.strip())))
+        self.assertEqual(counts.pop("infrastructure"), [0, 0, 0])
+        self.assertEqual(sorted(sum(counts.values(), [])), [1] * 17)
+
+    def test_none_pins_an_empty_axis_list(self) -> None:
+        line = "distribute: none"
+        self.assertEqual(_drive_stage("coriolis", self._axes(),
+                                      tests_md=self._cor_tests(line)), [])
+        self._one(_drive_stage("coriolis", tests_md=self._cor_tests(line)),
+                  "(o) tests.md line 31: drive.distribute (x = grid.nx, y = grid.ny) is not the "
+                  "`distribute:` line (none): the axes ['x', 'y'] are not the line's [] in its "
+                  "order")
+        self._one(_drive_stage("coriolis", self._axes()), "drive.distribute (none) is not the "
+                  "`distribute:` line (x = grid.nx, y = grid.ny)")
+
+    def test_each_member_is_compared_in_order(self) -> None:
+        for label, mutate, line, fragment in (
+                ("fewer axes", self._axes(self._X), None,
+                 "the axes ['x'] are not the line's ['x', 'y'] in its order"),
+                ("a reordered pair", self._axes(self._Y, self._X), None,
+                 "the axes ['y', 'x'] are not the line's ['x', 'y'] in its order"),
+                ("a ghost on one side", self._axes({**self._X, "ghost": "inputs.grid.nx"},
+                                                   self._Y), None,
+                 "axis 'x' ghost: the line states None, drive.distribute 'inputs.grid.nx'"),
+                ("a missing extended", None,
+                 "distribute: x = grid.nx (ghost grid.ng, extended grid.nx_total), y = grid.ny",
+                 "axis 'x' ghost: the line states 'grid.ng', drive.distribute None; axis 'x' "
+                 "extended: the line states 'grid.nx_total', drive.distribute None"),
+                ("min_block above", self._axes({**self._X, "min_block": 3}, self._Y), None,
+                 "axis 'x' min_block: the line states 1, drive.distribute 3"),
+                ("min_block below", None,
+                 "distribute: x = grid.nx (min_block 2), y = grid.ny",
+                 "axis 'x' min_block: the line states 2, drive.distribute 1"),
+                ("a path that differs", self._axes(self._X, {**self._Y, "cells":
+                                                             "inputs.grid.nx_total"}), None,
+                 "axis 'y' cells: the line states 'grid.ny', drive.distribute "
+                 "'inputs.grid.nx_total'"),
+                ("a flat path against a nested input", None,
+                 "distribute: x = nx, y = grid.ny",
+                 "axis 'x' cells: the line states 'nx', drive.distribute 'inputs.grid.nx'"),
+                ("a nested path against a flat one", None, "distribute: x = grid.grid.nx, "
+                 "y = grid.ny", "axis 'x' cells: the line states 'grid.grid.nx'")):
+            with self.subTest(refused=label):
+                # gate (n) may refuse the same mutant on its own ground; gate (o)'s is one finding
+                v = _drive_stage("coriolis", mutate, tests_md=self._cor_tests(line))
+                self._one([m for m in v if ":(o) " in m], fragment)
+        # the line's path carrying `inputs.` is refused as the line's own defect
+        self._one(_drive_stage("coriolis", tests_md=self._cor_tests(
+            "distribute: x = inputs.grid.nx, y = grid.ny")),
+            "the cells path 'inputs.grid.nx' carries `inputs.`")
+        # admitted: equal members in both spellings of min_block 1
+        self.assertEqual(_drive_stage("coriolis", self._axes({**self._X, "min_block": 1},
+                                                             self._Y)), [])
+        self.assertEqual(_drive_stage("coriolis", tests_md=self._cor_tests(
+            "distribute: x = grid.nx (min_block 1), y = grid.ny")), [])
+
+    def test_a_bullet_and_backticks_are_admitted(self) -> None:
+        for line in ("- distribute: x = grid.nx, y = grid.ny",
+                     "* `distribute`: `x = grid.nx, y = grid.ny`",
+                     "distribute:x=grid.nx,y=grid.ny",
+                     "distribute: x = grid.nx, y = grid.ny."):
+            with self.subTest(line=line):
+                self.assertEqual(_drive_stage("coriolis", tests_md=self._cor_tests(line)), [])
+        # the word is case-sensitive: a capitalised line is no line, so the node has none
+        self._one(_drive_stage("coriolis", tests_md=self._cor_tests(
+            "Distribute: x = grid.nx, y = grid.ny")), "carries 0 `distribute:` lines")
+
+    def test_a_second_line_anywhere_is_refused(self) -> None:
+        for label, extra in (("prose", f"\n{self._COR}\n"),
+                             ("a fenced block", f"\n```\n{self._COR}\n```\n")):
+            with self.subTest(where=label):
+                self._one(_drive_stage("coriolis", tests_md=self._cor_tests(extra=extra)),
+                          "(o) tests.md carries 2 `distribute:` lines (lines [31, ")
+
+    def test_commas_inside_parentheses_are_members_not_axes(self) -> None:
+        swe_tests = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
+        self.assertIn(self._SWE, swe_tests)
+        two = "- distribute: x = grid.nx (min_block 2, ghost grid.ng), y = grid.ny (min_block 2)"
+        self._one(_drive_stage("swe", tests_md=swe_tests.replace(self._SWE, two)),
+                  "axis 'x' ghost: the line states 'grid.ng', drive.distribute None")
+        parsed, why = vps._parse_distribute_line(
+            "x = grid.nx (ghost grid.ng, extended grid.nx_total), "
+            "y = grid.ny (ghost grid.ng, extended grid.ny_total, min_block 3)")
+        self.assertIsNone(why)
+        self.assertEqual(parsed, [
+            {"name": "x", "cells": "grid.nx", "ghost": "grid.ng", "extended": "grid.nx_total",
+             "min_block": 1},
+            {"name": "y", "cells": "grid.ny", "ghost": "grid.ng", "extended": "grid.ny_total",
+             "min_block": 3}])
+        for body, why_part in (("x = nx (ghost ng", "parentheses do not balance"),
+                               ("x = nx, x = ny", "stated twice"),
+                               ("x = nx (extended nxt)", "extended requires ghost"),
+                               ("x = nx (min_block 0)", "min_block is a positive integer"),
+                               ("x = nx (ghost ng, ghost mg)", "names ghost twice"),
+                               ("x = nx (halo ng)", "is not `ghost <path>`"),
+                               ("x nx", "is not `<axis> = <cells path>"),
+                               # `none` is the whole line, never a prefix of one
+                               ("none, x = nx", "'none' is not `<axis> = <cells path>"),
+                               ("none (min_block 2)", "is not `<axis> = <cells path>"),
+                               ("", "it states nothing"),
+                               # lines no IR can transcribe past `parse_distribute`
+                               ("x = grid.n, y = grid.n",
+                                "the path 'grid.n' is the cells / extended count of two roles"),
+                               ("x = nx (ghost ng, extended nx)",
+                                "the path 'nx' is the cells / extended count of two roles"),
+                               ("x = nx (ghost ng, extended n), y = n",
+                                "the path 'n' is the cells / extended count of two roles"),
+                               ("x = nx, y = ny, z = nz", "it states 3 axes; at most 2")):
+            with self.subTest(body=body):
+                parsed, why = vps._parse_distribute_line(body)
+                self.assertIsNone(parsed)
+                self.assertIn(why_part, why)
+        # their legitimate twins: two axes, distinct counts, one ghost width shared by both axes
+        for body in ("x = nx, y = ny", "x = nx (ghost ng, extended nxt)",
+                     "x = nx (ghost ng, extended nxt), y = ny (ghost ng, extended nyt)"):
+            with self.subTest(admitted=body):
+                parsed, why = vps._parse_distribute_line(body)
+                self.assertIsNone(why)
+                self.assertEqual(len(parsed), body.count("="))
+        # every line of the corpus parses
+        repo = Path(__file__).resolve().parents[2]
+        catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+        bodies = [m.group(1).replace("`", "").strip()
+                  for e in catalog if e.get("spec_kind") in ("component", "problem")
+                  for ln in (repo / e["tests_path"]).read_text(encoding="utf-8").splitlines()
+                  if (m := vps.TEST_DISTRIBUTE_LINE.match(ln.strip()))]
+        self.assertEqual(len(bodies), 17)
+        for body in bodies:
+            with self.subTest(corpus=body):
+                self.assertIsNone(vps._parse_distribute_line(body)[1])
+        # through the stage the refusal is gate (o)'s, naming the line, beside gate (n)'s on the
+        # IR that transcribes it
+        v = _drive_stage("coriolis", self._axes(self._X, {**self._Y, "cells": "inputs.grid.nx"}),
+                         tests_md=self._cor_tests("distribute: x = grid.nx, y = grid.nx"))
+        self._one([m for m in v if ":(o) " in m],
+                  "(o) tests.md line 31: `distribute:` 'x = grid.nx, y = grid.nx' does not "
+                  "parse: the path 'grid.nx' is the cells / extended count of two roles")
+        self.assertIn("the line is the operator's to correct", v[[":(o) " in m for m in v]
+                                                                 .index(True)])
+
+    def test_a_missing_tests_path_is_not_this_gates_finding(self) -> None:
+        ir = _drive_fixture("coriolis")
+        self.assertEqual(vps._distribute_line_violations(None, ir, kind="component"), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(vps._distribute_line_violations(Path(tmp) / "absent.md", ir,
+                                                             kind="component"), [])
+        # an absent or malformed drive.distribute is gate (n)'s, which this gate leaves alone
+        v = _drive_stage("coriolis", lambda ir: ir["drive"].pop("distribute"))
+        self.assertEqual(v, ["<ir>:(n) drive.distribute is required on a component / problem "
+                             "node: {axes: [...]} transcribes the tests.md `distribute:` line "
+                             "(`axes: []` for `distribute: none`)"])
+
+    def test_a_block_first_binding_passes_the_compile_stage(self) -> None:
+        """`block.<axis>.first` through the whole `Compile.static` body (the §5.1 pin, the
+        dry render of every declared target, gates (b), (n) and (o)): an integer `in` dummy
+        added to §5.1 and to the IR, bound to a declared axis, is admitted; bound to an axis
+        the line does not declare, gate (n) refuses it."""
+        repo_real = Path(__file__).resolve().parents[2]
+        spec_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
+        spec = (repo_real / spec_ref).read_text(encoding="utf-8")
+        anchor = ("  - name: ny\n    rank: 0\n    intent: in\n    spec:\n      type: integer\n")
+        self.assertEqual(spec.count(anchor), 1)
+        spec = spec.replace(anchor, anchor + anchor.replace("name: ny", "name: j0"))
+
+        def bind(axis: str):
+            def mutate(ir: dict) -> None:
+                args = ir["public_api"]["signatures"][0]["signature"]["args"]
+                at = next(i for i, a in enumerate(args) if a["name"] == "ny") + 1
+                args.insert(at, {"name": "j0", "rank": 0, "intent": "in",
+                                 "spec": {"type": "integer"}})
+                ir["drive"]["step"]["arguments"]["j0"] = f"block.{axis}.first"
+            return mutate
+
+        self.assertEqual(_drive_stage("coriolis", bind("y"), controlled_spec=spec), [])
+        self.assertEqual(_drive_stage("coriolis", bind("z"), controlled_spec=spec), [
+            "<ir>:(n) drive.step.arguments.j0: block.z.first names no axis of "
+            "drive.distribute.axes (['x', 'y'])"])
+
+    def test_the_message_names_the_line(self) -> None:
+        v = _drive_stage("coriolis", self._axes(self._X))
+        self.assertEqual(v, [
+            "<ir>:(o) tests.md line 31: drive.distribute (x = grid.nx) is not the `distribute:` "
+            "line (x = grid.nx, y = grid.ny): the axes ['x'] are not the line's ['x', 'y'] in "
+            "its order — the IR transcribes the line, whose paths ARE the case inputs' paths "
+            "without `inputs.`"])
+        v = _drive_stage("coriolis", tests_md=self._cor_tests("distribute: x = nx ("))
+        self._one(v, "(o) tests.md line 31: `distribute:` 'x = nx (' does not parse: its "
+                     "parentheses do not balance (docs/TESTS.md §Description format; the line "
+                     "is the operator's to correct)")
 
 
 if __name__ == "__main__":

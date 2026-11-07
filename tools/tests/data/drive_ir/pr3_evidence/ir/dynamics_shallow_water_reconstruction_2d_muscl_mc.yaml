@@ -3404,6 +3404,10 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes:
+    - {name: x, cells: inputs.grid.nx, ghost: inputs.grid.ng, extended: inputs.grid.nx_total}
+    - {name: y, cells: inputs.grid.ny, ghost: inputs.grid.ng, extended: inputs.grid.ny_total}
   step:
     operation: dynamics_shallow_water_reconstruction_2d_muscl_mc__reconstruct
     result: grid_valid

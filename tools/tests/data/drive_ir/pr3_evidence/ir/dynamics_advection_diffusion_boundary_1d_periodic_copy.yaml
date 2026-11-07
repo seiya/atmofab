@@ -484,6 +484,8 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes: []
   step:
     operation: dynamics_advection_diffusion_boundary_1d_periodic_copy__apply
     result: guard_pass

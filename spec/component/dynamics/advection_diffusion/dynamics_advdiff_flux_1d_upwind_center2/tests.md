@@ -6,7 +6,7 @@
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_advdiff_flux_1d_upwind_center2`
-- `spec_ref.spec_version`: `0.4.0`
+- `spec_ref.spec_version`: `0.5.0`
 - `spec_ref.controlled_spec_path`: `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/controlled_spec.md`
 
 ## 1. Test purpose
@@ -23,7 +23,7 @@ The operation admits three transformations (`docs/TESTS.md` §Symmetry pairs): t
   - `l0_periodic_seam`: `nx=4`, `ng=1`, `a=1.0`, `nu=0.1`, `dx=0.25`, `dt=0.1`, `u = [0.5, 1.0, 3.0, 2.0, 0.5, 1.0]`. The case declares the selectors `seam.left_select = [1, 0, 0, 0, 0]` and `seam.right_select = [0, 0, 0, 0, 1]` as inputs, the two end faces of §5.
   - `l0_min_extent`: the smallest valid grid, `nx=2`, `ng=1`, with `a=2.0`, `nu=0.3`, `dx=0.5`, `dt=0.1`, `u = [0.3, 1.7, 0.2, 2.9]`: a guard written `nx<3` or `ng<2` refuses it.
 - The input field is supplied directly as the ghost-extended array of `nx + 2*ng` values in the layout of `controlled_spec.md` §2; the `L0` suite does not call the boundary `component`.
-- Every case derives the extent of `u` as the scalar `n_u = nx + 2*ng`, which sizes the state `u`: the Controlled Spec §5.1 gives `u` no `dims`.
+- Every case derives the extent of `u` as the scalar `n_u = nx + 2*ng`, which sizes the state `u`.
 - The fixed-value cases are `l0_face_formula` (`a>0`) and `l0_face_formula_aneg` (`a<0`), each with the inputs its judgment of §6 states, and one transformed copy of each, sorting after its base:
   - `l0_face_formula_amir`: `nx=4`, `ng=2`, `a=-2.0`, `nu=0.3`, `dx=0.5`, `dt=0.1`, `u = [2.2, 3.6, 0.4, 1.1, 2.9, 0.2, 1.7, 0.3]` (the field of `l0_face_formula` reversed, and `a` reversed).
   - `l0_face_formula_aneg_amir`: `nx=5`, `ng=2`, `a=1.5`, `nu=0.2`, `dx=0.25`, `dt=0.1`, `u = [-2.2, 1.8, 3.1, -0.7, 0.9, 2.4, -1.3, 0.6, 2.7]` (the field of `l0_face_formula_aneg` reversed, and `a` reversed).
@@ -37,6 +37,8 @@ The operation admits three transformations (`docs/TESTS.md` §Symmetry pairs): t
 
 ## 3. Execution-control rules
 `N/A`: this `component` exposes a single pointwise `operation` and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
+
+distribute: x = nx (ghost ng, min_block 2)
 
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed single-stencil inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
