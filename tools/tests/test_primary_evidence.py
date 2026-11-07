@@ -5621,6 +5621,32 @@ class DistributeGateTests(unittest.TestCase):
             "with axes names a case input"])
         self.assertNotIn("h", pe.distribute_layouts(ir))
 
+    def test_two_dummies_on_one_state_deriving_different_layouts_are_refused(self) -> None:
+        """`init` and `step` bind one state `h` with dims `[nx, ny]` and `[ny, nx]`. Every case
+        is square, so gate (c)'s per-case extents agree (the issue #490 class) and only the
+        layout comparison tells the two dummies apart."""
+        def toyi_2d(step_dims: list[str]) -> dict:
+            ir = _toyi()
+            for sig, dims in zip(ir["public_api"]["signatures"], (["nx", "ny"], step_dims)):
+                args = sig["signature"]["args"]
+                args.insert(1, _arg("ny", "in", "integer"))
+                h = next(a for a in args if a["name"] == "h")
+                h["rank"], h["dims"] = 2, dims
+            for role in ("init", "step"):
+                ir["drive"][role]["arguments"]["ny"] = "inputs.grid.ny"
+            for case in ir["case"]["test_case_set"]:
+                case["inputs"]["grid"]["ny"] = case["inputs"]["grid"]["nx"]
+            ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+                "variables"][0]["shape_expr"] = "[nx, ny]"
+            ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"},
+                                                  {"name": "y", "cells": "inputs.grid.ny"}]}
+            return ir
+
+        self.assertEqual(pe.drive_violations(toyi_2d(["nx", "ny"]), kind="problem"), [])
+        self.assertEqual(pe.drive_violations(toyi_2d(["ny", "nx"]), kind="problem"), [
+            "(n) h (drive.step.arguments.h): its dims derive [y:cell, x:cell], another dummy "
+            "bound to it [x:cell, y:cell]"])
+
     def test_a_case_no_entry_runs_is_skipped_by_the_bound_input_rule(self) -> None:
         import yaml
         ir = yaml.safe_load((_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml").read_text())
