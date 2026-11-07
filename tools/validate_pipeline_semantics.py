@@ -3992,6 +3992,18 @@ def _parse_distribute_line(body: str) -> tuple[list[dict[str, Any]] | None, str 
         if any(a["name"] == axis["name"] for a in axes):
             return None, f"axis {axis['name']!r} is stated twice"
         axes.append(axis)
+    # `parse_distribute`'s two refusals of the block itself, so that a line no faithful IR can
+    # transcribe is refused here, naming the line, and not as gate (n)'s finding on the IR
+    from tools.primary_evidence import DISTRIBUTE_MAX_AXES
+    if len(axes) > DISTRIBUTE_MAX_AXES:
+        return None, (f"it states {len(axes)} axes; at most {DISTRIBUTE_MAX_AXES} (a process "
+                      "grid has two dimensions)")
+    counted = [a[key] for a in axes for key in ("cells", "extended") if a[key] is not None]
+    for path in counted:
+        if counted.count(path) > 1:
+            return None, (f"the path {path!r} is the cells / extended count of two roles (on "
+                          "two axes, or one axis's cells and extended): a path counts one "
+                          "thing")
     return axes, None
 
 

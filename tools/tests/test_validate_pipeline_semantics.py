@@ -30080,9 +30080,9 @@ class DistributeLineGateTests(unittest.TestCase):
                                                    self._Y), None,
                  "axis 'x' ghost: the line states None, drive.distribute 'inputs.grid.nx'"),
                 ("a missing extended", None,
-                 "distribute: x = grid.nx (ghost grid.nx, extended grid.ny), y = grid.ny",
-                 "axis 'x' ghost: the line states 'grid.nx', drive.distribute None; axis 'x' "
-                 "extended: the line states 'grid.ny', drive.distribute None"),
+                 "distribute: x = grid.nx (ghost grid.ng, extended grid.nx_total), y = grid.ny",
+                 "axis 'x' ghost: the line states 'grid.ng', drive.distribute None; axis 'x' "
+                 "extended: the line states 'grid.nx_total', drive.distribute None"),
                 ("min_block above", self._axes({**self._X, "min_block": 3}, self._Y), None,
                  "axis 'x' min_block: the line states 1, drive.distribute 3"),
                 ("min_block below", None,
@@ -30154,11 +30154,46 @@ class DistributeLineGateTests(unittest.TestCase):
                                # `none` is the whole line, never a prefix of one
                                ("none, x = nx", "'none' is not `<axis> = <cells path>"),
                                ("none (min_block 2)", "is not `<axis> = <cells path>"),
-                               ("", "it states nothing")):
+                               ("", "it states nothing"),
+                               # lines no IR can transcribe past `parse_distribute`
+                               ("x = grid.n, y = grid.n",
+                                "the path 'grid.n' is the cells / extended count of two roles"),
+                               ("x = nx (ghost ng, extended nx)",
+                                "the path 'nx' is the cells / extended count of two roles"),
+                               ("x = nx (ghost ng, extended n), y = n",
+                                "the path 'n' is the cells / extended count of two roles"),
+                               ("x = nx, y = ny, z = nz", "it states 3 axes; at most 2")):
             with self.subTest(body=body):
                 parsed, why = vps._parse_distribute_line(body)
                 self.assertIsNone(parsed)
                 self.assertIn(why_part, why)
+        # their legitimate twins: two axes, distinct counts, one ghost width shared by both axes
+        for body in ("x = nx, y = ny", "x = nx (ghost ng, extended nxt)",
+                     "x = nx (ghost ng, extended nxt), y = ny (ghost ng, extended nyt)"):
+            with self.subTest(admitted=body):
+                parsed, why = vps._parse_distribute_line(body)
+                self.assertIsNone(why)
+                self.assertEqual(len(parsed), body.count("="))
+        # every line of the corpus parses
+        repo = Path(__file__).resolve().parents[2]
+        catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+        bodies = [m.group(1).replace("`", "").strip()
+                  for e in catalog if e.get("spec_kind") in ("component", "problem")
+                  for ln in (repo / e["tests_path"]).read_text(encoding="utf-8").splitlines()
+                  if (m := vps.TEST_DISTRIBUTE_LINE.match(ln.strip()))]
+        self.assertEqual(len(bodies), 17)
+        for body in bodies:
+            with self.subTest(corpus=body):
+                self.assertIsNone(vps._parse_distribute_line(body)[1])
+        # through the stage the refusal is gate (o)'s, naming the line, beside gate (n)'s on the
+        # IR that transcribes it
+        v = _drive_stage("coriolis", self._axes(self._X, {**self._Y, "cells": "inputs.grid.nx"}),
+                         tests_md=self._cor_tests("distribute: x = grid.nx, y = grid.nx"))
+        self._one([m for m in v if ":(o) " in m],
+                  "(o) tests.md line 31: `distribute:` 'x = grid.nx, y = grid.nx' does not "
+                  "parse: the path 'grid.nx' is the cells / extended count of two roles")
+        self.assertIn("the line is the operator's to correct", v[[":(o) " in m for m in v]
+                                                                 .index(True)])
 
     def test_a_missing_tests_path_is_not_this_gates_finding(self) -> None:
         ir = _drive_fixture("coriolis")
