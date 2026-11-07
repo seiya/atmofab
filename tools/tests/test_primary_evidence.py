@@ -5729,6 +5729,17 @@ class DistributeGateTests(unittest.TestCase):
             f"not inputs.grid.nx + 2*inputs.grid.ng = {case['nx'] + 2 * case['ng']} along axis "
             "'x', and only `pass` tests target the case (the driver replicates an inconsistent "
             "case with its raw inputs: an `xfail` test's input)"])
+        # a case no test targets feeds no predicate: replicated, never refused
+        import copy
+        from tools import runner_ir
+        ir = _bench(_MUSCL)
+        cases = ir["case"]["test_case_set"]
+        orphan = copy.deepcopy(next(c for c in cases
+                                    if c["case_id"] == "l0_invalid_nx_total_above"))
+        orphan["case_id"] = "l0_no_test"
+        cases.append(orphan)
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+        self.assertFalse(runner_ir.distribute_plan(ir, orphan, (2, 2)))
 
     def test_a_scalar_out_with_axes_is_refused(self) -> None:
         ir = _rus()

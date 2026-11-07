@@ -827,7 +827,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-27": "e2f6af75c30ef32ce2a57293ef55abe728b2f7613efd528c7bde25980a068390",
     # compile-docs-28 (issue #610, PR-B1): `phase_01_compile.md` states `drive.distribute`, the
     # `block.<axis>.first` binding, gates (n) and (o) and V3 (iv)'s `distribute:` clause.
-    "compile-docs-28": "ea61c8b53cb002f77fa2e600355b59518d09a3913170b548432b96480b98435c",
+    "compile-docs-28": "d58e16d4635f66838827d9c1194e367c666cf6a43a94035ad5d9e47a4d79cd4d",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1742,8 +1742,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # which runs at `Compile.static` and in the gate body, never inside `_evaluate_cases`, and
     # reads `block.<axis>.first`, which the case evaluator skips. Measured at the commit that
     # takes this pin: `evaluate_case_inputs` over every bench IR gives byte-identical case files
-    # at 33eaeec8 and in this tree. The digest `execute-16` shipped with at 33eaeec8:
-    "execute-16": "d0dffedd28d68cc451ea378d8b8c1572fa885a820870a7e0f167a1122657abd4",
+    # at 33eaeec8 and in this tree. Re-pinned again in review round 1 for edits inside
+    # `_distribute_violations` (gate (n)'s body), which `drive_violations` and
+    # `distribute_layouts` alone call. The digest `execute-16` shipped with at 33eaeec8:
+    "execute-16": "51938898b5d9415f1e27468e48aa1f28e1936efabb13067f0b20946041ecd7d0",
     "execute-16@33eaeec8": "0ed726abf3542050c341c1a20529fa31d2e3f73bcc87d28392a887d0b585211b",
     # Re-pinned for issue #607: the file member moved, and `load_case_env`, the one
     # thing that changed, is reached by the predicate evaluator alone, so no case file
@@ -1945,8 +1947,10 @@ PINNED_VERDICT: dict[str, str] = {
     # `distribute` parse, read by `drive_violations` alone. Measured at the commit that takes
     # this pin, over every bench IR at 33eaeec8 and in this tree (`PYTHONHASHSEED=0`): the
     # `drive_model` classes, `state_reads`, `step_series_names` and `predicate_schema_context`
-    # the verdict evaluates under are equal. The digest `verdict-16` shipped with at 33eaeec8:
-    "verdict-16": "9d9ece5838456e11f59aeccf7819c9daf0eb5336cf4a07dee1c219ffc22c7480",
+    # the verdict evaluates under are equal. Re-pinned again in review round 1 for edits inside
+    # `_distribute_violations` (gate (n)'s body), which `drive_violations` and
+    # `distribute_layouts` alone call. The digest `verdict-16` shipped with at 33eaeec8:
+    "verdict-16": "06a855ebb07aa7568f0beddee7192811d6b7a9f0294e8e74dfe486b66e18e633",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 

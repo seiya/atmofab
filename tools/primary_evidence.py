@@ -4176,9 +4176,9 @@ def _distribute_violations(ir: dict[str, Any], model: DriveModel,
     that declares `ghost`, never on an `out` / `inout` dummy (B2) nor a recorded one; no rank-0
     real / integer `out` of a one-call `step` (B8); and per case (`evaluated`: gate (c)'s
     values) each derived extent is `cells`, `cells + 1` or `cells + 2*ghost` by layout — a case
-    whose `extended` is not `cells + 2*ghost` is replicated by the driver unless only `pass` tests
-    target it, where it is refused. Reads no document and no target profile: the agreement with
-    the `tests.md` line is gate (o)'s (`validate_pipeline_semantics`)."""
+    whose `extended` is not `cells + 2*ghost` is replicated by the driver unless tests target it
+    and every one is `pass`, where it is refused. Reads no document and no target profile: the
+    agreement with the `tests.md` line is gate (o)'s (`validate_pipeline_semantics`)."""
     from tools.runner_ir import array_layouts   # the one derivation, shared with the renderer
 
     block = model.block
@@ -4373,7 +4373,10 @@ def _distribute_violations(ir: dict[str, Any], model: DriveModel,
         inconsistent = [a for a in axes if a.extended is not None
                         and values[a.extended] != values[a.cells] + 2 * values[a.ghost]]
         if inconsistent:
-            if outcomes.get(cid, set()) <= {"pass"}:
+            # a case no test targets enters no predicate (`at('<case>')` names a target case),
+            # so replicating it moves no verdict: refused only where `pass` tests read it
+            targeting = outcomes.get(cid, set())
+            if targeting and targeting <= {"pass"}:
                 for a in inconsistent:
                     v.append(f"(n) case {cid!r}: inputs.{a.extended} = {values[a.extended]} is "
                              f"not inputs.{a.cells} + 2*inputs.{a.ghost} = "

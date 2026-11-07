@@ -442,7 +442,7 @@ drive:
   #   is refused; a `record` state takes the layout of the prototype `in` dummy it records and its
   #   `shape_expr` agrees; no `out` / `inout` and no record is ghost-extended; no rank-0 real / integer `out`
   #   of a one-call `step`; per case each extent fits its layout, and a case whose `extended` is not cells
-  #   + 2*ghost is refused when only `pass` tests target it; (o) the tests.md carries ONE `distribute:` line
+  #   + 2*ghost is refused when tests target it and all are `pass`; (o) the tests.md carries ONE `distribute:` line
   #   equal to `drive.distribute` (axes in order, paths as strings, `min_block`). The host also
   #   EVALUATES every case (primary_evidence.evaluate_case_inputs) and refuses a non-finite value, a shape
   #   mismatch, a host-data `loop.n_step` that is not an integer >= 1, a host-data `loop.dt` <= 0, an `every`
