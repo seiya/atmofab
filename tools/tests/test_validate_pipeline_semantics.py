@@ -29598,8 +29598,12 @@ class DriveGateStageTests(unittest.TestCase):
         def infra(ir):
             ir["meta"]["spec_kind"] = "infrastructure"
         v = _drive_stage("coriolis", infra, catalog=catalog)
+        # the seeded tests.md is the component's, so its `distribute:` line is gate (o)'s on a
+        # node the catalog calls infrastructure, whatever the IR holds
         self.assertEqual(v, ["<ir>:drive: an infrastructure node carries no drive block (its "
-                             "own runner runs its cases)"])
+                             "own runner runs its cases)",
+                             "<ir>:(o) tests.md line 31: a `distribute:` line is refused on an "
+                             "infrastructure node (it runs its own cases)"])
         # an EMPTY block is a block: the same refusal, and the loop artifacts are no driver's
         def empty(ir):
             infra(ir)
