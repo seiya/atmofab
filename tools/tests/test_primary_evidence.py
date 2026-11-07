@@ -5731,8 +5731,18 @@ class DistributeGateTests(unittest.TestCase):
             f"not inputs.grid.nx + 2*inputs.grid.ng = {case['nx'] + 2 * case['ng']} along axis "
             "'x', and only `pass` tests target the case (the driver replicates an inconsistent "
             "case with its raw inputs: an `xfail` test's input)"])
-        # a case no test targets feeds no predicate: replicated, never refused
+        # a case a `pass` test and an `xfail` test both target: replicated, never refused
         import copy
+        ir = _bench(_MUSCL)
+        tests = ir["io_contract"]["tests"]
+        mixed = copy.deepcopy(next(t for t in tests
+                                   if t["test_id"] == "l0_invalid_nx_total_above_xfail"))
+        mixed["test_id"] = "l0_invalid_nx_total_above_pass"
+        mixed["expected_outcome"] = "pass"
+        tests.append(mixed)
+        self.assertEqual(pe._distribute_violations(ir, model, model.variables,
+                                                   pe._cases_by_id(ir), evaluated), [])
+        # a case no test targets feeds no predicate: replicated, never refused
         from tools import runner_ir
         ir = _bench(_MUSCL)
         cases = ir["case"]["test_case_set"]
