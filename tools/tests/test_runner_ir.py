@@ -287,7 +287,9 @@ class DistributeBlockTests(unittest.TestCase):
                       "nx + nxt", "nx + dx", "dx", "nx + ncomp", "nx/2", "nx**2", "nxt - 2*ng",
                       "nx +",
                       # twice a name that is no declared ghost width
-                      "nx + 2*ncomp"):
+                      "nx + 2*ncomp",
+                      # the ghost-extended count plus twice the ghost: the margin counted twice
+                      "nxt + 2*ng"):
             with self.subTest(token=token):
                 layouts, refusals = r.array_layouts({"a": ["ncomp", token]}, roles, 2)
                 self.assertEqual(layouts, {})
