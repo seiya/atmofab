@@ -22120,7 +22120,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # 105800->107200; measured 106733 at this commit.
         # Issue #589 PR-3 (the zero extent, a `derived` dims token, the one-cell reduction): bumped
         # 107200->107500; measured 107438 after V3 (iv) gained the procedure binding.
-        "docs/workflow/phases/phase_01_compile.md": 107500,
+        # Issue #610 PR-B1 (`drive.distribute`, `block.<axis>.first`, gates (n) / (o), V3 (iv)'s
+        # `distribute:` clause): bumped 107500->110200; measured 109989 at this commit.
+        "docs/workflow/phases/phase_01_compile.md": 110200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -28683,7 +28685,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
         # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:98aae3a61672474c":
+        "tools/prompt_templates/workshop_compile_generate.txt:17bf88cb81265028":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28705,7 +28707,9 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "again 2026-11-04 when rule 5's closure sentence named the result flag's quantity "
             "and its xfail sentence the flag eq 0 under it (review round 4, R4-3) — rule 3 "
             "unchanged; re-keyed again 2026-11-04 when rule 5 took the flag predicate's form "
-            "(review round 5, R5-2) and the `expected_outcome:` line (R5-1) — rule 3 unchanged)",
+            "(review round 5, R5-2) and the `expected_outcome:` line (R5-1) — rule 3 unchanged; "
+            "re-keyed 2026-11-08 when rule 9 took `drive.distribute`, issue #610 PR-B1 — rule 3 "
+            "unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",
