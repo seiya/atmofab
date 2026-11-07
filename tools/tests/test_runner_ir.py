@@ -432,6 +432,10 @@ class DistributeBlockTests(unittest.TestCase):
         case = {"inputs": {"grid": {"nx": 3, "ny": 2, "ng": 2, "nx_total": 7, "ny_total": 6}}}
         self.assertEqual([r.distribute_plan(ir, case, g) for g in _GRIDS],
                          [True, False, False, True, False, True, True])
+        # every declared axis counts, split or not: (2, 1) splits x alone, and y's 0 cells
+        # are under 1 * min_block
+        empty_y = {"inputs": {"grid": {**case["inputs"]["grid"], "ny": 0, "ny_total": 4}}}
+        self.assertFalse(r.distribute_plan(ir, empty_y, (2, 1)))
         case["inputs"]["grid"]["nx_total"] = 8   # inconsistent: replicated everywhere
         self.assertFalse(any(r.distribute_plan(ir, case, g) for g in _GRIDS))
         self.assertFalse(r.distribute_plan(ir, case, (1, 1)))
