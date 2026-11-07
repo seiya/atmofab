@@ -5752,8 +5752,15 @@ class DistributeGateTests(unittest.TestCase):
             "is refused (a block-local scalar has no global value the driver can gather)"])
 
     def test_the_gate_reads_no_target_profile_and_no_document(self) -> None:
+        """The gate takes no path (its signature is `(ir, kind)`) and opens no file while it
+        runs: every opener a module reaches through an attribute lookup at call time is
+        refused — `open` (builtins and `io`), `os.open`, and `Path`'s readers and `open`.
+        Out of reach: an opener a module bound to a name of its own at import (`from io import
+        open as _o`) before the patch; no module the gate imports does (by reading)."""
         import builtins
         import inspect
+        import io
+        import os
         from unittest import mock
         self.assertEqual(list(inspect.signature(pe.drive_violations).parameters), ["ir", "kind"])
         irs = [_bench(s) for s in (_MUSCL, _RK4, _FLUX)]
@@ -5762,7 +5769,10 @@ class DistributeGateTests(unittest.TestCase):
             raise AssertionError("gate (n) opened a file")
 
         with mock.patch.object(builtins, "open", refuse), \
+                mock.patch.object(io, "open", refuse), \
+                mock.patch.object(os, "open", refuse), \
                 mock.patch.object(Path, "read_text", refuse), \
+                mock.patch.object(Path, "read_bytes", refuse), \
                 mock.patch.object(Path, "open", refuse):
             for ir in irs:
                 self.assertEqual(_gate_n(ir), [])
