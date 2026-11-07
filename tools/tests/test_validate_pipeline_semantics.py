@@ -30121,6 +30121,9 @@ class DistributeLineGateTests(unittest.TestCase):
                                ("x = nx (ghost ng, ghost mg)", "names ghost twice"),
                                ("x = nx (halo ng)", "is not `ghost <path>`"),
                                ("x nx", "is not `<axis> = <cells path>"),
+                               # `none` is the whole line, never a prefix of one
+                               ("none, x = nx", "'none' is not `<axis> = <cells path>"),
+                               ("none (min_block 2)", "is not `<axis> = <cells path>"),
                                ("", "it states nothing")):
             with self.subTest(body=body):
                 parsed, why = vps._parse_distribute_line(body)
