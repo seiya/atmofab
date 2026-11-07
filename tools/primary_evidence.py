@@ -4147,9 +4147,22 @@ def _layout_text(layout: tuple[Any, ...], axes: tuple[DistributeAxis, ...]) -> s
                            for d in layout) + "]"
 
 
+def distribute_layouts(ir: dict[str, Any]) -> dict[str, tuple[Any, ...]]:
+    """The layout gate (n) derives for every rank >= 1 variable and bound host array of an IR
+    that carries `drive` (`runner_ir.array_layouts`'s answer: key -> one entry per dimension,
+    None or ``(axis index, layout)``; a state keyed by its name, a host array by its binding
+    text); ``{}`` on a node with no axis. Raises `PrimaryEvidenceError` as `drive_model` does.
+    `test_runner_ir.DriveAgreementTest` holds it equal to `runner_ir.distribute_layouts`."""
+    model = drive_model(ir)
+    out: dict[str, tuple[Any, ...]] = {}
+    _distribute_violations(ir, model, model.variables, _cases_by_id(ir), {}, layouts_out=out)
+    return out
+
+
 def _distribute_violations(ir: dict[str, Any], model: DriveModel,
                            schema_vars: dict[str, list[str]], cases: dict[str, dict[str, Any]],
-                           evaluated: dict[str, CaseValues]) -> list[str]:
+                           evaluated: dict[str, CaseValues],
+                           layouts_out: dict[str, tuple[Any, ...]] | None = None) -> list[str]:
     """Gate (n) (issue #610, §3.1): `drive.distribute` against the IR's own entries and cases.
 
     `distribute` is required on a `component` / `problem` (`axes: []` on a node with no spatial
@@ -4303,6 +4316,8 @@ def _distribute_violations(ir: dict[str, Any], model: DriveModel,
             tokens[alt_key] = alt_dims
     layouts, refusals = array_layouts(tokens, role_of_name, len(axes))
     v.extend(f"(n) {msg}" for msg in refusals)
+    if layouts_out is not None:
+        layouts_out.update({k: lay for k, lay in layouts.items() if " (" not in k})
     for key, alts in alternates.items():
         for alt_key, _ in alts:
             if key in layouts and alt_key in layouts and layouts[alt_key] != layouts[key]:

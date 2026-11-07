@@ -384,6 +384,45 @@ class SpecCorpusVersionTest(unittest.TestCase):
                     "last_fail_reason": None, "debug_mode": False, "context_isolated": True}))
                 self.assertEqual(validate_compile_ir_dir(REPO, ir_dir), [])
 
+    def test_each_declared_axis_set_distributes_a_pass_case(self) -> None:
+        """Issue #610 (B6, §10 approval (a)): for every bench IR whose `distribute:` line
+        declares axes, `distribute_plan` — the one replication decider — distributes at least one
+        `pass` case on the minimal partitioning grid (2 along each declared axis) and on each
+        launcher profile's certified grid. The population is the bench's case values, which no
+        gate holds to `tests.md` §4 (case VALUES are V3's reading): the row says "the spec as the
+        bench transcribes it distributes a `pass` case", and skips a node whose line is
+        `none`. A lower bound of one, not the census counts, so a case edit does not redden it."""
+        from tools.runner_ir import distribute_plan, drive_distribute_axes
+        evidence = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
+        launchers = {}
+        for path in sorted((REPO / "spec/targets").glob("*.yaml")):
+            execution = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get(
+                "execution") or {}
+            if execution.get("ranks"):
+                grid = execution.get("process_grid") or [execution["ranks"], 1]
+                launchers[path.stem] = (int(grid[0]), int(grid[1]))
+        self.assertIn("fortran_cpu_mpi", launchers)
+        with_axes = 0
+        for path in sorted(evidence.glob("*.yaml")):
+            ir = yaml.safe_load(path.read_text(encoding="utf-8"))
+            axes = drive_distribute_axes(ir)
+            if not axes:
+                continue
+            with_axes += 1
+            passing = {c for t in ir["io_contract"]["tests"]
+                       if str(t["expected_outcome"]).strip().lower() == "pass"
+                       for c in t["target_cases"]}
+            cases = [c for c in ir["case"]["test_case_set"] if c["case_id"] in passing]
+            minimal = (2, 2 if len(axes) > 1 else 1)
+            for label, grid in (("minimal", minimal), *launchers.items()):
+                with self.subTest(spec_id=path.stem, grid=label):
+                    self.assertGreaterEqual(
+                        sum(distribute_plan(ir, c, grid) for c in cases), 1,
+                        f"no `pass` case of {path.stem} is distributed on {grid}: the line's "
+                        "min_block (or the cases' extents) leave the target's certification "
+                        "vacuous")
+        self.assertEqual(with_axes, 10)
+
     def test_the_flag_rule_is_driven_both_ways(self) -> None:
         """Synthetic: a `pass` test missing its operation's result, a time-marching one missing
         `run.n_step` or the `__init` result, and `input_guard` are each reported; each satisfied

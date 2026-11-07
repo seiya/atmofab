@@ -282,6 +282,28 @@ class _DriverBehaviour:
         self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
         return run
 
+    def test_block_first_renders_one_on_the_serial_driver(self) -> None:
+        """Issue #610 (B5): `block.<axis>.first` is the block's first global index, `1` on a
+        serial or device driver. The toy kernel refuses exactly `mode == 1` (`ok = mode /= 1`),
+        so `mode` bound to `block.x.first` captures what the literal-1 case captures, and not
+        what the mode-0 case does."""
+        def run(ir: dict[str, Any], case: str) -> dict[str, Any]:
+            with tempfile.TemporaryDirectory() as tmp:
+                got = type(self).build_and_run(Path(tmp), ir)
+                self.assertEqual(got.proc.returncode, 0, got.proc.stderr[-2000:])
+                return got.snapshot(case)
+
+        ir = call_ir(0)
+        ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"}]}
+        ir["drive"]["step"]["arguments"]["mode"] = "block.x.first"
+        bound = run(ir, "m0")
+        self.assertEqual(bound["ok"], 0.0)
+        self.assertEqual(bound["b"], [2.0, 4.0, 6.0])
+        one = run(call_ir(1), "m1")
+        self.assertEqual({k: v for k, v in bound.items() if k != "case_id"},
+                         {k: v for k, v in one.items() if k != "case_id"})
+        self.assertEqual(run(call_ir(0), "m0")["ok"], 1.0)
+
     def test_a_loop_runs_n_step_committed_steps_with_step_and_t_the_drivers(self) -> None:
         run = self._run(loop_ir(0))
         final = run.snapshot("m0")
