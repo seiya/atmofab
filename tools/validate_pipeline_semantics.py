@@ -3995,12 +3995,16 @@ def _parse_distribute_line(body: str) -> tuple[list[dict[str, Any]] | None, str 
     return axes, None
 
 
-def _distribute_line_violations(tests_path: Path | None, ir: dict) -> list[str]:
+def _distribute_line_violations(tests_path: Path | None, ir: dict, *,
+                                 kind: str | None) -> list[str]:
     """Gate (o) (issue #610, B14): the `tests.md` `distribute:` line against
     `drive.distribute`. The line is the operator's statement of which case inputs count cells
-    along which grid dimension; the IR transcribes it member for member. A node whose IR carries
-    `drive` (a `component` / `problem`) carries exactly ONE line anywhere in the file; an IR with
-    no `drive` (an `infrastructure` node) carries none. The comparison is element-wise: the axes
+    along which grid dimension; the IR transcribes it member for member. ``kind`` is the node's
+    kind as the CATALOG answers it, never read from the IR: a `component` / `problem` carries
+    exactly ONE line anywhere in the file, whatever its IR holds; an `infrastructure` node
+    carries none; with no answer (``None``, `_validate_catalog_spec_kind`'s refusal) this gate
+    reads nothing. An IR with no `drive` is compared with nothing (gate (a)'s finding, as a
+    malformed `drive` is `drive_violations`'). The comparison is element-wise: the axes
     in order, each with its `cells` / `ghost` / `extended` paths (present on both sides or
     neither, compared as STRINGS against the IR's path with `inputs.` stripped — nothing matches
     by suffix or by name) and its `min_block` (1 when absent on either side); `none` against
@@ -4010,22 +4014,18 @@ def _distribute_line_violations(tests_path: Path | None, ir: dict) -> list[str]:
     evaluates no case."""
     from tools.primary_evidence import PrimaryEvidenceError, drive_block
 
-    if tests_path is None:
+    if tests_path is None or kind not in ("infrastructure", "component", "problem"):
         return []
     try:
         text = tests_path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return []
-    try:
-        block = drive_block(ir)
-    except PrimaryEvidenceError:
-        return []
     lines = [(n, m.group(1).replace("`", "").strip())
              for n, raw in enumerate(text.splitlines(), start=1)
              if (m := TEST_DISTRIBUTE_LINE.match(raw.strip()))]
-    if block is None:
-        return [f"(o) tests.md line {n}: a `distribute:` line is refused on a node whose IR "
-                "carries no drive (an infrastructure node runs its own cases)" for n, _ in lines]
+    if kind == "infrastructure":
+        return [f"(o) tests.md line {n}: a `distribute:` line is refused on an infrastructure "
+                "node (it runs its own cases)" for n, _ in lines]
     if len(lines) != 1:
         where = f" (lines {[n for n, _ in lines]})" if lines else ""
         return [f"(o) tests.md carries {len(lines)} `distribute:` lines{where}; a component / "
@@ -4037,8 +4037,12 @@ def _distribute_line_violations(tests_path: Path | None, ir: dict) -> list[str]:
     if stated is None:
         return [f"(o) tests.md line {lineno}: `distribute:` {body!r} does not parse: {why} "
                 "(docs/TESTS.md §Description format; the line is the operator's to correct)"]
-    if block.distribute is None:
-        return []   # absent or malformed: gate (n)'s finding
+    try:
+        block = drive_block(ir)
+    except PrimaryEvidenceError:
+        return []
+    if block is None or block.distribute is None:
+        return []   # no drive: gate (a)'s finding; absent or malformed distribute: gate (n)'s
     ir_axes = [{"name": a.name, "cells": a.cells, "ghost": a.ghost, "extended": a.extended,
                 "min_block": a.min_block} for a in block.distribute]
     if stated == ir_axes:
@@ -10550,7 +10554,7 @@ def _validate_tests_and_predicates(
     for msg in _history_line_violations(tests_path, ir):
         violations.append(f"{derived_path}:{msg}")
     # Gate (o): the `distribute:` line against `drive.distribute` (issue #610).
-    for msg in _distribute_line_violations(tests_path, ir):
+    for msg in _distribute_line_violations(tests_path, ir, kind=kind):
         violations.append(f"{derived_path}:{msg}")
 
     # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is

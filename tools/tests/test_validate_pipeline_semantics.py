@@ -30008,15 +30008,41 @@ class DistributeLineGateTests(unittest.TestCase):
         self._one(_drive_stage("coriolis", tests_md=self._cor_tests("")),
                   "(o) tests.md carries 0 `distribute:` lines; a component / problem node "
                   "carries exactly one")
-        # an IR with no drive (an infrastructure node): every line is refused, none is asked
+        # the CATALOG's kind decides, never the IR: on an infrastructure node every line is
+        # refused and none is asked, whatever its IR holds
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "tests.md"
             path.write_text("# harness\n\ndistribute: none\n", encoding="utf-8")
-            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}}), [
-                "(o) tests.md line 3: a `distribute:` line is refused on a node whose IR "
-                "carries no drive (an infrastructure node runs its own cases)"])
+            for ir in ({"meta": {}}, _drive_fixture("coriolis")):
+                self.assertEqual(vps._distribute_line_violations(path, ir,
+                                                                 kind="infrastructure"), [
+                    "(o) tests.md line 3: a `distribute:` line is refused on an infrastructure "
+                    "node (it runs its own cases)"])
+            # a component / problem IR that dropped `drive` is gate (a)'s finding, not the
+            # line's: the line is still read, and compared with nothing
+            for kind in ("component", "problem"):
+                self.assertEqual(vps._distribute_line_violations(path, {"meta": {}},
+                                                                 kind=kind), [])
+            # no catalog answer: `_validate_catalog_spec_kind`'s refusal, this gate reads nothing
+            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}}, kind=None), [])
             path.write_text("# harness\n", encoding="utf-8")
-            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}}), [])
+            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}},
+                                                             kind="infrastructure"), [])
+            self.assertTrue(vps._distribute_line_violations(path, {"meta": {}},
+                                                            kind="component"))
+            self.assertEqual(vps._distribute_line_violations(path, {"meta": {}}, kind=None), [])
+        v = _drive_stage("coriolis", lambda ir: ir.pop("drive"))
+        self.assertTrue(v, v)
+        self.assertFalse([m for m in v if ":(o) " in m], v)
+        # the stage hands the gate the catalog's kind, not a constant
+        real, seen = vps._distribute_line_violations, []
+
+        def spy(*args, **kwargs):
+            seen.append(kwargs.get("kind"))
+            return real(*args, **kwargs)
+        with unittest.mock.patch.object(vps, "_distribute_line_violations", spy):
+            self.assertEqual(_drive_stage("coriolis") + _drive_stage("swe"), [])
+        self.assertEqual(seen, ["component", "problem"])
         # the corpus: one line on each of the 17 physics nodes, none on the 3 harnesses
         repo = Path(__file__).resolve().parents[2]
         catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
@@ -30132,9 +30158,10 @@ class DistributeLineGateTests(unittest.TestCase):
 
     def test_a_missing_tests_path_is_not_this_gates_finding(self) -> None:
         ir = _drive_fixture("coriolis")
-        self.assertEqual(vps._distribute_line_violations(None, ir), [])
+        self.assertEqual(vps._distribute_line_violations(None, ir, kind="component"), [])
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(vps._distribute_line_violations(Path(tmp) / "absent.md", ir), [])
+            self.assertEqual(vps._distribute_line_violations(Path(tmp) / "absent.md", ir,
+                                                             kind="component"), [])
         # an absent or malformed drive.distribute is gate (n)'s, which this gate leaves alone
         v = _drive_stage("coriolis", lambda ir: ir["drive"].pop("distribute"))
         self.assertEqual(v, ["<ir>:(n) drive.distribute is required on a component / problem "
