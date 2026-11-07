@@ -5593,6 +5593,24 @@ class DistributeGateTests(unittest.TestCase):
         self.assertTrue(any("inputs.time.t_end, which no rank-0 integer dummy" in m
                             for m in _gate_n(ir)), _gate_n(ir))
 
+    def test_a_rank0_dummy_bound_to_an_axis_input_in_one_entry_only_is_refused(self) -> None:
+        """A dims token resolves a name through every entry's rank-0 dummies, so a name bound to
+        an axis input in one entry and to another value in another has no one role: the gate
+        names the dummy, and `role_of_name` reads the ambiguous name as `derived`, so the token
+        naming it derives no layout. Case `a` has `nx == 4`, so gate (c)'s per-case extents
+        agree there and only case `b` is (c)'s."""
+        ir = _toyi()
+        ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.grid.nx"}]}
+        self.assertEqual(pe.drive_violations(ir, kind="problem"), [])
+        ir["drive"]["init"]["arguments"]["nx"] = 4
+        self.assertEqual(_gate_n(ir), [
+            "(n) the rank-0 dummy 'nx' is bound to an axis input in one entry and to another "
+            "value in another ([\"('cells', 0)\", 'None']): a dims token names a dummy by name, "
+            "so every entry binds it alike",
+            "(n) h: dims token 'nx' names ['nx'], bound to a derived value: an extent on a node "
+            "with axes names a case input"])
+        self.assertNotIn("h", pe.distribute_layouts(ir))
+
     def test_a_case_no_entry_runs_is_skipped_by_the_bound_input_rule(self) -> None:
         import yaml
         ir = yaml.safe_load((_DRIVE_DIR / "coriolis_0.2.0.spec.ir.yaml").read_text())
