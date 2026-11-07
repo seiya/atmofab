@@ -10352,8 +10352,8 @@ def _validate_tests_and_predicates(
 
     - A retired key (``_RETIRED_IO_CONTRACT_KEYS``) is refused by name.
     - ``tests``: ``verdict_evaluator.validate_tests_schema``, against the canonical test-id set.
-    - ``drive`` (issue #589): ``primary_evidence.drive_violations`` — SHAPE gates (a)-(l), the
-      case inputs evaluated as a gate (nothing written), a ``schema.variables[].source`` key
+    - ``drive`` (issue #589): ``primary_evidence.drive_violations`` — SHAPE gates (a)-(l) and
+      (n) (issue #610), the case inputs evaluated as a gate (nothing written), a ``schema.variables[].source`` key
       refused — under the node's kind as the CATALOG answers it (``_ir_catalog_spec_kind``;
       no answer is ``_validate_catalog_spec_kind``'s refusal, and this gate then has no kind to
       ask with). An IR with no ``drive`` (``infrastructure``) has its case inputs evaluated here

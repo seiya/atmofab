@@ -30138,6 +30138,32 @@ class DistributeLineGateTests(unittest.TestCase):
                              "node: {axes: [...]} transcribes the tests.md `distribute:` line "
                              "(`axes: []` for `distribute: none`)"])
 
+    def test_a_block_first_binding_passes_the_compile_stage(self) -> None:
+        """`block.<axis>.first` through the whole `Compile.static` body (the §5.1 pin, the
+        dry render of every declared target, gates (b), (n) and (o)): an integer `in` dummy
+        added to §5.1 and to the IR, bound to a declared axis, is admitted; bound to an axis
+        the line does not declare, gate (n) refuses it."""
+        repo_real = Path(__file__).resolve().parents[2]
+        spec_ref = _drive_fixture("coriolis")["meta"]["source_refs"]["controlled_spec"]
+        spec = (repo_real / spec_ref).read_text(encoding="utf-8")
+        anchor = ("  - name: ny\n    rank: 0\n    intent: in\n    spec:\n      type: integer\n")
+        self.assertEqual(spec.count(anchor), 1)
+        spec = spec.replace(anchor, anchor + anchor.replace("name: ny", "name: j0"))
+
+        def bind(axis: str):
+            def mutate(ir: dict) -> None:
+                args = ir["public_api"]["signatures"][0]["signature"]["args"]
+                at = next(i for i, a in enumerate(args) if a["name"] == "ny") + 1
+                args.insert(at, {"name": "j0", "rank": 0, "intent": "in",
+                                 "spec": {"type": "integer"}})
+                ir["drive"]["step"]["arguments"]["j0"] = f"block.{axis}.first"
+            return mutate
+
+        self.assertEqual(_drive_stage("coriolis", bind("y"), controlled_spec=spec), [])
+        self.assertEqual(_drive_stage("coriolis", bind("z"), controlled_spec=spec), [
+            "<ir>:(n) drive.step.arguments.j0: block.z.first names no axis of "
+            "drive.distribute.axes (['x', 'y'])"])
+
     def test_the_message_names_the_line(self) -> None:
         v = _drive_stage("coriolis", self._axes(self._X))
         self.assertEqual(v, [

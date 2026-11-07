@@ -4410,9 +4410,9 @@ def _distribute_violations(ir: dict[str, Any], model: DriveModel,
 
 
 def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
-    """The Compile gate over `drive` (issue #589, SHAPE §6 gates (a)-(l)); ``kind`` is the
-    node's `spec_kind` as the catalog answers it (never the IR's own `meta.spec_kind`). Gate
-    (m) reads `tests.md` and is the validator's. An `infrastructure` IR carries no `drive`; a
+    """The Compile gate over `drive` (issue #589, SHAPE §6 gates (a)-(l); issue #610 gate
+    (n)); ``kind`` is the node's `spec_kind` as the catalog answers it (never the IR's own
+    `meta.spec_kind`). Gates (m) and (o) read `tests.md` and are the validator's. An `infrastructure` IR carries no `drive`; a
     `problem` or `component` IR must. A schema variable's `source` key is refused on every
     kind, before the kind decides anything (`_source_key_violations`). Structural findings stop
     the semantic gates (no cascade). Returns violation strings (empty == valid)."""
@@ -4420,7 +4420,7 @@ def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
 
 
 def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
-    """`drive_violations` past the `source` key: the gates (a)-(l) under ``kind``."""
+    """`drive_violations` past the `source` key: the gates (a)-(l) and (n) under ``kind``."""
     if kind == INFRASTRUCTURE_KIND:
         return (["drive: an infrastructure node carries no drive block (its own runner runs "
                  "its cases)"] if _has_drive(ir) else [])

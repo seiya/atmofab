@@ -827,7 +827,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-27": "e2f6af75c30ef32ce2a57293ef55abe728b2f7613efd528c7bde25980a068390",
     # compile-docs-28 (issue #610, PR-B1): `phase_01_compile.md` states `drive.distribute`, the
     # `block.<axis>.first` binding, gates (n) and (o) and V3 (iv)'s `distribute:` clause.
-    "compile-docs-28": "b1e934269dbabfc4d582a9b36a84ccfe5ac4429bccb1eac16417979c89a42194",
+    "compile-docs-28": "ea61c8b53cb002f77fa2e600355b59518d09a3913170b548432b96480b98435c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1743,7 +1743,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # reads `block.<axis>.first`, which the case evaluator skips. Measured at the commit that
     # takes this pin: `evaluate_case_inputs` over every bench IR gives byte-identical case files
     # at 33eaeec8 and in this tree. The digest `execute-16` shipped with at 33eaeec8:
-    "execute-16": "69108e606266a2f9e79c35a1f264f5649c1d4f5da46c6e671d14803d40120142",
+    "execute-16": "d0dffedd28d68cc451ea378d8b8c1572fa885a820870a7e0f167a1122657abd4",
     "execute-16@33eaeec8": "0ed726abf3542050c341c1a20529fa31d2e3f73bcc87d28392a887d0b585211b",
     # Re-pinned for issue #607: the file member moved, and `load_case_env`, the one
     # thing that changed, is reached by the predicate evaluator alone, so no case file
@@ -1946,7 +1946,7 @@ PINNED_VERDICT: dict[str, str] = {
     # this pin, over every bench IR at 33eaeec8 and in this tree (`PYTHONHASHSEED=0`): the
     # `drive_model` classes, `state_reads`, `step_series_names` and `predicate_schema_context`
     # the verdict evaluates under are equal. The digest `verdict-16` shipped with at 33eaeec8:
-    "verdict-16": "ba7dbdcb5a0e64a1a528e03b20eb363e382075c774812c91da50e9c650151cba",
+    "verdict-16": "9d9ece5838456e11f59aeccf7819c9daf0eb5336cf4a07dee1c219ffc22c7480",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 
