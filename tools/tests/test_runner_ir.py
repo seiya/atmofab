@@ -357,6 +357,52 @@ class DistributeBlockTests(unittest.TestCase):
                       "drive.distribute.axes (['x'])",
                       pe.drive_violations(with_i0("integer", axis="y"), kind="problem"))
 
+    def test_the_render_readers_refuse_what_gate_n_refuses(self) -> None:
+        """The renderer's own refusals over `drive.distribute` (PR-B2's backstop): gate (n) runs
+        first on every admitted IR, so no stage of PR-B1 reaches these; each is pinned here on
+        the render reader directly."""
+        x = {"name": "x", "cells": "inputs.grid.nx"}
+        for raw, want in (({"axes": [{**x, "halo": "inputs.grid.ng"}]}, "must be {name, cells"),
+                          ({"axes": [{"name": "x"}]}, "cells is required"),
+                          ({"axes": [{**x, "extended": "inputs.grid.nxt"}]},
+                           "extended requires ghost"),
+                          ({"axes": [{**x, "min_block": 0}]}, "min_block is a positive"),
+                          ({"axes": [{**x, "cells": "derived.nx"}]}, "must be an inputs.<path>"),
+                          ({"axes": [x, x]}, "each named once"),
+                          ({"axes": [{**x, "name": n} for n in "xyz"]}, "at most two axes")):
+            with self.subTest(raw=raw):
+                ir = _toy()
+                ir["drive"]["distribute"] = raw
+                with self.assertRaises(RenderError) as ctx:
+                    r.drive_distribute_axes(ir)
+                self.assertIn(want, str(ctx.exception))
+        # an array dummy without dims, and a recorded prototype dummy without dims
+        ir = _bench_ir("dynamics_advdiff_flux_1d_upwind_center2")
+        args = ir["public_api"]["signatures"][0]["signature"]["args"]
+        del next(a for a in args if a["name"] == "u")["dims"]
+        self.assertEqual(r.distribute_layouts(ir, _variables(ir))[1], [
+            "u: the array dummy 'u' of dynamics_advdiff_flux_1d_upwind_center2__compute_flux "
+            "has no dims on a node with axes"])
+        ir = _bench_ir("dynamics_shallow_water_time_update_2d_rk4")
+        proto = ir["public_api"]["interfaces"][0]["signature"]["args"]
+        del next(a for a in proto if a["name"] == "U")["dims"]
+        layouts, refusals = r.distribute_layouts(ir, _variables(ir))
+        self.assertEqual(refusals, [f"stage_U{i}: the recorded dummy 'U' of the prototype has "
+                                    "no dims on a node with axes" for i in range(1, 5)])
+        self.assertFalse({f"stage_U{i}" for i in range(1, 5)} & set(layouts))
+        # a rank-0 dummy name bound two ways reads as `derived`: no layout derives through it
+        ir = _toyi()
+        ir["drive"]["distribute"] = {"axes": [x]}
+        self.assertEqual(r.distribute_layouts(ir, _variables(ir)), ({"h": (_C(0),)}, []))
+        ir["drive"]["init"]["arguments"]["nx"] = 4
+        self.assertEqual(r.distribute_layouts(ir, _variables(ir)), ({}, [
+            "h: dims token 'nx' names ['nx'], bound to a derived value: an extent on a node "
+            "with axes names a case input"]))
+        # a ghost width that is not an integer replicates the case (the flux: ghost, no extended)
+        flux = _bench_ir("dynamics_advdiff_flux_1d_upwind_center2")
+        self.assertEqual([r.distribute_plan(flux, {"inputs": {"nx": 8, "ng": ng}}, (2, 1))
+                          for ng in (1, 1.5, None)], [True, False, False])
+
     def test_distribute_plan_matches_the_census_table(self) -> None:
         never: dict[str, list[str]] = {}
         for path in sorted(_BENCH_DIR.glob("*.yaml")):

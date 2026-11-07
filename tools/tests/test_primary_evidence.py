@@ -5540,6 +5540,8 @@ class DistributeGateTests(unittest.TestCase):
         for raw, want in (({"axes": "x"}, "must be {axes: [...]}"),
                           ({"axes": [], "extra": 1}, "must be {axes: [...]}"),
                           ({"axes": [{"name": "x"}]}, "cells is required"),
+                          ({"axes": [{"name": "x", "cells": "inputs.grid.nx", "halo": 1}]},
+                           "halo is not a key of an axis"),
                           ({"axes": [{"name": "x", "cells": "grid.nx"}]}, "inputs.<path>"),
                           ({"axes": [{"name": "x", "cells": "inputs.grid.nx",
                                       "extended": "inputs.grid.nx"}]}, "extended requires ghost"),
