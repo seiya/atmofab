@@ -664,6 +664,8 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes: []
   step:
     operation: dynamics_shallow_water_boundary_2d_periodic_copy__apply
     result: grid_valid

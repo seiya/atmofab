@@ -33,6 +33,8 @@ The symmetry pairs (`docs/TESTS.md` §Symmetry pairs) are carried on the cubic c
 ## 3. Execution-control rules
 `N/A`: this `component` reconstructs interface states from a provided field and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
 
+distribute: x = grid.nx (ghost grid.ng, extended grid.nx_total), y = grid.ny (ghost grid.ng, extended grid.ny_total)
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 

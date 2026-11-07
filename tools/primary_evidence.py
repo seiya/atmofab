@@ -2580,6 +2580,11 @@ def quantity_violations(tests: Any, predicates: Any,
 #: The roots and words an `arguments` value may take (`parse_binding`).
 _STATE_ROOT = "state"
 _BINDING_WORDS = ("time", STEP_CAPTURE)
+#: `block.<axis>.first` (issue #610, B5): the 1-based global index of the first owned cell of
+#: the block along the declared spatial axis `<axis>` of `drive.distribute` — `1` on a serial or
+#: device driver and on every rank of a replicated case. Binds a rank-0 integer `in` dummy.
+_BLOCK_ROOT = "block"
+_BLOCK_FIRST = "first"
 #: The keys of `drive.loop`, every one required with `loop` (gate (e)).
 LOOP_KEYS: tuple[str, ...] = ("n_step", "dt", "t_start", "t_end")
 #: The spec kinds the catalog answers with (`spec/registry/spec_catalog.yaml`).
@@ -2593,7 +2598,7 @@ _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 class Binding(NamedTuple):
     """One `arguments` value: ``kind`` is ``inputs`` (``ref`` the dotted path), ``derived`` /
     ``state`` (``ref`` the name), ``time`` / ``step`` (``ref`` None), ``literal`` (``ref`` the
-    number or bool) or ``procedure`` (``ref`` the expression text, D11; ``calls`` the state
+    number or bool), ``block`` (``ref`` the axis name of `block.<axis>.first`) or ``procedure`` (``ref`` the expression text, D11; ``calls`` the state
     the driver counts the calls of the procedure in, ``record`` (prototype `in` dummy, states)
     the states holding what the operation passed at its first calls, one state per call,
     or one rank-1 state for a rank-0 dummy)."""
@@ -2607,6 +2612,8 @@ class Binding(NamedTuple):
             return f"{self.kind}.{self.ref}"
         if self.kind == "procedure":
             return f"{{procedure: {self.ref!r}}}"
+        if self.kind == _BLOCK_ROOT:
+            return f"{_BLOCK_ROOT}.{self.ref}.{_BLOCK_FIRST}"
         return self.kind if self.kind in _BINDING_WORDS else repr(self.ref)
 
 
@@ -2621,8 +2628,8 @@ def _state_ref(raw: Any, whole: Any) -> str:
 
 def parse_binding(value: Any) -> Binding:
     """Read one `drive` `arguments` value (SHAPE §2): `"inputs.<path>"`, `"derived.<name>"`,
-    `"state.<var>"`, `"time"`, `"step"`, a finite number or a bool, or `{procedure: "<expr>"}`
-    with optional `calls: "state.<var>"` and `record: {<dummy>: "state.<var>" | [...]}`.
+    `"state.<var>"`, `"time"`, `"step"`, `"block.<axis>.first"`, a finite number or a bool, or
+    `{procedure: "<expr>"}` with optional `calls: "state.<var>"` and `record: {<dummy>: "state.<var>" | [...]}`.
     Raises `PrimaryEvidenceError` on anything else."""
     if isinstance(value, bool):
         return Binding("literal", value)
@@ -2658,9 +2665,12 @@ def parse_binding(value: Any) -> Binding:
         if root in (_DERIVED, _STATE_ROOT) and len(segments) == 1 \
                 and _IDENT.fullmatch(segments[0]):
             return Binding(root, rest)
+        if root == _BLOCK_ROOT and len(segments) == 2 and _IDENT.fullmatch(segments[0]) \
+                and segments[1] == _BLOCK_FIRST:
+            return Binding(_BLOCK_ROOT, segments[0])
     raise PrimaryEvidenceError(
         f"binding {value!r} is not one of inputs.<path>, derived.<name>, state.<var>, time, "
-        "step, a number, a bool, or {procedure: \"<expression>\"}")
+        "step, block.<axis>.first, a number, a bool, or {procedure: \"<expression>\"}")
 
 
 class DriveEntry(NamedTuple):
@@ -2680,16 +2690,100 @@ class DriveEntry(NamedTuple):
         return next((d for d in self.dummies if d.get("name") == name), None)
 
 
+class DistributeAxis(NamedTuple):
+    """One spatial axis of `drive.distribute.axes` (issue #610, §3.1): ``name``; ``cells`` the
+    `inputs` path (without the prefix) of the cell count along it; ``ghost`` / ``extended`` the
+    paths of the ghost width and of the ghost-extended count, None when undeclared;
+    ``min_block`` the smallest block the kernel's own guard admits along it (1 when absent)."""
+    name: str
+    cells: str
+    ghost: str | None
+    extended: str | None
+    min_block: int
+
+
+#: The keys of one `drive.distribute.axes` entry.
+DISTRIBUTE_AXIS_KEYS: tuple[str, ...] = ("name", "cells", "ghost", "extended", "min_block")
+#: The most spatial axes a node declares: the length of a process grid (`ExecutionShape`).
+DISTRIBUTE_MAX_AXES = 2
+
+
+def parse_distribute(raw: Any) -> tuple[tuple[DistributeAxis, ...] | None, list[str]]:
+    """`drive.distribute` (issue #610, §3.1): ``{axes: [{name, cells, ghost?, extended?,
+    min_block?}, ...]}``, the spatial axes in grid-dimension order (axis k is partitioned along
+    grid dimension k+1), `[]` on a node with none. ``(axes, [])`` when it holds, ``(None,
+    findings)`` otherwise; an absent block (``raw`` None) is ``(None, [])`` — gate (n) requires
+    it, a render reads it as no axis."""
+    if raw is None:
+        return None, []
+    if not isinstance(raw, dict) or set(raw) != {"axes"} or not isinstance(raw["axes"], list):
+        return None, [f"drive.distribute must be {{axes: [...]}} (got {raw!r})"]
+    v: list[str] = []
+    axes: list[DistributeAxis] = []
+    if len(raw["axes"]) > DISTRIBUTE_MAX_AXES:
+        v.append(f"drive.distribute.axes declares {len(raw['axes'])} axes; at most "
+                 f"{DISTRIBUTE_MAX_AXES} (a process grid has two dimensions)")
+    for i, item in enumerate(raw["axes"]):
+        loc = f"drive.distribute.axes[{i}]"
+        if not isinstance(item, dict):
+            v.append(f"{loc} must be a mapping {{name, cells, ghost?, extended?, min_block?}}")
+            continue
+        for key in sorted(set(item) - set(DISTRIBUTE_AXIS_KEYS), key=str):
+            v.append(f"{loc}.{key} is not a key of an axis ({list(DISTRIBUTE_AXIS_KEYS)})")
+        name = item.get("name")
+        if not isinstance(name, str) or not _IDENT.fullmatch(name):
+            v.append(f"{loc}.name must be an identifier (got {name!r})")
+            name = None
+        paths: dict[str, str | None] = {}
+        for key in ("cells", "ghost", "extended"):
+            if key not in item:
+                if key == "cells":
+                    v.append(f"{loc}.cells is required: the inputs.<path> of the cell count")
+                paths[key] = None
+                continue
+            try:
+                binding: Binding | None = parse_binding(item[key])
+            except PrimaryEvidenceError:
+                binding = None
+            if binding is None or binding.kind != "inputs":
+                v.append(f"{loc}.{key} must be an inputs.<path> (got {item[key]!r})")
+                paths[key] = None
+            else:
+                paths[key] = binding.ref
+        if "extended" in item and "ghost" not in item:
+            v.append(f"{loc}: extended requires ghost (the ghost-extended count is cells + "
+                     "2*ghost)")
+        min_block = item.get("min_block", 1)
+        if isinstance(min_block, bool) or not isinstance(min_block, int) or min_block < 1:
+            v.append(f"{loc}.min_block must be a positive integer (got {min_block!r})")
+            min_block = 1
+        if name is not None and paths["cells"] is not None:
+            axes.append(DistributeAxis(name, paths["cells"], paths["ghost"], paths["extended"],
+                                       min_block))
+    names = [a.name for a in axes]
+    if len(set(names)) != len(names):
+        v.append(f"drive.distribute.axes names an axis twice ({names})")
+    counted = [p for a in axes for p in (a.cells, a.extended) if p is not None]
+    if len(set(counted)) != len(counted):
+        v.append(f"drive.distribute.axes: one inputs path is the cells / extended count of two "
+                 f"roles ({counted})")
+    if v:
+        return None, v
+    return tuple(axes), []
+
+
 class DriveBlock(NamedTuple):
     """The parsed `drive` block: ``init`` (None when absent), the ``step`` entries,
     ``list_form`` (the `step` is a list of entries with `cases`), ``loop`` (key -> `Binding`,
-    None when absent: one call per case) and ``history_every`` (the `inputs` path of
-    `history.every`, None when absent)."""
+    None when absent: one call per case), ``history_every`` (the `inputs` path of
+    `history.every`, None when absent) and ``distribute`` (the `drive.distribute` axes,
+    `parse_distribute`; None when the block is absent or malformed — gate (n) reports both)."""
     init: DriveEntry | None
     step: tuple[DriveEntry, ...]
     list_form: bool
     loop: dict[str, Binding] | None
     history_every: str | None
+    distribute: tuple[DistributeAxis, ...] | None = None
 
     def entries(self) -> list[DriveEntry]:
         return ([self.init] if self.init is not None else []) + list(self.step)
@@ -2808,9 +2902,9 @@ def _parse_drive(ir: dict[str, Any]) -> tuple[DriveBlock | None, list[str]]:
     v: list[str] = []
     drive = ir.get("drive")
     if not isinstance(drive, dict):
-        return None, ["drive must be a mapping {init?, step, loop?, history?}"]
-    for key in sorted(set(drive) - {"init", "step", "loop", "history"}, key=str):
-        v.append(f"drive.{key} is not a key of drive (init, step, loop, history)")
+        return None, ["drive must be a mapping {init?, step, loop?, history?, distribute}"]
+    for key in sorted(set(drive) - {"init", "step", "loop", "history", "distribute"}, key=str):
+        v.append(f"drive.{key} is not a key of drive (init, step, loop, history, distribute)")
     published, sigs = _published_operations(ir)
     init = None
     if drive.get("init") is not None:
@@ -2875,8 +2969,11 @@ def _parse_drive(ir: dict[str, Any]) -> tuple[DriveBlock | None, list[str]]:
             every = binding.ref
     if v:
         return None, v
+    # `distribute`'s own findings are gate (n)'s, APPENDED (`_distribute_violations`): a
+    # structural refusal here would stop every other gate and mask its subject
+    axes, _findings = parse_distribute(drive.get("distribute"))
     return DriveBlock(init=init, step=tuple(step), list_form=list_form, loop=loop,
-                      history_every=every), []
+                      history_every=every, distribute=axes), []
 
 
 def drive_block(ir: dict[str, Any]) -> DriveBlock | None:
@@ -3946,6 +4043,8 @@ def _binding_violations(ir: dict[str, Any], model: DriveModel,
                     v.append(f"{loc}: time binds a rank-0 real dummy")
                 if binding.kind == STEP_CAPTURE and not (rank == 0 and dtype == "integer"):
                     v.append(f"{loc}: step binds a rank-0 integer dummy")
+                if binding.kind == _BLOCK_ROOT and not (rank == 0 and dtype == "integer"):
+                    v.append(f"{loc}: {binding.text()} binds a rank-0 integer dummy")
                 if binding.kind == "literal":
                     lit = binding.ref
                     ok = (isinstance(lit, bool) if dtype == "logical" else
@@ -4017,6 +4116,282 @@ def _source_key_violations(ir: dict[str, Any]) -> list[str]:
             "retired (D6): what a variable is follows from drive"
             for idx, entry in enumerate(variables if isinstance(variables, list) else [])
             if isinstance(entry, dict) and "source" in entry]
+
+
+def _dims_list(dummy: dict[str, Any]) -> list[str] | None:
+    """A dummy's `dims` tokens, None when it has none (or a `:` one)."""
+    dims = dummy.get("dims")
+    if isinstance(dims, list) and dims and all(isinstance(t, str) and t.strip() != ":"
+                                               for t in dims):
+        return [t.strip() for t in dims]
+    return None
+
+
+def _prototype_ins(ir: dict[str, Any], dummy: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The `in` dummies of the `public_api.interfaces` prototype a procedure dummy names (gate
+    (b) resolves the same prototype, `_procedure_violations`); empty when it names none."""
+    spec = dummy.get("spec") if isinstance(dummy.get("spec"), dict) else {}
+    api = ir.get("public_api") if isinstance(ir.get("public_api"), dict) else {}
+    for item in (api.get("interfaces") if isinstance(api.get("interfaces"), list) else []):
+        if isinstance(item, dict) and item.get("name") == spec.get("interface"):
+            args = (item.get("signature") or {}).get("args") \
+                if isinstance(item.get("signature"), dict) else None
+            return {a["name"]: a for a in (args if isinstance(args, list) else [])
+                    if isinstance(a, dict) and isinstance(a.get("name"), str)
+                    and a.get("intent") == "in"}
+    return {}
+
+
+def _layout_text(layout: tuple[Any, ...], axes: tuple[DistributeAxis, ...]) -> str:
+    return "[" + ", ".join("null" if d is None else f"{axes[d[0]].name}:{d[1]}"
+                           for d in layout) + "]"
+
+
+def _distribute_violations(ir: dict[str, Any], model: DriveModel,
+                           schema_vars: dict[str, list[str]], cases: dict[str, dict[str, Any]],
+                           evaluated: dict[str, CaseValues]) -> list[str]:
+    """Gate (n) (issue #610, §3.1): `drive.distribute` against the IR's own entries and cases.
+
+    `distribute` is required on a `component` / `problem` (`axes: []` on a node with no spatial
+    axis); every `block.<axis>.first` names a declared axis. On a node with axes: each axis input
+    is an integer of every case and bound to a rank-0 integer dummy of an entry that runs it (a
+    case no step entry runs is skipped); every rank >= 1 snapshot variable and bound host array
+    derives its layout (`runner_ir.array_layouts`) — from its binding dummy's `dims` (an array
+    dummy without `dims` is refused), a `record` state from the `dims` of the recorded `in` dummy
+    of the `public_api.interfaces` prototype (never from a state of that name), its own
+    `shape_expr` deriving the same layout as the one check; a `ghost` layout only on an axis
+    that declares `ghost`, never on an `out` / `inout` dummy (B2) nor a recorded one; no rank-0
+    real / integer `out` of a one-call `step` (B8); and per case (`evaluated`: gate (c)'s
+    values) each derived extent is `cells`, `cells + 1` or `cells + 2*ghost` by layout — a case
+    whose `extended` is not `cells + 2*ghost` is replicated by the driver unless only `pass` tests
+    target it, where it is refused. Reads no document and no target profile: the agreement with
+    the `tests.md` line is gate (o)'s (`validate_pipeline_semantics`)."""
+    from tools.runner_ir import array_layouts   # the one derivation, shared with the renderer
+
+    block = model.block
+    raw = (ir.get("drive") or {}).get("distribute")
+    if raw is None:
+        return ["(n) drive.distribute is required on a component / problem node: {axes: "
+                "[...]} transcribes the tests.md `distribute:` line (`axes: []` for "
+                "`distribute: none`)"]
+    axes, findings = parse_distribute(raw)
+    if axes is None:
+        return [f"(n) {msg}" for msg in findings]
+    v: list[str] = []
+    names = [a.name for a in axes]
+    entries = block.entries()
+    for entry in entries:
+        for dname, binding in entry.arguments.items():
+            if binding.kind == _BLOCK_ROOT and binding.ref not in names:
+                v.append(f"(n) {entry.loc}.arguments.{dname}: {binding.text()} names no axis of "
+                         f"drive.distribute.axes ({names})")
+    if not axes:
+        return v
+
+    # the role of each rank-0 dummy name, over every entry (a dims token names it by name)
+    ghosts = {a.ghost for a in axes if a.ghost is not None}
+    roles: dict[str, set[Any]] = {}
+    for entry in entries:
+        for dummy in entry.dummies:
+            binding = entry.arguments.get(dummy["name"])
+            if binding is None or _dummy_rank(dummy) != 0:
+                continue
+            role: Any = None
+            if binding.kind == _DERIVED:
+                role = "derived"
+            elif binding.kind == "inputs":
+                for k, axis in enumerate(axes):
+                    if binding.ref == axis.cells:
+                        role = ("cells", k)
+                    elif binding.ref == axis.extended:
+                        role = ("extended", k)
+                if role is None and binding.ref in ghosts:
+                    role = "ghost"
+            roles.setdefault(dummy["name"], set()).add(role)
+    for name, found in sorted(roles.items()):
+        if len(found) > 1 and any(r is not None and r != "derived" for r in found):
+            v.append(f"(n) the rank-0 dummy {name!r} is bound to an axis input in one entry and "
+                     f"to another value in another ({sorted(map(str, found))}): a dims token "
+                     "names a dummy by name, so every entry binds it alike")
+
+    def role_of_name(name: str) -> Any:
+        found = roles.get(name, {None})
+        return next(iter(found)) if len(found) == 1 else "derived"
+
+    # every axis input an integer of every case, bound to a rank-0 integer dummy that runs it
+    not_int: dict[str, list[str]] = {}
+    unbound: dict[str, list[str]] = {}
+    for cid, case in sorted(cases.items()):
+        running = [e for e in block.entries_for(cid) if e.role == "step"]
+        if not running:
+            continue   # run by no entry: (f') refuses it; it produces no output
+        running = block.entries_for(cid)
+        for axis in axes:
+            for path in (axis.cells, axis.ghost, axis.extended):
+                if path is None:
+                    continue
+                found_, value = _lookup_input(case.get("inputs"), path)
+                if not found_ or isinstance(value, bool) or not _is_number(value) \
+                        or not float(value).is_integer():
+                    not_int.setdefault(path, []).append(cid)
+                if not any(b.kind == "inputs" and b.ref == path
+                           and _dummy_rank(d) == 0 and _dummy_type(d) == "integer"
+                           for e in running for d in e.dummies
+                           if (b := e.arguments.get(d["name"])) is not None):
+                    unbound.setdefault(path, []).append(cid)
+    for path, cids in sorted(not_int.items()):
+        v.append(f"(n) drive.distribute names inputs.{path}, which is not an integer in case(s) "
+                 f"{cids}")
+    for path, cids in sorted(unbound.items()):
+        v.append(f"(n) drive.distribute names inputs.{path}, which no rank-0 integer dummy of an "
+                 f"entry running case(s) {cids} binds: the case file holds bound inputs only")
+
+    # the tokens each variable's layout derives from
+    tokens: dict[str, list[str]] = {}
+    alternates: dict[str, list[tuple[str, list[str]]]] = {}
+    writers: dict[str, list[str]] = {}
+    skipped: set[str] = set()
+    recorded: dict[str, tuple[str, dict[str, Any]]] = {}
+    for entry in entries:
+        for dummy in entry.dummies:
+            binding = entry.arguments.get(dummy["name"])
+            if binding is None:
+                continue
+            if binding.kind == "procedure":
+                ins = _prototype_ins(ir, dummy)
+                for dname, refs in binding.record:
+                    if dname in ins:
+                        for ref in refs:
+                            recorded[ref] = (dname, ins[dname])
+                continue
+            if _dummy_rank(dummy) == 0 or binding.kind not in (_STATE_ROOT, _DERIVED, "inputs"):
+                continue
+            key = binding.ref if binding.kind == _STATE_ROOT else binding.text()
+            dims = _dims_list(dummy)
+            if dims is None:
+                v.append(f"(n) {entry.loc}.arguments.{dummy['name']} ({binding.text()}): an "
+                         "array dummy without dims on a node with axes (its dims derive the "
+                         "layout the driver slices it by)")
+                skipped.add(key)
+                continue
+            if dummy.get("intent") in ("out", "inout"):
+                writers.setdefault(key, []).append(f"{entry.loc}.arguments.{dummy['name']}")
+            if key not in tokens:
+                tokens[key] = dims
+            elif dims != tokens[key]:
+                alternates.setdefault(key, []).append(
+                    (f"{key} ({entry.loc}.arguments.{dummy['name']})", dims))
+    record_checks: list[tuple[str, str, str]] = []
+    for var, dims in schema_vars.items():
+        if not dims or var in tokens or var in skipped:
+            continue
+        if var in recorded and _dummy_rank(recorded[var][1]) >= 1:
+            dname, arg = recorded[var]
+            proto_dims = _dims_list(arg)
+            if proto_dims is None:
+                v.append(f"(n) state.{var}: the prototype in dummy {dname!r} it records has no "
+                         "dims on a node with axes (a record state takes that dummy's layout)")
+                continue
+            tokens[var] = proto_dims
+            own = f"{var} (shape_expr)"
+            tokens[own] = list(dims)
+            record_checks.append((var, own, dname))
+        else:
+            tokens[var] = list(dims)
+    for key, alts in alternates.items():
+        for alt_key, alt_dims in alts:
+            tokens[alt_key] = alt_dims
+    layouts, refusals = array_layouts(tokens, role_of_name, len(axes))
+    v.extend(f"(n) {msg}" for msg in refusals)
+    for key, alts in alternates.items():
+        for alt_key, _ in alts:
+            if key in layouts and alt_key in layouts and layouts[alt_key] != layouts[key]:
+                v.append(f"(n) {alt_key}: its dims derive {_layout_text(layouts[alt_key], axes)}"
+                         f", another dummy bound to it {_layout_text(layouts[key], axes)}")
+    for var, own, dname in record_checks:
+        if var in layouts and own in layouts and layouts[var] != layouts[own]:
+            v.append(f"(n) state.{var}: its shape_expr derives {_layout_text(layouts[own], axes)}"
+                     f", and the prototype in dummy {dname!r} it records "
+                     f"{_layout_text(layouts[var], axes)}: a record state takes the layout of "
+                     "the dummy it records, and its shape_expr tokens agree with it")
+        if var in layouts and any(d is not None and d[1] == "ghost" for d in layouts[var]):
+            v.append(f"(n) state.{var}: it records {dname!r}, whose layout "
+                     f"{_layout_text(layouts[var], axes)} is ghost-extended: only the cell and "
+                     "face layouts are gathered, so a record of a ghost layout is refused")
+    for key, layout in sorted(layouts.items()):
+        for d in layout:
+            if d is not None and d[1] == "ghost" and axes[d[0]].ghost is None:
+                v.append(f"(n) {key}: a ghost-extended layout along axis {axes[d[0]].name!r}, "
+                         "which declares no ghost input")
+        if key in writers and any(d is not None and d[1] == "ghost" for d in layout):
+            v.append(f"(n) {key}: written by {writers[key]} with the ghost-extended layout "
+                     f"{_layout_text(layout, axes)}: an out / inout array with a ghost margin is "
+                     "refused on a node with axes (the image the kernel writes into its block's "
+                     "margin is not the global one); a component that writes the periodic "
+                     "image declares `distribute: none`")
+    for var in sorted(model.one_call_scalars):
+        v.append(f"(n) state.{var}: a rank-0 real / integer out of a one-call step on a node "
+                 "with axes is refused (a block-local scalar has no global value the driver "
+                 "can gather)")
+
+    # per case: each derived extent, and the extended identity
+    outcomes: dict[str, set[str]] = {}
+    for test in _test_entries(ir):
+        for cid in (test.get("target_cases") or []):
+            outcomes.setdefault(str(cid).strip(), set()).add(_expected_outcome(test))
+    main_keys = {k for k in layouts if " (" not in k}
+    for cid, cv in sorted(evaluated.items()):
+        if not any(e.role == "step" for e in block.entries_for(cid)):
+            continue
+        inputs = cases[cid].get("inputs")
+        values: dict[str | None, int] = {}
+        for axis in axes:
+            for path in (axis.cells, axis.ghost, axis.extended):
+                if path is not None:
+                    found_, value = _lookup_input(inputs, path)
+                    if found_ and _is_number(value) and not isinstance(value, bool) \
+                            and float(value).is_integer():
+                        values[path] = int(value)
+        if any(p not in values for a in axes for p in (a.cells, a.ghost, a.extended)
+               if p is not None):
+            continue   # reported above
+        inconsistent = [a for a in axes if a.extended is not None
+                        and values[a.extended] != values[a.cells] + 2 * values[a.ghost]]
+        if inconsistent:
+            if outcomes.get(cid, set()) <= {"pass"}:
+                for a in inconsistent:
+                    v.append(f"(n) case {cid!r}: inputs.{a.extended} = {values[a.extended]} is "
+                             f"not inputs.{a.cells} + 2*inputs.{a.ghost} = "
+                             f"{values[a.cells] + 2 * values[a.ghost]} along axis {a.name!r}, "
+                             "and only `pass` tests target the case (the driver replicates an "
+                             "inconsistent case with its raw inputs: an `xfail` test's input)")
+            continue
+        for key in sorted(main_keys):
+            if key.startswith(f"{_INPUTS_ROOT}."):
+                found_, value = _lookup_input(inputs, key[len(_INPUTS_ROOT) + 1:])
+                shape = tuple(np.shape(value)) if found_ else None
+            elif key.startswith(f"{_DERIVED}."):
+                value = cv.derived.get(key[len(_DERIVED) + 1:])
+                shape = None if value is None else tuple(np.shape(value))
+            else:
+                shape = cv.shapes.get(key)
+            if shape is None or len(shape) != len(layouts[key]):
+                continue
+            for i, d in enumerate(layouts[key]):
+                if d is None:
+                    continue
+                axis = axes[d[0]]
+                cells = values[axis.cells]
+                want = {"cell": cells, "face": cells + 1}.get(d[1])
+                if d[1] == "ghost":
+                    if axis.ghost is None:
+                        continue
+                    want = cells + 2 * values[axis.ghost]
+                if shape[i] != want:
+                    v.append(f"(n) case {cid!r}: {key} dimension {i + 1} derives the {d[1]} "
+                             f"layout of axis {axis.name!r}, extent {want}, and evaluates to "
+                             f"{shape[i]}")
+    return v
 
 
 def drive_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
@@ -4196,11 +4571,13 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
             before.add(str(name))
 
     # (c) the per-case shapes (only once the bindings and names hold: no cascade)
+    evaluated: dict[str, CaseValues] = {}
     if not v:
         subjects = _xfail_only_cases(ir)
         for cid, case in sorted(cases.items()):
             try:
-                _evaluate_case(model, schema, case, refusal_subject=cid in subjects)
+                evaluated[cid] = _evaluate_case(model, schema, case,
+                                                refusal_subject=cid in subjects)
             except PrimaryEvidenceError as exc:
                 v.append(f"(c) case {cid!r}: {exc}")
 
@@ -4291,6 +4668,10 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
                              f"all its target cases under `quantity: {state}`, the result's own "
                              "name its tests.md `quantities` line lists (the call's result, the "
                              "zero-step closure of a one-call node)")
+
+    # (n) the spatial axes and the layouts they derive (issue #610), appended: never a return
+    # that masks another gate's subject
+    v.extend(_distribute_violations(ir, model, schema_vars, cases, evaluated))
     return v
 
 def _read_ir(path: Path) -> dict[str, Any]:

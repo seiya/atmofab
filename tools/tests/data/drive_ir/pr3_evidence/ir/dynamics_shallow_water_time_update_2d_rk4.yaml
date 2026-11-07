@@ -1158,6 +1158,10 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes:
+    - {name: x, cells: inputs.grid.nx}
+    - {name: y, cells: inputs.grid.ny}
   step:
     operation: dynamics_shallow_water_time_update_2d_rk4__advance
     result: guard_pass

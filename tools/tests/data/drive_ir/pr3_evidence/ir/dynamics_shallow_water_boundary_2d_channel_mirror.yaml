@@ -1798,6 +1798,8 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes: []
   step:
     operation: dynamics_shallow_water_boundary_2d_channel_mirror__apply
     result: grid_valid

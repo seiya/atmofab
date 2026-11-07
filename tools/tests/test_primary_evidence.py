@@ -2624,7 +2624,8 @@ def _toy() -> dict:
                                          "t": "time", "h": "state.h", "ok": "state.ok"}},
                   "loop": {"n_step": "derived.n_step", "dt": "derived.dt",
                            "t_start": "inputs.time.t_start", "t_end": "inputs.time.t_end"},
-                  "history": {"every": "inputs.history.every"}},
+                  "history": {"every": "inputs.history.every"},
+                  "distribute": {"axes": []}},
         "case": {"test_case_set": [_toy_case("a", 4), _toy_case("b", 8)]},
         "io_contract": {
             "raw_requirements": {"required_evidence": _evidence(
@@ -2660,7 +2661,8 @@ def _toyi() -> dict:
                                "h": "state.h", "ok": "state.ok"}},
         "loop": {"n_step": "state.n_plan", "dt": "state.dt", "t_start": "inputs.time.t_start",
                  "t_end": "inputs.time.t_end"},
-        "history": {"every": "inputs.history.every"}}
+        "history": {"every": "inputs.history.every"},
+        "distribute": {"axes": []}}
     for case in ir["case"]["test_case_set"]:
         del case["initial_state"], case["derived"]
     io = ir["io_contract"]
@@ -2696,7 +2698,8 @@ def _rus() -> dict:
         "drive": {"step": {"operation": "rus__flux", "result": "ok",
                            "arguments": {"nx": "inputs.grid.nx", "q": "state.q",
                                          "F": "state.F", "a_x": "state.a_x",
-                                         "ok": "state.ok"}}},
+                                         "ok": "state.ok"}},
+                  "distribute": {"axes": []}},
         "case": {"test_case_set": [{"case_id": "a", "inputs": {"grid": {"nx": 4}},
                                     "initial_state": {"q": "x", "F": -999.0, "a_x": -999.0}}]},
         "io_contract": {
@@ -4976,7 +4979,7 @@ def _list_form_ir(spec_id: str, rel: str, partition: dict[str, list[str]],
     return {
         "meta": {"spec_id": spec_id, "spec_kind": "component"},
         "public_api": _api({op: procs[op] for op in (e["operation"] for e in step)}),
-        "drive": {"step": step},
+        "drive": {"step": step, "distribute": {"axes": []}},
         "case": {"test_case_set": cases},
         "io_contract": {"raw_requirements": {"required_evidence": [
             {"artifact": "state_snapshots", "required": True, "schema": schema}]},

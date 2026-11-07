@@ -4403,6 +4403,8 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes: []
   step:
   - operation: microphysics_saturation_liquid_1d_column__dens2qsat_liq
     result: guard_pass

@@ -28,6 +28,8 @@ The symmetry pairs (`docs/TESTS.md` §Symmetry pairs) are the **axis exchange** 
 ## 3. Execution-control rules
 `N/A`: this `component` evaluates a pointwise source at a supplied state and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
 
+distribute: x = grid.nx, y = grid.ny
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 

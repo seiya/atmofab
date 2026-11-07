@@ -91,6 +91,8 @@ cases:
 ## 3. Execution-control rules
 `N/A`: each `operation` is a single evaluation of one column. `dt` is a case input of §2 and the suite performs one step. Stepping belongs to the `problem` that composes these `operation`s.
 
+distribute: none
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses the fixed cases of §2 and defines no `case` sweep.
 

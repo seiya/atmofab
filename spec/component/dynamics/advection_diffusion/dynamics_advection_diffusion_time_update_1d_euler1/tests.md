@@ -26,6 +26,8 @@ The suite carries no symmetry pair (`docs/TESTS.md` §Symmetry pairs). The updat
 ## 3. Execution-control rules
 `N/A`: this `component` advances a single step for a given `dt` and does not control the time loop or its cadence. Execution control belongs to the `problem` that composes this `operation`.
 
+distribute: x = nx
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 

@@ -3911,6 +3911,167 @@ def _history_line_violations(tests_path: Path, ir: dict) -> list[str]:
     return v
 
 
+#: The `distribute` line of a physics node's `tests.md` (issue #610, `docs/TESTS.md`
+#: §Description format): `distribute: <axis> = <cells path> [(ghost <path>, extended <path>,
+#: min_block <N>)], <axis> = ...`, or `distribute: none`. Each path is the case input's path
+#: without `inputs.`, as the `history:` line spells its input. A leading `- ` / `* ` bullet and
+#: backticks are admitted like the other definition lines; the word is case-sensitive.
+TEST_DISTRIBUTE_LINE = re.compile(r"^[-*]?\s*`?distribute`?\s*:\s*(.*)$")
+_DISTRIBUTE_PATH = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"
+_DISTRIBUTE_AXIS = re.compile(
+    rf"^([A-Za-z_]\w*)\s*=\s*({_DISTRIBUTE_PATH})\s*(?:\(([^()]*)\))?$")
+_DISTRIBUTE_MEMBER = re.compile(
+    rf"^(?:(ghost|extended)\s+({_DISTRIBUTE_PATH})|(min_block)\s+(\d+))$")
+
+
+def _split_outside_parentheses(text: str) -> list[str] | None:
+    """``text`` split on the commas outside parentheses; None when the parentheses do not
+    balance."""
+    parts, depth, cur = [], 0, []
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if depth != 0:
+        return None
+    parts.append("".join(cur))
+    return [p.strip() for p in parts]
+
+
+def _parse_distribute_line(body: str) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """The axes a `distribute:` line states, each ``{name, cells, ghost, extended,
+    min_block}`` (absent members None, `min_block` 1), ``[]`` for `none`; or ``(None, why)``."""
+    body = body.strip()
+    if body.endswith("."):
+        body = body[:-1].strip()
+    if body == "none":
+        return [], None
+    items = _split_outside_parentheses(body)
+    if items is None or not body:
+        return None, "its parentheses do not balance" if body else "it states nothing"
+    axes: list[dict[str, Any]] = []
+    for item in items:
+        m = _DISTRIBUTE_AXIS.match(item)
+        if m is None:
+            return None, f"{item!r} is not `<axis> = <cells path> [(<members>)]`"
+        axis = {"name": m.group(1), "cells": m.group(2), "ghost": None, "extended": None,
+                "min_block": 1}
+        seen: set[str] = set()
+        members = [] if m.group(3) is None else [p.strip() for p in m.group(3).split(",")]
+        for member in members:
+            mm = _DISTRIBUTE_MEMBER.match(member)
+            if mm is None:
+                return None, (f"axis {axis['name']!r}: {member!r} is not `ghost <path>`, "
+                              "`extended <path>` or `min_block <N>`")
+            key = mm.group(1) or mm.group(3)
+            if key in seen:
+                return None, f"axis {axis['name']!r} names {key} twice"
+            seen.add(key)
+            if key == "min_block":
+                if int(mm.group(4)) < 1:
+                    return None, f"axis {axis['name']!r}: min_block is a positive integer"
+                axis["min_block"] = int(mm.group(4))
+            else:
+                axis[key] = mm.group(2)
+        if axis["extended"] is not None and axis["ghost"] is None:
+            return None, f"axis {axis['name']!r}: extended requires ghost"
+        for key in ("cells", "ghost", "extended"):
+            if axis[key] is not None and (axis[key] == "inputs"
+                                          or axis[key].startswith("inputs.")):
+                return None, (f"axis {axis['name']!r}: the {key} path {axis[key]!r} carries "
+                              "`inputs.`; the line spells the path without it, as `history:` "
+                              "does")
+        if any(a["name"] == axis["name"] for a in axes):
+            return None, f"axis {axis['name']!r} is stated twice"
+        axes.append(axis)
+    return axes, None
+
+
+def _distribute_line_violations(tests_path: Path | None, ir: dict) -> list[str]:
+    """Gate (o) (issue #610, B14): the `tests.md` `distribute:` line against
+    `drive.distribute`. The line is the operator's statement of which case inputs count cells
+    along which grid dimension; the IR transcribes it member for member. A node whose IR carries
+    `drive` (a `component` / `problem`) carries exactly ONE line anywhere in the file; an IR with
+    no `drive` (an `infrastructure` node) carries none. The comparison is element-wise: the axes
+    in order, each with its `cells` / `ghost` / `extended` paths (present on both sides or
+    neither, compared as STRINGS against the IR's path with `inputs.` stripped — nothing matches
+    by suffix or by name) and its `min_block` (1 when absent on either side); `none` against
+    `axes: []`. A malformed or absent `drive.distribute` is `drive_violations`' (gate (n)) to
+    report, and this gate then compares nothing; a ``tests_path`` of None is not this gate's
+    finding (`_validate_ir_source_refs_tests` reports a missing ref). Reads no target profile and
+    evaluates no case."""
+    from tools.primary_evidence import PrimaryEvidenceError, drive_block
+
+    if tests_path is None:
+        return []
+    try:
+        text = tests_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    try:
+        block = drive_block(ir)
+    except PrimaryEvidenceError:
+        return []
+    lines = [(n, m.group(1).replace("`", "").strip())
+             for n, raw in enumerate(text.splitlines(), start=1)
+             if (m := TEST_DISTRIBUTE_LINE.match(raw.strip()))]
+    if block is None:
+        return [f"(o) tests.md line {n}: a `distribute:` line is refused on a node whose IR "
+                "carries no drive (an infrastructure node runs its own cases)" for n, _ in lines]
+    if len(lines) != 1:
+        where = f" (lines {[n for n, _ in lines]})" if lines else ""
+        return [f"(o) tests.md carries {len(lines)} `distribute:` lines{where}; a component / "
+                "problem node carries exactly one (`distribute: <axis> = <cells path> [(ghost "
+                "<path>, extended <path>, min_block <N>)], ...` or `distribute: none`, "
+                "docs/TESTS.md): the line is the operator's, in the spec's tests.md"]
+    lineno, body = lines[0]
+    stated, why = _parse_distribute_line(body)
+    if stated is None:
+        return [f"(o) tests.md line {lineno}: `distribute:` {body!r} does not parse: {why} "
+                "(docs/TESTS.md §Description format; the line is the operator's to correct)"]
+    if block.distribute is None:
+        return []   # absent or malformed: gate (n)'s finding
+    ir_axes = [{"name": a.name, "cells": a.cells, "ghost": a.ghost, "extended": a.extended,
+                "min_block": a.min_block} for a in block.distribute]
+    if stated == ir_axes:
+        return []
+
+    def spell(axes: list[dict[str, Any]]) -> str:
+        if not axes:
+            return "none"
+        out = []
+        for a in axes:
+            members = [f"{k} {a[k]}" for k in ("ghost", "extended") if a[k] is not None]
+            members += [f"min_block {a['min_block']}"] if a["min_block"] != 1 else []
+            out.append(f"{a['name']} = {a['cells']}" + (f" ({', '.join(members)})"
+                                                         if members else ""))
+        return ", ".join(out)
+
+    diffs: list[str] = []
+    if [a["name"] for a in stated] != [a["name"] for a in ir_axes]:
+        diffs.append(f"the axes {[a['name'] for a in ir_axes]} are not the line's "
+                     f"{[a['name'] for a in stated]} in its order")
+    else:
+        for a, b in zip(stated, ir_axes):
+            for key in ("cells", "ghost", "extended", "min_block"):
+                if a[key] != b[key]:
+                    ir_side = (b[key] if key == "min_block" or b[key] is None
+                               else f"inputs.{b[key]}")
+                    diffs.append(f"axis {a['name']!r} {key}: the line states {a[key]!r}, "
+                                 f"drive.distribute {ir_side!r}")
+    return [f"(o) tests.md line {lineno}: drive.distribute ({spell(ir_axes)}) is not the "
+            f"`distribute:` line ({spell(stated)}): " + "; ".join(diffs) + " — the IR "
+            "transcribes the line, whose paths ARE the case inputs' paths without `inputs.`"]
+
+
 # Matches a top-level numbered controlled_spec heading `## <n>. Title`. The `(?:\s|$)`
 # after the dot ensures a decimal subsection like `## 5.1 Foo` is NOT read as section 5.
 _CONTROLLED_SPEC_SECTION_HEADING = re.compile(r"^##\s+(\d+)\.(?:\s|$)")
@@ -10387,6 +10548,9 @@ def _validate_tests_and_predicates(
             "(docs/TESTS.md)")
     # Gate (m): the `history:` line against `drive`.
     for msg in _history_line_violations(tests_path, ir):
+        violations.append(f"{derived_path}:{msg}")
+    # Gate (o): the `distribute:` line against `drive.distribute` (issue #610).
+    for msg in _distribute_line_violations(tests_path, ir):
         violations.append(f"{derived_path}:{msg}")
 
     # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is

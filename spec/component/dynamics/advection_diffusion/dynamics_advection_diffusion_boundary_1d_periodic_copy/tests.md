@@ -23,6 +23,8 @@ The mapping admits three transformations (`docs/TESTS.md` §Symmetry pairs): the
 ## 3. Execution-control rules
 `N/A`: this `component` applies a boundary mapping to a provided field and defines no time-stepping or iteration. Execution control belongs to the `problem` that composes this `operation`.
 
+distribute: none
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses fixed inputs and defines no `case` sweep. Case expansion is defined at the `problem` level.
 

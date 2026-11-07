@@ -12,8 +12,7 @@ case:
   test_case_set:
   - case_id: l0_zero_tendency
     inputs:
-      grid:
-        nx: 4
+      nx: 4
       time:
         dt: 0.1
       initial:
@@ -35,8 +34,7 @@ case:
       u_np1: -999.0
   - case_id: l0_single_step_formula
     inputs:
-      grid:
-        nx: 4
+      nx: 4
       time:
         dt: 0.1
       initial:
@@ -64,8 +62,7 @@ case:
       u_np1: -999.0
   - case_id: l0_invalid_dt
     inputs:
-      grid:
-        nx: 4
+      nx: 4
       time:
         dt: -0.1
       initial:
@@ -87,20 +84,18 @@ case:
       u_np1: -999.0
   - case_id: l0_large_step
     inputs:
-      grid:
-        nx: 64
+      nx: 64
       time:
         dt: 0.0061
       test_profile_id: dynamics_advection_diffusion_time_update_1d_euler1_l0
       test_profile_version: 0.6.0
     initial_state:
-      u_n: 1 + 0.5 * sin(2 * pi * xc / inputs.grid.nx)
-      L_flux: cos(2 * pi * xc / inputs.grid.nx)
+      u_n: 1 + 0.5 * sin(2 * pi * xc / inputs.nx)
+      L_flux: cos(2 * pi * xc / inputs.nx)
       u_np1: -999.0
   - case_id: l0_invalid_dt_zero
     inputs:
-      grid:
-        nx: 4
+      nx: 4
       time:
         dt: 0.0
       initial:
@@ -151,7 +146,7 @@ algorithm:
     outputs:
     - u_np1
     description: 'Runs only when guard_pass is true. One forward Euler step, for every
-      interior cell i = 0 .. nx-1 (nx = inputs.grid.nx, the extent of u_n, L_flux
+      interior cell i = 0 .. nx-1 (nx = inputs.nx, the extent of u_n, L_flux
       and u_np1; no ghost cells): u_np1(i) = u_n(i) + dt * L_flux(i), where L_flux(i)
       is the caller-supplied tendency L_i = -(F_{i+1/2} - F_{i-1/2}) / dx taken as
       a FIXED field (element i+1 of L_flux in 1-based numbering, i.e. the same cell
@@ -176,7 +171,7 @@ algorithm:
   temporaries: []
   derived_field_rules:
   - name: nx
-    rule: number of interior cells, the case input inputs.grid.nx; the first published
+    rule: number of interior cells, the case input inputs.nx; the first published
       argument, it fixes the extent [nx] of u_n, L_flux and u_np1.
   - name: dt
     rule: time step, the case input inputs.time.dt, passed as the dt argument; it
@@ -252,8 +247,8 @@ io_contract:
         time_shape_expr: scalar
         coordinates:
         - axis: 0
-          count: inputs.grid.nx
-          length: inputs.grid.nx
+          count: inputs.nx
+          length: inputs.nx
           name: xc
           placement: cell_center
   semantic_dependency:
@@ -448,11 +443,14 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes:
+    - {name: x, cells: inputs.nx}
   step:
     operation: dynamics_advection_diffusion_time_update_1d_euler1__advance
     result: guard_pass
     arguments:
-      nx: inputs.grid.nx
+      nx: inputs.nx
       u_n: state.u_n
       L_flux: state.L_flux
       dt: inputs.time.dt

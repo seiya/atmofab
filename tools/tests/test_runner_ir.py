@@ -45,7 +45,7 @@ class BindingTest(unittest.TestCase):
 
 class ReadersTest(unittest.TestCase):
     def test_the_block(self) -> None:
-        self.assertEqual(set(r.drive_block(_toy())), {"step", "loop", "history"})
+        self.assertEqual(set(r.drive_block(_toy())), {"step", "loop", "history", "distribute"})
         with self.assertRaisesRegex(RenderError, "IR has no drive block"):
             r.drive_block({})
         ir = _toy()

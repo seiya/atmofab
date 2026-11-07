@@ -81,6 +81,8 @@ cases:
 ## 3. Execution-control rules
 `N/A`: each `operation` is a single evaluation of one column and defines no time-stepping. The iteration of `__saturation_adjustment` is part of its definition (Controlled Spec §3), and the suite controls no part of it. The driver calls the case's `operation` once, through a list of two `drive.step` entries whose `cases` are the block's `operation` values, each with `result: guard_pass`. On each entry `ka`, `ks`, `ke` bind `inputs.grid.<name>`, the constants bind `inputs.constants.<name>`, every array binds `state.<its own name>`, and each logical output binds `state.<its own name>`.
 
+distribute: none
+
 ## 4. Case-expansion rules
 `N/A`: the `L0` suite uses the fixed cases of §2 and defines no `case` sweep.
 

@@ -751,6 +751,10 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes:
+    - {name: x, cells: inputs.grid.nx}
+    - {name: y, cells: inputs.grid.ny}
   step:
     operation: dynamics_shallow_water_source_2d_coriolis__apply
     result: guard_pass

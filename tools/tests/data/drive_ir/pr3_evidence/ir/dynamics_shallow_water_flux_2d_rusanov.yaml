@@ -1873,6 +1873,8 @@ public_api:
         spec:
           type: logical
 drive:
+  distribute:
+    axes: []
   step:
     operation: dynamics_shallow_water_flux_2d_rusanov__compute_flux
     result: guard_ok

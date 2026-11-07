@@ -210,8 +210,8 @@ def _state_ref(raw: Any) -> str:
 def drive_binding(value: Any) -> tuple[str, Any]:
     """One `arguments` value as ``(kind, ref)``: ``("inputs", "<dotted path>")``,
     ``("derived", name)``, ``("state", var)``, ``("time", None)``, ``("step", None)``,
-    ``("literal", value)`` or ``("procedure", ("<expression>", calls, record))``. RenderError
-    otherwise."""
+    ``("literal", value)``, ``("block", axis)`` (`block.<axis>.first`, issue #610 B5) or
+    ``("procedure", ("<expression>", calls, record))``. RenderError otherwise."""
     if isinstance(value, bool) or (isinstance(value, (int, float)) and value == value
                                    and value not in (float("inf"), float("-inf"))):
         return ("literal", value)
@@ -236,8 +236,11 @@ def drive_binding(value: Any) -> tuple[str, Any]:
             return ("inputs", rest)
         if root in ("derived", "state") and len(parts) == 1 and _ident(parts[0]):
             return (root, rest)
+        if root == "block" and len(parts) == 2 and _ident(parts[0]) and parts[1] == "first":
+            return ("block", parts[0])
     raise RenderError(f"drive binding {value!r} is not inputs.<path>, derived.<name>, "
-                      "state.<var>, time, step, a number, a bool or {procedure: <expression>}")
+                      "state.<var>, time, step, block.<axis>.first, a number, a bool or "
+                      "{procedure: <expression>}")
 
 
 def drive_block(ir: dict[str, Any]) -> dict[str, Any]:
@@ -245,10 +248,316 @@ def drive_block(ir: dict[str, Any]) -> dict[str, Any]:
     drive = dget(ir, "drive")
     if not isinstance(drive, dict):
         raise RenderError("IR has no drive block (the operation the driver calls per case)")
-    unknown = sorted(set(drive) - {"init", "step", "loop", "history"}, key=str)
+    unknown = sorted(set(drive) - {"init", "step", "loop", "history", "distribute"}, key=str)
     if unknown:
         raise RenderError(f"drive carries unknown key(s) {unknown}")
     return drive
+
+
+@dataclass(frozen=True)
+class Axis:
+    """One spatial axis of `drive.distribute.axes` (issue #610, §3.1), its paths without the
+    `inputs.` prefix; ``ghost`` / ``extended`` None when undeclared."""
+    name: str
+    cells: str
+    ghost: str | None
+    extended: str | None
+    min_block: int
+
+
+def drive_distribute_axes(ir: dict[str, Any]) -> tuple[Axis, ...]:
+    """The declared spatial axes in grid-dimension order (axis k is partitioned along grid
+    dimension k+1). An ABSENT `drive.distribute` reads as no axis: the requirement is the Compile
+    gate's (gate (n), `primary_evidence.drive_violations`), and every IR a render reaches has
+    passed it. RenderError on a malformed block."""
+    raw = drive_block(ir).get("distribute")
+    if raw is None:
+        return ()
+    items = raw.get("axes") if isinstance(raw, dict) and set(raw) == {"axes"} else None
+    if not isinstance(items, list):
+        raise RenderError("drive.distribute must be {axes: [...]}")
+    axes: list[Axis] = []
+    for i, item in enumerate(items):
+        where = f"drive.distribute.axes[{i}]"
+        if not isinstance(item, dict) or not set(item) <= {
+                "name", "cells", "ghost", "extended", "min_block"} \
+                or not (isinstance(item.get("name"), str) and _ident(item["name"])):
+            raise RenderError(f"{where} must be {{name, cells, ghost?, extended?, min_block?}}")
+        paths: dict[str, str | None] = {}
+        for key in ("cells", "ghost", "extended"):
+            if key not in item:
+                paths[key] = None
+                continue
+            kind, ref = drive_binding(item[key])
+            if kind != "inputs":
+                raise RenderError(f"{where}.{key} must be an inputs.<path>")
+            paths[key] = ref
+        min_block = item.get("min_block", 1)
+        if paths["cells"] is None or isinstance(min_block, bool) \
+                or not isinstance(min_block, int) or min_block < 1 \
+                or (paths["extended"] is not None and paths["ghost"] is None):
+            raise RenderError(f"{where}: cells is required, extended requires ghost, and "
+                              "min_block is a positive integer")
+        axes.append(Axis(item["name"], paths["cells"], paths["ghost"], paths["extended"],
+                         min_block))
+    if len({a.name for a in axes}) != len(axes) or len(axes) > 2:
+        raise RenderError("drive.distribute.axes: at most two axes, each named once")
+    return tuple(axes)
+
+
+# ------------------------------------------------------------------------------ distribution
+#
+# The two neutral functions over `drive.distribute` (issue #610): which spatial axis, in which
+# layout, each array dimension carries (`array_layouts`, B3) and whether a case is distributed
+# or replicated on a process grid (`distribute_plan`, B6). Both callers of `array_layouts` —
+# gate (n) (`primary_evidence`, over its own entry parser) and this module's
+# `distribute_layouts` (over the render readers) — hand it their own reading of the tokens; the
+# function decides and neither caller restates the rule. `test_runner_ir.DriveAgreementTest`
+# holds the two callers' answers equal.
+
+#: The layouts of one array dimension along a spatial axis: the owned cells (`cell`), the
+#: cells plus one shared face (`face`), the cells plus a ghost margin on each side (`ghost`).
+LAYOUTS = ("cell", "face", "ghost")
+
+
+def _linear_form(node: ast.AST) -> dict[str, int] | None:
+    """A token as ``{name: coefficient, "": constant}`` when it is linear in its names with
+    integer coefficients (literals, names, `+ - *` with a constant factor, unary minus), else
+    None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+            and not isinstance(node.value, bool):
+        return {"": node.value}
+    if isinstance(node, ast.Name):
+        return {node.id: 1}
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        inner = _linear_form(node.operand)
+        return None if inner is None else {k: -c for k, c in inner.items()}
+    if isinstance(node, ast.BinOp):
+        left, right = _linear_form(node.left), _linear_form(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, (ast.Add, ast.Sub)):
+            sign = 1 if isinstance(node.op, ast.Add) else -1
+            out = dict(left)
+            for k, c in right.items():
+                out[k] = out.get(k, 0) + sign * c
+            return {k: c for k, c in out.items() if c != 0 or k == ""}
+        if isinstance(node.op, ast.Mult):
+            for const, other in ((left, right), (right, left)):
+                if set(const) <= {""}:
+                    factor = const.get("", 0)
+                    return {k: c * factor for k, c in other.items()
+                            if c * factor != 0 or k == ""}
+    return None
+
+
+def array_layouts(tokens_by_variable: dict[str, Any],
+                  role_of_name: Callable[[str], Any], n_axes: int
+                  ) -> tuple[dict[str, tuple[tuple[int, str] | None, ...]], list[str]]:
+    """The layout of every array dimension (issue #610, B3), from its extent tokens.
+
+    ``tokens_by_variable``: variable -> its extent tokens (each caller supplies the tokens that
+    fix the variable's layout: a dummy-bound variable's binding dummy's `dims`, a `record`
+    state's recorded prototype dummy's `dims`, any other variable's own `shape_expr`).
+    ``role_of_name(name)``: ``("cells", k)`` / ``("extended", k)`` for a rank-0 dummy bound to
+    axis k's cell-count / ghost-extended input, ``"ghost"`` for one bound to a declared ghost
+    width (no axis index: one width may serve two axes), ``"derived"`` for one bound to a
+    `derived` value, None otherwise. ``n_axes``: the declared axis count.
+
+    A token is `(k, "cell")` when it is the cells name of axis k, `(k, "face")` for cells + 1,
+    `(k, "ghost")` for the extended name or cells + 2*<a ghost name>; it is not spatial (None)
+    when it names no axis input (a literal, `ncomp`) or only ghost names (a stencil width,
+    `2*ng + 1`); any other token naming an axis input, a `derived`-bound dummy, or a token
+    that does not parse, is refused, and so is an array naming one axis twice. Returns
+    ``(layouts, refusals)``: variable -> one entry per dimension (None where not spatial) for
+    each variable with no refusal, and the refusal strings. Raises nothing."""
+    layouts: dict[str, tuple[tuple[int, str] | None, ...]] = {}
+    refusals: list[str] = []
+    for var, tokens in tokens_by_variable.items():
+        dims: list[tuple[int, str] | None] = []
+        refused = False
+        for token in tokens:
+            text = str(token).strip()
+            try:
+                tree = ast.parse(text, mode="eval").body
+            except SyntaxError:
+                refusals.append(f"{var}: dims token {text!r} does not parse")
+                refused = True
+                continue
+            names = sorted({n.id for n in ast.walk(tree) if isinstance(n, ast.Name)})
+            roles = {n: role_of_name(n) for n in names}
+            axis_names = {n: r for n, r in roles.items() if isinstance(r, tuple)
+                          and r[0] in ("cells", "extended") and 0 <= r[1] < n_axes}
+            derived = [n for n, r in roles.items() if r == "derived"]
+            if derived:
+                refusals.append(f"{var}: dims token {text!r} names {derived}, bound to a derived "
+                                "value: an extent on a node with axes names a case input")
+                refused = True
+                continue
+            if not axis_names:
+                dims.append(None)   # a literal, `ncomp`, or a ghost width alone
+                continue
+            form = _linear_form(tree)
+            ghosts = [n for n, r in roles.items() if r == "ghost"]
+            found: tuple[int, str] | None = None
+            if form is not None and len(axis_names) == 1:
+                (name, (role, k)), = axis_names.items()
+                const = form.get("", 0)
+                rest = {n: c for n, c in form.items() if n not in ("", name)}
+                if form.get(name) == 1 and role == "extended" and not rest and const == 0:
+                    found = (k, "ghost")
+                elif form.get(name) == 1 and role == "cells" and not rest and const in (0, 1):
+                    found = (k, "cell" if const == 0 else "face")
+                elif form.get(name) == 1 and role == "cells" and const == 0 \
+                        and len(rest) == 1 and next(iter(rest)) in ghosts \
+                        and next(iter(rest.values())) == 2:
+                    found = (k, "ghost")
+            if found is None:
+                refusals.append(
+                    f"{var}: dims token {text!r} is not `cells`, `cells + 1`, `extended` or "
+                    "`cells + 2*ghost` of a declared axis, and names an axis input "
+                    f"({sorted(axis_names)})")
+                refused = True
+                continue
+            dims.append(found)
+        spatial = [d[0] for d in dims if d is not None]
+        if not refused and len(set(spatial)) != len(spatial):
+            refusals.append(f"{var}: the dims {list(map(str, tokens))} carry one spatial axis on "
+                            "two array dimensions")
+            refused = True
+        if not refused:
+            layouts[var] = tuple(dims)
+    return layouts, refusals
+
+
+def _case_input(case: Any, path: str) -> Any:
+    cur = dget(case, "inputs")
+    for seg in path.split("."):
+        cur = cur.get(seg) if isinstance(cur, dict) else None
+    return cur
+
+
+def _case_int(case: Any, path: str | None) -> int | None:
+    value = _case_input(case, path) if path is not None else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or not float(value).is_integer():
+        return None
+    return int(value)
+
+
+def distribute_plan(ir: dict[str, Any], case: dict[str, Any], grid: tuple[int, int]) -> bool:
+    """Whether ``case`` (an entry of `case.test_case_set`) is DISTRIBUTED on the process grid
+    ``grid`` = (p1, p2) — True — or replicated, every rank holding the whole case (issue #610,
+    B6; the one decider: the driver's rendered table, the bench row and the closing figure all
+    call it). Distributed iff some declared axis k has p_{k+1} > 1, along every declared axis the
+    cell count is an integer >= p_{k+1} * min_block_k, and the axis inputs are consistent
+    integers (extended == cells + 2*ghost where both are declared). `ghost` sets no threshold:
+    a component's margin is sliced from the global array. A node with no axis replicates every
+    case."""
+    axes = drive_distribute_axes(ir)
+    p = (int(grid[0]), int(grid[1]))
+    if not axes or not any(p[k] > 1 for k in range(len(axes))):
+        return False
+    for k, axis in enumerate(axes):
+        cells = _case_int(case, axis.cells)
+        if cells is None or cells < p[k] * axis.min_block:
+            return False
+        if axis.ghost is not None and _case_int(case, axis.ghost) is None:
+            return False
+        if axis.extended is not None:
+            extended, ghost = _case_int(case, axis.extended), _case_int(case, axis.ghost)
+            if extended is None or ghost is None or extended != cells + 2 * ghost:
+                return False
+    return True
+
+
+def _dims_tokens(dummy: dict[str, Any]) -> list[str] | None:
+    dims = dummy.get("dims")
+    if isinstance(dims, list) and dims and all(isinstance(t, str) and t.strip() != ":"
+                                               for t in dims):
+        return [t.strip() for t in dims]
+    return None
+
+
+def distribute_layouts(ir: dict[str, Any], variables: dict[str, str]
+                       ) -> tuple[dict[str, tuple[tuple[int, str] | None, ...]], list[str]]:
+    """`array_layouts` over the render readers (issue #610, B3; ``variables``: the snapshot
+    schema, name -> shape_expr): the key of a state is its name, of a bound host array
+    `derived.<name>` / `inputs.<path>`. A state an `in` / `out` / `inout` dummy binds takes that
+    dummy's `dims`; a `record` state of a procedure binding the `dims` of the recorded `in`
+    dummy of the `public_api.interfaces` prototype (a rank-0 recorded dummy: the state's own
+    `shape_expr`); any other state its `shape_expr`. Each name is resolved by name through the
+    entries' rank-0 dummies. ``({}, [])`` on a node with no axis; an array dummy without `dims`
+    on a node with axes is a refusal (`dims` is what derives its layout)."""
+    axes = drive_distribute_axes(ir)
+    if not axes:
+        return {}, []
+    init, steps = drive_init(ir), drive_steps(ir)
+    calls = ([init] if init is not None else []) + steps
+    ghosts = {a.ghost for a in axes if a.ghost is not None}
+    roles: dict[str, set[Any]] = {}
+    for call in calls:
+        for dummy in call["dummies"]:
+            if _dummy_rank(dummy) != 0:
+                continue
+            kind, ref = call["bindings"][dummy["name"]]
+            role: Any = None
+            if kind == "derived":
+                role = "derived"
+            elif kind == "inputs":
+                for k, axis in enumerate(axes):
+                    if ref == axis.cells:
+                        role = ("cells", k)
+                    elif ref == axis.extended:
+                        role = ("extended", k)
+                if role is None and ref in ghosts:
+                    role = "ghost"
+            roles.setdefault(dummy["name"], set()).add(role)
+
+    def role_of_name(name: str) -> Any:
+        found = roles.get(name, {None})
+        return next(iter(found)) if len(found) == 1 else "derived"
+
+    tokens: dict[str, list[str]] = {}
+    refusals: list[str] = []
+    recorded: dict[str, list[str] | None] = {}
+    for call in calls:
+        for dummy in call["dummies"]:
+            kind, ref = call["bindings"][dummy["name"]]
+            if kind == "procedure":
+                proto = _interface(ir, dget(dummy.get("spec"), "interface"))
+                ins = {a.get("name"): a for a in proto.get("args") or []
+                       if a.get("intent") == "in"}
+                for name, states in ref[2]:
+                    arg = ins.get(name)
+                    if arg is None:
+                        raise RenderError(f"record.{name} is not an in dummy of the prototype")
+                    for state in states:
+                        recorded[state] = (_dims_tokens(arg) if _dummy_rank(arg) >= 1
+                                           else None)
+                        if _dummy_rank(arg) >= 1 and recorded[state] is None:
+                            refusals.append(f"{state}: the recorded dummy {name!r} of the "
+                                            "prototype has no dims on a node with axes")
+                continue
+            if _dummy_rank(dummy) == 0 or kind not in ("state", "derived", "inputs"):
+                continue
+            key = ref if kind == "state" else f"{kind}.{ref}"
+            dims = _dims_tokens(dummy)
+            if dims is None:
+                refusals.append(f"{key}: the array dummy {dummy['name']!r} of "
+                                f"{call['operation']} has no dims on a node with axes")
+                continue
+            tokens.setdefault(key, dims)
+    for var, shape in variables.items():
+        if var in tokens or rank_of_shape(shape, var) == 0 or any(
+                r.startswith(f"{var}: the ") for r in refusals):
+            continue
+        if var in recorded and recorded[var] is not None:
+            tokens[var] = recorded[var]
+        else:
+            tokens[var] = _shape_tokens(shape)
+    layouts, more = array_layouts(tokens, role_of_name, len(axes))
+    return layouts, refusals + more
 
 
 def _signature_args(ir: dict[str, Any], op: str) -> list[dict[str, Any]]:
@@ -411,8 +720,9 @@ class Actual:
     """How one dummy is passed. ``form``: ``host`` (``ref`` a `HostValue`), ``state`` (the state
     itself), ``work`` (its work copy on a `loop` node), ``logical`` / ``integer`` (a temporary
     the driver writes into the scalar state after the call), ``state_int`` (a rank-0 integer
-    `in` read from a scalar state), ``time``, ``step``, ``literal``, ``procedure`` (``ref`` a
-    `ProcedurePlan`); ``writes`` — the dummy's intent is not `in`."""
+    `in` read from a scalar state), ``time``, ``step``, ``literal``, ``block_first`` (``ref``
+    the axis of `block.<axis>.first`: `1` on a serial or device driver, issue #610 B5),
+    ``procedure`` (``ref`` a `ProcedurePlan`); ``writes`` — the dummy's intent is not `in`."""
     form: str
     ref: Any = None
     writes: bool = False
@@ -594,6 +904,7 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
     steps = drive_steps(ir)
     loop = drive_loop(ir)
     every = drive_history_every(ir)
+    axis_names = {a.name for a in drive_distribute_axes(ir)}
     if (loop is None) != (every is None):
         raise RenderError("drive.history is declared exactly when drive.loop is")
     if loop is not None and len(steps) != 1:
@@ -649,6 +960,14 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
                 actuals.append(Actual("literal", (dtype, ref)))
                 if rank == 0:
                     locals_[name] = str(ref)
+            elif kind == "block":
+                if not (dtype == "integer" and rank == 0 and intent == "in"):
+                    raise RenderError(f"dummy {name!r}: block.{ref}.first binds a rank-0 "
+                                      "integer in dummy")
+                if ref not in axis_names:
+                    raise RenderError(f"dummy {name!r}: block.{ref}.first names no axis of "
+                                      f"drive.distribute ({sorted(axis_names)})")
+                actuals.append(Actual("block_first", ref))
             elif kind == "time":
                 actuals.append(Actual("time"))
             elif kind == "step":

@@ -156,7 +156,10 @@ def _with_outcome_lines(body: str, outcome: str = "pass") -> str:
         if vps.TEST_ID_HEADING_PATTERN.match(stripped) or vps.TEST_ID_BULLET_PATTERN.match(stripped):
             out.append(("" if line.endswith("\n") else "\n")
                        + f"- `expected_outcome`: `{outcome}`\n")
-    return "".join(out)
+    # gate (o) (issue #610): a physics tests.md carries one `distribute:` line; APPENDED, so the
+    # line numbers a row pins in the body above stay as written
+    text = "".join(out)
+    return text + ("\n" if text and not text.endswith("\n") else "") + "distribute: none\n"
 
 
 # A real full-fidelity IR in the issue #589 shape: the certified IR of
@@ -507,7 +510,8 @@ def _mock_drive(extra_args: tuple = ()) -> dict:
     every dummy bound to the state of its name."""
     return {"step": {"operation": "shallow_water2d__step", "result": "ok",
                      "arguments": {a["name"]: f"state.{a['name']}"
-                                   for a in _mock_step_signature(extra_args)["args"]}}}
+                                   for a in _mock_step_signature(extra_args)["args"]}},
+            "distribute": {"axes": []}}
 
 
 def _mock_public_api(extra_args: tuple = ()) -> dict:
@@ -25189,7 +25193,7 @@ class HarnessRenderPreconditionsTests(unittest.TestCase):
                         {"name": "ok", "intent": "out", "spec": {"type": "logical"}}]}}]},
             "drive": {"step": {"operation": "bx__step", "result": "ok", "arguments": {
                 "nx": "inputs.grid.nx", "ny": "inputs.grid.ny", "U": "state.U",
-                "ok": "state.ok"}}},
+                "ok": "state.ok"}}, "distribute": {"axes": []}},
             "case": {"test_case_set": [{"case_id": "c_a", "inputs": {"grid": {"nx": 2, "ny": 2}},
                                         "initial_state": {"U": 0.0}}]},
             "io_contract": {

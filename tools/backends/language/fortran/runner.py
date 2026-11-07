@@ -532,6 +532,8 @@ def _actual(actual: runner_ir.Actual) -> str:
         return "step_c"
     if form == "literal":
         return _literal(ref[0], ref[1])
+    if form == "block_first":
+        return "1"   # the serial driver's block is the whole case (issue #610, B5)
     return ref.name
 
 
