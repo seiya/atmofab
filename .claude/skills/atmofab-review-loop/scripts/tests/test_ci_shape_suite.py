@@ -68,7 +68,15 @@ class CiPathTests(unittest.TestCase):
 
     def test_directory_without_a_hidden_name_is_kept_verbatim(self) -> None:
         path = ci_shape_suite.ci_path(str(self.plain), {"claude"}, self.shim)
-        self.assertEqual(path.split(os.pathsep), [str(self.shim), str(self.plain)])
+        self.assertEqual(path.split(os.pathsep), [str(self.plain)])
+
+    def test_a_kept_directory_before_a_shimmed_one_still_wins(self) -> None:
+        # `plain` precedes `mixed`: plain's ruff must stay first, so the shim takes mixed's
+        # position rather than the head of PATH.
+        path = ci_shape_suite.ci_path(f"{self.plain}{os.pathsep}{self.mixed}", {"claude"}, self.shim)
+        self.assertEqual(Path(self._which(path, "ruff")).parent, self.plain)
+        self.assertIsNone(self._which(path, "claude"))
+        self.assertEqual(Path(self._which(path, "fortitude")).resolve(), self.mixed / "fortitude")
 
     def test_hidden_set_is_the_skip_probes_definition(self) -> None:
         from tools.tests import skip_probes
@@ -127,11 +135,12 @@ class CiEnvTests(unittest.TestCase):
 
 class VerdictTests(unittest.TestCase):
     def test_only_a_passing_full_run_with_a_clean_check_is_zero(self) -> None:
-        self.assertEqual(ci_shape_suite.verdict(0, 10, 10, 0), 0)
-        for suite_rc, ran, check_rc in ((1, 10, 0), (5, 10, 0), (0, None, 0), (0, 9, 0),
-                                        (0, 11, 0), (0, 10, None), (0, 10, 1)):
-            with self.subTest(suite_rc=suite_rc, ran=ran, check_rc=check_rc):
-                self.assertEqual(ci_shape_suite.verdict(suite_rc, ran, 10, check_rc), 1)
+        self.assertEqual(ci_shape_suite.verdict(0, (10, 0), 10, 0), 0)
+        for suite_rc, counted, check_rc in ((1, (10, 0), 0), (5, (10, 0), 0), (0, None, 0),
+                                            (0, (9, 0), 0), (0, (11, 0), 0), (0, (10, 1), 0),
+                                            (0, (10, 0), None), (0, (10, 0), 1)):
+            with self.subTest(suite_rc=suite_rc, counted=counted, check_rc=check_rc):
+                self.assertEqual(ci_shape_suite.verdict(suite_rc, counted, 10, check_rc), 1)
 
 
 class ReportTestcasesTests(unittest.TestCase):
@@ -142,13 +151,15 @@ class ReportTestcasesTests(unittest.TestCase):
     def test_counts_elements_not_the_tests_attribute(self) -> None:
         report = self.root / "r.xml"
         report.write_text('<testsuites><testsuite tests="9"><testcase name="a"/>'
-                          '<testcase name="b"/></testsuite></testsuites>')
-        self.assertEqual(ci_shape_suite.report_testcases(report), 2)
+                          '<testcase name="b"><failure/></testcase>'
+                          '<testcase name="c"><error/></testcase>'
+                          '<testcase name="d"><skipped/></testcase></testsuite></testsuites>')
+        self.assertEqual(ci_shape_suite.report_testcases(report), (4, 2))
 
     def test_a_bare_testsuite_root_is_read(self) -> None:
         report = self.root / "r.xml"
         report.write_text('<testsuite><testcase name="a"/></testsuite>')
-        self.assertEqual(ci_shape_suite.report_testcases(report), 1)
+        self.assertEqual(ci_shape_suite.report_testcases(report), (1, 0))
 
     def test_missing_or_truncated_report_is_none(self) -> None:
         self.assertIsNone(ci_shape_suite.report_testcases(self.root / "absent.xml"))
@@ -173,16 +184,24 @@ class RunWiringTests(unittest.TestCase):
         self.work.mkdir()
         self.calls: list[tuple[list[str], dict[str, str]]] = []
 
-    def _runner(self, ran: int, suite_rc: int = 0, check_rc: int = 0, pristine_rc: int = 0):
+    def _runner(self, ran: int, suite_rc: int = 0, check_rc: int = 0, pristine_rc: int = 0,
+                failed: int = 0):
         def run(cmd, env, **_kwargs):
             self.calls.append((list(cmd), dict(env)))
             if "--collect-only" in cmd:
-                return subprocess.CompletedProcess(cmd, pristine_rc, f"{self.PRISTINE} tests collected\n", "")
+                # The checkout's addopts would select a subset; only `-o addopts=` gives the
+                # pristine count. The ids come first, the count line last, as pytest prints.
+                pristine = "-o" in cmd and cmd[cmd.index("-o") + 1] == "addopts="
+                count = self.PRISTINE if pristine else ran
+                out = "tools/tests/test_a.py::T::t\n\n" + f"{count} tests collected in 0.1s\n"
+                return subprocess.CompletedProcess(cmd, pristine_rc, out, "")
             if "tools.tests.skip_probes" in cmd:
                 return subprocess.CompletedProcess(cmd, check_rc, "skipped=0 accepted=0 refused=0\n", "")
             report = next(a.split("=", 1)[1] for a in cmd if a.startswith("--junitxml="))
             Path(report).write_text("<testsuites><testsuite>"
-                                    + '<testcase name="x"/>' * ran + "</testsuite></testsuites>")
+                                    + '<testcase name="f"><failure/></testcase>' * failed
+                                    + '<testcase name="x"/>' * (ran - failed)
+                                    + "</testsuite></testsuites>")
             return subprocess.CompletedProcess(cmd, suite_rc, "3 passed\n", "")
         return run
 
@@ -208,6 +227,9 @@ class RunWiringTests(unittest.TestCase):
 
     def test_a_subset_is_one(self) -> None:
         self.assertEqual(self._go(ran=self.PRISTINE - 1), 1)
+
+    def test_a_failure_the_exit_status_hid_is_one(self) -> None:
+        self.assertEqual(self._go(ran=self.PRISTINE, failed=1, suite_rc=0), 1)
 
     def test_a_failed_pristine_collection_is_two(self) -> None:
         self.assertEqual(self._go(ran=self.PRISTINE, pristine_rc=2), 2)
