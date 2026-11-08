@@ -646,7 +646,7 @@ class LaunchGateTests(unittest.TestCase):
                                       f"backend {backend} declares none", violations)
             # One rank needs none; a launcher backend takes any count (over a harness that
             # drives several processes — `test_the_backend_and_the_harness_agree_on_processes`).
-            # Asked for the harness: a physics node there is `driver_distributed_pending`.
+            # Asked for the harness, the node that target's run starts with.
             self.assertEqual(tp.target_profile_violations(
                 repo.root, self._profile(repo, execution__ranks=1)), [])
             with _distributed_harness_x():
@@ -971,10 +971,12 @@ class LaunchGateTests(unittest.TestCase):
                 repo.root, "t1", node_key="component/harness_y@0.7.0").target_id, "t1")
 
 
-class DriverDistributedPendingTests(unittest.TestCase):
-    """Issue #589 D12: the host-rendered driver is serial until the distributed driver lands, so a
-    physics node on a target whose parallel backend declares a launcher is refused at preflight,
-    in every phase, under a reason of its own. Its harness still runs there."""
+class LauncherTargetAdmissionTests(unittest.TestCase):
+    """Issue #610 (plan B, PR-B2): the host-rendered driver has a distributed form, so a physics
+    node on a target whose parallel backend declares a launcher is admitted at preflight in every
+    phase, as its harness is. Until then it was refused under a reason of its own
+    (`driver_distributed_pending`, issue #589 D12); these rows were that refusal's, turned into
+    the admission they now pin."""
 
     _PHYSICS = (None, "problem/shallow_water2d@0.4.7", "component/advect@0.1.0",
                 "component/harness_y@0.7.0")
@@ -983,18 +985,18 @@ class DriverDistributedPendingTests(unittest.TestCase):
     def _resolve(self, repo: _ScratchRepo, **kwargs: object) -> tp.TargetProfile:
         return tp.resolve_run_target(repo.root, "t1", **kwargs)
 
-    def test_a_physics_spec_is_refused_with_its_own_reason_in_every_phase(self) -> None:
+    def test_a_physics_spec_is_admitted_in_every_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, _distributed_harness_x():
             repo = _ScratchRepo(tmp)
             repo.write("t1", parallel__backend="mpi")
             for node_key in self._PHYSICS:
                 for phase in self._PHASES:
                     with self.subTest(node_key=node_key, phase=phase):
-                        with self.assertRaises(tp.TargetProfileError) as cm:
-                            self._resolve(repo, node_key=node_key, until_phase=phase)
-                        self.assertEqual(cm.exception.reason, "driver_distributed_pending")
-                        self.assertIn("declares a launcher", cm.exception.detail)
-                        self.assertIn("issue #589", cm.exception.detail)
+                        self.assertEqual(self._resolve(repo, node_key=node_key,
+                                                       until_phase=phase).target_id, "t1")
+                        self.assertEqual(tp.target_profile_violations(
+                            repo.root, tp.load_target_profile(repo.root, "t1"),
+                            node_key=node_key, until_phase=phase), [])
 
     def test_the_harness_of_that_target_is_admitted_in_every_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, _distributed_harness_x():
@@ -1005,30 +1007,24 @@ class DriverDistributedPendingTests(unittest.TestCase):
                     self.assertEqual(self._resolve(repo, node_key=_HARNESS_X,
                                                    until_phase=phase).target_id, "t1")
 
-    def test_it_is_the_first_violation_so_the_reason_is_this_one(self) -> None:
-        # A second violation behind it must not rename the reason: mpi over a harness that
-        # provides no distributed_state is one, and the phase's hardware reason is another.
+    def test_a_launcher_over_a_single_process_harness_is_still_refused(self) -> None:
+        # What the deleted refusal used to precede: mpi over a harness that provides no
+        # distributed_state is refused under the profile's own reason, for a physics node too,
+        # behind a phase's hardware reason when there is one.
         with tempfile.TemporaryDirectory() as tmp:
             repo = _ScratchRepo(tmp)
             repo.write("t1", parallel__backend="mpi")
             profile = tp.load_target_profile(repo.root, "t1")
             violations = tp.target_profile_violations(repo.root, profile, until_phase="Validate")
-            self.assertGreater(len(violations), 1, violations)
-            self.assertTrue(violations[0].startswith("driver_distributed_pending"), violations)
+            self.assertTrue(violations, violations)
+            self.assertTrue(violations[0].startswith("parallel.backend: mpi starts the program "
+                                                     "as several processes"), violations)
             with self.assertRaises(tp.TargetProfileError) as cm:
                 self._resolve(repo)
-            self.assertEqual(cm.exception.reason, "driver_distributed_pending")
-            # ... ahead of a hardware reason too, the one list entry that precedes the insert (a
-            # mutant appending instead survived every row above: none had a hardware reason).
+            self.assertEqual(cm.exception.reason, "target_profile_invalid")
             with mock.patch.object(tp, "hardware_violations", return_value=["hardware: refused"]):
-                self.assertEqual(
-                    tp.target_profile_violations(repo.root, profile)[:2],
-                    [tp.target_profile_violations(repo.root, profile)[0], "hardware: refused"])
-                self.assertTrue(tp.target_profile_violations(repo.root, profile)[0].startswith(
-                    "driver_distributed_pending"))
-                with self.assertRaises(tp.TargetProfileError) as cm:
-                    self._resolve(repo)
-                self.assertEqual(cm.exception.reason, "driver_distributed_pending")
+                self.assertEqual(tp.target_profile_violations(repo.root, profile)[0],
+                                 "hardware: refused")
 
     def test_a_backend_that_declares_no_launcher_is_not_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1039,21 +1035,20 @@ class DriverDistributedPendingTests(unittest.TestCase):
                     self.assertEqual(self._resolve(repo, node_key=node_key).target_id, "t1")
 
     def test_the_checked_in_mpi_target(self) -> None:
-        # The operator's own target: the physics spec the corpus names, in compile and in validate,
-        # and the harness that target names. The harness's answer here may carry this machine's
-        # tool reasons, so it is read as "not this one".
+        # The operator's own target admits the physics spec the corpus names, in compile and in
+        # validate, with the answer its harness gets less what only an infrastructure node is
+        # asked (the toolchain's harness half), which may carry this machine's tool reasons.
+        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
+        harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
         for phase in ("compile", "validate"):
             for node_key in (None, "problem/shallow_water2d@0.4.7"):
                 with self.subTest(phase=phase, node_key=node_key):
-                    with self.assertRaises(tp.TargetProfileError) as cm:
-                        tp.resolve_run_target(REPO_ROOT, "fortran_cpu_mpi", node_key=node_key,
-                                              until_phase=phase)
-                    self.assertEqual(cm.exception.reason, "driver_distributed_pending")
-            profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
-            harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
-            self.assertFalse([v for v in tp.target_profile_violations(
-                REPO_ROOT, profile, node_key=harness, until_phase=phase)
-                if v.startswith("driver_distributed_pending")])
+                    physics = tp.target_profile_violations(REPO_ROOT, profile,
+                                                           node_key=node_key, until_phase=phase)
+                    of_harness = tp.target_profile_violations(REPO_ROOT, profile,
+                                                              node_key=harness, until_phase=phase)
+                    self.assertEqual([v for v in physics if not v.startswith("toolchain:")],
+                                     [v for v in of_harness if not v.startswith("toolchain:")])
 
 
 class HarnessEntriesTests(unittest.TestCase):

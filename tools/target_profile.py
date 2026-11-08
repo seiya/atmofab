@@ -828,18 +828,6 @@ def target_profile_violations(repo_root: Path, profile: TargetProfile, *,
     out: list[str] = hardware_violations(profile, until_phase=until_phase)
     tc = profile.toolchain
     infrastructure = bool(node_key) and node_key.split("/", 1)[0] == "infrastructure"
-    from tools.host_execution import DRIVER_DISTRIBUTED_PENDING, declares_launcher
-    # A physics node on a target whose backend starts several processes (issue #589, D12): the
-    # host-rendered driver is serial until the distributed driver lands, and refusing here, in
-    # every phase, spares a Compile whose Validate cannot run and a --with-deps closure's harness
-    # run. `node_key=None` is a physics spec (`resolve_run_target`'s callers). First, so the reason
-    # below is this one. The renderer refuses too, as the backstop.
-    if not infrastructure and declares_launcher(profile.parallel_backend):
-        out.insert(0, f"{DRIVER_DISTRIBUTED_PENDING}: parallel backend "
-                      f"{profile.parallel_backend} declares a launcher, and the host-rendered "
-                      "driver of a physics node is serial until the distributed driver lands "
-                      "(issue #589, Plan B). Run the node on a target whose backend declares no "
-                      "launcher; only the harness itself runs on this one")
     out += [f"toolchain: {r}" for r in toolchain_servable_reasons(
         tc["language"], tc["build_system"], infrastructure=infrastructure)]
     reason = backend_registry.unimplemented_reason("parallel", profile.parallel_backend)
@@ -920,8 +908,7 @@ def resolve_run_target(repo_root: Path, requested: str | None, *,
     violations = target_profile_violations(repo_root, profile, node_key=node_key,
                                            until_phase=until_phase)
     if violations:
-        from tools.host_execution import DRIVER_DISTRIBUTED_PENDING
-        reason = next((known for known in ("target_harness_mismatch", DRIVER_DISTRIBUTED_PENDING)
-                       if violations[0].startswith(known)), "target_profile_invalid")
+        reason = ("target_harness_mismatch" if violations[0].startswith("target_harness_mismatch")
+                  else "target_profile_invalid")
         raise TargetProfileError(reason, f"target {target_id}: {violations[0]}")
     return profile
