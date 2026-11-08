@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for `ci_shape_suite.ci_path` and the executable set it hides.
+"""Tests for `ci_shape_suite`: the PATH, the environment, the hidden set and the exit verdict.
 
-The script's verdict is "this branch is green as CI sees it". Its dangerous direction is a
-PATH that still reaches a hidden executable (a skip CI would refuse reads as a run here), and
-the false-alarm direction is a PATH that loses a tool CI does have (the linters beside a CLI,
-129 and 220 false failures measured on two branches that dropped whole directories).
+The script's verdict is "green without the skip-probe dependencies and the operator's home".
+Its dangerous direction is exit 0 where CI is red: a PATH that still reaches a hidden
+executable, the operator's HOME or a leftover `PYTEST_ADDOPTS` reaching the run, or a failed
+suite or skip check folded into 0. The false-alarm direction is a PATH that loses a tool CI
+does have (the linters installed beside a CLI).
 """
 
 from __future__ import annotations
@@ -70,6 +71,57 @@ class CiPathTests(unittest.TestCase):
         self.assertEqual(ci_shape_suite.hidden_executables(), expected)
         self.assertIn("claude", expected)
         self.assertIn("codex", expected)
+
+
+class CiEnvTests(unittest.TestCase):
+    """The environment the suite runs in, built from a synthetic operator environment."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.bin = self.root / "bin"
+        self.shim = self.root / "shim"
+        self.home = self.root / "home"
+        for d in (self.bin, self.shim, self.home):
+            d.mkdir()
+        _exe(self.bin / "claude")
+        _exe(self.bin / "ruff")
+        self.operator = {
+            "HOME": "/home/operator",
+            "PATH": str(self.bin),
+            "PYTHONPATH": "/operator/extra",
+            "PYTEST_ADDOPTS": "-k only_this",
+            "CLAUDECODE": "1",
+            "CLAUDE_CODE_ENTRYPOINT": "cli",
+            "LANG": "C.UTF-8",
+        }
+        self.env = ci_shape_suite.ci_env(self.operator, {"claude"}, self.shim, self.home,
+                                         "/operator/site")
+
+    def test_home_is_the_empty_directory_not_the_operators(self) -> None:
+        self.assertEqual(self.env["HOME"], str(self.home))
+        self.assertNotEqual(self.env["HOME"], self.operator["HOME"])
+
+    def test_user_site_goes_first_and_an_existing_pythonpath_is_kept(self) -> None:
+        self.assertEqual(self.env["PYTHONPATH"].split(os.pathsep), ["/operator/site", "/operator/extra"])
+
+    def test_session_and_pytest_option_variables_are_dropped(self) -> None:
+        for key in ("PYTEST_ADDOPTS", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+            self.assertNotIn(key, self.env)
+        self.assertEqual(self.env["LANG"], "C.UTF-8")
+
+    def test_path_hides_and_keeps(self) -> None:
+        self.assertIsNone(shutil.which("claude", path=self.env["PATH"]))
+        self.assertIsNotNone(shutil.which("ruff", path=self.env["PATH"]))
+
+
+class VerdictTests(unittest.TestCase):
+    def test_only_a_passing_suite_with_a_clean_check_is_zero(self) -> None:
+        self.assertEqual(ci_shape_suite.verdict(0, True, 0), 0)
+        for suite_rc, written, check_rc in ((1, True, 0), (0, False, None), (0, True, None),
+                                            (0, True, 1), (5, True, 0)):
+            with self.subTest(suite_rc=suite_rc, written=written, check_rc=check_rc):
+                self.assertEqual(ci_shape_suite.verdict(suite_rc, written, check_rc), 1)
 
 
 if __name__ == "__main__":

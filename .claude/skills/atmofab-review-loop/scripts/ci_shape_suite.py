@@ -1,32 +1,41 @@
 #!/usr/bin/env python3
-"""Run the suite as CI sees it, then the skip-report check, in one command.
+"""Run the whole suite without the dependencies CI lacks, then the skip-report check, in one command.
 
 CI has none of the executables `tools/tests/skip_probes.py` `DEPENDENCIES` names (the CUDA
 compiler driver and the two leaf CLIs), and none of the operator's home: no credentials file,
 no CLI configuration. A run on the operator's host has both, so a row that reads either is
 green here and red in CI, and a row added behind a host tool with a bare `skipUnless` is a skip
-only CI refuses (issue #589 PR-1b: 37 rows; PR #557: 5 rows binding the credentials file).
+only CI refuses (issue #589 PR-1b; PR #557's five rows binding the credentials file).
 
-What this script does, so it is not rebuilt by hand each time:
+What this script reproduces:
 
 * HOME is a fresh empty directory.
 * PATH keeps every directory that holds none of the hidden executables. A directory that holds
-  one is replaced by a shim directory of symlinks to everything else in it — dropping the whole
-  directory also drops the linters installed beside a CLI (measured: 129 and 220 false failures
-  on two branches that did that).
-* PYTHONPATH carries the user site-packages: under an empty HOME the interpreter no longer
-  finds packages installed with `pip install --user`, pytest among them, and the run then dies
-  with `No module named pytest` and prints no summary line.
-* The suite runs under `--junitxml`, and `python3 -m tools.tests.skip_probes` reads that report
-  in the SAME environment, which is the host the check must run on (its docstring says why).
+  one is replaced by a shim directory of symlinks to everything else in it, because dropping the
+  whole directory also drops the linters installed beside a CLI and every lint row then fails.
+* PYTHONPATH carries the user site-packages: under an empty HOME the interpreter no longer finds
+  packages installed with `pip install --user`, pytest among them.
+* The agent-session variables (`CLAUDECODE`, `CLAUDE_CODE_*`) and `PYTEST_ADDOPTS` are removed,
+  so a run started from an agent session or from a shell with leftover pytest options is the
+  same run.
+* The WHOLE suite runs (no selection can be passed), under `--junitxml`, and
+  `python3 -m tools.tests.skip_probes` reads that report in the SAME environment, which is the
+  host the check must run on (its docstring says why).
+
+What it does NOT reproduce: CI runs the suite serially and this script runs it under
+pytest-xdist by default (`--jobs 24`), so an order dependence red only serially is missed —
+pass `--jobs 0` for CI's serial order. Every other host difference is inherited: other
+compilers and profilers on PATH, which MPI comes first, and the rest of the environment.
+A green result therefore means "green without the skip-probe dependencies and without the
+operator's home", not "green in CI".
 
 Run from the checkout root:
 
-    python3 .claude/skills/atmofab-review-loop/scripts/ci_shape_suite.py [-- <extra pytest args>]
+    python3 .claude/skills/atmofab-review-loop/scripts/ci_shape_suite.py [--jobs N] [--keep]
 
-`-n <workers>` is added when pytest-xdist is importable (pass `--jobs` to choose; default 24).
 The temporary directory is removed at exit unless `--keep` is given.
-Exit status: 0 only when the suite passed AND the skip check refused nothing.
+Exit status: 0 only when the suite passed, the report was written, and the skip check refused
+nothing; 2 when the run could not be set up.
 """
 
 from __future__ import annotations
@@ -39,7 +48,12 @@ import site
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+
+#: environment variables the operator's session carries and CI does not
+DROPPED_VARIABLES = ("CLAUDECODE", "PYTEST_ADDOPTS")
+DROPPED_PREFIXES = ("CLAUDE_CODE_",)
 
 
 def hidden_executables() -> set[str]:
@@ -74,12 +88,30 @@ def ci_path(path: str, hide: set[str], shim: Path) -> str:
     return os.pathsep.join([str(shim), *kept])
 
 
+def ci_env(environ: Mapping[str, str], hide: set[str], shim: Path, home: Path,
+           user_site: str) -> dict[str, str]:
+    """The environment the suite runs in: `environ` with HOME, PATH, PYTHONPATH replaced."""
+    env = {key: value for key, value in environ.items()
+           if key not in DROPPED_VARIABLES and not key.startswith(DROPPED_PREFIXES)}
+    env["HOME"] = str(home)
+    env["PATH"] = ci_path(environ.get("PATH", ""), hide, shim)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (user_site, environ.get("PYTHONPATH")) if p)
+    return env
+
+
+def verdict(suite_rc: int, report_written: bool, check_rc: int | None) -> int:
+    """0 only when the suite passed, a report exists, and the skip check ran and refused nothing."""
+    if suite_rc != 0 or not report_written or check_rc != 0:
+        return 1
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--jobs", type=int, default=24, help="pytest-xdist workers (default 24)")
+    parser.add_argument("--jobs", type=int, default=24,
+                        help="pytest-xdist workers (default 24; 0 runs serially, as CI does)")
     parser.add_argument("--keep", action="store_true",
                         help="keep the temporary HOME, shim and report (removed by default)")
-    parser.add_argument("pytest_args", nargs="*", help="extra pytest arguments, after --")
     args = parser.parse_args(argv)
 
     if not Path("tools/tests").is_dir():
@@ -100,38 +132,40 @@ def _run(args: argparse.Namespace, hide: set[str], root: Path) -> int:
     shim, home, report = root / "shim", root / "home", root / "report.xml"
     shim.mkdir()
     home.mkdir()
-    env = dict(os.environ, HOME=str(home), PATH=ci_path(os.environ.get("PATH", ""), hide, shim))
-    user_site = site.getusersitepackages()
-    env["PYTHONPATH"] = os.pathsep.join(p for p in (user_site, os.environ.get("PYTHONPATH")) if p)
+    env = ci_env(os.environ, hide, shim, home, site.getusersitepackages())
+    still = sorted(name for name in hide if shutil.which(name, path=env["PATH"]))
+    if still:
+        print(f"still on the reduced PATH: {', '.join(still)}", file=sys.stderr)
+        return 2
+    print(f"hidden: {', '.join(sorted(hide))}; HOME={home}; jobs={args.jobs}")
 
-    for name in sorted(hide):
-        found = subprocess.run(["sh", "-c", f"command -v {name}"], env=env, capture_output=True, check=False)
-        if found.returncode == 0:
-            print(f"{name} is still on the CI-shaped PATH", file=sys.stderr)
-            return 2
-    print(f"hidden: {', '.join(sorted(hide))}; HOME={home}; report={report}")
-
-    cmd = [sys.executable, "-m", "pytest", "tools/tests", "-q", "-p", "no:randomly", "-rs",
+    cmd = [sys.executable, "-m", "pytest", "tools/tests", "-q", "-p", "no:randomly", "-rfEs",
            f"--junitxml={report}"]
-    if importlib.util.find_spec("xdist") is not None:
+    if args.jobs > 0:
+        if importlib.util.find_spec("xdist") is None:
+            print("pytest-xdist is not installed: pass --jobs 0", file=sys.stderr)
+            return 2
         cmd += ["-n", str(args.jobs)]
-    cmd += args.pytest_args
     suite = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     lines = [line for line in suite.stdout.splitlines() if line.strip()]
     print(lines[-1] if lines else "(pytest printed nothing)")
     if suite.returncode != 0:
-        print("\n".join(line for line in lines if line.startswith(("FAILED", "ERROR"))))
+        for line in lines:
+            if line.startswith(("FAILED", "ERROR")):
+                print(line)
         print(suite.stderr[-2000:], file=sys.stderr)
-    if not report.is_file():
+
+    check_rc: int | None = None
+    if report.is_file():
+        check = subprocess.run([sys.executable, "-m", "tools.tests.skip_probes", str(report)],
+                               env=env, capture_output=True, text=True, check=False)
+        check_rc = check.returncode
+        print(check.stdout[-4000:] if check_rc != 0 else
+              next((ln for ln in check.stdout.splitlines() if ln.startswith("skipped=")),
+                   check.stdout[-2000:]))
+    else:
         print("no JUnit report was written: the skip check did not run", file=sys.stderr)
-        return 1
-    check = subprocess.run([sys.executable, "-m", "tools.tests.skip_probes", str(report)],
-                           env=env, capture_output=True, text=True, check=False)
-    summary = [line for line in check.stdout.splitlines() if line.startswith("skipped=")]
-    print(summary[-1] if summary else check.stdout[-2000:])
-    if check.returncode != 0:
-        print(check.stdout[-4000:])
-    return 0 if suite.returncode == 0 and check.returncode == 0 else 1
+    return verdict(suite.returncode, report.is_file(), check_rc)
 
 
 if __name__ == "__main__":

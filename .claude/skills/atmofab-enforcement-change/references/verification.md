@@ -91,14 +91,15 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   and before the push run once with every tool CI lacks hidden, under `--junitxml`, then the
   report check over that file (`refused=0`). **That run is one command**:
   `python3 .claude/skills/atmofab-review-loop/scripts/ci_shape_suite.py` from the checkout root.
-  It hides exactly the executables `skip_probes.DEPENDENCIES` names, gives the run an empty
-  `HOME`, and runs the report check in the same environment; exit 0 means both passed. Do not
-  rebuild it by hand — the three hand-built failures it absorbs: dropping a whole PATH directory
-  to hide a CLI also drops the linters installed beside it (129 and 220 false failures, on PR
-  #557 and issue #610 PR-B3); an empty `HOME` hides a `pip install --user` pytest, so the run
-  dies with `No module named pytest` and no summary line unless the user site-packages go on
-  `PYTHONPATH`; and a shell loop that builds the PATH in zsh syntax is refused by the agent
-  session's command check before it runs. And read a CI run's result from a fresh
+  It runs the WHOLE suite with the executables `skip_probes.DEPENDENCIES` names hidden and an
+  empty `HOME`, then the report check in the same environment; exit 0 means both passed. Its
+  docstring lists what it reproduces and what it does not: it runs under xdist by default where
+  CI runs serially (`--jobs 0` for CI's order), and every other host difference — other
+  compilers on PATH, which MPI comes first, the rest of the environment — is inherited, so green
+  means "green without those dependencies and that home", not "green in CI". Prefer it to a
+  hand-built PATH: dropping a whole PATH directory to hide a CLI also drops the linters installed
+  beside it, and an empty `HOME` hides a `pip install --user` pytest unless the user
+  site-packages go on `PYTHONPATH`. And read a CI run's result from a fresh
   `gh pr view --json statusCheckRollup`: on the installed `gh` 2.4.0, `gh run watch --exit-status`
   returned 0 on that failed run.
   **A nonzero skip count in the summary line is the trigger, and it is easy to read past**: issue
