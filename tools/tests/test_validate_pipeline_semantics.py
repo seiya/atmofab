@@ -24046,6 +24046,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("declares state_residency 'host'", v[0])
         self.assertIn('"state_residency": "distributed"', v[0])
+        # True of a `distribute: none` node too (PR-B2 round 1): not "every case".
+        self.assertIn("the cases its IR declares axes for and runs the rest replicated", v[0])
         # The remedy names the token the target's harness provides, as the manifest lists it:
         # a bundle that followed an older token would be `bundle_capability_unsatisfied`.
         from tools.codegen_bundle import capability_name, harness_provided_capabilities

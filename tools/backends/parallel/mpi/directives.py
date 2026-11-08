@@ -160,7 +160,8 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], plan: Any,
         out.append(
             f"{first}: the target profile resolves to MPI (parallel.backend=mpi), and the "
             f"bundle's target_lowering_plan declares state_residency {residency!r}: the "
-            "host-rendered driver distributes every case over the ranks, so the plan declares "
+            "host-rendered driver distributes over the ranks the cases its IR declares axes "
+            "for and runs the rest replicated, so the plan declares "
             "\"state_residency\": \"distributed\" (with distributed_state@2 in "
             "capability_requirements)")
     if node_kind == "problem" and harness_spec_id:
