@@ -89,7 +89,20 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   rows with a bare `skipUnless(NVCC, ...)`: `nvcc` is on the operator's PATH, so the suite and the
   empty-`HOME` run were green and CI refused 37 of them. Use `skip_probes.skip_unless_installed`,
   and before the push run once with every tool CI lacks hidden, under `--junitxml`, then the
-  report check over that file (`refused=0`). And read a CI run's result from a fresh
+  report check over that file (`refused=0`). **That run is one command**:
+  `python3 .claude/skills/atmofab-review-loop/scripts/ci_shape_suite.py` from the checkout root.
+  It runs the suite with the executables `skip_probes.DEPENDENCIES` names hidden and an empty
+  `HOME`, refuses a run whose report holds fewer or more tests than a pristine collection or any
+  `<failure>` / `<error>` (CI's guard, so a subset `pytest.ini`'s `addopts` or a plugin
+  selected, and a failure a hook hid from the exit status, read red), then runs the report
+  check in the same environment; exit 0 means all of it held. Its
+  docstring lists what it reproduces and what it does not: it runs under xdist by default where
+  CI runs serially (`--jobs 0` for CI's order), and every other host difference — other
+  compilers on PATH, which MPI comes first, the rest of the environment — is inherited, so green
+  means "green without those dependencies and that home", not "green in CI". Prefer it to a
+  hand-built PATH: dropping a whole PATH directory to hide a CLI also drops the linters installed
+  beside it, and an empty `HOME` hides a `pip install --user` pytest unless the user
+  site-packages go on `PYTHONPATH`. And read a CI run's result from a fresh
   `gh pr view --json statusCheckRollup`: on the installed `gh` 2.4.0, `gh run watch --exit-status`
   returned 0 on that failed run.
   **A nonzero skip count in the summary line is the trigger, and it is easy to read past**: issue
