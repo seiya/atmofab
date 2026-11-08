@@ -3,19 +3,25 @@
 
 The script's verdict is "green without the skip-probe dependencies and the operator's home".
 Its dangerous direction is exit 0 where CI is red: a PATH that still reaches a hidden
-executable, the operator's HOME or a leftover `PYTEST_ADDOPTS` reaching the run, or a failed
-suite or skip check folded into 0. The false-alarm direction is a PATH that loses a tool CI
+executable, the operator's HOME or a leftover `PYTEST_ADDOPTS` / `PYTEST_PLUGINS` reaching the
+run, a subset run counted as the whole, or a failed suite or skip check folded into 0 — at the
+function and at the call site (`RunWiringTests` drives `_run` with a stub runner). The false-alarm direction is a PATH that loses a tool CI
 does have (the linters installed beside a CLI).
 """
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parents[3]
@@ -92,6 +98,8 @@ class CiEnvTests(unittest.TestCase):
             "PYTHONPATH": "/operator/extra",
             "PYTEST_ADDOPTS": "-k only_this",
             "CLAUDECODE": "1",
+            "CODEX_COMPANION_SESSION_ID": "s",
+            "PYTEST_PLUGINS": "zzsubset",
             "CLAUDE_CODE_ENTRYPOINT": "cli",
             "LANG": "C.UTF-8",
         }
@@ -106,9 +114,11 @@ class CiEnvTests(unittest.TestCase):
         self.assertEqual(self.env["PYTHONPATH"].split(os.pathsep), ["/operator/site", "/operator/extra"])
 
     def test_session_and_pytest_option_variables_are_dropped(self) -> None:
-        for key in ("PYTEST_ADDOPTS", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        for key in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
+                    "CODEX_COMPANION_SESSION_ID"):
             self.assertNotIn(key, self.env)
         self.assertEqual(self.env["LANG"], "C.UTF-8")
+        self.assertEqual(self.env["OMPI_MCA_rmaps_base_oversubscribe"], "1")
 
     def test_path_hides_and_keeps(self) -> None:
         self.assertIsNone(shutil.which("claude", path=self.env["PATH"]))
@@ -116,12 +126,98 @@ class CiEnvTests(unittest.TestCase):
 
 
 class VerdictTests(unittest.TestCase):
-    def test_only_a_passing_suite_with_a_clean_check_is_zero(self) -> None:
-        self.assertEqual(ci_shape_suite.verdict(0, True, 0), 0)
-        for suite_rc, written, check_rc in ((1, True, 0), (0, False, None), (0, True, None),
-                                            (0, True, 1), (5, True, 0)):
-            with self.subTest(suite_rc=suite_rc, written=written, check_rc=check_rc):
-                self.assertEqual(ci_shape_suite.verdict(suite_rc, written, check_rc), 1)
+    def test_only_a_passing_full_run_with_a_clean_check_is_zero(self) -> None:
+        self.assertEqual(ci_shape_suite.verdict(0, 10, 10, 0), 0)
+        for suite_rc, ran, check_rc in ((1, 10, 0), (5, 10, 0), (0, None, 0), (0, 9, 0),
+                                        (0, 11, 0), (0, 10, None), (0, 10, 1)):
+            with self.subTest(suite_rc=suite_rc, ran=ran, check_rc=check_rc):
+                self.assertEqual(ci_shape_suite.verdict(suite_rc, ran, 10, check_rc), 1)
+
+
+class ReportTestcasesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+
+    def test_counts_elements_not_the_tests_attribute(self) -> None:
+        report = self.root / "r.xml"
+        report.write_text('<testsuites><testsuite tests="9"><testcase name="a"/>'
+                          '<testcase name="b"/></testsuite></testsuites>')
+        self.assertEqual(ci_shape_suite.report_testcases(report), 2)
+
+    def test_a_bare_testsuite_root_is_read(self) -> None:
+        report = self.root / "r.xml"
+        report.write_text('<testsuite><testcase name="a"/></testsuite>')
+        self.assertEqual(ci_shape_suite.report_testcases(report), 1)
+
+    def test_missing_or_truncated_report_is_none(self) -> None:
+        self.assertIsNone(ci_shape_suite.report_testcases(self.root / "absent.xml"))
+        truncated = self.root / "t.xml"
+        truncated.write_text("<testsuites><testsuite><testcase")
+        self.assertIsNone(ci_shape_suite.report_testcases(truncated))
+
+
+class RunWiringTests(unittest.TestCase):
+    """`_run` with a stub runner: which environment each subprocess gets, and the exit code."""
+
+    PRISTINE = 3
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        _exe(self.bin / "claude")
+        self.operator = {"HOME": "/home/operator", "PATH": str(self.bin)}
+        self.work = self.root / "work"
+        self.work.mkdir()
+        self.calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def _runner(self, ran: int, suite_rc: int = 0, check_rc: int = 0, pristine_rc: int = 0):
+        def run(cmd, env, **_kwargs):
+            self.calls.append((list(cmd), dict(env)))
+            if "--collect-only" in cmd:
+                return subprocess.CompletedProcess(cmd, pristine_rc, f"{self.PRISTINE} tests collected\n", "")
+            if "tools.tests.skip_probes" in cmd:
+                return subprocess.CompletedProcess(cmd, check_rc, "skipped=0 accepted=0 refused=0\n", "")
+            report = next(a.split("=", 1)[1] for a in cmd if a.startswith("--junitxml="))
+            Path(report).write_text("<testsuites><testsuite>"
+                                    + '<testcase name="x"/>' * ran + "</testsuite></testsuites>")
+            return subprocess.CompletedProcess(cmd, suite_rc, "3 passed\n", "")
+        return run
+
+    def _go(self, **kw) -> int:
+        args = argparse.Namespace(jobs=0, keep=False)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return ci_shape_suite._run(args, {"claude"}, self.work, environ=self.operator,
+                                       runner=self._runner(**kw))
+
+    def test_green_run_and_every_subprocess_gets_the_reduced_environment(self) -> None:
+        self.assertEqual(self._go(ran=self.PRISTINE), 0)
+        self.assertEqual(len(self.calls), 3)
+        for cmd, env in self.calls:
+            with self.subTest(cmd=cmd[:4]):
+                self.assertEqual(env["HOME"], str(self.work / "home"))
+                self.assertIsNone(shutil.which("claude", path=env["PATH"]))
+
+    def test_a_failed_suite_is_one(self) -> None:
+        self.assertEqual(self._go(ran=self.PRISTINE, suite_rc=1), 1)
+
+    def test_a_refusing_skip_check_is_one(self) -> None:
+        self.assertEqual(self._go(ran=self.PRISTINE, check_rc=1), 1)
+
+    def test_a_subset_is_one(self) -> None:
+        self.assertEqual(self._go(ran=self.PRISTINE - 1), 1)
+
+    def test_a_failed_pristine_collection_is_two(self) -> None:
+        self.assertEqual(self._go(ran=self.PRISTINE, pristine_rc=2), 2)
+
+    def test_a_hidden_executable_left_on_path_stops_the_run(self) -> None:
+        # The self-check behind ci_path: if the PATH it builds still reaches a hidden name,
+        # nothing runs and the exit is 2.
+        with mock.patch.object(ci_shape_suite, "ci_path", lambda path, hide, shim: path):
+            self.assertEqual(self._go(ran=self.PRISTINE), 2)
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":

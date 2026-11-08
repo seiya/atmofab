@@ -77,8 +77,9 @@ first and staging second is how a correct-looking message gets attached to the w
 
 **A commit that changes what a suite row reads against must carry the other half.** Issue #610
 PR-B3 gave a `spec`'s §5.1 four arguments in its first commit and the bench IR the signature pin
-compares against them three commits later, so those three commits are red on
-`test_spec_corpus_versions.py` and a bisect over `main` can land on them; the suite ran only at the branch
+compares against them three commits later, so those commits are red on
+`test_spec_corpus_versions.py` (two measured, the third inferred) and a bisect over `main` can
+land on them; the suite ran only at the branch
 head, so nothing said so until the disclosure round. Before committing a `spec`
 signature, a contract version or a pinned document, name the rows that compare against it, and
 put their fixture change in the same commit — or run the suite on each commit before the push
