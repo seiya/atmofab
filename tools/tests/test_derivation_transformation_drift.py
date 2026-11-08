@@ -1445,7 +1445,7 @@ PINNED_BUILD: dict[str, str] = {
     # Re-pinned for issue #610 PR-B2, NOT bumped: `tools/host_execution.py` (a member) loses
     # `DRIVER_DISTRIBUTED_PENDING`, which no build reads (its readers were the preflight refusal
     # and the render backstop, both deleted). Measured against 84c5ff88: that file is the one
-    # member that moved. The digest `build-4` shipped with at 84c5ff88:
+    # member that moved. The digest `build-4` shipped with at 84c5ff88 is `build-4@84c5ff88`.
     "build-4": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
