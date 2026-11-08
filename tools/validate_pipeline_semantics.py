@@ -2795,16 +2795,6 @@ def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | 
     return _m3c_language(ir, toolchain[0], toolchain[1])
 
 
-def _shape_rank_or_none(shape_expr: Any) -> int | None:
-    """The rank of a snapshot `shape_expr` as the runner renderer reads it, or None when it does
-    not parse — the render refuses that IR itself, so no binding is asked of it here."""
-    from tools import runner_ir
-    try:
-        return runner_ir.rank_of_shape(shape_expr, "")
-    except Exception:  # noqa: BLE001 - the renderer's refusal, reported by the render gate
-        return None
-
-
 def _validate_model_source_isolation(
     execution: NodeExecution, language: str, src_dir: Path, model_files: list[Path],
     violations: list[str], *, harness_spec_id: str | None = None,
