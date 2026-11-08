@@ -1148,7 +1148,7 @@ PINNED: dict[str, str] = {
     # leaf-94 (issue #610, PR-B2): the `mpi` producer and reviewer fragments state the
     # distributed driver (what it does, what reaches an operation, what is the kernel's).
     # Moved: those two fragments alone.
-    "leaf-94": "8eb63097d473ff36eff62575ac209fe8437a812049e3ddfe5d20d156115a7e13",
+    "leaf-94": "822078aca3199646cda69bca7aa23f6adc1a397f4ff6ae9dcff968bf96a088bd",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1174,7 +1174,7 @@ PINNED_READER: dict[str, str] = {
     "generate-verify-5": "4b1510fa3754ac74f5fca40a90a400b0495c2244921cae1df49da3883bb2a68a",
     # generate-verify-6 (issue #610, PR-B2): the `mpi` reviewer fragment judges a kernel under the
     # distributed driver. Moved: that fragment alone.
-    "generate-verify-6": "cc1701eb9c89ddd9204773174b60ca21c5c8e6133b90d19c035c4ff0ed627833",
+    "generate-verify-6": "7cc9f441734d945b41359c979b794bf2580c64c334a655e772278b66719d5769",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",

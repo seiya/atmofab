@@ -263,6 +263,15 @@ class PromptFragmentTests(unittest.TestCase):
         self.assertIn("the partition, the writers, the emitters, the gathers", producer)
         self.assertIn("decides a wall by `__grid_coord`", reviewer)
         self.assertIn("partitions again", reviewer)
+        # Round 1 of PR-B2: a sum over the ranks counts a cell once per rank holding it (a
+        # replicated case, a block along a dimension no axis takes), and the kernel cannot tell
+        # without the grid, so neither fragment offers `__reduce_sum` for a whole-field value
+        # nor a fix by the grid coordinate.
+        for text in (producer, reviewer):
+            self.assertIn("whole-field sum or mean", text)
+            self.assertNotIn("coordinate 0", text)
+        self.assertNotIn("goes through `<harness>__reduce_sum`", producer)
+        self.assertIn("goes through `<harness>__reduce_max` / `__reduce_min`", producer)
 
 
 class HarnessUseStatementTests(unittest.TestCase):

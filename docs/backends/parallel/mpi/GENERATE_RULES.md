@@ -96,6 +96,18 @@ A plan that declines MPI exempts nothing: the driver distributes from the IR wha
   `l0_min_extent` of muscl, coriolis and rk4 and `l0_min_extent` / `l0_min_extent_axis` of tc4.
   No workflow gate reads whether a node's `pass` cases distribute; a suite row over the bench does
   (`test_spec_corpus_versions.py`).
+- **A whole-field sum is not one a kernel can form.** A case the table replicates reaches every
+  rank whole, and a block of a node with fewer declared axes than the grid has dimensions reaches
+  every rank along the other dimension; a kernel cannot tell how many ranks hold its cells
+  without deciding from the grid (the reviewer's finding), so `__reduce_sum` over the ranks counts
+  each such cell once per rank holding it. Fixture model (3) summing its block's cell count
+  through it, case `c6`, measured 6 on `(1, 1)`, `(2, 1)`, `(3, 1)` and `(4, 1)`, 12 on `(2, 2)`
+  and `(1, 2)`, 18 on `(1, 3)` and 24 on `(1, 4)` (2026-11-08). Only a reduction a copy does not
+  change gives the whole field's value: `__reduce_min` / `__reduce_max`, and `__reduce_sum_int`
+  as a count compared against zero (whether any rank refuses). A `problem` whose spec needs a
+  whole-field sum or mean is not buildable on this driver. Corpus need: none — on 2026-11-08 no
+  `problem` model generated for `fortran_cpu_mpi` called `__reduce_sum` (two `component` models
+  of 2026-10-17 did, and the floor now refuses a component that names a harness operation).
 - **A node with `distribute: none`** is certified as the kernel's result on rank 0 of a replicated
   run, with the reduced result and the series extremes the only cross-rank facts in the record.
   Rank-independence of such a `component` rests on the floor (no harness name in its model); a
