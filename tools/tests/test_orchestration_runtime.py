@@ -22124,8 +22124,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `distribute:` clause): bumped 107500->110050; measured 109989 after review round 1
         # stated the `distribute:` line's form once, in docs/TESTS.md (110117 before that).
         # Issue #610 PR-B3 (a dummy that needs the case's whole count binds `derived`: the
-        # BINDINGS comment and V3 (iv)): bumped 110050->110650; measured 110594 at this commit.
-        "docs/workflow/phases/phase_01_compile.md": 110650,
+        # BINDINGS comment and V3 (iv)): bumped 110050->110650; measured 110594 at b35b64b2.
+        # Review round 1 (the `block.<axis>.first` binding, the extent-dummy exception, the
+        # `extended` count): bumped 110650->111100; measured 111036.
+        "docs/workflow/phases/phase_01_compile.md": 111100,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
