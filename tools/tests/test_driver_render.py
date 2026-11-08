@@ -1033,7 +1033,7 @@ def prob_ir() -> dict[str, Any]:
             _arg("ny_g", "in", INT), _arg("i0", "in", INT), _arg("j0", "in", INT),
             _arg("refuse_init", "in", INT),
             _arg("h", "out", REAL, ["nx", "ny"]), _arg("dt", "out", REAL),
-            _arg("ok", "out", LOGICAL)],
+            _arg("n_cells", "out", INT), _arg("ok", "out", LOGICAL)],
         f"{sid}__step": [
             _arg("nx", "in", INT), _arg("ny", "in", INT), _arg("nx_g", "in", INT),
             _arg("ny_g", "in", INT), _arg("i0", "in", INT), _arg("j0", "in", INT),
@@ -1046,7 +1046,7 @@ def prob_ir() -> dict[str, Any]:
                                 {"name": "y", "cells": "inputs.ny", "min_block": 2}]},
         "init": {"operation": f"{sid}__init", "result": "ok", "arguments": {
             **common, "refuse_init": "inputs.refuse_init", "h": "state.h", "dt": "state.dt",
-            "ok": "state.init_ok"}},
+            "n_cells": "state.n_cells", "ok": "state.init_ok"}},
         "step": {"operation": f"{sid}__step", "result": "ok", "arguments": {
             **common, "refuse_at": "inputs.refuse_at", "stepno": "step", "dt": "state.dt",
             "h": "state.h", "ok": "state.step_ok"}},
@@ -1060,6 +1060,7 @@ def prob_ir() -> dict[str, Any]:
                                                      ("ny8r", 8, 3, 0), ("ny8i", 8, -1, 1))]
     tests, predicates = _one_test_per_case(
         cases, [("init", "min(initial.h) + initial.dt + initial.init_ok", "gt", 1.0),
+                ("n_cells", "initial.n_cells - inputs.nx * inputs.ny", "eq", 0),
                 ("run.n_step", "final.step - inputs.n_step", "eq", 0),
                 ("h", "maxabs(final.h)", "gt", 0.0)],
         xfail={"ny8r": [("step_ok", "final.step_ok", "eq", 0),
@@ -1067,7 +1068,8 @@ def prob_ir() -> dict[str, Any]:
                "ny8i": [("init_ok", "final.init_ok", "eq", 0),
                         ("h", "maxabs(final.h)", "gt", 0.0)]})
     return _mpi_ir(sid, "problem", ops, drive, cases,
-                   {"h": "[nx, ny]", "dt": "scalar", "init_ok": "scalar", "step_ok": "scalar"},
+                   {"h": "[nx, ny]", "dt": "scalar", "n_cells": "scalar", "init_ok": "scalar",
+                    "step_ok": "scalar"},
                    tests, predicates)
 
 
@@ -1446,10 +1448,10 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
             build, reference, grids, cases=cases, timeout=30), label)
 
     def test_an_init_scalar_unequal_across_the_ranks_stops_the_run(self) -> None:
-        """B8: after an accepted `init`, a rank-0 real it wrote must agree across the ranks. Model
-        (2) taking its step size from its block's counts gives each rank its own `dt` under
-        `(3, 1)` (blocks of 3, 3 and 2 cells), and the run stops naming it; a `(2, 2)` run, whose
-        blocks are equal, agrees across the ranks and differs from the singleton instead."""
+        """B8: after an accepted `init`, a rank-0 real or integer it wrote must agree across the
+        ranks. Model (2) taking its step size from its block's counts gives each rank its own `dt`
+        under `(3, 1)` (blocks of 3, 3 and 2 cells), and the run stops naming it; a `(2, 2)` run,
+        whose blocks are equal, agrees across the ranks and differs from the singleton instead."""
         ir = prob_ir()
         model = (MPI_DATA / "fx_prob_model.f90").read_text()
         old = "    dt = 0.8_dp / real(nx_g + ny_g, dp)"
@@ -1467,6 +1469,16 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         run = self._build(ir, model=nan).run((2, 1), cases=["ny8"])
         self.assertNotEqual(run.rc, 0)
         self.assertIn("error: init wrote a non-finite dt on a rank for case ny8", run.stderr)
+        # An integer `out` is checked the same way (channel's `n_step_plan`): the count of the
+        # block's cells instead of the field's differs per rank under `(3, 1)`.
+        old = "    n_cells = nx_g * ny_g"
+        self.assertEqual(model.count(old), 1)
+        build = self._build(ir, model=model.replace(old, "    n_cells = nx * ny"))
+        run = build.run((3, 1), cases=["ny8"])
+        self.assertNotEqual(run.rc, 0)
+        self.assertIn("error: init wrote n_cells unequal across the ranks for case ny8",
+                      run.stderr)
+        self.assertEqual(build.run(SINGLETON, cases=["ny8"]).rc, 0)
 
     def test_the_interior_upper_face_is_in_no_record(self) -> None:
         """B10's documented limit: each shared face is taken from the right neighbour's first
