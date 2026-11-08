@@ -1,6 +1,12 @@
-! 2D shallow water channel (problem/shallow_water2d_channel@0.3.1): a hand edit of the certified
+! 2D shallow water channel (problem/shallow_water2d_channel@0.4.0): a hand edit of the certified
 ! 0.2.5 model (issue #589 D3). The setup is __init; the loop and the run reductions are the
 ! host-rendered driver's; __step is one committed step of the certified loop body.
+! 0.4.0 (issue #610 PR-B3): __init takes the block it is handed (spec §5, the block): the case's
+! counts nx_g, ny_g and the block's first global indices i0, j0. The spacing comes from nx_g, ny_g,
+! the coordinates and the tc3 quadrature from the global index, and the wall sides from the global
+! index (m_wall_lo, m_wall_hi). This model is the SERIAL one, built against the single-process
+! harness: it fills no block side from a neighbour, so it computes the whole grid only (both
+! sides across the channel wall sides, nx = nx_g, ny = ny_g) and stops on any other block.
 ! Periodic along the channel, free-slip mirror walls across it, beta-plane Coriolis,
 ! p1 MUSCL-MC reconstruction, Rusanov flux, classic RK4 (method of lines).
 ! Setup (IR steps 01-06) is shallow_water2d_channel__init; shallow_water2d_channel__step performs
@@ -40,6 +46,8 @@ module shallow_water2d_channel_model
   integer :: m_ng = 2
   integer :: m_wall_axis = 2
   integer :: m_along_axis = 1
+  logical :: m_wall_lo = .true.
+  logical :: m_wall_hi = .true.
   real(dp) :: m_g = 0.0_dp
   real(dp) :: m_dx = 0.0_dp
   real(dp) :: m_dy = 0.0_dp
@@ -60,14 +68,18 @@ module shallow_water2d_channel_model
 contains
 
   ! IR steps 01-06: validation, grid, Coriolis, initial state, tc4 setup, dt rule.
-  subroutine shallow_water2d_channel__init(nx, ny, L_x, L_y, ng, t_start, t_end, &
-      cfl_target, dt_scale, g, Omega, a, theta0, along_axis, flow_profile_id, zonal_sign, gh0, &
+  subroutine shallow_water2d_channel__init(nx, ny, nx_g, ny_g, L_x, L_y, ng, i0, j0, t_start, &
+      t_end, cfl_target, dt_scale, g, Omega, a, theta0, along_axis, flow_profile_id, zonal_sign, gh0, &
       eta0, shift_x_fraction, u_jet, h, hu, hv, dt, n_step_plan, init_ok)
     integer, intent(in) :: nx
     integer, intent(in) :: ny
+    integer, intent(in) :: nx_g
+    integer, intent(in) :: ny_g
     real(dp), intent(in) :: L_x
     real(dp), intent(in) :: L_y
     integer, intent(in) :: ng
+    integer, intent(in) :: i0
+    integer, intent(in) :: j0
     real(dp), intent(in) :: t_start
     real(dp), intent(in) :: t_end
     real(dp), intent(in) :: cfl_target
@@ -91,7 +103,7 @@ contains
     logical, intent(out) :: init_ok
 
     logical :: is_x
-    integer :: prof, i, j, k, nr, nq, q
+    integer :: prof, i, j, k, nr, nq, q, k0
     real(dp) :: sigma, l_s, l_r, f0, beta, h0, u0, uj, kw, dr, hs, rq, acc
     real(dp) :: r_b, r_e, s, r, us, ur, h_tc2, xi, rho2, psi, psi_s, psi_r
     real(dp) :: u_t, v_t, h_t, f_mid, lam0, dt_raw
@@ -134,16 +146,16 @@ contains
     ! --- step 02: grid ----------------------------------------------------------------
     m_g = g
     m_ng = ng
-    m_dx = l_x / real(nx, dp)
-    m_dy = l_y / real(ny, dp)
+    m_dx = l_x / real(nx_g, dp)
+    m_dy = l_y / real(ny_g, dp)
     if (allocated(m_xc)) deallocate(m_xc)
     if (allocated(m_yc)) deallocate(m_yc)
     allocate(m_xc(nx), m_yc(ny))
     do i = 1, nx
-      m_xc(i) = (real(i, dp) - 0.5_dp) * m_dx
+      m_xc(i) = (real(i0 + i - 1, dp) - 0.5_dp) * m_dx
     end do
     do j = 1, ny
-      m_yc(j) = (real(j, dp) - 0.5_dp) * m_dy
+      m_yc(j) = (real(j0 + j - 1, dp) - 0.5_dp) * m_dy
     end do
     if (is_x) then
       sigma = 1.0_dp
@@ -155,6 +167,9 @@ contains
       m_odd_hv = .true.
       nr = ny
       dr = m_dy
+      k0 = j0
+      m_wall_lo = j0 == 1
+      m_wall_hi = j0 + ny - 1 == ny_g
     else
       sigma = -1.0_dp
       l_s = l_y
@@ -165,7 +180,12 @@ contains
       m_odd_hv = .false.
       nr = nx
       dr = m_dx
+      k0 = i0
+      m_wall_lo = i0 == 1
+      m_wall_hi = i0 + nx - 1 == nx_g
     end if
+    if (.not. (m_wall_lo .and. m_wall_hi .and. nx == nx_g .and. ny == ny_g)) &
+      error stop 'shallow_water2d_channel: this serial model computes the whole grid only'
 
     ! --- step 03: beta-plane Coriolis parameter -----------------------------------------
     f0 = 2.0_dp * omega * sin(theta0)
@@ -202,7 +222,7 @@ contains
       hs = dr / 64.0_dp
       !$omp parallel do private(nq, q, rq, acc) schedule(dynamic)
       do k = 1, nr
-        nq = 64 * k - 32
+        nq = 64 * (k0 + k - 1) - 32
         acc = 0.0_dp
         do q = 0, nq
           rq = real(q, dp) * hs
@@ -215,7 +235,7 @@ contains
           end if
         end do
         h_line(k) = h0 - (sigma / g) * (hs / 3.0_dp) * acc
-        us_line(k) = jet_speed((real(k, dp) - 0.5_dp) * dr, r_b, r_e, u0, x_e)
+        us_line(k) = jet_speed((real(k0 + k - 1, dp) - 0.5_dp) * dr, r_b, r_e, u0, x_e)
       end do
       !$omp end parallel do
     end if

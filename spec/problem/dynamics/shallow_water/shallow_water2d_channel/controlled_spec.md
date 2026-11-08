@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d_channel`
-- `spec_version`: `0.3.1`
+- `spec_version`: `0.4.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -43,7 +43,7 @@ The coordinate system is 2D Cartesian coordinates, the coordinate names are `x`,
 The derived variables are `u=hu/h`, `v=hv/h`, and `c=sqrt(g*h)`. `h<=0` is invalid input.
 
 ## 3. Type definition of domain and boundary conditions
-The domain is the channel $[0,L_x]\times[0,L_y]$, periodic along the channel. The grid is a uniform cell-centered finite-volume grid with `nx` × `ny` interior cells, $dx=L_x/nx$, $dy=L_y/ny$, cell centres $x_i=(i-\tfrac12)dx$, $y_j=(j-\tfrac12)dy$ for $i=1..nx$, $j=1..ny$, and two ghost cells on each side (`ng=2`). The arrays are indexed $(i, j)$ in either orientation: the first array axis is `x` and the second is `y`.
+The domain is the channel $[0,L_x]\times[0,L_y]$, periodic along the channel. The grid is a uniform cell-centered finite-volume grid with `nx` × `ny` interior cells (the case inputs `nx`, `ny` of §6; §5 states how the block an operation is handed lies on this grid), $dx=L_x/nx$, $dy=L_y/ny$, cell centres $x_i=(i-\tfrac12)dx$, $y_j=(j-\tfrac12)dy$ for $i=1..nx$, $j=1..ny$, and two ghost cells on each side (`ng=2`). The arrays are indexed $(i, j)$ in either orientation: the first array axis is `x` and the second is `y`.
 
 The boundary condition is fixed by `channel_axis`: periodic along the channel, and a free-slip impermeable wall at $r=0$ and $r=L_r$. For `channel_axis=x` the channel is periodic in `x` with walls at $y=0$ and $y=L_y$; for `channel_axis=y` it is periodic in `y` with walls at $x=0$ and $x=L_x$. The wall is realized as a mirror ghost — `h` and the along-channel momentum copied, the cross-channel momentum sign-reversed into the two ghost lines beyond the wall (`hv` into the ghost rows for `channel_axis=x`, `hu` into the ghost columns for `channel_axis=y`) — by the boundary `component` the adopted `profile` selects (§4). The reconstruction `component`'s §2 states the property of its interface states on a mirror-ghost field: at a wall interface the two states of `h` and of the along-wall momentum are equal and those of the wall-normal momentum opposite, so the interface mass flux and the along-wall momentum flux through the wall are exactly zero, and the wall-face `h` equals the cell-centre `h` of the wall-adjacent line, so the $O(\Delta r)$ wall-pressure property that the boundary `component`'s §2 states holds unchanged. The prescribed flow of `tc4_translating_low` has zero background velocity at both walls and a low whose streamfunction at a wall satisfies $|\psi|\le|\psi_0|\,e^{-(L_r/2)^2/R_{low}^2}$ ($1.1\times10^{-7}\,|\psi_0|$ at $L_r=8R_{low}$, the channel of `tests.md`; §6), so the mirror ghost departs from that flow at the walls by that relative amount in `h` and in the wall-normal velocity, and by about $10^{-6}$ of its maximum in the along-wall velocity of the low (the forcing `component`'s §2); this departure is part of the discretization and is not corrected. The default input used for verification is defined in `tests.md`.
 
@@ -111,6 +111,12 @@ The published `operation_id`s are exactly `shallow_water2d_channel__init` and `s
 
 The model holds data between `shallow_water2d_channel__init` and `shallow_water2d_channel__step`: the run-fixed data `rhs` is bound to (§5), such as `dx`, `dy`, `g` and the setup-time arrays of §6. It is no state variable and is in no capture, and the driver does not reset it between cases, so `shallow_water2d_channel__init` establishes every field of it that `shallow_water2d_channel__step` reads, in every case.
 
+**The block.** Each operation computes over the block of the grid of §3 that it is handed, and the block's indices are arguments of §5.1. The arguments `nx`, `ny` are the block's interior counts, `nx_g`, `ny_g` are the case's interior counts (the `nx`, `ny` of §3 and §6), and `i0`, `j0` are the global indices, counted from 1, of the block's first cell along `x` and `y`. The block is the cells $i_0..i_0+nx-1$ along `x` and $j_0..j_0+ny-1$ along `y`, and its cell $(i, j)$ is the grid's cell $(i_0+i-1,\ j_0+j-1)$; the arrays `h`, `hu`, `hv` of both operations hold the block's cells. When the block is the whole grid, `nx` = `nx_g`, `ny` = `ny_g` and `i0` = `j0` = 1. `shallow_water2d_channel__step` is handed the block of its case's `shallow_water2d_channel__init` and takes the block's indices from the data that call establishes.
+- `shallow_water2d_channel__init` evaluates every setup-time field at the grid's index: the spacing is $dx=L_x/nx_g$ and $dy=L_y/ny_g$, the cell centres of the block are $x_i=(i_0+i-1-\tfrac12)\,dx$ and $y_j=(j_0+j-1-\tfrac12)\,dy$, and the `tc3_compact_jet` quadrature of §6 at the block's cross-channel line $k$ runs to the cross-channel coordinate of the grid's line $k_0+k-1$, with $k_0=j_0$ for `channel_axis=x` and $k_0=i_0$ for `channel_axis=y`.
+- A quantity that §6 or `tests.md` §3 defines over the whole grid — the maximum $\lambda_0$ of the `dt` procedure, and so `dt` and `n_step_plan` — has the value of the whole grid on every block of a case.
+- A side of the block across the channel is a wall side by its global index alone: for `channel_axis=x`, the lower `y` side lies on the wall $y=0$ if and only if $j_0=1$, and the upper `y` side on the wall $y=L_y$ if and only if $j_0+ny-1=ny_g$; for `channel_axis=y`, the same holds along `x` with $i_0$, `nx` and `nx_g`. The kernel decides a wall side from these indices and from nothing it queries of its execution environment.
+- The ghost lines beyond a wall side are the mirror ghost of §3 (step 1). The ghost lines beyond every other side of the block hold the grid's cells that lie there, with the periodic mapping along the channel; on a block that is not the whole grid, the values step 1's boundary `component` writes into those lines are replaced by those cells before step 2 reads them. When the block is the whole grid, both sides across the channel are wall sides and step 1 writes every ghost line.
+
 A change breaking compatibility of a published signature — the argument names, their order, their types, their ranks, or their `intent`s — is a breaking change released under a new `spec_version`.
 
 ### 5.1 Canonical interface block
@@ -135,6 +141,16 @@ procedures:
     intent: in
     spec:
       type: integer
+  - name: nx_g
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: ny_g
+    rank: 0
+    intent: in
+    spec:
+      type: integer
   - name: L_x
     rank: 0
     intent: in
@@ -148,6 +164,16 @@ procedures:
       type: real
       kind: dp
   - name: ng
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: i0
+    rank: 0
+    intent: in
+    spec:
+      type: integer
+  - name: j0
     rank: 0
     intent: in
     spec:
@@ -408,7 +434,7 @@ $$
 $$
 and it is an exact solution of the equations of §1 with the forcing $Q$ that `dynamics_shallow_water_source_2d_tc4_forcing` §3 defines, with that `component`'s `S` as $Q$, its `along_axis` as in §5 step 6, its per-cell arguments `f`, `dfdr`, `ubar`, `dubar`, `hbar` the values at the cell centre of $f(r)$, $\beta$, $\bar u(r)$, $\bar u'(r)=U_j\,k\sin 2kr$ and $\bar h(r)$, and `x`, `y`, `g`, `L_along` $=L_s$, `psi0`, `R_low`, `c_tr`, `s_c0`, `r_c` the values above. The derivatives `dfdr` and `dubar` are the closed forms stated here and not differences of the arrays. The five per-cell arrays, the cell-centre coordinates and the parameters of the low are evaluated once at setup. The initial state is the prescribed flow at $t=0$ at the cell centres $(x_i, y_j)$: $h=\tilde h$, $hu=\tilde h\,\tilde u$, $hv=\tilde h\,\tilde v$. The reference solution at time $t$ is the prescribed flow at $t$; the centre of the low moves a distance $c_{tr}\,t$ along the channel, so $\tilde h(x,y,t)-\tilde h(x,y,0)=f\,(\psi(x,y,t)-\psi(x,y,0))/g$.
 
-The integral of `tc3_compact_jet` is evaluated by composite Simpson quadrature on a uniform sub-grid of spacing $\Delta r/64$ (with $\Delta r=dy$ for `channel_axis=x`, $dx$ for `channel_axis=y`) from $r'=0$ to the $j$-th cell-centre cross-channel coordinate $r_j=(j-\tfrac12)\Delta r$, which spans $64j-32$ sub-intervals (an even count for every $j$); this quadrature is part of the definition of the discrete initial state and is not an implementation choice. $u_s$ has compact support in $(r_b, r_e)$ and its largest magnitude is $|u_0|$ at $\zeta=x_e/2$. Because $r_b+r_e=L_r$ and $u_s$ is symmetric about $L_r/2$, the $\beta$ term of $f$ integrates to zero over the support, and the depth beyond the jet ($r>r_e$) is the constant
+The integral of `tc3_compact_jet` is evaluated by composite Simpson quadrature on a uniform sub-grid of spacing $\Delta r/64$ (with $\Delta r=dy$ for `channel_axis=x`, $dx$ for `channel_axis=y`) from $r'=0$ to the $j$-th cell-centre cross-channel coordinate $r_j=(j-\tfrac12)\Delta r$, with $j$ the grid's line index (§5, the block), which spans $64j-32$ sub-intervals (an even count for every $j$); this quadrature is part of the definition of the discrete initial state and is not an implementation choice. $u_s$ has compact support in $(r_b, r_e)$ and its largest magnitude is $|u_0|$ at $\zeta=x_e/2$. Because $r_b+r_e=L_r$ and $u_s$ is symmetric about $L_r/2$, the $\beta$ term of $f$ integrates to zero over the support, and the depth beyond the jet ($r>r_e$) is the constant
 $$
 h_N=h_0-\sigma\,\frac{f_0\,u_0\,e^{4/x_e}}{g}\,\frac{r_e-r_b}{x_e}\,C,\qquad C=\int_0^{x_e}e^{-1/\zeta-1/(x_e-\zeta)}\,d\zeta=1.12064479227927\times10^{-7}
 $$
@@ -423,7 +449,7 @@ The runtime input requires the following.
 - `t_start`, `t_end`
 - `dt_rule`, with its `cfl_target` and `dt_scale`
 
-The arguments of §5.1 are numbers, so two of these inputs reach `shallow_water2d_channel__init` by number: `channel_axis` as `along_axis`, the array axis along the channel of §5 step 6 (`1` for `x`, `2` for `y`), and `flow_profile` as `flow_profile_id` (`1` for `tc2_zonal_uniform`, `2` for `tc3_compact_jet`, `3` for `tc2_zonal_perturbed`, `4` for `tc4_translating_low`). `coriolis_profile` and `dt_rule` each have one allowed value and are no argument. `eta0`, `shift_x_fraction` and `u_jet` are arguments in every case, and a `flow_profile` that does not define one does not read it.
+The arguments of §5.1 are numbers, so two of these inputs reach `shallow_water2d_channel__init` by number: `channel_axis` as `along_axis`, the array axis along the channel of §5 step 6 (`1` for `x`, `2` for `y`), and `flow_profile` as `flow_profile_id` (`1` for `tc2_zonal_uniform`, `2` for `tc3_compact_jet`, `3` for `tc2_zonal_perturbed`, `4` for `tc4_translating_low`). `coriolis_profile` and `dt_rule` each have one allowed value and are no argument. `eta0`, `shift_x_fraction` and `u_jet` are arguments in every case, and a `flow_profile` that does not define one does not read it. The four further arguments `nx_g`, `ny_g`, `i0` and `j0` are no runtime input: `nx_g` and `ny_g` carry the values of `nx` and `ny`, and `i0` and `j0` locate the block an operation is handed (§5).
 
 `along_axis` other than `1` or `2`, `flow_profile_id` outside `1` to `4`, `ng` other than `2`, `zonal_sign` other than `+1` or `-1`, `Omega = 0`, and `theta0` outside $0<|\theta_0|<\pi/2$ are errors at setup: `shallow_water2d_channel__init` writes `init_ok` as `false`.
 

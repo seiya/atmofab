@@ -828,6 +828,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-28 (issue #610, PR-B1): `phase_01_compile.md` states `drive.distribute`, the
     # `block.<axis>.first` binding, gates (n) and (o) and V3 (iv)'s `distribute:` clause.
     "compile-docs-28": "8a8eb609c64741c4ca74eff37fcbb8d9e19e21ecf5b5aaac587c58c3e5a7d57c",
+    # compile-docs-29 (issue #610, PR-B3): `phase_01_compile.md` states that a dummy bound to an
+    # axis's `cells` / `extended` input receives the block's count (plus twice the ghost width for
+    # `extended`) where the driver hands a block,
+    # and that a dummy needing the case's whole count binds `derived` (BINDINGS, V3 (iv)); review
+    # round 1 added the `block.<axis>.first` binding of a first-global-index dummy and the
+    # extent-dummy exception, and review round 2 scoped the whole-count clause to a node with
+    # an axis (the version was unreleased, so its digest moved in place each time).
+    "compile-docs-29": "c32a21eb875b67af5aa43881584f4bc033b7f813cd08499fbe2de58539c1e578",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
