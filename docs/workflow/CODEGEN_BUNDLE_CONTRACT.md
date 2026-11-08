@@ -444,9 +444,7 @@ harness in the manifest provides it now.) `distributed_state@2` carries one rule
 every caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
 values. Like `sync_single_case@1` it names operations of the harness source, so the harness's own
 `Generate.static` pin of §5.1 enforces the operations, and so does the language backend's
-`assert_harness_pin`. A physics node on a target whose parallel backend declares a launcher is
-refused at preflight (`driver_distributed_pending`, `docs/ORCHESTRATION.md`) until the distributed
-driver lands. What a bundle states to be driven this way is
+`assert_harness_pin`. What a bundle states to be driven this way is
 `target_lowering_plan.state_residency: distributed` with `distributed_state@2` among its
 `capability_requirements` (the residency coupling below).
 

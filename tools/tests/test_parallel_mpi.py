@@ -241,6 +241,29 @@ class PromptFragmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prompts.fragments("compile_generate")
 
+    def test_the_fragments_state_what_the_distributed_driver_does_and_leaves(self) -> None:
+        """Issue #610 (plan B §3.4): the host-rendered driver decomposes, slices, gathers and
+        makes the stop uniform, so the producer is told no decomposition of its own, no partition
+        call and no declining plan, and is told what reaches its operations (the block's count,
+        the case's through `derived`, the offset through `block.<axis>.first`) and the wall rule
+        by global index; the reviewer is told the same and what is the finding. Neither says the
+        node is refused, which it was until PR-B2."""
+        producer = prompts.fragments("generate_generate")["target_lowering_floor"]
+        reviewer = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
+        for text in (producer, reviewer):
+            self.assertNotIn("driver_distributed_pending", text)
+            self.assertNotIn("refused at preflight", text)
+            self.assertNotIn("decomposition", text)
+            self.assertNotIn("__partition(", text)
+            self.assertIn("block.<axis>.first", text)
+            self.assertIn("`derived` binding", text)
+            self.assertIn("GLOBAL index", text)
+        self.assertNotIn('"model": "none"', producer)
+        self.assertIn("receives the BLOCK's count", producer)
+        self.assertIn("the partition, the writers, the emitters, the gathers", producer)
+        self.assertIn("decides a wall by `__grid_coord`", reviewer)
+        self.assertIn("partitions again", reviewer)
+
 
 class HarnessUseStatementTests(unittest.TestCase):
     """Issue #316 round 1: the prohibition on a physics source naming the harness was stated

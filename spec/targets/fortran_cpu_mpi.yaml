@@ -15,9 +15,10 @@
 # dimension only, a remainder cell under 3 ranks, a wrap across a rank boundary — disagrees with
 # the quality check's serial reference (one process, grid (1, 1)) under one of them.
 #
-# A component or problem node built for this target is distributed over the ranks through the
-# harness (docs/backends/parallel/mpi/GENERATE_RULES.md), and its host-rendered runner gathers
-# the partitioned state onto rank 0 before it is captured (issue #316 PR-4).
+# A component or problem node built for this target is distributed over the ranks by its
+# host-rendered driver: it distributes the state the IR declares, calls the node's operations on
+# each rank's block, and gathers that state onto rank 0 before it is captured (issue #610,
+# docs/backends/parallel/mpi/GENERATE_RULES.md).
 target_profile_version: 1
 target_id: fortran_cpu_mpi
 hardware:
