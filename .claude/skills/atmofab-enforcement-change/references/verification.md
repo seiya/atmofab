@@ -89,7 +89,16 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   rows with a bare `skipUnless(NVCC, ...)`: `nvcc` is on the operator's PATH, so the suite and the
   empty-`HOME` run were green and CI refused 37 of them. Use `skip_probes.skip_unless_installed`,
   and before the push run once with every tool CI lacks hidden, under `--junitxml`, then the
-  report check over that file (`refused=0`). And read a CI run's result from a fresh
+  report check over that file (`refused=0`). **That run is one command**:
+  `python3 .claude/skills/atmofab-review-loop/scripts/ci_shape_suite.py` from the checkout root.
+  It hides exactly the executables `skip_probes.DEPENDENCIES` names, gives the run an empty
+  `HOME`, and runs the report check in the same environment; exit 0 means both passed. Do not
+  rebuild it by hand — the three hand-built failures it absorbs: dropping a whole PATH directory
+  to hide a CLI also drops the linters installed beside it (129 and 220 false failures, on PR
+  #557 and issue #610 PR-B3); an empty `HOME` hides a `pip install --user` pytest, so the run
+  dies with `No module named pytest` and no summary line unless the user site-packages go on
+  `PYTHONPATH`; and a shell loop that builds the PATH in zsh syntax is refused by the agent
+  session's command check before it runs. And read a CI run's result from a fresh
   `gh pr view --json statusCheckRollup`: on the installed `gh` 2.4.0, `gh run watch --exit-status`
   returned 0 on that failed run.
   **A nonzero skip count in the summary line is the trigger, and it is easy to read past**: issue
