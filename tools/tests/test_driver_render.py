@@ -1480,6 +1480,48 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                       run.stderr)
         self.assertEqual(build.run(SINGLETON, cases=["ny8"]).rc, 0)
 
+    def test_a_committed_nan_on_another_rank_reaches_the_series_on_every_grid(self) -> None:
+        """B9: model (2) committing a NaN at the global last cell after its first step, and
+        clearing it at the next, writes it into no history sample (`every` 2) and into the
+        series' first entry: on the singleton, whose block is the whole field, and on every grid
+        of the sweep, where a distributed case holds the cell on the last rank's block and only
+        the non-finite flag summed over the ranks carries it to rank 0's entry (`minval` skips a
+        NaN). The loader refuses the series on each, as it does the serial driver's."""
+        ir = prob_ir()
+        model = (MPI_DATA / "fx_prob_model.f90").read_text()
+        for old, new in (
+                ("  use harness_fortran_cpu_mpi_model,",
+                 "  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, "
+                 "ieee_is_nan\n  use harness_fortran_cpu_mpi_model,"),
+                ("    he = 0.0_dp\n    he(1:nx, 1:ny) = h\n",
+                 "    he = 0.0_dp\n    if (ieee_is_nan(h(nx, ny))) h(nx, ny) = 10.0_dp\n"
+                 "    he(1:nx, 1:ny) = h\n"),
+                ("          + 0.5_dp * he(i, j + 1) - 4.5_dp * he(i, j))\n      end do\n"
+                 "    end do\n",
+                 "          + 0.5_dp * he(i, j + 1) - 4.5_dp * he(i, j))\n      end do\n"
+                 "    end do\n    if (stepno == 0 .and. i0 + nx - 1 == nx_g .and. "
+                 "j0 + ny - 1 == ny_g) h(nx, ny) = ieee_value(1.0_dp, ieee_quiet_nan)\n")):
+            self.assertEqual(model.count(old), 1, old)
+            model = model.replace(old, new)
+        build = self._build(ir, model=model)
+        for grid in (SINGLETON, *MPI_GRIDS):
+            with self.subTest(grid=grid):
+                run = build.run(grid, cases=["ny4", "ny8"], timeout=60)
+                self.assertEqual(run.rc, 0, run.stderr[-1000:])
+                snaps = run.snapshots()
+                for cid in ("ny4", "ny8"):
+                    series = snaps[f"series/{cid}.json"]
+                    for name in ("h_min", "h_max"):
+                        column = np.asarray(series[name], float)
+                        self.assertTrue(np.isnan(column[0]), (cid, name))
+                        self.assertTrue(np.isfinite(column[1:]).all(), (cid, name))
+                    for key in (f"initial/{cid}.json", f"{cid}.json",
+                                *(f"history/{cid}__{n}.json" for n in (2, 4, 6))):
+                        self.assertTrue(np.isfinite(np.asarray(snaps[key]["h"], float)).all(),
+                                        key)
+                    with self.assertRaises(pe.PrimaryEvidenceError):
+                        pe._load_series(run.dir / "raw" / "state_snapshots", cid)
+
     def test_the_interior_upper_face_is_in_no_record(self) -> None:
         """B10's documented limit: each shared face is taken from the right neighbour's first
         position, so an interior block's upper face is in no record. Model (1) wrong at its LAST
