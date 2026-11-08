@@ -22123,7 +22123,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Issue #610 PR-B1 (`drive.distribute`, `block.<axis>.first`, gates (n) / (o), V3 (iv)'s
         # `distribute:` clause): bumped 107500->110050; measured 109989 after review round 1
         # stated the `distribute:` line's form once, in docs/TESTS.md (110117 before that).
-        "docs/workflow/phases/phase_01_compile.md": 110050,
+        # Issue #610 PR-B3 (a dummy that needs the case's whole count binds `derived`: the
+        # BINDINGS comment and V3 (iv)): bumped 110050->110650; measured 110594 at this commit.
+        "docs/workflow/phases/phase_01_compile.md": 110650,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
