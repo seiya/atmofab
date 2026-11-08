@@ -75,6 +75,15 @@ more than one finding, stage that file with `git add -p` or commit the findings 
 file was edited.** And read the stat BEFORE writing the message rather than after — writing it
 first and staging second is how a correct-looking message gets attached to the wrong diff.
 
+**A commit that changes what a suite row reads against must carry the other half.** Issue #610
+PR-B3 gave a `spec`'s §5.1 four arguments in its first commit and the bench IR the signature pin
+compares against them three commits later, so those three commits are red on
+`test_spec_corpus_versions.py` and a bisect over `main` can land on them; the suite ran only at the branch
+head, so nothing said so until the disclosure round. Before committing a `spec`
+signature, a contract version or a pinned document, name the rows that compare against it, and
+put their fixture change in the same commit — or run the suite on each commit before the push
+(a worktree per revision).
+
 **When it has already happened and the commit is pushed or built on, do not rewrite history to
 tidy it** — say in the later commit which finding's work is in which commit, and why. A reader
 looking for a witness needs the pointer more than the history needs to be neat; and give them a
