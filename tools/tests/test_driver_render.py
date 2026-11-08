@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from typing import Any
 
 import numpy as np
@@ -739,11 +741,19 @@ class ProblemModelGateTest(unittest.TestCase):
 
 
 class RenderRefusalTest(unittest.TestCase):
-    def test_a_distributed_harness_has_no_driver_yet(self) -> None:
-        with self.assertRaises(RenderError) as caught:
-            f_runner.render_runner(loop_ir(0), "drv_toy", "harness_fortran_cpu_mpi", target=CPU)
-        self.assertIn(f_runner.DRIVER_DISTRIBUTED_PENDING, str(caught.exception))
-        self.assertTrue(caught.exception.identity)
+    def test_a_distributed_harness_takes_the_distributed_form(self) -> None:
+        """Issue #610: what was refused here as `driver_distributed_pending` until PR-B2 renders
+        the distributed form; an axis-less node keeps the serial body under the distributed
+        harness's names, with rank 0 writing and the result reduced, and no partition."""
+        text = f_runner.render_runner(loop_ir(0), "drv_toy", "harness_fortran_cpu_mpi",
+                                      target=CPU)
+        self.assertIn("  call harness_fortran_cpu_mpi__init()", text)
+        self.assertIn("lg_ok = nok == nranks", text)
+        self.assertIn("    if (rank == 0) call harness_fortran_cpu_mpi__write_snapshot(cid, vals, t_c)",
+                      text)
+        self.assertNotIn("__partition", text)
+        self.assertNotIn("nranks", f_runner.render_runner(loop_ir(0), "drv_toy",
+                                                          "harness_fortran_cpu", target=CPU))
 
     def test_an_ir_with_no_drive_is_refused_as_content(self) -> None:
         ir = loop_ir(0)
@@ -884,6 +894,684 @@ class ProcedureGateTest(unittest.TestCase):
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "call record"):
             pe.evaluate_case_inputs(ir)
 
+
+# --- the distributed driver, compiled and run under the launcher (issue #610, PR-B2) -------------
+#
+# `data/driver_e2e/mpi/` holds the certified `harness_fortran_cpu_mpi@0.2.0` model with three
+# blocks of the certified `harness_fortran_cpu@0.10.0` model inserted under its names (the
+# variables of the reading state, `__parse_cases` in the form that keeps the spec path, and
+# `__read_case` with its getters): `0.4.0`'s surface by hand, held to the real `0.4.0` §5.1 by
+# `assert_harness_pin` below. Four hand-written models, each with the IR its builder returns and the
+# `tests.md` line gate (o) holds that IR to.
+
+MPI_DATA = DATA / "mpi"
+MPI_HARNESS = "harness_fortran_cpu_mpi"
+#: The 4-rank grids of `fortran_cpu_mpi` (the certified grid and its sweep), uneven partitions
+#: kept, and the singleton the quality check runs.
+MPI_GRIDS = ((2, 2), (4, 1), (1, 4), (3, 1), (1, 3), (2, 1), (1, 2))
+SINGLETON = (1, 1)
+
+
+def _mpi_target() -> dict[str, Any]:
+    return yaml.safe_load((ROOT / "spec/targets/fortran_cpu_mpi.yaml").read_text())
+
+
+def _mpi_flag_sets() -> dict[str, list[str]]:
+    """The flag sets the host builds a binary of this target with: the release build's
+    (`control_file.flags`, without its module-directory options) and the `checked` row's (the
+    compiler's `CHECKED_FLAGS` appended)."""
+    from tools.backends.compiler.gfortran import checked_flags
+    from tools.backends.language.fortran import control_file
+    release = control_file.flags("f2008", "mpi").split(" -J")[0].split()
+    return {"release": release, "checked": [*release, *checked_flags.CHECKED_FLAGS]}
+
+
+def _mpi_ir(sid: str, kind: str, ops: dict[str, list[dict[str, Any]]], drive: dict[str, Any],
+            cases: list[dict[str, Any]], variables: dict[str, str], tests: list[dict[str, Any]],
+            predicates: list[dict[str, Any]], interfaces: tuple[dict[str, Any], ...] = ()
+            ) -> dict[str, Any]:
+    ir: dict[str, Any] = {
+        "schema_version": 1,
+        "meta": {"spec_id": sid, "spec_kind": kind, "spec_version": "0.1.0",
+                 "node_key": f"{kind}/{sid}@0.1.0"},
+        "public_api": {
+            "published_operations": [{"operation_id": op} for op in ops],
+            "module_parameters": [{"name": "dp", "value": "float64"}],
+            "interfaces": [{"name": p["name"], "signature": p} for p in interfaces],
+            "signatures": [{"symbol": op, "signature": {"kind": "subroutine", "name": op,
+                                                        "args": args}}
+                           for op, args in ops.items()]},
+        "drive": drive,
+        "case": {"test_case_set": cases},
+        "dependency": {"node_key": f"{kind}/{sid}@0.1.0", "direct_deps": []},
+        "io_contract": {
+            "raw_requirements": {"required_evidence": [
+                {"artifact": "state_snapshots", "required": True,
+                 "schema": {"time_variable": "t", "variables": [
+                     {"name": n, "shape_expr": s} for n, s in variables.items()]}}]},
+            "tests": tests, "predicates": predicates}}
+    if "loop" in drive:
+        names = ["step", *(f"{v}_{m}" for v, s in variables.items() if s != "scalar"
+                           for m in ("min", "max"))]
+        ir["io_contract"]["raw_requirements"]["required_evidence"] += [
+            {"artifact": "state_history"}, {"artifact": "step_series", "names": names}]
+    return ir
+
+
+def _one_test_per_case(cases: list[dict[str, Any]], checks: list[tuple[str, str, str, Any]],
+                       xfail: dict[str, list[tuple[str, str, str, Any]]] | None = None
+                       ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """One test per case, carrying the predicates ``checks`` (quantity, expr, op, value); a case
+    of ``xfail`` gets an `xfail` test carrying that entry's predicates instead (each holds on the
+    refusal it states)."""
+    tests, predicates = [], []
+    for case in cases:
+        tid, ids = f"t_{case['case_id']}", [case["case_id"]]
+        own = (xfail or {}).get(ids[0], checks)
+        tests.append({"test_id": tid,
+                      "expected_outcome": "xfail" if ids[0] in (xfail or {}) else "pass",
+                      "target_cases": ids, "quantities": sorted({q for q, *_ in own})})
+        predicates += [{"test_id": tid, "quantity": q, "target_cases": ids, "per_case": True,
+                        "expr": expr, "op": op, "value": value} for q, expr, op, value in own]
+    return tests, predicates
+
+
+def recon_ir() -> dict[str, Any]:
+    """Model (1), muscl's shape: a ghosted `in` (`u_in`, its domain ghosts a sentinel) and two
+    face `out`s. `c6x4` under `(1, 4)` is the one-cell-block case (`min_block` 1, B6); `cbad`'s
+    `nx_total` is inconsistent, so it is replicated with its raw inputs and refused (`xfail`)."""
+    sid = "fx_recon"
+    ops = {f"{sid}__apply": [
+        _arg("nx", "in", INT), _arg("ny", "in", INT), _arg("ng", "in", INT),
+        _arg("nx_total", "in", INT), _arg("ny_total", "in", INT),
+        _arg("u_in", "in", REAL, ["nx_total", "ny_total"]),
+        _arg("u_l", "out", REAL, ["nx + 1", "ny"]), _arg("u_r", "out", REAL, ["nx", "ny + 1"]),
+        _arg("ok", "out", LOGICAL)]}
+    drive = {
+        "distribute": {"axes": [
+            {"name": "x", "cells": "inputs.grid.nx", "ghost": "inputs.grid.ng",
+             "extended": "inputs.grid.nx_total"},
+            {"name": "y", "cells": "inputs.grid.ny", "ghost": "inputs.grid.ng",
+             "extended": "inputs.grid.ny_total"}]},
+        "step": {"operation": f"{sid}__apply", "result": "ok", "arguments": {
+            "nx": "inputs.grid.nx", "ny": "inputs.grid.ny", "ng": "inputs.grid.ng",
+            "nx_total": "inputs.grid.nx_total", "ny_total": "inputs.grid.ny_total",
+            "u_in": "state.u_in", "u_l": "state.u_l", "u_r": "state.u_r", "ok": "state.ok"}}}
+
+    def case(cid: str, nx: int, ny: int, ng: int, nx_total: int | None = None) -> dict:
+        nxt, nyt = (nx + 2 * ng if nx_total is None else nx_total), ny + 2 * ng
+        u = [[-999.0 if not (ng <= i < nx + ng and ng <= j < ny + ng) else
+              1.0 + 0.1 * (i - ng + 1) + 0.37 * (j - ng + 1) + 0.013 * (i - ng + 1) ** 2
+              * (j - ng + 1) for j in range(nyt)] for i in range(nxt)]
+        return {"case_id": cid, "inputs": {"grid": {"nx": nx, "ny": ny, "ng": ng,
+                                                    "nx_total": nxt, "ny_total": nyt}},
+                "initial_state": {"u_in": u, "u_l": -999.0, "u_r": -999.0}}
+    cases = [case("c6x4", 6, 4, 2), case("c12x8", 12, 8, 2), case("c1x1", 1, 1, 2),
+             case("cbad", 6, 4, 2, nx_total=9)]
+    tests, predicates = _one_test_per_case(
+        cases, [("ok", "final.ok", "eq", 1),
+                ("faces", "maxabs(final.u_l) + maxabs(final.u_r)", "gt", 0.0)],
+        xfail={"cbad": [("ok", "final.ok", "eq", 0),
+                        ("faces", "maxabs(final.u_l) + maxabs(final.u_r)", "gt", 0.0)]})
+    return _mpi_ir(sid, "component", ops, drive, cases,
+                   {"u_in": "[nx_total, ny_total]", "u_l": "[nx + 1, ny]",
+                    "u_r": "[nx, ny + 1]", "ok": "scalar"}, tests, predicates)
+
+
+def prob_ir() -> dict[str, Any]:
+    """Model (2), a stencil `problem`: periodic along x, walls along y, `__init` from the block's
+    offsets (`block.<axis>.first`) and the global counts (`derived` values), a mid-step exchange,
+    the walls restored by global index, and a rank-local refusal at step `refuse_at` (`ny8r`).
+    `min_block 2`: `ny4` replicates on `(1, 4)` and `(1, 3)` and distributes on `(1, 2)`, `(2, 2)`."""
+    sid = "fx_prob"
+    ops = {
+        f"{sid}__init": [
+            _arg("nx", "in", INT), _arg("ny", "in", INT), _arg("nx_g", "in", INT),
+            _arg("ny_g", "in", INT), _arg("i0", "in", INT), _arg("j0", "in", INT),
+            _arg("h", "out", REAL, ["nx", "ny"]), _arg("dt", "out", REAL),
+            _arg("ok", "out", LOGICAL)],
+        f"{sid}__step": [
+            _arg("nx", "in", INT), _arg("ny", "in", INT), _arg("nx_g", "in", INT),
+            _arg("ny_g", "in", INT), _arg("i0", "in", INT), _arg("j0", "in", INT),
+            _arg("refuse_at", "in", INT), _arg("stepno", "in", INT), _arg("dt", "in", REAL),
+            _arg("h", "inout", REAL, ["nx", "ny"]), _arg("ok", "out", LOGICAL)]}
+    common = {"nx": "inputs.nx", "ny": "inputs.ny", "nx_g": "derived.nx_g",
+              "ny_g": "derived.ny_g", "i0": "block.x.first", "j0": "block.y.first"}
+    drive = {
+        "distribute": {"axes": [{"name": "x", "cells": "inputs.nx", "min_block": 2},
+                                {"name": "y", "cells": "inputs.ny", "min_block": 2}]},
+        "init": {"operation": f"{sid}__init", "result": "ok", "arguments": {
+            **common, "h": "state.h", "dt": "state.dt", "ok": "state.init_ok"}},
+        "step": {"operation": f"{sid}__step", "result": "ok", "arguments": {
+            **common, "refuse_at": "inputs.refuse_at", "stepno": "step", "dt": "state.dt",
+            "h": "state.h", "ok": "state.step_ok"}},
+        "loop": {"n_step": "inputs.n_step", "dt": "state.dt", "t_start": "inputs.t_start",
+                 "t_end": "inputs.t_end"},
+        "history": {"every": "inputs.every"}}
+    cases = [{"case_id": cid, "derived": {"nx_g": "inputs.nx", "ny_g": "inputs.ny"},
+              "inputs": {"nx": 8, "ny": ny, "refuse_at": refuse_at, "n_step": 6,
+                         "t_start": 0.0, "t_end": 1.0, "every": 2}}
+             for cid, ny, refuse_at in (("ny4", 4, -1), ("ny8", 8, -1), ("ny8r", 8, 3))]
+    tests, predicates = _one_test_per_case(
+        cases, [("init", "min(initial.h) + initial.dt + initial.init_ok", "gt", 1.0),
+                ("run.n_step", "final.step - inputs.n_step", "eq", 0),
+                ("h", "maxabs(final.h)", "gt", 0.0)],
+        xfail={"ny8r": [("step_ok", "final.step_ok", "eq", 0),
+                        ("h", "maxabs(final.h)", "gt", 0.0)]})
+    return _mpi_ir(sid, "problem", ops, drive, cases,
+                   {"h": "[nx, ny]", "dt": "scalar", "init_ok": "scalar", "step_ok": "scalar"},
+                   tests, predicates)
+
+
+def wit_ir() -> dict[str, Any]:
+    """Model (3), the witness: `w` holds the `nx` the call was handed, `wb` the `nx_b` of a
+    second dummy bound to the same input, `wg` the `nx_g` bound to a `derived` value."""
+    sid = "fx_wit"
+    ops = {f"{sid}__apply": [
+        _arg("nx", "in", INT), _arg("nx_b", "in", INT), _arg("nx_g", "in", INT),
+        _arg("w", "out", REAL, ["nx"]), _arg("wb", "out", REAL, ["nx"]),
+        _arg("wg", "out", REAL, ["nx"]), _arg("ok", "out", LOGICAL)]}
+    drive = {"distribute": {"axes": [{"name": "x", "cells": "inputs.nx"}]},
+             "step": {"operation": f"{sid}__apply", "result": "ok", "arguments": {
+                 "nx": "inputs.nx", "nx_b": "inputs.nx", "nx_g": "derived.nx_g",
+                 "w": "state.w", "wb": "state.wb", "wg": "state.wg", "ok": "state.ok"}}}
+    cases = [{"case_id": "c6", "derived": {"nx_g": "inputs.nx"}, "inputs": {"nx": 6},
+              "initial_state": {"w": -999.0, "wb": -999.0, "wg": -999.0}}]
+    tests, predicates = _one_test_per_case(cases, [("ok", "final.ok", "eq", 1),
+                                                   ("w", "maxabs(final.w)", "gt", 0.0)])
+    return _mpi_ir(sid, "component", ops, drive, cases,
+                   {"w": "[nx]", "wb": "[nx]", "wg": "[nx]", "ok": "scalar"}, tests, predicates)
+
+
+def loop_mpi_ir() -> dict[str, Any]:
+    """Model (4), a `loop` component in rk4's and tc4's shape: `u [ncomp, nx, ny]` from the
+    case file, the host arrays `derived.f`, `derived.x`, `derived.y`, a procedure binding whose
+    `record` fills two states from the prototype's `q` (named like no state) and a `[4]` stamp,
+    a ghosted `in` state `ug [nx + 2*ng]` (domain ghosts a sentinel) and a cell `in` state
+    `zb [nx, ny]`."""
+    sid = "fx_loop"
+    proto = {"kind": "subroutine", "name": "fx_rhs_proto", "args": [
+        _arg("ncomp", "in", INT), _arg("nx", "in", INT), _arg("ny", "in", INT),
+        _arg("t", "in", REAL), _arg("q", "in", REAL, ["ncomp", "nx", "ny"]),
+        _arg("dqdt", "out", REAL, ["ncomp", "nx", "ny"])]}
+    ops = {f"{sid}__advance": [
+        _arg("ncomp", "in", INT), _arg("nx", "in", INT), _arg("ny", "in", INT),
+        _arg("ng", "in", INT), _arg("u", "in", REAL, ["ncomp", "nx", "ny"]),
+        _arg("ug", "in", REAL, ["nx + 2*ng"]), _arg("zb", "in", REAL, ["nx", "ny"]),
+        _arg("f", "in", REAL, ["nx", "ny"]), _arg("x", "in", REAL, ["nx"]),
+        _arg("y", "in", REAL, ["ny"]),
+        {"name": "rhs", "spec": {"type": "procedure", "interface": "fx_rhs_proto"}},
+        _arg("t", "in", REAL), _arg("dt", "in", REAL),
+        _arg("u_np1", "out", REAL, ["ncomp", "nx", "ny"]), _arg("ok", "out", LOGICAL)]}
+    drive = {
+        "distribute": {"axes": [
+            {"name": "x", "cells": "inputs.grid.nx", "ghost": "inputs.grid.ng"},
+            {"name": "y", "cells": "inputs.grid.ny"}]},
+        "step": {"operation": f"{sid}__advance", "result": "ok", "arguments": {
+            "ncomp": "inputs.grid.ncomp", "nx": "inputs.grid.nx", "ny": "inputs.grid.ny",
+            "ng": "inputs.grid.ng", "u": "state.u", "ug": "state.ug", "zb": "state.zb",
+            "f": "derived.f", "x": "derived.x", "y": "derived.y",
+            "rhs": {"procedure": "inputs.lam * q", "calls": "state.n_calls",
+                    "record": {"t": "state.stage_t",
+                               "q": ["state.stage_q1", "state.stage_q2"]}},
+            "t": "time", "dt": "inputs.time.dt", "u_np1": "state.u", "ok": "state.ok"}},
+        "loop": {"n_step": "inputs.time.n_step", "dt": "inputs.time.dt",
+                 "t_start": "inputs.time.t_start", "t_end": "inputs.time.t_end"},
+        "history": {"every": "inputs.history.every"}}
+
+    def case(cid: str, nx: int, ny: int, ng: int) -> dict[str, Any]:
+        u = [[[(k + 1) * (i + 1) + 10 * (j + 1) + 0.01 * i * j for j in range(ny)]
+              for i in range(nx)] for k in range(2)]
+        ug = [-999.0 if (i < ng or i >= nx + ng) else (i - ng + 1) * 0.5
+              for i in range(nx + 2 * ng)]
+        return {"case_id": cid,
+                "derived": {"f": "inputs.fld.f", "x": "inputs.fld.x", "y": "inputs.fld.y"},
+                "inputs": {"grid": {"ncomp": 2, "nx": nx, "ny": ny, "ng": ng}, "lam": 0.5,
+                           "fld": {"f": [[1.0 + 0.1 * i - 0.05 * j for j in range(ny)]
+                                         for i in range(nx)],
+                                   "x": [0.5 + i for i in range(nx)],
+                                   "y": [100.0 + 2 * j for j in range(ny)]},
+                           "time": {"dt": 0.1, "n_step": 3, "t_start": 0.0, "t_end": 0.3},
+                           "history": {"every": 1}},
+                "initial_state": {"u": u, "ug": ug, "zb": [[0.2 * i + 0.03 * j for j in range(ny)]
+                                                           for i in range(nx)]}}
+    cases = [case("big", 12, 8, 2), case("nearly", 9, 5, 1), case("tiny", 3, 1, 2)]
+    tests, predicates = _one_test_per_case(
+        cases, [("ok", "final.ok", "eq", 1),
+                ("run.n_step", "final.step - inputs.time.n_step", "eq", 0),
+                ("u", "maxabs(final.u)", "gt", 0.0)])
+    return _mpi_ir(sid, "component", ops, drive, cases,
+                   {"u": "[ncomp, nx, ny]", "ok": "scalar", "n_calls": "scalar",
+                    "stage_t": "[4]", "stage_q1": "[ncomp, nx, ny]",
+                    "stage_q2": "[ncomp, nx, ny]", "ug": "[nx + 2*ng]", "zb": "[nx, ny]"},
+                   tests, predicates, interfaces=(proto,))
+
+
+MPI_FIXTURES = {"fx_recon": recon_ir, "fx_prob": prob_ir, "fx_wit": wit_ir,
+                "fx_loop": loop_mpi_ir}
+
+
+class MpiRun:
+    """One run of a distributed binary: ``rc`` None when it was killed at the timeout."""
+
+    def __init__(self, directory: Path, rc: int | None, stderr: str) -> None:
+        self.dir, self.rc, self.stderr = directory, rc, stderr
+
+    def snapshots(self) -> dict[str, Any]:
+        root = self.dir / "raw" / "state_snapshots"
+        return {str(p.relative_to(root)): json.loads(p.read_text())
+                for p in sorted(root.rglob("*.json"))}
+
+    def perf(self) -> dict[str, Any]:
+        return json.loads((self.dir / "perf.json").read_text())
+
+
+class MpiBuild:
+    """A fixture model's distributed driver, rendered for `fortran_cpu_mpi` and built with the MPI
+    pair `test_parallel_mpi` resolves (a missing pair fails, #498), in a temporary directory."""
+
+    def __init__(self, tmp: Path, ir: dict[str, Any], *, flags: list[str],
+                 model: str | None = None, runner: str | None = None,
+                 harness: str = MPI_HARNESS) -> None:
+        from tools.backends.parallel.mpi import launcher, wrapper
+        from tools.tests.test_parallel_mpi import _require_mpi_pair
+        pair = Path(_require_mpi_pair())
+        self.launcher = str(pair / launcher.EXECUTABLE)
+        self.tmp, self.ir = tmp, ir
+        sid = ir["meta"]["spec_id"]
+        (tmp / "ir").mkdir(parents=True)
+        (tmp / "ir" / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+        pe.write_case_inputs(ir, tmp / "ir")
+        self.runner = runner if runner is not None else f_runner.render_runner(
+            ir, sid, harness, target=_mpi_target())
+        (tmp / "runner.f90").write_text(self.runner)
+        (tmp / "model.f90").write_text(model if model is not None
+                                       else (MPI_DATA / f"{sid}_model.f90").read_text())
+        harness_src = (MPI_DATA / f"{MPI_HARNESS}_model.f90" if harness == MPI_HARNESS
+                       else DATA / "harness_fortran_cpu_model.f90")
+        compiler = str(pair / wrapper.COMPILER_WRAPPER) if harness == MPI_HARNESS else "gfortran"
+        objs = []
+        for stem, src in (("harness", harness_src), ("model", tmp / "model.f90"),
+                          ("runner", tmp / "runner.f90")):
+            build = subprocess.run([compiler, *flags, "-c", str(src), "-o", f"{stem}.o"],
+                                   cwd=tmp, capture_output=True, text=True)
+            if build.returncode != 0:
+                raise AssertionError(f"{stem}: {build.stderr[:3000]}")
+            objs.append(f"{stem}.o")
+        subprocess.run([compiler, *flags, *objs, "-o", "bin"], cwd=tmp, check=True,
+                       capture_output=True)
+
+    def run(self, grid: tuple[int, int], *, cases: list[str] | None = None,
+            timeout: float = 120) -> MpiRun:
+        """Run under ``grid``: the singleton bare, as the quality check runs it, and a grid of
+        several ranks under the launcher with `--oversubscribe` and the grid variable. A run past
+        ``timeout`` is killed with its whole process group (the ranks with the launcher)."""
+        import signal
+        from tools.backends.parallel.mpi import execution
+        d = self.tmp / f"run_{grid[0]}x{grid[1]}"
+        shutil.rmtree(d, ignore_errors=True)
+        for sub in ("initial", "history", "series"):   # what `_run_raw_dirs` creates
+            (d / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+        env = {k: v for k, v in os.environ.items() if k != execution.PROCESS_GRID_VARIABLE}
+        argv = [str(self.tmp / "bin")]
+        if grid != SINGLETON:
+            env.update(execution.environment(1, process_grid=grid))
+            argv = [self.launcher, "--oversubscribe", "-n", str(grid[0] * grid[1]), *argv]
+        ids = cases if cases is not None else [c["case_id"] for c in
+                                               self.ir["case"]["test_case_set"]]
+        proc = subprocess.Popen([*argv, "--cases", str(self.tmp / "ir" / "spec.ir.yaml"), *ids],
+                                cwd=d, env=env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True,
+                                stdin=subprocess.DEVNULL)
+        try:
+            _out, err = proc.communicate(timeout=timeout)
+            return MpiRun(d, proc.returncode, err)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            return MpiRun(d, None, "timeout")
+
+    def verdict(self, run: MpiRun) -> dict[str, str]:
+        records = pe.evaluate_primary_predicates(self.ir, run.dir)
+        verdict = verdict_evaluator.evaluate_verdict(self.ir["io_contract"]["tests"], records)
+        return {t["test_id"]: t["status"] for t in verdict["per_test"]}
+
+
+def _witness_expectation(ir: dict[str, Any], grid: tuple[int, int]) -> dict[str, list[float]]:
+    """What model (3)'s capture holds under ``grid``: on a case `distribute_plan` distributes,
+    each cell of `w` and `wb` the count of the block holding it (the harness's partition: the
+    first `nx mod p` ranks of a line one cell more), on a replicated one the case's `nx`; `wg` the
+    case's `nx` everywhere."""
+    case = ir["case"]["test_case_set"][0]
+    nx = case["inputs"]["nx"]
+    if runner_ir.distribute_plan(ir, case, grid):
+        p = grid[0]
+        blocks = [nx // p + (1 if c < nx % p else 0) for c in range(p)]
+        local = [float(b) for b in blocks for _ in range(b)]
+    else:
+        local = [float(nx)] * nx
+    return {"w": local, "wb": local, "wg": [float(nx)] * nx}
+
+
+class DistributedDriverEndToEndTest(unittest.TestCase):
+    """The distributed form of the host-rendered driver (issue #610, plan B §3.3), compiled with
+    the fixture harness and run with the real launcher on every 4-rank grid of `fortran_cpu_mpi`
+    and bare as the singleton: each shape's captures and verdict equal the singleton's. The
+    seeded defects below show what each comparison detects; the documented-limit row shows the
+    one thing the capture is silent on (B10)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from tools.tests.test_parallel_mpi import _require_mpi_pair
+        _require_mpi_pair()
+
+    def setUp(self) -> None:  # noqa: N802
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._n = 0
+
+    def _build(self, ir: dict[str, Any], *, flags: str = "release", **kw: Any) -> MpiBuild:
+        self._n += 1
+        return MpiBuild(Path(self._tmp.name) / f"b{self._n}", ir,
+                        flags=_mpi_flag_sets()[flags], **kw)
+
+    def _first_disagreement(self, build: MpiBuild, reference: dict[str, Any],
+                            grids: tuple[tuple[int, int], ...] = MPI_GRIDS,
+                            **kw: Any) -> tuple[tuple[int, int], str] | None:
+        """The first grid whose run fails or whose captures differ from ``reference``."""
+        for grid in grids:
+            run = build.run(grid, **kw)
+            if run.rc != 0:
+                return grid, f"rc {run.rc}: {run.stderr[-300:]}"
+            got = run.snapshots()
+            if got != reference:
+                bad = sorted(k for k in reference if got.get(k) != reference[k])
+                return grid, f"captures differ: {bad[:3]}"
+        return None
+
+    def _agree_on_every_grid(self, sid: str, flags: str) -> None:
+        ir = MPI_FIXTURES[sid]()
+        build = self._build(ir, flags=flags)
+        single = build.run(SINGLETON)
+        self.assertEqual(single.rc, 0, single.stderr[-2000:])
+        reference, verdict = single.snapshots(), build.verdict(single)
+        self.assertEqual(verdict, {t["test_id"]: t["expected_outcome"]
+                                   for t in ir["io_contract"]["tests"]})
+        serial_cells = single.perf()["cells_updated"]
+        for grid in MPI_GRIDS:
+            with self.subTest(sid=sid, flags=flags, grid=grid):
+                run = build.run(grid)
+                self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                got = run.snapshots()
+                if sid == "fx_wit":
+                    final = got["c6.json"]
+                    self.assertEqual({k: final[k] for k in ("w", "wb", "wg")},
+                                     _witness_expectation(ir, grid))
+                else:
+                    self.assertEqual(sorted(got), sorted(reference))
+                    for name in reference:
+                        self.assertEqual(got[name], reference[name], name)
+                self.assertEqual(build.verdict(run), verdict)
+                perf = run.perf()
+                self.assertEqual(perf["parallelism"]["mpi_ranks"], grid[0] * grid[1])
+                self.assertEqual(perf["parallelism"]["process_grid"], list(grid))
+                self.assertEqual(perf["cells_updated"], serial_cells)
+
+    def test_the_fixture_irs_pass_gates_n_and_o_and_the_harness_pin(self) -> None:
+        """Each fixture IR is one `Compile.static` admits (gates (a)-(n), and gate (o) against its
+        `tests.md` line), and the fixture harness publishes what the renderer pins against the
+        real `harness_fortran_cpu_mpi@0.4.0` §5.1 (plan B §8 (k))."""
+        from tools.validate_pipeline_semantics import _distribute_line_violations
+        spec = (ROOT / "spec/infrastructure/infra/harness/harness_fortran_cpu_mpi/"
+                       "controlled_spec.md").read_text()
+        block = yaml.safe_load(spec.split("### 5.1", 1)[1].split("```yaml", 1)[1].split("```", 1)[0])
+        signatures = [{"symbol": t["name"], "signature": t} for t in block["types"]] + [
+            {"symbol": p["name"], "signature": p} for p in block["procedures"]]
+        source = (MPI_DATA / f"{MPI_HARNESS}_model.f90").read_text()
+        for sid, builder in MPI_FIXTURES.items():
+            with self.subTest(sid=sid):
+                ir = builder()
+                kind = ir["meta"]["spec_kind"]
+                self.assertEqual(pe.drive_violations(ir, kind=kind), [])
+                self.assertEqual(_distribute_line_violations(
+                    MPI_DATA / f"{sid}.tests.md", ir, kind=kind), [])
+                f_runner.assert_harness_pin(ir, sid, MPI_HARNESS, signatures, source)
+
+    def test_the_singleton_is_the_serial_driver(self) -> None:
+        """On `(1, 1)` every case is replicated (B6), so the distributed binary bare writes what
+        the serial driver over the single-process harness writes, `cells_updated` included."""
+        for sid in ("fx_recon", "fx_wit", "fx_loop"):
+            with self.subTest(sid=sid):
+                ir = MPI_FIXTURES[sid]()
+                single = self._build(ir).run(SINGLETON)
+                self.assertEqual(single.rc, 0, single.stderr[-2000:])
+                serial = self._build(ir, harness="harness_fortran_cpu",
+                                     flags="release").run(SINGLETON)
+                self.assertEqual(serial.rc, 0, serial.stderr[-2000:])
+                self.assertEqual(single.snapshots(), serial.snapshots())
+                self.assertEqual(single.perf()["cells_updated"], serial.perf()["cells_updated"])
+                self.assertEqual(single.perf()["steps"], serial.perf()["steps"])
+
+    def test_the_witness_tells_a_replicated_case_from_a_distributed_one(self) -> None:
+        """With the real `distribute_plan` the `(2, 1)` capture holds the block counts and the
+        singleton the case's; with `distribute_plan` patched to replicate the case, the `(2, 1)`
+        capture holds the case's: the row that fails if the driver distributes a replicated
+        case or replicates a distributed one. A second dummy bound to the same cell-count input
+        takes the block count too; the count a `derived` entry carries does not."""
+        ir = wit_ir()
+        self.assertTrue(runner_ir.distribute_plan(ir, ir["case"]["test_case_set"][0], (2, 1)))
+        real = self._build(ir).run((2, 1))
+        self.assertEqual(real.rc, 0, real.stderr[-1000:])
+        final = real.snapshots()["c6.json"]
+        self.assertEqual(final["w"], [3.0] * 6)
+        self.assertEqual(final["wb"], [3.0] * 6)
+        self.assertEqual(final["wg"], [6.0] * 6)
+        with mock.patch.object(runner_ir, "distribute_plan", return_value=False):
+            replicated = self._build(ir).run((2, 1))
+        self.assertEqual(replicated.rc, 0, replicated.stderr[-1000:])
+        self.assertEqual(replicated.snapshots()["c6.json"]["w"], [6.0] * 6)
+
+    def test_a_one_cell_block_under_a_two_cell_ghost_distributes_and_agrees(self) -> None:
+        """B6's threshold has no `ghost` term: model (1)'s 6x4 case with `ng = 2` is distributed
+        under `(1, 4)`, one cell per block along y, and agrees with the singleton (the margin is
+        sliced from the global array)."""
+        ir = recon_ir()
+        case = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == "c6x4")
+        self.assertTrue(runner_ir.distribute_plan(ir, case, (1, 4)))
+        build = self._build(ir, flags="checked")
+        reference = build.run(SINGLETON, cases=["c6x4"]).snapshots()
+        self.assertIsNone(self._first_disagreement(build, reference, ((1, 4),), cases=["c6x4"]))
+
+    def test_the_rendered_table_lists_each_grid_once_and_no_wider_than_the_dry_render(self) -> None:
+        target = _mpi_target()
+        target["execution"]["sweep"]["grids"] = [[2, 2], [4, 1], [1, 1], [4, 1]]
+        self.assertEqual(runner_ir.distribute_grids(target), ((2, 2), (4, 1), (1, 1)))
+        text = f_runner.render_runner(recon_ir(), "fx_recon", MPI_HARNESS, target=target)
+        self.assertEqual(text.count("if (p1 == 4 .and. p2 == 1) grid_known = .true."), 1)
+        dry = f_runner.render_runner(recon_ir(), "fx_recon", MPI_HARNESS,
+                                     target=f_runner._DRY_RUN_TARGET)
+        self.assertIn("if (p1 == 1 .and. p2 == 1) grid_known = .true.", dry)
+        self.assertNotIn("p1 == 2", dry)
+        width = max(len(line) for line in dry.splitlines())
+        self.assertLessEqual(max(len(line) for line in _mpi_runner_text("fx_recon")
+                                 .splitlines()), width)
+
+    def _driver_defect_fails_a_grid(self, sid: str, label: str, old: str, new: str) -> None:
+        """Plan B §5's driver defects (`_DRIVER_DEFECTS`, one row each), each seeded into the
+        rendered text of the model whose captures show it: every one fails — a run failure, a hang
+        killed at the timeout, or captures that differ from the singleton's (on the witness, from
+        what `distribute_plan` implies) — on at least one grid."""
+        ir = MPI_FIXTURES[sid]()
+        text = _mpi_runner_text(sid)
+        self.assertEqual(text.count(old), 1, (label, old))
+        build = self._build(ir, runner=text.replace(old, new))
+        if sid == "fx_wit":
+            run = build.run((2, 1))
+            self.assertNotEqual(
+                {k: run.snapshots()["c6.json"][k] for k in ("w", "wb", "wg")}
+                if run.rc == 0 else None, _witness_expectation(ir, (2, 1)), label)
+            return
+        reference = self._build(ir).run(SINGLETON).snapshots()
+        self.assertIsNotNone(self._first_disagreement(build, reference, timeout=30), label)
+
+    def _kernel_defect_fails_a_grid(self, sid: str, label: str,
+                                    edits: tuple[tuple[str, str], ...], cases: list[str],
+                                    grids: tuple[tuple[int, int], ...]) -> None:
+        """Plan B §6's kernel defects (`_KERNEL_DEFECTS`, one row each): on the singleton each
+        writes what the correct model writes (every case replicated, a grid of one rank), and
+        each fails a 4-rank grid — a hang among them, which the timeout kills with the ranks."""
+        ir = MPI_FIXTURES[sid]()
+        model = (MPI_DATA / f"{sid}_model.f90").read_text()
+        for old, new in edits:
+            self.assertEqual(model.count(old), 1, (label, old))
+            model = model.replace(old, new)
+        reference = self._build(ir).run(SINGLETON, cases=cases).snapshots()
+        build = self._build(ir, model=model)
+        single = build.run(SINGLETON, cases=cases)
+        self.assertEqual(single.rc, 0, single.stderr[-1000:])
+        self.assertEqual(single.snapshots(), reference)
+        self.assertIsNotNone(self._first_disagreement(
+            build, reference, grids, cases=cases, timeout=30), label)
+
+    def test_an_init_scalar_unequal_across_the_ranks_stops_the_run(self) -> None:
+        """B8: after an accepted `init`, a rank-0 real it wrote must agree across the ranks. Model
+        (2) taking its step size from its block's counts gives each rank its own `dt` under
+        `(3, 1)` (blocks of 3, 3 and 2 cells), and the run stops naming it; a `(2, 2)` run, whose
+        blocks are equal, agrees across the ranks and differs from the singleton instead."""
+        ir = prob_ir()
+        model = (MPI_DATA / "fx_prob_model.f90").read_text()
+        old = "    dt = 0.8_dp / real(nx_g + ny_g, dp)"
+        self.assertEqual(model.count(old), 1)
+        build = self._build(ir, model=model.replace(old, "    dt = 0.8_dp / real(nx + ny, dp)"))
+        run = build.run((3, 1), cases=["ny8"])
+        self.assertNotEqual(run.rc, 0)
+        self.assertIn("error: init wrote dt unequal across the ranks for case ny8", run.stderr)
+        self.assertEqual(build.run(SINGLETON, cases=["ny8"]).rc, 0)
+        nan = model.replace(old, "    dt = merge(ieee_value(1.0_dp, ieee_quiet_nan), 0.1_dp, "
+                                 "i0 > 1)").replace(
+            "  use harness_fortran_cpu_mpi_model,",
+            "  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan\n"
+            "  use harness_fortran_cpu_mpi_model,")
+        run = self._build(ir, model=nan).run((2, 1), cases=["ny8"])
+        self.assertNotEqual(run.rc, 0)
+        self.assertIn("error: init wrote a non-finite dt on a rank for case ny8", run.stderr)
+
+    def test_the_interior_upper_face_is_in_no_record(self) -> None:
+        """B10's documented limit: each shared face is taken from the right neighbour's first
+        position, so an interior block's upper face is in no record. Model (1) wrong at its LAST
+        local face (a one-sided formula there, which the domain's last face takes on the
+        singleton too) agrees with the singleton on every grid; the same defect at the FIRST
+        local face disagrees. A gather that closed the limit would change this pinned fact."""
+        ir = recon_ir()
+        model = (MPI_DATA / "fx_recon_model.f90").read_text()
+        correct = ("        u_l(i, j) = u_in(i + ng - 1, j + ng) &\n"
+                   "          + 0.3_dp * (u_in(i + ng - 1, j + ng) - u_in(i + ng - 2, j + ng))\n")
+        self.assertEqual(model.count(correct), 1)
+        for face, agrees in (("nx + 1", True), ("1", False)):
+            with self.subTest(face=face):
+                wrong = correct + f"        if (i == {face}) u_l(i, j) = u_in(i + ng - 1, j + ng)\n"
+                build = self._build(ir, model=model.replace(correct, wrong))
+                single = build.run(SINGLETON)
+                self.assertEqual(single.rc, 0, single.stderr[-1000:])
+                found = self._first_disagreement(build, single.snapshots())
+                self.assertEqual(found is None, agrees, found)
+
+
+def _mpi_runner_text(sid: str) -> str:
+    return f_runner.render_runner(MPI_FIXTURES[sid](), sid, MPI_HARNESS, target=_mpi_target())
+
+
+#: Plan B §5's seeded driver defects: (fixture, label, rendered text, its replacement).
+_DRIVER_DEFECTS: tuple[tuple[str, str, str, str], ...] = (
+    ("fx_prob", "the result is not reduced over the ranks",
+     "      lg_step_ok = nok == nranks\n", ""),
+    ("fx_recon", "the face gather leaves out the shared face",
+     "        1, 1, dfe1, dlo1, &\n        2, 1, dnl2, dlo2, g_r2)",
+     "        1, 1, dnl1, dlo1, &\n        2, 1, dnl2, dlo2, g_r2)"),
+    ("fx_loop", "the fold of a written cell array is not reduced",
+     "      x_min = harness_fortran_cpu_mpi__reduce_min(minval(arr))\n"
+     "      x_max = harness_fortran_cpu_mpi__reduce_max(maxval(arr))\n"
+     "    end if\n  end subroutine dfold_r3",
+     "      x_min = minval(arr)\n      x_max = maxval(arr)\n"
+     "    end if\n  end subroutine dfold_r3"),
+    ("fx_loop", "one dummy's local extent is not rewritten",
+     "      h3 = dhi2 - dlo2 + 1\n", ""),
+    ("fx_loop", "the ghost slice is off by ng",
+     "      st_ug = gl_ug(dlo1:dhi1 + 2 * h4)", "      st_ug = gl_ug(dlo1 + h4:dhi1 + 3 * h4)"),
+    ("fx_prob", "block.<axis>.first is off by one",
+     "    call fx_prob__init( &\n      h1, &\n      h2, &\n      h3, &\n      h4, &\n      dlo1, &",
+     "    call fx_prob__init( &\n      h1, &\n      h2, &\n      h3, &\n      h4, &\n"
+     "      dlo1 + 1, &"),
+    ("fx_wit", "a table row is flipped",
+     "    else if (p1 == 2 .and. p2 == 1) then\n      select case (cid)\n      case ('c6')\n"
+     "        replicated = .false.",
+     "    else if (p1 == 2 .and. p2 == 1) then\n      select case (cid)\n      case ('c6')\n"
+     "        replicated = .true."),
+    ("fx_loop", "the null axis's offset is wrong in a gather",
+     "      call harness_fortran_cpu_mpi__gather_r3(st_u, &\n        2, 1, dnl1, dlo1, &",
+     "      call harness_fortran_cpu_mpi__gather_r3(st_u, &\n        1, 1, dnl1, dlo1, &"),
+    ("fx_loop", "a derived slice has its axes swapped",
+     "h5 = h5g(dlo1:dhi1, dlo2:dhi2)", "h5 = h5g(dlo2:dhi2, dlo1:dhi1)"),
+    ("fx_loop", "the record gather is dropped",
+     "    if (replicated) then\n      if (rank == 0) out(5) =",
+     "    if (.true.) then\n      if (rank == 0) out(5) ="),
+)
+
+#: The seeded kernel defects: (fixture, label, the model edits, cases, grids). Each fails a 4-rank
+#: shape and passes the singleton.
+_KERNEL_DEFECTS: tuple[tuple[str, str, tuple[tuple[str, str], ...], list[str],
+                             tuple[tuple[int, int], ...]], ...] = (
+    ("fx_prob", "a problem that copies its own edges instead of exchanging", (
+        ("    call harness_fortran_cpu_mpi__exchange_halo_r2(he, 1, 1, 1, .true.)\n"
+         "    call harness_fortran_cpu_mpi__exchange_halo_r2(he, 2, 2, 1, .false.)\n",
+         "    he(0, :) = he(nx, :)\n    he(nx + 1, :) = he(1, :)\n"),), ["ny8"], ((2, 2),)),
+    ("fx_prob", "a refusal before the exchange on one rank (a hang)", (
+        ("    he = 0.0_dp\n",
+         "    he = 0.0_dp\n    if (stepno == refuse_at .and. i0 + nx - 1 == nx_g .and. "
+         "j0 + ny - 1 == ny_g) then\n      ok = .false.\n      return\n    end if\n"),),
+     ["ny8r"], ((2, 2),)),
+    ("fx_prob", "a wall decided by the grid coordinate", (
+        ("  use harness_fortran_cpu_mpi_model, only: harness_fortran_cpu_mpi__exchange_halo_r2\n",
+         "  use harness_fortran_cpu_mpi_model, only: harness_fortran_cpu_mpi__exchange_halo_r2, &\n"
+         "    harness_fortran_cpu_mpi__grid_coord, harness_fortran_cpu_mpi__grid_dims\n"),
+        ("    integer :: i, j\n    he = 0.0_dp\n",
+         "    integer :: i, j, c1, c2, p1, p2\n    he = 0.0_dp\n"),
+        ("    if (j0 == 1) he(:, 0) = he(:, 1)\n"
+         "    if (j0 + ny - 1 == ny_g) he(:, ny + 1) = he(:, ny)\n",
+         "    call harness_fortran_cpu_mpi__grid_coord(c1, c2)\n"
+         "    call harness_fortran_cpu_mpi__grid_dims(p1, p2)\n"
+         "    if (c2 == 0) he(:, 0) = he(:, 1)\n"
+         "    if (c2 == p2 - 1) he(:, ny + 1) = he(:, ny)\n")), ["ny4"], ((1, 4),)),
+    ("fx_recon", "a component guard against a global count passed in by hand", (
+        ("    ok = nx >= 1 .and. ny >= 1", "    ok = nx >= 6 .and. ny >= 1"),),
+     ["c6x4"], ((2, 2),)),
+)
+
+
+
+def _slug(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+
+
+def _add_defect_rows() -> None:
+    """One test method per fixture and flag set, and per seeded defect, so the suite's workers run
+    them side by side: `test_agree_<fixture>_<flags>` runs the fixture on every grid under the
+    release flags and under the `checked` row's (issue #589 PR-1b: what the rendered driver reads
+    across an `intent(out)` call depends on them)."""
+    for sid in MPI_FIXTURES:
+        for flags in ("release", "checked"):
+            setattr(DistributedDriverEndToEndTest, f"test_agree_{sid}_{flags}",
+                    lambda self, a=(sid, flags): self._agree_on_every_grid(*a))
+    for sid, label, old, new in _DRIVER_DEFECTS:
+        setattr(DistributedDriverEndToEndTest, f"test_driver_defect_{_slug(label)}",
+                lambda self, a=(sid, label, old, new): self._driver_defect_fails_a_grid(*a))
+    for sid, label, edits, cases, grids in _KERNEL_DEFECTS:
+        setattr(DistributedDriverEndToEndTest, f"test_kernel_defect_{_slug(label)}",
+                lambda self, a=(sid, label, edits, cases, grids):
+                self._kernel_defect_fails_a_grid(*a))
+
+
+_add_defect_rows()
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,10 +26,16 @@ filter, compute or rewrite a captured value on its way to the emitters. The text
 lint-clean (``use only:``, a bare ``implicit none`` with NO allow directive, ≤99-column lines) so
 the deterministic Generate.gate lint checker — which lints the whole ``src/`` tree — stays green.
 
-A harness that runs the program as several ranks (``harness_fortran_cpu_mpi``) has no driver until
-the distributed driver lands: ``render_runner`` refuses it (``driver_distributed_pending``). Its
-pin stays here, because a physics source on such a harness is still held to its distributed-state
-operations (``physics_harness_uses``).
+A harness that runs the program as several ranks (``harness_fortran_cpu_mpi``) takes the
+DISTRIBUTED form of the same driver (issue #610, Plan B §3.3): every rank reads the whole case; the
+replication table the host renders from ``runner_ir.distribute_plan`` decides per process grid
+whether a case is distributed; on a distributed case each spatial axis of ``drive.distribute`` is
+partitioned, the integer extents bound to an axis's cell count become the block's (B4), every
+array that carries an axis is copied into a fresh allocatable at its block (B3), the result is
+reduced over the ranks (B8), the series folds a written array over the owned cells with a
+non-finite flag (B9), and each capture gathers what the driver or the kernel writes onto rank 0,
+which writes (B10). A physics source on such a harness is held to its distributed-state operations
+(``physics_harness_uses``).
 
 ``render_runner`` raises ``RenderError`` (→ transport fail_closed, NOT a Generate
 retry) for any IR it cannot faithfully render: an unparseable ``shape_expr``, a
@@ -57,7 +63,7 @@ from typing import Any
 # language question).
 from tools import runner_ir
 from tools.backends.language.fortran import bundle
-from tools.host_execution import DRIVER_DISTRIBUTED_PENDING, perf_parallelism
+from tools.host_execution import perf_parallelism
 from tools.host_render import RenderError
 
 _IDENTIFIER_RE = re.compile(bundle.IDENTIFIER_PATTERN)
@@ -121,22 +127,28 @@ _ST = "st_"
 _WK = "wk_"
 _LG = "lg_"
 _IV = "iv_"
+#: The distributed driver's global copy of a spatial state it reads (issue #610).
+_GL = "gl_"
 
 # The distributed-state operations a RUNNER calls on a harness that drives the program as several
-# ranks (`distributed_state@2`, issues #316 and #512): it starts and ends the runtime, asks its rank
-# (only rank 0 writes) and the run's size (the perf record's rank count, observed rather than
-# configured), sums the ranks' updated-cell counts, and gathers each distributed state array onto
-# rank 0 before it is serialized (`gather_r<k>`, added per array rank on demand). Pinned although
-# the driver does not render for such a harness yet (`render_runner`).
-_DISTRIBUTED_RUNNER_OPS = ("init", "finalize", "comm_rank", "comm_size", "reduce_sum_int")
+# ranks (`distributed_state@2`, issues #316, #512 and #610): it starts and ends the runtime, asks
+# its rank (only rank 0 writes), the run's size (the perf record's rank count, observed rather
+# than configured) and the process grid (the replication table's key), partitions each spatial
+# axis, reduces the result logical, the series extremes and `init`'s scalars over the ranks, and
+# gathers each partitioned array it or the kernel writes onto rank 0 before it is serialized
+# (`gather_r<k>`, added per array rank on demand, `_distributed_ops`).
+_DISTRIBUTED_RUNNER_OPS = ("init", "finalize", "comm_rank", "comm_size", "grid_dims",
+                           "partition", "reduce_sum_int", "reduce_min", "reduce_max")
 
 #: The distributed-state operations a PHYSICS source (the leaf's model) may call on such a harness,
 #: and the only harness names it may `use` (`source.
 #: model_harness_isolation_violations`). The runner keeps the rest: the start and end of the
-#: runtime and the gather are the capture's, and the writers and emitters are the runner's alone
-#: (Z6) — a physics source that reached them could write its own evidence.
+#: runtime and the gather are the capture's, the writers and emitters are the runner's alone
+#: (Z6) — a physics source that reached them could write its own evidence — and the partition is
+#: the driver's (issue #610, B13: the driver hands each call its block, so a kernel that
+#: partitioned again would distribute an already distributed block).
 PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
-    "comm_rank", "comm_size", "grid_dims", "grid_coord", "partition", "exchange_halo_r1",
+    "comm_rank", "comm_size", "grid_dims", "grid_coord", "exchange_halo_r1",
     "exchange_halo_r2",
     "reduce_sum", "reduce_max", "reduce_min", "reduce_sum_int",
 )
@@ -200,10 +212,13 @@ def _threads(target: dict[str, Any]) -> int:
 
 
 #: The target a DRY render is given: `ir_content_violations` renders only to learn whether the
-#: IR renders, and discards the text. Both values reach nothing but the perf-record line, which
-#: raises for no value, so they decide no violation.
+#: IR renders, and discards the text. The class and the thread count reach nothing but the
+#: perf-record line, which raises for no value; the rank count is the grid list of the
+#: distributed form's replication table (issue #610, B6), here `(1, 1)` alone, so the dry render
+#: builds that row and a real target's table adds rows of the same width (a case id per line).
+#: None of the three decides a violation.
 _DRY_RUN_TARGET: dict[str, Any] = {"hardware": {"class": "cpu"},
-                                   "execution": {"threads_per_rank": 1}}
+                                   "execution": {"threads_per_rank": 1, "ranks": 1}}
 
 
 
@@ -244,8 +259,8 @@ def _used_harness_ops(ir: dict[str, Any], *, distributed: bool = False) -> list[
     """Unqualified harness op names the rendered driver calls (deterministic order): the core
     writers and readers, the emitters and getters of what the IR declares, and the rank-1 emitter
     of the series on a `loop` node. `assert_harness_pin` compares exactly these, so a name left
-    out here is an unenforced pin. `distributed`: the operations a physics source is told of on
-    such a harness (the driver itself does not render for one yet)."""
+    out here is an unenforced pin. `distributed`: the distributed form's own operations too
+    (`_distributed_ops`), which the program `use`s by the same list."""
     schema, _ = _snapshot_schema(ir)
     plan = runner_ir.driver_plan(ir, schema)
     ops = ["parse_cases", "read_case", *plan.getters, "emit_real"]
@@ -253,7 +268,8 @@ def _used_harness_ops(ir: dict[str, Any], *, distributed: bool = False) -> list[
     ops += [f"emit_array_r{r}" for r in sorted(ranks)]
     ops += ["box", "write_snapshot", "write_perf"]
     if distributed:
-        ops += [*_DISTRIBUTED_RUNNER_OPS, *(f"gather_r{r}" for r in sorted(ranks))]
+        dist = _distribution(ir, schema, plan, None, _DRY_RUN_TARGET)
+        ops += _distributed_ops(plan, dist)
     return ops
 
 
@@ -327,12 +343,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     """Render ``<spec_id>_runner.f90``, the driver, from the IR and the target. Deterministic and
     pure.
 
-    ``harness_spec_id`` is the certified plumbing module's spec_id (a key of ``_HARNESS_PINS``).
-    A harness that runs the program as several ranks has no driver yet: refused here, as the
-    backstop of the preflight refusal (`target_profile`, ``driver_distributed_pending``), with
-    ``identity=True`` because no IR re-author repairs it. ``target`` is the run's target profile
-    document, read for the perf record's hardware class and device count
-    (``host_execution.perf_parallelism``). See module docstring for the render-error matrix. The
+    ``harness_spec_id`` is the certified plumbing module's spec_id (a key of ``_HARNESS_PINS``);
+    a harness that runs the program as several ranks takes the distributed form (module
+    docstring). ``target`` is the run's target profile document, read for the perf record's
+    hardware class, thread and device counts (``host_execution.perf_parallelism``) and, on the
+    distributed form, for the process grids the replication table lists
+    (``runner_ir.distribute_grids``). See module docstring for the render-error matrix. The
     returned text is the complete Fortran source (trailing newline included).
     """
     # `spec_id`/`harness_spec_id` empty and IR-not-a-mapping are node-identity/caller defects,
@@ -346,11 +362,6 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     if not harness_spec_id:
         raise RenderError("harness_spec_id is empty", identity=True)
     _check_identifier_lengths(spec_id, harness_spec_id)
-    if _is_distributed_harness(harness_spec_id):
-        raise RenderError(
-            f"{DRIVER_DISTRIBUTED_PENDING}: harness {harness_spec_id} runs the program as several "
-            "ranks, and the host-rendered driver is serial until the distributed driver lands",
-            identity=True)
 
     infra = _infra_dep_count(ir)
     if infra > 1:
@@ -371,10 +382,13 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     plan = runner_ir.driver_plan(ir, schema_vars)
 
     H = lambda sym: _hname(harness_spec_id, sym)  # noqa: E731 (local shorthand)
+    # A harness that runs the program as several ranks takes the distributed form (issue #610).
+    dist = (_distribution(ir, schema_vars, plan, H, target)
+            if _is_distributed_harness(harness_spec_id) else None)
     lines: list[str] = []
     a = lines.append
     _render_procedure_module(a, plan, spec_id)
-    _render_program(a, plan, spec_id, harness_spec_id, H, target_class, devices)
+    _render_program(a, plan, spec_id, harness_spec_id, H, target_class, devices, dist)
     # Safety net: the runner is host-rendered, so a line over the deterministic Generate.gate
     # lint-checker column limit (`max_rendered_line()`) would be an UNREPAIRABLE wedge (no leaf
     # can edit a host file). Measured per PHYSICAL line. `>=`, not `>`: on some supported linter
@@ -512,7 +526,7 @@ def _wrap(text: str, width: int = 88) -> list[str]:
     return out
 
 
-def _actual(actual: runner_ir.Actual) -> str:
+def _actual(actual: runner_ir.Actual, block_first: dict[str, str] | None = None) -> str:
     form, ref = actual.form, actual.ref
     if form == "host":
         return ref.local
@@ -533,16 +547,23 @@ def _actual(actual: runner_ir.Actual) -> str:
     if form == "literal":
         return _literal(ref[0], ref[1])
     if form == "block_first":
-        return "1"   # the serial driver's block is the whole case (issue #610, B5)
+        # The block's first global index: the distributed driver's offset of that axis, `1` on
+        # the serial driver, whose block is the whole case (issue #610, B5).
+        return block_first[ref] if block_first is not None else "1"
     return ref.name
 
 
-def _render_call(a: Any, call: runner_ir.CallPlan, indent: str, *, timed: bool = False) -> None:
+def _render_call(a: Any, call: runner_ir.CallPlan, indent: str, *, timed: bool = False,
+                 dist: _Dist | None = None) -> None:
     """Every logical `out` `.false.` before the call and written as 1 / 0 after it (D1). The
     scalars an `intent(out)` dummy takes are `volatile`: gfortran clobbers an `intent(out)` scalar
     actual at the call (measured, `-fdump-tree-original`), so at `-O2` a plain variable's reset
     is a dead store and a kernel that never assigns its result reads whatever the register held,
-    `.true.` included."""
+    `.true.` included.
+
+    On the distributed driver (`dist`) the result is the ranks' together (issue #610, B8): the
+    count of ranks whose result is true, summed over the ranks, decides it on every rank, so a
+    refusal on one rank is the refusal everywhere and the loop exits on every rank at once."""
     for var in call.logical:
         a(f"{indent}{_LG}{var} = .false.")
     for var in call.integer:
@@ -550,20 +571,153 @@ def _render_call(a: Any, call: runner_ir.CallPlan, indent: str, *, timed: bool =
     if timed:
         a(f"{indent}call system_clock(count=clock0)")
     a(f"{indent}call {call.operation}( &")
-    actuals = [_actual(x) for x in call.actuals]
+    actuals = [_actual(x, dist.block_first if dist is not None else None)
+               for x in call.actuals]
     for i, text in enumerate(actuals):
         a(f"{indent}  {text}{', &' if i < len(actuals) - 1 else ')'}")
     if timed:
         a(f"{indent}call system_clock(count=clock1)")
         a(f"{indent}walltime = walltime + real(clock1 - clock0, dp) / real(clock_rate, dp)")
+    if dist is not None:
+        res = f"{_LG}{call.result_state}"
+        a(f"{indent}nok = {dist.H('reduce_sum_int')}(merge(1, 0, {res}))")
+        a(f"{indent}{res} = nok == nranks")
     for var in call.logical:
         a(f"{indent}{_ST}{var} = merge(1.0_dp, 0.0_dp, {_LG}{var})")
     for var in call.integer:
         a(f"{indent}{_ST}{var} = real({_IV}{var}, dp)")
 
 
+@dataclass(frozen=True)
+class _Dist:
+    """What the distributed form of the driver adds to the serial one (issue #610, §3.3), for a
+    harness that runs the program as several ranks. ``axes`` are `drive.distribute`'s; on a node
+    with none every case is replicated and only the reductions and rank 0's writing remain.
+
+    ``layouts``: the spatial arrays (a state by its name, a bound host array by its key), each
+    with one entry per dimension, None where not spatial (`runner_ir.distribute_layouts`).
+    ``gathered``: the spatial states the driver or the kernel writes, gathered onto rank 0 at a
+    capture (B10); ``global_states``: the spatial states nothing writes, captured and folded from
+    the global copy every rank read (B9, B10). ``table``: per process grid, the cases
+    `distribute_plan` distributes (B6). ``init_checks``: the rank-0 real / integer states `init`
+    writes, which must be finite and agree across the ranks (B8)."""
+    H: Any
+    axes: tuple[runner_ir.Axis, ...]
+    layouts: dict[str, tuple[tuple[int, str] | None, ...]]
+    gathered: tuple[str, ...]
+    global_states: tuple[str, ...]
+    table: tuple[tuple[tuple[int, int], tuple[str, ...]], ...]
+    grids: tuple[tuple[int, int], ...]
+    threads: int
+    init_checks: tuple[str, ...]
+
+    @property
+    def block_first(self) -> dict[str, str]:
+        return {axis.name: f"dlo{k}" for k, axis in enumerate(self.axes, start=1)}
+
+
+def _distribution(ir: dict[str, Any], schema: dict[str, str], plan: runner_ir.DriverPlan,
+                  H: Any, target: dict[str, Any]) -> _Dist:
+    """The distributed facts of ``ir``, or RenderError for an IR they cannot be rendered from:
+    the render backstop of gate (n) (`primary_evidence.drive_violations`), which every IR a
+    render reaches has passed."""
+    layouts, refusals = runner_ir.distribute_layouts(ir, schema)
+    if refusals:
+        raise RenderError("drive.distribute: " + "; ".join(refusals))
+    spatial = {k: v for k, v in layouts.items() if any(d is not None for d in v)}
+    gathered = tuple(v for v in plan.arrays if v in spatial and v in plan.written)
+    for var in gathered:
+        if any(d is not None and d[1] == "ghost" for d in spatial[var]):
+            raise RenderError(f"{var}: an array the driver or the kernel writes has a ghost "
+                              "layout, and only a cell or face layout is gathered (gate (n))")
+    for k, axis in enumerate(plan.axes):
+        for entry in plan.entries:
+            cells, ghost, extended = entry.axis_hosts[k]
+            if cells is None or (extended is not None and ghost is None):
+                raise RenderError(
+                    f"drive.distribute axis {axis.name}: a drive entry binds no rank-0 integer "
+                    f"dummy to inputs.{axis.cells}"
+                    + ("" if cells is None else f" with inputs.{axis.ghost}")
+                    + " (gate (n))")
+            needs_ghost = any(d is not None and d[0] == k and d[1] == "ghost"
+                              for lay in spatial.values() for d in lay)
+            if needs_ghost and ghost is None:
+                raise RenderError(f"drive.distribute axis {axis.name}: an array has a ghost "
+                                  f"layout and no rank-0 integer dummy binds inputs.{axis.ghost}")
+    init = plan.entries[0].init
+    checks = tuple(dict.fromkeys(
+        x.ref for x in (init.actuals if init is not None else ())
+        if (x.form == "state" and x.writes and plan.variables.get(x.ref) == 0)
+        or x.form == "integer"))
+    grids = runner_ir.distribute_grids(target)
+    return _Dist(
+        H=H, axes=plan.axes, layouts=spatial, gathered=gathered,
+        global_states=tuple(v for v in plan.arrays if v in spatial and v not in plan.written),
+        table=runner_ir.replication_table(ir, grids) if plan.axes else (), grids=grids,
+        threads=_threads(target), init_checks=checks)
+
+
+def _distributed_ops(plan: runner_ir.DriverPlan, dist: _Dist) -> list[str]:
+    """The distributed-state operations the distributed form calls, in a fixed order: the start
+    and end of the runtime, the rank and size, the grid the table is looked up by, the result's
+    reduction (every call), the partition on a node with axes, the extremes' reductions where a
+    fold or `init`'s agreement check takes them, and one gather per rank of a gathered array."""
+    ops = ["init", "finalize", "comm_rank", "comm_size", "grid_dims", "reduce_sum_int"]
+    if dist.axes:
+        ops.append("partition")
+    if dist.init_checks or (plan.loop and any(v in plan.written for v in plan.arrays)):
+        ops += ["reduce_min", "reduce_max"]
+    ops += [f"gather_r{r}" for r in sorted({plan.variables[v] for v in dist.gathered})]
+    return ops
+
+
+def _section(layout: tuple[tuple[int, str] | None, ...], ghost: dict[int, str]) -> str:
+    """The global array's index ranges of a rank's block: the owned cells of a `cell`
+    dimension, the cells and the upper face of a `face` one, the cells and the ghost margin on
+    each side of a `ghost` one (the ghost-extended global position of cell `i` is `i + ng`, so
+    the block's first position is the global position of its first owned cell)."""
+    out = []
+    for dim in layout:
+        if dim is None:
+            out.append(":")
+            continue
+        k, kind = dim[0] + 1, dim[1]
+        upper = {"cell": f"dhi{k}", "face": f"dhi{k} + 1",
+                 "ghost": f"dhi{k} + 2 * {ghost.get(dim[0], '')}"}[kind]
+        out.append(f"dlo{k}:{upper}")
+    return ", ".join(out)
+
+
+def _owned(layout: tuple[tuple[int, str] | None, ...]) -> str:
+    """The positions of a rank's block it contributes to the global array: all of a `cell`
+    dimension and, along a `face` one, the cells plus the domain's last face on the last rank
+    of the line (`dfe<k>`). Written arrays have no `ghost` dimension (`_distribution`)."""
+    return ", ".join(f"1:dfe{d[0] + 1}" if d is not None and d[1] == "face" else ":"
+                     for d in layout)
+
+
+def _global_size(var: str, plan: runner_ir.DriverPlan, dist: _Dist) -> str:
+    """The global element count of state ``var`` on the distributed form, for the perf record
+    (B10): a spatial state read from the case file by its global copy; a spatial state the
+    driver allocates (written by `init` or recorded, never `ghost`-laid) from the axes' global
+    counts; any other state by its own size, since every rank holds it whole."""
+    layout = dist.layouts.get(var)
+    if layout is None:
+        return f"size({_ST}{var}, kind=int64)"
+    if var in _from_file_states(plan):
+        return f"size({_GL}{var}, kind=int64)"
+    return " * ".join(
+        f"size({_ST}{var}, {i}, kind=int64)" if dim is None
+        else f"int(dnc{dim[0] + 1}{' + 1' if dim[1] == 'face' else ''}, int64)"
+        for i, dim in enumerate(layout, start=1))
+
+
+def _from_file_states(plan: runner_ir.DriverPlan) -> set[str]:
+    return {v for entry in plan.entries for v in entry.from_file}
+
+
 def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_spec_id: str,
-                    H: Any, target_class: str, devices: int) -> None:
+                    H: Any, target_class: str, devices: int, dist: _Dist | None = None) -> None:
     from_module = {v.local for v in plan.procedure_hosts}
     records = set(plan.record_states)
     emit_ops = ["emit_real"] + [f"emit_array_r{r}" for r in plan.array_ranks]
@@ -573,16 +727,27 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         *[H(t) for t in _HARNESS_TYPES], H("parse_cases"), H("read_case"),
         *[H(g) for g in plan.getters], *[H(op) for op in emit_ops],
         H("box"), H("write_snapshot"), H("write_perf")]
+    if dist is not None:
+        harness_syms += [H(op) for op in _distributed_ops(plan, dist)]
     operations = list(dict.fromkeys(
         c.operation for e in plan.entries for c in ([e.init] if e.init else []) + [e.step]))
+    from_file = _from_file_states(plan)
+    spatial_hosts = [v for v in plan.hosts
+                     if dist is not None and v.rank and v.key in dist.layouts]
     a("! Deterministic driver rendered by the host from the node's IR (issue #589). Per case it")
     a("! reads the host-written case file, allocates the state, calls the published operations,")
     a("! owns the time loop on a loop node, and writes every capture THROUGH the certified")
     a(f"! {harness_spec_id} plumbing, which owns all JSON assembly.")
+    if dist is not None:
+        a("! The program runs as several ranks (issue #610): every rank reads the whole case; on a")
+        a("! case the replication table distributes it calls the operations on its own block, the")
+        a("! partitioned state is gathered onto rank 0 at each capture, and rank 0 writes.")
     a(f"program {spec_id}_runner")
     a("  use, intrinsic :: iso_fortran_env, only: real64, int64, error_unit")
     if plan.work_vars or plan.loop:
         a("  use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_is_finite")
+    elif dist is not None and dist.init_checks:
+        a("  use, intrinsic :: ieee_arithmetic, only: ieee_is_finite")
     a(f"  use {harness_spec_id}_model, only: &")
     for i, sym in enumerate(harness_syms):
         a(f"    {sym}{', &' if i < len(harness_syms) - 1 else ''}")
@@ -608,6 +773,13 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("  integer(int64) :: cells_total, clock0, clock1, clock_rate")
     a("  real(dp) :: walltime, t_c")
     a("  logical :: ok, case_refused")
+    if dist is not None:
+        a("  integer :: rank, nranks, p1, p2, nok")
+        a("  logical :: grid_known")
+        if dist.axes:
+            a("  logical :: replicated")
+            for k in range(1, len(dist.axes) + 1):
+                a(f"  integer :: dnc{k}, dlo{k}, dhi{k}, dnl{k}, dfe{k}")
     a("  character(len=token_len), allocatable :: tokens(:)")
     a("  character(len=case_id_len), allocatable :: case_ids(:)")
     a("  character(len=:), allocatable :: cid")
@@ -626,6 +798,10 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
             a(f"  real(dp), allocatable :: {_ST}{var}({_colons(rank)})")
         else:
             a(f"  real(dp), volatile :: {_ST}{var}")
+    if dist is not None:
+        for var in plan.arrays:
+            if var in dist.layouts and var in from_file:
+                a(f"  real(dp), allocatable :: {_GL}{var}({_colons(plan.variables[var])})")
     for var in plan.work_vars:
         a(f"  real(dp), allocatable :: {_WK}{var}({_colons(plan.variables[var])})")
     for var in plan.logical_states:
@@ -640,7 +816,24 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         else:
             decl = {"real": "real(dp)", "integer": "integer", "logical": "logical"}[value.kind]
             a(f"  {decl} :: {value.local}")
+    for value in spatial_hosts:
+        a(f"  real(dp), allocatable :: {value.local}g({_colons(value.rank)})")
     a("")
+    if dist is not None:
+        a("  ! --- the ranks, and the process grid the replication table is looked up by ---")
+        a(f"  call {H('init')}()")
+        a(f"  rank = {H('comm_rank')}()")
+        a(f"  nranks = {H('comm_size')}()")
+        a(f"  call {H('grid_dims')}(p1, p2)")
+        a("  grid_known = .false.")
+        for g1, g2 in dist.grids:
+            a(f"  if (p1 == {g1} .and. p2 == {g2}) grid_known = .true.")
+        a("  if (.not. grid_known) then")
+        a("    write(error_unit, '(A)') 'error: the process grid is not one the replication "
+          "table lists'")
+        a("    error stop 1")
+        a("  end if")
+        a("")
     a("  ! --- read argv and parse the case set (--cases <spec> <case_id>...) --------")
     a("  nargs = command_argument_count()")
     a("  allocate(tokens(max(nargs, 1)))")
@@ -687,15 +880,20 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         a("    select case (entry_no)")
         for k, entry in enumerate(plan.entries, start=1):
             a(f"    case ({k})")
-            _render_entry(a, plan, entry, H, "      ")
+            _render_entry(a, plan, entry, H, "      ", dist)
         a("    case default")
         a("      write(error_unit, '(A)') 'error: no drive entry numbered for case '//cid")
         a("      error stop 2")
         a("    end select")
     else:
-        _render_entry(a, plan, plan.entries[0], H, "    ")
+        _render_entry(a, plan, plan.entries[0], H, "    ", dist)
     a("    steps_total = steps_total + step_c")
-    sizes = [f"size({_ST}{v}, kind=int64)" for v in plan.arrays]
+    if dist is None:
+        sizes = [f"size({_ST}{v}, kind=int64)" for v in plan.arrays]
+    else:
+        # The GLOBAL extents (B10): a sum of the ranks' blocks would count a replicated case
+        # once per rank, and a rank's own block is not the case's largest array.
+        sizes = [_global_size(v, plan, dist) for v in plan.arrays]
     largest = ("max(" + ", ".join(sizes) + ")") if len(sizes) > 1 else (
         sizes[0] if sizes else "1_int64")
     for line in _wrap(f"cells_total = cells_total + int(step_c, int64) * {largest}"):
@@ -705,9 +903,19 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("  if (walltime <= 0.0_dp) walltime = 1.0e-9_dp")
     a("")
     a("  ! --- emit the perf record (harness owns its envelope) ------------------------")
-    a(f"  call {H('write_perf')}(trim(case_ids(ncases)), '{_flit(target_class)}', &")
-    a("    steps_total, int(min(cells_total, int(huge(0), int64))), walltime, 1, "
-      f"{devices})")
+    if dist is None:
+        a(f"  call {H('write_perf')}(trim(case_ids(ncases)), '{_flit(target_class)}', &")
+        a("    steps_total, int(min(cells_total, int(huge(0), int64))), walltime, 1, "
+          f"{devices})")
+    else:
+        # The rank count is the one the run observes, never the profile's (B10).
+        a("  if (rank == 0) then")
+        a(f"    call {H('write_perf')}(trim(case_ids(ncases)), '{_flit(target_class)}', &")
+        a("      steps_total, int(min(cells_total, int(huge(0), int64))), walltime, nranks, "
+          f"{dist.threads}, &")
+        a(f"      {devices})")
+        a("  end if")
+        a(f"  call {H('finalize')}()")
     a("")
     a("contains")
     a("")
@@ -715,12 +923,15 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("  ! capture point of every case.")
     a("  subroutine capture_state(out)")
     a(f"    type({H('h_named')}), allocatable, intent(out) :: out(:)")
-    a(f"    allocate(out({len(plan.variables) + 1}))")
-    for k, (var, rank) in enumerate(plan.variables.items(), start=1):
-        a(f"    out({k}) = {H('box')}('{_flit(var)}', &")
-        a(f"      {H('emit_real') if rank == 0 else H(f'emit_array_r{rank}')}({_ST}{var}))")
-    a(f"    out({len(plan.variables) + 1}) = {H('box')}('step', &")
-    a(f"      {H('emit_real')}(real(step_c, dp)))")
+    if dist is None:
+        a(f"    allocate(out({len(plan.variables) + 1}))")
+        for k, (var, rank) in enumerate(plan.variables.items(), start=1):
+            a(f"    out({k}) = {H('box')}('{_flit(var)}', &")
+            a(f"      {H('emit_real') if rank == 0 else H(f'emit_array_r{rank}')}({_ST}{var}))")
+        a(f"    out({len(plan.variables) + 1}) = {H('box')}('step', &")
+        a(f"      {H('emit_real')}(real(step_c, dp)))")
+    else:
+        _render_distributed_capture(a, plan, dist, H)
     a("  end subroutine capture_state")
     if plan.loop:
         a("")
@@ -735,7 +946,14 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         a(f"      s = {H('emit_array_r1')}(se(1:n_done, column))")
         a("    end if")
         a("  end function series_json")
-        for rank in plan.array_ranks:
+        if dist is None:
+            local_ranks, reduced_ranks = plan.array_ranks, ()
+        else:
+            local_ranks = tuple(sorted({plan.variables[v] for v in plan.arrays
+                                        if v not in plan.written}))
+            reduced_ranks = tuple(sorted({plan.variables[v] for v in plan.arrays
+                                          if v in plan.written}))
+        for rank in local_ranks:
             cols = _colons(rank)
             for fn, intrinsic in (("min", "minval"), ("max", "maxval")):
                 a("")
@@ -750,29 +968,189 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
                 a("      x = ieee_value(1.0_dp, ieee_quiet_nan)")
                 a("    end if")
                 a(f"  end function fold_{fn}_r{rank}")
+        for rank in reduced_ranks:
+            a("")
+            a("  ! The extremes over every rank's owned cells (B9): a non-finite cell on any rank")
+            a("  ! is a flag summed over the ranks, so no reduction is handed a NaN, and the entry")
+            a("  ! is NaN on every rank. Each rank calls the reductions in the same order.")
+            a(f"  subroutine dfold_r{rank}(arr, x_min, x_max)")
+            a(f"    real(dp), intent(in) :: arr({_colons(rank)})")
+            a("    real(dp), intent(out) :: x_min, x_max")
+            a("    integer :: n_bad")
+            a(f"    n_bad = {H('reduce_sum_int')}(merge(0, 1, all(ieee_is_finite(arr))))")
+            a("    if (n_bad > 0) then")
+            a("      x_min = ieee_value(1.0_dp, ieee_quiet_nan)")
+            a("      x_max = x_min")
+            a("    else")
+            a(f"      x_min = {H('reduce_min')}(minval(arr))")
+            a(f"      x_max = {H('reduce_max')}(maxval(arr))")
+            a("    end if")
+            a(f"  end subroutine dfold_r{rank}")
+    if dist is not None and dist.init_checks:
+        a("")
+        a("  ! A scalar `init` wrote must be finite on every rank and equal across the ranks")
+        a("  ! (B8): a value taken from a rank's own block is the readable cause here, rather")
+        a("  ! than a disagreement many steps later. No reduction is handed a non-finite value.")
+        a("  subroutine init_agree(name, x)")
+        a("    character(len=*), intent(in) :: name")
+        a("    real(dp), intent(in) :: x")
+        a("    real(dp) :: x_min, x_max")
+        a(f"    if ({H('reduce_sum_int')}(merge(0, 1, ieee_is_finite(x))) > 0) then")
+        a("      write(error_unit, '(A)') 'error: init wrote a non-finite '//name// &")
+        a("        ' on a rank for case '//cid")
+        a("      error stop 2")
+        a("    end if")
+        a(f"    x_min = {H('reduce_min')}(x)")
+        a(f"    x_max = {H('reduce_max')}(x)")
+        a("    if (x_min /= x_max) then")
+        a("      write(error_unit, '(A)') 'error: init wrote '//name// &")
+        a("        ' unequal across the ranks for case '//cid")
+        a("      error stop 2")
+        a("    end if")
+        a("  end subroutine init_agree")
     a("")
     a(f"end program {spec_id}_runner")
 
 
+def _render_distributed_capture(a: Any, plan: runner_ir.DriverPlan, dist: _Dist, H: Any) -> None:
+    """`capture_state` of the distributed form (B10): every rank takes part in each gather of a
+    partitioned array the driver or the kernel writes (a collective), and rank 0 boxes. A
+    replicated case gathers nothing (a gather of a whole array on every rank does not tile);
+    an array nothing writes is boxed from the global copy every rank read; a scalar is rank
+    0's."""
+    gathered_ranks = sorted({plan.variables[v] for v in dist.gathered})
+    for r in gathered_ranks:
+        a(f"    real(dp), allocatable :: g_r{r}({_colons(r)})")
+    a(f"    allocate(out({len(plan.variables) + 1}))")
+    for k, (var, rank) in enumerate(plan.variables.items(), start=1):
+        emit = H("emit_real") if rank == 0 else H(f"emit_array_r{rank}")
+        box = f"out({k}) = {H('box')}('{_flit(var)}', &"
+        if var in dist.gathered:
+            layout = dist.layouts[var]
+            slots: list[str] = []
+            for axis in range(len(dist.axes)):
+                dims = [i for i, d in enumerate(layout, start=1) if d is not None and d[0] == axis]
+                if not dims:
+                    slots += ["0", "1", "1", "1"]
+                    continue
+                kind = layout[dims[0] - 1][1]
+                slots += [str(dims[0]), "1",
+                          f"{'dfe' if kind == 'face' else 'dnl'}{axis + 1}", f"dlo{axis + 1}"]
+            if len(dist.axes) == 1:
+                slots += ["0", "1", "1", "1"]
+            a("    if (replicated) then")
+            a(f"      if (rank == 0) {box}")
+            a(f"        {emit}({_ST}{var}))")
+            a("    else")
+            a(f"      call {H(f'gather_r{rank}')}({_ST}{var}, &")
+            a(f"        {', '.join(slots[:4])}, &")
+            a(f"        {', '.join(slots[4:])}, g_r{rank})")
+            a(f"      if (rank == 0) {box}")
+            a(f"        {emit}(g_r{rank}))")
+            a("    end if")
+            continue
+        source = f"{_GL}{var}" if var in dist.layouts else f"{_ST}{var}"
+        a(f"    if (rank == 0) {box}")
+        a(f"      {emit}({source}))")
+    a(f"    if (rank == 0) out({len(plan.variables) + 1}) = {H('box')}('step', &")
+    a(f"      {H('emit_real')}(real(step_c, dp)))")
+
+
+def _render_partition(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
+                      dist: _Dist, ind: str) -> None:
+    """The table lookup, the partition, the local extents (B4) and the block copies (B3): every
+    spatial array — a state read from the case file and a bound host array alike, whatever the
+    dummy's intent — is copied out of the global array into a fresh allocatable, never passed as
+    a section. On a replicated case the block is the whole case and no index arithmetic runs (a
+    case whose inputs are inconsistent reaches the kernel with its raw inputs, B6)."""
+    from_file = [v for v in entry.from_file if v in dist.layouts]
+    hosts = [v for v in entry.hosts if v.rank and v.key in dist.layouts]
+    ghost = {k: hv[1].local for k, hv in enumerate(entry.axis_hosts) if hv[1] is not None}
+    a(f"{ind}! --- the replication table (`distribute_plan` per process grid, issue #610 B6) ---")
+    a(f"{ind}replicated = .true.")
+    first = True
+    for (g1, g2), ids in dist.table:
+        ids = [c for c in ids if entry.cases is None or c in entry.cases]
+        if not ids:
+            continue
+        a(f"{ind}{'if' if first else 'else if'} (p1 == {g1} .and. p2 == {g2}) then")
+        first = False
+        a(f"{ind}  select case (cid)")
+        for case_id in ids:
+            a(f"{ind}  case ('{_flit(case_id)}')")
+            a(f"{ind}    replicated = .false.")
+        a(f"{ind}  case default")
+        a(f"{ind}    replicated = .true.")
+        a(f"{ind}  end select")
+    if not first:
+        a(f"{ind}end if")
+    for k, (cells, _ghost, _extended) in enumerate(entry.axis_hosts, start=1):
+        a(f"{ind}dnc{k} = {cells.local}")
+    a(f"{ind}if (replicated) then")
+    for k in range(1, len(dist.axes) + 1):
+        a(f"{ind}  dlo{k} = 1")
+        a(f"{ind}  dhi{k} = dnc{k}")
+    for var in from_file:
+        a(f"{ind}  {_ST}{var} = {_GL}{var}")
+    for value in hosts:
+        a(f"{ind}  {value.local} = {value.local}g")
+    a(f"{ind}else")
+    for k in range(1, len(dist.axes) + 1):
+        a(f"{ind}  call {dist.H('partition')}(dnc{k}, {k}, dlo{k}, dhi{k})")
+    a(f"{ind}  ! the local extents (B4): every rank-0 integer bound to an axis's cell count")
+    a(f"{ind}  ! takes the owned count, to its ghost-extended count the owned count + 2*ghost")
+    for k, (cells, ghost_host, extended) in enumerate(entry.axis_hosts, start=1):
+        a(f"{ind}  {cells.local} = dhi{k} - dlo{k} + 1")
+        if extended is not None:
+            a(f"{ind}  {extended.local} = {cells.local} + 2 * {ghost_host.local}")
+    for local, glob, key in [*((f"{_ST}{v}", f"{_GL}{v}", v) for v in from_file),
+                             *((v.local, f"{v.local}g", v.key) for v in hosts)]:
+        extents = entry.extents.get(key)
+        copy = f"{local} = {glob}({_section(dist.layouts[key], ghost)})"
+        if extents is None:
+            for line in _wrap(copy):
+                a(f"{ind}  {line}")
+            continue
+        # A copy that holds no element carries no extents (the case file's `[]`), so the block
+        # is allocated at its local extents instead: the gather and the call then see its shape.
+        a(f"{ind}  if (size({glob}) > 0) then")
+        for line in _wrap(copy):
+            a(f"{ind}    {line}")
+        a(f"{ind}  else")
+        a(f"{ind}    if (allocated({local})) deallocate({local})")
+        for line in _wrap(f"allocate({local}({', '.join(extents)}))"):
+            a(f"{ind}    {line}")
+        a(f"{ind}  end if")
+    a(f"{ind}end if")
+    for k in range(1, len(dist.axes) + 1):
+        a(f"{ind}dnl{k} = dhi{k} - dlo{k} + 1")
+        a(f"{ind}dfe{k} = dnl{k} + merge(1, 0, dhi{k} == dnc{k})")
+
+
 def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
-                  ind: str) -> None:
+                  ind: str, dist: _Dist | None = None) -> None:
+    spatial_hosts = {v.key for v in entry.hosts
+                     if dist is not None and v.rank and v.key in dist.layouts}
     a(f"{ind}! --- the case file, read whole before any capture ---")
     for value in entry.hosts:
         key = _flit(value.key)
         if value.rank:
             a(f"{ind}call {H(f'get_array_r{value.rank}')}( &")
             a(f"{ind}  '{key}', &")
-            a(f"{ind}  {value.local})")
+            a(f"{ind}  {value.local}{'g' if value.key in spatial_hosts else ''})")
         else:
             a(f"{ind}{value.local} = {H(runner_ir.GETTERS[value.kind])}( &")
             a(f"{ind}  '{key}')")
     for var in entry.from_file:
         rank = plan.variables[var]
+        local = f"{_GL if dist is not None and var in dist.layouts else _ST}{var}"
         if rank:
             a(f"{ind}call {H(f'get_array_r{rank}')}('{_flit(var)}', &")
-            a(f"{ind}  {_ST}{var})")
+            a(f"{ind}  {local})")
         else:
             a(f"{ind}{_ST}{var} = {H('get_real')}('{_flit(var)}')")
+    if dist is not None and dist.axes:
+        _render_partition(a, plan, entry, dist, ind)
     for var in entry.zero_scalars:
         a(f"{ind}{_ST}{var} = 0.0_dp")
     for var, extents in entry.zero_arrays.items():
@@ -796,8 +1174,13 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         a(f"{ind}t_c = t_start_c")
     if entry.init is not None:
         a(f"{ind}! --- init, on the state itself; a false result refuses the case ---")
-        _render_call(a, entry.init, ind)
+        _render_call(a, entry.init, ind, dist=dist)
         a(f"{ind}case_refused = .not. {_LG}{entry.init.result_state}")
+        if dist is not None and dist.init_checks:
+            a(f"{ind}if (.not. case_refused) then")
+            for var in dist.init_checks:
+                a(f"{ind}  call init_agree('{_flit(var)}', {_ST}{var})")
+            a(f"{ind}end if")
         if plan.loop:
             state_loop = {k: v[1] for k, v in entry.loop_values.items() if v[0] == "state"}
             if state_loop:
@@ -819,34 +1202,41 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
                     a(f"{ind}  end if")
                 a(f"{ind}end if")
             a(f"{ind}if (case_refused) n_c = 0")
+    write = f"{ind}if (rank == 0) " if dist is not None else ind
     a(f"{ind}! --- the initial capture (raw/state_snapshots/initial/<case_id>.json) ---")
     a(f"{ind}call capture_state(vals)")
-    a(f"{ind}call {H('write_snapshot')}('initial/'//cid, vals, t_c)")
+    a(f"{write}call {H('write_snapshot')}('initial/'//cid, vals, t_c)")
     a(f"{ind}deallocate(vals)")
     if plan.loop:
-        _render_loop(a, plan, entry, H, ind)
+        _render_loop(a, plan, entry, H, ind, dist)
     else:
         a(f"{ind}if (.not. case_refused) then")
         a(f"{ind}  ! --- one call on the state itself: what it leaves is the captured state ---")
-        _render_call(a, entry.step, ind + "  ", timed=True)
+        _render_call(a, entry.step, ind + "  ", timed=True, dist=dist)
         a(f"{ind}  if ({_LG}{entry.step.result_state}) step_c = 1")
         a(f"{ind}end if")
     a(f"{ind}! --- the final capture (raw/state_snapshots/<case_id>.json) ---")
     a(f"{ind}call capture_state(vals)")
-    a(f"{ind}call {H('write_snapshot')}(cid, vals, t_c)")
+    a(f"{write}call {H('write_snapshot')}(cid, vals, t_c)")
     a(f"{ind}deallocate(vals)")
     if plan.loop:
         names = plan.series_names
-        a(f"{ind}allocate(vals({len(names)}))")
+        inner = ind
+        if dist is not None:
+            a(f"{ind}if (rank == 0) then")
+            inner = ind + "  "
+        a(f"{inner}allocate(vals({len(names)}))")
         for col, name in enumerate(names, start=1):
-            a(f"{ind}vals({col}) = {H('box')}('{_flit(name)}', series_json({col}))")
-        a(f"{ind}call {H('write_snapshot')}('series/'//cid, vals, t_c)")
-        a(f"{ind}deallocate(vals)")
+            a(f"{inner}vals({col}) = {H('box')}('{_flit(name)}', series_json({col}))")
+        a(f"{inner}call {H('write_snapshot')}('series/'//cid, vals, t_c)")
+        a(f"{inner}deallocate(vals)")
+        if dist is not None:
+            a(f"{ind}end if")
         a(f"{ind}deallocate(se)")
 
 
 def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
-                 ind: str) -> None:
+                 ind: str, dist: _Dist | None = None) -> None:
     a(f"{ind}n_done = 0")
     a(f"{ind}allocate(se(max(n_c, 0), {len(plan.series_names)}))")
     a(f"{ind}do n = 1, n_c")
@@ -855,7 +1245,7 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
         a(f"{in1}{_WK}{var} = {_ST}{var}")
     for var in entry.work_nan:
         a(f"{in1}{_WK}{var} = ieee_value(1.0_dp, ieee_quiet_nan)")
-    _render_call(a, entry.step, in1, timed=True)
+    _render_call(a, entry.step, in1, timed=True, dist=dist)
     a(f"{in1}if (.not. {_LG}{entry.step.result_state}) exit")
     a(f"{in1}! --- committed: the state, step, t, the series entry, the sample ---")
     for var in (*entry.work_copy, *entry.work_nan):
@@ -867,14 +1257,25 @@ def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan,
     col = 2
     for var in plan.arrays:
         rank = plan.variables[var]
-        a(f"{in1}se(n, {col}) = fold_min_r{rank}({_ST}{var})")
-        a(f"{in1}se(n, {col + 1}) = fold_max_r{rank}({_ST}{var})")
+        if dist is not None and var in plan.written:
+            # B9: a written array's extremes over the owned positions, reduced over the ranks.
+            owned = _owned(dist.layouts[var]) if var in dist.layouts else _colons(rank)
+            a(f"{in1}call dfold_r{rank}({_ST}{var}({owned}), &")
+            a(f"{in1}  se(n, {col}), se(n, {col + 1}))")
+        else:
+            # An array nothing writes: its global copy, the same on every rank and every grid.
+            source = f"{_GL}{var}" if dist is not None and var in dist.layouts else f"{_ST}{var}"
+            a(f"{in1}se(n, {col}) = fold_min_r{rank}({source})")
+            a(f"{in1}se(n, {col + 1}) = fold_max_r{rank}({source})")
         col += 2
     a(f"{in1}if (every_c > 0) then")
     a(f"{in1}  if (mod(n, every_c) == 0) then")
     a(f"{in1}    write(step_text, '(I0)') n")
     a(f"{in1}    call capture_state(vals)")
-    a(f"{in1}    call {H('write_snapshot')}( &")
+    if dist is not None:
+        a(f"{in1}    if (rank == 0) call {H('write_snapshot')}( &")
+    else:
+        a(f"{in1}    call {H('write_snapshot')}( &")
     a(f"{in1}      'history/'//cid//'__'//trim(step_text), vals, t_c)")
     a(f"{in1}    deallocate(vals)")
     a(f"{in1}  end if")
@@ -1193,8 +1594,8 @@ class _HarnessPin:
 
     #: The §5.1 block the rendered glue is written against, under the harness's names.
     interface: str
-    #: Whether the harness drives the program as several ranks (`distributed_state@2`). The
-    #: driver does not render for one yet (`render_runner`).
+    #: Whether the harness drives the program as several ranks (`distributed_state@2`): the
+    #: driver then takes its distributed form (`render_runner`).
     distributed: bool
 
 
