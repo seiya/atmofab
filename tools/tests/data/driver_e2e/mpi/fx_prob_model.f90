@@ -1,7 +1,9 @@
 ! Fixture model (2) of the distributed driver's end to end (issue #610, PR-B2): a stencil
 ! `problem` on the block it is handed. Periodic along x, walls along y. `__init` writes the
 ! state from the GLOBAL index (`i0`, `j0`, the block's offsets) and a step size from the global
-! counts (`nx_g`, `ny_g`, bound to `derived` values); `__step` fills a ghost-extended temporary,
+! counts (`nx_g`, `ny_g`, bound to `derived` values), and with `refuse_init` 1 refuses on the
+! block holding the global last cell after writing it, a block-local `init` refusal (the shape
+! of a depth check over the block); `__step` fills a ghost-extended temporary,
 ! exchanges it along dimension 1 then 2 (the corners), restores each wall by global index (never
 ! by the grid coordinate), and refuses at step `refuse_at` on the block holding the global last
 ! cell, a rank-local refusal after the exchange (`refuse_at` -1: never; `stepno` is the count of
@@ -14,8 +16,8 @@ module fx_prob_model
   integer, parameter :: dp = real64
   public :: fx_prob__init, fx_prob__step
 contains
-  subroutine fx_prob__init(nx, ny, nx_g, ny_g, i0, j0, h, dt, ok)
-    integer, intent(in) :: nx, ny, nx_g, ny_g, i0, j0
+  subroutine fx_prob__init(nx, ny, nx_g, ny_g, i0, j0, refuse_init, h, dt, ok)
+    integer, intent(in) :: nx, ny, nx_g, ny_g, i0, j0, refuse_init
     real(dp), intent(out) :: h(nx, ny)
     real(dp), intent(out) :: dt
     logical, intent(out) :: ok
@@ -30,6 +32,7 @@ contains
       end do
     end do
     dt = 0.8_dp / real(nx_g + ny_g, dp)
+    if (refuse_init == 1 .and. i0 + nx - 1 == nx_g .and. j0 + ny - 1 == ny_g) ok = .false.
   end subroutine fx_prob__init
 
   subroutine fx_prob__step(nx, ny, nx_g, ny_g, i0, j0, refuse_at, stepno, dt, h, ok)

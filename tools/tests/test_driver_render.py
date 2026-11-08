@@ -1021,13 +1021,17 @@ def recon_ir() -> dict[str, Any]:
 def prob_ir() -> dict[str, Any]:
     """Model (2), a stencil `problem`: periodic along x, walls along y, `__init` from the block's
     offsets (`block.<axis>.first`) and the global counts (`derived` values), a mid-step exchange,
-    the walls restored by global index, and a rank-local refusal at step `refuse_at` (`ny8r`).
+    the walls restored by global index, a rank-local refusal at step `refuse_at` (`ny8r`), and a
+    block-local `init` refusal on the block holding the global last cell (`ny8i`, channel's
+    `__init` depth refusal in shape): the result's reduction (B8) refuses the case on every rank,
+    and without it the other ranks go on alone into a collective (a hang).
     `min_block 2`: `ny4` replicates on `(1, 4)` and `(1, 3)` and distributes on `(1, 2)`, `(2, 2)`."""
     sid = "fx_prob"
     ops = {
         f"{sid}__init": [
             _arg("nx", "in", INT), _arg("ny", "in", INT), _arg("nx_g", "in", INT),
             _arg("ny_g", "in", INT), _arg("i0", "in", INT), _arg("j0", "in", INT),
+            _arg("refuse_init", "in", INT),
             _arg("h", "out", REAL, ["nx", "ny"]), _arg("dt", "out", REAL),
             _arg("ok", "out", LOGICAL)],
         f"{sid}__step": [
@@ -1041,7 +1045,8 @@ def prob_ir() -> dict[str, Any]:
         "distribute": {"axes": [{"name": "x", "cells": "inputs.nx", "min_block": 2},
                                 {"name": "y", "cells": "inputs.ny", "min_block": 2}]},
         "init": {"operation": f"{sid}__init", "result": "ok", "arguments": {
-            **common, "h": "state.h", "dt": "state.dt", "ok": "state.init_ok"}},
+            **common, "refuse_init": "inputs.refuse_init", "h": "state.h", "dt": "state.dt",
+            "ok": "state.init_ok"}},
         "step": {"operation": f"{sid}__step", "result": "ok", "arguments": {
             **common, "refuse_at": "inputs.refuse_at", "stepno": "step", "dt": "state.dt",
             "h": "state.h", "ok": "state.step_ok"}},
@@ -1049,14 +1054,17 @@ def prob_ir() -> dict[str, Any]:
                  "t_end": "inputs.t_end"},
         "history": {"every": "inputs.every"}}
     cases = [{"case_id": cid, "derived": {"nx_g": "inputs.nx", "ny_g": "inputs.ny"},
-              "inputs": {"nx": 8, "ny": ny, "refuse_at": refuse_at, "n_step": 6,
-                         "t_start": 0.0, "t_end": 1.0, "every": 2}}
-             for cid, ny, refuse_at in (("ny4", 4, -1), ("ny8", 8, -1), ("ny8r", 8, 3))]
+              "inputs": {"nx": 8, "ny": ny, "refuse_at": refuse_at, "refuse_init": refuse_init,
+                         "n_step": 6, "t_start": 0.0, "t_end": 1.0, "every": 2}}
+             for cid, ny, refuse_at, refuse_init in (("ny4", 4, -1, 0), ("ny8", 8, -1, 0),
+                                                     ("ny8r", 8, 3, 0), ("ny8i", 8, -1, 1))]
     tests, predicates = _one_test_per_case(
         cases, [("init", "min(initial.h) + initial.dt + initial.init_ok", "gt", 1.0),
                 ("run.n_step", "final.step - inputs.n_step", "eq", 0),
                 ("h", "maxabs(final.h)", "gt", 0.0)],
         xfail={"ny8r": [("step_ok", "final.step_ok", "eq", 0),
+                        ("h", "maxabs(final.h)", "gt", 0.0)],
+               "ny8i": [("init_ok", "final.init_ok", "eq", 0),
                         ("h", "maxabs(final.h)", "gt", 0.0)]})
     return _mpi_ir(sid, "problem", ops, drive, cases,
                    {"h": "[nx, ny]", "dt": "scalar", "init_ok": "scalar", "step_ok": "scalar"},
@@ -1299,8 +1307,12 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                                    for t in ir["io_contract"]["tests"]})
         serial_cells = single.perf()["cells_updated"]
         for grid in MPI_GRIDS:
+            # A hang (a rank alone in a collective) is killed at the timeout and ends the row:
+            # one bounded wait, not one per grid.
+            run = build.run(grid, timeout=60)
+            if run.rc is None:
+                self.fail(f"{sid} {flags} {grid}: killed at the timeout (a hang)")
             with self.subTest(sid=sid, flags=flags, grid=grid):
-                run = build.run(grid)
                 self.assertEqual(run.rc, 0, run.stderr[-2000:])
                 got = run.snapshots()
                 if sid == "fx_wit":
