@@ -1581,7 +1581,7 @@ class HarnessPinTest(unittest.TestCase):
                   *((sid, builder(), sid) for sid, builder in MPI_FIXTURES.items()),
                   *((p.stem, yaml.safe_load(p.read_text()), p.stem)
                     for p in sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml")))]
-        self.assertEqual(len(shapes), 4 + 4 + 17)
+        self.assertEqual(len(shapes), 4 + 5 + 17)
         for label, ir, sid in shapes:
             with self.subTest(label):
                 txt = render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC)

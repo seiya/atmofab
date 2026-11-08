@@ -696,20 +696,30 @@ def _owned(layout: tuple[tuple[int, str] | None, ...]) -> str:
                      for d in layout)
 
 
-def _global_size(var: str, plan: runner_ir.DriverPlan, dist: _Dist) -> str:
-    """The global element count of state ``var`` on the distributed form, for the perf record
-    (B10): a spatial state read from the case file by its global copy; a spatial state the
-    driver allocates (written by `init` or recorded, never `ghost`-laid) from the axes' global
-    counts; any other state by its own size, since every rank holds it whole."""
+def _global_size(var: str, entry: runner_ir.EntryPlan, dist: _Dist) -> str:
+    """The global element count of state ``var`` on the distributed form in a case ``entry``
+    runs, for the perf record (B10): a spatial state that entry reads from the case file by its
+    global copy; a spatial state it allocates (written by `init` or recorded, never `ghost`-laid)
+    from the axes' global counts; any other state by its own size, since every rank holds it
+    whole. Per ENTRY (review round 2): on a list-form drive a state read from the file by one
+    entry may be recorded by another, whose case leaves the global copy unallocated or another
+    case's."""
     layout = dist.layouts.get(var)
     if layout is None:
         return f"size({_ST}{var}, kind=int64)"
-    if var in _from_file_states(plan):
+    if var in entry.from_file:
         return f"size({_GL}{var}, kind=int64)"
     return " * ".join(
         f"size({_ST}{var}, {i}, kind=int64)" if dim is None
         else f"int(dnc{dim[0] + 1}{' + 1' if dim[1] == 'face' else ''}, int64)"
         for i, dim in enumerate(layout, start=1))
+
+
+def _render_cells_total(a: Any, sizes: list[str], ind: str) -> None:
+    largest = ("max(" + ", ".join(sizes) + ")") if len(sizes) > 1 else (
+        sizes[0] if sizes else "1_int64")
+    for line in _wrap(f"cells_total = cells_total + int(step_c, int64) * {largest}"):
+        a(f"{ind}{line}")
 
 
 def _from_file_states(plan: runner_ir.DriverPlan) -> set[str]:
@@ -889,15 +899,7 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         _render_entry(a, plan, plan.entries[0], H, "    ", dist)
     a("    steps_total = steps_total + step_c")
     if dist is None:
-        sizes = [f"size({_ST}{v}, kind=int64)" for v in plan.arrays]
-    else:
-        # The GLOBAL extents (B10): a sum of the ranks' blocks would count a replicated case
-        # once per rank, and a rank's own block is not the case's largest array.
-        sizes = [_global_size(v, plan, dist) for v in plan.arrays]
-    largest = ("max(" + ", ".join(sizes) + ")") if len(sizes) > 1 else (
-        sizes[0] if sizes else "1_int64")
-    for line in _wrap(f"cells_total = cells_total + int(step_c, int64) * {largest}"):
-        a(f"    {line}")
+        _render_cells_total(a, [f"size({_ST}{v}, kind=int64)" for v in plan.arrays], "    ")
     a("  end do")
     a("")
     a("  if (walltime <= 0.0_dp) walltime = 1.0e-9_dp")
@@ -1233,6 +1235,11 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         if dist is not None:
             a(f"{ind}end if")
         a(f"{ind}deallocate(se)")
+    if dist is not None:
+        # The GLOBAL extents (B10), in the entry that ran the case: a sum of the ranks' blocks
+        # would count a replicated case once per rank, and a rank's own block is not the case's
+        # largest array.
+        _render_cells_total(a, [_global_size(v, entry, dist) for v in plan.arrays], ind)
 
 
 def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,

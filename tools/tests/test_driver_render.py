@@ -901,7 +901,7 @@ class ProcedureGateTest(unittest.TestCase):
 # blocks of the certified `harness_fortran_cpu@0.10.0` model inserted under its names (the
 # variables of the reading state, `__parse_cases` in the form that keeps the spec path, and
 # `__read_case` with its getters): `0.4.0`'s surface by hand, held to the real `0.4.0` §5.1 by
-# `assert_harness_pin` below. Four hand-written models, each with the IR its builder returns and the
+# `assert_harness_pin` below. Five hand-written models, each with the IR its builder returns and the
 # `tests.md` line gate (o) holds that IR to.
 
 MPI_DATA = DATA / "mpi"
@@ -1157,8 +1157,44 @@ def loop_mpi_ir() -> dict[str, Any]:
                    tests, predicates, interfaces=(proto,))
 
 
+def lst_ir() -> dict[str, Any]:
+    """Model (5), a list-form `component` with axis `x` (review round 2 of PR-B2): case `a`'s
+    entry reads `q [nx]` from the case file, case `b`'s entry has `q` recorded by a procedure
+    binding (the prototype's `in` dummy `q`), so `q` is file-backed in the first entry and
+    driver-written in the second. `a` has 8 cells and `b` 6, so with `min_block` 2 both
+    distribute on `(2, 1)` and `(2, 2)` and `b` alone replicates on `(4, 1)`."""
+    sid = "fx_lst"
+    proto = {"kind": "subroutine", "name": "fx_lst_proto", "args": [
+        _arg("nx", "in", INT), _arg("q", "in", REAL, ["nx"]), _arg("dqdt", "out", REAL, ["nx"])]}
+    ops = {f"{sid}__plain": [_arg("nx", "in", INT), _arg("q", "in", REAL, ["nx"]),
+                              _arg("w", "out", REAL, ["nx"]), _arg("ok", "out", LOGICAL)],
+           f"{sid}__proc": [_arg("nx", "in", INT),
+                             {"name": "rhs", "spec": {"type": "procedure",
+                                                      "interface": "fx_lst_proto"}},
+                             _arg("w", "out", REAL, ["nx"]), _arg("ok", "out", LOGICAL)]}
+    drive = {"distribute": {"axes": [{"name": "x", "cells": "inputs.nx", "min_block": 2}]},
+             "step": [
+                 {"operation": f"{sid}__plain", "result": "ok", "cases": ["a"],
+                  "arguments": {"nx": "inputs.nx", "q": "state.q", "w": "state.w",
+                                "ok": "state.ok"}},
+                 {"operation": f"{sid}__proc", "result": "ok", "cases": ["b"],
+                  "arguments": {"nx": "inputs.nx",
+                                "rhs": {"procedure": "inputs.lam * q",
+                                        "record": {"q": "state.q"}},
+                                "w": "state.w", "ok": "state.ok"}}]}
+    cases = [{"case_id": "a", "inputs": {"nx": 8, "lam": 0.5},
+              "initial_state": {"q": [1.0 + i for i in range(8)], "w": -999.0}},
+             {"case_id": "b", "inputs": {"nx": 6, "lam": 0.5},
+              "initial_state": {"w": -999.0}}]
+    tests, predicates = _one_test_per_case(cases, [("ok", "final.ok", "eq", 1),
+                                                   ("w", "maxabs(final.w)", "gt", 0.0)])
+    return _mpi_ir(sid, "component", ops, drive, cases,
+                   {"q": "[nx]", "w": "[nx]", "ok": "scalar"}, tests, predicates,
+                   interfaces=(proto,))
+
+
 MPI_FIXTURES = {"fx_recon": recon_ir, "fx_prob": prob_ir, "fx_wit": wit_ir,
-                "fx_loop": loop_mpi_ir}
+                "fx_loop": loop_mpi_ir, "fx_lst": lst_ir}
 
 
 class MpiRun:
@@ -1354,7 +1390,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
     def test_the_singleton_is_the_serial_driver(self) -> None:
         """On `(1, 1)` every case is replicated (B6), so the distributed binary bare writes what
         the serial driver over the single-process harness writes, `cells_updated` included."""
-        for sid in ("fx_recon", "fx_wit", "fx_loop"):
+        for sid in ("fx_recon", "fx_wit", "fx_loop", "fx_lst"):
             with self.subTest(sid=sid):
                 ir = MPI_FIXTURES[sid]()
                 single = self._build(ir).run(SINGLETON)
@@ -1479,6 +1515,25 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         self.assertIn("error: init wrote n_cells unequal across the ranks for case ny8",
                       run.stderr)
         self.assertEqual(build.run(SINGLETON, cases=["ny8"]).rc, 0)
+
+    def test_the_perf_size_of_a_state_comes_from_the_entry_that_ran_the_case(self) -> None:
+        """Model (5): `q` is read from the file in case `a`'s entry and recorded in case `b`'s,
+        so `cells_updated` is 8 for `a` and 6 for `b` whatever the order and the grid — not the
+        size of `a`'s global copy of `q` (16 for `a b`), nor of one never allocated (`b` alone,
+        or first). Under the `checked` flags, on the singleton, on grids that distribute both
+        cases, and on `(4, 1)`, which replicates `b` alone (6 cells under 4 ranks of
+        `min_block` 2)."""
+        ir = lst_ir()
+        cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+        self.assertFalse(runner_ir.distribute_plan(ir, cases["b"], (4, 1)))
+        self.assertTrue(runner_ir.distribute_plan(ir, cases["a"], (4, 1)))
+        build = self._build(ir, flags="checked")
+        for ids, cells in ((["a", "b"], 14), (["b"], 6), (["b", "a"], 14), (["a"], 8)):
+            for grid in (SINGLETON, (2, 1), (4, 1), (2, 2)):
+                with self.subTest(cases=ids, grid=grid):
+                    run = build.run(grid, cases=ids, timeout=60)
+                    self.assertEqual(run.rc, 0, run.stderr[-1000:])
+                    self.assertEqual(run.perf()["cells_updated"], cells)
 
     def test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed(self) -> None:
         """Every cell is held by the same number of ranks on every shape the driver runs (a
