@@ -25,7 +25,7 @@ import ast
 import math
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from tools.host_render import RenderError
@@ -471,6 +471,37 @@ def distribute_plan(ir: dict[str, Any], case: dict[str, Any], grid: tuple[int, i
     return True
 
 
+def distribute_grids(target: dict[str, Any]) -> tuple[tuple[int, int], ...]:
+    """The process grids a binary built for the target profile DOCUMENT ``target`` runs on
+    (issue #610, B6), in the order the replication table lists them: the certified grid
+    (`execution.process_grid`, else `(execution.ranks, 1)`, the rule of
+    `TargetProfile.process_grid`; `ranks` 1 when absent), then each `execution.sweep.grids`
+    entry, then `(1, 1)` — the quality check's one process — each once. RenderError on a grid
+    that is not two positive integers (the profile loader refuses one first)."""
+    execution = dget(target, "execution", {})
+    raw = [dget(execution, "process_grid") or [dget(execution, "ranks", 1), 1],
+           *(dget(dget(execution, "sweep", {}), "grids", []) or []), [1, 1]]
+    grids: list[tuple[int, int]] = []
+    for grid in raw:
+        if not (isinstance(grid, (list, tuple)) and len(grid) == 2 and all(
+                isinstance(p, int) and not isinstance(p, bool) and p >= 1 for p in grid)):
+            raise RenderError(f"process grid {grid!r} of the target is not two positive integers")
+        grids.append((grid[0], grid[1]))
+    return tuple(dict.fromkeys(grids))
+
+
+def replication_table(ir: dict[str, Any], grids: tuple[tuple[int, int], ...]
+                      ) -> tuple[tuple[tuple[int, int], tuple[str, ...]], ...]:
+    """Per grid of ``grids``, the case ids `distribute_plan` DISTRIBUTES on it, in declaration
+    order (issue #610, B6): what the distributed driver renders as its table, so the driver holds
+    no rule of its own and every other reader of the decision calls the same function."""
+    cases = [c for c in dget(dget(ir, "case", {}), "test_case_set", []) or []
+             if isinstance(c, dict) and isinstance(c.get("case_id"), str)]
+    return tuple((grid, tuple(c["case_id"].strip() for c in cases
+                              if distribute_plan(ir, c, grid)))
+                 for grid in grids)
+
+
 def _dims_tokens(dummy: dict[str, Any]) -> list[str] | None:
     dims = dummy.get("dims")
     if isinstance(dims, list) and dims and all(isinstance(t, str) and t.strip() != ":"
@@ -772,6 +803,15 @@ class EntryPlan:
     work_copy: tuple[str, ...]
     loop_values: dict[str, Any]
     procedures: tuple[ProcedurePlan, ...]
+    #: Per axis of `drive.distribute` (issue #610), the entry's host values of its `cells`,
+    #: `ghost` and `extended` inputs — the rank-0 integer locals a distributed driver partitions
+    #: by and rewrites (B4) — each None where no rank-0 integer dummy of the entry binds it.
+    axis_hosts: tuple[tuple[HostValue | None, HostValue | None, HostValue | None], ...] = ()
+    #: The extent tokens over the entry's integer locals of every array the entry's dummies
+    #: bind or the schema shapes (a state by its name, a bound host array by its key), where they
+    #: resolve: what a distributed driver allocates a block at when the case file's copy holds no
+    #: element, whose extents the file cannot carry (issue #610).
+    extents: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -791,6 +831,11 @@ class DriverPlan:
     record_states: tuple[str, ...]
     hosts: tuple[HostValue, ...]
     procedure_hosts: tuple[HostValue, ...]
+    #: The spatial axes of `drive.distribute` (issue #610; empty on a node with none).
+    axes: tuple[Axis, ...] = ()
+    #: The states an `out` / `inout` dummy of any entry or a host-rendered procedure's `record`
+    #: writes, in schema order: what a distributed driver gathers and folds with a reduction.
+    written: tuple[str, ...] = ()
 
 
 def _dummy_rank(dummy: dict[str, Any]) -> int:
@@ -904,7 +949,8 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
     steps = drive_steps(ir)
     loop = drive_loop(ir)
     every = drive_history_every(ir)
-    axis_names = {a.name for a in drive_distribute_axes(ir)}
+    axes = drive_distribute_axes(ir)
+    axis_names = {a.name for a in axes}
     if (loop is None) != (every is None):
         raise RenderError("drive.history is declared exactly when drive.loop is")
     if loop is not None and len(steps) != 1:
@@ -1030,6 +1076,24 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
                 zero_arrays[var] = _extent_tokens(
                     bound if bound is not None else {}, _shape_tokens(variables[var]),
                     dummy_local)
+        extents: dict[str, tuple[str, ...]] = dict(zero_arrays)
+        for var in variables:
+            if ranks[var] >= 1 and var not in extents:
+                bound = _dummy_bound_to(init, step, var)
+                try:
+                    extents[var] = _extent_tokens(bound if bound is not None else {},
+                                                  _shape_tokens(variables[var]), dummy_local)
+                except RenderError:
+                    pass
+        for call in ([init] if init is not None else []) + [step]:
+            for dummy in call["dummies"]:
+                kind, ref = call["bindings"][dummy["name"]]
+                if kind in ("inputs", "derived") and _dummy_rank(dummy) >= 1 \
+                        and f"{kind}.{ref}" not in extents:
+                    try:
+                        extents[f"{kind}.{ref}"] = _extent_tokens(dummy, None, dummy_local)
+                    except RenderError:
+                        pass
         loop_values: dict[str, Any] = {}
         if loop is not None:
             for key in ("n_step", "dt", "t_start"):
@@ -1047,11 +1111,20 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
                          if a.form == "work" and d.get("intent") == "out")
         work_copy = tuple(a.ref for a, d in zip(step_plan.actuals, step["dummies"])
                           if a.form == "work" and d.get("intent") == "inout")
+        entry_hosts = tuple(dict.fromkeys(used))
+        by_key = {(v.key, v.kind, v.rank): v for v in entry_hosts}
+
+        def axis_host(path: str | None) -> HostValue | None:
+            return None if path is None else by_key.get((f"inputs.{path}", "integer", 0))
+
         entries.append(EntryPlan(
             cases=tuple(step["cases"]) if step["cases"] is not None else None,
-            hosts=tuple(dict.fromkeys(used)), from_file=from_file, zero_arrays=zero_arrays,
+            hosts=entry_hosts, from_file=from_file, zero_arrays=zero_arrays,
             zero_scalars=zero_scalars, init=init_plan, step=step_plan, work_nan=work_nan,
-            work_copy=work_copy, loop_values=loop_values, procedures=tuple(procedures)))
+            work_copy=work_copy, loop_values=loop_values, procedures=tuple(procedures),
+            axis_hosts=tuple((axis_host(a.cells), axis_host(a.ghost), axis_host(a.extended))
+                             for a in axes),
+            extents=extents))
     arrays = tuple(v for v in variables if ranks[v] >= 1)
     scalars = tuple(v for v in variables if ranks[v] == 0)
     getters: set[str] = set()
@@ -1074,7 +1147,10 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
         logical_states=tuple(v for v in variables if v in logical_states),
         integer_states=tuple(v for v in variables if v in integer_states),
         record_states=tuple(v for v in variables if v in record_states),
-        hosts=tuple(hosts.values()), procedure_hosts=tuple(procedure_hosts.values()))
+        hosts=tuple(hosts.values()), procedure_hosts=tuple(procedure_hosts.values()),
+        axes=axes,
+        written=tuple(v for v in variables
+                      if v in drive_state_classes(ir)["written"] or v in record_states))
 
 
 def _procedure_plan(call: dict[str, Any], dummy: str, proto: dict[str, Any], binding: Any,

@@ -2795,16 +2795,6 @@ def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | 
     return _m3c_language(ir, toolchain[0], toolchain[1])
 
 
-def _shape_rank_or_none(shape_expr: Any) -> int | None:
-    """The rank of a snapshot `shape_expr` as the runner renderer reads it, or None when it does
-    not parse — the render refuses that IR itself, so no binding is asked of it here."""
-    from tools import runner_ir
-    try:
-        return runner_ir.rank_of_shape(shape_expr, "")
-    except Exception:  # noqa: BLE001 - the renderer's refusal, reported by the render gate
-        return None
-
-
 def _validate_model_source_isolation(
     execution: NodeExecution, language: str, src_dir: Path, model_files: list[Path],
     violations: list[str], *, harness_spec_id: str | None = None,
@@ -3164,16 +3154,13 @@ def _validate_parallel_presence_floor(
             {f: f.read_text(encoding="utf-8", errors="ignore") for f in launch_files}))
     # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: a forbidden direct use of the
     # library does not depend on the plan) states its findings itself, and decides for itself what
-    # a declining plan exempts. `checks_texts` is that floor's keyword until the distributed
-    # driver rewrites it; no leaf source answers to it any more.
+    # a declining plan exempts (issue #610: nothing, since the host-rendered driver distributes
+    # whatever the plan says).
     node_violations = getattr(floor, "node_violations", None)
     if node_violations is not None:
         violations.extend(node_violations(
             model_texts={f: f.read_text(encoding="utf-8", errors="ignore") for f in model_files},
-            checks_texts={},
             plan=bundle.get("target_lowering_plan"),
-            bound_arrays=[v for v, shape in _state_snapshot_requirement_details(
-                repo_root, execution)[0].items() if _shape_rank_or_none(shape) not in (None, 0)],
             harness_spec_id=str(target.harness.get("infrastructure_id") or ""),
             node_kind=execution.node_key.split("/", 1)[0]))
         return

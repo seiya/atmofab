@@ -241,6 +241,54 @@ class PromptFragmentTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             prompts.fragments("compile_generate")
 
+    def test_the_fragments_state_what_the_distributed_driver_does_and_leaves(self) -> None:
+        """Issue #610 (plan B §3.4): the host-rendered driver decomposes, slices, gathers and
+        makes the stop uniform, so the producer is told no decomposition of its own, no partition
+        call and no declining plan, and is told what reaches its operations (the block's count,
+        the case's through `derived`, the offset through `block.<axis>.first`) and the wall rule
+        by global index; the reviewer is told the same and what is the finding. Neither says the
+        node is refused, which it was until PR-B2."""
+        producer = prompts.fragments("generate_generate")["target_lowering_floor"]
+        reviewer = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
+        for text in (producer, reviewer):
+            self.assertNotIn("driver_distributed_pending", text)
+            self.assertNotIn("refused at preflight", text)
+            self.assertNotIn("decomposition", text)
+            self.assertNotIn("__partition(", text)
+            self.assertIn("block.<axis>.first", text)
+            self.assertIn("`derived` binding", text)
+            self.assertIn("GLOBAL index", text)
+        self.assertNotIn('"model": "none"', producer)
+        self.assertIn("receives the BLOCK's count", producer)
+        self.assertIn("the partition, the writers, the emitters, the gathers", producer)
+        self.assertIn("decides a wall by `__grid_coord`", reviewer)
+        self.assertIn("partitions again", reviewer)
+        # Round 1 of PR-B2: a sum over the ranks counts a cell once per rank holding it (a
+        # replicated case, a block along a dimension no axis takes), and the kernel cannot tell
+        # without the grid, so neither fragment offers a bare `__reduce_sum` for a whole-field
+        # value nor a fix by the grid coordinate. Round 2: every cell is held by the same number
+        # of ranks, so the reduced sum over the reduced count of the same cells is the field's
+        # mean on every grid (`DistributedDriverEndToEndTest.test_a_whole_field_mean_divides_by_
+        # the_reduced_count_of_the_cells_it_summed`): the producer is told that form and the
+        # total from it, the reviewer's finding is the UN-normalised sum, and the round-1 "no
+        # whole-field sum is formable" statement is gone from both.
+        for text in (producer, reviewer):
+            self.assertNotIn("coordinate 0", text)
+            self.assertNotIn("not one a kernel can form", text)
+            self.assertNotIn("sound only as a count compared against zero", text)
+            self.assertNotIn("serves a count compared against zero", text)
+        self.assertNotIn("goes through `<harness>__reduce_sum`", producer)
+        self.assertIn("an extreme goes through `<harness>__reduce_max` / `__reduce_min`", producer)
+        self.assertIn("a mean is the `<harness>__reduce_sum` of the block's sum divided by the "
+                      "`<harness>__reduce_sum_int` of the block's cell count", producer)
+        self.assertIn("a total is that mean times the case's cell count from a `derived` "
+                      "binding", producer)
+        self.assertIn("forms a whole-field sum or mean from an un-normalised reduced sum — a "
+                      "`__reduce_sum` / `__reduce_sum_int` not divided by the `__reduce_sum_int` "
+                      "of the cell count of the cells it summed", reviewer)
+        self.assertIn("the reduced sum over the reduced count of the same cells is the field's "
+                      "mean on every grid", reviewer)
+
 
 class HarnessUseStatementTests(unittest.TestCase):
     """Issue #316 round 1: the prohibition on a physics source naming the harness was stated

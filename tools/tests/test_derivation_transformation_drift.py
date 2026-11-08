@@ -1140,6 +1140,15 @@ PINNED_RENDER: dict[str, str] = {
     "render-15": "163c4233eed104015d16a8ac727c6b474b6ed33c94f8b046092b1b2c5ce73d7c",
     "render-15@33eaeec8": "2a0ca8d3d95293acd135a46595f29fe7dcb3852e3fea4ffb7726c4ce4573e543",
     "render-15@8dbba52f": "0e4cb18fd5c9e038c0f0a43e7d146cd4dd14d3efcedb20a683ce8f9da2e68aa7",
+    # render-16 (issue #610, PR-B2): a harness that runs the program as several ranks takes the
+    # distributed form of the driver (the Fortran `runner.py`; `runner_ir` gains the grid list,
+    # the replication table and the per-entry facts it reads), where it was refused. Moved,
+    # measured against 84c5ff88: `fortran/runner.py`, `runner_ir.py`, `host_execution.py`. A
+    # bump, because a launcher target's render is new. The serial and device renders are
+    # byte-identical to 84c5ff88's: the 52 renders of the 17 bench IRs, the two drive fixtures
+    # and seven toy IRs, for fortran_cpu and cpp_gpu (sha256, measured). Re-pinned in place once
+    # before it shipped (review round 2: the perf cell count is sized per drive entry).
+    "render-16": "442f58ba9a64b90a1f39d6ebd7218958d7b7da19f43a46a0856b504f895064b5",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source
@@ -1434,7 +1443,12 @@ PINNED_BUILD: dict[str, str] = {
     # object. Rows moved, measured against origin/main a55f7390: `make/control_file.py`,
     # `fortran/bundle.py`, `tools/host_execution.py`. Row added: `cuda_cpp/bundle.py`, which names
     # a staged dependency on that language as `fortran/bundle.py` does on its own.
-    "build-4": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
+    # Re-pinned for issue #610 PR-B2, NOT bumped: `tools/host_execution.py` (a member) loses
+    # `DRIVER_DISTRIBUTED_PENDING`, which no build reads (its readers were the preflight refusal
+    # and the render backstop, both deleted). Measured against 84c5ff88: that file is the one
+    # member that moved. The digest `build-4` shipped with at 84c5ff88 is `build-4@84c5ff88`.
+    "build-4": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
+    "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1753,8 +1767,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # (the measurement); 9ec02e88 (the gate-range docstrings of `drive_violations` and
     # `_drive_kind_violations`); 93a732f1 (review round 1: the untargeted-case refusal deleted
     # inside `_distribute_violations`, gate (n)'s body, which `drive_violations` and
-    # `distribute_layouts` alone call). The digest `execute-16` shipped with at 33eaeec8:
-    "execute-16": "51938898b5d9415f1e27468e48aa1f28e1936efabb13067f0b20946041ecd7d0",
+    # `distribute_layouts` alone call). The digest `execute-16` shipped with at 33eaeec8 is
+    # `execute-16@33eaeec8`.
+    # Re-pinned again for issue #610 PR-B2, NOT bumped: `tools/host_execution.py` (a member) loses
+    # `DRIVER_DISTRIBUTED_PENDING`, which no run reads (`_execute_inproc` and the quality-check
+    # author are unchanged). Measured against 84c5ff88: that file is the one member that moved.
+    # The digest `execute-16` shipped with at 84c5ff88 is `execute-16@84c5ff88`.
+    "execute-16": "d11577e8e31950adb620fc26f0ac102754108e5609f14d7ffa8448ce39f1c2a4",
+    "execute-16@84c5ff88": "51938898b5d9415f1e27468e48aa1f28e1936efabb13067f0b20946041ecd7d0",
     "execute-16@33eaeec8": "0ed726abf3542050c341c1a20529fa31d2e3f73bcc87d28392a887d0b585211b",
     # Re-pinned for issue #607: the file member moved, and `load_case_env`, the one
     # thing that changed, is reached by the predicate evaluator alone, so no case file

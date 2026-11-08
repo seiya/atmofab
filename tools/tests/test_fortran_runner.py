@@ -44,6 +44,12 @@ from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, procedure_ir
 
 HARNESS = "harness_fortran_cpu"
+#: The distributed harness, and the target a physics node is built for over it (issue #610).
+DIST_HARNESS = "harness_fortran_cpu_mpi"
+_MPI_TARGET_DOC = yaml.safe_load((Path(__file__).resolve().parents[2]
+                                  / "spec/targets/fortran_cpu_mpi.yaml").read_text())
+#: (harness, target document) of each form of the driver: the serial one and the distributed one.
+_FORMS = ((HARNESS, None), (DIST_HARNESS, _MPI_TARGET_DOC))
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
 
 
@@ -1565,6 +1571,23 @@ class HarnessPinTest(unittest.TestCase):
                 named = set(re.findall(r"harness_fortran_cpu__(\w+)", txt)) - {"h_named"}
                 self.assertEqual(named, set(_used_harness_ops(ir)))
 
+    def test_the_distributed_form_calls_nothing_of_the_harness_the_pin_does_not_ask(self) -> None:
+        """The same for the distributed form (issue #610), over the toy shapes, the 17 bench IRs
+        and the end-to-end fixtures: the harness names its text holds are exactly
+        `_used_harness_ops(ir, distributed=True)`."""
+        from tools.tests.test_driver_render import MPI_FIXTURES
+        shapes = [("loop", loop_ir(0), "drv_toy"), ("init", init_ir(0), "drv_toy"),
+                  ("call", call_ir(0), "drv_toy"), ("procedure", procedure_ir(), "drv_toy"),
+                  *((sid, builder(), sid) for sid, builder in MPI_FIXTURES.items()),
+                  *((p.stem, yaml.safe_load(p.read_text()), p.stem)
+                    for p in sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml")))]
+        self.assertEqual(len(shapes), 4 + 5 + 17)
+        for label, ir, sid in shapes:
+            with self.subTest(label):
+                txt = render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC)
+                named = set(re.findall(r"harness_fortran_cpu_mpi__(\w+)", txt)) - {"h_named"}
+                self.assertEqual(named, set(_used_harness_ops(ir, distributed=True)))
+
 
 class DeclaredLintRuleHoldTest(unittest.TestCase):
     """Hold the RENDERED runner to the rule set the `Generate.gate` lint check imposes.
@@ -1580,7 +1603,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
     """
 
     def _assert_runner_clean_under_the_declared_lint_rules(
-            self, ir: dict, sid: str) -> None:
+            self, ir: dict, sid: str, harness: str = HARNESS) -> None:
         """The rendered runner passes the rule set the `Generate.gate` lint check imposes.
 
         Issue #112's "worth deciding at the same time": hold the host-authored artifact to the
@@ -1601,7 +1624,8 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         from tools.backends.linter.fortitude import lint as _lint
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
-            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc))
+            target = _MPI_TARGET_DOC if harness == DIST_HARNESS else _TARGET_PROFILE.doc
+            (d / f"{sid}_runner.f90").write_text(render_runner(ir, sid, harness, target=target))
             r = subprocess.run(list(_lint.check_argv(".")), cwd=d,
                                capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -1617,10 +1641,14 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
     def test_each_shape_of_driver_is_clean_under_the_declared_lint_rules(self) -> None:
         # The loop, `init`, one-call and procedure-argument shapes, each with lines the two rows
         # above never render.
-        for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
-                          ("procedure", procedure_ir())):
-            with self.subTest(label):
-                self._assert_runner_clean_under_the_declared_lint_rules(ir, "drv_toy")
+        # Each form (issue #610: the distributed one renders for every node's Compile dry render
+        # on a launcher target, and a host-rendered lint finding is terminal in a billed run).
+        for harness, _target in _FORMS:
+            for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
+                              ("procedure", procedure_ir())):
+                with self.subTest(label, harness=harness):
+                    self._assert_runner_clean_under_the_declared_lint_rules(ir, "drv_toy",
+                                                                            harness)
 
     def test_a_list_form_driver_is_clean_under_the_declared_lint_rules(self) -> None:
         # Both `select case` blocks of the list form need their default arm (C011). Without the
@@ -1637,10 +1665,18 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         # a real physics node reached the gate first in a billed run.
         paths = sorted((DRIVE_IR_EVIDENCE / "ir").glob("*.yaml"))
         self.assertEqual(len(paths), 17)
-        for path in paths:
-            with self.subTest(path.stem):
-                self._assert_runner_clean_under_the_declared_lint_rules(
-                    yaml.safe_load(path.read_text()), path.stem)
+        for harness, _target in _FORMS:
+            for path in paths:
+                with self.subTest(path.stem, harness=harness):
+                    self._assert_runner_clean_under_the_declared_lint_rules(
+                        yaml.safe_load(path.read_text()), path.stem, harness)
+
+    def test_every_distributed_fixture_renders_a_clean_runner(self) -> None:
+        from tools.tests.test_driver_render import MPI_FIXTURES
+        for sid, builder in MPI_FIXTURES.items():
+            with self.subTest(sid):
+                self._assert_runner_clean_under_the_declared_lint_rules(builder(), sid,
+                                                                        DIST_HARNESS)
 
 
 def _build_and_run(d: Path, ir: dict, sid: str, model: str, flags: list[str] | None = None,
@@ -1784,28 +1820,37 @@ class GfortranSmokeTest(unittest.TestCase):
             self.assertEqual(final["a4"][1][0][1], [6.0, 8.0])
             self.assertEqual(final["s"], 72.0)
 
-    def _assert_runner_clean_under_promoted_warnings(self, ir: dict, sid: str, model: str) -> None:
+    def _assert_runner_clean_under_promoted_warnings(self, ir: dict, sid: str, model: str,
+                                                     harness: str = HARNESS) -> None:
         """The `Generate.gate` syntax check promotes unused-dummy-argument / unused-variable /
         ampersand to errors over the whole staged set. The runner is host-rendered, so such a
         warning is unfixable by the leaf and would spin a futile warm-repair loop — the
         rendered artifact must be clean under all three. The harness and the model are compiled
         WITHOUT the flags: only the runner, the artifact the renderer owns, is held to them."""
-        runner = render_runner(ir, sid, HARNESS, target=_TARGET_PROFILE.doc)
+        compiler = "gfortran"
+        harness_src = DRIVER_E2E / "harness_fortran_cpu_model.f90"
+        target = _TARGET_PROFILE.doc
+        if harness == DIST_HARNESS:
+            from tools.backends.parallel.mpi import wrapper
+            from tools.tests.test_parallel_mpi import _require_mpi_pair
+            compiler = str(Path(_require_mpi_pair()) / wrapper.COMPILER_WRAPPER)
+            harness_src = DRIVER_E2E / "mpi" / f"{DIST_HARNESS}_model.f90"
+            target = _MPI_TARGET_DOC
+        runner = render_runner(ir, sid, harness, target=target)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             mods = d / "mods"
             mods.mkdir()
-            (d / "harness_fortran_cpu_model.f90").write_text(
-                (DRIVER_E2E / "harness_fortran_cpu_model.f90").read_text())
+            (d / f"{harness}_model.f90").write_text(harness_src.read_text())
             (d / f"{sid}_model.f90").write_text(model)
             (d / f"{sid}_runner.f90").write_text(runner)
             pre = subprocess.run(
-                ["gfortran", "-fsyntax-only", "-std=f2008", "-J", str(mods),
-                 "harness_fortran_cpu_model.f90", f"{sid}_model.f90"],
+                [compiler, "-fsyntax-only", "-std=f2008", "-J", str(mods),
+                 f"{harness}_model.f90", f"{sid}_model.f90"],
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(pre.returncode, 0, pre.stderr)
             r = subprocess.run(
-                ["gfortran", "-fsyntax-only", "-std=f2008",
+                [compiler, "-fsyntax-only", "-std=f2008",
                  "-Werror=unused-dummy-argument", "-Werror=unused-variable",
                  "-Werror=ampersand",
                  "-J", str(mods), "-I", str(mods), f"{sid}_runner.f90"],
@@ -1821,25 +1866,35 @@ class GfortranSmokeTest(unittest.TestCase):
 
     def test_each_shape_of_driver_is_clean_under_promoted_unused_warnings(self) -> None:
         model = (DRIVER_E2E / "drv_toy_model.f90").read_text()
-        for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
-                          ("procedure", procedure_ir())):
-            with self.subTest(label):
-                self._assert_runner_clean_under_promoted_warnings(ir, "drv_toy", model)
+        for harness, _target in _FORMS:
+            for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
+                              ("procedure", procedure_ir())):
+                with self.subTest(label, harness=harness):
+                    self._assert_runner_clean_under_promoted_warnings(ir, "drv_toy", model,
+                                                                      harness)
+
+    def test_each_distributed_fixture_is_clean_under_promoted_unused_warnings(self) -> None:
+        from tools.tests.test_driver_render import MPI_DATA, MPI_FIXTURES
+        for sid, builder in MPI_FIXTURES.items():
+            with self.subTest(sid):
+                self._assert_runner_clean_under_promoted_warnings(
+                    builder(), sid, (MPI_DATA / f"{sid}_model.f90").read_text(), DIST_HARNESS)
 
 
-# --- the distributed harness (issue #316, R4-c PR-4) --------------------------------------------
+# --- the distributed harness (issue #316, R4-c PR-4; issue #610) --------------------------------
 #
-# The driver does not render for it yet (`test_driver_render.RenderRefusalTest`), so what stays
-# here is what a physics source and the pin still hold it to.
+# What a physics source and the pin hold it to. The distributed form of the driver itself is
+# compiled and run in `test_driver_render.DistributedDriverEndToEndTest`.
 
-DIST_HARNESS = "harness_fortran_cpu_mpi"
 DIST_SID = "prob_dist"
 
 
 def _distributed_ir() -> dict:
-    """A problem IR whose driver would read and emit the array ranks the distributed harness's
-    gather covers: what `assert_harness_pin` asks of that harness."""
-    return _driven({
+    """A problem IR whose driver reads, gathers and emits the array ranks the distributed
+    harness's gather covers, on one spatial axis `x` (issue #610: so the partition is the
+    driver's, and the gathers of both ranks are asked): what `assert_harness_pin` asks of that
+    harness."""
+    ir = _driven({
         "meta": {"spec_id": DIST_SID, "spec_kind": "problem"},
         "case": {"test_case_set": [{"case_id": "c0", "inputs": {"mode": 0}}]},
         "io_contract": {
@@ -1859,6 +1914,14 @@ def _distributed_ir() -> dict:
         },
         "dependency": {"node_key": f"problem/{DIST_SID}@0.1.0", "direct_deps": []},
     }, f"{DIST_SID}__apply", {"u": ("inout", 1), "w": ("inout", 2), "s": ("out", 0)})
+    args = ir["public_api"]["signatures"][0]["signature"]["args"]
+    args.insert(0, _dummy("nx", "in", {"type": "integer"}))
+    for arg in args:
+        arg["dims"] = {"u": ["nx"], "w": ["3", "nx"]}.get(arg["name"], arg.get("dims"))
+    ir["drive"]["step"]["arguments"]["nx"] = "inputs.nx"
+    ir["drive"]["distribute"] = {"axes": [{"name": "x", "cells": "inputs.nx"}]}
+    ir["case"]["test_case_set"][0]["inputs"]["nx"] = 10
+    return ir
 
 
 class DistributedHarnessBoundTest(unittest.TestCase):
@@ -1877,10 +1940,56 @@ class DistributedHarnessBoundTest(unittest.TestCase):
         with self.assertRaisesRegex(fortran_runner.RenderError, "exchange_halo_r1"):
             fortran_runner._check_identifier_lengths("bx", fits + "h")
 
-    def test_a_refused_distributed_render_is_excluded_from_the_compile_mirror(self) -> None:
-        # A re-author cannot repair it, so it must not reach `compile.generate` as a content
-        # defect; its refusal is the target's preflight and the render's backstop.
+    def test_the_distributed_form_is_in_the_compile_mirror(self) -> None:
+        """Issue #610: the distributed form renders, so `ir_content_violations` reports nothing for
+        a clean IR, and reports the render's own refusal of `drive.distribute` (gate (n)'s
+        backstop) as an IR content defect, which a Compile re-author can repair. Until PR-B2 the
+        form was refused here as a node-identity defect, which the mirror excluded."""
         self.assertEqual(ir_content_violations(_distributed_ir(), DIST_SID, DIST_HARNESS), [])
+        ir = _distributed_ir()
+        args = ir["public_api"]["signatures"][0]["signature"]["args"]
+        next(a for a in args if a["name"] == "w")["dims"] = ["3", "nx + 2"]
+        found = ir_content_violations(ir, DIST_SID, DIST_HARNESS)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("drive.distribute: w: dims token 'nx + 2'", found[0])
+        self.assertEqual(ir_content_violations(ir, DIST_SID, HARNESS), [])
+
+
+class DistributedFormRefusalTest(unittest.TestCase):
+    """The distributed form's own refusals (issue #610): the render backstop of gate (n), which
+    every IR a render reaches has passed. Each is an IR content defect, so the Compile dry render
+    reports it (`ir_content_violations`) for a Compile re-author."""
+
+    def _render(self, ir: dict, sid: str) -> str:
+        return render_runner(ir, sid, DIST_HARNESS, target=_MPI_TARGET_DOC)
+
+    def test_each_refusal(self) -> None:
+        from tools.tests.test_driver_render import recon_ir
+
+        def rebind(ir: dict, dummy: str, value: object) -> dict:
+            ir["drive"]["step"]["arguments"][dummy] = value
+            return ir
+
+        def write_u_in(ir: dict) -> dict:
+            args = ir["public_api"]["signatures"][0]["signature"]["args"]
+            next(a for a in args if a["name"] == "u_in")["intent"] = "inout"
+            return ir
+
+        for label, ir, needle in (
+                ("cells bound to no rank-0 integer", rebind(recon_ir(), "nx", 6),
+                 "a drive entry binds no rank-0 integer dummy to inputs.grid.nx (gate (n))"),
+                ("extended without its ghost bound", rebind(recon_ir(), "ng", 2),
+                 "to inputs.grid.nx with inputs.grid.ng (gate (n))"),
+                ("a written ghost-laid array", write_u_in(recon_ir()),
+                 "u_in: an array the driver or the kernel writes has a ghost layout"),
+                ("a layout that does not derive", rebind(recon_ir(), "nx_total", "derived.n"),
+                 "drive.distribute: ")):
+            with self.subTest(label):
+                with self.assertRaises(RenderError) as cm:
+                    self._render(ir, "fx_recon")
+                self.assertIn(needle, str(cm.exception))
+                self.assertFalse(cm.exception.identity)
+                self.assertEqual(len(ir_content_violations(ir, "fx_recon", DIST_HARNESS)), 1)
 
 
 class HarnessPinTableTest(unittest.TestCase):
