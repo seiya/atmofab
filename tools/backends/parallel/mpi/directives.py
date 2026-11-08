@@ -1,4 +1,4 @@
-"""The MPI presence floor of `Generate.static` (issue #316, R4-c PR-4).
+"""The MPI presence floor of `Generate.static` (issue #316, R4-c PR-4; issue #610, plan B §3.7).
 
 The `parallel_directives` capability, stated for a model whose parallelism is not a directive: a
 program built for this model runs as several processes, and the message-passing runtime is
@@ -6,26 +6,30 @@ reached through the target's harness alone (`docs/backends/parallel/mpi/GENERATE
 the floor a `component` / `problem` node's sources are held to is a whole-node judgment rather
 than a per-file directive count, and this module states it as one (`PresenceFloor.
 node_violations`, which the validator asks instead of the per-file directive loop when a floor
-carries it):
+carries it). The host-rendered driver distributes each case (issue #610): it partitions the
+spatial axes the IR declares, hands each call its rank's block, gathers the captures and makes
+the stop uniform. What the floor asks of the leaf's MODEL sources is what stays theirs:
 
-* the model and checks sources never reach the library directly — no `use` of its modules, no
-  `include` of its header, no call of a procedure of its namespace — whatever the plan says;
-* on a `component` node the MODEL sources name no harness operation at all, whatever the plan
-  says (issue #512): a consumer calls a component's published operations on its own rank's
+* they never reach the library directly — no `use` of its modules, no `include` of its header,
+  no call of a procedure of its namespace;
+* on a `component` node they name no harness operation at all (issue #512): every caller — the
+  driver and a consumer alike — calls a component's published operations on its own rank's
   block, so an operation that partitions, exchanges, asks the grid or reduces inside itself
-  distributes that block a second time. The component distributes its own cases in its checks
-  module, around the unmodified operation, as a consumer does;
-* unless the bundle's `target_lowering_plan.parallelization` explicitly declines MPI, the plan
-  declares `state_residency: distributed`, at least one source calls the harness's partition or
-  halo exchange, and the checks module sets at least one bound array's partition axis along a
-  grid dimension (`sb_<var>_axis1` / `sb_<var>_axis2`) to something other than a literal zero.
+  distributes that block a second time;
+* the plan declares `state_residency: distributed` (one rule for both kinds on this target;
+  the bundle contract couples `distributed_state@2` to it);
+* on a `problem` node at least one model source calls the harness's halo exchange by its harness
+  name: a problem's step reads its neighbours' cells across a block edge only through it.
 
-It is a PRESENCE floor: whether the decomposition is right, whether each rank computes only what
-it owns, and whether the global quantities go through the reductions is `Generate.verify` G6's
-judgment. A kernel that computes the whole range on every rank and reports a partition passes it
-— the accepted residual of issue #316, stated in the reviewer's fragment. The loops a directive
-would parallelize are not counted: whether a kernel needs distributing does not depend on whether
-its source spells a counted loop.
+A plan that declines MPI exempts nothing: the driver distributes from the IR whatever the plan's
+`parallelization` says, so a `problem` that declines and exchanges nothing fails the shape
+comparison, and a `component` is held to the same rules either way. `lowering_plan_declines`
+stays the `parallel_directives` capability's interface, which the OpenMP and CUDA floors' callers
+reach through the validator.
+
+It is a PRESENCE floor: whether a problem's exchange precedes every stencil read, with the spec's
+periodicity, and whether each global quantity goes through a reduction is `Generate.verify` G6's
+judgment, and the shape comparison of the sweep is what judges the result.
 
 The sources are read as the Fortran backend reads them — its `statements` (comments stripped,
 continuations joined, `;` split) with string contents masked — asked of the registry, not
@@ -37,7 +41,6 @@ Stdlib only.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,23 +62,17 @@ _FORBIDDEN_STATEMENT_RE = re.compile(
 # (`x%mpi_count(1)` is the leaf's own component).
 _FORBIDDEN_REFERENCE_RE = re.compile(r"(?<![\w%])mpi_\w*\s*\(", re.IGNORECASE)
 
-def _distributing_call_re(harness_spec_id: str) -> re.Pattern[str]:
-    """A call of the target harness's partition or halo exchange, by its harness name — the
-    harness's own prefix, and only the operations it publishes (§3.3: `exchange_halo_r1` /
-    `_r2`) — as a `call` statement or the action of a one-line logical `if`
-    (`if (n > 0) call h__partition(...)`). Round 3 of the PR's review found the prefix read as
-    any identifier, so a leaf's own `<spec_id>__partition` counted."""
-    return re.compile(
-        rf"^(?:if\s*\(.*\)\s*)?call\s+{re.escape(harness_spec_id)}__"
-        rf"(?:partition|exchange_halo_r[12])\b", re.IGNORECASE)
 
-# An assignment (or a declaration's initializer) of a bound array's partition axis along either
-# grid dimension (issue #512: `sb_<var>_axis1`, `sb_<var>_axis2`); `(?!=)` keeps a comparison
-# `sb_u_axis1 == 0` out. The value is read up to the next top-level comma.
-_AXIS_ASSIGNMENT_RE = re.compile(r"(?<![\w%])sb_(\w+)_axis[12]\s*=(?!=)\s*([^,;]*)",
-                                 re.IGNORECASE)
-# A literal zero, with an optional kind suffix and any enclosing parentheses.
-_ZERO_LITERAL_RE = re.compile(r"^\(*\s*[+]?0+(?:_\w+)?\s*\)*$")
+
+def _exchange_call_re(harness_spec_id: str) -> re.Pattern[str]:
+    """A call of the target harness's halo exchange, by its harness name — the harness's own
+    prefix, and only the exchanges it publishes (§3.3: `exchange_halo_r1` / `_r2`) — as a `call`
+    statement or the action of a one-line logical `if` (`if (n > 0) call h__exchange_halo_r1(…)`).
+    Round 3 of issue #316 PR-4's review found the prefix read as any identifier, so a leaf's own
+    `<spec_id>__exchange_halo_r1` counted."""
+    return re.compile(
+        rf"^(?:if\s*\(.*\)\s*)?call\s+{re.escape(harness_spec_id)}__exchange_halo_r[12]\b",
+        re.IGNORECASE)
 
 
 def _code_statements(text: str) -> list[tuple[str, str]]:
@@ -88,14 +85,14 @@ def _code_statements(text: str) -> list[tuple[str, str]]:
     return [(s.strip(), reader.mask_string_contents(s).strip()) for s in reader.statements(text)]
 
 
+
 @dataclass(frozen=True)
 class PresenceFloor:
     """What the floor asks of one (language, hardware class) pair: a whole-node judgment."""
 
-    #: `node_violations(model_texts=, checks_texts=, plan=, bound_arrays=, harness_spec_id=,
-    #: node_kind=)` → the findings, each naming a file. `bound_arrays` is the node's bound array
-    #: variables (the IR's snapshot variables of rank >= 1); `harness_spec_id` is the target's
-    #: harness; `node_kind` is the first segment of the node_key (`component` / `problem`).
+    #: `node_violations(model_texts=, plan=, harness_spec_id=, node_kind=)` → the findings, each
+    #: naming a file. `harness_spec_id` is the target's harness; `node_kind` is the first segment
+    #: of the node_key (`component` / `problem`).
     node_violations: Any
 
 
@@ -128,11 +125,9 @@ def _harness_reference_re(harness_spec_id: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![\w%]){re.escape(harness_spec_id)}__\w+", re.IGNORECASE)
 
 
-def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[Path, str],
-                            plan: Any, bound_arrays: Iterable[str],
+def _fortran_cpu_violations(*, model_texts: dict[Path, str], plan: Any,
                             harness_spec_id: str, node_kind: str) -> list[str]:
-    statements = {path: _code_statements(text)
-                  for path, text in [*model_texts.items(), *checks_texts.items()]}
+    statements = {path: _code_statements(text) for path, text in model_texts.items()}
     out: list[str] = []
     if node_kind == "component" and harness_spec_id:
         named = _harness_reference_re(harness_spec_id)
@@ -140,15 +135,13 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[
             hits = [m.group(0) for _raw, masked in statements[path] for m in named.finditer(masked)]
             if hits:
                 out.append(
-                    f"{path}: a component's published operations are called by every consumer "
-                    f"on that consumer's own rank's block, so a component MODEL source names no "
-                    f"operation of the harness — this one names {hits[0]!r}: an operation that "
-                    "partitions, exchanges, asks the grid or reduces inside itself distributes an "
-                    "already distributed block a second time. Keep each operation computing "
-                    "exactly what the spec says over the arrays it is handed, and distribute the "
-                    "component's own cases in its checks module: case_setup partitions and "
-                    "allocates this rank's block, case_run fills the halo with the harness's "
-                    "exchange and then calls the unmodified operation on the block")
+                    f"{path}: a component's published operations are called on a rank's own "
+                    "block — by the host-rendered driver, which partitions each case, and by "
+                    "every consumer — so a component MODEL source names no operation of the "
+                    f"harness; this one names {hits[0]!r}: an operation that partitions, "
+                    "exchanges, asks the grid or reduces inside itself distributes an already "
+                    "distributed block a second time. Keep each operation computing exactly "
+                    "what the spec says over the arrays it is handed")
     for path, stmts in statements.items():
         direct = [raw for raw, masked in stmts
                   if _FORBIDDEN_STATEMENT_RE.match(raw) or _FORBIDDEN_REFERENCE_RE.search(masked)]
@@ -156,54 +149,32 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[
             out.append(
                 f"{path}: the target profile resolves to MPI (parallel.backend=mpi), and a "
                 "physics source reaches the message-passing runtime only through the target's "
-                "harness — its partition, halo exchange, rank queries and reductions — never "
+                "harness — its halo exchange, rank and grid queries and reductions — never "
                 f"directly; this source does: {direct[0][:120]!r}. Remove the library's "
                 "`use` / `include` and every call or reference to a name that starts with "
                 "`mpi_` (a variable of your own too — rename it), and call the harness "
-                "operations the host-rendered runner lists instead")
-    if lowering_plan_declines(plan):
-        return out
-    first = next(iter(model_texts), None) or next(iter(checks_texts), None)
+                "operations instead")
+    first = next(iter(model_texts), None)
     residency = plan.get("state_residency") if isinstance(plan, dict) else None
     if residency != "distributed":
         out.append(
-            f"{first}: the target profile resolves to MPI (parallel.backend=mpi) and the "
-            "bundle's target_lowering_plan.parallelization does not decline MPI, but the plan "
-            f"declares state_residency {residency!r}: a kernel distributed over the ranks "
-            "declares \"state_residency\": \"distributed\" (with distributed_state@2 in "
-            "capability_requirements). Only when the kernel genuinely cannot be distributed is "
-            "\"model\": \"none\" in the plan's parallelization the answer, with the reason "
-            "stated; the independent reviewer holds that declaration to the kernel")
-        return out
-    distributing = _distributing_call_re(harness_spec_id)
-    if not any(distributing.match(masked)
-               for stmts in statements.values() for _raw, masked in stmts):
-        out.append(
-            f"{first}: the target profile resolves to MPI and the plan declares distributed "
-            f"state, but neither the model nor the checks source calls the harness's "
-            f"`{harness_spec_id}__partition` or `{harness_spec_id}__exchange_halo_r1` / `_r2` "
-            "— the owned range of "
-            "each rank comes from the partition, and a stencil reads its neighbours' cells "
-            "through the halo exchange. Call them by their harness names (a statement "
-            f"`call {harness_spec_id}__partition(...)`; a renamed alias is not recognized)")
-    # Only the axis of a BOUND array counts, and only where the checks module sets it: a
-    # variable named like one that no capture reads (`sb_tmp_axis = 1`) distributes nothing
-    # (round 1 of the PR's review built that shape and it passed).
-    arrays = {str(name).casefold() for name in bound_arrays}
-    axes = [m.group(2).strip() for stmts in (statements[p] for p in checks_texts)
-            for _raw, masked in stmts for m in _AXIS_ASSIGNMENT_RE.finditer(masked)
-            if m.group(1).casefold() in arrays]
-    if not any(value and not _ZERO_LITERAL_RE.match(value) for value in axes):
-        where = next(iter(checks_texts), first)
-        out.append(
-            f"{where}: the plan declares distributed state, but the checks module never sets "
-            "a partition axis (`sb_<var>_axis1` / `sb_<var>_axis2`) of a bound array "
-            f"({', '.join(sorted(arrays)) or 'none declared'}) to anything but 0, so every "
-            "bound array is captured as replicated and nothing the run records is "
-            "distributed. Set `sb_<var>_axis<d>` to the axis a partitioned array is split along "
-            "grid dimension <d>, with `sb_<var>_lo<d>` / `sb_<var>_hi<d>` / `sb_<var>_glo<d>` "
-            "describing the cells this rank contributes along it to the global array (the "
-            "host-rendered runner's comment states the binding)")
+            f"{first}: the target profile resolves to MPI (parallel.backend=mpi), and the "
+            f"bundle's target_lowering_plan declares state_residency {residency!r}: the "
+            "host-rendered driver distributes every case over the ranks, so the plan declares "
+            "\"state_residency\": \"distributed\" (with distributed_state@2 in "
+            "capability_requirements)")
+    if node_kind == "problem" and harness_spec_id:
+        exchange = _exchange_call_re(harness_spec_id)
+        if not any(exchange.match(masked)
+                   for stmts in statements.values() for _raw, masked in stmts):
+            out.append(
+                f"{first}: the target profile resolves to MPI, and no model source of this "
+                f"problem calls the harness's `{harness_spec_id}__exchange_halo_r1` / `_r2` by "
+                "that name: the host-rendered driver hands the step its rank's block, and a "
+                "stencil reads its neighbours' cells across the block's edge only through the "
+                "halo exchange (a statement "
+                f"`call {harness_spec_id}__exchange_halo_r2(...)`; a renamed alias is not "
+                "recognized)")
     return out
 
 

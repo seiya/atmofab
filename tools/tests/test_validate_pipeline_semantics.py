@@ -21316,11 +21316,12 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
     def test_a_physics_source_may_use_the_harness_for_its_distributed_operations_only(
             self) -> None:
         # Issue #316 (R4-c PR-4), over the model and a second bundle source: the rule keeps its
-        # allowance on a harness that runs the program as several ranks, and nowhere else.
+        # allowance on a harness that runs the program as several ranks, and nowhere else. Since
+        # issue #610 the partition is the host-rendered driver's, outside the allowance.
         mpi = "harness_fortran_cpu_mpi"
         use = "  use harness_fortran_cpu_mpi_model, only: "
-        ok = (f"{use}harness_fortran_cpu_mpi__partition, harness_fortran_cpu_mpi__reduce_sum\n",
-              f"{use}part => harness_fortran_cpu_mpi__partition\n",
+        ok = (f"{use}harness_fortran_cpu_mpi__exchange_halo_r1, harness_fortran_cpu_mpi__reduce_sum\n",
+              f"{use}ex => harness_fortran_cpu_mpi__exchange_halo_r1\n",
               "  use :: harness_fortran_cpu_mpi_model, only: harness_fortran_cpu_mpi__comm_rank\n",
               f"{use}HARNESS_FORTRAN_CPU_MPI__EXCHANGE_HALO_R2\n",
               # Issue #512: the grid queries the mpi producer fragment tells a kernel to ask.
@@ -21330,6 +21331,8 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
             (f"{use}harness_fortran_cpu_mpi__write_snapshot\n", "__write_snapshot`"),
             (f"{use}harness_fortran_cpu_mpi__gather_r1\n", "__gather_r1`"),
             (f"{use}harness_fortran_cpu_mpi__init\n", "__init`"),
+            (f"{use}harness_fortran_cpu_mpi__partition\n", "__partition`"),
+            (f"{use}part => harness_fortran_cpu_mpi__partition\n", "__partition`"),
             (f"{use}w => harness_fortran_cpu_mpi__write_perf\n", "__write_perf`"),
             (f"{use}harness_fortran_cpu_mpi__h_named\n", "__h_named`"),
             ("  use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n",
@@ -21355,7 +21358,7 @@ class ModelSourceIsolationGateTests(unittest.TestCase):
                     self.assertEqual(len(v), 1, v)
                     self.assertIn(needle, v[0])
                     self.assertIn(f"bx_{where}.f90", v[0])
-                    self.assertIn("harness_fortran_cpu_mpi__partition", v[0])
+                    self.assertIn("harness_fortran_cpu_mpi__exchange_halo_r1", v[0])
 
     def test_the_generation_gate_asks_it_for_the_pipeline_targets_harness(self) -> None:
         """Through the caller: the harness is the TARGET's (issue #284), read off the pipeline's
@@ -23878,55 +23881,57 @@ def _doc_prose(rel: str, text: str) -> str:
 
 
 class MpiPresenceFloorGateTests(unittest.TestCase):
-    """The MPI floor (issue #316, R4-c PR-4): a whole-node judgment
-    (`tools/backends/parallel/mpi/directives.py`). `_run` reaches it through
-    `_validate_parallel_presence_floor` on a pipeline whose TARGET's parallel backend is `mpi`, and
-    that caller hands it no checks text since issue #589: no leaf source answers to one, and a
-    physics node is refused on this target at preflight (`driver_distributed_pending`) until the
-    distributed driver rewrites the floor. `_floor` asks the floor's own function with the keyword
-    it keeps until then, so what that rewrite starts from stays pinned. The OpenMP rows above pin
-    that the per-file directive floor is unchanged."""
+    """The MPI floor (issue #316, R4-c PR-4; issue #610, plan B §3.7): a whole-node judgment
+    (`tools/backends/parallel/mpi/directives.py`) over the MODEL sources. `_run` reaches it
+    through `_validate_parallel_presence_floor` on a pipeline whose TARGET's parallel backend is
+    `mpi`; `_floor` asks the floor's own function. Since PR-B2 the host-rendered driver
+    distributes each case, so the floor keeps the direct-library and component rules, asks a
+    distributed residency of both kinds whatever the plan says, and asks a halo-exchange call of
+    a `problem` only; the checks-source rules went with the checks module (`partition` is the
+    driver's). The OpenMP rows above pin that the per-file directive floor is unchanged."""
 
     _H = "harness_fortran_cpu_mpi"
     _DIST = {"precision": {}, "state_residency": "distributed",
-             "parallelization": {"model": "mpi"}, "decomposition": {"axis": 1}}
+             "parallelization": {"model": "mpi"}}
+    _DECLINED = {"precision": {}, "state_residency": "host",
+                 "parallelization": {"model": "none"}}
     _MODEL = ("module dep_base_model\n  use harness_fortran_cpu_mpi_model, only: "
               "harness_fortran_cpu_mpi__exchange_halo_r1\ncontains\n"
               "  subroutine dep_base__step(u)\n    real(8), intent(inout) :: u(:)\n"
               "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n"
               "  end subroutine\nend module\n")
+    _BARE = ("module dep_base_model\ncontains\n  subroutine dep_base__step(u)\n"
+             "    real(8), intent(inout) :: u(:)\n    u = u\n  end subroutine\nend module\n")
+    #: The checks module the distributed driver retired (issue #589 PR-1b), as a stray file.
     _CHECKS = ("module dep_base_checks\ncontains\n  subroutine case_setup(c, ok)\n"
                "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n"
+               "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n"
                "    sb_u_axis1 = 1\n  end subroutine\nend module\n")
 
-    def _floor(self, model: str | None = None, checks: str | None = None, *,
-               plan: object = None, node_key: str = "problem/dep_base@0.1.0",
-               array: str = "u") -> list[str]:
+    def _floor(self, model: str | None = None, *, plan: object = None,
+               node_key: str = "problem/dep_base@0.1.0") -> list[str]:
         from tools.backends.parallel.mpi.directives import presence_floor
         floor = presence_floor(language="fortran", hardware_class="cpu")
         return floor.node_violations(
             model_texts={Path("dep_base_model.f90"): self._MODEL if model is None else model},
-            checks_texts={Path("dep_base_checks.f90"): self._CHECKS if checks is None else checks},
-            plan=self._DIST if plan is None else plan, bound_arrays=[array],
+            plan=self._DIST if plan is None else plan,
             harness_spec_id=self._H, node_kind=node_key.split("/", 1)[0])
 
     def _run(self, model: str | None = None, *, stray_checks: str | None = None,
-             plan: object = None, node_key: str = "problem/dep_base@0.1.0",
-             array: str = "u") -> list[str]:
+             plan: object = None, node_key: str = "problem/dep_base@0.1.0") -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             from tools.tests.target_fixtures import install_target_profile, profile_with
             install_target_profile(repo_root, profile_with(
                 parallel={"backend": "mpi"},
                 harness={"infrastructure_id": "harness_fortran_cpu_mpi"}))
-            # The node's bound state: `u` is its one bound array, `t` a scalar.
             ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
             (repo_root / ir_ref).mkdir(parents=True)
             (repo_root / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump({
                 "meta": {"spec_kind": "component", "spec_id": "dep_base"},
                 "io_contract": {"raw_requirements": {"required_evidence": [
                     {"artifact": "state_snapshots", "schema": {"variables": [
-                        {"name": array, "shape_expr": "[8]"},
+                        {"name": "u", "shape_expr": "[8]"},
                         {"name": "t", "shape_expr": "scalar"}]}}]}}}), encoding="utf-8")
             pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
                             / _TARGET_ID / "p1")
@@ -23948,58 +23953,53 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
 
     def test_a_distributed_node_through_the_harness_passes(self) -> None:
         self.assertEqual(self._floor(), [])
+        self.assertEqual(self._run(), [])
 
-    def test_the_gate_hands_the_floor_the_model_sources_and_no_checks_text(self) -> None:
-        # Through the caller, with what a physics node on this target can still reach it with:
-        # the model's findings reach the list, and a stray file named as the deleted module
-        # settles nothing, so a distributed plan is refused for the axis on the model's path.
-        v = self._run(stray_checks=self._CHECKS)
+    def test_the_gate_hands_the_floor_the_model_sources_and_the_node_kind(self) -> None:
+        # Through the caller: the model's findings reach the list, and a stray file named as the
+        # retired checks module settles nothing — its exchange call does not stand for the
+        # model's, so the problem is refused on the model's path.
+        bare = self._BARE
+        v = self._run(model=bare, stray_checks=self._CHECKS)
         self.assertEqual(len(v), 1, v)
         self.assertIn("dep_base_model.f90", v[0])
-        self.assertIn("never sets a partition axis", v[0])
-        declined = {"precision": {}, "state_residency": "host",
-                    "parallelization": {"model": "none"}}
-        self.assertEqual(self._run(plan=declined), [])
-        v = self._run(model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
-                      plan=declined)
+        self.assertIn("calls the harness's `harness_fortran_cpu_mpi__exchange_halo_r1`", v[0])
+        v = self._run(model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"))
         self.assertEqual(len(v), 1, v)
         self.assertIn("reaches the message-passing runtime only through the target's harness", v[0])
-        self.assertIn("dep_base_model.f90", v[0])
-        # The node's kind and its bound arrays are the caller's to pass.
-        v = self._run(model=self._MODEL, node_key="component/dep_base@0.1.0", plan=declined)
+        # The node's kind is the caller's to pass: a component's model naming the harness.
+        v = self._run(node_key="component/dep_base@0.1.0")
         self.assertEqual(len(v), 1, v)
         self.assertIn("a component's published operations", v[0])
-        self.assertIn("(u)", self._run()[0])
+        # ...and the plan is the bundle's: a declining one exempts nothing (issue #610).
+        v = self._run(plan=self._DECLINED)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("declares state_residency 'host'", v[0])
 
     def test_a_component_model_names_no_harness_operation(self) -> None:
-        """Issue #512: a consumer calls a component's operations on its own rank's block, so a
-        component distributes its cases in its checks module and its MODEL names no harness
-        operation (the closing run of PR-4a: two of three regenerated advdiff components
-        partitioned inside their operation, and the problem built on them was wrong on every
-        grid with p1 > 1). A problem's model may (its one operation is driven by its own
-        checks module only)."""
+        """Issue #512: the driver and every consumer call a component's operations on a rank's
+        own block, so its MODEL names no harness operation, whatever the plan says. A problem's
+        model may (it exchanges its own temporaries)."""
         component = "component/dep_base@0.1.0"
-        checks = self._CHECKS.replace(
-            "    sb_u_axis1 = 1\n",
-            "    sb_u_axis1 = 1\n    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, "
-            ".true.)\n")
-        bare = ("module dep_base_model\ncontains\n  subroutine dep_base__step(u)\n"
-                "    real(8), intent(inout) :: u(:)\n    u = u\n  end subroutine\nend module\n")
-        self.assertEqual(self._floor(model=bare, checks=checks, node_key=component), [])
+        self.assertEqual(self._floor(model=self._BARE, node_key=component), [])
         for op in ("exchange_halo_r1(u, 1, 1, .true.)", "partition(n, 1, glo, ghi)",
                    "grid_dims(p1, p2)"):
             with self.subTest(op=op):
-                model = bare.replace("    u = u\n", f"    call harness_fortran_cpu_mpi__{op}\n")
-                v = self._floor(model=model, checks=checks, node_key=component)
+                model = self._BARE.replace("    u = u\n",
+                                           f"    call harness_fortran_cpu_mpi__{op}\n")
+                v = self._floor(model=model, node_key=component)
                 self.assertEqual(len(v), 1, v)
-                self.assertIn("dep_base_model.f90: a component's published operations", v[0])
+                self.assertIn("dep_base_model.f90: a component's published operations are "
+                              "called on a rank's own block", v[0])
                 self.assertIn(f"'harness_fortran_cpu_mpi__{op.split('(')[0]}'", v[0])
-                # ...and whatever the plan says.
-                self.assertEqual(len(self._floor(model=model, checks=checks, node_key=component,
-                                               plan={"precision": {}, "parallelization": {
-                                                   "model": "none"}})), 1)
-                # A problem's model may.
-                self.assertEqual(self._floor(model=model, checks=checks), [])
+                declined = self._floor(model=model, node_key=component, plan=self._DECLINED)
+                self.assertEqual(len(declined), 2, declined)
+                self.assertIn("a component's published operations", declined[0])
+                self.assertIn("declares state_residency 'host'", declined[1])
+        # A problem's model may name one; it is held to the exchange call instead.
+        self.assertEqual(self._floor(model=self._BARE.replace(
+            "    u = u\n", "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n")),
+            [])
         # A use list naming one, or a function reference, is a reference too; a string or a
         # comment is not, and neither is a name that only starts the same way.
         for line, refused in (
@@ -24008,47 +24008,40 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 ("    n = harness_fortran_cpu_mpi__reduce_max(x)\n", True),
                 # Fortran names are case-insensitive, and the statement reader keeps the case.
                 ("    CALL HARNESS_FORTRAN_CPU_MPI__PARTITION(N, 1, GLO, GHI)\n", True),
-                ("    ! harness_fortran_cpu_mpi__partition is the checks module's\n", False),
+                ("    ! harness_fortran_cpu_mpi__partition is the driver's\n", False),
                 ("    msg = 'harness_fortran_cpu_mpi__partition'\n", False),
                 ("    x = my_harness_fortran_cpu_mpi__partition\n", False)):
             with self.subTest(line=line):
-                model = bare.replace("    u = u\n", line) if not line.startswith("  use") \
-                    else bare.replace("contains", line.rstrip("\n") + "\ncontains")
-                v = self._floor(model=model, checks=checks, node_key=component)
+                model = self._BARE.replace("    u = u\n", line) if not line.startswith("  use") \
+                    else self._BARE.replace("contains", line.rstrip("\n") + "\ncontains")
+                v = self._floor(model=model, node_key=component)
                 self.assertEqual(len(v), int(refused), v)
 
     def test_a_direct_use_of_the_library_is_refused_whatever_the_plan(self) -> None:
-        declined = {"precision": {}, "state_residency": "host",
-                    "parallelization": {"model": "none"}}
-        for where, text in (
-                ("model", self._MODEL.replace("contains", "  use mpi_f08\ncontains")),
-                ("model", self._MODEL.replace("contains", "  use :: mpi\ncontains")),
-                ("model", self._MODEL.replace("contains",
-                                              "  use, non_intrinsic :: mpi\ncontains")),
-                ("model", self._MODEL.replace("contains", "  include 'mpif.h'\ncontains")),
-                ("checks", self._CHECKS.replace("sb_u_axis1 = 1",
-                                                "sb_u_axis1 = 1\n    call mpi_barrier(c, e)")),
-                ("checks", self._CHECKS.replace("sb_u_axis1 = 1",
-                                                "sb_u_axis1 = 1\n    t = MPI_Wtime()"))):
-            for plan in (None, declined):
-                with self.subTest(where=where, text=text[-60:], plan=plan):
-                    v = self._floor(**{where: text}, plan=plan)
-                    self.assertEqual(len(v), 1, v)
+        for text in (
+                self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
+                self._MODEL.replace("contains", "  use :: mpi\ncontains"),
+                self._MODEL.replace("contains", "  use, non_intrinsic :: mpi\ncontains"),
+                self._MODEL.replace("contains", "  include 'mpif.h'\ncontains"),
+                self._MODEL.replace("  end subroutine", "    call mpi_barrier(c, e)\n"
+                                                        "  end subroutine"),
+                self._MODEL.replace("  end subroutine", "    t = MPI_Wtime()\n  end subroutine")):
+            for plan in (None, self._DECLINED):
+                with self.subTest(text=text[-60:], plan=plan):
+                    v = self._floor(text, plan=plan)
+                    self.assertEqual(len(v), 1 if plan is None else 2, v)
                     self.assertIn("reaches the message-passing runtime only through the "
                                   "target's harness", v[0])
-                    self.assertIn(f"dep_base_{where}.f90", v[0])
+                    self.assertIn("dep_base_model.f90", v[0])
 
     def test_names_that_only_look_like_the_library_pass(self) -> None:
-        for text in (self._CHECKS.replace("sb_u_axis1 = 1", "sb_u_axis1 = 1\n    use mpi_utils"),
-                     self._CHECKS.replace("sb_u_axis1 = 1", "sb_u_axis1 = 1\n    x = s%mpi_n(1)"),
-                     self._CHECKS.replace("sb_u_axis1 = 1",
-                                          "sb_u_axis1 = 1\n    ! call mpi_send(x)"),
-                     self._CHECKS.replace("sb_u_axis1 = 1",
-                                          "sb_u_axis1 = 1\n    m = 'call mpi_send('")):
-            with self.subTest(text=text[-40:]):
-                self.assertEqual(self._floor(checks=text), [])
+        for line in ("    use mpi_utils", "    x = s%mpi_n(1)", "    ! call mpi_send(x)",
+                     "    m = 'call mpi_send('"):
+            with self.subTest(line=line):
+                self.assertEqual(self._floor(self._MODEL.replace(
+                    "  end subroutine", f"{line}\n  end subroutine")), [])
 
-    def test_a_non_distributed_residency_is_refused_unless_the_plan_declines(self) -> None:
+    def test_a_non_distributed_residency_is_refused_whatever_the_plan(self) -> None:
         v = self._run(plan={**self._DIST, "state_residency": "host"})
         self.assertEqual(len(v), 1, v)
         self.assertIn("declares state_residency 'host'", v[0])
@@ -24060,76 +24053,49 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
             "infrastructure/harness_fortran_cpu_mpi@0.4.0") or frozenset()
         token = next(t for t in provided if capability_name(t) == "distributed_state")
         self.assertIn(f"(with {token} in capability_requirements)", v[0])
-        for model in ("none", "serial", "openmp"):
-            with self.subTest(model=model):
-                self.assertEqual(self._run(plan={"precision": {}, "state_residency": "host",
-                                                 "parallelization": {"model": model}}), [])
+        # A plan that declines MPI is refused the same (issue #610: the driver distributes
+        # whatever the plan says), on both kinds, and so is an absent plan or residency.
+        for kind in ("problem", "component"):
+            model = self._MODEL if kind == "problem" else self._BARE
+            for plan in ({"precision": {}, "state_residency": "host",
+                          "parallelization": {"model": m}} for m in ("none", "serial", "openmp")):
+                with self.subTest(kind=kind, plan=plan):
+                    v = self._floor(model, plan=plan, node_key=f"{kind}/dep_base@0.1.0")
+                    self.assertEqual(len(v), 1, v)
+                    self.assertIn("declares state_residency 'host'", v[0])
+            for plan in (None, {}, {"parallelization": {"model": "mpi"}}):
+                with self.subTest(kind=kind, plan=plan):
+                    v = self._floor(model, plan=plan if plan is not None else "absent",
+                                    node_key=f"{kind}/dep_base@0.1.0")
+                    self.assertEqual(len(v), 1, v)
+                    self.assertIn("declares state_residency None", v[0])
 
-    def test_no_partition_or_halo_exchange_by_its_harness_name_is_refused(self) -> None:
-        model = self._MODEL.replace(
+    def test_a_problem_with_no_halo_exchange_by_its_harness_name_is_refused(self) -> None:
+        """A problem's step reads its neighbours' cells across a block edge only through the halo
+        exchange: a model with none, or one only under another name, is refused. The partition
+        no longer counts (it is the driver's), and a component is not asked."""
+        no_call = self._MODEL.replace(
             "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")
-        for checks in (self._CHECKS.replace(
-                "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n", ""),
-                self._CHECKS.replace("call harness_fortran_cpu_mpi__partition", "call part"),
-                self._CHECKS.replace("call harness_fortran_cpu_mpi__partition",
-                                     "! call harness_fortran_cpu_mpi__partition")):
-            with self.subTest(checks=checks[40:110]):
-                v = self._floor(model=model, checks=checks)
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("neither the model nor the checks source calls the harness's", v[0])
-                self.assertIn("harness_fortran_cpu_mpi__partition", v[0])
-        # Only the TARGET harness's operations, and only those it publishes (round 3): the
-        # leaf's own `<spec_id>__partition`, another prefix, and an `exchange_halo_r3` do not.
-        for call in ("call dep_base__partition(n, glo, ghi)",
-                     "call harness_fortran_cpu__partition(n, glo, ghi)",
-                     "call harness_fortran_cpu_mpi__exchange_halo_r3(u, 1, 1, .true.)"):
+        for call in ("", "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n",
+                     "    call exch(u, 1, 1, .true.)\n",
+                     "    ! call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n",
+                     # only the TARGET harness's exchanges, and only those it publishes
+                     "    call dep_base__exchange_halo_r1(u, 1, 1, .true.)\n",
+                     "    call harness_fortran_cpu__exchange_halo_r1(u, 1, 1, .true.)\n",
+                     "    call harness_fortran_cpu_mpi__exchange_halo_r3(u, 1, 1, .true.)\n"):
             with self.subTest(call=call):
-                v = self._floor(model=model, checks=self._CHECKS.replace(
-                    "call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)", call))
+                v = self._floor(no_call.replace("  end subroutine", f"{call}  end subroutine"))
                 self.assertEqual(len(v), 1, v)
-                self.assertIn("neither the model nor the checks source calls", v[0])
-        # The action of a one-line logical `if` is a call too.
-        self.assertEqual(self._floor(model=model, checks=self._CHECKS.replace(
-            "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n",
-            "    if (n > 0) call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n")), [])
-        # Either one suffices, in either source.
-        self.assertEqual(self._floor(model=model), [])
-        self.assertEqual(self._floor(checks=self._CHECKS.replace(
-            "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n", "")), [])
-
-    def test_a_checks_module_that_sets_no_partition_axis_is_refused(self) -> None:
-        for assignment in ("sb_u_axis1 = 0", "sb_u_axis1 = 0_int32", "sb_u_axis1 = (0)",
-                           "if (sb_u_axis1 == 1) x = 1", "u_axis = 1", "x%sb_u_axis1 = 1",
-                           # the axis of a name that is not a bound array distributes nothing,
-                           # nor does a scalar's
-                           "sb_tmp_axis1 = 1", "sb_t_axis2 = 1",
-                           # the one-dimensional spelling of `distributed_state@1`, and a
-                           # third grid dimension, name no slot (issue #512)
-                           "sb_u_axis = 1", "sb_u_axis3 = 1"):
-            with self.subTest(assignment=assignment):
-                v = self._floor(checks=self._CHECKS.replace("sb_u_axis1 = 1", assignment))
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("never sets a partition axis", v[0])
-                self.assertIn("dep_base_checks.f90", v[0])
-        for assignment in ("sb_u_axis1 = 2", "sb_u_axis1 = k", "sb_v_axis1 = 0; sb_u_axis1 = 1", "sb_u_axis2 = 2",
-                           "sb_u_axis1=1"):
-            with self.subTest(assignment=assignment):
-                self.assertEqual(self._floor(checks=self._CHECKS.replace("sb_u_axis1 = 1",
-                                                                       assignment)), [])
-        # The model module setting it does not count: the checks module owns the binding.
-        v = self._floor(model=self._MODEL.replace("contains", "  integer :: sb_u_axis1 = 1\ncontains"),
-                      checks=self._CHECKS.replace("sb_u_axis1 = 1", "x = 0"))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("never sets a partition axis", v[0])
-        # The bound array's name is compared as Fortran compares identifiers, on both sides:
-        # the corpus declares upper-case snapshot names (`U`, `U_in`).
-        self.assertEqual(self._floor(checks=self._CHECKS.replace("sb_u_axis1 = 1", "SB_U_AXIS1 = 1")),
-                         [])
-        self.assertEqual(self._floor(array="U"), [])
-        # A declaration's initializer is a setting too.
-        self.assertEqual(self._floor(checks=self._CHECKS.replace(
-            "sb_u_axis1 = 1", "x = 0").replace("contains", "  integer :: sb_u_axis1 = 1\ncontains")),
-            [])
+                self.assertIn("no model source of this problem calls the harness's "
+                              "`harness_fortran_cpu_mpi__exchange_halo_r1` / `_r2`", v[0])
+        # The action of a one-line logical `if` is a call too, and either exchange counts.
+        for call in ("    if (n > 0) call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, "
+                     ".true.)\n",
+                     "    call harness_fortran_cpu_mpi__exchange_halo_r2(a, 1, 1, 1, .true.)\n"):
+            with self.subTest(call=call):
+                self.assertEqual(self._floor(no_call.replace(
+                    "  end subroutine", f"{call}  end subroutine")), [])
+        self.assertEqual(self._floor(self._BARE, node_key="component/dep_base@0.1.0"), [])
 
     def test_the_floor_is_not_asked_of_an_infrastructure_node(self) -> None:
         self.assertEqual(self._run(
