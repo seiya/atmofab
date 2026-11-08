@@ -22126,8 +22126,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Issue #610 PR-B3 (a dummy that needs the case's whole count binds `derived`: the
         # BINDINGS comment and V3 (iv)): bumped 110050->110650; measured 110594 at b35b64b2.
         # Review round 1 (the `block.<axis>.first` binding, the extent-dummy exception, the
-        # `extended` count): bumped 110650->111100; measured 111036.
-        "docs/workflow/phases/phase_01_compile.md": 111100,
+        # `extended` count): bumped 110650->111100; measured 111036 at 98fc4ead. Review
+        # round 2 (the whole-count clause scoped to a node with an axis): bumped
+        # 111100->111250; measured 111187.
+        "docs/workflow/phases/phase_01_compile.md": 111250,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

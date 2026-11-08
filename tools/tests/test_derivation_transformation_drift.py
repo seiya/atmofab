@@ -832,8 +832,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # axis's `cells` / `extended` input receives the block's count where the driver hands a block,
     # and that a dummy needing the case's whole count binds `derived` (BINDINGS, V3 (iv)); review
     # round 1 added the `block.<axis>.first` binding of a first-global-index dummy and the
-    # extent-dummy exception (the version was unreleased, so its digest moved in place).
-    "compile-docs-29": "27c698d77344f2dfb5b7da99f96da4545ff63f032a2bbadec27fee1b7c7b5980",
+    # extent-dummy exception, and review round 2 scoped the whole-count clause to a node with
+    # an axis (the version was unreleased, so its digest moved in place each time).
+    "compile-docs-29": "c32a21eb875b67af5aa43881584f4bc033b7f813cd08499fbe2de58539c1e578",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
