@@ -96,16 +96,26 @@ A plan that declines MPI exempts nothing: the driver distributes from the IR wha
   `l0_min_extent` of muscl, coriolis and rk4 and `l0_min_extent` / `l0_min_extent_axis` of tc4.
   No workflow gate reads whether a node's `pass` cases distribute; a suite row over the bench does
   (`test_spec_corpus_versions.py`).
-- **A whole-field sum is not one a kernel can form.** A case the table replicates reaches every
-  rank whole, and a block of a node with fewer declared axes than the grid has dimensions reaches
-  every rank along the other dimension; a kernel cannot tell how many ranks hold its cells
-  without deciding from the grid (the reviewer's finding), so `__reduce_sum` over the ranks counts
-  each such cell once per rank holding it. Fixture model (3) summing its block's cell count
-  through it, case `c6`, measured 6 on `(1, 1)`, `(2, 1)`, `(3, 1)` and `(4, 1)`, 12 on `(2, 2)`
-  and `(1, 2)`, 18 on `(1, 3)` and 24 on `(1, 4)` (2026-11-08). Only a reduction a copy does not
-  change gives the whole field's value: `__reduce_min` / `__reduce_max`, and `__reduce_sum_int`
-  as a count compared against zero (whether any rank refuses). A `problem` whose spec needs a
-  whole-field sum or mean is not buildable on this driver. Corpus need: none — on 2026-11-08 no
+- **A whole-field sum is the reduced sum over the reduced count, times the case's count.** A
+  case the table replicates reaches every rank whole, a block of a node with fewer declared axes
+  than the grid has dimensions reaches every rank along the other dimension, and a distributed
+  block reaches one rank; a kernel cannot tell which without deciding from the grid (the
+  reviewer's finding), so `__reduce_sum` over the ranks counts each cell once per rank holding
+  it. Fixture model (3) summing its block's cell count through it, case `c6`, measured 6 on
+  `(1, 1)`, `(2, 1)`, `(3, 1)` and `(4, 1)`, 12 on `(2, 2)` and `(1, 2)`, 18 on `(1, 3)` and 24
+  on `(1, 4)` (2026-11-08). On every shape the driver produces, though, every cell of a case is
+  held by the SAME number of ranks, so the `__reduce_sum` of the block's sum divided by the
+  `__reduce_sum_int` of the block's cell count is the field's mean on every grid, and a total is
+  that mean times the case's count from a `derived` binding. Fixture model (2) taking `dt` from
+  that mean, from that total, and (axis `x` alone) from that mean again wrote the singleton's
+  `dt` (the ratio 1 to 14 decimal places) on all seven 4-rank grids, `ny4` replicated on `(1, 4)` and `(1, 3)`
+  included; dividing the reduced sum by the case's count instead wrote it 4 times the
+  singleton's on `(1, 4)` and 3 times on `(1, 3)` for `ny4`, and on the one-axis node 2, 4, 3
+  and 2 times on `(2, 2)`, `(1, 4)`, `(1, 3)` and `(1, 2)` for both cases (2026-11-08;
+  `test_driver_render.DistributedDriverEndToEndTest.test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed`
+  pins the mean, the total and the un-normalised `dt` on `(1, 4)`). An extreme goes through
+  `__reduce_min` / `__reduce_max`, which a copy does not change, and a reduced count of refusals
+  compared against zero tells whether any rank refuses. Corpus use: on 2026-11-08 no
   `problem` model generated for `fortran_cpu_mpi` called `__reduce_sum` (two `component` models
   of 2026-10-17 did, and the floor now refuses a component that names a harness operation).
 - **A node with `distribute: none`** is certified as the kernel's result on rank 0 of a replicated

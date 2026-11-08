@@ -265,13 +265,29 @@ class PromptFragmentTests(unittest.TestCase):
         self.assertIn("partitions again", reviewer)
         # Round 1 of PR-B2: a sum over the ranks counts a cell once per rank holding it (a
         # replicated case, a block along a dimension no axis takes), and the kernel cannot tell
-        # without the grid, so neither fragment offers `__reduce_sum` for a whole-field value
-        # nor a fix by the grid coordinate.
+        # without the grid, so neither fragment offers a bare `__reduce_sum` for a whole-field
+        # value nor a fix by the grid coordinate. Round 2: every cell is held by the same number
+        # of ranks, so the reduced sum over the reduced count of the same cells is the field's
+        # mean on every grid (`DistributedDriverEndToEndTest.test_a_whole_field_mean_divides_by_
+        # the_reduced_count_of_the_cells_it_summed`): the producer is told that form and the
+        # total from it, the reviewer's finding is the UN-normalised sum, and the round-1 "no
+        # whole-field sum is formable" statement is gone from both.
         for text in (producer, reviewer):
-            self.assertIn("whole-field sum or mean", text)
             self.assertNotIn("coordinate 0", text)
+            self.assertNotIn("not one a kernel can form", text)
+            self.assertNotIn("sound only as a count compared against zero", text)
+            self.assertNotIn("serves a count compared against zero", text)
         self.assertNotIn("goes through `<harness>__reduce_sum`", producer)
-        self.assertIn("goes through `<harness>__reduce_max` / `__reduce_min`", producer)
+        self.assertIn("an extreme goes through `<harness>__reduce_max` / `__reduce_min`", producer)
+        self.assertIn("a mean is the `<harness>__reduce_sum` of the block's sum divided by the "
+                      "`<harness>__reduce_sum_int` of the block's cell count", producer)
+        self.assertIn("a total is that mean times the case's cell count from a `derived` "
+                      "binding", producer)
+        self.assertIn("forms a whole-field sum or mean from an un-normalised reduced sum — a "
+                      "`__reduce_sum` / `__reduce_sum_int` not divided by the `__reduce_sum_int` "
+                      "of the cell count of the cells it summed", reviewer)
+        self.assertIn("the reduced sum over the reduced count of the same cells is the field's "
+                      "mean on every grid", reviewer)
 
 
 class HarnessUseStatementTests(unittest.TestCase):

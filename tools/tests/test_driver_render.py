@@ -1480,6 +1480,75 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                       run.stderr)
         self.assertEqual(build.run(SINGLETON, cases=["ny8"]).rc, 0)
 
+    def test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed(self) -> None:
+        """Every cell is held by the same number of ranks on every shape the driver runs (a
+        replicated case: all of them; a node with fewer axes than the grid has dimensions: all
+        along the other dimension; a distributed one: one), so model (2)'s `__init` taking `dt`
+        from the field's mean — `__reduce_sum` of its block's sum over `__reduce_sum_int` of its
+        block's cell count — or from a total, that mean times the global count from `derived`,
+        writes the singleton's `dt` on every grid, `ny4` replicated on `(1, 4)` and `(1, 3)`
+        included, and so does the one-axis variant (axis `x` alone, `block.y.first` the literal
+        1). Dividing the reduced sum by the global count instead — the un-normalised sum — writes
+        it `p` times too large where `p` ranks hold each cell, and agrees on the singleton and
+        on the grids that distribute both axes. The scalar agreement check (B8) is silent on it:
+        a reduced value is equal across the ranks."""
+        H = MPI_HARNESS
+        base = (MPI_DATA / "fx_prob_model.f90").read_text()
+        edits = (
+            (f"  use {H}_model, only: {H}__exchange_halo_r2\n",
+             f"  use {H}_model, only: {H}__exchange_halo_r2, &\n"
+             f"    {H}__reduce_sum, {H}__reduce_sum_int\n"),
+            # The collectives are reached on every rank: no return before them.
+            ("    n_cells = 0\n    if (.not. ok) return\n", "    n_cells = 0\n"))
+        for old, _new in edits:
+            self.assertEqual(base.count(old), 1, old)
+        mean = (f"({H}__reduce_sum(sum(h)) &\n"
+                f"      / real({H}__reduce_sum_int(nx * ny), dp))")
+        dt_lines = {
+            "mean": f"    dt = 1.0e-3_dp * {mean}\n",
+            "total": f"    dt = 1.0e-5_dp * real(nx_g * ny_g, dp) * {mean}\n",
+            "unnormalised": f"    dt = 1.0e-3_dp * {H}__reduce_sum(sum(h)) &\n"
+                            "      / real(nx_g * ny_g, dp)\n"}
+        dt_old = "    dt = 0.8_dp / real(nx_g + ny_g, dp)\n"
+        self.assertEqual(base.count(dt_old), 1)
+        one_axis = prob_ir()
+        one_axis["drive"]["distribute"]["axes"] = one_axis["drive"]["distribute"]["axes"][:1]
+        for call in ("init", "step"):
+            one_axis["drive"][call]["arguments"]["j0"] = 1
+        exchange_y = f"    call {H}__exchange_halo_r2(he, 2, 2, 1, .false.)\n"
+        self.assertEqual(base.count(exchange_y), 1)
+        cases = ["ny4", "ny8"]
+        # (variant, axes, the expected dt ratio to the singleton per grid and case).
+        unit = {g: (1.0, 1.0) for g in MPI_GRIDS}
+        rows = (
+            ("mean", 2, unit), ("total", 2, unit), ("mean", 1, unit),
+            ("unnormalised", 2, {(1, 4): (4.0, 1.0), (1, 3): (3.0, 1.0), (2, 2): (1.0, 1.0)}),
+            ("unnormalised", 1, {(1, 4): (4.0, 4.0), (2, 2): (2.0, 2.0), (4, 1): (1.0, 1.0)}))
+        for variant, n_axes, expected in rows:
+            with self.subTest(variant=variant, axes=n_axes):
+                model = base
+                for old, new in (*edits, (dt_old, dt_lines[variant])):
+                    model = model.replace(old, new)
+                ir = prob_ir() if n_axes == 2 else one_axis
+                if n_axes == 1:
+                    model = model.replace(exchange_y, "")
+                build = self._build(ir, model=model)
+                single = build.run(SINGLETON, cases=cases)
+                self.assertEqual(single.rc, 0, single.stderr[-1000:])
+                ref = single.snapshots()
+                for grid, ratios in expected.items():
+                    run = build.run(grid, cases=cases, timeout=60)
+                    self.assertEqual(run.rc, 0, (grid, run.stderr[-1000:]))
+                    got = run.snapshots()
+                    for cid, ratio in zip(cases, ratios):
+                        dt = got[f"initial/{cid}.json"]["dt"]
+                        self.assertAlmostEqual(dt / ref[f"initial/{cid}.json"]["dt"], ratio,
+                                               places=12, msg=(grid, cid))
+                        if ratio == 1.0:
+                            np.testing.assert_allclose(
+                                np.asarray(got[f"{cid}.json"]["h"], float),
+                                np.asarray(ref[f"{cid}.json"]["h"], float), rtol=1e-12)
+
     def test_a_committed_nan_on_another_rank_reaches_the_series_on_every_grid(self) -> None:
         """B9: model (2) committing a NaN at the global last cell after its first step, and
         clearing it at the next, writes it into no history sample (`every` 2) and into the
