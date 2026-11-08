@@ -445,5 +445,64 @@ class DistributeBlockTests(unittest.TestCase):
         self.assertFalse(r.distribute_plan(flux, {"inputs": {"nx": 8, "ng": 1}}, (1, 4)))
 
 
+class DistributedDriverPlanTests(unittest.TestCase):
+    """What the distributed form of the driver reads beside `distribute_plan` (issue #610, PR-B2):
+    the grids its table lists, the table, and the per-entry facts `driver_plan` carries."""
+
+    def test_distribute_grids_is_the_certified_grid_then_the_sweep_then_the_singleton(self) -> None:
+        mpi = yaml.safe_load((_DRIVE_DIR.parents[3] / "spec/targets/fortran_cpu_mpi.yaml")
+                             .read_text())
+        self.assertEqual(r.distribute_grids(mpi), _GRIDS + ((1, 1),))
+        # `(ranks, 1)` when no grid is imposed, the singleton when no count is either (the
+        # Compile dry render's document), each grid once, in that order.
+        self.assertEqual(r.distribute_grids({"execution": {"ranks": 3}}), ((3, 1), (1, 1)))
+        self.assertEqual(r.distribute_grids({"execution": {"threads_per_rank": 1}}), ((1, 1),))
+        self.assertEqual(r.distribute_grids({"execution": {
+            "ranks": 4, "process_grid": [2, 2],
+            "sweep": {"grids": [[1, 1], [2, 2], [4, 1], [1, 1]]}}}), ((2, 2), (1, 1), (4, 1)))
+        for bad in ([2], [0, 2], [2.0, 2], [True, 2], "2,2"):
+            with self.subTest(grid=bad), self.assertRaises(RenderError):
+                r.distribute_grids({"execution": {"ranks": 4, "process_grid": bad}})
+
+    def test_the_replication_table_is_distribute_plan_per_grid(self) -> None:
+        for path in sorted(_BENCH_DIR.glob("*.yaml")):
+            ir = yaml.safe_load(path.read_text())
+            grids = _GRIDS + ((1, 1),)
+            with self.subTest(spec_id=path.stem):
+                table = dict(r.replication_table(ir, grids))
+                self.assertEqual(list(table), list(grids))
+                for grid in grids:
+                    self.assertEqual(table[grid], tuple(
+                        c["case_id"] for c in ir["case"]["test_case_set"]
+                        if r.distribute_plan(ir, c, grid)))
+                self.assertEqual(table[(1, 1)], ())
+
+    def test_the_plan_carries_each_axis_host_the_written_states_and_the_extents(self) -> None:
+        ir = _bench_ir("dynamics_shallow_water_reconstruction_2d_muscl_mc")
+        plan = r.driver_plan(ir, _variables(ir))
+        self.assertEqual([a.name for a in plan.axes], ["x", "y"])
+        (entry,) = plan.entries
+        keys = [tuple(None if h is None else h.key for h in hosts) for hosts in entry.axis_hosts]
+        self.assertEqual(keys, [("inputs.grid.nx", "inputs.grid.ng", "inputs.grid.nx_total"),
+                                ("inputs.grid.ny", "inputs.grid.ng", "inputs.grid.ny_total")])
+        self.assertTrue(all(h.kind == "integer" and h.rank == 0
+                            for hosts in entry.axis_hosts for h in hosts))
+        self.assertEqual(plan.written, ("U_L", "U_R", "U_B", "U_T", "grid_valid"))
+        self.assertEqual(entry.extents, {"U_in": ("h4", "h5"), "U_L": ("h1 + 1", "h2"),
+                                         "U_R": ("h1 + 1", "h2"), "U_B": ("h1", "h2 + 1"),
+                                         "U_T": ("h1", "h2 + 1")})
+        # An axis input no rank-0 integer dummy binds is None (the renderer refuses it).
+        rk4 = _bench_ir("dynamics_shallow_water_time_update_2d_rk4")
+        (entry,) = r.driver_plan(rk4, _variables(rk4)).entries
+        self.assertEqual([tuple(None if h is None else h.key for h in hosts)
+                          for hosts in entry.axis_hosts],
+                         [("inputs.grid.nx", None, None), ("inputs.grid.ny", None, None)])
+        self.assertEqual(r.driver_plan(rk4, _variables(rk4)).written[:1], ("U",))
+        self.assertIn("stage_U1", r.driver_plan(rk4, _variables(rk4)).written)
+        # A node with no axis carries none.
+        plan = r.driver_plan(_toy(), _variables(_toy()))
+        self.assertEqual((plan.axes, plan.entries[0].axis_hosts), ((), ()))
+
+
 if __name__ == "__main__":
     unittest.main()
