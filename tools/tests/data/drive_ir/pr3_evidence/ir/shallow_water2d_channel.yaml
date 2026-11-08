@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/shallow_water2d_channel@0.3.1
+  node_key: problem/shallow_water2d_channel@0.4.0
   spec_kind: problem
   spec_id: shallow_water2d_channel
-  spec_version: 0.3.1
+  spec_version: 0.4.0
   source_refs:
     controlled_spec: spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md
     tests: spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md
@@ -51,6 +51,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 221
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n064_dts100
     inputs:
       grid:
@@ -92,6 +95,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 442
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n128_dts100
     inputs:
       grid:
@@ -133,6 +139,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 883
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n032_dts100
     inputs:
       grid:
@@ -174,6 +183,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 142
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n064_dts100
     inputs:
       grid:
@@ -215,6 +227,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 284
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n128_dts100
     inputs:
       grid:
@@ -256,6 +271,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 567
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n032_dts100
     inputs:
       grid:
@@ -297,6 +315,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 272
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n064_dts100
     inputs:
       grid:
@@ -338,6 +359,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 544
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n128_dts100
     inputs:
       grid:
@@ -379,6 +403,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 1087
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n032_dts100
     inputs:
       grid:
@@ -420,6 +447,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 222
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n064_dts100
     inputs:
       grid:
@@ -461,6 +491,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 443
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n128_dts100
     inputs:
       grid:
@@ -502,6 +535,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 886
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n256_dts100
     inputs:
       grid:
@@ -543,6 +579,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 1772
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_guard_n032_dts240
     inputs:
       grid:
@@ -584,6 +623,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 92
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n128_dts100_tend5d
     inputs:
       grid:
@@ -625,6 +667,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 4413
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n128_dts100_tend5d
     inputs:
       grid:
@@ -666,6 +711,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 5433
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n032_dts100_half
     inputs:
       grid:
@@ -707,6 +755,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 543
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n064_dts100_sx025
     inputs:
       grid:
@@ -748,6 +799,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 443
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n064_dts100_rect
     inputs:
       grid:
@@ -789,6 +843,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 576
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n064_dts100_rect
     inputs:
       grid:
@@ -830,6 +887,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 303
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n064_dts100_axis
     inputs:
       grid:
@@ -871,6 +931,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 442
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n064_dts100_axis
     inputs:
       grid:
@@ -912,6 +975,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 284
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n064_dts100_sx025_axis
     inputs:
       grid:
@@ -953,6 +1019,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 443
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n064_dts100_rectaxis
     inputs:
       grid:
@@ -994,6 +1063,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 303
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n064_dts100_rectaxis
     inputs:
       grid:
@@ -1035,6 +1107,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 576
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n064_dts100_xmir
     inputs:
       grid:
@@ -1076,6 +1151,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 442
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n064_dts100_xmir
     inputs:
       grid:
@@ -1117,6 +1195,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 284
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n064_dts100_xmir
     inputs:
       grid:
@@ -1158,6 +1239,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 544
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n064_dts100_xmir
     inputs:
       grid:
@@ -1199,6 +1283,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 443
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n064_dts100_rectxmir
     inputs:
       grid:
@@ -1240,6 +1327,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 576
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n064_dts100_ymir
     inputs:
       grid:
@@ -1281,6 +1371,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 442
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc3_ref_n064_dts100_ymir
     inputs:
       grid:
@@ -1322,6 +1415,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 284
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n064_dts100_ymir
     inputs:
       grid:
@@ -1363,6 +1459,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 544
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_xpert_n064_dts100_ymir
     inputs:
       grid:
@@ -1404,6 +1503,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 443
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badprofile
     inputs:
       grid:
@@ -1445,6 +1547,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badaxis
     inputs:
       grid:
@@ -1486,6 +1591,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badng
     inputs:
       grid:
@@ -1527,6 +1635,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badzonal
     inputs:
       grid:
@@ -1568,6 +1679,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badomega
     inputs:
       grid:
@@ -1609,6 +1723,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badtheta
     inputs:
       grid:
@@ -1650,6 +1767,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_baddepth
     inputs:
       grid:
@@ -1691,6 +1811,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_dry_n032_dts800
     inputs:
       grid:
@@ -1732,6 +1855,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc4_ref_n032_dts100_badradius
     inputs:
       grid:
@@ -1773,6 +1899,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_zrepeat_n032_dts100
     inputs:
       grid:
@@ -1814,6 +1943,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 221
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badnx
     inputs:
       grid:
@@ -1855,6 +1987,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chan_tc2_ref_n032_dts100_badny
     inputs:
       grid:
@@ -1896,6 +2031,9 @@ case:
       test_profile_version: 0.8.0
       history:
         every: 0
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   sweeps:
     chan_tc2_ref:
       parameter: grid.nx = grid.ny
@@ -2506,7 +2644,7 @@ algorithm:
   diagnostics_from_state: true
   fallback_policy: fail_closed
 dependency:
-  node_key: problem/shallow_water2d_channel@0.3.1
+  node_key: problem/shallow_water2d_channel@0.4.0
   direct_deps:
   - node_key: component/dynamics_shallow_water_boundary_2d_channel_mirror@0.2.0
     kind: component
@@ -19839,6 +19977,16 @@ public_api:
         intent: in
         spec:
           type: integer
+      - name: nx_g
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ny_g
+        rank: 0
+        intent: in
+        spec:
+          type: integer
       - name: L_x
         rank: 0
         intent: in
@@ -19852,6 +20000,16 @@ public_api:
           type: real
           kind: dp
       - name: ng
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: i0
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: j0
         rank: 0
         intent: in
         spec:
@@ -20056,9 +20214,13 @@ drive:
     arguments:
       nx: inputs.grid.nx
       ny: inputs.grid.ny
+      nx_g: derived.nx_g
+      ny_g: derived.ny_g
       L_x: inputs.grid.L_x
       L_y: inputs.grid.L_y
       ng: inputs.grid.ng
+      i0: block.x.first
+      j0: block.y.first
       t_start: inputs.time.t_start
       t_end: inputs.time.t_end
       cfl_target: inputs.dt_rule.cfl_target
