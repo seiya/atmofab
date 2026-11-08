@@ -906,7 +906,7 @@ class ProcedureGateTest(unittest.TestCase):
 
 MPI_DATA = DATA / "mpi"
 MPI_HARNESS = "harness_fortran_cpu_mpi"
-#: The 4-rank grids of `fortran_cpu_mpi` (the certified grid and its sweep), uneven partitions
+#: The grids of `fortran_cpu_mpi` (the certified 4-rank grid and its sweep, 2 to 4 ranks), uneven partitions
 #: kept, and the singleton the quality check runs.
 MPI_GRIDS = ((2, 2), (4, 1), (1, 4), (3, 1), (1, 3), (2, 1), (1, 2))
 SINGLETON = (1, 1)
@@ -1301,7 +1301,7 @@ def _witness_expectation(ir: dict[str, Any], grid: tuple[int, int]) -> dict[str,
 
 class DistributedDriverEndToEndTest(unittest.TestCase):
     """The distributed form of the host-rendered driver (issue #610, plan B §3.3), compiled with
-    the fixture harness and run with the real launcher on every 4-rank grid of `fortran_cpu_mpi`
+    the fixture harness and run with the real launcher on every grid of `fortran_cpu_mpi`
     and bare as the singleton: each shape's captures and verdict equal the singleton's. The
     seeded defects below show what each comparison detects; the documented-limit row shows the
     one thing the capture is silent on (B10)."""
@@ -1469,7 +1469,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                                     grids: tuple[tuple[int, int], ...]) -> None:
         """Plan B §6's kernel defects (`_KERNEL_DEFECTS`, one row each): on the singleton each
         writes what the correct model writes (every case replicated, a grid of one rank), and
-        each fails a 4-rank grid — a hang among them, which the timeout kills with the ranks."""
+        each fails a grid of `MPI_GRIDS` — a hang among them, which the timeout kills with the ranks."""
         ir = MPI_FIXTURES[sid]()
         model = (MPI_DATA / f"{sid}_model.f90").read_text()
         for old, new in edits:
@@ -1707,8 +1707,8 @@ _DRIVER_DEFECTS: tuple[tuple[str, str, str, str], ...] = (
      "    if (.true.) then\n      if (rank == 0) out(5) ="),
 )
 
-#: The seeded kernel defects: (fixture, label, the model edits, cases, grids). Each fails a 4-rank
-#: shape and passes the singleton.
+#: The seeded kernel defects: (fixture, label, the model edits, cases, grids). Each fails a
+#: shape of `MPI_GRIDS` and passes the singleton.
 _KERNEL_DEFECTS: tuple[tuple[str, str, tuple[tuple[str, str], ...], list[str],
                              tuple[tuple[int, int], ...]], ...] = (
     ("fx_prob", "a problem that copies its own edges instead of exchanging", (

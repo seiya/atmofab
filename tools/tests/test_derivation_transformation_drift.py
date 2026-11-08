@@ -1146,7 +1146,8 @@ PINNED_RENDER: dict[str, str] = {
     # measured against 84c5ff88: `fortran/runner.py`, `runner_ir.py`, `host_execution.py`. A
     # bump, because a launcher target's render is new. The serial and device renders are
     # byte-identical to 84c5ff88's: the 52 renders of the 17 bench IRs, the two drive fixtures
-    # and seven toy IRs, for fortran_cpu and cpp_gpu (sha256, measured).
+    # and seven toy IRs, for fortran_cpu and cpp_gpu (sha256, measured). Re-pinned in place once
+    # before it shipped (review round 2: the perf cell count is sized per drive entry).
     "render-16": "442f58ba9a64b90a1f39d6ebd7218958d7b7da19f43a46a0856b504f895064b5",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
