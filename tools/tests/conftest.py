@@ -94,8 +94,8 @@ reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regress
 143 were the branch's and the rest were this.
 
 Measured on `165c26f`, whole suite, one variable at a time unless noted. **That commit
-predates the `met-dsl` -> `spec2science` rename (issue #127), so to RE-TAKE any figure below
-spell the names `METDSL_*` there — `SPEC2SCIENCE_*` matches nothing at `165c26f` and every
+predates both renames of the project (issue #127 from `met-dsl`, issue #619 after it), so
+to RE-TAKE any figure below spell the names `METDSL_*` there — `SPEC2SCIENCE_*` matches nothing at `165c26f` and every
 row comes back 0.** The names are written in the current spelling because the record
 is about which names the tree reads, not about that commit's text:
 

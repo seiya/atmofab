@@ -212,7 +212,7 @@ PINNED: dict[str, str] = {
     "pure-22": "771d0659d2341bb372d1dde2c7afd71b2a25d4383ce900ed94c20c828826e94d",
     # pure-23: the project rename (issue #127; `docs/GLOSSARY.md` §13 is canonical for the
     # name and for what it was called before) reached the opening sentence of both pure
-    # templates ("the `generate.generate` producer of the Spec2Science workflow"). No rule, gate, or ABI constant moved. The bump is here because
+    # templates (the "producer of the … workflow" clause names the project). No rule, gate, or ABI constant moved. The bump is here because
     # `orchestration_runtime._resolve_exemplar_source` gates prior-art exemplars on this
     # version, and a bundle produced under the old text must not be silently treated as
     # having been produced under the new one; re-pinning in place would have been the
