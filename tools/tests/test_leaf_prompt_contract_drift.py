@@ -1149,6 +1149,11 @@ PINNED: dict[str, str] = {
     # distributed driver (what it does, what reaches an operation, what is the kernel's).
     # Moved: those two fragments alone.
     "leaf-94": "653bc46d21c10c79e4a528f578588dbb8f1290265f35a83e71072c7ae9c8ac2a",
+    # leaf-95 (issue #619, the rename to spec2science): the first line of each of the nine
+    # `workshop_*.txt` templates names "the Spec2Science workflow" (was "the atmofab workflow"),
+    # and the `cuda_cpp` fragments name the namespace `spec2science::`. Moved: those nine
+    # templates and the three `cuda_cpp` fragments.
+    "leaf-95": "9717911a100f260d586941fef7c33fb04f99887ee5254ee845ea8ce09b48cc15",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1160,6 +1165,8 @@ PINNED_READER: dict[str, str] = {
     # compile-verify-3 (issue #589, PR-1a): V3 (iv) judges each `initial_state` / `derived`
     # entry and the history stride against tests.md.
     "compile-verify-3": "a17e90f9f3a50e55da26f365e3a6d59d33dd928b9d1fc13aca8d7903159c80e3",
+    # compile-verify-4 (issue #619): the reviewer template names the Spec2Science workflow.
+    "compile-verify-4": "dae8e1d336a363d721549da1489b647ae03f08d78d61667e4cdc35b9757b0364",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
@@ -1175,6 +1182,9 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-6 (issue #610, PR-B2): the `mpi` reviewer fragment judges a kernel under the
     # distributed driver. Moved: that fragment alone.
     "generate-verify-6": "2f77c144dbf55ae8796b5a610e21a1429f0403ae16a7d4897db13e48c79a12c6",
+    # generate-verify-7 (issue #619): both verify templates name the Spec2Science workflow, and
+    # the two `cuda_cpp` reviewer fragments name the namespace `spec2science::`.
+    "generate-verify-7": "2518f69f9302b536ad0020b4cc12a5bdbabf1873df6478eeacee2e62a14620b8",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
@@ -1183,6 +1193,8 @@ PINNED_READER: dict[str, str] = {
     "validate-judge-4": "67e52883deef5f306c1128e6f9276171f8c11b6599bfee39b99a5ce1cef1cf63",
     # validate-judge-5 (issue #602): the rank rule and the gate sentence state the zero-extent row.
     "validate-judge-5": "809aa51ea05643a0525adbc1cedf9f3f60cd04dd63126dbae1cfe7a22397ade6",
+    # validate-judge-6 (issue #619): the judge template names the Spec2Science workflow.
+    "validate-judge-6": "81f0963aee5296619974dd345a5cad07cf21746df67835c2a8e65f2267241650",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
