@@ -350,8 +350,11 @@ class _GenerateProducer(_GenerateHarness):
         """Issue #616 on an HTTP entry: a death whose text carries `OAuth token has expired` is
         `llm_auth_expired`, declined `no_credential_file` and terminal, with the REAL identity
         read and both CLI credential files present. The family check runs first, so this row
-        kills a gate that skips it (a stat of a CLI file would decline `credential_unchanged`);
-        `HttpCredentialIdentityTests` kills an identity method that stats one for HTTP."""
+        kills a gate that skips it: measured, that gate declines `credential_file_missing`
+        (the real identity read answers None for an HTTP entry, at launch and now), not
+        `no_credential_file`. It cannot see an identity method that stats a CLI file for HTTP
+        while the family check stands — the check answers before the identity is read;
+        `HttpCredentialIdentityTests` is the row that kills that mutant."""
         self.conductor([{"status": 401, "body": json.dumps(
             {"type": "error", "error": {"type": "authentication_error",
                                         "message": "OAuth token has expired."}})}])
