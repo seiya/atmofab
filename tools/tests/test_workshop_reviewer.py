@@ -28,7 +28,12 @@ from tools.tests.test_leaf_compile import _write_compile_node
 from tools.tests.test_leaf_judge import _review, _write_run_node
 from tools.tests.test_leaf_producer import _PureFakeConductor, _valid_bundle
 from tools.tests.test_leaf_verify import _verdict, _verify_node
-from tools.tests.test_workshop_producer import _codex_proc
+from tools.tests.test_workshop_producer import (
+    _FLAKE,
+    _OAUTH_DEATH_STDOUT,
+    _codex_proc,
+    _replace_file,
+)
 
 _ORCH = "o"
 
@@ -1240,6 +1245,149 @@ class ClaudeReadingLineageIsNotScannedTests(_Base):
     def test_a_claude_attempt_row_carries_no_cut_outputs(self) -> None:
         self.assertEqual(self.run_substep().status, "pass")
         self.assertNotIn("cut_outputs", self.attempt_meta()["per_attempt"][0])
+
+
+class _StaleCredentialReviewerFake(_ReviewerFake):
+    """The reviewer fake with the REAL identity read and the backoff sleep recorded (a
+    transient retry here would otherwise wait out its real schedule)."""
+
+    _credential_identity = wc.Conductor._credential_identity
+
+    def _sleep_backoff(self, seconds):  # type: ignore[override]
+        self.slept.append(seconds)
+
+
+class StaleCredentialReviewerTests(_Base):
+    """`Conductor._stale_credential_relaunch` in the reviewer loop (issue #616), on a claude
+    entry, with the real identity read of a temporary credentials file the real resolver is
+    patched to name. A class of its own, so the claude-only patch is not inherited by the
+    codex pairs."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        cred = tempfile.TemporaryDirectory()
+        self.addCleanup(cred.cleanup)
+        self.cred = Path(cred.name) / ".credentials.json"
+        self.cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
+        from tools import operator_private_root
+        patcher = mock.patch.object(operator_private_root, "claude_credentials_file",
+                                    lambda: self.cred)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.c = _StaleCredentialReviewerFake(
+            repo_root=self.repo, orchestration_id=_ORCH, orchestration_agent_run_id="orch",
+            llm_config=_config(self.repo, self.PHASE, self.SUBSTEP), env={})
+        self.c.calls = []
+        self.c.slept = []
+        self.c.homes = self.repo.parent / (self.repo.name + "_homes")
+        self.events: list[dict] = []
+        self.c.emit = lambda event, **f: self.events.append({"event": event, **f})  # type: ignore
+
+    def writes_pass_and_dies(self, *, replace: bool, advance: float = 0.0):
+        def action(c, tree, kwargs):
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+            if replace:
+                _replace_file(self.cred)
+            if advance:
+                self.clock[0] += advance
+            return wc.ProcResult(1, _OAUTH_DEATH_STDOUT, "")
+        return action
+
+    def flake(self, *, advance: float = 0.0):
+        def action(c, tree, kwargs):
+            if advance:
+                self.clock[0] += advance
+            return wc.ProcResult(1, "", _FLAKE)
+        return action
+
+    def named(self, event: str) -> list[dict]:
+        return [e for e in self.events if e["event"] == event]
+
+    def test_a_changed_identity_re_launches_from_the_seeds_alone(self) -> None:
+        """The dead reviewer wrote a passing document and died on a replaced credential: one
+        re-launch in a NEW lineage seeded from the seeds alone (the reading kind's reseed rule),
+        so a retry that writes nothing does not certify the dead leaf's document. Kills a
+        reviewer branch that does not re-launch, and one that carries the dead tree."""
+        self.c.leaf_actions = [self.writes_pass_and_dies(replace=True), _writes_nothing]
+        outcome = self.run_substep()
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+        self.assertEqual(self.requests()[1]["workshop_lineage_id"], "child-2")
+        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
+        self.assertFalse((self.paths("child-2").tree / self.OUTPUT).exists())
+        self.assertEqual(outcome.status, "fail")
+        self.assertNotEqual(self.attempt_meta()["result"], "pass")
+
+    def test_an_unchanged_identity_is_terminal(self) -> None:
+        """Same inode: declined `credential_unchanged`, one launch, the tag on the outcome.
+        Kills a reviewer gate that re-launches without an identity change."""
+        self.c.leaf_actions = [self.writes_pass_and_dies(replace=False)]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.infra_error[0], "llm_auth_expired")
+        self.assertEqual(len(self.c.spawns), 1)
+        (event,) = self.named("leaf_stale_credential_relaunch_declined")
+        self.assertEqual(event["reason"], "credential_unchanged")
+        self.assertEqual(self.named("leaf_stale_credential_relaunch"), [])
+
+    def test_a_stale_death_after_a_flake_is_still_re_launched(self) -> None:
+        """A flake (retried), then a changed-identity death: still re-launched, then pass.
+        Kills `relaunches_done` fed `transient_retries` in the reviewer branch."""
+        self.c.leaf_actions = [self.flake(), self.writes_pass_and_dies(replace=True),
+                               _writes(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 3)
+        self.assertEqual(len(self.named("leaf_transient_retry")), 1)
+        (event,) = self.named("leaf_stale_credential_relaunch")
+        self.assertEqual((event["attempt"], event["dead_agent_run_id"]), (1, "child-2"))
+        self.assertEqual(self.named("leaf_stale_credential_relaunch_declined"), [])
+
+    def test_a_second_stale_death_spends_the_budget(self) -> None:
+        """Two changed-identity deaths: the first re-launched, the second declined
+        `budget_spent`, terminal on the tag. Kills a reviewer branch that never counts
+        `stale_relaunches`."""
+        self.c.leaf_actions = [self.writes_pass_and_dies(replace=True),
+                               self.writes_pass_and_dies(replace=True)]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.infra_error[0], "llm_auth_expired")
+        self.assertEqual(len(self.c.spawns), 2)
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+        (event,) = self.named("leaf_stale_credential_relaunch_declined")
+        self.assertEqual((event["reason"], event["attempt"], event["dead_agent_run_id"]),
+                         ("budget_spent", 2, "child-2"))
+        # The budget is checked before the identity, so this death's file is never compared
+        # (docs/RUNBOOK.md routes a genuine expiry on that).
+        self.assertIsNone(event["identity_now"])
+        self.assertIsNotNone(event["identity_at_launch"])
+
+    def test_the_stale_attempt_is_not_charged_to_the_transient_wall_clock(self) -> None:
+        """A 500 s stale death (re-launched), then a 200 s flake: the flake is still retried
+        (0 + 200 <= 600 s). Kills a reviewer branch that charges the stale attempt to
+        `transient_spent` (700 s would decline the flake)."""
+        self.assertGreater(700.0, wc.TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS)
+        self.assertLessEqual(200.0, wc.TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS)
+        self.clock = [1_000.0]
+        self.c.leaf_actions = [self.writes_pass_and_dies(replace=True, advance=500.0),
+                               self.flake(advance=200.0),
+                               _writes(self.OUTPUT, self.passing())]
+        with mock.patch.object(wc.time, "monotonic", lambda: self.clock[0]):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 3)
+        self.assertEqual(self.named("leaf_transient_retry_declined"), [])
+        self.assertEqual(len(self.named("leaf_transient_retry")), 1)
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+
+    def test_the_stale_re_launch_does_not_sleep(self) -> None:
+        """The stale re-launch is immediate: the host already holds the refreshed credential,
+        so no backoff is waited. Kills a `_sleep_backoff` call added in the reviewer branch."""
+        self.c.leaf_actions = [self.writes_pass_and_dies(replace=True),
+                               _writes(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+        self.assertEqual(self.c.slept, [])
 
 
 class JsonSeedLayoutTests(unittest.TestCase):

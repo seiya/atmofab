@@ -1055,6 +1055,11 @@ class _FakeConductor(wc.Conductor):
     when the test passes none (issue #284, `target_fixtures.fixture_target`), WITHOUT setting
     `target_profile`."""
 
+    def _credential_identity(self, entry):  # type: ignore[override]
+        # Never stat the operator's real credential file (issue #616): a row that pins the
+        # identity gate opts into the real method on its own class.
+        return None
+
     @property
     def target(self):  # type: ignore[override]
         from tools.tests.target_fixtures import fixture_target
@@ -4859,19 +4864,25 @@ class TransportFailureTest(unittest.TestCase):
         both directions.
 
         The CLI reports an infrastructure failure as its RESULT TEXT — on stdout, often with an
-        empty stderr (that is exactly how the E2E #4 incident line arrived). So the two
-        NON-RETRYABLE tags must be able to override a stderr transport match: retrying a usage
-        limit re-launches into a multi-hour hard stop, and retrying a 4xx re-sends a request the
-        API rejects identically every time. Promoting them can only ever REMOVE a launch.
+        empty stderr (that is exactly how the E2E #4 incident line arrived, and the issue #616
+        OAuth death). So the three non-retryable tags must be able to override a less severe
+        stderr match: retrying a usage limit re-launches into a multi-hour hard stop, and
+        retrying a 4xx re-sends a request the API rejects identically every time. A promotion
+        replaces the stderr tag's policy with the promoted tag's own: terminal for those two; for
+        `llm_auth_expired`, terminal unless the host credential identity changed during the
+        launch, and then at most `MAX_STALE_CREDENTIAL_RELAUNCHES` re-launch on a counter of its
+        own — so over `llm_transport_flake` it removes the flake's retries and may add the one
+        gated launch, even after the transient budget is spent.
 
         Nothing else from stdout may override stderr, because stdout is also the model's own
         prose. If any prose match could outrank stderr, a leaf that happened to write "rate limits
         the timestep" while the connection actually dropped would silently retag — or worse,
         suppress — the retry, re-arming the 6.8-hour incident with the leaf's own writing."""
         self.assertEqual(wc._CROSS_STREAM_PROMOTING_TAGS,
-                         {"llm_usage_limit", "llm_client_error"})
+                         {"llm_usage_limit", "llm_auth_expired", "llm_client_error"})
         for stdout_line, expected in (
                 ("Claude AI usage limit reached|1752307200", "llm_usage_limit"),
+                ("API Error: OAuth token has expired.", "llm_auth_expired"),
                 ('API Error: 400 {"type":"invalid_request_error"}', "llm_client_error")):
             with self.subTest(stdout=stdout_line):
                 got = wc._classify_leaf_infra_error(
@@ -4892,8 +4903,9 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(got[1], "Error: socket hang up")
 
     def test_classify_leaf_infra_error_tags_a_4xx_as_a_non_retryable_client_error(self) -> None:
-        """A 4xx means the REQUEST is wrong (bad credential, unsupported parameter, oversized
-        prompt): every re-launch sends the same request and gets the same rejection. Without its
+        """A 4xx means the REQUEST is wrong (a missing login or a rejected key, an unsupported
+        parameter, an oversized prompt; an expired OAuth token is `llm_auth_expired` since issue
+        #616, pinned in `LeafAuthExpiredClassifierTests`): every re-launch sends the same request and gets the same rejection. Without its
         own tag the `^api error` catch-all would swallow it into `llm_transport_flake`, retry a
         deterministic misconfiguration three times, and then report it to the operator as a
         provider outage to wait out. The case this repo can cause itself is the first one: a leaf
@@ -4910,7 +4922,7 @@ class TransportFailureTest(unittest.TestCase):
             # the dependency facts and the must-read docs into a cold generate prompt.
             "API Error: prompt is too long: 235000 tokens > 200000 maximum",
             "API Error: Invalid API key · Please run /login",
-            "API Error: OAuth token has expired.",
+            "Not logged in · Please run /login",
             "API Error: Request body too large",
         ]
         for text in cases:
@@ -25651,6 +25663,137 @@ class ConductTargetTests(unittest.TestCase):
             self.assertIs(seen[-1], profile)
 
 
+
+
+# The recorded `claude -p` envelope of the issue #616 death, verbatim (one line, 1691 bytes):
+# `workspace/orchestrations/orch_20261108T120034Z_f727c989/agents/
+# 34dbd3a7-2155-40e0-a2a1-7a97aacbf90e/dialogs/leaf.stdout.log` — exit 1, empty stderr.
+_RECORDED_OAUTH_DEATH_ENVELOPE = (
+    '{"duration_api_ms":353508,"stop_reason":"stop_sequence","session_id":"34dbd3a7-2155-40'
+    'e0-a2a1-7a97aacbf90e","total_cost_usd":1.6675778,"usage":{"input_tokens":16,"cache_cre'
+    'ation_input_tokens":86240,"cache_read_input_tokens":316869,"output_tokens":45711,"outp'
+    'ut_tokens_details":{"thinking_tokens":9886},"server_tool_use":{"web_search_requests":0'
+    ',"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_inp'
+    'ut_tokens":86240,"ephemeral_5m_input_tokens":0},"inference_geo":"global","iterations":'
+    '[],"speed":"standard","fallback_credit":null},"modelUsage":{"claude-opus-5-5":{"inputT'
+    'okens":16,"outputTokens":45711,"cacheReadInputTokens":316869,"cacheCreationInputTokens'
+    '":86240,"webSearchRequests":0,"costUSD":1.6675778,"contextWindow":1000000,"maxOutputTo'
+    'kens":128000,"thinkingTokens":9886,"cacheCreationEphemeral5mInputTokens":0,"cacheCreat'
+    'ionEphemeral1hInputTokens":86240,"canonicalModel":"claude-opus-5-5","provider":"firstP'
+    'arty","costBasis":"list"}},"permission_denials":[],"terminal_reason":"api_error","fast'
+    '_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subagent_stats":'
+    '{"spawned":0,"requested":{"background":0,"foreground":0,"unset":0},"started_in_backgro'
+    'und":0,"max_depth":0,"spawned_by_subagents":0,"completed":0,"failed":0,"killed":{"pare'
+    'nt":0,"user":0,"system":0},"refused":{"depth_limit":0,"concurrency_limit":0,"budget":0'
+    '},"by_type":{}},"safety_stops":0,"is_error":true,"num_turns":17,"subtype":"success","a'
+    'pi_error_status":null,"result":"Failed to authenticate: OAuth session expired and coul'
+    'd not be refreshed","type":"result","duration_ms":358714,"uuid":"2b107e87-a5ed-4032-92'
+    '8e-601e23c32484","queued_turn_count":0,"result_index":0}'
+)
+
+
+class LeafAuthExpiredClassifierTests(unittest.TestCase):
+    """`llm_auth_expired` (issue #616): what it tags, what it must not, and where it ranks. The
+    re-launch it may buy is decided by a host `stat`, not by this text; these rows pin the text
+    half alone."""
+
+    def _codex_turn_failed(self, message: str, kind: str = "turn.failed") -> str:
+        failure_events: list[str] = []
+        event = ({"type": kind, "error": {"message": message}} if kind == "turn.failed"
+                 else {"type": kind, "message": message})
+        wc._absorb_codex_event(json.loads(json.dumps(event, separators=(",", ":"))), None,
+                               None, None, False, failure_events)
+        self.assertEqual(len(failure_events), 1)
+        return failure_events[0]
+
+    def test_the_recorded_envelope_and_the_oauth_lines_tag_auth_expired(self) -> None:
+        self.assertEqual(len(_RECORDED_OAUTH_DEATH_ENVELOPE), 1690)
+        for stderr, stdout in (
+                ("", _RECORDED_OAUTH_DEATH_ENVELOPE),
+                ("Failed to authenticate: OAuth session expired and could not be refreshed", ""),
+                ("API Error: OAuth token has expired.", ""),
+                # Both phrases on one line: the per-line loop stops at the first matching rank,
+                # and `llm_auth_expired` ranks above `llm_client_error`.
+                ("API Error: OAuth token has expired. Please run /login", "")):
+            with self.subTest(stderr=stderr[:60], stdout=stdout[:60]):
+                got = wc._classify_leaf_infra_error(stderr, stdout)
+                self.assertIsNotNone(got)
+                self.assertEqual(got[0], "llm_auth_expired")
+
+    def test_codex_refresh_failures_tag_on_turn_failed(self) -> None:
+        """The two spellings come from codex-cli 0.167.0's `login/src/auth/manager.rs` string
+        table and its guarded-reload path; no recorded run carries either. `… was already used`
+        is the stale-inode signature (the host consumed the rotated refresh token)."""
+        for message in (
+                "Your access token could not be refreshed because your refresh token was "
+                "already used. Please log out and sign in again.",
+                "Your access token could not be refreshed because you have since logged out or "
+                "signed in to another account. Please sign in again."):
+            with self.subTest(message=message[:70]):
+                line = self._codex_turn_failed(message)
+                self.assertEqual(wc._classify_leaf_infra_error(line, "")[0], "llm_auth_expired")
+
+    def test_lines_that_must_not_tag_auth_expired(self) -> None:
+        """Each asserts the exact value, so a widened pattern is red here."""
+        refreshed = ("Your access token could not be refreshed because your refresh token was "
+                     "already used. Please log out and sign in again.")
+        cases = [
+            # A genuine expiry of the login itself: not this tag, and today no tag at all.
+            ("this login reached its time limit and cannot be renewed", "", None),
+            ("Not logged in · Please run /login", "", "llm_client_error"),
+            # The anchor: the exact sentence, but not at the head of `result`.
+            ("", '{"type":"result","is_error":true,"result":"done. note: failed to '
+                 'authenticate: oauth session expired and could not be refreshed"}', None),
+            # The codex phrase outside an event line.
+            (refreshed, "", None),
+            # The AWS SSO / Bedrock login provider's string (`aws-config` `login.rs`), not
+            # codex's `auth.json` path, even when it reaches `turn.failed`.
+            (self._codex_turn_failed("Your session has expired. Please reauthenticate."), "",
+             None),
+        ]
+        for stderr, stdout, expected in cases:
+            with self.subTest(stderr=stderr[:60], stdout=stdout[:60]):
+                got = wc._classify_leaf_infra_error(stderr, stdout)
+                self.assertEqual(got[0] if got is not None else None, expected)
+
+    def test_a_non_terminal_codex_event_does_not_take_a_flakes_retries(self) -> None:
+        """An `error` event is non-terminal. The codex phrase on one, beside a stream
+        disconnect, must leave the flake retryable — a pattern widened to `error|turn.failed`
+        is red here. The same for codex's recorded non-fatal refresh noise (codex-cli 0.164.0,
+        `orch_20261026T085505Z_d87e8903/agents/60f7d632-…/dialogs/leaf.stderr.log`, a leaf that
+        went on to pass), raw on stderr and spliced as an `error` event."""
+        refreshed = ("Your access token could not be refreshed because your refresh token was "
+                     "already used. Please log out and sign in again.")
+        noise = ("ERROR codex_login::auth::manager: Failed to refresh token: Read-only file "
+                 "system (os error 30)")
+        for extra in (self._codex_turn_failed(refreshed, kind="error"), noise,
+                      self._codex_turn_failed(noise, kind="error")):
+            with self.subTest(extra=extra[:60]):
+                got = wc._classify_leaf_infra_error(
+                    extra + "\nstream disconnected before completion: Connection closed", "")
+                self.assertEqual(got[0], "llm_transport_flake")
+                self.assertIn(got[0], wc._RETRYABLE_LEAF_INFRA_TAGS)
+
+    def test_rank_and_cross_stream_promotion(self) -> None:
+        self.assertNotIn("llm_auth_expired", wc._RETRYABLE_LEAF_INFRA_TAGS)
+        self.assertIn("llm_auth_expired", wc._CROSS_STREAM_PROMOTING_TAGS)
+        tags = [t for t, _ in wc._LEAF_INFRA_ERROR_PATTERNS]
+        self.assertEqual(tags.index("llm_auth_expired") + 1, tags.index("llm_client_error"))
+        sentence = "Failed to authenticate: OAuth session expired and could not be refreshed"
+        auth_401 = 'API Error: 401 {"type":"authentication_error","message":"invalid"}'
+        for stderr, stdout, expected in (
+                # Same stream: the 401 does not outrank it, in either order.
+                (f"{auth_401}\n{sentence}", "", "llm_auth_expired"),
+                (f"{sentence}\n{auth_401}", "", "llm_auth_expired"),
+                # Promoted out of stdout over a stderr transient and over a stderr 401.
+                ("API Error: Connection closed mid-response", _RECORDED_OAUTH_DEATH_ENVELOPE,
+                 "llm_auth_expired"),
+                (auth_401, _RECORDED_OAUTH_DEATH_ENVELOPE, "llm_auth_expired"),
+                # Only upward: a stderr rate limit outranks it and stands.
+                ("API Error: 429 Too Many Requests", _RECORDED_OAUTH_DEATH_ENVELOPE,
+                 "llm_rate_limit")):
+            with self.subTest(stderr=stderr[:50], stdout=stdout[:30]):
+                self.assertEqual(wc._classify_leaf_infra_error(stderr, stdout)[0], expected)
 
 
 if __name__ == "__main__":  # pragma: no cover

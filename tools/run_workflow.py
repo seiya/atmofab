@@ -3369,8 +3369,8 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
     if status == "info" and event == "leaf_transient_retry_declined":
         # Rendered like its sibling above, and for a sharper reason: this is the ONLY record
         # that a re-launch was possible and was declined. The fail_closed reason cannot carry
-        # that — its `[attempts=<n>]` is the launch count, which includes repair turns and
-        # usage waits, so a decline is indistinguishable there from a count exhaustion. The two
+        # that — its `[attempts=<n>]` is the launch count, which includes repair turns, usage
+        # waits and stale-credential re-launches, so a decline is indistinguishable there from a count exhaustion. The two
         # want opposite remedies, and the standing guidance for a transient tag reaching
         # fail_closed ("the fault outlived every retry, wait for the provider to recover") is
         # the wrong one here.
@@ -3427,6 +3427,30 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
             how = f"on the fixed schedule ({payload.get('fallback_reason') or '?'})"
         return (f"    [warn   ] usage limit in {phase}.{substep} [wait {attempt}/{max_waits}]: "
                 f"sleeping {wait}s {how}, then re-launching")
+
+    if status == "info" and event == "leaf_stale_credential_relaunch":
+        # Issue #616: the operator's credential file changed identity during the launch (a
+        # host-side refresh or login), so the leaf's bound view was stale.
+        phase = payload.get("step", "?")
+        substep = payload.get("substep") or "step"
+        attempt = payload.get("attempt", "?")
+        total = payload.get("max_relaunches", "?")
+        return (f"    [warn   ] stale credential ({payload.get('tag', '?')}) in "
+                f"{phase}.{substep} [re-launch {attempt}/{total}]: the operator's credential "
+                f"file was replaced during the launch; re-launching on the current one")
+
+    if status == "info" and event == "leaf_stale_credential_relaunch_declined":
+        # The reason is what docs/RUNBOOK.md routes the operator on (`llm_auth_expired`).
+        phase = payload.get("step", "?")
+        substep = payload.get("substep") or "step"
+        reason = payload.get("reason", "?")
+        # Two reasons read alike and want opposite remedies; name which one this is.
+        hint = {"no_credential_file": "an HTTP entry: fix the provider key, not a CLI login",
+                "credential_file_missing": "the CLI credential file could not be read"}.get(reason)
+        return (f"    [warn   ] credential failure ({payload.get('tag', '?')}) in "
+                f"{phase}.{substep}: no re-launch ({reason}"
+                + (f" — {hint}" if hint else "")
+                + ") — the run fails closed; see docs/RUNBOOK.md (llm_auth_expired)")
 
     if status == "info" and event in ("start_claim_degraded", "start_claim_waiting"):
         kind = payload.get("claim_kind", "?")

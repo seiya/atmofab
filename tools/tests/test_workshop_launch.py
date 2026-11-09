@@ -17,6 +17,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import tools.llm_config as lc
@@ -181,6 +182,62 @@ class LineageHomeTests(_Env):
         for bad in ("../x", "a/b", "", "x y"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 self._prepare(bad, resume=False)
+
+
+class CredentialIdentityTests(_Env):
+    """The operator credential identity the conductor stats (issue #616) against the file the
+    lineage home binds."""
+
+    _CLAUDE = SimpleNamespace(provider="claude_cli")
+
+    def identity(self):
+        return wc.Conductor._credential_identity(wc.Conductor.__new__(wc.Conductor),
+                                                 self._CLAUDE)
+
+    def test_one_resolver_patch_reaches_the_bind_source_and_the_identity(self) -> None:
+        """`_Env` patches `operator_private_root.claude_credentials_file` by attribute; the
+        same patch is the preparer's `credentials` bind source and the file the identity
+        stats. Kills a `claude_credentials_file` bound at import time in either reader (the
+        bind would name the operator's real file, or none under an empty `HOME`)."""
+        iso = self._prepare("lin_a", resume=False)
+        self.assertEqual(Path(iso["credentials"]), self.credentials.resolve())
+        st = os.stat(self.credentials)
+        self.assertEqual(self.identity(), (st.st_dev, st.st_ino))
+        self.assertEqual(ort.workshop_credential_source("claude"), self.credentials)
+
+    def test_the_identity_is_the_inode_not_the_content(self) -> None:
+        """A real stat: `(st_dev, st_ino)`; an in-place write (a leaf's refresh through the
+        bind) keeps it, a rename over the path (a host-side refresh) changes it, and a removed
+        file has none. Kills an identity that folds in the mtime or the size."""
+        st = os.stat(self.credentials)
+        first = self.identity()
+        self.assertEqual(first, (st.st_dev, st.st_ino))
+        with self.credentials.open("r+", encoding="utf-8") as fh:
+            fh.write('{"claudeAiOauth": {"accessToken": "refreshed-in-place-longer"}}')
+        os.utime(self.credentials, (st.st_atime + 60, st.st_mtime + 60))
+        self.assertEqual(self.identity(), first)
+        staged = self.credentials.with_name("staged.json")
+        staged.write_text("{}", encoding="utf-8")
+        os.replace(staged, self.credentials)
+        self.assertNotEqual(self.identity(), first)
+        self.credentials.unlink()
+        self.assertIsNone(self.identity())
+
+    def test_the_identity_follows_a_symlinked_credential_file(self) -> None:
+        """`os.stat`, not `os.lstat`: bwrap binds the file a symlink resolves to, so the
+        identity is the target's, and a rename over the TARGET (the link untouched) changes
+        it. Kills an `lstat` identity, which would read the link and decline the stale death
+        `credential_unchanged`."""
+        target = self.credentials.with_name("real.credentials.json")
+        os.replace(self.credentials, target)
+        self.credentials.symlink_to(target)
+        st = os.stat(target)
+        self.assertEqual(self.identity(), (st.st_dev, st.st_ino))
+        staged = target.with_name("staged.json")
+        staged.write_text("{}", encoding="utf-8")
+        os.replace(staged, target)
+        self.assertEqual(self.identity(), (os.stat(target).st_dev, os.stat(target).st_ino))
+        self.assertNotEqual(self.identity(), (st.st_dev, st.st_ino))
 
 
 class WorkshopProfileTests(_Env):

@@ -1648,9 +1648,6 @@ class CodexWorkshopLoopTests(OuterReopenTests):
             orchestration_dir=paths.orchestration_dir)
         self.assertFalse(check(self.c, claude, "01a1-thread"))
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # --- `compile.generate` (issue #534 step 2) -----------------------------------------------
 
@@ -1998,3 +1995,389 @@ class WorkshopSpecTests(_Base):
         with self.assertRaises(ValueError) as ctx:
             wc.build_launch_request(self.refs, **base)
         self.assertIn("names its lineage (workshop_lineage_id)", str(ctx.exception))
+
+
+# --- issue #616: the stale-credential re-launch ------------------------------------------
+
+#: The recorded claude death of issue #616, verbatim (`orch_20261108T120034Z_f727c989`, agent
+#: `34dbd3a7-2155-40e0-a2a1-7a97aacbf90e`, `dialogs/leaf.stdout.log`): exit 1, empty stderr.
+_OAUTH_DEATH_STDOUT = (
+    '{"duration_api_ms":353508,"stop_reason":"stop_sequence","session_id":"34dbd3a7-2155-40e0'
+    '-a2a1-7a97aacbf90e","total_cost_usd":1.6675778,"usage":{"input_tokens":16,"cache_creatio'
+    'n_input_tokens":86240,"cache_read_input_tokens":316869,"output_tokens":45711,"output_tok'
+    'ens_details":{"thinking_tokens":9886},"server_tool_use":{"web_search_requests":0,"web_fe'
+    'tch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens"'
+    ':86240,"ephemeral_5m_input_tokens":0},"inference_geo":"global","iterations":[],"speed":"'
+    'standard","fallback_credit":null},"modelUsage":{"claude-opus-5-5":{"inputTokens":16,"out'
+    'putTokens":45711,"cacheReadInputTokens":316869,"cacheCreationInputTokens":86240,"webSear'
+    'chRequests":0,"costUSD":1.6675778,"contextWindow":1000000,"maxOutputTokens":128000,"thin'
+    'kingTokens":9886,"cacheCreationEphemeral5mInputTokens":0,"cacheCreationEphemeral1hInputT'
+    'okens":86240,"canonicalModel":"claude-opus-5-5","provider":"firstParty","costBasis":"lis'
+    't"}},"permission_denials":[],"terminal_reason":"api_error","fast_mode_state":"off","fast'
+    '_mode_disabled_reason":"sdk_opt_in_required","subagent_stats":{"spawned":0,"requested":{'
+    '"background":0,"foreground":0,"unset":0},"started_in_background":0,"max_depth":0,"spawne'
+    'd_by_subagents":0,"completed":0,"failed":0,"killed":{"parent":0,"user":0,"system":0},"re'
+    'fused":{"depth_limit":0,"concurrency_limit":0,"budget":0},"by_type":{}},"safety_stops":0'
+    ',"is_error":true,"num_turns":17,"subtype":"success","api_error_status":null,"result":"Fa'
+    'iled to authenticate: OAuth session expired and could not be refreshed","type":"result",'
+    '"duration_ms":358714,"uuid":"2b107e87-a5ed-4032-928e-601e23c32484","queued_turn_count":0'
+    ',"result_index":0}')
+
+
+#: A transient transport death the real `_leaf_transient_retry` re-launches.
+_FLAKE = "API Error: Connection closed mid-response."
+
+
+def _replace_file(path: Path) -> None:
+    """What a host-side refresh does: a NEW file renamed over `path`, so the path names
+    another inode (an in-place write would keep it)."""
+    staged = path.with_name(path.name + ".staged")
+    staged.write_text('{"claudeAiOauth": {"accessToken": "refreshed"}}', encoding="utf-8")
+    os.replace(staged, path)
+
+
+def _rewrite_in_place(path: Path) -> None:
+    """What the leaf's own refresh does: new content written onto the SAME inode, and the
+    mtime moved (set an hour ahead, so a coarse filesystem clock cannot hide the move)."""
+    before = os.stat(path)
+    with open(path, "r+", encoding="utf-8") as fh:
+        fh.seek(0)
+        fh.write('{"claudeAiOauth": {"accessToken": "rewritten in place"}}')
+        fh.truncate()
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 3_600 * 10**9))
+    after = os.stat(path)
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+    assert after.st_mtime_ns != before.st_mtime_ns
+
+
+def _identity(path: Path) -> list[int]:
+    st = os.stat(path)
+    return [st.st_dev, st.st_ino]
+
+
+class _StaleCredentialFake(_WorkshopFakeConductor):
+    """The workshop fake with the REAL identity read (the shared base stubs it to None) and the
+    backoff sleep recorded."""
+
+    _credential_identity = wc.Conductor._credential_identity
+
+    def _sleep_backoff(self, seconds):  # type: ignore[override]
+        self.slept.append(seconds)
+
+
+class StaleCredentialRelaunchTests(_Base):
+    """`Conductor._stale_credential_relaunch` in the producer loop (issue #616). The host change
+    happens INSIDE the scripted leaf action, on a temporary credentials file the real resolver
+    (`operator_private_root.claude_credentials_file`) is patched to name, and the real
+    `_credential_identity` stats it — so every row also pins the family-to-path mapping and
+    where in the launch the identity is read."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        cred = tempfile.TemporaryDirectory()
+        self.addCleanup(cred.cleanup)
+        self.cred = Path(cred.name) / ".credentials.json"
+        self.cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
+        from tools import operator_private_root
+        patcher = mock.patch.object(operator_private_root, "claude_credentials_file",
+                                    lambda: self.cred)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.c = _StaleCredentialFake(
+            repo_root=self.repo, orchestration_id=_ORCH, orchestration_agent_run_id="orch",
+            llm_config=_config(self.repo), env={})
+        self.c.homes = self.repo.parent / (self.repo.name + "_homes")
+        self.c.leaf_actions = [_writes_bundle]
+        self.c.slept = []
+        self.events: list[dict] = []
+        self.c.emit = lambda event, **f: self.events.append({"event": event, **f})  # type: ignore
+
+    def dies(self, *, replace: bool = False, remove: bool = False, rewrite: bool = False,
+             advance: float = 0.0, stdout: str = _OAUTH_DEATH_STDOUT, stderr: str = ""):
+        """A launch that dies (rc 1) after optionally replacing, rewriting in place or
+        removing the credentials file and advancing the patched monotonic clock by `advance`
+        seconds."""
+        def action(c, tree, kwargs):
+            (tree / "draft.txt").write_text("kept\n", encoding="utf-8")
+            if replace:
+                _replace_file(self.cred)
+            if rewrite:
+                _rewrite_in_place(self.cred)
+            if remove:
+                self.cred.unlink()
+            if advance:
+                self.clock[0] += advance
+            return wc.ProcResult(1, stdout, stderr)
+        return action
+
+    def named(self, event: str) -> list[dict]:
+        return [e for e in self.events if e["event"] == event]
+
+    def declined(self) -> dict:
+        (event,) = self.named("leaf_stale_credential_relaunch_declined")
+        self.assertEqual(self.named("leaf_stale_credential_relaunch"), [])
+        return event
+
+    def assert_terminal(self, outcome: wc.SubstepOutcome, spawns: int = 1) -> None:
+        self.assertEqual(outcome.status, "fail", outcome)
+        self.assertEqual(outcome.infra_error[0], "llm_auth_expired")
+        self.assertEqual(len(self.c.spawns), spawns)
+        self.assertEqual(self.c.slept, [])
+
+    def test_a_death_on_a_replaced_credential_is_re_launched_in_a_new_lineage(self) -> None:
+        """Changed identity: a cold reuse in a NEW lineage seeded from the dead one's snapshot,
+        one `leaf_stale_credential_relaunch` naming both identities and the classifier's
+        evidence, no sleep, then pass. Kills a capture after `spawn_leaf` (it would read the
+        post-rename inode twice), a stat of any other path, a branch that does not re-launch,
+        and an event whose `evidence` is emptied."""
+        before = _identity(self.cred)
+        seen: list[str] = []
+
+        def finishes(c, tree, kwargs):
+            seen.append((tree / "draft.txt").read_text())
+            _write_bundle(tree)
+
+        self.c.leaf_actions = [self.dies(replace=True), finishes]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(seen, ["kept\n"])
+        _first, second = self.requests()
+        self.assertEqual(second["workshop_lineage_id"], "child-2")
+        self.assertFalse(second.get("warm_resume"))
+        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "leaf_exit")
+        (event,) = self.named("leaf_stale_credential_relaunch")
+        self.assertEqual((event["tag"], event["attempt"], event["max_relaunches"],
+                          event["dead_agent_run_id"], event["substep"]),
+                         ("llm_auth_expired", 1, 1, "child-1", "generate"))
+        # The classifier's evidence line for the death's streams, carried as it is.
+        tag, evidence = wc._classify_leaf_infra_error("", _OAUTH_DEATH_STDOUT)
+        self.assertEqual(tag, "llm_auth_expired")
+        self.assertTrue(evidence)
+        self.assertEqual(event["evidence"], evidence)
+        self.assertEqual(event["identity_at_launch"], before)
+        self.assertEqual(event["identity_now"], _identity(self.cred))
+        self.assertNotEqual(event["identity_at_launch"], event["identity_now"])
+        self.assertEqual(self.named("leaf_stale_credential_relaunch_declined"), [])
+        self.assertEqual(self.c.slept, [])
+
+    def test_a_death_on_an_unchanged_credential_is_terminal(self) -> None:
+        """Same inode: declined `credential_unchanged`, one launch, the outcome carrying the
+        tag the phase's fail_closed reason reports. Kills a gate that re-launches without an
+        identity change."""
+        self.c.leaf_actions = [self.dies()]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome)
+        event = self.declined()
+        self.assertEqual(event["reason"], "credential_unchanged")
+        self.assertEqual(event["identity_at_launch"], _identity(self.cred))
+        self.assertEqual(event["identity_now"], _identity(self.cred))
+        self.assertEqual(self.named("leaf_transient_retry"), [])
+
+    def test_an_in_place_rewrite_with_a_moved_mtime_is_unchanged(self) -> None:
+        """The leaf's own refresh writes onto the shared inode and moves its mtime while host
+        and leaf still agree: declined `credential_unchanged`, one launch, terminal. Kills an
+        identity that adds `st_mtime_ns` (or any content-derived field) to `(st_dev, st_ino)`."""
+        self.c.leaf_actions = [self.dies(rewrite=True)]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome)
+        event = self.declined()
+        self.assertEqual(event["reason"], "credential_unchanged")
+        self.assertEqual(event["identity_at_launch"], _identity(self.cred))
+        self.assertEqual(event["identity_now"], _identity(self.cred))
+
+    def test_a_401_on_stderr_beside_the_sentence_on_stdout_takes_the_gate(self) -> None:
+        """The promotion over a terminal stderr tag: a stderr `401 authentication_error` and
+        the stdout sentence are `llm_auth_expired`, terminal when unchanged and re-launched
+        once when changed. Kills dropping the tag from `_CROSS_STREAM_PROMOTING_TAGS` (the
+        stderr `llm_client_error` would stand and the changed half would not re-launch)."""
+        stderr = ('API Error: 401 {"type":"error","error":{"type":"authentication_error",'
+                  '"message":"Invalid authentication credentials"}}')
+        for replace in (False, True):
+            with self.subTest(changed=replace):
+                self.setUp()
+                self.c.leaf_actions = [self.dies(replace=replace, stderr=stderr),
+                                       _writes_bundle]
+                outcome = self.run_substep()
+                if replace:
+                    self.assertEqual(outcome.status, "pass", outcome)
+                    self.assertEqual(len(self.c.spawns), 2)
+                    self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+                else:
+                    self.assert_terminal(outcome)
+                    self.assertEqual(self.declined()["reason"], "credential_unchanged")
+
+    def test_a_credential_removed_during_the_launch_is_declined_as_missing(self) -> None:
+        """The comparison-side None: declined `credential_file_missing` with `identity_now`
+        null, the tag kept (not `workshop_lineage_setup_failed`). Kills a gate that reads
+        `None != (dev, ino)` as a change."""
+        before = _identity(self.cred)
+        self.c.leaf_actions = [self.dies(remove=True)]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome)
+        event = self.declined()
+        self.assertEqual((event["reason"], event["identity_at_launch"], event["identity_now"]),
+                         ("credential_file_missing", before, None))
+
+    def test_a_launch_identity_that_could_not_be_read_is_declined_as_missing(self) -> None:
+        """The launch-side None on a CLI entry (the first read answers None, the comparison
+        the real stat): declined `credential_file_missing` with `identity_at_launch` null.
+        Kills a gate that compares only `identity_now` against the launch value."""
+        calls: list[int] = []
+
+        def first_none(entry):
+            calls.append(1)
+            if len(calls) == 1:
+                return None
+            return wc.Conductor._credential_identity(self.c, entry)
+
+        self.c._credential_identity = first_none  # type: ignore[assignment]
+        self.c.leaf_actions = [self.dies(replace=True)]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome)
+        event = self.declined()
+        self.assertEqual((event["reason"], event["identity_at_launch"], event["identity_now"]),
+                         ("credential_file_missing", None, _identity(self.cred)))
+        self.assertEqual(len(calls), 2)
+
+    def test_a_second_stale_death_spends_the_budget(self) -> None:
+        """`MAX_STALE_CREDENTIAL_RELAUNCHES` is one: the second changed-identity death is
+        declined `budget_spent`. Kills a budget that never counts."""
+        self.c.leaf_actions = [self.dies(replace=True), self.dies(replace=True)]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome, spawns=2)
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+        (event,) = self.named("leaf_stale_credential_relaunch_declined")
+        self.assertEqual((event["reason"], event["attempt"], event["dead_agent_run_id"]),
+                         ("budget_spent", 2, "child-2"))
+        # The budget is checked before the identity, so this death's file is never compared
+        # (docs/RUNBOOK.md routes a genuine expiry on that).
+        self.assertIsNone(event["identity_now"])
+        self.assertIsNotNone(event["identity_at_launch"])
+
+    def test_the_identity_is_read_per_launch_not_per_lineage(self) -> None:
+        """Launch 1 leaves an empty tree and its action replaces the file (after launch 1's
+        identity was read, before the warm repair launch's); the warm repair dies with no
+        further change → declined `credential_unchanged`. Kills an identity captured once per
+        lineage, which would compare launch 1's inode with the new one and re-launch."""
+        def empty_and_replaced(c, tree, kwargs):
+            _replace_file(self.cred)
+
+        self.c.leaf_actions = [empty_and_replaced, self.dies()]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome, spawns=2)
+        self.assertEqual(self.c.spawns[1]["resume_session_id"], "child-1")
+        self.assertEqual([r["workshop_lineage_id"] for r in self.requests()],
+                         ["child-1", "child-1"])
+        self.assertEqual(self.declined()["reason"], "credential_unchanged")
+
+    def test_a_stale_death_of_a_warm_repair_is_re_launched_cold(self) -> None:
+        """Launch 1 leaves an empty tree (a repairable defect, so launch 2 is a WARM repair of
+        lineage child-1); the warm repair dies on a replaced credential → launch 3 is COLD, in
+        a new lineage, resuming no session (the dead session still holds the stale view).
+        Kills deleting `machine.after_transport()` from the producer stale branch: with it
+        gone the open lineage and its session id survive, so launch 3 warm-resumes child-1.
+        (Every other row dies on a cold first launch, where that mutant is equivalent.)"""
+        def empty(c, tree, kwargs):
+            return None
+
+        self.c.leaf_actions = [empty, self.dies(replace=True), _writes_bundle]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 3)
+        self.assertEqual(self.c.spawns[1]["resume_session_id"], "child-1")
+        self.assertIsNone(self.c.spawns[2]["resume_session_id"])
+        lineages = [r["workshop_lineage_id"] for r in self.requests()]
+        self.assertEqual(lineages, ["child-1", "child-1", "child-3"])
+        self.assertFalse(self.requests()[2].get("warm_resume"))
+        (event,) = self.named("leaf_stale_credential_relaunch")
+        self.assertEqual(event["dead_agent_run_id"], "child-2")
+
+    def test_the_identity_is_read_after_record_launch(self) -> None:
+        """Round-3 L1: `record_launch`'s host-side probes may refresh the token, so a rename
+        inside `record_launch` is the launch's own identity, not a change during it → declined
+        `credential_unchanged`. Kills a capture placed before `record_launch`."""
+        real_runtime = self.c.runtime
+
+        def runtime(args, *, input=None):
+            result = real_runtime(args, input=input)
+            if args[0] == "record-launch":
+                _replace_file(self.cred)
+            return result
+
+        self.c.runtime = runtime  # type: ignore[assignment]
+        self.c.leaf_actions = [self.dies()]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome)
+        self.assertEqual(self.declined()["reason"], "credential_unchanged")
+
+    def test_a_flake_after_the_stale_re_launch_keeps_both_transient_retries(self) -> None:
+        """Stale (re-launched), then two flakes: both retried by the REAL transient branch,
+        then pass. Kills a stale re-launch charged to `transient_retries`."""
+        flake = lambda c, t, kw: wc.ProcResult(1, "", _FLAKE)
+        self.c.leaf_actions = [self.dies(replace=True), flake, flake, _writes_bundle]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 4)
+        self.assertEqual([e["attempt"] for e in self.named("leaf_transient_retry")], [1, 2])
+        self.assertEqual(len(self.c.slept), 2)
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+
+    def test_a_stale_death_after_a_flake_is_still_re_launched(self) -> None:
+        """A flake (retried), then a changed-identity death: still re-launched. Kills
+        `relaunches_done` fed `transient_retries` (or the two summed)."""
+        flake = lambda c, t, kw: wc.ProcResult(1, "", _FLAKE)
+        self.c.leaf_actions = [flake, self.dies(replace=True), _writes_bundle]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 3)
+        (event,) = self.named("leaf_stale_credential_relaunch")
+        self.assertEqual((event["attempt"], event["dead_agent_run_id"]), (1, "child-2"))
+
+    def run_clocked(self) -> wc.SubstepOutcome:
+        self.clock = [1_000.0]
+        with mock.patch.object(wc.time, "monotonic", lambda: self.clock[0]):
+            return self.run_substep()
+
+    def test_the_stale_attempt_is_not_charged_to_the_transient_wall_clock(self) -> None:
+        """A 500 s stale death (re-launched), then a 200 s flake: the flake is still retried
+        (0 + 200 <= 600 s). Kills the branch placed after `transient_spent += elapsed_s`,
+        which computes 700 s and declines the flake."""
+        def flake(c, tree, kwargs):
+            self.clock[0] += 200.0
+            return wc.ProcResult(1, "", _FLAKE)
+
+        self.c.leaf_actions = [self.dies(replace=True, advance=500.0), flake, _writes_bundle]
+        outcome = self.run_clocked()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 3)
+        self.assertEqual(self.named("leaf_transient_retry_declined"), [])
+        self.assertEqual(len(self.named("leaf_transient_retry")), 1)
+
+    def test_a_stale_death_over_the_wall_clock_budget_is_still_re_launched(self) -> None:
+        """A changed-identity death that ran 700 s, over
+        `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`, is re-launched: the budget bounds the
+        transient branch alone. Kills a stale branch that applies the wall-clock budget."""
+        self.assertGreater(700.0, wc.TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS)
+        self.c.leaf_actions = [self.dies(replace=True, advance=700.0), _writes_bundle]
+        outcome = self.run_clocked()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+        self.assertEqual(self.named("leaf_transient_retry_declined"), [])
+
+    def test_a_flake_with_a_changed_identity_takes_the_transient_branch(self) -> None:
+        """The branch requires the tag: a transport flake whose launch also saw the file
+        replaced is a transient retry, not a stale re-launch. Kills a branch armed by the
+        identity alone."""
+        self.c.leaf_actions = [self.dies(replace=True, stdout="", stderr=_FLAKE),
+                               _writes_bundle]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.named("leaf_transient_retry")), 1)
+        self.assertEqual(self.named("leaf_stale_credential_relaunch"), [])
+        self.assertEqual(self.named("leaf_stale_credential_relaunch_declined"), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
