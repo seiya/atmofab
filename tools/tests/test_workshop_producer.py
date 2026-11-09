@@ -2251,6 +2251,10 @@ class StaleCredentialRelaunchTests(_Base):
         (event,) = self.named("leaf_stale_credential_relaunch_declined")
         self.assertEqual((event["reason"], event["attempt"], event["dead_agent_run_id"]),
                          ("budget_spent", 2, "child-2"))
+        # The budget is checked before the identity, so this death's file is never compared
+        # (docs/RUNBOOK.md routes a genuine expiry on that).
+        self.assertIsNone(event["identity_now"])
+        self.assertIsNotNone(event["identity_at_launch"])
 
     def test_the_identity_is_read_per_launch_not_per_lineage(self) -> None:
         """Launch 1 leaves an empty tree and its action replaces the file (after launch 1's

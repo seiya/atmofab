@@ -1356,6 +1356,10 @@ class StaleCredentialReviewerTests(_Base):
         (event,) = self.named("leaf_stale_credential_relaunch_declined")
         self.assertEqual((event["reason"], event["attempt"], event["dead_agent_run_id"]),
                          ("budget_spent", 2, "child-2"))
+        # The budget is checked before the identity, so this death's file is never compared
+        # (docs/RUNBOOK.md routes a genuine expiry on that).
+        self.assertIsNone(event["identity_now"])
+        self.assertIsNotNone(event["identity_at_launch"])
 
     def test_the_stale_attempt_is_not_charged_to_the_transient_wall_clock(self) -> None:
         """A 500 s stale death (re-launched), then a 200 s flake: the flake is still retried
