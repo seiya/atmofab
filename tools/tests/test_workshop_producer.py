@@ -2036,6 +2036,20 @@ def _replace_file(path: Path) -> None:
     os.replace(staged, path)
 
 
+def _rewrite_in_place(path: Path) -> None:
+    """What the leaf's own refresh does: new content written onto the SAME inode, and the
+    mtime moved (set an hour ahead, so a coarse filesystem clock cannot hide the move)."""
+    before = os.stat(path)
+    with open(path, "r+", encoding="utf-8") as fh:
+        fh.seek(0)
+        fh.write('{"claudeAiOauth": {"accessToken": "rewritten in place"}}')
+        fh.truncate()
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 3_600 * 10**9))
+    after = os.stat(path)
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+    assert after.st_mtime_ns != before.st_mtime_ns
+
+
 def _identity(path: Path) -> list[int]:
     st = os.stat(path)
     return [st.st_dev, st.st_ino]
@@ -2078,14 +2092,17 @@ class StaleCredentialRelaunchTests(_Base):
         self.events: list[dict] = []
         self.c.emit = lambda event, **f: self.events.append({"event": event, **f})  # type: ignore
 
-    def dies(self, *, replace: bool = False, remove: bool = False, advance: float = 0.0,
-             stdout: str = _OAUTH_DEATH_STDOUT, stderr: str = ""):
-        """A launch that dies (rc 1) after optionally replacing or removing the credentials
-        file and advancing the patched monotonic clock by `advance` seconds."""
+    def dies(self, *, replace: bool = False, remove: bool = False, rewrite: bool = False,
+             advance: float = 0.0, stdout: str = _OAUTH_DEATH_STDOUT, stderr: str = ""):
+        """A launch that dies (rc 1) after optionally replacing, rewriting in place or
+        removing the credentials file and advancing the patched monotonic clock by `advance`
+        seconds."""
         def action(c, tree, kwargs):
             (tree / "draft.txt").write_text("kept\n", encoding="utf-8")
             if replace:
                 _replace_file(self.cred)
+            if rewrite:
+                _rewrite_in_place(self.cred)
             if remove:
                 self.cred.unlink()
             if advance:
@@ -2151,6 +2168,18 @@ class StaleCredentialRelaunchTests(_Base):
         self.assertEqual(event["identity_at_launch"], _identity(self.cred))
         self.assertEqual(event["identity_now"], _identity(self.cred))
         self.assertEqual(self.named("leaf_transient_retry"), [])
+
+    def test_an_in_place_rewrite_with_a_moved_mtime_is_unchanged(self) -> None:
+        """The leaf's own refresh writes onto the shared inode and moves its mtime while host
+        and leaf still agree: declined `credential_unchanged`, one launch, terminal. Kills an
+        identity that adds `st_mtime_ns` (or any content-derived field) to `(st_dev, st_ino)`."""
+        self.c.leaf_actions = [self.dies(rewrite=True)]
+        outcome = self.run_substep()
+        self.assert_terminal(outcome)
+        event = self.declined()
+        self.assertEqual(event["reason"], "credential_unchanged")
+        self.assertEqual(event["identity_at_launch"], _identity(self.cred))
+        self.assertEqual(event["identity_now"], _identity(self.cred))
 
     def test_a_401_on_stderr_beside_the_sentence_on_stdout_takes_the_gate(self) -> None:
         """The promotion over a terminal stderr tag: a stderr `401 authentication_error` and
