@@ -146,7 +146,7 @@ leaf tools that went in issue #171, and was deleted in issue #445.)
 **That command gets none of the guards `tools/tests/conftest.py` installs** for the suite's
 own directory: not the environment strip, not the private-root redirect, not
 the secret-root refusal, and `--keep-operator-env` is an unrecognized argument there. Nothing
-is known to bite — neither the instrument's tests nor the script read an `SPEC2SCIENCE_*` name,
+is known to bite — neither the instrument's tests nor the script read a `SPEC2SCIENCE_*` name,
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR` — and no `conftest.py` is placed beside them, so an
 instrument test that ever does need a guard has to say so itself.
 

@@ -20,7 +20,7 @@ Split of authorship on a physics node:
 - ``src/Makefile`` — the build system's control-file renderer              (host)
 
 Every snapshot variable is a namespace-scope variable of the driver, ``st_<var>``: a scalar is a
-``double``, a rank-1 array a ``std::vector<double>``, a rank-R array an ``spec2science::Array<double, R>``
+``double``, a rank-1 array a ``std::vector<double>``, a rank-R array a ``spec2science::Array<double, R>``
 (the owning column-major array the published-surface header defines); the driver hands the
 operations and the emitters a non-owning ``spec2science::View`` over it. So no generated function can
 filter, compute or rewrite a captured value on its way to the emitters, and a state's type is never

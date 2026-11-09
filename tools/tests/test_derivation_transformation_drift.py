@@ -1168,11 +1168,12 @@ PINNED_RENDER: dict[str, str] = {
     # `cuda_cpp/header.py` (the guard) and `fortran/bundle.py` (a comment naming
     # `SPEC2SCIENCE_SYNTAX_COMPILERS`). Re-pinned in place once before it shipped (K5 of the same
     # PR): the CUDA C++ header, runner and gates declare and read the namespace `spec2science`
-    # (`cuda_cpp/header.py`, `runner.py`, `signatures.py`, `source.py`) — rendered bytes, covered
+    # (`cuda_cpp/header.py`, `runner.py`, `signatures.py`; `source.py` is no member) — rendered bytes, covered
     # by this same bump. Re-pinned in place again before it shipped (K6 of the same PR): `parallel/mpi/wrapper.py`'s
     # binding canary (a probe program the wrapper check compiles, not a rendered file) is
-    # named `spec2science_mpi_binding_canary`.
-    "render-17": "3e28f20b1f40d3861e6f7fdf55eb24a98e99439ebaa0a6798d1e445df810595b",
+    # named `spec2science_mpi_binding_canary`. Again in review round 1: an article in a docstring
+    # of `cuda_cpp/runner.py` and of `cuda_cpp/signatures.py`.
+    "render-17": "131dacb348a66b80f47ebe5e2cbd9965548eac550e75c815dbdcce87d82ac21c",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

@@ -173,7 +173,7 @@ DEVICE_CALLABLE_SPEC_KINDS = frozenset({"component"})
 def _is_fixed_numeric(ent: Any) -> bool:
     """`ent` is a `real` / `integer` / `logical` value that is either rank 0 or an explicit-shape
     array whose every `dims` entry is an integer literal — a value whose whole extent is known
-    without reading another argument, and which lowers to a scalar or an `spec2science::View`."""
+    without reading another argument, and which lowers to a scalar or a `spec2science::View`."""
     if not isinstance(ent, dict):
         return False
     spec = ent.get("spec")

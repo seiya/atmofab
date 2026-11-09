@@ -1149,15 +1149,16 @@ PINNED: dict[str, str] = {
     # distributed driver (what it does, what reaches an operation, what is the kernel's).
     # Moved: those two fragments alone.
     "leaf-94": "653bc46d21c10c79e4a528f578588dbb8f1290265f35a83e71072c7ae9c8ac2a",
-    # leaf-95 (issue #619, the rename to spec2science): the first line of each of the nine
-    # `workshop_*.txt` templates names "the Spec2Science workflow" (the former name before),
-    # and the `cuda_cpp` fragments name the namespace `spec2science::`. Moved: those nine
+    # leaf-95 (issue #619, the rename to spec2science): the first line of each of the eight
+    # `workshop_*.txt` templates that named the project (the three `*_repair.txt` never did) names "the Spec2Science workflow" (the former name before),
+    # and the `cuda_cpp` fragments name the namespace `spec2science::`. Moved: those eight
     # templates and the three `cuda_cpp` fragments. Re-pinned in place once before it shipped
     # (K5 of the same PR): the host-rendered `gate_guards_section` and `dependency_facts_render`
     # name the CUDA C++ namespace the header now declares, `spec2science::`.
     # Re-pinned in place again before it shipped (K6 of the same PR): the runner-output contract links
-    # issues at `github.com/seiya/spec2science`.
-    "leaf-95": "1b8d1984ca1576e31fc42345f35521e61602a5daaea4c0b82dd0390f14e7f9eb",
+    # issues at `github.com/seiya/spec2science`. Again in review round 1: two `cuda_cpp` reviewer
+    # fragments read "a `spec2science::View`" (the substitution had left "an").
+    "leaf-95": "ace7ba72d063b767308ae0fe4223111ab99abdd0efa402555ca16064d9e263bc",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1189,8 +1190,9 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-7 (issue #619): both verify templates name the Spec2Science workflow, and
     # the two `cuda_cpp` reviewer fragments name the namespace `spec2science::`. Re-pinned in place
     # once before it shipped (K5): `dependency_facts_render` names `spec2science::`.
-    # Re-pinned in place again (K6): the runner-output contract's issue links.
-    "generate-verify-7": "e2557ee3d6066ad7e3f6ed6c6d7c62c7a40527a88eb1312d077ff61a1b1527be",
+    # Re-pinned in place again (K6): the runner-output contract's issue links. Again in review
+    # round 1: the article before `spec2science::View` in the two `cuda_cpp` reviewer fragments.
+    "generate-verify-7": "180b0bf2f57d54f8d54466db66a9cb0b0a6ea949a675e8c5c4af126668efc481",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
