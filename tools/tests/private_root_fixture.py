@@ -128,7 +128,7 @@ def isolated_homes_per_test_suite(tests):
             for test in self:
                 if result.shouldStop:
                     break
-                with tempfile.TemporaryDirectory(prefix="atmofab-test-homes-") as td:
+                with tempfile.TemporaryDirectory(prefix="spec2science-test-homes-") as td:
                     previous = {}
                     for env_name, subdir in redirects:
                         root = Path(td) / subdir
@@ -197,7 +197,7 @@ def redirect_isolated_homes_root_for_module(module_name: str) -> None:
     import os
     import tempfile
 
-    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-homes-")
+    tmp = tempfile.TemporaryDirectory(prefix="spec2science-test-homes-")
     previous = {}
     for env_name, subdir in _private_root_redirects():
         root = Path(tmp.name) / subdir

@@ -212,7 +212,7 @@ PINNED: dict[str, str] = {
     "pure-22": "771d0659d2341bb372d1dde2c7afd71b2a25d4383ce900ed94c20c828826e94d",
     # pure-23: the project rename (issue #127; `docs/GLOSSARY.md` §13 is canonical for the
     # name and for what it was called before) reached the opening sentence of both pure
-    # templates ("the `generate.generate` producer of the atmofab workflow"). No rule, gate, or ABI constant moved. The bump is here because
+    # templates ("the `generate.generate` producer of the Spec2Science workflow"). No rule, gate, or ABI constant moved. The bump is here because
     # `orchestration_runtime._resolve_exemplar_source` gates prior-art exemplars on this
     # version, and a bundle produced under the old text must not be silently treated as
     # having been produced under the new one; re-pinning in place would have been the
@@ -1150,12 +1150,14 @@ PINNED: dict[str, str] = {
     # Moved: those two fragments alone.
     "leaf-94": "653bc46d21c10c79e4a528f578588dbb8f1290265f35a83e71072c7ae9c8ac2a",
     # leaf-95 (issue #619, the rename to spec2science): the first line of each of the nine
-    # `workshop_*.txt` templates names "the Spec2Science workflow" (was "the atmofab workflow"),
+    # `workshop_*.txt` templates names "the Spec2Science workflow" (the former name before),
     # and the `cuda_cpp` fragments name the namespace `spec2science::`. Moved: those nine
     # templates and the three `cuda_cpp` fragments. Re-pinned in place once before it shipped
     # (K5 of the same PR): the host-rendered `gate_guards_section` and `dependency_facts_render`
     # name the CUDA C++ namespace the header now declares, `spec2science::`.
-    "leaf-95": "dd5e3137d6c8db6dc5b425350057f7e286c9609675cdb96f972395f6d325cd17",
+    # Re-pinned in place again before it shipped (K6 of the same PR): the runner-output contract links
+    # issues at `github.com/seiya/spec2science`.
+    "leaf-95": "1b8d1984ca1576e31fc42345f35521e61602a5daaea4c0b82dd0390f14e7f9eb",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1187,7 +1189,8 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-7 (issue #619): both verify templates name the Spec2Science workflow, and
     # the two `cuda_cpp` reviewer fragments name the namespace `spec2science::`. Re-pinned in place
     # once before it shipped (K5): `dependency_facts_render` names `spec2science::`.
-    "generate-verify-7": "e315bd4b78d2f0ca279a4e2f74911b14b7810564e4540f6653ffffa8e8fad301",
+    # Re-pinned in place again (K6): the runner-output contract's issue links.
+    "generate-verify-7": "e2557ee3d6066ad7e3f6ed6c6d7c62c7a40527a88eb1312d077ff61a1b1527be",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
@@ -1199,7 +1202,8 @@ PINNED_READER: dict[str, str] = {
     # validate-judge-6 (issue #619): the judge template names the Spec2Science workflow.
     # Re-pinned in place once before it shipped (K5): `dependency_facts_render` names
     # `spec2science::`.
-    "validate-judge-6": "48bf0c741e4667f6d3e4915ee323d5df66b4099908586eaf2de3317b6ebff72d",
+    # Re-pinned in place again (K6): the issue links in §1+§3 of the runner-output contract.
+    "validate-judge-6": "7dc2fe5e397f6cd92b88f6e4a70b27f51ffa8a921775f301c9bc3ed656b9ffc0",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
@@ -1218,7 +1222,7 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         # file under the directory, keyed by its path below it, so a new language's fragments
         # join the pin by existing (the `project_pure_prompt_gate_drift_guard_gap` class issue
         # #289's R4-b plan closed,
-        # https://github.com/seiya/atmofab/issues/289#issuecomment-5824025920).
+        # https://github.com/seiya/spec2science/issues/289#issuecomment-5824025920).
         "language_fragments": {
             str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
             for path in sorted((tpl_dir / "backends").rglob("*.txt"))

@@ -64,7 +64,7 @@ def netns_record_fields(family: str, backend_command: str,
     Merge `env` into the fixture's own env."""
     from tools import leaf_netns
     from tools.leaf_contract import WORKSHOP_CLI_ENDPOINTS
-    socket_dir = "/run/user/0/atmofab-net-fixture"
+    socket_dir = "/run/user/0/spec2science-net-fixture"
     return {
         "network": leaf_netns.network_block(socket_dir, WORKSHOP_CLI_ENDPOINTS[family],
                                             wrapper_port),

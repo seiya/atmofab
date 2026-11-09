@@ -3,7 +3,7 @@ name: spec2science-enforcement-change
 description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime library's argument checks, the launch-record refusals (a new pure launch among them), the workshop leaf's writable lineage profile, its wrapper's path resolution under the work tree, its per-lineage operation set and its call cap, `check_ir`'s scratch IR directory under the lineage home, the READING workshop leaf of a judging substep or the `escalate` diagnostician (no endpoint, its one output document, the seed restore, the seeds-only reseed after a transport death, the launch-record endpoint row), the HTTP host tool-use loop of a workshop leaf (its file tools' path resolution and reserved names, the cut / timeout / transport rules, the in-memory warm history, `loop_turns.jsonl`, the HTTP workshop record audit), the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `tools/build_runtime.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
-# Changing atmofab's enforcement machinery
+# Changing Spec2Science's enforcement machinery
 
 What this skill holds is the **traps specific to the enforcement domain**: dual-read pairs,
 failure attribution, verification commands, and the judgment rules you never drop. **How to
@@ -556,7 +556,7 @@ recipes are in `references/input-surfaces.md`:
 - **Surface 9-b — a HOST write that lands OUTSIDE every child window is a new thing for the
   write-attribution layer to classify, and the layer has no category for it.** Surface 9 asks
   what can MOVE a protected path; this asks what happens when the same path is written at a new
-  TIME. **HISTORICAL since Z4** ([issue #171](https://github.com/seiya/atmofab/issues/171)
+  TIME. **HISTORICAL since Z4** ([issue #171](https://github.com/seiya/spec2science/issues/171)
   PR-2): the write-attribution layer this surface is about is deleted, because a
   leaf has no write authority over the checkout to attribute — the host writes every artifact
   (from a `pure-function leaf`'s returned document then, from a `workshop leaf`'s tree snapshot

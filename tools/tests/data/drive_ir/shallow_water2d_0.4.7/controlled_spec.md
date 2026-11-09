@@ -41,7 +41,7 @@ The coordinate system is 2D Cartesian coordinates, the coordinate names are `x`,
 
 The derived variables are `u=hu/h`, `v=hv/h`, and `c=sqrt(g*h)`. `h<=0` is invalid input.
 
-The equations of §1 are invariant under the exchange of the two axes, $(h, hu, hv)(x, y)\to(h, hv, hu)(y, x)$ with $z_b(x, y)\to z_b(y, x)$, under the reflection $x\to L_x-x$ with $hu\to-hu$, and under the reflection $y\to L_y-y$ with $hv\to-hv$, each with the bottom topography transformed the same way. The position of the cone of §6 is an input, `x_c_fraction` and `y_c_fraction`, so that the transformed configuration of each is a case of this `problem`, and §5 states the equivariance of the discretization under each ([issue #513](https://github.com/seiya/atmofab/issues/513)).
+The equations of §1 are invariant under the exchange of the two axes, $(h, hu, hv)(x, y)\to(h, hv, hu)(y, x)$ with $z_b(x, y)\to z_b(y, x)$, under the reflection $x\to L_x-x$ with $hu\to-hu$, and under the reflection $y\to L_y-y$ with $hv\to-hv$, each with the bottom topography transformed the same way. The position of the cone of §6 is an input, `x_c_fraction` and `y_c_fraction`, so that the transformed configuration of each is a case of this `problem`, and §5 states the equivariance of the discretization under each ([issue #513](https://github.com/seiya/spec2science/issues/513)).
 
 ## 3. Type definition of domain and boundary conditions
 The domain is the orthogonal periodic domain $[0,L_x)\times[0,L_y)$. The grid is a uniform cell-centered finite-volume grid, and $dx=L_x/nx$, $dy=L_y/ny$.
@@ -260,7 +260,7 @@ Forbid computing a case by transposing or reflecting its state, its grid, its co
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself and the `component`; the runner harness is the target's, not a node of this closure), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
-The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009). The centre of the cone as an input and the equivariances of §5 are those of [issue #513](https://github.com/seiya/atmofab/issues/513).
+The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009). The centre of the cone as an input and the equivariances of §5 are those of [issue #513](https://github.com/seiya/spec2science/issues/513).
 
 ## 9. tests reference
 The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.7.0`.

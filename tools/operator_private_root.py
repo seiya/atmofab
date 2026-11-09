@@ -57,7 +57,7 @@ def workflow_homes_root() -> Path:
     Under the operator-secret root by default. That placement was chosen so
     `protected_host_read_roots` could cover EVERY orchestration's home through one entry
     rather than only the one it could resolve from metadata; that guard went with the leaf
-    hook layer in Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)), and the
+    hook layer in Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)), and the
     placement is kept because `tools/prune_workflow_homes.py` and the resolvers below still
     want one root, not a scatter.
 

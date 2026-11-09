@@ -52,7 +52,7 @@ class SuiteHarnessCoversAllPrivateRootsTests(unittest.TestCase):
     def test_every_operator_private_resolver_is_guarded(self) -> None:
         for label, resolver in self._resolvers():
             self.assertTrue(
-                getattr(resolver, "_atmofab_private_root_guard_installed", False),
+                getattr(resolver, "_spec2science_private_root_guard_installed", False),
                 f"the session guard does not wrap the {label} resolver — a test can "
                 "resolve it into the operator's real ~/.spec2science and nothing will say so "
                 "(tools/tests/conftest.py)")

@@ -7884,7 +7884,7 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str],
     (measured under real bwrap: the planted dialogs and `tools/` file stay hidden — the
     accepted control row of `test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused`).
     It is NOT exempt from the mount table: a bind mount of the checkout's subtree BELOW an
-    exempt root and outside the checkout's own path (`~/work/alias` beside `~/work/atmofab`,
+    exempt root and outside the checkout's own path (`~/work/alias` beside `~/work/spec2science`,
     with the CLI under `~/work`) is carried in by the recursive ro-bind with nothing on top
     (issue #227 round 1, measured readable by the review before the table ran for such
     roots). The comparison is keyed on WHERE THE CHECKOUT APPEARS through each mount, the
@@ -7928,10 +7928,10 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str],
         # appears through it, and refuse unless that place is at or under `resolved_repo`
         # — the one path the tmpfs covers. Keyed on where the checkout APPEARS rather than
         # on where the mount point IS (issue #227 round 2): a mount between the root and the
-        # checkout (a data disk at `~/work/proj` holding `~/work/proj/atmofab`) exposes it
+        # checkout (a data disk at `~/work/proj` holding `~/work/proj/spec2science`) exposes it
         # only at its own path and is accepted; a checkout that is itself a bind of a tree
-        # under the root (`~/work/src/atmofab` bound at `~/work/atmofab`) exposes its source
-        # at `~/work/src/atmofab` and is refused; a bind of the root itself below the root,
+        # under the root (`~/work/src/spec2science` bound at `~/work/spec2science`) exposes its source
+        # at `~/work/src/spec2science` and is refused; a bind of the root itself below the root,
         # with the checkout spelled through the bind, exposes it at the root's own path and
         # is refused. Both directions of overlap: a mount whose subtree CONTAINS the checkout
         # shows it at `<appears>/<checkout within the subtree>`; a mount whose subtree lies

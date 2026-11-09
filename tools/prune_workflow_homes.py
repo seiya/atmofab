@@ -28,7 +28,7 @@ calls it.
 THE JUSTIFICATION ABOVE STANDS ON ITSELF, and this paragraph exists to stop the next
 reader propping it up with a precedent. Two earlier versions cited the
 `workspace/` retention entry (in `TODO.md` until issue #181 moved it to
-https://github.com/seiya/atmofab/issues/181#issuecomment-5559631710 ) — first as "the same decision", then as "the remedy that
+https://github.com/seiya/spec2science/issues/181#issuecomment-5559631710 ) — first as "the same decision", then as "the remedy that
 entry asks for" — and both were wrong, in opposite directions, and each was caught by a
 different reviewer. What that entry actually records is a third thing: DONE, with the
 retention-rule half **rejected by decision**, because `workspace/` is the gate's

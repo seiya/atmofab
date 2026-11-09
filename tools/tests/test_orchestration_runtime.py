@@ -208,7 +208,7 @@ def setUpModule() -> None:
     # workshop launch. The fixtures here launch claude workshop leaves as SETUP for something
     # else, so the file the preparer reads is a temporary one, never the operator's (and CI
     # has none).
-    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-claude-cred-")
+    tmp = tempfile.TemporaryDirectory(prefix="spec2science-test-claude-cred-")
     cred = Path(tmp.name) / ".credentials.json"
     cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
     os.chmod(cred, 0o600)
@@ -13476,7 +13476,7 @@ class SignatureDriftCanaryTests(unittest.TestCase):
     #
     # So the comparison stays a MEASUREMENT, taken once and recorded where a measurement belongs (the
     # `spec:` commit's message and issue #153's record,
-    # https://github.com/seiya/atmofab/issues/153#issuecomment-5559622300): at `2dd73cd`,
+    # https://github.com/seiya/spec2science/issues/153#issuecomment-5559622300): at `2dd73cd`,
     # every component's §5.1 agreed with its
     # certified source on argument names, order, `intent` and `rank`, except
     # `dynamics_advection_diffusion_boundary_1d_periodic_copy`, whose ABI the operator decided to
@@ -21882,13 +21882,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 59810->59990 at the round-4 HEAD (measured 59837): the `major` bullet regained a
         # subject category for the `fail`s the verify `SKILL` mandates outside V1-V8, which
         # round 3 had narrowed away and left ungradable. Measured with `wc -c` in
-        # /home/seiya/atmofab, and set by the ~150 B slack rule THIS entry follows. Not every
+        # the checkout, and set by the ~150 B slack rule THIS entry follows. Not every
         # entry does, and a round-5 reviewer was right to say so: measured at that HEAD the
         # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
         # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
         # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
         # Bumped 59990->66780 (issue #168, Z1) — measured 66618 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack
+        # the checkout at the commit that takes this bump, plus this entry's ~150 B slack
         # rule. §substep structure states that both LLM substeps of this phase now run as
         # `pure-function leaf`s and what the host inlines for each; §`ir_meta.json` required keys
         # states the values the HOST writes (and why `verification_status` is `"pending"`);
@@ -21923,7 +21923,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # section that defines it, because the document had been stating it four ways and the
         # narrowest reading dropped the one invariant family no gate re-checks.)
         # Bumped 66780->68623 (issue #175) — measured 68473 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B
+        # the checkout at the commit that takes this bump, plus this entry's ~150 B
         # slack rule. The growth is one rule and one sidecar key a compile leaf cannot get
         # right without being told: `<ir_ref>/dependency_graph.json` now carries `profiles`,
         # `direct_deps` is sourced from the graph rather than from `deps.yaml` (an adopted
@@ -21962,7 +21962,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # compile prompts and still described the AGENTIC path in the present tense to the leaf
         # reading it ("An agentic leaf writes `ir_meta.json` itself"). Three sentences rewritten
         # to address the one leaf there is, ~170 bytes.
-        # Bumped 70900->71960 (issue #233) — measured 71813 with `wc -c` in /home/seiya/atmofab
+        # Bumped 70900->71960 (issue #233) — measured 71813 with `wc -c` in the checkout
         # at the commit that takes this bump, plus this entry's ~150 B slack rule. The growth is
         # the single-resolved-shape rule of §V3, which the document had NAMED since `537475dc`
         # without stating: a compile leaf reading "each element references `variables[].name`
@@ -21971,7 +21971,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # takes that reading. The rule is stated in the form the gate applies, with both refusal
         # messages, and `test_validate_pipeline_semantics.py` pins the document to the gate's
         # own message text.
-        # Bumped 71960->72480 (issue #235) — measured 72326 with `wc -c` in /home/seiya/atmofab
+        # Bumped 71960->72480 (issue #235) — measured 72326 with `wc -c` in the checkout
         # at the commit that takes this bump (72104 at `41676641`; PR #236's round 1 reworded
         # the remedy into the form the producer supports, +166 B; round 2 un-narrowed it to
         # the value's own shape, +56 B), plus this entry's ~150 B slack rule. The enum
@@ -21998,39 +21998,39 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # a condition's `quantity`, five worked translations of `tests.md` prose (the fidelity V3
         # reads), and the V3 rule itself. A grammar stated anywhere but here reaches no leaf
         # (a pure leaf reads only what is inlined). Measured 82034 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack.
+        # the checkout at the commit that takes this bump, plus this entry's ~150 B slack.
         # Bumped 82200->84200 (Z6 PR-2 round 1): the grammar block gains the cross-case
         # `at('<case>').inputs` / `at('<case>').<coordinate>` roots, the operand-pairing rule
         # (what a leaf must reduce before comparing two resolutions), the arity caps and the
         # coordinate-name rule; the worked examples spell the cell size from the inputs the
-        # cases declare; V3 gains item (iv). Measured 84045 with `wc -c` in /home/seiya/atmofab
+        # cases declare; V3 gains item (iv). Measured 84045 with `wc -c` in the checkout
         # at the commit that takes this bump, plus this entry's ~150 B slack.
         # Bumped 84200->85300 (Z6 PR-2 round 2): a coordinate carries the state's shape (a
         # norm over a reference field counts every cell), the time variable's provenance, the
         # `at()` case_id spelling, finite thresholds, the reference at the declared end time.
-        # Measured 85136 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 85136 with `wc -c` in the checkout at the commit that takes this bump.
         # Bumped 85300->86200 (Z6 PR-2 round 3): every entry reads captured state, the xfail
         # semantics, the depth bound, the end-state-minimum note on the positivity example.
-        # Measured 86007 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 86007 with `wc -c` in the checkout at the commit that takes this bump.
         # Bumped 86200->88600 (Z6 PR-3): `quantity` is required and the coverage gate is stated
         # at the condition, the COVERAGE block replaces the NOT DEGENERATE one, grammar 2's
         # numeric-list inputs and the harness-shape capture errors, the same-name rule for a
         # run-wide metric and the harness sentinel example, V3 (i)'s window / vacuity clauses.
-        # Measured 88398 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 88398 with `wc -c` in the checkout at the commit that takes this bump.
         # Bumped 88600->89300 (Z6 PR-3 round 1): the coverage block and V3 state the scope rule.
-        # Measured 89070 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 89070 with `wc -c` in the checkout at the commit that takes this bump.
         # Round 2: the rule is stated over the cases a corroborant reads; measured 89207, no bump.
         # Bumped 89300->90200 (Z6 PR-3 round 3): the harness self-test carve-out beside the
         # "primary state only" rule and V3 (iv). Measured 89999 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump.
+        # the checkout at the commit that takes this bump.
         # Bumped 90200->91000 (issue #266 PR-2): the `public_api.interfaces` carrier in the
         # authoring bullet and its V8 pin (name set and argument set; a legacy IR passes only
-        # when §5.1 declares no prototype). Measured 90688 with `wc -c` in /home/seiya/atmofab
+        # when §5.1 declares no prototype). Measured 90688 with `wc -c` in the checkout
         # at the commit that takes this bump. Round 1: the IR example names the key; measured
         # 90818, no bump.
         # Bumped 91000->93100 (issue #346 PR-1): the runtime/provenance classification of the
         # case inputs, the Compile.generate route bullet, V9 (case input routing) and the scope
-        # sentence naming it. Measured 92850 with `wc -c` in /home/seiya/atmofab at the commit
+        # sentence naming it. Measured 92850 with `wc -c` in the checkout at the commit
         # that takes this bump. Round 1 (judgment keys, null member): bumped 93100->94000;
         # measured 93188 at the commit that takes this bump. Round 2 (one criterion, "a value
         # the algorithm takes", replaces the judgment class): measured 93249, no bump. Round 3 (V9's route
@@ -22040,17 +22040,17 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 94000->95000 (issue #386): V3 and the schema block's `checks[].id` comment add
         # the non-gating judgment (and exclude an `informational_only` one) to the coverage
         # rule, the `minor` bullet names its absence. Measured 94663 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V3 says what each id
+        # the checkout at the commit that takes this bump. Round 1 (V3 says what each id
         # answers to instead of "neither more nor less"): measured 94689, no bump.
         # Round 2 (a cross-target judgment is no check-id source): measured 94899, no bump.
         # Round 3 (the `major` example names the Diagnostics contract too): 94943, no bump.
         # Issue #437 (`checks[].per_case_status` in the schema block and V3; the stale
         # "(Generate never reads tests.md)" comment shortened to pay for it): measured 94998
-        # with `wc -c` in /home/seiya/atmofab at d36bd436, no bump.
+        # with `wc -c` in the checkout at d36bd436, no bump.
         # Bumped 95000->95900 (issue #440): the `coordinates:` line defines the STATE's shape
         # for a mixed-rank schema, the grammar header and the V3 gate list state the static
         # operand-rank check, and V3 gains (vi) (`count` against the `axis` token). Measured
-        # 95710 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
+        # 95710 with `wc -c` in the checkout at the commit that takes this bump. Round 1
         # (the lower-rank remedy is a component mask over the stacked variables, since a stacked
         # output keeps the stacked capture): bumped 95900->96100; measured 95879 at the commit
         # that takes this bump. Round 2 (the component coordinate's `count` and `length` are both
@@ -22059,7 +22059,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 96200->96600 (issue #483): the reads-state rule in the schema block states that
         # a read only inside a term constant by form is no read, the `required_raw_variables`
         # bullet covers the corroborant's reads, and V3 (i)/(ii) trade the now-gated example for
-        # the shapes the gate cannot see. Measured 96399 with `wc -c` in /home/seiya/atmofab at
+        # the shapes the gate cannot see. Measured 96399 with `wc -c` in the checkout at
         # the commit that takes this bump. Round 1 (V3 (i)'s CFL example narrowed to a `le`
         # bound, the `xfail` guard's exceedance excluded): measured 96486, no bump. Round 2 (the
         # time variable excluded from the `required_raw_variables` clause; the negated-add form
@@ -22072,7 +22072,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # name-half bullet and the V4c-ii gate bullet say so, V4c-iii (a procedure passed to a
         # dependency's procedure-typed argument states the listed prototype) is new, and
         # §On-failure says the surface is an input. Measured 97923 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V4c-iii's backstop
+        # the checkout at the commit that takes this bump. Round 1 (V4c-iii's backstop
         # narrowed to what the syntax probe refuses — measured with gfortran 11.4.0
         # `-fsyntax-only`: permuted shape bounds and swapped same-typed arguments pass): bumped
         # 98000->98200; measured 98038 at the commit that takes this bump. Round 2 (V4c-iii names
@@ -22088,7 +22088,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # that takes this bump. Issue #526 PR-1 (§1-1 and the schema block state a `Compile fail`
         # as the structured `compile_fail` object, and that a declaration naming no admissible
         # input is a document violation retried like any producer failure): bumped 99000->99600;
-        # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
+        # measured 99487 with `wc -c` in the checkout at the commit that takes this bump. Round 1
         # (§Acceptance of retry from Validate names `compile_fail`): measured 99479, no bump.
         # Round 3 (§1-1 lists a `compile_fail` beside a non-null `ir`): measured 99507, no bump.
         # Issue #526 PR-2 (the substep-14 bullet says the host assembles the IR from a core call
@@ -22097,11 +22097,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # lists): measured 99610, no bump. Issue #532 (the schema block, the grammar's
         # `inputs.<a>.<b>` entry, V3 and V9's floor say an own-case input resolves in every case
         # the predicate's scope evaluates, and an `at('<case>')` one in that case): bumped
-        # 99800->100200; measured 99971 with `wc -c` in /home/seiya/atmofab at the commit that
+        # 99800->100200; measured 99971 with `wc -c` in the checkout at the commit that
         # takes this bump. Issue #567 (the COVERAGE block says a corroborant reads the cases an
         # at('<case>') that enters its value names, the schema block's bind comment says a bind
         # expr does not reach enters no value, V3 (ii) names what the coverage gate no longer
-        # counts): bumped 100200->100800; measured 100691 with `wc -c` in /home/seiya/atmofab at
+        # counts): bumped 100200->100800; measured 100691 with `wc -c` in the checkout at
         # the commit that takes this bump. Review round 1 of the same issue (the COVERAGE block
         # counts only captured STATE reads): bumped 100800->101400; measured 101116 the same way
         # at the commit that takes this bump; the same round's two comment rewordings (the bind
@@ -22110,7 +22110,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # per-case `initial_state` / `derived`, `state_history` / `step_series`, grammar 6's
         # `history.*` / `series.*` / `derived.*` / `smax`, and `public_api` on a `problem`; the
         # `source` classes, the reported-read gate and the checks-module seed deleted): bumped
-        # 102000->103400; measured 102790 with `wc -c` in /home/seiya/atmofab at the commit that
+        # 102000->103400; measured 102790 with `wc -c` in the checkout at the commit that
         # takes this bump. Its review round 2 (R2-1: the driver's counters and an unwritten
         # variable's history are no state read; R2-2 / R2-3: the classes, the unbound array's
         # extents and the reads-a-capture rule PER CASE on a list-form `drive.step`; R2-4: D7
@@ -23484,7 +23484,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
             # A symlink DEEP INSIDE the cache (the mirrored source path) is rejected: CPython
             # follows it when loading cached modules.
             repo = Path(tmp).resolve()
-            mirrored = repo / prefix / "home" / "u" / "atmofab"
+            mirrored = repo / prefix / "home" / "u" / "spec2science"
             mirrored.mkdir(parents=True)
             target = repo.parent / "leaf_writable"
             target.mkdir(exist_ok=True)
@@ -24644,7 +24644,7 @@ class JsonPayloadFileArgTests(unittest.TestCase):
 
 class AgentRoleFailClosedTests(unittest.TestCase):
     """`agent_role` must be fail-closed at BOTH chokepoints (high; recorded on PR #57,
-    https://github.com/seiya/atmofab/pull/57#issuecomment-5559631060).
+    https://github.com/seiya/spec2science/pull/57#issuecomment-5559631060).
 
     WHAT IS PINNED vs WHAT IS SAMPLED is declared in `_DEFINITION_DRIVEN` /
     `_SAMPLE_DRIVEN` below and CHECKED BY A TEST
@@ -26263,7 +26263,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         self._homes_tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._homes_tmp.cleanup)
-        root = Path(self._homes_tmp.name) / "atmofab-homes"
+        root = Path(self._homes_tmp.name) / "spec2science-homes"
         root.mkdir(mode=0o700)
         patcher = mock.patch.dict(
             os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(root)}, clear=False)
@@ -26348,7 +26348,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         The recorded container here follows the `<homes-root>/<oid>/codex` layout under an
         OLD root, because a workshop lineage's paths are derived from its container's
         grandparent (`workshop_tree.LineagePaths`; the codex lineage is a workshop one since
-        issue #534 PR-J4-b). The pre-issue-#64 `/tmp/atmofab-codex-*` container this row first
+        issue #534 PR-J4-b). The pre-issue-#64 `/tmp/spec2science-codex-*` container this row first
         reused fits no such layout and was reusable only by the pure codex thread lineage,
         which went with the pure leaf; a run that recorded one is behind the J4-a / J4-b
         `--resume` barriers."""
@@ -26815,7 +26815,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         this code puts one.
 
         TWO cases, because the first version of this test only reached the first guard.
-        `atmofab-codex-old` is not a declared backend name, so
+        `spec2science-codex-old` is not a declared backend name, so
         `_workflow_backend_home_path` raised and returned before the path comparison ever
         ran — a mutant replacing that comparison with `if False:` left the whole suite
         green. The second case is a home whose directory IS named `codex` but sits under
@@ -26827,7 +26827,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             root = self._claude_repo(td)
             legacy_parent = Path(tempfile.mkdtemp())
             self.addCleanup(shutil.rmtree, legacy_parent, True)
-            legacy = legacy_parent / "atmofab-codex-old"
+            legacy = legacy_parent / "spec2science-codex-old"
             legacy.mkdir(mode=0o700)
             os.chmod(legacy, 0o700)
             (root / "workspace" / "orchestrations" / "orch_d"
@@ -27017,7 +27017,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         import tools.orchestration_runtime as runtime
         from tools.operator_private_root import operator_secret_root
         self.assertTrue(
-            getattr(runtime._workflow_homes_root, "_atmofab_private_root_guard_installed", False),
+            getattr(runtime._workflow_homes_root, "_spec2science_private_root_guard_installed", False),
             "the suite's operator-private-root guard is a conftest fixture and is not "
             "installed: run the suite under pytest")
         real_root = operator_secret_root() / "homes"
@@ -27969,7 +27969,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             home.symlink_to(physical, target_is_directory=True)
         else:
             home = physical
-        repo = physical / "work" / "atmofab"
+        repo = physical / "work" / "spec2science"
         dialogs = repo / "workspace" / "orchestrations" / "o" / "agents" / "P" / "dialogs"
         dialogs.mkdir(parents=True)
         (dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
@@ -28021,13 +28021,13 @@ class LeafEnvClosureTests(unittest.TestCase):
 
     def test_an_install_root_that_is_the_checkout_itself_under_another_name_is_refused(self) -> None:
         # The equality boundary of the ancestor walk (a `resolved_repo != physical` exemption
-        # survived the round-3 sweep): `~/x -> ~/atmofab` with the wrapper at `~/x/bin/` makes
+        # survived the round-3 sweep): `~/x -> ~/spec2science` with the wrapper at `~/x/bin/` makes
         # the root the checkout ITSELF under a second name, and every hidden tree is readable
         # at `~/x/workspace/...` (measured under real bwrap by the round-3 security axis).
         d = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
-        repo = home / "atmofab"
+        repo = home / "spec2science"
         (repo / "workspace").mkdir(parents=True)
         (home / "x").symlink_to(repo, target_is_directory=True)
         bindir = repo / "bin"
@@ -28056,7 +28056,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
         home.mkdir()
-        repo = d / "data" / "atmofab"
+        repo = d / "data" / "spec2science"
         bindir = repo / "workspace" / "bin"
         bindir.mkdir(parents=True)
         (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -28087,7 +28087,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
         home.mkdir()
-        repo = home / "atmofab"
+        repo = home / "spec2science"
         (repo / "workspace").mkdir(parents=True)
         (d / "alias").symlink_to(repo, target_is_directory=True)
         ort._ensure_orchestration_audit_dirs(repo, "o")
@@ -28109,12 +28109,12 @@ class LeafEnvClosureTests(unittest.TestCase):
         fake.write_text(
             "20 1 8:1 / / rw - xfs /dev/sda1 rw\n"
             "30 20 8:2 / /mnt/my\\040disk rw - xfs /dev/sdb1 rw\n"
-            "40 20 8:1 /data/atmofab/workspace /home/u/tools rw - xfs /dev/sda1 rw\n",
+            "40 20 8:1 /data/spec2science/workspace /home/u/tools rw - xfs /dev/sda1 rw\n",
             encoding="utf-8")
         table = ort._mount_table(fake)
         self.assertEqual(table[1][0], "/mnt/my disk")
         self.assertEqual(ort._fs_identity(Path("/home/u/tools/bin"), table),
-                         ("8:1", Path("/data/atmofab/workspace/bin")))
+                         ("8:1", Path("/data/spec2science/workspace/bin")))
         self.assertEqual(ort._fs_identity(Path("/home/u/other"), table),
                          ("8:1", Path("/home/u/other")))
         self.assertEqual(ort._fs_identity(Path("/mnt/my disk/x"), table), ("8:2", Path("/x")))
@@ -28129,7 +28129,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         d = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
-        repo = home / "atmofab"
+        repo = home / "spec2science"
         ws = repo / "workspace"
         ws.mkdir(parents=True)
         (ws / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")

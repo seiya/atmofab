@@ -3,7 +3,7 @@
 The README restates facts that live in code and in the registry: which substeps each phase
 runs and which of them are `LLM` leaves, and which `spec` this tree holds. Prose copies of machine-owned facts are what this repository
 keeps paying for (the documentation-drift item, closed by issue #479, whose completion criterion
-(https://github.com/seiya/atmofab/issues/181#issuecomment-5560399218) asks for
+(https://github.com/seiya/spec2science/issues/181#issuecomment-5560399218) asks for
 a doc-sync test rather than another proofread), so each table here is compared against the
 source that OWNS it, never against a second literal:
 

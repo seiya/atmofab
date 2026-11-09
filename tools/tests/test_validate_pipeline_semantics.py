@@ -7751,7 +7751,7 @@ end module shallow_water2d_model
         # `*_model.f90` in the tree, the pair moves the violation count down by two with no
         # `problem/` file changing verdict. (The absolute pair depends on how `dep_spec_ids` is
         # derived for that sweep; issue #181's record holds the harness,
-        # https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999. The DELTA does not.)
+        # https://github.com/seiya/spec2science/issues/181#issuecomment-5559628999. The DELTA does not.)
         for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
                     "h_in, & ! it's the field\n       h_in, tmp"):
             self.assertEqual(fortran_source.split_names(raw), ["h_in", "h_in", "tmp"], raw)
@@ -25992,7 +25992,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         if pure_prompt:
             prompt = (
                 f"{PURE_PROMPT_SENTINEL}: you are the `generate.generate` producer of the "
-                "atmofab workflow, run as a host-mediated pure function.\n\n"
+                "spec2science workflow, run as a host-mediated pure function.\n\n"
                 f"Target node_key: {self._NODE}\nTarget step: generate\n"
                 f"Target substep: generate\norchestration_id: {self._ORCH}\n"
                 f"agent_run_id: {self._ARID}\n"

@@ -1308,12 +1308,12 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         head = cmd[:cmd.index("--")]
         self.assertIn("--unshare-net", head)
         self.assertIn("--unshare-pid", head)
-        bind = ["--ro-bind", block["socket_dir"], "/run/atmofab/net"]
+        bind = ["--ro-bind", block["socket_dir"], "/run/spec2science/net"]
         self.assertTrue(any(head[i:i + 3] == bind for i in range(len(head))), head)
         self.assertEqual(cmd[cmd.index("--") + 1:], [
-            "/usr/bin/python3", "-I", "/run/atmofab/net/relay.py",
-            "--proxy", "3128", "/run/atmofab/net/provider.sock",
-            "--tunnel", "4242", "/run/atmofab/net/wrapper.sock", "--", "claude", "-p"])
+            "/usr/bin/python3", "-I", "/run/spec2science/net/relay.py",
+            "--proxy", "3128", "/run/spec2science/net/provider.sock",
+            "--tunnel", "4242", "/run/spec2science/net/wrapper.sock", "--", "claude", "-p"])
         reading = self._profile(network=network_block("claude"))
         tail = render_bwrap_command(profile=reading, command_argv=["claude"])
         self.assertNotIn("--tunnel", tail)
@@ -1381,7 +1381,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         inside.mkdir(mode=0o700)
         for label, value, needle in (
                 ("absent", None, "needs its network namespace's socket directory"),
-                ("missing", "/tmp/atmofab-net-does-not-exist", "does not exist"),
+                ("missing", "/tmp/spec2science-net-does-not-exist", "does not exist"),
                 ("not private", loose, "mode 0700"),
                 ("a link", str(link), "not a link"),
                 ("inside the checkout", str(inside), "outside the checkout")):
@@ -1423,7 +1423,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
                 ("no --unshare-net", [t for t in cmd if t != "--unshare-net"]),
                 ("no --unshare-pid", [t for t in cmd if t != "--unshare-pid"]),
                 ("no -I", cmd[:split + 2] + cmd[split + 3:]),
-                ("no ro-bind", [t if t != "/run/atmofab/net" else "/run/x" for t in cmd]),
+                ("no ro-bind", [t if t != "/run/spec2science/net" else "/run/x" for t in cmd]),
                 ("not rendered", None)):
             with self.subTest(label):
                 self.assertTrue(vps._workshop_profile_violations(

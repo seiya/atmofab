@@ -131,7 +131,7 @@ def setUpModule() -> None:
     """
     global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT, _TARGET_REDIRECT
     _SAVED_CLAIM_ROOT = os.environ.get("SPEC2SCIENCE_START_CLAIM_ROOT")
-    _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="atmofab_claims_")
+    _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="spec2science_claims_")
     os.environ["SPEC2SCIENCE_START_CLAIM_ROOT"] = _CLAIM_ROOT_TMPDIR.name
     # Target resolution (issue #284) reads THIS checkout's `spec/targets/` and catalog, not the
     # scratch `repo_root` each test builds: those trees carry neither a target profile nor the
@@ -1765,7 +1765,7 @@ class RunWorkflowTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"SPEC2SCIENCE_START_CLAIM_ROOT": "relclaims"}), \
                 self.assertRaisesRegex(ValueError, "must be an absolute path"):
             run_workflow._start_claims_root()
-        for absolute in ("/tmp/atmofab-abs-claims", "~/atmofab-claims"):
+        for absolute in ("/tmp/spec2science-abs-claims", "~/spec2science-claims"):
             with self.subTest(value=absolute), \
                     mock.patch.dict(os.environ, {"SPEC2SCIENCE_START_CLAIM_ROOT": absolute}):
                 self.assertTrue(run_workflow._start_claims_root().is_absolute())
@@ -1803,7 +1803,7 @@ class RunWorkflowTests(unittest.TestCase):
         and nothing would say so, which is the failure mode the guard exists to replace.
         """
         self.assertTrue(
-            getattr(run_workflow._start_claims_root, "_atmofab_private_root_guard_installed", False),
+            getattr(run_workflow._start_claims_root, "_spec2science_private_root_guard_installed", False),
             "the suite's operator-private-root guard is a conftest fixture and is not "
             "installed: run the suite under pytest")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1875,7 +1875,7 @@ class RunWorkflowTests(unittest.TestCase):
         """
         from tools.operator_private_root import operator_secret_root
         self.assertTrue(
-            getattr(run_workflow._start_claims_root, "_atmofab_private_root_guard_installed", False),
+            getattr(run_workflow._start_claims_root, "_spec2science_private_root_guard_installed", False),
             "the suite's operator-private-root guard is a conftest fixture and is not "
             "installed: run the suite under pytest")
         real_root = operator_secret_root() / "start_claims"
@@ -10072,7 +10072,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                 f"    workdir: {Path(tmp) / 'jobs'}\n    executes: [cpu, gpu]\n"
                 f"    scheduler: none\ntargets:\n  t_cpu: box\n", encoding="utf-8")
             env = {"PATH": f"{shims}{os.pathsep}{os.environ['PATH']}", "SHIM_LOG": str(log),
-                   "SHIM_SSH_FAIL": "atmofab-probe"}
+                   "SHIM_SSH_FAIL": "spec2science-probe"}
             rc, ran, events = self._closure_until(repo_root, "generate", "t_cpu", **env)
             self.assertEqual(rc, 2)
             self.assertEqual(ran, [])
@@ -10846,7 +10846,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self._remote()
         for until in ("compile", "generate"):
             with self.subTest(until=until):
-                code, events, _calls = self._main(until=until, SHIM_SSH_FAIL="atmofab-probe")
+                code, events, _calls = self._main(until=until, SHIM_SSH_FAIL="spec2science-probe")
                 self.assertEqual(code, 0, events)
                 self.assertEqual(self._probes(), [])
 
@@ -10855,14 +10855,14 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         at Build is probed like one reaching Validate — and asked for the build compiler, not
         for what the binary runs under."""
         self._remote()
-        code, events, calls = self._main(until="build", SHIM_SSH_FAIL="atmofab-probe")
+        code, events, calls = self._main(until="build", SHIM_SSH_FAIL="spec2science-probe")
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "site_unreachable")
         self.assertEqual(calls, [])
 
     def test_a_site_that_does_not_answer_is_refused_before_anything_runs(self) -> None:
         self._remote()
-        code, events, calls = self._main(SHIM_SSH_FAIL="atmofab-probe")
+        code, events, calls = self._main(SHIM_SSH_FAIL="spec2science-probe")
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "site_unreachable")
         self.assertEqual(events[-1]["site"], "box")

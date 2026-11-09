@@ -76,7 +76,7 @@ def _build_runtime():
 # parallel `mutation_check.py` jobs, or a reviewer's run beside yours, overwrote each other's
 # launch probes there and turned a pass into a failure that belonged to no change. `mkdtemp`
 # honours `TMPDIR`, so each job's scratch root holds its own.
-_SHARED_REPO_ROOT = Path(tempfile.mkdtemp(prefix="atmofab-conductor-tests-"))
+_SHARED_REPO_ROOT = Path(tempfile.mkdtemp(prefix="spec2science-conductor-tests-"))
 #: The target's harness as the fixture catalogs register it: the checked-in profile's
 #: `harness_fortran_cpu` at a version its constraint matches (issue #284).
 _HARNESS_NK = "infrastructure/harness_fortran_cpu@0.7.0"
@@ -6249,7 +6249,7 @@ class LeafChildEnvTest(unittest.TestCase):
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
         self.assertNotIn("CODEX_HOME", env)
 
-    def test_child_env_drops_atmofab_home_despite_the_prefix(self) -> None:
+    def test_child_env_drops_spec2science_home_despite_the_prefix(self) -> None:
         """`SPEC2SCIENCE_HOME` is inside the allowed prefix and still must not travel: it is
         the deprecated alias for codex's config home, so it is on the single-route side.
         The prefix exception is what keeps the general rule general."""
@@ -6879,7 +6879,7 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def test_the_documented_margin_cap_and_probe_timeout_are_the_constants(self) -> None:
         """`docs/ORCHESTRATION.md` "leaf transient retry" states the issue #405 margin, cap and
-        probe timeout as numbers next to their names. Coupled by NUMBER (atmofab-enforcement-
+        probe timeout as numbers next to their names. Coupled by NUMBER (spec2science-enforcement-
         change rule 3-a): each is rendered from its constant and looked for as
         "`NAME` = <n> s", so an edit to a constant that leaves the prose behind is red.
         Self-test: the renders are checked against today's literals first."""
@@ -21247,7 +21247,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         d = Path(args["project_dir"])
         staged = {p.name for p in d.iterdir() if p.is_file() and p.suffix == ".f90"}
         if d.name.endswith("_canary"):
-            self.assertEqual(staged, {"atmofab_syntax_canary.f90"})
+            self.assertEqual(staged, {"spec2science_syntax_canary.f90"})
             return "canary"
         if d.name.endswith("_deps_probe"):
             self.assertEqual(staged, set(self._probe_sources))

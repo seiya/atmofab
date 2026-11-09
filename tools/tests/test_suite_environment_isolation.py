@@ -68,7 +68,7 @@ _CITATION_SOURCES = (
 # resolves the home: measured clean-OK / poisoned-FAILED / guarded-pass on the commit that
 # moved it. The witness needs the control to FAIL, so `test_a_poisoned_environment_...`
 # asserts exactly that and tells you to find a new subject when it stops.
-_SUBJECT_POISON = {"CODEX_HOME": "/tmp/atmofab_witness_codex_home"}
+_SUBJECT_POISON = {"CODEX_HOME": "/tmp/spec2science_witness_codex_home"}
 _SUBJECT_MODULE = "tools.tests.test_orchestration_runtime"
 _SUBJECT_CLASS = "CodexOrchestrationRuntimeTests"
 _SUBJECT_TEST = "test_probe_codex_cli_passes_without_running_features_list"
@@ -635,8 +635,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                 # exactly what the walk was added to stop printing.
                 self.assertTrue(
                     self._last_import_reads[expected].endswith(
-                        "atmofab_probe_module.py:" + str(body.count("\n") + 2))
-                    or "atmofab_probe_module.py:" in self._last_import_reads[expected],
+                        "spec2science_probe_module.py:" + str(body.count("\n") + 2))
+                    or "spec2science_probe_module.py:" in self._last_import_reads[expected],
                     f"the spy did not attribute the read to the probe file: "
                     f"{self._last_import_reads[expected]}")
 
@@ -659,10 +659,10 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def _names_read_during_import_of_source(self, body: str) -> set[str]:
         """Run the spy over a synthetic module built from `body`."""
         with tempfile.TemporaryDirectory() as td:
-            module = Path(td) / "atmofab_probe_module.py"
+            module = Path(td) / "spec2science_probe_module.py"
             module.write_text("import os\n" + body + "\n", encoding="utf-8")
             return self._names_read_during_import(
-                "atmofab_probe_module", extra_path=td)
+                "spec2science_probe_module", extra_path=td)
 
     def _names_read_during_import(self, module: str,
                                   extra_path: str | None = None) -> set[str]:
@@ -673,7 +673,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         that does not happen reads nothing.
         """
         with tempfile.TemporaryDirectory() as td:
-            spy = Path(td) / "atmofab_import_spy.py"
+            spy = Path(td) / "spec2science_import_spy.py"
             spy.write_text(_IMPORT_SPY_SOURCE, encoding="utf-8")
             argv = [sys.executable, str(spy), module]
             if extra_path:
@@ -699,7 +699,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
 
         Scoped to the files this change owns, and to CODE — a document may legitimately
         name a deleted test as deleted, and issue #84's record does
-        (https://github.com/seiya/atmofab/issues/84#issuecomment-5560395673). A code comment
+        (https://github.com/seiya/spec2science/issues/84#issuecomment-5560395673). A code comment
         pointing at a test is telling the reader where to look, so it has to lead somewhere.
         """
         cited_names = set()
@@ -858,7 +858,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """
         accepted = _run(
             [sys.executable, "-m", "pytest", "--keep-operator-env", "--co", "-q",
-             "-k", "atmofab_no_such_test_name"], {})
+             "-k", "spec2science_no_such_test_name"], {})
         self.assertEqual(
             accepted.returncode, 5,          # 5 = collected, nothing selected
             "a bare `pytest` did not accept --keep-operator-env, so tools/tests/"
@@ -873,7 +873,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # a test does not make this fail.
         explicit = _run(
             [sys.executable, "-m", "pytest", "tools/tests/", "--co", "-q",
-             "-k", "atmofab_no_such_test_name"], {})
+             "-k", "spec2science_no_such_test_name"], {})
         deselected = re.search(r"(\d+) deselected", accepted.stdout)
         expected = re.search(r"(\d+) deselected", explicit.stdout)
         self.assertTrue(deselected and expected, accepted.stdout + explicit.stdout)

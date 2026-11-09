@@ -352,7 +352,7 @@ writing). The plan's own §4 asked one question about it: is that write attribut
 an unauthorized write?
 
 Reading said no. The probe said yes, and the probe is the record. **The mechanism below is
-deleted** ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2 — a pure leaf has no
+deleted** ([issue #171](https://github.com/seiya/spec2science/issues/171) PR-2 — a pure leaf has no
 write authority to attribute), so the code will not run at HEAD; it is kept because the
 EPISODE is the lesson — reading a layer said one thing and driving it said another:
 

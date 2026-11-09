@@ -177,7 +177,7 @@ jobs:
         # and the sandbox claim could not drift from the job in either direction. That coupling
         # is gone and nothing replaces it: an accepted residue of #183, which PR #419's audit
         # removed from `TODO.md` as not a task
-        # (https://github.com/seiya/atmofab/pull/419#issuecomment-5996926913). The only
+        # (https://github.com/seiya/spec2science/pull/419#issuecomment-5996926913). The only
         # thing still reading this file is `tools/tests/test_backend_boundary.py`'s
         # technology-token scan, which reads the TEXT for backend tokens and nothing about what
         # the job does — and whose growth half is frozen out of the suite (`AGENTS.md` §Backend

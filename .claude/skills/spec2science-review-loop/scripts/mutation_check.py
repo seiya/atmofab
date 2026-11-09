@@ -20,7 +20,7 @@ The checkout is never touched: every mutation happens in a `git worktree` under
 `$TMPDIR` (default: the platform's).
 
 **Both of those are paths the harness chooses, and a suite can be red because of them
-rather than because of your change.** In atmofab a scratch root under `/dev/shm` reddens
+rather than because of your change.** In spec2science a scratch root under `/dev/shm` reddens
 the two tests that reason about a write guard over `/dev/shm`. The default worktree
 location used to do the same through its filesystem DEPTH, reddening the hook tests that
 resolve `..` and `~`; issue #84 closed that on 2026-09-02 (the rows build their own
@@ -40,7 +40,7 @@ One test run per hunk is the whole cost, so the hunks are spread over `--jobs`
 worktrees that run at the same time (default: min(cores - 2, 4)). Two more things cut the
 wall clock, and both are the caller's to do: pass `-x` so a killed hunk stops at its
 first failing test instead of finishing the suite, and keep `--test-cmd` narrowed to
-the tests that could plausibly see the change. Measured on a 4-hunk atmofab range with
+the tests that could plausibly see the change. Measured on a 4-hunk spec2science range with
 an 805-test file: 5m52s serially without `-x`, 43s with both (21s of that the baseline).
 
 **`-x` is only safe once the baseline for THAT `--test-cmd` is green.** If the command
@@ -48,7 +48,7 @@ you pass already has a failure unrelated to the change, `-x` stops every mutant 
 every mutant is recorded `killed` — a false green over the whole run. The baseline check
 below is what protects you (red baseline, exit 2), so heed it rather than reaching for
 `--skip-baseline`; and note the protection does NOT extend to a sweep you write by hand.
-atmofab's standing instance was the path-depth-coupled `ForbidBackendCredentialReadTests` cases,
+spec2science's standing instance was the path-depth-coupled `ForbidBackendCredentialReadTests` cases,
 closed on 2026-09-02 (issue #84) by building the `$HOME`/checkout relationship in the fixture; the
 CLASS stays open, so deselect whatever your `--test-cmd` already fails, or drop `-x`.
 
@@ -106,7 +106,7 @@ def _is_test_file(path: str) -> bool:
 #: Markdown (this repository pins `##` sections out of committed documents), a preprocessor
 #: directive in the c/cpp families, a shebang in a shell script, a lint pragma such as
 #: `noqa` or `type: ignore` — and inside a Python string literal or a YAML block scalar it is just text, which is
-#: exactly the prompt-template and contract text atmofab pins. Two review rounds broke a
+#: exactly the prompt-template and contract text spec2science pins. Two review rounds broke a
 #: line-shaped predicate in two different shapes, so the predicate is not line-shaped any more:
 #: only Python is classified, and only through its AST.
 _PARSEABLE_SUFFIXES = frozenset({".py", ".pyi"})
@@ -136,7 +136,7 @@ def _suite_did_not_run(output: str) -> bool:
     A reverted hunk can break collection — an import that no longer resolves, a fixture built at
     class-body scope, a syntax error — and pytest then exits nonzero having run nothing. Scored on
     the exit code alone that reads as `killed`, which is the worst possible false green: it says a
-    test noticed the change when no test ran at all. A witness census on atmofab PR #68 hit exactly
+    test noticed the change when no test ran at all. A witness census on spec2science PR #68 hit exactly
     this on three mutations; re-run with `--continue-on-collection-errors` they showed 41-47 real
     failures each, so the verdict was right by accident and would not have been on a fourth.
 
@@ -162,7 +162,7 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
     """True when reverting this hunk changes only PROSE of a Python module: comments, docstrings.
 
     Prose stays in the check rather than being filtered out, because a test may assert on it —
-    atmofab pins prompt-template and contract text. But when nothing does, such a hunk is a
+    spec2science pins prompt-template and contract text. But when nothing does, such a hunk is a
     guaranteed survivor, and an unlabelled guaranteed survivor is how a survivor list stops being
     read: measured on PR #67, 2 of 5 survivors were docstring edits reported exactly like the
     three real gaps beside them.
@@ -419,7 +419,7 @@ def main() -> int:
     jobs = args.jobs if args.jobs > 0 else max(1, min((os.cpu_count() or 3) - 2, 4))
     jobs = min(jobs, len(hunks))
     # `--test-cmd` runs through a shell, so a `TMPDIR=...` prefix in it OVERRIDES the per-job
-    # TMPDIR set below and every job shares one temp root. That is the configuration atmofab
+    # TMPDIR set below and every job shares one temp root. That is the configuration spec2science
     # has already been bitten by: two suite runs on one TMPDIR produce failures that belong to
     # neither, and here such a failure is recorded as `killed` — a hunk reported pinned that
     # nothing pins. It is the spelling this repository's own suite command has always carried
@@ -449,18 +449,18 @@ def main() -> int:
 
     Path(args.workdir).mkdir(parents=True, exist_ok=True)
     # Siblings, not `<root>/wt0` — a nested layout makes every checkout path a few
-    # characters longer, and atmofab has at least one test whose budget the checkout
+    # characters longer, and spec2science has at least one test whose budget the checkout
     # path feeds into and which sits 1 character from its limit. Each worktree keeps
     # exactly the path shape a single-job run has always had.
     worktrees = [Path(tempfile.mkdtemp(prefix="mut-", dir=args.workdir))
                  for _ in range(jobs)]
     # One TMPDIR per job, since concurrent jobs would otherwise share the temp root.
-    # Named as short as `mkdtemp` allows: a atmofab test asserts a budget on a message
+    # Named as short as `mkdtemp` allows: a spec2science test asserts a budget on a message
     # that carries a temp path, and a long temp root alone can fail it.
     #
     # `gettempdir()`, which honours TMPDIR and falls back to the platform default. It used
     # to default to `/dev/shm`, and that default made this script UNUSABLE with a full-suite
-    # `--test-cmd` in atmofab: two `DevShmWriteBlockTests` rows reason about a write guard
+    # `--test-cmd` in spec2science: two `DevShmWriteBlockTests` rows reason about a write guard
     # over `/dev/shm`, so putting the job's scratch root inside the path under test made the
     # BASELINE red on every run — and the message then told the operator to fix a suite that
     # is green in their own checkout. The general rule the episode teaches: **the harness's
@@ -619,7 +619,7 @@ def main() -> int:
         if prose:
             print("\nA prose-only hunk — comments, docstrings — changes no behaviour, so it "
                   "ALWAYS survives. It is still checked (a test may pin prose, and this repo "
-                  "does) and it is labelled so it does not read as a finding: on atmofab PR #67, "
+                  "does) and it is labelled so it does not read as a finding: on spec2science PR #67, "
                   "2 of 5 survivors were docstrings printed identically to the three real gaps "
                   "beside them. Only Python is classified this way, by comparing ASTs; in any "
                   "other file type a prose hunk is reported unlabelled.")
@@ -638,7 +638,7 @@ def main() -> int:
     print("every hunk is pinned")
     print("NOT the same as 'the tests are adequate'. Reverting a hunk cannot detect a test\n"
           "that passes for a DIFFERENT reason than its name claims: the hunk is live, just\n"
-          "unobserved. In atmofab L128 the whole scope analysis could be replaced by a\n"
+          "unobserved. In spec2science L128 the whole scope analysis could be replaced by a\n"
           "pass-through and the suite stayed green, while every individual hunk was 'pinned'.\n"
           "Also run: one MECHANISM-level deletion (stub the function out), and check that each\n"
           "fixture has no second path to the outcome it asserts.")

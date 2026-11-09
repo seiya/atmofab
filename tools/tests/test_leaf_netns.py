@@ -262,7 +262,7 @@ class HostRoutesTests(unittest.TestCase):
         deep = os.path.join(runtime, "d" * 80)
         os.mkdir(deep)
         self.addCleanup(os.rmdir, deep)
-        self.assertGreater(len(os.path.join(deep, "atmofab-net-xxxxxxxx", "provider.sock")),
+        self.assertGreater(len(os.path.join(deep, "spec2science-net-xxxxxxxx", "provider.sock")),
                            leaf_netns.SUN_PATH_MAX)
         with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": deep}):
             self.assertEqual(leaf_netns.socket_dir_parent(), "/tmp")
@@ -295,9 +295,9 @@ class RelayMainTests(unittest.TestCase):
     def test_the_relay_argv_is_the_installed_copy_under_the_system_python(self) -> None:
         self.assertEqual(
             leaf_netns.relay_argv(["claude", "-p"], wrapper_port=4321),
-            ["/usr/bin/python3", "-I", "/run/atmofab/net/relay.py", "--proxy", "3128",
-             "/run/atmofab/net/provider.sock", "--tunnel", "4321",
-             "/run/atmofab/net/wrapper.sock", "--", "claude", "-p"])
+            ["/usr/bin/python3", "-I", "/run/spec2science/net/relay.py", "--proxy", "3128",
+             "/run/spec2science/net/provider.sock", "--tunnel", "4321",
+             "/run/spec2science/net/wrapper.sock", "--", "claude", "-p"])
         with open(os.path.join(self.dir, leaf_netns.RELAY_INSTALL_NAME), "rb") as f:
             self.assertEqual(f.read(), Path(leaf_netns.__file__).read_bytes())
 

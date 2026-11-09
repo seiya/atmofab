@@ -32,7 +32,7 @@ This checklist names concrete spellings of one target language, which is knowled
 `docs/BACKEND_BOUNDARY.md` keeps out of the neutral core. It was written while the gates it warns
 about sat in `validate_pipeline_semantics.py`, with the promise that it would go when the
 source-reading area of the `TODO.md` migration ledger closed. That area closed (issue #289) and the
-whole migration with [issue #469](https://github.com/seiya/atmofab/issues/469), and the checklist
+whole migration with [issue #469](https://github.com/seiya/spec2science/issues/469), and the checklist
 stays: it is a review checklist for whoever changes the `fortran` reader, not code the neutral
 core runs, and its natural home if it is ever moved is `docs/backends/language/fortran/`. Two things about that are worth stating rather than implying. Nothing measures
 this file: `.claude/skills/**` matches none of the scanner's globs, so the ratchet that bounds this
@@ -40,7 +40,7 @@ kind of growth elsewhere does not read it at all. And the debt is **new to the r
 until 2026-08-19 these files lived in one operator's home directory. Most of it is not in this
 checklist, either: the majority of the sampled tokens under `.claude/skills/` are in episodes and
 identifier names, in both skills, and `spec2science-review-loop` carries some while having no checklist
-at all. The development-documentation entry, now [a comment on PR #90](https://github.com/seiya/atmofab/pull/90#issuecomment-5559633234), holds the measurement and the command that
+at all. The development-documentation entry, now [a comment on PR #90](https://github.com/seiya/spec2science/pull/90#issuecomment-5559633234), holds the measurement and the command that
 reproduces it — do not quote a figure from here, because every edit to these files moves it.
 
 ## What the reader drops and the build compiles (issue #589 PR-1b)

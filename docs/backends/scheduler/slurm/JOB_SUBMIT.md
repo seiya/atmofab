@@ -11,7 +11,7 @@
 A job runs as ONE Slurm job, in the foreground of the ssh call that runs the job script:
 
 ```
-ssh <options> -- <host> 'echo; printf ... atmofab-submitted <epoch> && exec srun --time=<minutes> <directives> --ntasks=1 --job-name=atmofab-<agent_run_id> --immediate=<queue_timeout_sec> sh -c <job script>'
+ssh <options> -- <host> 'echo; printf ... spec2science-submitted <epoch> && exec srun --time=<minutes> <directives> --ntasks=1 --job-name=spec2science-<agent_run_id> --immediate=<queue_timeout_sec> sh -c <job script>'
 ```
 
 - `srun` waits for an allocation, runs the job script as the job's single task, relays the
@@ -52,14 +52,14 @@ A site entry in `./sites.yaml` (the shape is `docs/ORCHESTRATION.md` §Execution
 ```yaml
   cluster_cpu:
     host: login-node
-    workdir: /work/atmofab-jobs
+    workdir: /work/spec2science-jobs
     executes: [cpu]
     scheduler: slurm
     scheduler_directives: ["--partition=compute", "--time=120"]
     queue_timeout_sec: 7200
   cluster_gpu:
     host: login-node
-    workdir: /work/atmofab-jobs
+    workdir: /work/spec2science-jobs
     executes: [gpu]
     scheduler: slurm
     scheduler_directives: ["--partition=gpu", "--gres=gpu:1", "--time=120"]
@@ -91,7 +91,7 @@ that runs long a refusal rather than the command's own timeout.
   `srun` process was re-parented and the job kept running). The executor has refused that job,
   and a later job runs in a directory of its own; the job runs on until the `--time` in force —
   the prefix's, or a directive's, which may be longer — which is why the prefix always sets one.
-  `scancel` it by hand (its name is `atmofab-<agent_run_id>`) to free the allocation sooner.
+  `scancel` it by hand (its name is `spec2science-<agent_run_id>`) to free the allocation sooner.
 - **No `sbatch`.** A batch job's stdout is a file under the operator's account, which the job's
   own commands can truncate and rewrite; the status of a command that runs after the runner would
   then be forgeable by the runner.

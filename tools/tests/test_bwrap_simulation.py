@@ -466,7 +466,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         grandchild the child leaked into a session of its own included. And
         a child killed by a signal while the relay lives reaches the caller as the relay's
         `128 + n` (bwrap mirrors its command's exit status)."""
-        token = f"atmofab-kill-chain-{uuid.uuid4().hex}"
+        token = f"spec2science-kill-chain-{uuid.uuid4().hex}"
         with tempfile.TemporaryDirectory() as t:
             repo = Path(t).resolve()
             orch, arid = "orch_kill", "arid_kill"
@@ -751,7 +751,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         """Round-3 security finding (issue #226): `realpath` is blind to a bind mount, so a
         data disk bound into `~/work` that holds both the checkout and a CLI wrapper, with the
         workflow started from the disk's own spelling, bound `~/work` read-only and exposed
-        the hidden `workspace/` at `~/work/atmofab/...` (measured: `PRODUCER REASONING`).
+        the hidden `workspace/` at `~/work/spec2science/...` (measured: `PRODUCER REASONING`).
         `_refuse_backend_ro_alias_of_repo` compares inodes now. The bind mount needs a mount
         namespace, so the layout is built under an OUTER bwrap and the builder runs inside
         it; the control row is the same layout with `repo_root` spelled through the bind,
@@ -759,13 +759,13 @@ class BwrapLineageProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             d = Path(t).resolve()
             data_work = d / "data" / "work"
-            (data_work / "atmofab" / "workspace").mkdir(parents=True)
+            (data_work / "spec2science" / "workspace").mkdir(parents=True)
             # Planted for the accepted row's probe: what the alias would expose.
             for rel, body in (("workspace/orchestrations/o/agents/p/dialogs/leaf.stdout.jsonl",
                                "PRODUCER REASONING\n"),
                               ("tools/validate_pipeline_semantics.py", "def gate(): ...\n")):
-                (data_work / "atmofab" / rel).parent.mkdir(parents=True, exist_ok=True)
-                (data_work / "atmofab" / rel).write_text(body, encoding="utf-8")
+                (data_work / "spec2science" / rel).parent.mkdir(parents=True, exist_ok=True)
+                (data_work / "spec2science" / rel).write_text(body, encoding="utf-8")
             bindir = data_work / "npm" / "bin"
             bindir.mkdir(parents=True)
             (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -776,19 +776,19 @@ class BwrapLineageProfileTests(unittest.TestCase):
             home_work = d / "home" / "user" / "work"
             outer = [*self._outer_bwrap([(data_work, home_work)]), "--",
                      sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d)]
-            refused = subprocess.run([*outer, str(data_work / "atmofab"), str(home_work / "npm" / "bin")],
+            refused = subprocess.run([*outer, str(data_work / "spec2science"), str(home_work / "npm" / "bin")],
                                      capture_output=True, text=True, timeout=120,
                                      check=False)  # the exit code is asserted below
             self.assertEqual(refused.returncode, 0, refused.stderr)
             self.assertIn("REFUSED", refused.stdout, refused.stdout)
             self.assertIn("is the same directory as", refused.stdout)
-            accepted = subprocess.run([*outer, str(home_work / "atmofab"), str(home_work / "npm" / "bin")],
+            accepted = subprocess.run([*outer, str(home_work / "spec2science"), str(home_work / "npm" / "bin")],
                                       capture_output=True, text=True, timeout=120,
                                       check=False)  # the exit code is asserted below
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
             self.assertEqual(accepted.stdout.split("\n")[0], "ACCEPTED", accepted.stdout)
             # The exemption holds under the mount: the root `~/work` is ro-bound and the
-            # tmpfs at `~/work/atmofab` stacks on top, so neither the dialogs nor the gate's
+            # tmpfs at `~/work/spec2science` stacks on top, so neither the dialogs nor the gate's
             # implementation is readable at the alias (issue #227 widened the second name's
             # gain from the artifact trees to `tools/`).
             self.assertIn("DIALOG:HIDDEN", accepted.stdout, accepted.stdout)
@@ -812,7 +812,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             d = Path(t).resolve()
             home = d / "home" / "user"
-            repo = home / "atmofab"
+            repo = home / "spec2science"
             ws_bin = repo / "workspace" / "bin"
             ws_bin.mkdir(parents=True)
             (ws_bin / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -826,14 +826,14 @@ class BwrapLineageProfileTests(unittest.TestCase):
             repo_root = Path(__file__).resolve().parents[2]
             child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d), str(repo)]
             # The EXEMPT layout (issue #227 round 1): the CLI under `~/work/npm/bin` and the
-            # checkout at `~/work/atmofab`, so the root `~/work` contains the checkout by its
+            # checkout at `~/work/spec2science`, so the root `~/work` contains the checkout by its
             # own spelling and is exempt from the inode walks. A bind mount of the hidden
             # tree BELOW that root and OUTSIDE the checkout's path (`~/work/alias`) was
             # carried in by the recursive ro-bind with nothing on top — measured readable
             # before the mount-table check ran for exempt roots. A mount AT OR UNDER the
             # checkout's path is covered by the tmpfs and stays accepted.
             work = home / "work"
-            exempt_repo = work / "atmofab"
+            exempt_repo = work / "spec2science"
             exempt_dialogs = exempt_repo / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
             exempt_dialogs.mkdir(parents=True)
             (exempt_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
@@ -844,17 +844,17 @@ class BwrapLineageProfileTests(unittest.TestCase):
             (work / "npm" / "bin" / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
             (work / "npm" / "bin" / "cli-sim").chmod(0o755)
             # Round 2's two layouts. A checkout that is ITSELF a bind of a tree under the
-            # exempt root (`~/work/src/atmofab` bound at `~/work/atmofab`, the workflow
+            # exempt root (`~/work/src/spec2science` bound at `~/work/spec2science`, the workflow
             # started from the bind): its physical source sits beside it under the root, and a
             # rule keyed on the mount point's path accepted it while the rendered profile
             # exposed the source. And a foreign mount BETWEEN the root and the checkout (a
-            # data disk at `~/work/proj` holding `~/work/proj/atmofab`): the same rule refused
+            # data disk at `~/work/proj` holding `~/work/proj/spec2science`): the same rule refused
             # it, although the checkout appears only at its own path there.
-            src_repo = work / "src" / "atmofab"
+            src_repo = work / "src" / "spec2science"
             (src_repo / "workspace").mkdir(parents=True)
             (src_repo / "tools").mkdir()
             disk = d / "disk"
-            disk_dialogs = disk / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            disk_dialogs = disk / "spec2science" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
             disk_dialogs.mkdir(parents=True)
             (disk_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
             # Round 4: the legitimate half of the system-directory rule — a checkout that
@@ -864,7 +864,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
             # stayed green while refusing that launch with a false remedy.
             sys_layout = d / "sys_layout"
             sys_home = sys_layout / "home" / "user"
-            sys_dialogs = sys_home / "work" / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            sys_dialogs = sys_home / "work" / "spec2science" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
             sys_dialogs.mkdir(parents=True)
             (sys_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
             (sys_home / "work" / "npm" / "bin").mkdir(parents=True)
@@ -872,23 +872,23 @@ class BwrapLineageProfileTests(unittest.TestCase):
             (sys_home / "work" / "npm" / "bin" / "cli-sim").chmod(0o755)
             sys_prefix = Path("/usr/local/src") / "home" / "user"
             sys_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
-                         str(sys_prefix / "work" / "atmofab"), str(sys_prefix / "work" / "npm" / "bin"),
+                         str(sys_prefix / "work" / "spec2science"), str(sys_prefix / "work" / "npm" / "bin"),
                          str(sys_prefix)]
             (work / "proj").mkdir()
             proj_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
-                          str(work / "proj" / "atmofab")]
+                          str(work / "proj" / "spec2science")]
             # Round 3: the SYSTEM directories are recursive ro-binds too, and the refusal ran
             # over the install roots alone — a checkout kept under `/usr/local/src` and
             # bind-mounted into the working tree rode in through `/usr` with nothing on top
             # (the review measured the dialogs readable there). The outer bwrap puts a
             # scratch tree at `/usr/local/src` so the row needs no privilege on the host.
             usrsrc = d / "usrsrc"
-            usrsrc_dialogs = usrsrc / "atmofab" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
+            usrsrc_dialogs = usrsrc / "spec2science" / "workspace" / "orchestrations" / "o" / "agents" / "p" / "dialogs"
             usrsrc_dialogs.mkdir(parents=True)
             (usrsrc_dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
             (work / "data").mkdir()
             usrsrc_empty = d / "usrsrc_empty"
-            (usrsrc_empty / "atmofab").mkdir(parents=True)  # a mountpoint the outer bwrap can use
+            (usrsrc_empty / "spec2science").mkdir(parents=True)  # a mountpoint the outer bwrap can use
             exempt_child = [sys.executable, "-c", self._BIND_ALIAS_CHILD, str(repo_root), str(d),
                             str(exempt_repo)]
             cases = [
@@ -917,10 +917,10 @@ class BwrapLineageProfileTests(unittest.TestCase):
                 ("exempt root, no mount (control)", exempt_child, [], work / "npm" / "bin",
                  "ACCEPTED"),
                 ("checkout physically under /usr/local/src, bound into the working tree",
-                 exempt_child, [(usrsrc, Path("/usr/local/src")), (usrsrc / "atmofab", exempt_repo)],
+                 exempt_child, [(usrsrc, Path("/usr/local/src")), (usrsrc / "spec2science", exempt_repo)],
                  work / "npm" / "bin", "REFUSED"),
                 ("checkout mirrored under /usr/local/src", exempt_child,
-                 [(usrsrc_empty, Path("/usr/local/src")), (exempt_repo, Path("/usr/local/src/atmofab"))],
+                 [(usrsrc_empty, Path("/usr/local/src")), (exempt_repo, Path("/usr/local/src/spec2science"))],
                  work / "npm" / "bin", "REFUSED"),
                 # A whole other filesystem under the exempt root (a scratch tmpfs, a data
                 # disk): a different device, `root_within=/`, and the round-3 sweep found
@@ -1279,7 +1279,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         server = _Loopback400()
         self.addCleanup(server.close)
         command = ["env", f"ANTHROPIC_BASE_URL={server.base_url}",
-                   "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
+                   "ANTHROPIC_API_KEY=spec2science-loopback", *argv]
         routes = _reach_standin(self, profile, "claude", server.base_url)
         res = subprocess.run(render_bwrap_command(profile=profile,
                                                   command_argv=routes.nest(command)),
@@ -1323,7 +1323,7 @@ class ClaudeSettingsIsolationTests(unittest.TestCase):
             (Path(home) / ".claude" / "settings.json").write_text(json.dumps(settings))
             env = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                    "ANTHROPIC_BASE_URL": server.base_url,
-                   "ANTHROPIC_API_KEY": "atmofab-loopback"}
+                   "ANTHROPIC_API_KEY": "spec2science-loopback"}
             res = subprocess.run(["claude", *flags, *extra, "-p"], input="Say hi.",
                                  capture_output=True, text=True, env=env, cwd=cwd,
                                  timeout=240, check=False)
@@ -1857,7 +1857,7 @@ class WorkshopLeafCliTests(unittest.TestCase):
             network=_leaf_routes(self, "claude").network,
             **ort.claude_workshop_profile_kwargs(self.iso))
         command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
-                   "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
+                   "ANTHROPIC_API_KEY=spec2science-loopback", *argv]
         routes = _reach_standin(self, profile, "claude", api.base_url, wrapper_port=server.port)
         return subprocess.run(render_bwrap_command(profile=profile,
                                                    command_argv=routes.nest(command)),
@@ -2083,7 +2083,7 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
             network=_leaf_routes(self, "claude").network,
             **ort.claude_workshop_profile_kwargs(self.iso))
         command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
-                   "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
+                   "ANTHROPIC_API_KEY=spec2science-loopback", *argv]
         routes = _reach_standin(self, profile, "claude", api.base_url)
         return subprocess.run(render_bwrap_command(profile=profile,
                                                    command_argv=routes.nest(command)),
@@ -2162,7 +2162,7 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
             network=_leaf_routes(self, "claude").network,
             **ort.claude_workshop_profile_kwargs(self.iso))
         command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
-                   "ANTHROPIC_API_KEY=atmofab-loopback",
+                   "ANTHROPIC_API_KEY=spec2science-loopback",
                    *self.reader.leaf_command(entry, session_id=session, reading=True)]
         routes = _reach_standin(self, profile, "claude", api.base_url)
         res = subprocess.run(render_bwrap_command(profile=profile,

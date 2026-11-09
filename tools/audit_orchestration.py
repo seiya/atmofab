@@ -873,7 +873,7 @@ def audit(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
     # and every section derived from it — the per-policy block counts, the benign/substantive
     # split and its volume budget, the `fix_hint` presence report, the `allow_auto_approve`
     # count and the five events before `fail_closed` — described decisions a hook made about a
-    # leaf's tool call. Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted
+    # leaf's tool call. Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)) deleted
     # the hook with the leaf that held tools; PR-2 deletes this half of the audit, which had
     # been reporting zero over a file nothing writes. The `fail_closed` timestamp survives,
     # read from `phase_state_log.jsonl` as it always was.

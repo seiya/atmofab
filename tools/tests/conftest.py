@@ -39,7 +39,7 @@ TWO LAYERS, and the second is the one that actually holds:
      Guarding at the RESOLVER is also what makes this survive a fourth subtree: the
      resolvers are the only spelling of the location (issue #132), so a writer that
      appears later either goes through one of them or is caught by
-     `test_the_dot_atmofab_constant_is_spelled_once` in
+     `test_the_dot_spec2science_constant_is_spelled_once` in
      `tools/tests/test_operator_private_root.py`.
 
      PREVENT, NOT DETECT, and the distinction was paid for: the first version of this
@@ -76,11 +76,11 @@ inside it is safe to remove.
 ONE MORE TREE, outside `~/.spec2science`: a leaf's per-launch socket directory
 (`leaf_netns.make_socket_dir`, issue #534 step 4) is created under `$XDG_RUNTIME_DIR`, and
 every test that serves or records a CLI launch makes one. A test removes its own, but a test
-process that is killed does not — measured 2026-10-29: 173 `atmofab-net-*` directories in the
+process that is killed does not — measured 2026-10-29: 173 `spec2science-net-*` directories in the
 operator's runtime directory, all from killed test processes and none from a run. That
 directory is where a REAL launch's leftover is looked for, so `pytest_configure` points
 `XDG_RUNTIME_DIR` at a short per-process directory under `/tmp` and `pytest_unconfigure`
-removes it: a killed suite's residue stays in its own `atmofab-suite-*` directory.
+removes it: a killed suite's residue stays in its own `spec2science-suite-*` directory.
 
 THE SECOND SUBJECT: the operator's ambient environment (issue #84).
 
@@ -94,7 +94,7 @@ reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regress
 143 were the branch's and the rest were this.
 
 Measured on `165c26f`, whole suite, one variable at a time unless noted. **That commit
-predates the `met-dsl` -> `atmofab` rename (issue #127), so to RE-TAKE any figure below
+predates the `met-dsl` -> `spec2science` rename (issue #127), so to RE-TAKE any figure below
 spell the names `METDSL_*` there — `SPEC2SCIENCE_*` matches nothing at `165c26f` and every
 row comes back 0.** The names are written in the current spelling because the record
 is about which names the tree reads, not about that commit's text:
@@ -177,26 +177,26 @@ def pytest_configure(config) -> None:
     1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
     """
     # Per process: an xdist worker inherits the controller's value and replaces it with its own.
-    config._atmofab_runtime_dir = (os.environ.get("XDG_RUNTIME_DIR"),
-                                   tempfile.mkdtemp(prefix="atmofab-suite-", dir="/tmp"))
-    os.environ["XDG_RUNTIME_DIR"] = config._atmofab_runtime_dir[1]
+    config._spec2science_runtime_dir = (os.environ.get("XDG_RUNTIME_DIR"),
+                                   tempfile.mkdtemp(prefix="spec2science-suite-", dir="/tmp"))
+    os.environ["XDG_RUNTIME_DIR"] = config._spec2science_runtime_dir[1]
     if config.getoption("--keep-operator-env"):
         suite_env_guard.decline_strip()
         return
     stripped = suite_env_guard.strip_operator_env(os.environ)
     if stripped:
-        config._atmofab_stripped_operator_env = stripped
+        config._spec2science_stripped_operator_env = stripped
 
 
 def _operator_env_disclosure(config) -> str | None:
     """What this run did to the operator's environment, or None if it did nothing."""
     if suite_env_guard.DECLINED:
-        return ("atmofab: --keep-operator-env -- the operator's environment was NOT "
+        return ("spec2science: --keep-operator-env -- the operator's environment was NOT "
                 "stripped for this run (issue #84); failures may belong to a knob you set")
-    stripped = getattr(config, "_atmofab_stripped_operator_env", None)
+    stripped = getattr(config, "_spec2science_stripped_operator_env", None)
     if not stripped:
         return None
-    return ("atmofab: stripped the operator's environment for this run (issue #84): "
+    return ("spec2science: stripped the operator's environment for this run (issue #84): "
             + ", ".join(stripped)
             + " -- pass --keep-operator-env to run against them instead")
 
@@ -225,7 +225,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
 
 def pytest_unconfigure(config) -> None:
     suite_env_guard.restore_operator_env(os.environ)
-    inherited, runtime = config._atmofab_runtime_dir
+    inherited, runtime = config._spec2science_runtime_dir
     shutil.rmtree(runtime, ignore_errors=True)
     if inherited is None:
         os.environ.pop("XDG_RUNTIME_DIR", None)
@@ -251,7 +251,7 @@ def _redirect_operator_private_roots(tmp_path, monkeypatch):
 
     roots = {}
     for env_name, subdir in _private_root_redirects():
-        root = tmp_path / f"atmofab-{subdir}"
+        root = tmp_path / f"spec2science-{subdir}"
         root.mkdir(mode=0o700, exist_ok=True)
         monkeypatch.setenv(env_name, str(root))
         roots[env_name] = root
@@ -308,7 +308,7 @@ def _forbid_anything_in_operator_secret_root():
         # about a marker that exists only on the resolver it happens to name. The
         # witnesses must SKIP when run outside pytest, where conftest is not loaded and
         # the thing they test does not exist.
-        _wrapper._atmofab_private_root_guard_installed = True
+        _wrapper._spec2science_private_root_guard_installed = True
         return _wrapper
 
     installed = [

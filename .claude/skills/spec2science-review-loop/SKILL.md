@@ -23,12 +23,12 @@ skill). **Those entries are no longer in `TODO.md`**: issue #181 moved every fin
 comment on the issue or pull request it belongs to, so the label is a name for an episode and
 nothing resolves it in the file. Resolve a label at the merge base of the pull request that used it — `git show <pr merge>^:TODO.md | sed -n '<n>p'`,
 and find that merge with `git log --oneline --merges --ancestry-path <the commit that did the work>..origin/main | tail -2`
-when the label carries no pull request number, which is the case for `L118`, `L128` and `L174`. That is how these were checked: `L118` is [the duplicate `_split_top_level_commas`](https://github.com/seiya/atmofab/issues/181#issuecomment-5559628555),
-`L128` [the `&`-continuation blindness](https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999),
-`L174` [the tree-sitter front-end swap](https://github.com/seiya/atmofab/issues/181#issuecomment-5559629951),
-`TODO:269` [the `STALE_DEPENDENCY_IR_MARKER` exit-code work](https://github.com/seiya/atmofab/pull/88#issuecomment-5560285483)
-and `TODO:414` [the development-documentation branch](https://github.com/seiya/atmofab/pull/90#issuecomment-5559633234).
-`L200`, which `PR #57`'s title names, is [the `agent_role` work](https://github.com/seiya/atmofab/pull/57#issuecomment-5559631060).
+when the label carries no pull request number, which is the case for `L118`, `L128` and `L174`. That is how these were checked: `L118` is [the duplicate `_split_top_level_commas`](https://github.com/seiya/spec2science/issues/181#issuecomment-5559628555),
+`L128` [the `&`-continuation blindness](https://github.com/seiya/spec2science/issues/181#issuecomment-5559628999),
+`L174` [the tree-sitter front-end swap](https://github.com/seiya/spec2science/issues/181#issuecomment-5559629951),
+`TODO:269` [the `STALE_DEPENDENCY_IR_MARKER` exit-code work](https://github.com/seiya/spec2science/pull/88#issuecomment-5560285483)
+and `TODO:414` [the development-documentation branch](https://github.com/seiya/spec2science/pull/90#issuecomment-5559633234).
+`L200`, which `PR #57`'s title names, is [the `agent_role` work](https://github.com/seiya/spec2science/pull/57#issuecomment-5559631060).
 
 - `references/mutation-testing.md` — round 0's episodes, and the "spinning in neutral" family
 - `references/measurement-records.md` — why a measured number rots once per round
@@ -190,7 +190,7 @@ when a rule does not obviously apply:
   (`run(){ pytest $1 }`) hands pytest one argument that is several paths glued together and
   collects **zero tests** — every mutant then reports `no tests ran`, which a scorer reading only
   the last line scores as not-failed. Hit for real on issue #142's round 0. **Read the baseline's
-  COUNT, not its colour**: `197 passed` and `no tests ran in 0.00s` are both non-red. atmofab's standing instance USED to be the
+  COUNT, not its colour**: `197 passed` and `no tests ran in 0.00s` are both non-red. Spec2Science's standing instance USED to be the
   path-depth-coupled `ForbidBackendCredentialReadTests` cases — one PR #98 reviewer reported 12 of
   12 mutants killed that way before re-running — and issue #84 closed it on 2026-09-02: those
   cases now build their own `$HOME` and checkout, so they pass at any depth and in a worktree.
@@ -451,7 +451,7 @@ when a rule does not obviously apply:
    - **A count with no unit is not reproducible** — "14 hunks" came back as 19 and 16 because the
      figure depends on the diff CONTEXT WIDTH. Name the width, the command, and the exclusions
    - **Name WHERE a suite figure was measured.** A number can be right and still be a defect if it
-     does not say which checkout produced it: atmofab's suite USED to be one lower in a `/tmp`
+     does not say which checkout produced it: Spec2Science's suite USED to be one lower in a `/tmp`
      worktree than in the primary checkout, because a declared skip fired there — on PR #104 a
      reviewer correctly reported a commit message as wrong for that reason, and the message was
      right, it simply had not said where. That particular skip is gone (issue #84, 2026-09-02) and

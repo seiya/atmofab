@@ -22,7 +22,7 @@ What is PINNED here and what is only SAMPLED:
     under one patched `$HOME` (`test_the_two_writers_and_the_guard_resolve_one_root`);
   * PINNED — that `".spec2science"` is spelled exactly ONCE across `tools/`, and in
     `tools/operator_private_root.py`
-    (`test_the_dot_atmofab_constant_is_spelled_once`). The FILE and the COUNT, not the
+    (`test_the_dot_spec2science_constant_is_spelled_once`). The FILE and the COUNT, not the
     function name: hoisting the literal to a module constant in that file strengthens the
     property and is allowed. A BOUND ON GROWTH,
     not a detector: an f-string, a rename of the constant, or a regex spelling the path
@@ -223,20 +223,20 @@ class OnePrivateRootTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True), \
                     mock.patch.object(private_root, "_home_dir",
                                       return_value=fake_home):
-                atmofab = (fake_home / ".spec2science").resolve()
+                spec2science = (fake_home / ".spec2science").resolve()
 
                 # WRITER 1 — the start claim.
                 self.assertEqual(
                     run_workflow._claim_lock_path(repo, "spec", "spec/x").parent,
-                    atmofab / "start_claims")
+                    spec2science / "start_claims")
 
                 # WRITER 2 — the isolated homes root.
-                self.assertEqual(ort._workflow_homes_root(), atmofab / "homes")
+                self.assertEqual(ort._workflow_homes_root(), spec2science / "homes")
 
                 # No third site: the read guard that was the third assertion here is gone
                 # with the tool it guarded (see the docstring).
 
-    def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
+    def test_the_dot_spec2science_constant_is_spelled_once(self) -> None:
         """`".spec2science"` is spelled exactly ONCE across `tools/`, in
         `tools/operator_private_root.py`.
 
@@ -276,7 +276,7 @@ class OnePrivateRootTests(unittest.TestCase):
                     tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
                 except SyntaxError:                  # not this test's subject
                     continue
-                found.extend(self._atmofab_constants(tree, rel))
+                found.extend(self._spec2science_constants(tree, rel))
         # THE RULE IS "ONCE, IN THE MODULE THAT OWNS THE RESOLVERS", not "inside that
         # one function". The first version pinned the function name, which refused a
         # change that STRENGTHENS the property — hoisting the literal to a module-level
@@ -301,7 +301,7 @@ class OnePrivateRootTests(unittest.TestCase):
             f"Sites: {sorted(found)}")
 
     @staticmethod
-    def _atmofab_constants(tree: ast.AST, rel: str) -> list[tuple[str, str]]:
+    def _spec2science_constants(tree: ast.AST, rel: str) -> list[tuple[str, str]]:
         """`(relative path, enclosing function)` for every bare `".spec2science"` constant.
 
         A LIST, one entry per CONSTANT NODE. It was a set, and both round-3 reviewers
@@ -342,7 +342,7 @@ class OnePrivateRootTests(unittest.TestCase):
             "TOP = Path.home() / '.spec2science'\n"
         )
         self.assertEqual(
-            len(OnePrivateRootTests._atmofab_constants(
+            len(OnePrivateRootTests._spec2science_constants(
                 ast.parse("from pathlib import Path\n"
                           "def twice():\n"
                           "    a = Path.home() / '.spec2science' / 'x'\n"
@@ -350,7 +350,7 @@ class OnePrivateRootTests(unittest.TestCase):
                           "    return a, b\n"), "probe.py")),
             2, "two spellings in ONE scope must count as two")
         self.assertEqual(
-            sorted(OnePrivateRootTests._atmofab_constants(ast.parse(source), "probe.py")),
+            sorted(OnePrivateRootTests._spec2science_constants(ast.parse(source), "probe.py")),
             [("probe.py", "<module>"), ("probe.py", "somewhere")])
 
 

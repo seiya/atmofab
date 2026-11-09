@@ -71,7 +71,7 @@ mutation to be named beside any vacuity claim, and re-run the ones that mutated 
 ## The harness's own scratch paths reddened the baseline (TODO:414, 2026-08-21)
 
 Two of the script's defaults were themselves inputs to the suite under test, and together they
-made a full-suite `--test-cmd` impossible to run in atmofab at all.
+made a full-suite `--test-cmd` impossible to run in Spec2Science at all.
 
 - The per-job temp root defaulted to `/dev/shm`. Two rows of `DevShmWriteBlockTests` ask what the
   write guard says about `/dev/shm`, so putting the job's scratch directory inside that path

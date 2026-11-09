@@ -19,7 +19,7 @@ The equation is treated in conservative form. The unknown variable is the scalar
 ## 2. Definition of variables and coordinates
 The coordinate system is 1D Cartesian coordinates, the coordinate name is `x`, and the unit is `m`. The state variable is `u`, its meaning is the passive-scalar concentration, its placement is the cell center, and its unit is the dimensionless `1`.
 
-The equation of §1 is invariant under the reflection $x\to L-x$ with $a\to-a$, and, being linear, under the sign reversal $u\to-u$. The advection velocity `a` is a signed input (§6), so the reflected configuration is a case of this `problem`, and §5 states the equivariance of the discretization under it ([issue #513](https://github.com/seiya/atmofab/issues/513)).
+The equation of §1 is invariant under the reflection $x\to L-x$ with $a\to-a$, and, being linear, under the sign reversal $u\to-u$. The advection velocity `a` is a signed input (§6), so the reflected configuration is a case of this `problem`, and §5 states the equivariance of the discretization under it ([issue #513](https://github.com/seiya/spec2science/issues/513)).
 
 ## 3. Type definition of domain and boundary conditions
 The domain is the interval $[0,L)$. The grid is a uniform cell-centered grid, and the grid width is defined by $dx=L/nx$. `L` and `nx` are runtime input.
@@ -157,7 +157,7 @@ Forbid non-periodic boundary. Forbid the addition of `limiter` / `clip` / `filte
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself and the `component`; the runner harness is the target's, not a node of this closure), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
-The reference basis is LeVeque (2002). The signed advection velocity and the equivariance of §5 are those of [issue #513](https://github.com/seiya/atmofab/issues/513).
+The reference basis is LeVeque (2002). The signed advection velocity and the equivariance of §5 are those of [issue #513](https://github.com/seiya/spec2science/issues/513).
 
 ## 9. tests reference
 The corresponding `tests.md` is `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md`, with `test_profile_version` of `0.8.0`.

@@ -521,7 +521,7 @@ class PurePayloadValidationTests(unittest.TestCase):
         # The PRESENCE check has two halves and only the key-absence half was pinned: mutating
         # `not (isinstance(v, str) and v.strip())` to `k not in ctx` left all five pure test files
         # green. The non-empty half is what item (b) of issue #142's record
-        # (https://github.com/seiya/atmofab/issues/142#issuecomment-5560398588) cites as the
+        # (https://github.com/seiya/spec2science/issues/142#issuecomment-5560398588) cites as the
         # reason an empty node artifact never reaches a billed leaf, so it must not be able to
         # rot unobserved.
         for blank in ("", "   ", "\n"):
@@ -2305,7 +2305,7 @@ class PureRenderTests(unittest.TestCase):
           repair-route value, and its template is covered by `PureRenderTests`' template-file
           sweep and by the prompt-contract drift guard, which hashes it. PR #419's audit of the
           rubric-twin entry records that the pair it used to own is gone
-          (https://github.com/seiya/atmofab/pull/419#issuecomment-5996926913).
+          (https://github.com/seiya/spec2science/pull/419#issuecomment-5996926913).
         """
         found = self._host_built_severity_mentions()
         detail = "; ".join(f"{k!r} in {sorted(v)}" for k, v in sorted(found.items()))

@@ -23,7 +23,7 @@ launch probe asks for it first.
 
 ## 2. Checked build
 
-`gfortran` declares `checked_flags` ([issue #589](https://github.com/seiya/atmofab/issues/589)
+`gfortran` declares `checked_flags` ([issue #589](https://github.com/seiya/spec2science/issues/589)
 PR-0): `CHECKED_FLAGS = ("-fcheck=bounds",)` in `tools/backends/compiler/gfortran/checked_flags.py`.
 `Build` compiles the certified sources a second time with the `fortran` control file's own
 `FFLAGS` string followed by it ([CONTROL_FILE.md](../../build_system/make/CONTROL_FILE.md) §1),

@@ -75,7 +75,7 @@ def setUpModule() -> None:
 
     from tools import operator_private_root as _opr
     redirect_isolated_homes_root_for_module(__name__)
-    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-claude-cred-")
+    tmp = tempfile.TemporaryDirectory(prefix="spec2science-test-claude-cred-")
     cred = Path(tmp.name) / ".credentials.json"
     cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
     os.chmod(cred, 0o600)

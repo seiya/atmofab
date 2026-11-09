@@ -1,6 +1,6 @@
-# Verification procedures (atmofab)
+# Verification procedures (Spec2Science)
 
-Run these from the atmofab checkout root. **Do not write an assertion into a commit or TODO.md
+Run these from the spec2science checkout root. **Do not write an assertion into a commit or TODO.md
 that you have not measured.**
 
 These are an operator's own dev-session commands. `AGENTS.md` §Build-runtime execution rules —

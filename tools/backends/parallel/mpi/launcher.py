@@ -38,25 +38,25 @@ LAUNCH_CANARY_RANKS = 2
 #: does not say (measured 2026-09-27 in both directions between Intel MPI 2021.10 and Open MPI
 #: 4.1.2: each process reports rank 0 of 1 and the launch exits 0).
 LAUNCH_CANARY_SOURCE = (
-    "program atmofab_mpi_launch_canary\n"
+    "program spec2science_mpi_launch_canary\n"
     "  use mpi_f08, only: MPI_Init, MPI_Finalize, MPI_Comm_size, MPI_COMM_WORLD\n"
     "  implicit none\n"
     "  integer :: n\n"
     "  call MPI_Init()\n"
     "  call MPI_Comm_size(MPI_COMM_WORLD, n)\n"
-    "  print '(a,i0)', 'atmofab-mpi-size ', n\n"
+    "  print '(a,i0)', 'spec2science-mpi-size ', n\n"
     "  call MPI_Finalize()\n"
-    "end program atmofab_mpi_launch_canary\n"
+    "end program spec2science_mpi_launch_canary\n"
 )
 
 #: The file name the launch canary is built from.
-LAUNCH_CANARY_FILENAME = "atmofab_mpi_launch_canary.f90"
+LAUNCH_CANARY_FILENAME = "spec2science_mpi_launch_canary.f90"
 
 #: The argv, after the compiler wrapper, that builds the launch canary (`{scratch}`,
 #: `{source}` and `{exe}` are filled in by the caller).
 LAUNCH_CANARY_BUILD_ARGV: tuple[str, ...] = ("-J", "{scratch}", "-o", "{exe}", "{source}")
 
-_SIZE_LINE = "atmofab-mpi-size "
+_SIZE_LINE = "spec2science-mpi-size "
 
 
 def launch_canary_problem(returncode: int, stdout: str) -> str | None:

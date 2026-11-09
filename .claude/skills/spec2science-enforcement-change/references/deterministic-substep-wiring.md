@@ -33,7 +33,7 @@ and dispatch sites — which is how the green-unit-suite failure above happens:
 7. ~~`_mandatory_file_tool_pins_for_launch`'s early-return set~~ and
    8. ~~`_allowed_file_tool_paths_for_launch`~~ — **both RETIRED**, so this is a checklist of
    SEVEN sites now. They pinned which paths a leaf's `Edit`/`Write` grant covered; both
-   functions went with that grant in Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)
+   functions went with that grant in Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)
    PR-2), when the `pure-function leaf` (deleted since in issue #534 PR-J4-b) held no tool and
    the host wrote every artifact from the document the leaf returned. There is nothing to make
    leaf-non-writable: a host-authored artifact is unreachable by construction (a `workshop leaf`,

@@ -41,16 +41,16 @@ SHOW_ARGV: tuple[str, ...] = (COMPILER_WRAPPER, "-show")
 #: A source the wrapper must compile, syntax-only, for this backend's harness to build: the
 #: binding the harness uses, the procedures and handles it calls through that binding.
 BINDING_CANARY_SOURCE = (
-    "module atmofab_mpi_binding_canary\n"
+    "module spec2science_mpi_binding_canary\n"
     "  use mpi_f08, only: MPI_Comm, MPI_COMM_WORLD, MPI_Init, MPI_Finalize\n"
     "  implicit none\n"
     "  private\n"
-    "  type(MPI_Comm), public :: atmofab_mpi_canary_comm\n"
-    "end module atmofab_mpi_binding_canary\n"
+    "  type(MPI_Comm), public :: spec2science_mpi_canary_comm\n"
+    "end module spec2science_mpi_binding_canary\n"
 )
 
 #: The file name the canary is compiled under.
-BINDING_CANARY_FILENAME = "atmofab_mpi_binding_canary.f90"
+BINDING_CANARY_FILENAME = "spec2science_mpi_binding_canary.f90"
 
 #: The argv, after the wrapper, that compiles the canary syntax-only in a scratch directory
 #: (`{source}` and `{scratch}` are filled in by the caller). The module files the front end

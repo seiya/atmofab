@@ -11,19 +11,19 @@ sites_version: 1
 sites:
   cpu_box:                          # site id: a lowercase token
     host: cpu-box                   # ssh destination [user@]name; no ':', '/', or spaces
-    workdir: /scratch/atmofab-jobs  # absolute remote path, no ':'; each job is created and removed beneath it
+    workdir: /scratch/spec2science-jobs  # absolute remote path, no ':'; each job is created and removed beneath it
     executes: [cpu]                 # the hardware classes this site runs
     scheduler: none                 # the job script runs in the foreground over ssh
     setup:                          # optional: shell lines each job runs first, in its own shell;
       - export PATH=/opt/tools/bin:$PATH  # what they set reaches every command of the job
   gpu_box:
     host: gpu-box
-    workdir: /scratch/atmofab-jobs
+    workdir: /scratch/spec2science-jobs
     executes: [gpu]
     scheduler: none
   cluster_cpu:                      # a site whose jobs run through a batch scheduler
     host: login-node                # the machine the job is asked for from
-    workdir: /work/atmofab-jobs     # must be visible at this path from the machines jobs run on
+    workdir: /work/spec2science-jobs     # must be visible at this path from the machines jobs run on
     executes: [cpu]                 # a claim about the machines the directives below select
     scheduler: slurm                # docs/backends/scheduler/<scheduler>/JOB_SUBMIT.md
     scheduler_directives: []        # each split into words and passed to the scheduler; its JOB_SUBMIT.md shows them
@@ -33,7 +33,7 @@ sites:
       - module load compiler
   # A class whose device must be requested gets a site of its own — directives are per site —
   # and that site's directives request it; two sites may name the same host.
-  # cluster_gpu: {host: login-node, workdir: /work/atmofab-jobs, executes: [gpu],
+  # cluster_gpu: {host: login-node, workdir: /work/spec2science-jobs, executes: [gpu],
   #               scheduler: slurm, scheduler_directives: [<select a machine with the device>]}
   local:                            # optional; `executes` is the only key it takes (no `setup`:
                                     # this host's commands run in the operator's own environment)

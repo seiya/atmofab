@@ -15,7 +15,7 @@ from tools.backends.scheduler.slurm import submit
 class ForegroundArgvTests(unittest.TestCase):
 
     def _argv(self, **kw) -> tuple[str, ...]:
-        args = {"directives": (), "job_name": "atmofab-j", "wall_clock_sec": 60,
+        args = {"directives": (), "job_name": "spec2science-j", "wall_clock_sec": 60,
                 "queue_timeout_sec": 5}
         args.update(kw)
         return submit.foreground_argv(**args)
@@ -26,7 +26,7 @@ class ForegroundArgvTests(unittest.TestCase):
         self.assertEqual(
             self._argv(directives=("--partition=gpu", "-p  debug", "--time=30")),
             ("srun", "--time=1", "--partition=gpu", "-p", "debug", "--time=30", "--ntasks=1",
-             "--job-name=atmofab-j", "--immediate=5"))
+             "--job-name=spec2science-j", "--immediate=5"))
 
     def test_the_time_limit_is_rounded_up_to_whole_minutes(self) -> None:
         for sec, minutes in ((1, 1), (60, 1), (61, 2), (3600, 60), (3601, 61)):
