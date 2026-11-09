@@ -1,7 +1,7 @@
 # Kessler measurement: offline driver and comparison
 
 ## Status
-A measurement record of [issue #578](https://github.com/seiya/atmofab/issues/578), item 2 of `docs/design/scale_migration.md` §Order. It belongs to no suite and no workflow phase, and nothing in `tools/` reads it.
+A measurement record of [issue #578](https://github.com/seiya/spec2science/issues/578), item 2 of `docs/design/scale_migration.md` §Order. It belongs to no suite and no workflow phase, and nothing in `tools/` reads it.
 
 **Placement exception.** `docs/DEVELOPMENT.md` §Record placement has no row for measurement code. This directory is the exception, placed beside the note it feeds, for as long as the two nodes it measures live in this repository: `TODO.md` carries the removal condition. Direct compiler calls here are a development measurement; `AGENTS.md` §Build-runtime execution rules binds the workflow's `compile`.
 
@@ -32,7 +32,7 @@ python3 compare.py compare kessler   --driver <dir>/O2/driver --alt-driver <dir>
 **Comparison.** The same driver columns against a certified run's `raw/state_snapshots/<case_id>.json`, at interior cells, every returned variable: `1e-12` relative with a `1e-15` absolute floor. `evaporate` is compared as `max(-pcsat, 0)`, because the droplet-number factor amplifies a round-off `pcsat`, and `rhoe_t` as `rhoe_t*dt/(dens*L00)`, the mixing ratio it stands for, because `dens*L00/dt` amplifies a round-off `qv` the same way. A difference beyond the tolerance is a finding on the `spec` or on the generated code, never a tolerance change. The script prints the deviation list beside the maxima.
 
 ## Calibration of `drift_ratio`
-The bound `1e-3` and the statement that the kept cells measure below `1e-5` come from an independent kernel of about 250 lines written from the two Controlled Specs by a reviewer, in four arrangements of the arithmetic. The builds were gfortran 11.4 at `-O0`, `-O2`, `-O3`, `-Ofast` and `-O3 -mfma -mavx2`, and ifort and ifx of oneAPI 2023.2 at `-O0`, `-O2` and `-O3`, 44 in all, each at one and four threads; the largest value was `2.9e-6`, at one build. It and its wrong variants are not kept in this repository, so the calibration cannot be retaken from this tree; the record of the run is on [issue #578](https://github.com/seiya/atmofab/issues/578). The original is re-read by the screen.
+The bound `1e-3` and the statement that the kept cells measure below `1e-5` come from an independent kernel of about 250 lines written from the two Controlled Specs by a reviewer, in four arrangements of the arithmetic. The builds were gfortran 11.4 at `-O0`, `-O2`, `-O3`, `-Ofast` and `-O3 -mfma -mavx2`, and ifort and ifx of oneAPI 2023.2 at `-O0`, `-O2` and `-O3`, 44 in all, each at one and four threads; the largest value was `2.9e-6`, at one build. It and its wrong variants are not kept in this repository, so the calibration cannot be retaken from this tree; the record of the run is on [issue #578](https://github.com/seiya/spec2science/issues/578). The original is re-read by the screen.
 
 ## What the suites do not separate
 Measured with an independent kernel written from the two Controlled Specs and with deliberately wrong variants of it, every judgment evaluated by `evaluate_primary_predicates`, on `xfail` cases too. These pass both suites, and each `tests.md` leaves them unstated because a `Generate` producer reads it:
@@ -44,7 +44,7 @@ Measured with an independent kernel written from the two Controlled Specs and wi
 Of those four, the comparison reads part of the threshold. A threshold of `2e-6` exits 1 on `compare saturation` and 0 on `compare kessler`; so do `3e-6` and `1e-5`, which fail the saturation suite only (the Kessler suite is false 0 on both). A threshold of `1.5e-6` exits 0 on both and is false 0 on both suites, with or without a comparand. A limit of `150` or `1000`, the kept `temp` and the clip exit 0 on both: the comparison skips `xfail` cases, and the other differences fall under its `1e-15` floor. Those are held by §3 and §6 of the Controlled Specs and a `Generate` reviewer alone. A threshold change is therefore read on `compare saturation`.
 
 ## Results
-Commit `db90db3e`, 2026-11-02, `fortran_cpu`, Claude leaves. Both nodes pass, with no framework change. The full record is on [issue #578](https://github.com/seiya/atmofab/issues/578#issuecomment-6568076705).
+Commit `db90db3e`, 2026-11-02, `fortran_cpu`, Claude leaves. Both nodes pass, with no framework change. The full record is on [issue #578](https://github.com/seiya/spec2science/issues/578#issuecomment-6568076705).
 
 | | saturation | Kessler |
 |---|---:|---:|

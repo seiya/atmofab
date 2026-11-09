@@ -519,7 +519,7 @@ with the keep-text mask.
 ## Rule 1-d: a certification on the degenerate grid, and a node certified under its own runner only (issue #512 PR-4a / PR #519, 2026-10-17)
 
 The PR moved `harness_fortran_cpu_mpi` to a host-imposed two-dimensional process grid
-(`ATMOFAB_PROCESS_GRID`; unset → `(ranks, 1)`). Three things went wrong, and each shows the
+(`SPEC2SCIENCE_PROCESS_GRID`; unset → `(ranks, 1)`). Three things went wrong, and each shows the
 same premise from a different side: **what the certifying run actually exercised**.
 
 **The degenerate member.** The first commit deferred the host side that sets the grid, so the
@@ -747,7 +747,7 @@ committed. `volatile` keeps the store.
 Two things outlast the fix. The premise "the driver's reset holds" read as a fact about the driver
 and was a fact about the compiler and its flags, so it took a run. And the first rows pinning the fix
 did not pin it, because at the flags they built with the defect did not show: `-O2` alone read `0` by
-register luck, while `-O2 -fcheck=bounds` and `-O3` read `1`. `atmofab-review-loop` carries that half.
+register luck, while `-O2 -fcheck=bounds` and `-O3` read `1`. `spec2science-review-loop` carries that half.
 
 ## Rule 1-d: a contract at every rank, a self-test at rank 1 (issue #589 PR-3 / PR #596, 2026-11-05)
 

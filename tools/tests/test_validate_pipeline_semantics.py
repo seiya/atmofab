@@ -7751,7 +7751,7 @@ end module shallow_water2d_model
         # `*_model.f90` in the tree, the pair moves the violation count down by two with no
         # `problem/` file changing verdict. (The absolute pair depends on how `dep_spec_ids` is
         # derived for that sweep; issue #181's record holds the harness,
-        # https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999. The DELTA does not.)
+        # https://github.com/seiya/spec2science/issues/181#issuecomment-5559628999. The DELTA does not.)
         for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
                     "h_in, & ! it's the field\n       h_in, tmp"):
             self.assertEqual(fortran_source.split_names(raw), ["h_in", "h_in", "tmp"], raw)
@@ -17661,7 +17661,7 @@ class ProfileSelectionGateTests(unittest.TestCase):
 
     The set of adopted profiles comes from the conductor-authored sidecar, never from the IR:
     a field the leaf authors must not decide whether the leaf is gated
-    (`atmofab-enforcement-change` surface 11)."""
+    (`spec2science-enforcement-change` surface 11)."""
 
     _PROFILE = {"node_key": "profile/pr@0.1.1", "profile_id": "pr", "profile_version": "0.1.1",
                 "version_constraint": ">=0.1.0 <1.0.0",
@@ -25992,7 +25992,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         if pure_prompt:
             prompt = (
                 f"{PURE_PROMPT_SENTINEL}: you are the `generate.generate` producer of the "
-                "atmofab workflow, run as a host-mediated pure function.\n\n"
+                "spec2science workflow, run as a host-mediated pure function.\n\n"
                 f"Target node_key: {self._NODE}\nTarget step: generate\n"
                 f"Target substep: generate\norchestration_id: {self._ORCH}\n"
                 f"agent_run_id: {self._ARID}\n"

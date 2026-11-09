@@ -1,12 +1,12 @@
-# atmofab
+# Spec2Science
 
-`atmofab` generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
+Spec2Science generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
 
 `controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the build-runtime library (`tools/build_runtime.py`).
 
 ## Scope
 
-- Generate the `model` (physics computation) and the `runner` (execution and judgment coordination) for a computation task defined by a `spec`, targeting `CPU` and `GPU` hardware. The material certified in this tree is Fortran on `CPU`. A second target profile, CUDA C++ on `GPU` (`spec/targets/`), builds its harness, and reaches `Validate` only at an execution site with a GPU that the operator's `sites.yaml` names ([issue #293](https://github.com/seiya/atmofab/issues/293); `docs/ORCHESTRATION.md` §Execution sites).
+- Generate the `model` (physics computation) and the `runner` (execution and judgment coordination) for a computation task defined by a `spec`, targeting `CPU` and `GPU` hardware. The material certified in this tree is Fortran on `CPU`. A second target profile, CUDA C++ on `GPU` (`spec/targets/`), builds its harness, and reaches `Validate` only at an execution site with a GPU that the operator's `sites.yaml` names ([issue #293](https://github.com/seiya/spec2science/issues/293); `docs/ORCHESTRATION.md` §Execution sites).
 - Manage specifications under four `spec_kind` values: `problem` (integration scenario), `component` (reusable operation), `profile` (component selection policy), and `infrastructure` (the shared runner harness, one node per `(language, hardware)` target).
 - Keep the physics definition separated from execution optimization. `spec.ir.yaml` carries physics-affecting structure in its `case` / `algorithm` / `io_contract` sections and names no implementation target; execution discretion is held in the target profile (`spec/targets/<target_id>.yaml`) and in the generated bundle's lowering plan (`docs/IMPL_PLAN_SPEC.md`).
 - Judge each `node` from its own execution evidence, and aggregate the judgment across its dependency closure.
@@ -27,7 +27,7 @@ The core workflow is five phases. Each phase produces exactly one kind of primar
 
 From `Generate` onward, `spec.ir.yaml` is the sole generation and verification contract; reading `controlled_spec.md` is forbidden except at `Generate.verify`, which reads it as a secondary requirement-fidelity cross-check.
 
-Each phase runs an ordered substep sequence, and there are three launch shapes. Every `LLM` substep runs as a `workshop leaf` ([issue #534](https://github.com/seiya/atmofab/issues/534); since PR-J4-b there is no other leaf model and no `leaf:` field to write — the `pure-function leaf` it replaced took a host-inlined closed context and returned one JSON document with no tools). A deterministic substep runs in the conductor's own process. The two producing substeps, `Compile.generate` and `Generate.generate`, run the producing kind: an agent that edits a host-seeded work tree outside the checkout — on `Generate.generate` asking the host to derive, compile, lint, syntax-check and run its bundle, on `Compile.generate` writing the whole IR and asking the host to check it as `Compile.static` will — after which the host snapshots the tree into one document and runs the gates. The three judging substeps, `Compile.verify`, `Generate.verify` and `Validate.judge`, run the reading kind (adopted on the A/B of 2026-10-25), on every provider: it reads its documents as files in a host-seeded tree, is served no host operation, and writes its one verdict document there, which the host checks and writes as it does a returned one (`docs/ORCHESTRATION.md` §workshop leaf). The agentic leaf of the pre-Z4 design ([issue #171](https://github.com/seiya/atmofab/issues/171)), which ran in the checkout with tools and a hook layer around it, is retired, and a node with no bundle shape fails closed rather than falling back to one.
+Each phase runs an ordered substep sequence, and there are three launch shapes. Every `LLM` substep runs as a `workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534); since PR-J4-b there is no other leaf model and no `leaf:` field to write — the `pure-function leaf` it replaced took a host-inlined closed context and returned one JSON document with no tools). A deterministic substep runs in the conductor's own process. The two producing substeps, `Compile.generate` and `Generate.generate`, run the producing kind: an agent that edits a host-seeded work tree outside the checkout — on `Generate.generate` asking the host to derive, compile, lint, syntax-check and run its bundle, on `Compile.generate` writing the whole IR and asking the host to check it as `Compile.static` will — after which the host snapshots the tree into one document and runs the gates. The three judging substeps, `Compile.verify`, `Generate.verify` and `Validate.judge`, run the reading kind (adopted on the A/B of 2026-10-25), on every provider: it reads its documents as files in a host-seeded tree, is served no host operation, and writes its one verdict document there, which the host checks and writes as it does a returned one (`docs/ORCHESTRATION.md` §workshop leaf). The agentic leaf of the pre-Z4 design ([issue #171](https://github.com/seiya/spec2science/issues/171)), which ran in the checkout with tools and a hook layer around it, is retired, and a node with no bundle shape fails closed rather than falling back to one.
 
 | phase | substeps | `LLM` substeps |
 |---|---|---|
@@ -136,9 +136,9 @@ python3 -m pytest tools/tests/ -q -m "not slow"
 opt-out because nothing else runs the full set: deselecting it by default would leave the
 leaf deadline / abandon / teardown guards executed by nobody.
 
-The review instrument under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py` —
+The review instrument under `.claude/skills/` — `spec2science-review-loop/scripts/mutation_check.py` —
 carries its tests beside it in `scripts/tests/`. Its skill states the command that runs them
-(`.claude/skills/atmofab-review-loop/SKILL.md`), because no command in this section collects
+(`.claude/skills/spec2science-review-loop/SKILL.md`), because no command in this section collects
 them — measured at `dfeb73dc`: `pytest tools/tests/` and a bare `pytest` each collect 6266, and
 that directory holds 52 tests. (A second instrument, `measure_claude_tool.py`, measured the
 leaf tools that went in issue #171, and was deleted in issue #445.)
@@ -146,11 +146,11 @@ leaf tools that went in issue #171, and was deleted in issue #445.)
 **That command gets none of the guards `tools/tests/conftest.py` installs** for the suite's
 own directory: not the environment strip, not the private-root redirect, not
 the secret-root refusal, and `--keep-operator-env` is an unrecognized argument there. Nothing
-is known to bite — neither the instrument's tests nor the script read an `ATMOFAB_*` name,
+is known to bite — neither the instrument's tests nor the script read a `SPEC2SCIENCE_*` name,
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR` — and no `conftest.py` is placed beside them, so an
 instrument test that ever does need a guard has to say so itself.
 
-**The suite ignores your `ATMOFAB_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
+**The suite ignores your `SPEC2SCIENCE_*`, `CODEX_HOME` and `CLAUDE_CONFIG_DIR` environment
 variables** (issue #84). They are per-run knobs that `tools/run_workflow.py` sets in every
 node's environment, so the shell most likely to have them exported is one used for this
 repository's own work — and a suite that inherits them answers a question about the machine

@@ -14,7 +14,7 @@ Two independent halves, neither of which contributes to any verdict:
   makes it usable as an oracle. It stays OUT of the gate deliberately: a verdict must not depend
   on which machine ran it, and flang is not a dependency this toolchain can require (``gfortran``
   is). See the DECIDED note in the front-end swap's record
-  (https://github.com/seiya/atmofab/issues/181#issuecomment-5559629951).
+  (https://github.com/seiya/spec2science/issues/181#issuecomment-5559629951).
 
 WHY THE `--flang` HALF SHELLS OUT DIRECTLY, since `AGENTS.md` requires compile / run / quality
 checks to go through the build-runtime library and a reviewer has raised this once. Three

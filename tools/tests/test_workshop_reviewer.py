@@ -783,7 +783,7 @@ def _codex_reading(case) -> None:
     """Put `case`'s fake on a `codex_cli` reading entry of its pair: the thread a launch emits
     is the one it resumed, else `thread-<arid>` (what `_ReviewerFake` recorded)."""
     case.c.llm_config = _codex_config(case.repo, case.PHASE, case.SUBSTEP)
-    # The homes OUTSIDE /tmp, as production's `~/.atmofab/homes` is: a codex reading lineage
+    # The homes OUTSIDE /tmp, as production's `~/.spec2science/homes` is: a codex reading lineage
     # whose home a codex shell can write is refused (`_codex_shell_writable_root`).
     homes = tempfile.TemporaryDirectory(dir="/var/tmp")
     case.addCleanup(homes.cleanup)

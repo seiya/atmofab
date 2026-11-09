@@ -55,7 +55,7 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
 | neutral | argument, `intent(in)` | argument, `out` / `inout` | component / result |
 |---|---|---|---|
 | `real` / `integer` / `logical`, rank 0 | `K name` | `K& name` | `K` |
-| `real` / `integer` / `logical`, rank R ≥ 1 | `atmofab::View<const K, R> name` | `atmofab::View<K, R> name` | `O` |
+| `real` / `integer` / `logical`, rank R ≥ 1 | `spec2science::View<const K, R> name` | `spec2science::View<K, R> name` | `O` |
 | the same, `alloc: true` | `const O& name` | `O& name` | — |
 | `string`, rank 0 | `const std::string& name` | `std::string& name` | `std::string` |
 | `derived T`, rank 0 | `const T& name` | `T& name` | `T` |
@@ -81,7 +81,7 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
 - A module parameter `n = float64` lowers to `using n = double;` (`float32` to `float`); an
   integer value `n = 64` to `inline constexpr int n = 64;` (in a header, an unreferenced
   `inline constexpr` draws no unused-variable diagnostic).
-- `O` is the owning container: `std::vector<X>` at rank 1, `atmofab::Array<X, R>` at rank
+- `O` is the owning container: `std::vector<X>` at rank 1, `spec2science::Array<X, R>` at rank
   R ≥ 2 (defined by every rendered header: `std::vector<X> data` and `long extent[R]`,
   column-major).
 - A `kind` naming a module parameter with an INTEGER value is refused: only a `float64` /
@@ -96,7 +96,7 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
   specifier. The target-free Compile
   gate renders every §5.1 in every language that declares `signatures`, so a §5.1 using one of
   these fails Compile.
-- **`atmofab::View<T, R>`** is the array view every rendered header defines, once per
+- **`spec2science::View<T, R>`** is the array view every rendered header defines, once per
   translation unit (`header.VIEW_DEFINITION`; its layout is `GENERATE_RULES.md` §Legality and gate guards).
 
 ## 3. The pin on a generated source

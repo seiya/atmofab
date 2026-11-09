@@ -49,7 +49,7 @@ import time
 #: The fixed in-sandbox mount point of the per-launch socket directory. `/run` is not among the
 #: system binds, so bwrap creates the mount point on its own root; the host `/tmp` path would be
 #: covered by the sandbox's `--tmpfs /tmp`.
-NET_MOUNT = "/run/atmofab/net"
+NET_MOUNT = "/run/spec2science/net"
 #: The in-namespace proxy listener the leaf's `HTTPS_PROXY` names.
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 3128
@@ -147,8 +147,8 @@ def socket_dir_parent() -> str:
     normalized path), else `/tmp` — never `tempfile.gettempdir()`, which follows `TMPDIR` and can
     name a path too long for a socket under it."""
     runtime = os.path.normpath(os.environ.get("XDG_RUNTIME_DIR") or "/nonexistent")
-    # The longest socket path under it: `<dir>/atmofab-net-XXXXXXXX/provider.sock`.
-    longest = os.path.join(runtime, "atmofab-net-" + "x" * 8, PROVIDER_SOCKET)
+    # The longest socket path under it: `<dir>/spec2science-net-XXXXXXXX/provider.sock`.
+    longest = os.path.join(runtime, "spec2science-net-" + "x" * 8, PROVIDER_SOCKET)
     if os.path.isabs(runtime) and os.path.isdir(runtime) \
             and os.access(runtime, os.W_OK | os.X_OK) \
             and len(longest.encode()) <= SUN_PATH_MAX:
@@ -158,7 +158,7 @@ def socket_dir_parent() -> str:
 
 def make_socket_dir() -> str:
     """Create one launch's socket directory (0700, this user's) and return its path."""
-    path = tempfile.mkdtemp(prefix="atmofab-net-", dir=socket_dir_parent())
+    path = tempfile.mkdtemp(prefix="spec2science-net-", dir=socket_dir_parent())
     os.chmod(path, 0o700)
     return path
 

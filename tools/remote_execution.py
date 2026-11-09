@@ -167,18 +167,18 @@ _ELEMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")
 _TAG = re.compile(r"[a-z][a-z0-9_]*")
 #: The first word of a status line the job script prints: `<marker> <tag> <rc> <t0> <t1>`, the
 #: exit status and the epoch seconds before and after.
-STATUS_MARKER = "atmofab-status"
+STATUS_MARKER = "spec2science-status"
 #: The first word of a platform line: `<marker> <key> <value>`, one for each of
 #: `PLATFORM_KEYS`, plus `gpu` when the request carries a probe; an empty value is "unknown".
-PLATFORM_MARKER = "atmofab-platform"
+PLATFORM_MARKER = "spec2science-platform"
 PLATFORM_KEYS = ("machine", "node", "cpu")
 #: The platform line's key for the toolchain version, printed only when the request carries a
 #: `toolchain_probe`; it is read into `JobResult.toolchain_version`, not into `platform`.
 TOOLCHAIN_KEY = "toolchain"
 #: A scheduler's job only: `<marker> <epoch>`, printed by the login shell before the job is asked
 #: for, and `<marker> <job_id> <epoch>`, printed by the job when it starts.
-SUBMIT_MARKER = "atmofab-submitted"
-JOB_MARKER = "atmofab-job"
+SUBMIT_MARKER = "spec2science-submitted"
+JOB_MARKER = "spec2science-job"
 #: A line of the script's stdout that carries no marker — what a login shell's startup files
 #: print — is not read; one that carries a marker must carry exactly one, at its start.
 _MARKERS = (STATUS_MARKER, PLATFORM_MARKER, SUBMIT_MARKER, JOB_MARKER)
@@ -411,7 +411,7 @@ def _program_check(prog: str, indent: str) -> list[str]:
 
 
 #: The shell variable that holds the index of the setup line running, empty outside them.
-_SETUP_LINE_VAR = "atmofab_setup_line"
+_SETUP_LINE_VAR = "spec2science_setup_line"
 
 
 def _setup_lines(setup: tuple[str, ...], on_failure: Callable[[int], str],
@@ -420,7 +420,7 @@ def _setup_lines(setup: tuple[str, ...], on_failure: Callable[[int], str],
     what it exports reaches every later line, with its stdout sent to stderr — the script's
     stdout carries the marker lines, and a setup line's output is not one. `on_failure(i)` is
     the shell text run when line `i` (0-based) exits non-zero; `on_exit` is run, by an EXIT
-    trap, when a line ENDS the shell instead, with `$atmofab_setup_line` holding its index.
+    trap, when a line ENDS the shell instead, with `$spec2science_setup_line` holding its index.
 
     Each line runs as `command eval <line>`, which turns a special built-in's error — `.` of a
     file that is not there, an option this `sh` does not take — into an ordinary failure the
@@ -707,7 +707,7 @@ def _read_output(path: Path, remote: str) -> str:
 
 
 #: The first word of each line `probe_site`'s script prints.
-PROBE_MARKER = "atmofab-probe"
+PROBE_MARKER = "spec2science-probe"
 
 
 #: What `probe_site` checks beyond the programs, each with the problem it names when it fails;
@@ -758,7 +758,7 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     workdir = str(site.workdir)
     # The shipped runner is executed from beneath the workdir, so a file there must run: one is
     # made, run and removed (the job script refuses a program that is not an executable file).
-    exe = f"{workdir}/.atmofab-probe-$$"
+    exe = f"{workdir}/.spec2science-probe-$$"
     tests = {
         "workdir": f"mkdir -p {q(workdir)} 2>/dev/null && [ -d {q(workdir)} ] && [ -w {q(workdir)} ]",
         "workdir_exec": (f"{{ printf '#!/bin/sh\\nexit 0\\n' > \"{exe}\" && chmod +x \"{exe}\" && "
@@ -902,7 +902,7 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
                       + (2 * PROBE_TIMEOUT_SEC if request.toolchain_probe else 0))
         prefix = submission.foreground_argv(
             directives=tuple(site.scheduler_directives),
-            job_name=f"atmofab-{remote.rsplit('/', 1)[1]}",
+            job_name=f"spec2science-{remote.rsplit('/', 1)[1]}",
             wall_clock_sec=wall_clock, queue_timeout_sec=queue_timeout)
         # The first line printed is empty, for the reason the job script's is.
         command = (f"echo; printf '%s %s\\n' {SUBMIT_MARKER} \"$(date +%s)\" && "

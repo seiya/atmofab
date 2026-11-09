@@ -27,7 +27,7 @@ _KERNEL_RE = re.compile(r"\b__global__\b|<<<")
 _LAUNCH_RE = re.compile(r"<<<")
 _LAUNCH_BLOCK_NAME = "launch_block_size"
 _LAUNCH_BLOCK_RE = re.compile(rf"\b{_LAUNCH_BLOCK_NAME}\b")
-# A write to it, through a QUALIFIED name (`atmofab::`, or a namespace alias of it): an
+# A write to it, through a QUALIFIED name (`spec2science::`, or a namespace alias of it): an
 # assignment, plain or compound, or an increment / decrement on either side; `==` and the
 # relational and shift operators are reads. A bare `launch_block_size = ...` is not refused: it is
 # how a function-local copy of the same name, a parameter's default or a member is spelled
@@ -56,7 +56,7 @@ class KernelPattern:
 
 def launch_violations(texts: dict[Path, str]) -> list[str]:
     """The launch-configuration floor (issue #512): a leaf source that launches a kernel (`<<<`,
-    in code) reads the run's threads per block, `atmofab::launch_block_size`, somewhere in its
+    in code) reads the run's threads per block, `spec2science::launch_block_size`, somewhere in its
     code, and no source writes it. A NECESSARY condition only: a source that names the variable
     and still launches some kernel with a literal block passes, and is `generate.verify` G6's
     finding. What it catches is the source that never takes the host's block at all — the shape
@@ -72,13 +72,13 @@ def launch_violations(texts: dict[Path, str]) -> list[str]:
         code = reader.code_view(text)
         if _LAUNCH_BLOCK_WRITE_RE.search(code):
             out.append(
-                f"{path}: writes `atmofab::launch_block_size`, the threads per block the host "
+                f"{path}: writes `spec2science::launch_block_size`, the threads per block the host "
                 "imposed on the run (the host-rendered runner sets it before the first case); "
                 "read it, never write it — the host runs the binary once per block size of the "
                 "target's sweep, and a source that sets its own block makes those runs one")
         if _LAUNCH_RE.search(code) and not _LAUNCH_BLOCK_RE.search(code):
             out.append(
-                f"{path}: launches a kernel (`<<<`) and never reads `atmofab::launch_block_size`, "
+                f"{path}: launches a kernel (`<<<`) and never reads `spec2science::launch_block_size`, "
                 "the threads per block the host imposed on the run — launch every kernel with it "
                 "as the block and a grid computed from it ((n + block - 1) / block blocks for n "
                 "elements), never with a literal or a block chosen from the device")

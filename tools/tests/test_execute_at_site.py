@@ -508,7 +508,7 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
 
     def test_a_transport_failure_is_a_deterministic_validate_error_with_no_evidence(
             self) -> None:
-        for knobs in ({"SHIM_SSH_FAIL": "atmofab-status"}, {"SHIM_SCP_FAIL": "down"},
+        for knobs in ({"SHIM_SSH_FAIL": "spec2science-status"}, {"SHIM_SCP_FAIL": "down"},
                       {"SHIM_SCP_FAIL": "up"}):
             with self.subTest(**knobs), tempfile.TemporaryDirectory() as tmp:
                 n = _Node(tmp)

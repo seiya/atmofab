@@ -37,7 +37,7 @@ operator's home", not "green in CI".
 
 Run from the checkout root:
 
-    python3 .claude/skills/atmofab-review-loop/scripts/ci_shape_suite.py [--jobs N] [--keep]
+    python3 .claude/skills/spec2science-review-loop/scripts/ci_shape_suite.py [--jobs N] [--keep]
 
 The temporary directory is removed at exit unless `--keep` is given.
 Exit status: 0 only when the suite exited 0, the report holds the pristine number of tests and

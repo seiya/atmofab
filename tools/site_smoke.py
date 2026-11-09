@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     orch_id, run_id = f"smoke_{stamp}", f"smoke_{uuid.uuid4().hex[:8]}"
     job_dir = rx.job_dir(site, orch_id, run_id)
-    local_tmp = Path(tempfile.mkdtemp(prefix="atmofab-site-smoke-"))
+    local_tmp = Path(tempfile.mkdtemp(prefix="spec2science-site-smoke-"))
     command = rx.CommandSpec(
         tag="smoke", tool_name="run_program", argv=("sh", "-c", args.cmd), cwd=job_dir,
         env={"JOB": job_dir},

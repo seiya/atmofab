@@ -1,7 +1,7 @@
 # Backend boundary (canonical source)
 
 ## Purpose
-`atmofab` describes a `spec` without naming an implementation technology. A `controlled_spec` is
+`spec2science` describes a `spec` without naming an implementation technology. A `controlled_spec` is
 language-neutral; the `IR` carries the technology choice as data; the workflow renders that choice
 into concrete source, a concrete build, and concrete tool invocations. This document is the
 canonical source for where the knowledge of a concrete technology is allowed to live, and for the
@@ -126,7 +126,7 @@ Out of scope, each for a stated reason:
   technology knowledge for a package to hold. `registry.load` raises for it. A new TECHNOLOGY
   value is not registered this way: it enters with its package (§Operations Rules). The
   migration that extracted every technology record closed with
-  [issue #469](https://github.com/seiya/atmofab/issues/469).
+  [issue #469](https://github.com/seiya/spec2science/issues/469).
 
 ## Placement rules
 | Artifact | Neutral location | Backend location |
@@ -358,6 +358,6 @@ own exit code.
 The current baseline is not zero, and it is not expected to reach zero: what it still counts is
 naming — citation paths, axis values, examples marked as a binding — which this document permits
 (§Decision Criteria). The per-area migration that removed the live knowledge is recorded on
-[issue #469](https://github.com/seiya/atmofab/issues/469), which closed it; the measured debt at
+[issue #469](https://github.com/seiya/spec2science/issues/469), which closed it; the measured debt at
 the time this rule was written is recorded in
-[a comment on the ratchet's issue](https://github.com/seiya/atmofab/issues/182#issuecomment-5559624872).
+[a comment on the ratchet's issue](https://github.com/seiya/spec2science/issues/182#issuecomment-5559624872).

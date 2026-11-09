@@ -4681,7 +4681,7 @@ def _validate_generate_syntax_command_logs(
     language backend names the MANDATORY stage (`bundle_facts.MANDATORY_SYNTAX_COMPILER`),
     and it must have passed; a language that declares no syntax stage
     (`syntax_promotions`) cannot be certified at all. Optional additional stages (the
-    ATMOFAB_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
+    SPEC2SCIENCE_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
     their compiler has no registered adapter or no installed binary, or when the stage
     refused before running (a staged source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
     either way, as does a recorded `fail` stage."""
@@ -10743,7 +10743,7 @@ def _validate_profile_selection(
     second copy of a fact ``all_nodes`` already carries, and the drift this gate exists to stop.
 
     WHICH nodes the field is required on comes from the SIDECAR, never from the IR
-    (`atmofab-enforcement-change` surface 11): a field the leaf authors must not decide whether
+    (`spec2science-enforcement-change` surface 11): a field the leaf authors must not decide whether
     the leaf is gated. A sidecar with ``profiles: []`` is a node that adopts none, and the field
     is not read there at all. The phase_01 schema block says no case of such a node declares one
     (issue #358: the harness `tests.md` files no longer give the name a meaning of their own),

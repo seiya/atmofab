@@ -31,11 +31,11 @@ VERSION_ARGV: tuple[str, ...] = (EXECUTABLE, "--version")
 #: device side is exercised too. Compiled with the stage's own argv, it separates a broken
 #: invocation (a `toolchain.standard` or `hardware.architecture` the driver refuses) from broken
 #: sources by the driver's own verdict.
-CANARY_SOURCE = ("__global__ void atmofab_syntax_canary_kernel(int n) { (void)n; }\n"
-                 "int atmofab_syntax_canary(void) { return 0; }\n")
+CANARY_SOURCE = ("__global__ void spec2science_syntax_canary_kernel(int n) { (void)n; }\n"
+                 "int spec2science_syntax_canary(void) { return 0; }\n")
 
 #: The name the canary is staged under; its suffix is one the language's source rule accepts.
-CANARY_FILENAME = "atmofab_syntax_canary.cu"
+CANARY_FILENAME = "spec2science_syntax_canary.cu"
 
 #: How this driver spells a standard, for the remedy an operator reads.
 STANDARD_SPELLING_EXAMPLE = "`c++17`, not `17`"

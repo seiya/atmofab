@@ -1,7 +1,7 @@
 # CodegenBundle contract (`bundle_schema_version` 2.0.0)
 
 > **Scope note.** The `Generate.generate` leaf — a `workshop leaf` since
-> [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, the `Z2` pure-function
+> [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b, the `Z2` pure-function
 > leaf (`docs/design/zero_base_architecture.md`) before it — produces exactly one
 > `CodegenBundle`, which the host assembles from the leaf's tree snapshot; the host validates
 > it with `validate_bundle` (the post-generate gate), writes the declared files, and
@@ -10,7 +10,7 @@
 >
 > | shape | node | the leaf authors | the host renders |
 > |---|---|---|---|
-> | `m3c` | a non-`infrastructure` node whose target toolchain the host writes the build control file for and renders the runner for (the `control_file` and `runner_render` capabilities); no dependency count enters it (until R4-a PR-3, issue #284, it also required exactly one `infrastructure` dependency) | `model` | the driver over the target's harness (`RUNNER_OUTPUT_CONTRACT.md`, [issue #589](https://github.com/seiya/atmofab/issues/589)), and the build control file |
+> | `m3c` | a non-`infrastructure` node whose target toolchain the host writes the build control file for and renders the runner for (the `control_file` and `runner_render` capabilities); no dependency count enters it (until R4-a PR-3, issue #284, it also required exactly one `infrastructure` dependency) | `model` | the driver over the target's harness (`RUNNER_OUTPUT_CONTRACT.md`, [issue #589](https://github.com/seiya/spec2science/issues/589)), and the build control file |
 > | `harness` | an `infrastructure` self-test (bundle 1.1.0's `runner` role) | `model` + `runner` | the build control file only |
 >
 > WHICH shape a node has is not a property of this document — `validate_bundle` sees a
@@ -19,7 +19,7 @@
 > readers `Conductor._bundle_shape` / `validate_pipeline_semantics._ir_bundle_shape`. A node
 > with neither shape has no producer path and FAILS CLOSED: `Conductor.run_substep` emits
 > `node_has_no_bundle_shape` and returns `fail`. It ran the shared agentic `Generate.generate`
-> leaf until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted that leaf;
+> leaf until Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)) deleted that leaf;
 > no such node is in the catalog, so the fall-back was never taken in tree.
 >
 > This document is the canonical contract for the bundle document itself; the schema
@@ -65,7 +65,7 @@ optimization boundary.
 
 - **agent capability token** — the per-`agent_run` secret at
   `workspace/orchestrations/<orchestration_id>/capabilities/<agent_run_id>.json` that
-  authorized build-runtime calls. **Deleted in PR-2 of [issue #171](https://github.com/seiya/atmofab/issues/171)**,
+  authorized build-runtime calls. **Deleted in PR-2 of [issue #171](https://github.com/seiya/spec2science/issues/171)**,
   with the gate that checked it: no leaf reaches the build-runtime library. The
   disambiguation is kept because the word still appears in records written before the cut.
 - **harness capability** (this document) — a declared feature of a target harness ABI
@@ -98,7 +98,7 @@ relaxed for forward compatibility. A producer that emits a new minor's fields th
 requires a validator of that minor; it does not silently pass an older one. The 1.0.0 -> 1.1.0
 bump is the worked example of the additive case: it added the `runner` role, which no 1.0.0
 validator's role enum admitted, and producer and validator moved together in one change. The
-1.2.0 -> 2.0.0 bump ([issue #589](https://github.com/seiya/atmofab/issues/589)) is a major one:
+1.2.0 -> 2.0.0 bump ([issue #589](https://github.com/seiya/spec2science/issues/589)) is a major one:
 the `checks` role, the `checks_interface` entrypoint kind, `state_bindings` and the
 `state_registration` capability left the document, so a 1.x document is refused at the version
 layer without further inspection. The declarative
@@ -382,7 +382,7 @@ integer version. The version is part of the token, not a range.
 |---|---|
 | `sync_single_case` | synchronous one-case-at-a-time execution; the current harness ABI (`harness_fortran_cpu`, `harness_cpp_gpu`, `harness_fortran_cpu_mpi`) |
 | `async_device_resident` | device-resident state with asynchronous capture (reserved) |
-| `distributed_state` | state partitioned across ranks, with the harness's partition, halo exchange, gather and reductions (`harness_fortran_cpu_mpi`, [issue #316](https://github.com/seiya/atmofab/issues/316)) |
+| `distributed_state` | state partitioned across ranks, with the harness's partition, halo exchange, gather and reductions (`harness_fortran_cpu_mpi`, [issue #316](https://github.com/seiya/spec2science/issues/316)) |
 | `batched_cases` | the harness drives several cases per invocation (reserved) |
 | `full_state_capture` | the harness captures full snapshots itself (reserved, `A4`/`Z6`) |
 | `trusted_reductions` | the harness computes certified reductions over state (reserved, `A4`/`Z6`) |
@@ -411,11 +411,11 @@ version: at this writing the canonical interface block of `harness_fortran_cpu@0
 (19 operations, 1 published type, `dp = float64`, `case_id_len = 64`), under the providing harness
 node's own `<spec_id>__` names and bound to its target language by that language's backend. The
 token names the block of whichever version the catalog holds, not one generation of it: `0.10.0`
-([issue #589](https://github.com/seiya/atmofab/issues/589)) extends the block by `__read_case` and
+([issue #589](https://github.com/seiya/spec2science/issues/589)) extends the block by `__read_case` and
 the typed getters under the same token, because no physics bundle calls an operation of the block,
 the language backend's `assert_harness_pin` is the mechanical enforcer of its text, and no consumer
 distinguishes a generation. Until `0.9.0`
-([issue #582](https://github.com/seiya/atmofab/issues/582)) the block also held the writers of two
+([issue #582](https://github.com/seiya/spec2science/issues/582)) the block also held the writers of two
 documents no runner writes now, and their types, which no consuming node's bundle code called.
 Its performance-record writer, which no consuming node's bundle code calls either (the
 host-rendered runner calls it, and so does the providing harness's
@@ -431,14 +431,14 @@ compares §5.1 against the certified
 harness IR's `public_api.signatures` and the generated harness source; this contract
 adds a name for the ABI, not a second checker of it.
 
-`distributed_state@2` ([issue #512](https://github.com/seiya/atmofab/issues/512)) is defined as
+`distributed_state@2` ([issue #512](https://github.com/seiya/spec2science/issues/512)) is defined as
 the distributed-state operations of `harness_fortran_cpu_mpi@0.4.0` §3.3, which that harness
 publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the two-dimensional
 process grid the host imposes and its queries, the block partition of a global index range over
 the ranks along one grid dimension, the halo exchange of an array along one grid dimension, the
 gather onto rank 0 of an array partitioned along up to two grid dimensions — which stops the
 program unless the contributed blocks tile the global array with neither overlap nor gap — and the
-global reductions. (`distributed_state@1`, [issue #316](https://github.com/seiya/atmofab/issues/316),
+global reductions. (`distributed_state@1`, [issue #316](https://github.com/seiya/spec2science/issues/316),
 was the same set over a one-dimensional arrangement of the ranks, that harness's `0.1.0` §3.3; no
 harness in the manifest provides it now.) `distributed_state@2` carries one rule for
 every caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
@@ -597,7 +597,7 @@ worth stating: its sole call site is guarded by `not self._leaf_substep(refs,
 "generate", "generate")`, so it now runs only for a node with no bundle shape — the shape
 `run_substep` then fails closed. It is kept because the parity test below is what pins the
 derived object order against it, and because narrowing a renderer's reachability is not
-the same claim as it being dead (`atmofab-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
+the same claim as it being dead (`spec2science-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
 `derive_build_graph(...)["link"]["objects"]` against the object list parsed out of the
 `_write_makefile`-authored control file. Since `Z2` an `M3c` node renders its control
 file from this derived graph (`_render_leaf_makefile_from_graph`, the build system's

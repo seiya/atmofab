@@ -15,3 +15,8 @@ a stale artifact that the sweep cannot classify fails the gate with no artifact 
 They are a FROZEN RECORD: regenerating them from today's tree is impossible and re-authoring them
 by hand would pin what someone believed the old renderer emitted. Reproduce with
 `git show 2b8db403` and the commit message of the Z4 PR-1 commit that added this directory.
+
+The full prompt keeps the environment-variable prefix `2b8db403` rendered, which the
+rename of issue #619 changed elsewhere: it is what that commit rendered, and
+`docs/GLOSSARY.md` §13 makes a record pinned to a pre-rename commit the exception to
+naming things under the current spelling.

@@ -487,7 +487,7 @@ def split_names(raw: str) -> list[str]:
     fire, while a lost `ncomp` hid the constant that now clears it.
 
     The end-to-end movement, before to after, is elsewhere and issue #181's record lists it
-    (https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999): two
+    (https://github.com/seiya/spec2science/issues/181#issuecomment-5559628999): two
     `workspace_20260319` artifacts lose a FALSE `initialize_state` violation whose only candidate
     is a module `parameter`; one 20260712 model keeps firing with two names recovered from behind
     a `&`; and two `profile/`-domain files move in opposite directions, neither of which any gate
@@ -805,7 +805,7 @@ def _dead_contained_spans(
     the text of a contained procedure already found live, to a fixed point; every other one is
     dead. A call, an actual argument, a pointer assignment, a function reference and a generic
     interface's `procedure` statement are not enumerated — they all WRITE THE NAME, which is the
-    one thing this reads (`atmofab-enforcement-change` §1: the source-text surface is not closed
+    one thing this reads (`spec2science-enforcement-change` §1: the source-text surface is not closed
     by enumerating grammar). Polarity: a name that occurs is live, which is how every contained
     procedure was read before this; a dead one is the new case. Calling a live one dead needs a
     reference that does not write the name, which neither F2008 nor this tree has.
@@ -913,7 +913,7 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     dump markers that are stable across compiler versions carry neither the result name nor the
     function/subroutine distinction, so it could only ever have rescued a subroutine-shaped one,
     of which this tree has none. See
-    https://github.com/seiya/atmofab/issues/181#issuecomment-5559629951 .
+    https://github.com/seiya/spec2science/issues/181#issuecomment-5559629951 .
     """
     # The label reading — two readings of one program, chosen by the PARSER — belongs to
     # `structure_reading` and is stated in its docstring, once. It was duplicated here verbatim
@@ -1191,7 +1191,7 @@ def _validate_problem_model_dependency_dataflow(
     as a producer), while `u_new` is written by the dependency call itself — a correct candidate
     whose flag is consumption-side, because `u = u_new` then crosses a `call` the assignment-only
     closure cannot follow. Whoever builds the flow-sensitive pass needs both halves (record:
-    https://github.com/seiya/atmofab/issues/181#issuecomment-5560396801)."""
+    https://github.com/seiya/spec2science/issues/181#issuecomment-5560396801)."""
     if not node_key.startswith("problem/"):
         return
     if not dep_spec_ids:

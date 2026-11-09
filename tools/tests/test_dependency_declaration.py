@@ -280,7 +280,7 @@ class CitationTests(unittest.TestCase):
 
     A wrong pointer is not a style matter. It is what a maintainer follows to decide whether a
     property is already covered, and both of these were written by me in the same commits that
-    claimed to be knotting statements to their authorities. `atmofab-enforcement-change` rule 3
+    claimed to be knotting statements to their authorities. `spec2science-enforcement-change` rule 3
     says to execute a sentence right after writing it; a citation is executable, and this is the
     execution.
     """
@@ -884,7 +884,7 @@ class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):
     backend that depends on the packages, and the only place that can answer what was measured. The
     same fact used to be spelt in that module's docstring, in its refusal message, and in
     `docs/RUNBOOK.md`; the rule below is the coupling rule 3-a of
-    `.claude/skills/atmofab-enforcement-change` prescribes at three statement sites.
+    `.claude/skills/spec2science-enforcement-change` prescribes at three statement sites.
     """
 
     def _measured(self) -> dict[str, str]:
@@ -1004,7 +1004,7 @@ class RemedyTests(unittest.TestCase):
     docstring without touching the assertion.
 
     Five statement sites of one rule is past the count at which
-    `.claude/skills/atmofab-enforcement-change` rule 3-a says discipline has already lost and the
+    `.claude/skills/spec2science-enforcement-change` rule 3-a says discipline has already lost and the
     sites must be COUPLED. This is that coupling, and it is written over the code rather than over
     the documents because the code is where the sites were.
 

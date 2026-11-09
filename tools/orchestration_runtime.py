@@ -174,7 +174,7 @@ TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 # lands in the orchestration transcript twice (the child leaf return + the record-reply
 # argument) and is re-read every turn (cache_read scales with context × turns), so an
 # over-long reply is a primary driver of the quadratic orchestration cost. record_agent_run
-# flags an over-budget reply as telemetry by default; ATMOFAB_ENFORCE_REPLY_BUDGET=1 makes it
+# flags an over-budget reply as telemetry by default; SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1 makes it
 # a hard fail so the child must be re-launched with a terse final message (full detail belongs
 # in the child's artifacts, which the orchestration reads on demand — not in the reply).
 REPLY_BUDGET_CHARS = 2000
@@ -4587,7 +4587,7 @@ SUPPORTED_PROVIDER_TOKENS = frozenset(SUPPORTED_BACKENDS) | _HTTP_PROVIDER_TOKEN
 # Escape hatch for an air-gapped or offline preflight: the unauthenticated reachability GET is
 # skipped, the key-presence and URL-shape checks are NOT (those cost nothing and catch the two
 # mistakes an operator actually makes).
-_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILITY"
+_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "SPEC2SCIENCE_HTTP_PREFLIGHT_SKIP_REACHABILITY"
 
 # The documents the HOST inlines into a pure launch prompt (see docs/workflow/). No leaf
 # reads one off disk since Z4 (issue #171): `skill_must_read_refs` is declared empty on every
@@ -5032,7 +5032,7 @@ def _clear_stale_active_child_markers(
     this function verifies nothing — it deletes the legacy active-child file and every per-arid
     marker unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
     and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
-    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    CLAIM (an advisory `flock` under `~/.spec2science/start_claims/`, released by the OS when the
     holding process dies) rather than by the recorded status. A terminal status still implies it;
     a `running` status no longer contradicts it, which is why `resume_orchestration` now
     reconciles a `running` prior too.
@@ -5215,7 +5215,7 @@ def _reset_stale_child_running_node_steps(
     this function verifies nothing — it resets every `child_running` node/step in
     `phase_state.json` to `not_started` unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
     and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
-    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    CLAIM (an advisory `flock` under `~/.spec2science/start_claims/`, released by the OS when the
     holding process dies) rather than by the recorded status. A terminal status still implies it;
     a `running` status no longer contradicts it, which is why `resume_orchestration` now
     reconciles a `running` prior too.
@@ -5613,7 +5613,7 @@ FAIL_CLOSED_REASON_CODES = {
     "revocation_not_landed",
 }
 
-PARALLEL_NODES_ENV_VAR = "ATMOFAB_ALLOW_PARALLEL_NODES"
+PARALLEL_NODES_ENV_VAR = "SPEC2SCIENCE_ALLOW_PARALLEL_NODES"
 
 STEP_KEYS_FOR_NODE_STATE: tuple[str, ...] = (
     "compile",
@@ -6210,7 +6210,7 @@ def _dependency_ready(
             # OR malformed-schema deps.yaml at gate time → reject with the
             # specific fail_reason (Codex round 25 F2: don't collapse distinct
             # verification failures into one generic reason).
-            if os.environ.get("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK") != "1":
+            if os.environ.get("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK") != "1":
                 return False, fail_reason or "deps_yaml_missing_or_unparseable"
             if step_token == "compile":
                 if readiness.get("direct_dependency_compile_readiness") is not True:
@@ -7503,7 +7503,7 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
 # pre-allowlist `_safe_host_env_for_child` used.
 LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 
-# `ATMOFAB_*` is passed by PREFIX, not by enumeration. The namespace is repo-owned BY
+# `SPEC2SCIENCE_*` is passed by PREFIX, not by enumeration. The namespace is repo-owned BY
 # CONVENTION — nothing enforces it, and the honest statement is the weaker one: the
 # names that are known to redirect a leaf (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`,
 # `AWS_*`, `LD_*`) are outside the prefix BY CONSTRUCTION, which is what makes the
@@ -7519,17 +7519,17 @@ LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 # TWO justifications this comment has carried and neither survived review, recorded so a
 # third is not written. (1) "every member has an in-tree reader" — the rule must not rest
 # on that whether or not it holds, because the inventory moves: it was false when written
-# (`ATMOFAB_MISSING_ORCHESTRATION_ID_POLICY` was seeded into every leaf by
+# (`SPEC2SCIENCE_MISSING_ORCHESTRATION_ID_POLICY` was seeded into every leaf by
 # `run_workflow.py` and read by nothing) and issue #82 has since given that very name a
 # reader in the leaf hook entrypoint (itself since deleted — Z4, issue #171, which moves the
 # inventory a THIRD time and is exactly the point). A justification that has to be re-measured whenever a
 # reader is added or dropped is what this comment is refusing. (2) "the namespace is
 # repo-owned, so nothing an
 # operator put in the environment lands inside it" — also false, and by one command:
-# `leaf_env_from({"ATMOFAB_ANYTHING": "x"})` forwards it. Nothing stops an operator
+# `leaf_env_from({"SPEC2SCIENCE_ANYTHING": "x"})` forwards it. Nothing stops an operator
 # exporting a name under this prefix.
 #
-# ACCEPTED RESIDUE, therefore, stated rather than argued away: a `ATMOFAB_*` value an
+# ACCEPTED RESIDUE, therefore, stated rather than argued away: a `SPEC2SCIENCE_*` value an
 # operator exports IS forwarded to every CLI leaf and IS persisted verbatim into
 # `sandbox_profiles/<arid>.json` and its `rendered_command`, which every agentic leaf can
 # read (`Bash(cat workspace/orchestrations/*)`). If that value is a secret, it is exposed.
@@ -7539,14 +7539,14 @@ LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 # namespace, a path only the operator can reach; enumerating instead would trade it for a
 # list that silently drops a variable the day someone adds one and forgets, which is the
 # failure this project has actually had. Revisit if a leaf ever gains a way to set one.
-LEAF_ENV_ALLOWED_PREFIXES = ("ATMOFAB_",)
+LEAF_ENV_ALLOWED_PREFIXES = ("SPEC2SCIENCE_",)
 
-# Inside the prefix but deliberately dropped. `ATMOFAB_HOME` is the deprecated alias for
+# Inside the prefix but deliberately dropped. `SPEC2SCIENCE_HOME` is the deprecated alias for
 # codex's configuration home; like `CODEX_HOME` it must reach the leaf through the bwrap
 # profile's `--setenv` alone, so that the home the leaf reads is the home whose settings
 # were SHA-pinned. The conductor still READS it (to raise on a conflict with CODEX_HOME)
 # — it just does not forward it.
-LEAF_ENV_PREFIX_EXCEPTIONS = ("ATMOFAB_HOME",)
+LEAF_ENV_PREFIX_EXCEPTIONS = ("SPEC2SCIENCE_HOME",)
 
 # Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling, the
 # auto-memory closure, and the closure of the CLI's nonessential traffic (telemetry, update
@@ -7884,7 +7884,7 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str],
     (measured under real bwrap: the planted dialogs and `tools/` file stay hidden — the
     accepted control row of `test_a_bind_mounted_install_root_that_aliases_the_checkout_is_refused`).
     It is NOT exempt from the mount table: a bind mount of the checkout's subtree BELOW an
-    exempt root and outside the checkout's own path (`~/work/alias` beside `~/work/atmofab`,
+    exempt root and outside the checkout's own path (`~/work/alias` beside `~/work/spec2science`,
     with the CLI under `~/work`) is carried in by the recursive ro-bind with nothing on top
     (issue #227 round 1, measured readable by the review before the table ran for such
     roots). The comparison is keyed on WHERE THE CHECKOUT APPEARS through each mount, the
@@ -7928,10 +7928,10 @@ def _refuse_backend_ro_alias_of_repo(repo_root: Path, backend_ro: Sequence[str],
         # appears through it, and refuse unless that place is at or under `resolved_repo`
         # — the one path the tmpfs covers. Keyed on where the checkout APPEARS rather than
         # on where the mount point IS (issue #227 round 2): a mount between the root and the
-        # checkout (a data disk at `~/work/proj` holding `~/work/proj/atmofab`) exposes it
+        # checkout (a data disk at `~/work/proj` holding `~/work/proj/spec2science`) exposes it
         # only at its own path and is accepted; a checkout that is itself a bind of a tree
-        # under the root (`~/work/src/atmofab` bound at `~/work/atmofab`) exposes its source
-        # at `~/work/src/atmofab` and is refused; a bind of the root itself below the root,
+        # under the root (`~/work/src/spec2science` bound at `~/work/spec2science`) exposes its source
+        # at `~/work/src/spec2science` and is refused; a bind of the root itself below the root,
         # with the checkout spelled through the bind, exposes it at the root's own path and
         # is refused. Both directions of overlap: a mount whose subtree CONTAINS the checkout
         # shows it at `<appears>/<checkout within the subtree>`; a mount whose subtree lies
@@ -8013,7 +8013,7 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
     later-overrides-earlier), so any rw path with a containment relationship to
     repo_root mounts the host's checkout back over the tmpfs, writable: covering
     repo_root (repo root, ~, /) exposes the whole repo, and an in-repo home (e.g.
-    ATMOFAB_HOME=$repo/workspace) makes that subtree — including other agents'
+    SPEC2SCIENCE_HOME=$repo/workspace) makes that subtree — including other agents'
     artifacts/audit logs — writable beyond the child's declared write_roots. Reject
     both. A missing config *dir* is created (the only file, ~/.claude.json, is
     existence-gated at source) so bwrap can bind it writable; a creation failure must
@@ -8202,7 +8202,7 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     threaded in so the profile records and delivers the environment that is actually
     used rather than a second, independently-derived one. It is validated against the
     ids this builder was called with: a profile that carried another leaf's ids would
-    hand the leaf a `ATMOFAB_CHILD_AGENT_RUN_ID` naming a different run, and the whole
+    hand the leaf a `SPEC2SCIENCE_CHILD_AGENT_RUN_ID` naming a different run, and the whole
     point of threading it is that record and reality are the same object.
 
     ``None`` — a conductor-less caller (a test fixture, the standalone CLI) — falls back
@@ -8214,8 +8214,8 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     into the leaf, so "the ids are present and correct" has to be a property of this
     function rather than of its callers.
     """
-    per_launch = (("ATMOFAB_ORCHESTRATION_ID", orchestration_id),
-                  ("ATMOFAB_CHILD_AGENT_RUN_ID", agent_run_id))
+    per_launch = (("SPEC2SCIENCE_ORCHESTRATION_ID", orchestration_id),
+                  ("SPEC2SCIENCE_CHILD_AGENT_RUN_ID", agent_run_id))
     if child_env is None:
         # THE FALLBACK RECONSTRUCTS; IT DOES NOT VALIDATE. The two paths answer
         # different questions and must not share an answer. Here the source is the
@@ -8223,7 +8223,7 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
         # whatever launched that process — for a `record-launch` run from inside a leaf
         # (documented in `docs/CLI_REFERENCE.md`, and granted to an agentic leaf until Z4 —
         # issue #171 — by `leaf_config/claude/settings.json`) that is the PARENT's id, and under the
-        # workflow `run_workflow.py` puts `ATMOFAB_ORCHESTRATION_ID` in every node's
+        # workflow `run_workflow.py` puts `SPEC2SCIENCE_ORCHESTRATION_ID` in every node's
         # environment, so it is present essentially always. Those values are STALE, not
         # a contradiction: overwrite them with the ids this profile is actually for.
         #
@@ -8256,7 +8256,7 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     # BOTH PATHS END WITH BOTH IDS PRESENT. Absence used to be tolerated on the threaded
     # path (the check above only compares a key that exists), and `--clearenv` is what
     # made that consequential: the profile is now the ONLY route into the leaf, so a
-    # profile missing `ATMOFAB_ORCHESTRATION_ID` used to produce a leaf whose build-runtime
+    # profile missing `SPEC2SCIENCE_ORCHESTRATION_ID` used to produce a leaf whose build-runtime
     # MCP server read "not under a run" and stopped requiring a capability token — an ungated
     # server, from an omission. That gate is retired (issue #171 PR-2) and no leaf carries an
     # MCP server at all, so what an omission costs now is ATTRIBUTION in `command_log.jsonl`.
@@ -8555,7 +8555,7 @@ def render_bwrap_command(
     # DISK (`spawn_leaf` -> `_sandbox_profile_for`), which that guarantee never touched —
     # including one persisted before the environment became declared, whose `env` predates
     # the ids entirely. Under `--clearenv` such a profile delivers a leaf with no
-    # `ATMOFAB_ORCHESTRATION_ID`, and its build-runtime MCP server (deleted in issue #444)
+    # `SPEC2SCIENCE_ORCHESTRATION_ID`, and its build-runtime MCP server (deleted in issue #444)
     # then read "not under a run" and stopped requiring a capability token.
     # FILLED from the profile's OWN recorded ids, not refused: refusing here would reject
     # exactly those older profiles, i.e. break `--resume` of a run started before this
@@ -8563,8 +8563,8 @@ def render_bwrap_command(
     # direction. The profile already records both ids as top-level fields, so the right
     # values are in hand and nothing has to be guessed.
     delivered = {**profile_env, "TMPDIR": ws_abs}
-    for _id_name, _id_field in (("ATMOFAB_ORCHESTRATION_ID", "orchestration_id"),
-                                ("ATMOFAB_CHILD_AGENT_RUN_ID", "agent_run_id")):
+    for _id_name, _id_field in (("SPEC2SCIENCE_ORCHESTRATION_ID", "orchestration_id"),
+                                ("SPEC2SCIENCE_CHILD_AGENT_RUN_ID", "agent_run_id")):
         _recorded = str(profile.get(_id_field) or "").strip()
         if _recorded and not delivered.get(_id_name):
             delivered[_id_name] = _recorded
@@ -9064,14 +9064,14 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
 
 
 def _live_preflight_mode() -> str:
-    """Return the operation mode from the value of ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT.
+    """Return the operation mode from the value of SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT.
 
     Return value: 'never' | 'always' | 'ttl'
     - 'never' : skip the probe
     - 'always': probe every time (ignore TTL, backward compatible)
     - 'ttl'   : probe with TTL cache (default)
     """
-    raw = os.environ.get("ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", "").strip().lower()
+    raw = os.environ.get("SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", "").strip().lower()
     if raw in {"0", "false", "no"}:
         return "never"
     if raw == "1":
@@ -9080,11 +9080,11 @@ def _live_preflight_mode() -> str:
 
 
 def _live_preflight_ttl_seconds() -> int:
-    """Read ATMOFAB_PREFLIGHT_TTL_SECONDS and return a non-negative integer.
+    """Read SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS and return a non-negative integer.
 
     Return PREFLIGHT_TTL_DEFAULT_SECONDS when unset or an invalid value.
     """
-    raw = os.environ.get("ATMOFAB_PREFLIGHT_TTL_SECONDS", "").strip()
+    raw = os.environ.get("SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS", "").strip()
     if not raw:
         return PREFLIGHT_TTL_DEFAULT_SECONDS
     try:
@@ -10408,7 +10408,7 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
         payload["skill_name"] = ""
         payload["skill_ref"] = ""
     payload.setdefault("issue_severity", "none")
-    payload.setdefault("workflow_mode", os.environ.get("ATMOFAB_WORKFLOW_EXEC_MODE", "dev"))
+    payload.setdefault("workflow_mode", os.environ.get("SPEC2SCIENCE_WORKFLOW_EXEC_MODE", "dev"))
     payload.setdefault("repair_strategy", "none")
     payload.setdefault("repair_target_agent_run_id", "none")
     payload.setdefault("repair_reason", "none")
@@ -10585,7 +10585,7 @@ def _required_launch_prompt_lines(request_payload: dict[str, Any]) -> list[str]:
 # that read a rendered prompt for an actionable invocation of one, stood here until Z4
 # (issue #171). Both existed because an AGENTIC leaf ran the gate itself out of its prompt:
 # `_lint_launch_prompt_gate_allowlist` refused a launch whose prompt named a stage outside
-# that substep's allow-set, and `ATMOFAB_ENFORCE_GATE_ALLOWLIST=0` was its rollback. A pure
+# that substep's allow-set, and `SPEC2SCIENCE_ENFORCE_GATE_ALLOWLIST=0` was its rollback. A pure
 # leaf holds no shell and invokes nothing; every gate is run by the conductor in its own
 # process, per `docs/workflow/phases/phase_0{1,2,4}_*.md`. The prose half went with them:
 # `docs/workflow/LAUNCH_PROMPT_REFERENCE.md`'s "substep <-> allowed validator gate
@@ -10778,7 +10778,7 @@ def _evaluate_reply_budget(
 
     Returns ``{"chars": n, "budget": REPLY_BUDGET_CHARS}`` when the reply exceeds the
     budget (so record_agent_run can surface it as telemetry), else ``None``. Always
-    appends an audit entry on an over-budget reply. With ATMOFAB_ENFORCE_REPLY_BUDGET=1
+    appends an audit entry on an over-budget reply. With SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1
     it raises instead of returning, turning the soft warning into a hard fail (the
     orchestration must then re-launch the child with a terse final message). A missing /
     unreadable reply file is treated as under budget (never blocks on absence).
@@ -10799,10 +10799,10 @@ def _evaluate_reply_budget(
         status="warn",
         detail={"agent_run_id": agent_run_id, **info},
     )
-    if os.environ.get("ATMOFAB_ENFORCE_REPLY_BUDGET") == "1":
+    if os.environ.get("SPEC2SCIENCE_ENFORCE_REPLY_BUDGET") == "1":
         raise ValueError(
             f"record-agent-run: child reply is {n} chars, over the {REPLY_BUDGET_CHARS}-char budget "
-            f"(ATMOFAB_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a status "
+            f"(SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a status "
             f"line, output_refs, and a few lines of rationale; full detail belongs in the child's artifacts."
         )
     return info
@@ -11036,7 +11036,7 @@ def resume_orchestration(
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
     meta.pop("driver", None)
     # ONE fact from that block survives it, and only one: the HOST. The exclusive claim that
-    # replaced the driver probe lives under the operator's own `~/.atmofab/start_claims/`, so
+    # replaced the driver probe lives under the operator's own `~/.spec2science/start_claims/`, so
     # it is host-scoped — with host-local homes (a container and its host bind-mounting the
     # checkout, a cluster with local `/home` and shared `/work`) two drivers each take their
     # own claim and both proceed. Nothing else in the tree can notice that.
@@ -11062,7 +11062,7 @@ def resume_orchestration(
                 "to": meta["last_driver_host"],
                 "note": (
                     "this orchestration was last driven on another host; the start claim is "
-                    "host-scoped (~/.atmofab/start_claims/), so it cannot prove the other "
+                    "host-scoped (~/.spec2science/start_claims/), so it cannot prove the other "
                     "host is not still running it — see docs/RUNBOOK.md §3-1"
                 ),
             },
@@ -12629,18 +12629,18 @@ def _probe_existing_directory_writable(path: Path) -> tuple[bool, str]:
 def _probe_codex_home_writable() -> dict[str, Any]:
     """Check the canonical Codex state home without silently accepting conflicts."""
     canonical = os.environ.get("CODEX_HOME")
-    legacy = os.environ.get("ATMOFAB_HOME")
+    legacy = os.environ.get("SPEC2SCIENCE_HOME")
     if (isinstance(canonical, str) and canonical.strip()
             and isinstance(legacy, str) and legacy.strip()
             and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve()):
         return {
             "name": "codex_home_writable", "pass": False,
-            "detail": "CODEX_HOME and deprecated ATMOFAB_HOME conflict",
+            "detail": "CODEX_HOME and deprecated SPEC2SCIENCE_HOME conflict",
         }
     raw = canonical if isinstance(canonical, str) and canonical.strip() else legacy
     source = (
         "env:CODEX_HOME" if isinstance(canonical, str) and canonical.strip()
-        else ("env:ATMOFAB_HOME (deprecated)" if isinstance(legacy, str) and legacy.strip()
+        else ("env:SPEC2SCIENCE_HOME (deprecated)" if isinstance(legacy, str) and legacy.strip()
               else "default:~/.codex")
     )
     codex_home = (
@@ -12749,11 +12749,11 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 # `tools/operator_private_root.py`, not defined here. TWO subtrees of the operator-private root are
 # relocatable, and each name moves exactly one of them:
 #
-#   * `ATMOFAB_WORKFLOW_HOMES_ROOT`  -> `~/.atmofab/homes` (this module writes it)
-#   * `ATMOFAB_START_CLAIM_ROOT`     -> `~/.atmofab/start_claims` (`tools/run_workflow.py`)
+#   * `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`  -> `~/.spec2science/homes` (this module writes it)
+#   * `SPEC2SCIENCE_START_CLAIM_ROOT`     -> `~/.spec2science/start_claims` (`tools/run_workflow.py`)
 #
 # Both exist for the same reason: a test, or an operator with a reason, needs the
-# tree somewhere other than the real `~/.atmofab`. (`ATMOFAB_HOME` is deliberately NOT
+# tree somewhere other than the real `~/.spec2science`. (`SPEC2SCIENCE_HOME` is deliberately NOT
 # reused — it already means "the operator's `~/.codex`" on the codex auth path, and one
 # name with two meanings is how two resolutions silently drift apart.) The ROOT itself is
 # deliberately not relocatable: it is the Bash read guard's anchor.
@@ -12761,7 +12761,7 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 # The homes one resolves in the hooks module because the side that CREATES that tree and
 # the side that FORBIDS a leaf from reading it have to resolve the same location — the
 # arrangement `backend_credential_home_paths` already uses. When `WORKFLOW_HOMES_ROOT_ENV`
-# lived here, the Bash guard knew only `~/.atmofab`, so setting the override moved the
+# lived here, the Bash guard knew only `~/.spec2science`, so setting the override moved the
 # homes out from under the one protected root that covers every orchestration and a leaf
 # could read a SIBLING run's transcript (measured). Codex found that; the fix is that
 # there is now one resolver. (A third relocatable subtree, the dismiss-violation operator
@@ -12788,7 +12788,7 @@ WORKFLOW_HOME_OWNER_FILENAME = "owner.json"
 
 
 def _workflow_homes_root() -> Path:
-    """`~/.atmofab/homes` — the durable root of every isolated backend home.
+    """`~/.spec2science/homes` — the durable root of every isolated backend home.
 
     A thin alias over `tools/operator_private_root.py::workflow_homes_root`, kept as a name because
     this module's tests and `tools/prune_workflow_homes.py` patch it, and because the
@@ -12971,14 +12971,14 @@ def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bo
     and the mode is the second: a directory at 0755 has not claimed it should stay at
     0755, and the mode this code wants is one it can simply establish. Refusing instead
     made an operator following `docs/RUNBOOK.md` — which offers
-    `ATMOFAB_WORKFLOW_HOMES_ROOT` with no stated precondition — fail EVERY launch after a
+    `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition — fail EVERY launch after a
     plain `mkdir` created the root 0755 under the default umask; and it made a mode drift
-    on `~/.atmofab/homes` (a backup restored without permissions) refuse every launch of
+    on `~/.spec2science/homes` (a backup restored without permissions) refuse every launch of
     every orchestration. The chmod is exactly what the create path does one branch away,
     so tightening here makes the two agree rather than adding an authority.
 
     The tightening is `require_private`-gated for the same reason the check was:
-    `~/.atmofab` ITSELF is left alone. The homes writer here and `tools/run_workflow.py`'s
+    `~/.spec2science` ITSELF is left alone. The homes writer here and `tools/run_workflow.py`'s
     start-claim writer both create it best-effort and neither forces its mode, it is
     shared with `start_claims/`, and it is the one level here that this code did not
     necessarily create. `docs/RUNBOOK.md` recommends
@@ -13039,7 +13039,7 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     override_used = bool(os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip())
     # With an override in play, only the root itself is created: the override names a
     # location the caller chose, and silently building a deep tree under a typo'd path is
-    # the failure mode that costs most. Without one, `~/.atmofab` may legitimately not
+    # the failure mode that costs most. Without one, `~/.spec2science` may legitimately not
     # exist yet (a host that has never run `init_orchestration`).
     ancestors: list[tuple[Path, bool]] = []
     if override_used:
@@ -13052,8 +13052,8 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
             repo_root=repo_root)
         ancestors.append((root, True))
     else:
-        ancestors.append((root.parent, False))  # ~/.atmofab — mode not forced
-        ancestors.append((root, True))          # ~/.atmofab/homes
+        ancestors.append((root.parent, False))  # ~/.spec2science — mode not forced
+        ancestors.append((root, True))          # ~/.spec2science/homes
     ancestors.append((home.parent, True))  # <homes-root>/<oid>
     for path, require_private in ancestors:
         if path.exists() or path.is_symlink():
@@ -13599,7 +13599,7 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
 
     Returns `{home, config, tree, credentials, credentials_destination, lineage_id,
     homes_root}`; `homes_root` is the root `LineagePaths` takes, derived from the container
-    actually used (the recorded one on a reuse, so a relocated `ATMOFAB_WORKFLOW_HOMES_ROOT`
+    actually used (the recorded one on a reuse, so a relocated `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`
     does not split one orchestration's lineages across two roots)."""
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
     if not _is_safe_path_id(lineage_token):
@@ -13781,13 +13781,13 @@ WORKSHOP_PROFILE_KWARGS: dict[str, Callable[[Mapping[str, str]], dict[str, Any]]
 
 
 def codex_origin_home() -> Path:
-    """The operator's ORIGIN Codex home: `$CODEX_HOME`, else the deprecated `$ATMOFAB_HOME`,
+    """The operator's ORIGIN Codex home: `$CODEX_HOME`, else the deprecated `$SPEC2SCIENCE_HOME`,
     else `~/.codex`. ONE resolver, because two places must name the same home: the isolated
     lineage home binds this home's `auth.json` (`_prepare_codex_workflow_home`), and the
     host-side reset probe (`tools/usage_reset.py`, issue #405) reads the account's windows with
     it. A conflict between the two variables is refused by the conductor's `_child_env`
     before either runs."""
-    raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("ATMOFAB_HOME", "").strip()
+    raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("SPEC2SCIENCE_HOME", "").strip()
     return Path(raw).expanduser() if raw else Path.home() / ".codex"
 
 
@@ -13802,7 +13802,7 @@ def workshop_credential_source(cli_family: str) -> Path | None:
     stats is the inode the sandbox binds. Resolved at CALL time: `claude_credentials_file` is
     looked up on its module here, never bound at import, so a test that patches
     `operator_private_root.claude_credentials_file` reaches both readers; `codex_origin_home`
-    reads `$CODEX_HOME` / `$ATMOFAB_HOME` on each call."""
+    reads `$CODEX_HOME` / `$SPEC2SCIENCE_HOME` on each call."""
     if cli_family == "claude":
         from tools import operator_private_root
         return operator_private_root.claude_credentials_file()
@@ -13918,14 +13918,14 @@ def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
     namespaces + a dry-run exec). bwrap enforcement is mandatory (Linux+userns only), so
     a host that fails this probe is unsupported and the run fails closed.
 
-    `ATMOFAB_ORCHESTRATION_ASSUME_BWRAP=1` is a **test-only** affordance: it bypasses the
+    `SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP=1` is a **test-only** affordance: it bypasses the
     real probe and reports the sandbox as available, so unit/integration tests can
     exercise the enforced launch path without bwrap actually installed in the test host.
     It must not be set in production — if bwrap is in fact missing, the probe lies here
     and the actual `bwrap` exec fails closed later at leaf launch (see the
     sandbox-unavailable fail-closed handling in the conductor)."""
     checks: list[dict[str, Any]] = []
-    assume = os.environ.get("ATMOFAB_ORCHESTRATION_ASSUME_BWRAP", "").strip().lower()
+    assume = os.environ.get("SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP", "").strip().lower()
     if assume in {"1", "true", "yes"}:
         checks.extend(
             [
@@ -14446,7 +14446,7 @@ def _probe_http_provider(
          UNAUTHENTICATED deliberately: preflight must not send the operator's key to a URL it
          has not yet validated, and must not spend a token on a probe.
 
-    `ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILITY=1` drops only (3), for an offline preflight."""
+    `SPEC2SCIENCE_HTTP_PREFLIGHT_SKIP_REACHABILITY=1` drops only (3), for an offline preflight."""
     import urllib.error
     import urllib.request
     from urllib.parse import urlparse
@@ -14682,10 +14682,10 @@ def probe_execution_platform(
     checks.extend(sandbox_checks)
     can_launch_agents = can_launch_agents and sandbox_enforced
     session_policy = {
-        "allow_step_agent_launch": os.environ.get("ATMOFAB_ALLOW_STEP_AGENT_LAUNCH", "1").strip().lower()
+        "allow_step_agent_launch": os.environ.get("SPEC2SCIENCE_ALLOW_STEP_AGENT_LAUNCH", "1").strip().lower()
         not in {"0", "false", "no"},
         "allow_substep_agent_launch": os.environ.get(
-            "ATMOFAB_ALLOW_SUBSTEP_AGENT_LAUNCH", "1"
+            "SPEC2SCIENCE_ALLOW_SUBSTEP_AGENT_LAUNCH", "1"
         ).strip().lower()
         not in {"0", "false", "no"},
     }
@@ -14864,7 +14864,7 @@ def init_orchestration(
         meta["invocation"] = invocation
         _record_until_phase_high_water(invocation)
     # No `driver` block: issue #177 deleted the liveness probe that read it, and the exclusive
-    # claim (`~/.atmofab/start_claims/`, released by the OS when the process dies) answers
+    # claim (`~/.spec2science/start_claims/`, released by the OS when the process dies) answers
     # "is another driver running this?" without a recorded identity to go stale.
     meta.pop("driver", None)
     if not orchestration_agent_run_id:
@@ -16349,7 +16349,7 @@ def record_agent_run(
         payload.setdefault("launch_reply_ref", reply_ref)
         _validate_step_or_substep_launch_refs(repo_root, payload)
         # Budget the child's verbatim reply (telemetry by default; hard fail under
-        # ATMOFAB_ENFORCE_REPLY_BUDGET=1). Evaluated before the terminal append so a
+        # SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Evaluated before the terminal append so a
         # hard fail leaves no durable record — the orchestration re-launches terser.
         reply_budget_info = _evaluate_reply_budget(
             repo_root,
@@ -16795,7 +16795,7 @@ def finalize_child(
             f"the offending file is launches/{arid}.agent_run.input.json"
         )
     # Hard reply-budget gate runs BEFORE any state-consuming side effect. Without this,
-    # record_agent_run's hard check (ATMOFAB_ENFORCE_REPLY_BUDGET=1) would fire only after
+    # record_agent_run's hard check (SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1) would fire only after
     # deactivate-child has already consumed the active marker, leaving the run un-retriable
     # via finalize-child. The soft path
     # (telemetry) is still handled by record_agent_run below, which reads the written reply.
@@ -16806,7 +16806,7 @@ def finalize_child(
     persisted_reply = reply_text if reply_text.endswith("\n") else reply_text + "\n"
     if (
         len(persisted_reply) > REPLY_BUDGET_CHARS
-        and os.environ.get("ATMOFAB_ENFORCE_REPLY_BUDGET") == "1"
+        and os.environ.get("SPEC2SCIENCE_ENFORCE_REPLY_BUDGET") == "1"
     ):
         # Audit the reject before raising — mirrors _evaluate_reply_budget's hook entry on
         # the direct record-agent-run path, so finalize-child hard failures stay visible in
@@ -16820,7 +16820,7 @@ def finalize_child(
         )
         raise ValueError(
             f"finalize-child: child reply is {len(persisted_reply)} chars, over the {REPLY_BUDGET_CHARS}-char "
-            f"budget (ATMOFAB_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a "
+            f"budget (SPEC2SCIENCE_ENFORCE_REPLY_BUDGET=1). Re-launch the child with a terse final message — a "
             f"status line, output_refs, and a few lines of rationale; full detail belongs in the artifacts."
         )
 

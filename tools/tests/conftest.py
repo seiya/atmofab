@@ -1,19 +1,19 @@
-"""Test-session hygiene for the OPERATOR-PRIVATE ROOT (`~/.atmofab`).
+"""Test-session hygiene for the OPERATOR-PRIVATE ROOT (`~/.spec2science`).
 
 `_prepare_claude_workflow_home` (and its codex twin) create a private per-orchestration
 home and nothing removes it. Since issue #64 that home is DURABLE — `<homes-root>/<oid>/
-<backend>` under `~/.atmofab/homes` — because it holds the leaf's only conversation
+<backend>` under `~/.spec2science/homes` — because it holds the leaf's only conversation
 record, and losing it makes a billed run unauditable after the fact. Retention is manual:
 `tools/prune_workflow_homes.py`, never anything automatic.
 
 A TEST RUN must not participate in that. Every fixture that drives `record_launch` for a
 claude-shaped leaf prepares a home, so a suite would otherwise write a few hundred
-directories into the operator's real `~/.atmofab/homes` and leave them there — mixed in
+directories into the operator's real `~/.spec2science/homes` and leave them there — mixed in
 with the homes of real runs, where the prune tool would find them unverifiable (their
 "owner" checkouts are temporary directories that no longer exist).
 
 TWO SUBTREES, and the homes were only ever one of them (issue #133). This repository
-writes `homes/` and `start_claims/` under `~/.atmofab`, and until this file covered every
+writes `homes/` and `start_claims/` under `~/.spec2science`, and until this file covered every
 one of them the rest went into the operator's real root on every run: measured at
 `e0bae3d`, `tools/tests/test_orchestration_runtime.py` alone left 249 files in the
 `operator_tokens/` store (deleted with `dismiss-violation` by issue #176), and
@@ -22,8 +22,8 @@ nothing else — which is why the resolvers are named below rather than the tree
 
 TWO LAYERS, and the second is the one that actually holds:
 
-  1. REDIRECT. A function-scoped autouse fixture points `ATMOFAB_WORKFLOW_HOMES_ROOT`
-     and `ATMOFAB_START_CLAIM_ROOT` at a per-test
+  1. REDIRECT. A function-scoped autouse fixture points `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`
+     and `SPEC2SCIENCE_START_CLAIM_ROOT` at a per-test
      `tmp_path`, so both land where pytest already cleans up. Per-TEST rather
      than per-session on purpose: the home path is deterministic now, so two tests using
      the same fixed orchestration id would collide on the exclusive `os.mkdir` under a
@@ -31,7 +31,7 @@ TWO LAYERS, and the second is the one that actually holds:
   2. ENFORCE, BEFORE THE FACT. A session-scoped guard wraps the two functions that
      decide WHERE each tree goes — `orchestration_runtime._workflow_homes_root` and
      `run_workflow._start_claims_root` — and raises if one is about to return something
-     inside the operator's REAL `~/.atmofab`. The redirect is a default a test can undo
+     inside the operator's REAL `~/.spec2science`. The redirect is a default a test can undo
      (`patch.dict(os.environ, ..., clear=True)` without re-setting the name is one line
      away), and this turns "the suite wrote into the operator's tree" from something
      noticed weeks later into a failure at the call that did it.
@@ -39,14 +39,14 @@ TWO LAYERS, and the second is the one that actually holds:
      Guarding at the RESOLVER is also what makes this survive a fourth subtree: the
      resolvers are the only spelling of the location (issue #132), so a writer that
      appears later either goes through one of them or is caught by
-     `test_the_dot_atmofab_constant_is_spelled_once` in
+     `test_the_dot_spec2science_constant_is_spelled_once` in
      `tools/tests/test_operator_private_root.py`.
 
      PREVENT, NOT DETECT, and the distinction was paid for: the first version of this
      guard wrapped the two PREPARERS and raised on the path they RETURNED, so by the time
      it fired the directory was already on disk and nothing removed it. A reviewer
      running one mutant that made `_workflow_homes_root` ignore the redirect left four
-     real directories in the operator's `~/.atmofab/homes` — permanent, unverifiable
+     real directories in the operator's `~/.spec2science/homes` — permanent, unverifiable
      residue in the one tree whose retention is manual. Wrapping the resolver means the
      mutant that reaches past the redirect cannot create anything at all.
 
@@ -73,14 +73,14 @@ DIFFERENT checkout, whose metadata is not visible from here. Redirecting is what
 question not arise — the suite never names the real root, so it never has to decide what
 inside it is safe to remove.
 
-ONE MORE TREE, outside `~/.atmofab`: a leaf's per-launch socket directory
+ONE MORE TREE, outside `~/.spec2science`: a leaf's per-launch socket directory
 (`leaf_netns.make_socket_dir`, issue #534 step 4) is created under `$XDG_RUNTIME_DIR`, and
 every test that serves or records a CLI launch makes one. A test removes its own, but a test
-process that is killed does not — measured 2026-10-29: 173 `atmofab-net-*` directories in the
+process that is killed does not — measured 2026-10-29: 173 `spec2science-net-*` directories in the
 operator's runtime directory, all from killed test processes and none from a run. That
 directory is where a REAL launch's leftover is looked for, so `pytest_configure` points
 `XDG_RUNTIME_DIR` at a short per-process directory under `/tmp` and `pytest_unconfigure`
-removes it: a killed suite's residue stays in its own `atmofab-suite-*` directory.
+removes it: a killed suite's residue stays in its own `spec2science-suite-*` directory.
 
 THE SECOND SUBJECT: the operator's ambient environment (issue #84).
 
@@ -94,25 +94,25 @@ reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regress
 143 were the branch's and the rest were this.
 
 Measured on `165c26f`, whole suite, one variable at a time unless noted. **That commit
-predates the `met-dsl` -> `atmofab` rename (issue #127), so to RE-TAKE any figure below
-spell the names `METDSL_*` there — `ATMOFAB_*` matches nothing at `165c26f` and every
+predates both renames of the project (issue #127 from `met-dsl`, issue #619 after it), so
+to RE-TAKE any figure below spell the names `METDSL_*` there — `SPEC2SCIENCE_*` matches nothing at `165c26f` and every
 row comes back 0.** The names are written in the current spelling because the record
 is about which names the tree reads, not about that commit's text:
 
   clean                                              5280 passed / 114s
-  ATMOFAB_ORCHESTRATION_ID + ATMOFAB_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
-  every `ATMOFAB_*` name found in the tree, plus
+  SPEC2SCIENCE_ORCHESTRATION_ID + SPEC2SCIENCE_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
+  every `SPEC2SCIENCE_*` name found in the tree, plus
     CODEX_HOME and CLAUDE_CONFIG_DIR, together         181 failed / 356s
 
 Attributed on `tools/tests/test_orchestration_runtime.py` alone (1242 tests, 20s clean):
-`ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
-then run the real probes; `CODEX_HOME` 10; `ATMOFAB_HOME` 3; `ATMOFAB_ENFORCE_REPLY_BUDGET`
+`SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
+then run the real probes; `CODEX_HOME` 10; `SPEC2SCIENCE_HOME` 3; `SPEC2SCIENCE_ENFORCE_REPLY_BUDGET`
 1; every other name measured that way 0. So the pair in the issue was a small part of the
 surface, and the expensive member was not in it.
 
 NO COUNT of those names appears here or anywhere else in the code, deliberately — and the
 sentence that replaced the first count was itself wrong, which is the argument. This
-paragraph said "the 17 `ATMOFAB_*` names the tree reads" for four commits; its replacement
+paragraph said "the 17 `SPEC2SCIENCE_*` names the tree reads" for four commits; its replacement
 credited the constant-resolving reader with 21, the figure that reader returns with its
 constant resolution REMOVED (it returns 27). Reviewers counting literals got 23 and 25.
 Every one of those is a right answer to a different question about which files and which
@@ -127,7 +127,7 @@ every test already does.
 
 BY PREFIX, not by list: the names are taken from
 `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES` — the same constant that decides which
-host names reach a leaf — so a `ATMOFAB_*` knob added later is neutralized without anyone
+host names reach a leaf — so a `SPEC2SCIENCE_*` knob added later is neutralized without anyone
 remembering this file. The two exact names beside it (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`)
 are the backend configuration homes, which carry no such prefix; `CODEX_HOME` is the one
 measured above, and `CLAUDE_CONFIG_DIR` is its twin, included by symmetry rather than by
@@ -160,7 +160,7 @@ from tools.tests import suite_env_guard
 def pytest_addoption(parser) -> None:
     parser.addoption(
         "--keep-operator-env", action="store_true", default=False,
-        help="do not strip the operator's ATMOFAB_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
+        help="do not strip the operator's SPEC2SCIENCE_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
              "from the environment (issue #84). For deliberately running the suite "
              "against a knob you have set; expect failures that belong to the knob.")
 
@@ -172,31 +172,31 @@ def pytest_configure(config) -> None:
     runs earlier than any fixture.
 
     The removal is REPORTED. A knob discarded in silence is a check recorded as run and not
-    run — `ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
+    run — `SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
     failures and 482s of real probing on `165c26f`, and an operator who sets it now gets
     1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
     """
     # Per process: an xdist worker inherits the controller's value and replaces it with its own.
-    config._atmofab_runtime_dir = (os.environ.get("XDG_RUNTIME_DIR"),
-                                   tempfile.mkdtemp(prefix="atmofab-suite-", dir="/tmp"))
-    os.environ["XDG_RUNTIME_DIR"] = config._atmofab_runtime_dir[1]
+    config._spec2science_runtime_dir = (os.environ.get("XDG_RUNTIME_DIR"),
+                                   tempfile.mkdtemp(prefix="spec2science-suite-", dir="/tmp"))
+    os.environ["XDG_RUNTIME_DIR"] = config._spec2science_runtime_dir[1]
     if config.getoption("--keep-operator-env"):
         suite_env_guard.decline_strip()
         return
     stripped = suite_env_guard.strip_operator_env(os.environ)
     if stripped:
-        config._atmofab_stripped_operator_env = stripped
+        config._spec2science_stripped_operator_env = stripped
 
 
 def _operator_env_disclosure(config) -> str | None:
     """What this run did to the operator's environment, or None if it did nothing."""
     if suite_env_guard.DECLINED:
-        return ("atmofab: --keep-operator-env -- the operator's environment was NOT "
+        return ("spec2science: --keep-operator-env -- the operator's environment was NOT "
                 "stripped for this run (issue #84); failures may belong to a knob you set")
-    stripped = getattr(config, "_atmofab_stripped_operator_env", None)
+    stripped = getattr(config, "_spec2science_stripped_operator_env", None)
     if not stripped:
         return None
-    return ("atmofab: stripped the operator's environment for this run (issue #84): "
+    return ("spec2science: stripped the operator's environment for this run (issue #84): "
             + ", ".join(stripped)
             + " -- pass --keep-operator-env to run against them instead")
 
@@ -225,7 +225,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
 
 def pytest_unconfigure(config) -> None:
     suite_env_guard.restore_operator_env(os.environ)
-    inherited, runtime = config._atmofab_runtime_dir
+    inherited, runtime = config._spec2science_runtime_dir
     shutil.rmtree(runtime, ignore_errors=True)
     if inherited is None:
         os.environ.pop("XDG_RUNTIME_DIR", None)
@@ -235,13 +235,13 @@ def pytest_unconfigure(config) -> None:
 
 @pytest.fixture(autouse=True)
 def _redirect_operator_private_roots(tmp_path, monkeypatch):
-    """Point every tree this test writes under `~/.atmofab` into `tmp_path`.
+    """Point every tree this test writes under `~/.spec2science` into `tmp_path`.
 
     Both subtrees, not just the homes: the isolated backend homes and the start-claim
     locks. Only the first was redirected until issue #133, and the rest were writing
     into the operator's real root the whole time (measured at `e0bae3d`:
     `test_orchestration_runtime.py` alone left 249 files in the `operator_tokens/` store
-    that issue #176 deleted, and `~/.atmofab/start_claims/` held 40).
+    that issue #176 deleted, and `~/.spec2science/start_claims/` held 40).
 
     Per-TEST rather than per-session on purpose: the home path is deterministic now, so
     two tests using the same fixed orchestration id would collide on the exclusive
@@ -251,7 +251,7 @@ def _redirect_operator_private_roots(tmp_path, monkeypatch):
 
     roots = {}
     for env_name, subdir in _private_root_redirects():
-        root = tmp_path / f"atmofab-{subdir}"
+        root = tmp_path / f"spec2science-{subdir}"
         root.mkdir(mode=0o700, exist_ok=True)
         monkeypatch.setenv(env_name, str(root))
         roots[env_name] = root
@@ -278,7 +278,7 @@ def _no_real_usage_reset_probe(monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_anything_in_operator_secret_root():
-    """Fail any test about to resolve one of the private roots to the real `~/.atmofab`."""
+    """Fail any test about to resolve one of the private roots to the real `~/.spec2science`."""
     import tools.orchestration_runtime as runtime
     from tools import run_workflow
     from tools.operator_private_root import operator_secret_root
@@ -308,7 +308,7 @@ def _forbid_anything_in_operator_secret_root():
         # about a marker that exists only on the resolver it happens to name. The
         # witnesses must SKIP when run outside pytest, where conftest is not loaded and
         # the thing they test does not exist.
-        _wrapper._atmofab_private_root_guard_installed = True
+        _wrapper._spec2science_private_root_guard_installed = True
         return _wrapper
 
     installed = [

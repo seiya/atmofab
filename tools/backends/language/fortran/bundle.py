@@ -70,7 +70,7 @@ def identifier_key(name: str) -> str:
 DEFAULT_COMPILER = "gfortran"
 
 #: The syntax-only stage `Generate.gate` must run, and pass, for this language whatever
-#: `ATMOFAB_SYNTAX_COMPILERS` lists; the post_generate certification requires its stage. Named
+#: `SPEC2SCIENCE_SYNTAX_COMPILERS` lists; the post_generate certification requires its stage. Named
 #: separately from `DEFAULT_COMPILER` because the readers ask different questions, and bound to
 #: it because the answers must not differ (see above).
 MANDATORY_SYNTAX_COMPILER = DEFAULT_COMPILER

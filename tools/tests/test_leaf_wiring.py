@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 # Trust the persisted dependency-readiness booleans _mark_dependencies_ready injects, so a
 # record_launch test does not need a real deps.yaml on disk (mirrors test_orchestration_runtime).
-os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
@@ -521,7 +521,7 @@ class PurePayloadValidationTests(unittest.TestCase):
         # The PRESENCE check has two halves and only the key-absence half was pinned: mutating
         # `not (isinstance(v, str) and v.strip())` to `k not in ctx` left all five pure test files
         # green. The non-empty half is what item (b) of issue #142's record
-        # (https://github.com/seiya/atmofab/issues/142#issuecomment-5560398588) cites as the
+        # (https://github.com/seiya/spec2science/issues/142#issuecomment-5560398588) cites as the
         # reason an empty node artifact never reaches a billed leaf, so it must not be able to
         # rot unobserved.
         for blank in ("", "   ", "\n"):
@@ -893,7 +893,7 @@ class PureRenderTests(unittest.TestCase):
 
     # Every document that states the ROUTING consequence of `issue_severity`, paired with a
     # sentence that PRECEDES the pointer on the same line and is byte-identical in the wording
-    # this issue refuses (`atmofab-enforcement-change` rule 3-a, trap 1), and the `step`s whose
+    # this issue refuses (`spec2science-enforcement-change` rule 3-a, trap 1), and the `step`s whose
     # rubric that line must reach. The rubric is defined once PER PHASE — `compile` in phase_01
     # §1-2 (issue #148), `generate` in phase_02 §2-2 (issue #143); these sites carry a pointer
     # only, so what is coupled is that a reader who meets the routing can reach the rule for
@@ -913,7 +913,7 @@ class PureRenderTests(unittest.TestCase):
          ("compile", "generate")),
     )
     # Where each phase's rubric lives. The DOCUMENT is derived from the code's own step ->
-    # phase-doc map (`atmofab-enforcement-change` rule 3-a: the rule is defined once, in the
+    # phase-doc map (`spec2science-enforcement-change` rule 3-a: the rule is defined once, in the
     # code, and the documents are checked against it), so a moved phase doc breaks both together;
     # only the section number is spelled here, having no representation in the code, and
     # `test_each_rubric_section_number_is_a_heading_of_its_phase_doc` holds it to the heading.
@@ -929,7 +929,7 @@ class PureRenderTests(unittest.TestCase):
     # at all. Each rewrite also refused a legitimate rewording, in the other direction.
     #
     # The question "does this prose grade on the repair-route axis?" is not answerable by
-    # pattern (`atmofab-enforcement-change` §1: when a gate reads source TEXT rather than the
+    # pattern (`spec2science-enforcement-change` §1: when a gate reads source TEXT rather than the
     # meaning of an input, enumerating spellings is the losing line). So it is replaced by a
     # question that IS answerable: "has this text changed since a human last read it against the
     # axis?" That is the instrument this file already uses for `_SEVERITY_ROUTING_ALLOWLIST` and
@@ -1451,7 +1451,7 @@ class PureRenderTests(unittest.TestCase):
     # one round: a hand-assignment written WITH the pointer (`it is a `fail` (`major`) — see
     # …§2-2`) passed, while correct routing prose about `prod` escalation, and about
     # `Compile.verify`'s own rule, was refused with a message calling it an assignment. Deciding
-    # "routes" from "assigns" by pattern is the losing line (`atmofab-enforcement-change`
+    # "routes" from "assigns" by pattern is the losing line (`spec2science-enforcement-change`
     # §"when the gate reads the source text"), so the rule is now: a NEW severity mention on a
     # leaf-read surface is refused until someone reads it and adds it here. That is a review
     # gate, not a judgment, and adding an entry is one line.
@@ -1977,15 +1977,15 @@ class PureRenderTests(unittest.TestCase):
         "interface_language": "cuda_cpp",
         "published_operations": [
             {"operation": "bc__advance",
-             "interface": "void bc__advance(atmofab::View<dp, 1> U, bc_rhs_1d rhs, dp t)",
+             "interface": "void bc__advance(spec2science::View<dp, 1> U, bc_rhs_1d rhs, dp t)",
              "argument_order": ["U", "rhs", "t"],
-             "arguments": [{"name": "U", "type": "atmofab::View<dp, 1>", "rank": 1},
+             "arguments": [{"name": "U", "type": "spec2science::View<dp, 1>", "rank": 1},
                            {"name": "rhs", "type": "bc_rhs_1d", "rank": 0,
                             "procedure_interface": "bc_rhs_1d"},
                            {"name": "t", "type": "dp", "rank": 0}],
              "procedure_interfaces": {"bc_rhs_1d": [
                  "using bc_rhs_1d = void(*)(u, dudt)",
-                 "atmofab::View<const dp, 1> u", "atmofab::View<dp, 1> dudt"]}},
+                 "spec2science::View<const dp, 1> u", "spec2science::View<dp, 1> dudt"]}},
         ],
     }
     # Both branches of `_build_dependency_surface_facts`' per-entry loop. The `unresolved` entry
@@ -2305,7 +2305,7 @@ class PureRenderTests(unittest.TestCase):
           repair-route value, and its template is covered by `PureRenderTests`' template-file
           sweep and by the prompt-contract drift guard, which hashes it. PR #419's audit of the
           rubric-twin entry records that the pair it used to own is gone
-          (https://github.com/seiya/atmofab/pull/419#issuecomment-5996926913).
+          (https://github.com/seiya/spec2science/pull/419#issuecomment-5996926913).
         """
         found = self._host_built_severity_mentions()
         detail = "; ".join(f"{k!r} in {sorted(v)}" for k, v in sorted(found.items()))
@@ -2759,7 +2759,7 @@ class PureRenderTests(unittest.TestCase):
                                   f"severity mention and the allowlist would have to absorb it")
 
     def test_compile_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
-        """Enumeration coupling (`atmofab-enforcement-change` rule 3-a) for phase_01 §1-2's
+        """Enumeration coupling (`spec2science-enforcement-change` rule 3-a) for phase_01 §1-2's
         rubric (issue #148) — the mirror of `test_leaf_verify
         .test_severity_rubric_states_every_verdict_severity_at_its_own_bullet`, which holds
         phase_02 §2-2 to the same rule.
@@ -3187,10 +3187,10 @@ class PureRecordLaunchTests(unittest.TestCase):
         credentials = Path(cred.name) / ".credentials.json"
         credentials.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
         os.chmod(credentials, 0o600)
-        env = {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
-               "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1",
-               "ATMOFAB_HOME": "/tmp/pure-leaf-test-home",
-               "ATMOFAB_WORKFLOW_HOMES_ROOT": str(self.homes)}
+        env = {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+               "SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1",
+               "SPEC2SCIENCE_HOME": "/tmp/pure-leaf-test-home",
+               "SPEC2SCIENCE_WORKFLOW_HOMES_ROOT": str(self.homes)}
         for patcher in (patch.dict(os.environ, env),
                         patch.object(operator_private_root, "claude_credentials_file",
                                      lambda: credentials)):

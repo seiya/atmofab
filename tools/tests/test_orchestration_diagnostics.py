@@ -81,17 +81,17 @@ def _home_env(home: Path) -> dict[str, str]:
     """`HOME`, and the homes root at its default place under it.
 
     The homes root is set explicitly as well because under pytest conftest's autouse fixture
-    has already pointed `ATMOFAB_WORKFLOW_HOMES_ROOT` at one directory per TEST, which every
+    has already pointed `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` at one directory per TEST, which every
     subtest of a row would share; under plain `unittest` the `HOME` half alone decides it."""
     from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
-    return {"HOME": str(home), WORKFLOW_HOMES_ROOT_ENV: str(home / ".atmofab" / "homes")}
+    return {"HOME": str(home), WORKFLOW_HOMES_ROOT_ENV: str(home / ".spec2science" / "homes")}
 
 
 def _lineage_projects(orchestration_id: str = ORCH_ID, lineage_id: str = LINEAGE_ID) -> Path:
     """The lineage's `config/projects`, from `workflow_homes_root()` read NOW.
 
     Call it INSIDE the `HOME` patch: under plain `unittest` nothing else redirects the homes
-    root, and a value read outside the patch is the operator's real `~/.atmofab/homes`."""
+    root, and a value read outside the patch is the operator's real `~/.spec2science/homes`."""
     from tools.operator_private_root import workflow_homes_root
     return (workflow_homes_root() / orchestration_id / "claude" / lineage_id / "config"
             / "projects")
@@ -507,7 +507,7 @@ class BuildLaunchIncidentTests(unittest.TestCase):
     def test_an_unexpandable_homes_root_is_a_typed_miss_naming_the_variable(self) -> None:
         """Round 3 of issue #565. The homes-root resolver is not total (the `TODO.md` item on
         `~account` overrides); its `RuntimeError` on the lineage branch is a miss that names
-        `ATMOFAB_WORKFLOW_HOMES_ROOT`, not a raise, and nothing is searched. The codex branch
+        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`, not a raise, and nothing is searched. The codex branch
         resolves the same root for its reason and falls back to the placeholder."""
         from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
         for provider, needle in (("claude_cli", WORKFLOW_HOMES_ROOT_ENV),
@@ -1537,7 +1537,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         map cannot silently fall behind the table again.
 
         Coupled ELEMENT BY ELEMENT AT ITS STATEMENT POSITION rather than by "the name occurs
-        somewhere in the file" (`atmofab-enforcement-change` rule 3-a): a basename that appears
+        somewhere in the file" (`spec2science-enforcement-change` rule 3-a): a basename that appears
         only inside another row's prose — `compile_generate_meta.json` is named in
         `bundle_meta.json`'s own row, as its `compile` twin — must not satisfy the requirement
         for itself. Measured: with that row's own entry deleted the document still holds two

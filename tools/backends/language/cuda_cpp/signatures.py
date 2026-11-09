@@ -13,10 +13,10 @@ language default:
     neutral                                  argument            component / result
     real / integer / logical, rank 0,  in    K name              K
     ... rank 0, out / inout                  K& name             —
-    real / integer / logical, rank R >= 1    atmofab::View<const K, R> (in) / View<K, R>
+    real / integer / logical, rank R >= 1    spec2science::View<const K, R> (in) / View<K, R>
                                              (component / result: the owning container below)
     ... alloc                                const <owning>& (in) / <owning>&
-    owning container, rank 1 / rank R >= 2   std::vector<X> / atmofab::Array<X, R>
+    owning container, rank 1 / rank R >= 2   std::vector<X> / spec2science::Array<X, R>
     string, rank 0                           const std::string& (in) / std::string&   std::string
     derived T, rank 0                        const T& (in) / T&                       T
     string / derived, rank R >= 1            const <owning>& (in) / <owning>&              <owning>
@@ -27,7 +27,7 @@ language default:
     interfaces entry P                       using P = <ret> (*)(<params>);
     type T                                   struct T { <component>; ... };
 
-`atmofab::View<T, R>` is the rank-R, column-major, non-owning array view every rendered header
+`spec2science::View<T, R>` is the rank-R, column-major, non-owning array view every rendered header
 defines (data pointer plus extents); the neutral `dims` of an argument are NOT part of the C++
 type, because a view's extents are run-time values, so they are not pinned here. A neutral string
 length is likewise not part of the type (`std::string` carries its own). A default kind is `float`
@@ -75,10 +75,10 @@ from tools.structured_signatures import validate_symbol as _validate_symbol
 LANGUAGE_DISPLAY_NAME = "CUDA C++"
 
 #: The array view type every rendered header defines (see the module docstring).
-VIEW_TYPE = "atmofab::View"
+VIEW_TYPE = "spec2science::View"
 #: The OWNING rank-R array every rendered header defines, for an array of rank 2 or more that owns
 #: its storage (a component, a result, an allocatable argument) or holds strings / derived values.
-ARRAY_TYPE = "atmofab::Array"
+ARRAY_TYPE = "spec2science::Array"
 
 #: C++ keywords (C++17) and the CUDA execution-space / memory-space specifiers. A §5.1 name equal
 #: to one of them cannot be declared in C++, so the lowering refuses it.
@@ -141,7 +141,7 @@ def _argument_type(ent: dict[str, Any], ctx: str) -> str:
 
 def _owning(element: str, rank: int) -> str:
     """The owning container of `rank` elements: `std::vector` for rank 1, the header's
-    `atmofab::Array<T, R>` above it."""
+    `spec2science::Array<T, R>` above it."""
     return f"std::vector<{element}>" if rank == 1 else f"{ARRAY_TYPE}<{element}, {rank}>"
 
 
@@ -173,7 +173,7 @@ DEVICE_CALLABLE_SPEC_KINDS = frozenset({"component"})
 def _is_fixed_numeric(ent: Any) -> bool:
     """`ent` is a `real` / `integer` / `logical` value that is either rank 0 or an explicit-shape
     array whose every `dims` entry is an integer literal — a value whose whole extent is known
-    without reading another argument, and which lowers to a scalar or an `atmofab::View`."""
+    without reading another argument, and which lowers to a scalar or a `spec2science::View`."""
     if not isinstance(ent, dict):
         return False
     spec = ent.get("spec")
@@ -599,7 +599,7 @@ _TYPE_KEYWORDS = frozenset({
 def _qualified_type(ctype: str, namespace: tuple[str, ...]) -> str:
     """`ctype` with every unqualified header name qualified by `namespace`, so a consumer that
     copies it from its prompt names `dep_model::dp` rather than an identifier its own translation
-    unit does not declare. A name already qualified (`atmofab::View`, `std::vector`), a namespace
+    unit does not declare. A name already qualified (`spec2science::View`, `std::vector`), a namespace
     name before `::`, a keyword and a number are left alone."""
     if not namespace:
         return ctype

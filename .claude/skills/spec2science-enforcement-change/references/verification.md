@@ -1,6 +1,6 @@
-# Verification procedures (atmofab)
+# Verification procedures (Spec2Science)
 
-Run these from the atmofab checkout root. **Do not write an assertion into a commit or TODO.md
+Run these from the spec2science checkout root. **Do not write an assertion into a commit or TODO.md
 that you have not measured.**
 
 These are an operator's own dev-session commands. `AGENTS.md` §Build-runtime execution rules —
@@ -62,7 +62,7 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   and on a branch). Issue #84 closed that on 2026-09-02 — the fixture builds both halves now —
   but a location-dependent row is a class, not one pair. **Compare the DELTA, not absolute
   values**. A `git archive` export is not a comparable tree at all: rows that call `git` fail
-  outside a checkout (six files at issue #498 — `atmofab-review-loop` `SKILL.md` names them) —
+  outside a checkout (six files at issue #498 — `spec2science-review-loop` `SKILL.md` names them) —
   use a worktree
 - **This count rots. Re-measure before handing anything over.** Three measurements of the same
   suite: 5 failures on 2026-08-13; 2 failed + 1 skipped on 2026-08-18
@@ -90,7 +90,7 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   empty-`HOME` run were green and CI refused 37 of them. Use `skip_probes.skip_unless_installed`,
   and before the push run once with every tool CI lacks hidden, under `--junitxml`, then the
   report check over that file (`refused=0`). **That run is one command**:
-  `python3 .claude/skills/atmofab-review-loop/scripts/ci_shape_suite.py` from the checkout root.
+  `python3 .claude/skills/spec2science-review-loop/scripts/ci_shape_suite.py` from the checkout root.
   It runs the suite with the executables `skip_probes.DEPENDENCIES` names hidden and an empty
   `HOME`, refuses a run whose report holds fewer or more tests than a pristine collection or any
   `<failure>` / `<error>` (CI's guard, so a subset `pytest.ini`'s `addopts` or a plugin
@@ -391,7 +391,7 @@ the shape that makes this kind of bug last: **the claim that matters can be true
 number in it is false.**
 
 Same reason as above, and one of this loop's own rules besides: the earlier form used `git stash`
-plus `git checkout -- .`, and `atmofab-review-loop` forbids `git checkout -- <path>` by name for
+plus `git checkout -- .`, and `spec2science-review-loop` forbids `git checkout -- <path>` by name for
 discarding uncommitted work along with whatever it was meant to revert.
 
 ## Tidying tangled commit history (no interactive rebase available)
@@ -477,7 +477,7 @@ python3 -c 'import json; from tools.build_runtime import tool_run_linter as f; p
 
 A refusal is a `ValueError` raised by the entry point. The library reads no workflow environment
 variable (issue #171 PR-2 retired the orchestrated mode), so the same call answers the same way
-with or without `ATMOFAB_WORKFLOW_MODE`.
+with or without `SPEC2SCIENCE_WORKFLOW_MODE`.
 
 ## What an LLM CLI actually does (unbilled capture harness)
 
@@ -681,6 +681,6 @@ What the branch shipped, and what it is worth:
 
 ## Mutation check
 
-Use `.claude/skills/atmofab-review-loop/scripts/mutation_check.py`. The procedure is owned by
-`atmofab-review-loop`'s "Before you hand it over (round 0)".
+Use `.claude/skills/spec2science-review-loop/scripts/mutation_check.py`. The procedure is owned by
+`spec2science-review-loop`'s "Before you hand it over (round 0)".
 

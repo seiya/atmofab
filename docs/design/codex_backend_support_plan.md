@@ -3,7 +3,7 @@
 ## Purpose
 
 This plan implements GitHub issue
-[seiya/atmofab#13](https://github.com/seiya/atmofab/issues/13) in one pull
+[seiya/spec2science#13](https://github.com/seiya/spec2science/issues/13) in one pull
 request. The implementation keeps workflow contracts and validation
 backend-neutral. Backend-specific behavior is confined to transport, session
 management, hooks, resume, and usage-limit handling.
@@ -15,7 +15,7 @@ the strict tool-free isolation provided by the Claude backend.
 
 Status note, 2026-09-16: the output schema this plan's `--output-schema` bullets and
 the `structured-output support` preflight check describe is retired
-([issue #230](https://github.com/seiya/atmofab/issues/230)); the pure codex leaf is the
+([issue #230](https://github.com/seiya/spec2science/issues/230)); the pure codex leaf is the
 read-only sandbox alone and the host's own parse is the shape check. The "records that
 isolation level" sentence above and the `sandboxed_structured_approximation` /
 `closed_tool_free` values below were never implemented: nothing in `tools/` records an
@@ -23,8 +23,8 @@ isolation level (`/usr/bin/grep -rn sandboxed_structured_approximation tools` is
 the commit of this note). The bullets below are kept as the record of what this plan
 proposed.
 
-Status note, 2026-10-29: superseded by [issue #534](https://github.com/seiya/atmofab/issues/534)
-PR-J4-b ([PR #557](https://github.com/seiya/atmofab/pull/557)). No pure codex leaf
+Status note, 2026-10-29: superseded by [issue #534](https://github.com/seiya/spec2science/issues/534)
+PR-J4-b ([PR #557](https://github.com/seiya/spec2science/pull/557)). No pure codex leaf
 exists: every codex launch is a `workshop leaf` under `--sandbox workspace-write`
 (`docs/ORCHESTRATION.md` §workshop leaf), and §Pure Generate CLI approximation is
 history.
@@ -71,7 +71,7 @@ history.
   - supplies repository trust explicitly;
   - enables hooks and bypasses only the validated project-hook hash check.
 - Use `CODEX_HOME` as the canonical Codex configuration location. Support
-  `ATMOFAB_HOME` temporarily as a deprecated compatibility alias and reject
+  `SPEC2SCIENCE_HOME` temporarily as a deprecated compatibility alias and reject
   conflicting values.
 - Preflight must parse the repository hook configuration and confirm that each
   workflow-relevant command resolves to

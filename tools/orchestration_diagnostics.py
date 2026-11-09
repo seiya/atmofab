@@ -22,7 +22,7 @@ PR-J4-b) was prepared no private ``CLAUDE_CONFIG_DIR`` and wrote under the opera
 workshop leaf's rollout and an HTTP workshop lineage's ``loop_turns.jsonl`` (PR-J3-b) are a
 different format each and are not read; the miss reason names where each is. Issue #63 had
 put an AGENTIC leaf's transcript in the orchestration's private home and issue #64 made that
-home durable (``~/.atmofab/homes/<orchestration_id>/claude``); that leaf is deleted, the home
+home durable (``~/.spec2science/homes/<orchestration_id>/claude``); that leaf is deleted, the home
 is no longer prepared, and a transcript written under one before Z4 (issue #171) is not
 reachable from here — recorded as an accepted loss, and the files are still on disk for
 ``tools/prune_workflow_homes.py``. Every "when it is still there" below reads against a home
@@ -504,7 +504,7 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
 
     The resolver's ``ValueError`` / ``OSError`` and a glob's ``OSError`` degrade to a miss, and
     so does the homes-root override's ``RuntimeError`` (a ``~account`` naming no account), as
-    a miss naming ``ATMOFAB_WORKFLOW_HOMES_ROOT``: left to propagate it made the report say
+    a miss naming ``SPEC2SCIENCE_WORKFLOW_HOMES_ROOT``: left to propagate it made the report say
     detection had failed and the window was unknown, which was false.
     """
     arid = str(child_arid or "").strip()

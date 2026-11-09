@@ -787,7 +787,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `{ir, compile_fail}` reply, "a pure reply carries no comments", "on the PURE path"), and
     # the two IR examples' headers say the host seeds them into both work trees. A bump taken
     # with `leaf-85`, which re-derives every Compile anyway, so this one costs no extra
-    # re-derivation; measured 100149 bytes with `wc -c` in /home/seiya/atmofab at the commit
+    # re-derivation; measured 100149 bytes with `wc -c` in the checkout at the commit
     # that takes it (ceiling 100200, no bump).
     "compile-docs-21": "325557f84cceedb3fd418b08a5588955c8f3c63445541e2d835cdf64f5dc5317",
     # Issue #567 (first form; the re-pins below narrow it to STATE reads): the COVERAGE block
@@ -796,7 +796,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # outside a term constant by form), the schema block's bind comment says a bind expr does
     # not reach enters no value, and V3 (ii) says the coverage gate no longer counts the case
     # a `0 *` term names. The leaf pin does not hash this document (it stays `leaf-85`);
-    # measured 100691 bytes with `wc -c` in /home/seiya/atmofab at the commit that takes it
+    # measured 100691 bytes with `wc -c` in the checkout at the commit that takes it
     # (ceiling 100200 -> 100800).
     # Re-pinned in place before shipping (issue #567 review round 1; the version is new on this
     # branch): the COVERAGE block counts only captured STATE reads — an `at('<case>').inputs`
@@ -836,6 +836,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # extent-dummy exception, and review round 2 scoped the whole-count clause to a node with
     # an axis (the version was unreleased, so its digest moved in place each time).
     "compile-docs-29": "c32a21eb875b67af5aa43881584f4bc033b7f813cd08499fbe2de58539c1e578",
+    # compile-docs-30 (issue #619, the rename to Spec2Science): `phase_01_compile.md`, the seed
+    # both compile leaves read, carries seven issue links, now at `github.com/seiya/spec2science`
+    # (no other site). Measured 111222 bytes with `wc -c` in the checkout at the
+    # commit that takes it (ceiling 111250, no bump).
+    "compile-docs-30": "c0cf513daed0331c6c70d36c14d39476752debe02019679c6bb732935bb93799",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1090,7 +1095,7 @@ PINNED_RENDER: dict[str, str] = {
     # other.) The digest `render-10` shipped with at 79e90e32:
     "render-10@79e90e32": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
     # render-11 (issue #512, PR-4c): the CUDA C++ runner calls the harness's `__block_size`
-    # before the first case and stores it in `atmofab::launch_block_size`, which the rendered
+    # before the first case and stores it in `spec2science::launch_block_size`, which the rendered
     # header now declares for every source of the program; the renderer's pin gains the
     # operation (`harness_cpp_gpu@0.2.0` §5.1). Rows moved: `cuda_cpp/runner.py`,
     # `cuda_cpp/header.py`, and `tools/host_execution.py` (the block size reaches the launch
@@ -1157,6 +1162,18 @@ PINNED_RENDER: dict[str, str] = {
     # and seven toy IRs, for fortran_cpu and cpp_gpu (sha256, measured). Re-pinned in place once
     # before it shipped (review round 2: the perf cell count is sized per drive entry).
     "render-16": "442f58ba9a64b90a1f39d6ebd7218958d7b7da19f43a46a0856b504f895064b5",
+    # render-17 (issue #619, the rename to Spec2Science): the CUDA C++ model header the host
+    # renders guards its `View` with `SPEC2SCIENCE_VIEW_DEFINED` (the former name's prefix before).
+    # A bump, because rendered bytes move. Rows moved, measured against origin/main 9360d799:
+    # `cuda_cpp/header.py` (the guard) and `fortran/bundle.py` (a comment naming
+    # `SPEC2SCIENCE_SYNTAX_COMPILERS`). Re-pinned in place once before it shipped (K5 of the same
+    # PR): the CUDA C++ header, runner and gates declare and read the namespace `spec2science`
+    # (`cuda_cpp/header.py`, `runner.py`, `signatures.py`; `source.py` is no member) — rendered bytes, covered
+    # by this same bump. Re-pinned in place again before it shipped (K6 of the same PR): `parallel/mpi/wrapper.py`'s
+    # binding canary (a probe program the wrapper check compiles, not a rendered file) is
+    # named `spec2science_mpi_binding_canary`. Again in review round 1: an article in a docstring
+    # of `cuda_cpp/runner.py` and of `cuda_cpp/signatures.py`.
+    "render-17": "131dacb348a66b80f47ebe5e2cbd9965548eac550e75c815dbdcce87d82ac21c",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source
@@ -1455,7 +1472,18 @@ PINNED_BUILD: dict[str, str] = {
     # `DRIVER_DISTRIBUTED_PENDING`, which no build reads (its readers were the preflight refusal
     # and the render backstop, both deleted). Measured against 84c5ff88: that file is the one
     # member that moved. The digest `build-4` shipped with at 84c5ff88 is `build-4@84c5ff88`.
-    "build-4": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
+    # Re-pinned for issue #619 (the rename to Spec2Science), NOT bumped: a comment in
+    # `fortran/bundle.py` names `SPEC2SCIENCE_SYNTAX_COMPILERS` under the new prefix; no code moved.
+    # Measured against 9360d799: that file is the one member that moved. Re-pinned in place
+    # once before it shipped (K3 of the same PR): `tools/remote_execution.py`'s site probe names
+    # its scratch executable `.spec2science-probe-$$` (the former name before); the file is made,
+    # run and removed in the remote workdir, and no build input or output moves. The digest
+    # `build-4` shipped with at 9360d799 is `build-4@9360d799`. Re-pinned in place again
+    # before it shipped (K6): `tools/remote_execution.py`'s job-script markers and setup-line
+    # variable are spelled `spec2science-*` / `spec2science_setup_line`; the job script and the
+    # reader of its output are the same module and move together, and no build output moves.
+    "build-4": "a26c5e752d6e83f924bb8401485db6dfccf2c1d83f673aa44b90f55f9da5d20e",
+    "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
 PINNED_EXECUTE: dict[str, str] = {
@@ -1513,7 +1541,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # prefix's time limit moved before the directives (a directive may shorten it). And a
     # docstring corrected in round 2 (what a process reaching the script's stdout can do), and
     # docstrings again in round 3. One none-site input IS read differently since PR-4, found in
-    # round 3: a platform value containing a scheduler marker (a node named `atmofab-jobs01`) is
+    # round 3: a platform value containing a scheduler marker (a node named `spec2science-jobs01`) is
     # now refused as a marker off its line's start, where origin/main recorded it. It fails
     # closed, so no certified output is wrong without a bump.
     # Re-pinned (issue #289, R4-b PR-6), behaviour-preserving: `tools/host_execution.py` gained
@@ -1698,7 +1726,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # other.) The digest `execute-8` shipped with at f4158bfa:
     "execute-8@f4158bfa": "2006092142e7b93ec637d4c5589ba5b2f9aac95bad8565525cf02f1708bc9dce",
     # execute-9 (issue #512, PR-4a): a launcher target's run is launched with the process grid
-    # its profile imposes (`execution.process_grid` -> `ATMOFAB_PROCESS_GRID` through the mpi
+    # its profile imposes (`execution.process_grid` -> `SPEC2SCIENCE_PROCESS_GRID` through the mpi
     # backend's `execution_env`). Rows moved: `tools/host_execution.py` and the mpi
     # `execution_env` module.
     "execute-9": "498b82394e172d1a5c391e6a0e31e9596180770b52d29e5673cbf841cc165b52",
@@ -1789,6 +1817,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # or binary run differs. A verdict `quality_check.json` carries can, and the
     # `verdict-16` bump moves the same Validate key.
     "execute-16@719970bc": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
+    # execute-17 (issue #619, the rename to Spec2Science): the environment variables the host
+    # passes a program are `SPEC2SCIENCE_CUDA_BLOCK` and `SPEC2SCIENCE_PROCESS_GRID` (the
+    # former prefix before); the harness specs name the same variables. Rows moved, measured against
+    # origin/main 9360d799: the registry launch rows of `parallel/cuda/execution.py` and
+    # `parallel/mpi/execution.py`. Re-pinned in place once before it shipped (K3 of the same PR):
+    # `tools/remote_execution.py`'s site probe names its scratch executable
+    # `.spec2science-probe-$$`, made, run and removed in the remote workdir. Re-pinned in
+    # place again before it shipped (K6): the remote job-script markers (as for `build-4`) and
+    # `parallel/mpi/launcher.py`'s launch canary (`spec2science_mpi_launch_canary`, its size
+    # line `spec2science-mpi-size`) — a probe the host writes and reads itself.
+    "execute-17": "582ad49a3417a2a0b3585a8f0cd75c0c0745540ea17f310b4de085e9d400486f",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

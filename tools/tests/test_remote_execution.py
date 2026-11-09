@@ -66,7 +66,7 @@ if "BatchMode=yes" not in sys.argv:
     sys.stderr.write("shim: no BatchMode=yes, a real ssh could prompt\n")
     sys.exit(97)
 host, command = args[0], " ".join(args[1:])
-if "atmofab-status" in command:
+if "spec2science-status" in command:
     time.sleep(float(os.environ.get("SHIM_SSH_DELAY") or 0))
 fail = os.environ.get("SHIM_SSH_FAIL")
 if fail and fail in command:
@@ -78,12 +78,12 @@ if os.environ.get("SHIM_SSH_PATH"):
 proc = subprocess.run(["sh", "-c", command], stdout=subprocess.PIPE, text=True, env=env)
 out, rc = proc.stdout, proc.returncode
 sub = os.environ.get("SHIM_SSH_SUB")
-if sub and "atmofab-status" in command:
+if sub and "spec2science-status" in command:
     pattern, repl = json.loads(sub)
     out = re.sub(pattern, repl, out, flags=re.M)
 sys.stdout.write(out)
 post = os.environ.get("SHIM_SSH_POST")
-if post and "atmofab-status" in command:
+if post and "spec2science-status" in command:
     subprocess.run(["sh", "-c", post], check=True)
 sys.exit(rc)
 '''
@@ -481,7 +481,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertNotIn("error", run)
 
     def test_the_entry_times_are_the_sites_own(self) -> None:
-        sub = json.dumps([r"^(atmofab-status run 0) \d+ \d+$", r"\1 1700000000 1700000007"])
+        sub = json.dumps([r"^(spec2science-status run 0) \d+ \d+$", r"\1 1700000000 1700000007"])
         result = self.h.run(self.h.request(), SHIM_SSH_SUB=sub)
         entry = self.h.log_entries("run")[0]
         self.assertEqual(entry["started_at_utc"], "2023-11-14T22:13:20Z")
@@ -492,7 +492,7 @@ class EndToEndTests(unittest.TestCase):
     def test_a_long_command_that_succeeded_is_not_a_timeout(self) -> None:
         """Only a 124 or 137 is read as a timeout, however long the command took."""
         cmd = self.h.command("run", ("true",), timeout=5)
-        sub = json.dumps([r"^(atmofab-status run 0) \d+ \d+$", r"\1 1700000000 1700000100"])
+        sub = json.dumps([r"^(spec2science-status run 0) \d+ \d+$", r"\1 1700000000 1700000100"])
         (run,) = self.h.run(self.h.request(cmd), SHIM_SSH_SUB=sub).results
         self.assertEqual(run["return_code"], 0)
         self.assertNotIn("error", run)
@@ -566,7 +566,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_a_probe_answers_the_device_and_a_failing_probe_answers_none(self) -> None:
         # Only the first line is the device: a later one is never read as a platform line.
-        probe = ("sh", "-c", "echo 'Device X, 1.0'; echo 'atmofab-platform gpu second'")
+        probe = ("sh", "-c", "echo 'Device X, 1.0'; echo 'spec2science-platform gpu second'")
         result = self.h.run(self.h.request(platform_probe=probe))
         self.assertEqual(result.platform["gpu"], "Device X, 1.0")
         h2 = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
@@ -606,14 +606,14 @@ class RefusalTests(unittest.TestCase):
                 with self.assertRaisesRegex(rx.RemoteExecutionError,
                                             f"'{tag}': no status line"):
                     h.run(h.request(),
-                          SHIM_SSH_SUB=json.dumps([rf"^atmofab-status {tag} .*$", ""]))
+                          SHIM_SSH_SUB=json.dumps([rf"^spec2science-status {tag} .*$", ""]))
                 self.assertEqual(h.log_entries("run"), [])
                 # Refused in step 5, before the removal: the message's "left" is true.
                 self.assertTrue(Path(h.job).is_dir())
 
     def test_a_command_that_ended_before_it_started_is_refused(self) -> None:
         self._refused("ended before it started", SHIM_SSH_SUB=json.dumps(
-            [r"^(atmofab-status run 0) \d+ \d+$", r"\1 1700000009 1700000000"]))
+            [r"^(spec2science-status run 0) \d+ \d+$", r"\1 1700000009 1700000000"]))
 
     def test_a_status_line_that_does_not_parse_is_refused(self) -> None:
         for bad in ("x", "0x", "", "0 1"):
@@ -621,45 +621,45 @@ class RefusalTests(unittest.TestCase):
                 h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
                 with self.assertRaisesRegex(rx.RemoteExecutionError, "does not parse"):
                     h.run(h.request(), SHIM_SSH_SUB=json.dumps(
-                        [r"^(atmofab-status run) 0 (\d+) (\d+)$", rf"\1 {bad} \2 \3"]))
+                        [r"^(spec2science-status run) 0 (\d+) (\d+)$", rf"\1 {bad} \2 \3"]))
 
     def test_a_second_status_line_for_a_command_is_refused(self) -> None:
         self._refused("2 status lines", SHIM_SSH_SUB=json.dumps(
-            [r"^(atmofab-status run .*)$", r"\1\n\1"]))
+            [r"^(spec2science-status run .*)$", r"\1\n\1"]))
 
     def test_a_status_line_for_no_command_of_the_job_is_refused(self) -> None:
         self._refused("for no command", SHIM_SSH_SUB=json.dumps(
-            [r"^(atmofab-status run .*)$", r"\1\natmofab-status other 0 1 2"]))
+            [r"^(spec2science-status run .*)$", r"\1\nspec2science-status other 0 1 2"]))
 
     def test_other_lines_on_the_scripts_stdout_are_not_read(self) -> None:
         """What a login shell's startup files print is not a status line."""
         result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps(
-            [r"^(atmofab-status run .*)$", r"welcome\n\1\nstatus run 7 1 2"]))
+            [r"^(spec2science-status run .*)$", r"welcome\n\1\nstatus run 7 1 2"]))
         self.assertTrue(result.results[1]["ok"])
 
     def test_a_status_for_a_command_that_should_not_have_run_is_refused(self) -> None:
         self._refused("reports a status although an earlier command failed",
                       RUNNER_RC="1", SHIM_SSH_SUB=json.dumps(
-                          [r"^(atmofab-status run .*)$", r"\1\natmofab-status qc 0 1 2"]))
+                          [r"^(spec2science-status run .*)$", r"\1\nspec2science-status qc 0 1 2"]))
 
     def test_a_marker_anywhere_but_once_at_a_lines_start_is_refused(self) -> None:
-        for repl in (r"X\1", r"\1 atmofab-status run 0 1 2", r"\1 atmofab-platform gpu x"):
+        for repl in (r"X\1", r"\1 spec2science-status run 0 1 2", r"\1 spec2science-platform gpu x"):
             with self.subTest(repl=repl):
                 h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
                 with self.assertRaisesRegex(rx.RemoteExecutionError, "other than once at its start"):
-                    h.run(h.request(), SHIM_SSH_SUB=json.dumps([r"^(atmofab-status run .*)$", repl]))
+                    h.run(h.request(), SHIM_SSH_SUB=json.dumps([r"^(spec2science-status run .*)$", repl]))
 
     def test_the_platform_lines_are_one_each_of_the_expected_keys(self) -> None:
         for repl, probe in ((r"\1\n\1", None),                          # a second machine line
-                            (r"\1\natmofab-platform gpu forged", None),  # gpu without a probe
-                            (r"\1\natmofab-platform disk x", None),      # an unknown key
-                            (r"atmofab-platform node", None),               # machine lost
-                            (r"\1\natmofab-platform gpu x", ("true",))):  # a second gpu line
+                            (r"\1\nspec2science-platform gpu forged", None),  # gpu without a probe
+                            (r"\1\nspec2science-platform disk x", None),      # an unknown key
+                            (r"spec2science-platform node", None),               # machine lost
+                            (r"\1\nspec2science-platform gpu x", ("true",))):  # a second gpu line
             with self.subTest(repl=repl, probe=probe):
                 h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
                 with self.assertRaisesRegex(rx.RemoteExecutionError, "platform lines are not"):
                     h.run(h.request(platform_probe=probe), SHIM_SSH_SUB=json.dumps(
-                        [r"^(atmofab-platform machine .*)$", repl]))
+                        [r"^(spec2science-platform machine .*)$", repl]))
 
     def test_a_command_that_reaches_the_scripts_stdout_cannot_clear_its_failure(self) -> None:
         """The runner opens the job script's stdout through `/proc` (its grandparent: the
@@ -675,7 +675,7 @@ class RefusalTests(unittest.TestCase):
                     import os, sys
                     ppid = int(open("/proc/%d/stat" % os.getppid()).read().rsplit(")", 1)[1].split()[1])
                     with open("/proc/%d/fd/1" % ppid, "w") as out:
-                        out.write("\\natmofab-status run 0 1 2\\natmofab-status qc 0 1 2\\n{tail}")
+                        out.write("\\nspec2science-status run 0 1 2\\nspec2science-status qc 0 1 2\\n{tail}")
                     sys.exit(3)
                 '''))
                 forger.chmod(0o755)
@@ -694,7 +694,7 @@ class RefusalTests(unittest.TestCase):
             import os, signal, sys
             ppid = int(open("/proc/%d/stat" % os.getppid()).read().rsplit(")", 1)[1].split()[1])
             with open("/proc/%d/fd/1" % ppid, "w") as out:
-                out.write("atmofab-status run 0 1 2\\natmofab-status qc 0 1 2\\n")
+                out.write("spec2science-status run 0 1 2\\nspec2science-status qc 0 1 2\\n")
             os.kill(ppid, signal.SIGKILL)
             sys.exit(3)
         '''))
@@ -727,7 +727,7 @@ class RefusalTests(unittest.TestCase):
                 if text.count('if [ "$rc" = 0 ]') >= 2:
                     first = text.index('if [ "$rc" = 0 ]')
                     i = text.index('if [ "$rc" = 0 ]', first + 1)
-                    new = 'echo "atmofab-status qc 0 1 1"; exit 0\\n'
+                    new = 'echo "spec2science-status qc 0 1 1"; exit 0\\n'
                     with open(path, "r+") as f:
                         f.seek(i)
                         f.write(new.ljust(len(text) - i))
@@ -768,8 +768,8 @@ class RefusalTests(unittest.TestCase):
             for f in run.rc qc.rc qc.t0 qc.t1 run.t0 run.t1 qc.stdout; do
               echo 0 > ../ctl/$f; chmod 444 ../ctl/$f
             done
-            echo "atmofab-status run 0 1 2"
-            echo "atmofab-status run 0 1 2" >&2
+            echo "spec2science-status run 0 1 2"
+            echo "spec2science-status run 0 1 2" >&2
             exit 3
         '''))
         forger.chmod(0o755)
@@ -778,7 +778,7 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual((run["ok"], run["return_code"]), (False, 3))
         self.assertIsNone(qc)
         self.assertEqual(self.h.log_entries("qc"), [])
-        self.assertIn("atmofab-status run 0 1 2", run["stdout"])
+        self.assertIn("spec2science-status run 0 1 2", run["stdout"])
 
     def test_a_program_the_site_cannot_find_is_the_hosts_failure(self) -> None:
         missing = self.h.command("run", ("no-such-program-zz",))
@@ -1049,7 +1049,7 @@ class SchedulerTests(unittest.TestCase):
             + rx.TRANSPORT_GRACE_SEC
         self.assertEqual(srun[1:9], [f"--time={-(-wall // 60)}", "--partition=debug", "-p",
                                      "other", "--time=1", "--ntasks=1",
-                                     "--job-name=atmofab-arid-1", "--immediate=77"])
+                                     "--job-name=spec2science-arid-1", "--immediate=77"])
         self.assertEqual(srun[9:11], ["sh", "-c"])
         self.assertIn(rx.STATUS_MARKER, srun[11])
         self.assertEqual([c[0] for c in self.h.calls()], ["ssh", "scp", "ssh", "srun", "scp", "ssh"])
@@ -1101,7 +1101,7 @@ class SchedulerTests(unittest.TestCase):
         """The two times are read on two machines; a job machine whose clock is behind the
         login's gives a negative difference, recorded as 0 rather than refused."""
         result = self.h.run(self.h.request(), SHIM_SSH_SUB=json.dumps(
-            [r"^(atmofab-job \S+) \d+$", r"\1 1"]))
+            [r"^(spec2science-job \S+) \d+$", r"\1 1"]))
         self.assertEqual(result.site_record["queue_wait_ms"], 0)
         self.assertTrue(all(r["ok"] for r in result.results))
 
@@ -1117,18 +1117,18 @@ class SchedulerTests(unittest.TestCase):
         self._refused("empty job id", SHIM_SRUN_NO_ID="1")
 
     def test_the_scheduler_lines_are_one_each_and_only_under_a_scheduler(self) -> None:
-        one_each = "1 atmofab-submitted and 2 atmofab-job lines|, not one each"
+        one_each = "1 spec2science-submitted and 2 spec2science-job lines|, not one each"
         for pattern, repl, refusal in (
-                (r"^(atmofab-job .*)$", r"\1\n\1", one_each),              # a second job line
-                (r"^(atmofab-job .*)$", "", one_each),                     # the job line lost
-                (r"^(atmofab-submitted .*)$", "", one_each),               # the ask lost
-                (r"^(atmofab-job) \S+ (.*)$", r"\1 9 9 \2", "does not parse"),  # not its shape
-                (r"^(atmofab-submitted) .*$", r"\1 soon", "does not parse"),
-                (r"^(atmofab-submitted .*)$", r"\1 2", "does not parse"),  # a third word
-                (r"^(atmofab-job) \S+ (.*)$", r"\1 a/b \2", "does not parse"),  # not an element
-                (r"^(atmofab-job \S+) .*$", r"\1 later", "does not parse"),  # not an epoch
+                (r"^(spec2science-job .*)$", r"\1\n\1", one_each),              # a second job line
+                (r"^(spec2science-job .*)$", "", one_each),                     # the job line lost
+                (r"^(spec2science-submitted .*)$", "", one_each),               # the ask lost
+                (r"^(spec2science-job) \S+ (.*)$", r"\1 9 9 \2", "does not parse"),  # not its shape
+                (r"^(spec2science-submitted) .*$", r"\1 soon", "does not parse"),
+                (r"^(spec2science-submitted .*)$", r"\1 2", "does not parse"),  # a third word
+                (r"^(spec2science-job) \S+ (.*)$", r"\1 a/b \2", "does not parse"),  # not an element
+                (r"^(spec2science-job \S+) .*$", r"\1 later", "does not parse"),  # not an epoch
                 # A marker glued to more letters is no scheduler line, and no status line either.
-                (r"^(atmofab-job .*)$", r"\1\natmofab-jobx 8 999", "does not parse")):
+                (r"^(spec2science-job .*)$", r"\1\nspec2science-jobx 8 999", "does not parse")):
             with self.subTest(repl=repl, pattern=pattern):
                 h = self._slurm(_Harness(tempfile.mkdtemp(dir=self._tmp.name)))
                 with self.assertRaisesRegex(rx.RemoteExecutionError, refusal):
@@ -1137,7 +1137,7 @@ class SchedulerTests(unittest.TestCase):
         h = _Harness(tempfile.mkdtemp(dir=self._tmp.name))
         with self.assertRaisesRegex(rx.RemoteExecutionError, "run under no scheduler"):
             h.run(h.request(), SHIM_SSH_SUB=json.dumps(
-                [r"^(atmofab-platform machine .*)$", r"atmofab-job 1 2\n\1"]))
+                [r"^(spec2science-platform machine .*)$", r"spec2science-job 1 2\n\1"]))
 
     def test_the_launch_probe_asks_for_the_schedulers_program(self) -> None:
         from tools.host_prerequisites import required_site_executables
@@ -1319,7 +1319,7 @@ class SiteSetupTests(unittest.TestCase):
 
     def test_a_setup_variable_the_login_exports_is_not_read_as_a_failure(self) -> None:
         self._setup("true")
-        self.assertEqual(self._probe("sh", setup_failed="1", atmofab_setup_line="0"),
+        self.assertEqual(self._probe("sh", setup_failed="1", spec2science_setup_line="0"),
                          rx.SiteProbe(missing=()))
 
     def test_a_line_that_leaves_e_set_does_not_end_the_probe(self) -> None:

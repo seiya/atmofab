@@ -1,11 +1,11 @@
 # Leaf must-read restructuring plan
 
-Status: **superseded by Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171))** — no
+Status: **superseded by Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171))** — no
 leaf force-reads a document, because no leaf holds a tool with which to read one. A document
 reaches a leaf only where `Conductor._build_pure_*_context` inlines it into the launch prompt,
 and `docs/AGENT_SKILLS.md` §Requirements is canonical for where a leaf-actionable rule goes now.
-Superseded in turn by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b
-([PR #557](https://github.com/seiya/atmofab/pull/557)): every leaf is a `workshop leaf`, which
+Superseded in turn by [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b
+([PR #557](https://github.com/seiya/spec2science/pull/557)): every leaf is a `workshop leaf`, which
 holds file tools confined to its work tree and reads the files the host seeds there — the
 documents `_build_pure_*_context` composes among them — and is still forced to read nothing.
 The body below is the record of the restructure as it shipped, and is not rewritten.
@@ -117,7 +117,7 @@ leaf to read what it does not use. Token/context pressure drops correspondingly.
 
 This table is the AGENTIC leaf's force-read set. A `pure-function leaf` force-reads nothing at
 all — it reads no `SKILL` and carries no `skill_must_read_refs`; the host inlines a closed context
-into its one prompt instead. Since [issue #168](https://github.com/seiya/atmofab/issues/168) that
+into its one prompt instead. Since [issue #168](https://github.com/seiya/spec2science/issues/168) that
 is the default for both `compile` rows as well as the two `generate` ones, so the rows below
 describe the residual agentic path (an entry whose `capabilities:` drops `pure`).
 

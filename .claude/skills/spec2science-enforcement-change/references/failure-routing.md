@@ -109,7 +109,7 @@ together with their episodes. Both sides state a rule, which is one site over th
 appears, rule 3-a applies to this pair as much as to anything else.
 
 The surfaces named in the last bullet — dependencies, preflight, execution policy, consistency
-with repository conventions — are the list `atmofab-review-loop` §"When to bring in Codex" carries.
+with repository conventions — are the list `spec2science-review-loop` §"When to bring in Codex" carries.
 
 **Once attribution is decided, decide when it should surface.** Attribution can be right while
 the **moment** is wrong, and the attribution discussion alone never surfaces that. In L174 a new
@@ -126,7 +126,7 @@ wrong moment.**
   backstop** and add the earlier check as well
 - Eight subagents across four rounds never raised this; **Codex raised it on its first pass**.
   Dependencies, preflight, and operations are surfaces subagents structurally do not look at (see
-  the Codex section of `atmofab-review-loop`)
+  the Codex section of `spec2science-review-loop`)
 
 **The cause a refusal message names must match the actual set of causes.** For a fail-closed,
 failing correctly is not enough. If the party that failed is a leaf, it is closed only once the
@@ -187,12 +187,12 @@ over".**
   `list.sort` over mixed types). Enumerate the raising operations, not the input types.
 - **A guard added for this reason needs a witness that reaches the raising operation**, and the
   family it is tested with has to straddle the type test — three review rounds went on that one
-  point (`atmofab-review-loop/references/mutation-testing.md` §"Issue #153").
+  point (`spec2science-review-loop/references/mutation-testing.md` §"Issue #153").
 
 **Scope, stated because the premises govern it.** None of this was a `leaf shortcut`: the artifacts
 in question are host-authored and leaf-non-writable, so no leaf gains anything by malforming one. It
 is an availability and reproducibility class — the "loss of reproducibility" fix category in
-`atmofab-review-loop` — which is why it is in scope at all despite no leaf gain.
+`spec2science-review-loop` — which is why it is in scope at all despite no leaf gain.
 
 ## A finding whose subject is the certified IR is the rc 4 class whatever rule fired (2026-09-16, issue #238)
 

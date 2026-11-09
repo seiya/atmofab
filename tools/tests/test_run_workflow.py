@@ -126,13 +126,13 @@ def setUpModule() -> None:
 
     Every test drives a fresh temporary repo root, and the claim path is keyed on it,
     so without this the suite deposits one 0-byte file per (root, spec/orchestration)
-    under `~/.atmofab/start_claims/` on every run — thousands of dentries that nothing
+    under `~/.spec2science/start_claims/` on every run — thousands of dentries that nothing
     ever reaps. Production leaves the variable unset.
     """
     global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT, _TARGET_REDIRECT
-    _SAVED_CLAIM_ROOT = os.environ.get("ATMOFAB_START_CLAIM_ROOT")
-    _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="atmofab_claims_")
-    os.environ["ATMOFAB_START_CLAIM_ROOT"] = _CLAIM_ROOT_TMPDIR.name
+    _SAVED_CLAIM_ROOT = os.environ.get("SPEC2SCIENCE_START_CLAIM_ROOT")
+    _CLAIM_ROOT_TMPDIR = tempfile.TemporaryDirectory(prefix="spec2science_claims_")
+    os.environ["SPEC2SCIENCE_START_CLAIM_ROOT"] = _CLAIM_ROOT_TMPDIR.name
     # Target resolution (issue #284) reads THIS checkout's `spec/targets/` and catalog, not the
     # scratch `repo_root` each test builds: those trees carry neither a target profile nor the
     # harness the profile names, and nearly every test here is about something else. The
@@ -149,9 +149,9 @@ def tearDownModule() -> None:
     if _TARGET_REDIRECT is not None:
         _TARGET_REDIRECT.close()
     if _SAVED_CLAIM_ROOT is None:
-        os.environ.pop("ATMOFAB_START_CLAIM_ROOT", None)
+        os.environ.pop("SPEC2SCIENCE_START_CLAIM_ROOT", None)
     else:
-        os.environ["ATMOFAB_START_CLAIM_ROOT"] = _SAVED_CLAIM_ROOT
+        os.environ["SPEC2SCIENCE_START_CLAIM_ROOT"] = _SAVED_CLAIM_ROOT
     if _CLAIM_ROOT_TMPDIR is not None:
         _CLAIM_ROOT_TMPDIR.cleanup()
 
@@ -1577,8 +1577,8 @@ class RunWorkflowTests(unittest.TestCase):
         # (this suite) from depositing a 0-byte file per key in the operator's home.
         with tempfile.TemporaryDirectory() as tmp:
             claim_root = Path(tmp) / "claims"
-            saved = os.environ.get("ATMOFAB_START_CLAIM_ROOT")
-            os.environ["ATMOFAB_START_CLAIM_ROOT"] = str(claim_root)
+            saved = os.environ.get("SPEC2SCIENCE_START_CLAIM_ROOT")
+            os.environ["SPEC2SCIENCE_START_CLAIM_ROOT"] = str(claim_root)
             try:
                 path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
                 self.assertEqual(path.parent, claim_root)
@@ -1592,18 +1592,18 @@ class RunWorkflowTests(unittest.TestCase):
                     path, run_workflow._claim_lock_path(Path(tmp), "spec", "spec/y"))
             finally:
                 if saved is None:
-                    os.environ.pop("ATMOFAB_START_CLAIM_ROOT", None)
+                    os.environ.pop("SPEC2SCIENCE_START_CLAIM_ROOT", None)
                 else:
-                    os.environ["ATMOFAB_START_CLAIM_ROOT"] = saved
+                    os.environ["SPEC2SCIENCE_START_CLAIM_ROOT"] = saved
 
     def test_the_claim_root_default_hangs_off_the_operator_secret_root(self) -> None:
         """The DEFAULT is the half `test_claim_root_is_relocatable` cannot see.
 
         That test sets the override, which is also what this module's `setUpModule`
-        does, so the production resolution — no override, `~/.atmofab/start_claims` —
+        does, so the production resolution — no override, `~/.spec2science/start_claims` —
         ran in no test at all. It is the branch that matters for issue #132: the claims
         are the third writer under the operator-private root, and until this commit it
-        spelled `Path.home() / ".atmofab"` for itself.
+        spelled `Path.home() / ".spec2science"` for itself.
 
         Pinned at the SHARED resolver, not against a transcribed path: `_home_dir` is
         patched in `tools.operator_private_root`, the module `operator_secret_root` reads, so if
@@ -1618,7 +1618,7 @@ class RunWorkflowTests(unittest.TestCase):
                     mock.patch.object(private_root, "_home_dir",
                                       return_value=fake_home):
                 path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
-            self.assertEqual(path.parent, (fake_home / ".atmofab").resolve()
+            self.assertEqual(path.parent, (fake_home / ".spec2science").resolve()
                              / "start_claims")
 
     def test_a_tilde_claim_root_override_is_expanded(self) -> None:
@@ -1630,7 +1630,7 @@ class RunWorkflowTests(unittest.TestCase):
         reviewers reported this one as a surviving mutant.
 
         The behaviour it pins is a CHANGE this branch made deliberately: a quoted
-        `ATMOFAB_START_CLAIM_ROOT='~/claims'` is a plausible spelling and the shell does
+        `SPEC2SCIENCE_START_CLAIM_ROOT='~/claims'` is a plausible spelling and the shell does
         not expand inside quotes, so before this branch the value became a literal `~`
         directory under the caller's working directory — which for the conductor is the
         checkout, where it then shows up as an untracked path.
@@ -1668,10 +1668,10 @@ class RunWorkflowTests(unittest.TestCase):
                 if shape == "unresolvable":
                     ctx.enter_context(
                         mock.patch.dict(os.environ,
-                                        {"ATMOFAB_START_CLAIM_ROOT": "relative-is-refused"}))
+                                        {"SPEC2SCIENCE_START_CLAIM_ROOT": "relative-is-refused"}))
                 else:
                     ctx.enter_context(mock.patch.dict(
-                        os.environ, {"ATMOFAB_START_CLAIM_ROOT": str(Path(tmp) / "claims")}))
+                        os.environ, {"SPEC2SCIENCE_START_CLAIM_ROOT": str(Path(tmp) / "claims")}))
                 if shape == "no_fcntl":
                     ctx.enter_context(mock.patch.object(run_workflow, "fcntl", None))
                 lock = None
@@ -1720,7 +1720,7 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root.mkdir()
             buf = io.StringIO()
             with mock.patch.dict(os.environ,
-                                 {"ATMOFAB_START_CLAIM_ROOT": str(Path(tmp) / "claims")}), \
+                                 {"SPEC2SCIENCE_START_CLAIM_ROOT": str(Path(tmp) / "claims")}), \
                     mock.patch.object(run_workflow, "fcntl", None), redirect_stdout(buf), \
                     run_workflow._exclusive_claim(repo_root, "spec", "spec/x",
                                                   stdout_format="human"):
@@ -1740,7 +1740,7 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root.mkdir()
             buf = io.StringIO()
             with mock.patch.dict(os.environ,
-                                 {"ATMOFAB_START_CLAIM_ROOT": str(Path(tmp) / "claims")}), \
+                                 {"SPEC2SCIENCE_START_CLAIM_ROOT": str(Path(tmp) / "claims")}), \
                     mock.patch.object(run_workflow, "fcntl", None), redirect_stdout(buf):
                 for _ in range(3):
                     with run_workflow._exclusive_claim(
@@ -1762,12 +1762,12 @@ class RunWorkflowTests(unittest.TestCase):
         succeed — a claim that is held and serializes nothing, which is the one degradation an
         operator cannot see from the outside. Measured before this refusal existed: two drivers,
         two lock paths, `held=True` for both."""
-        with mock.patch.dict(os.environ, {"ATMOFAB_START_CLAIM_ROOT": "relclaims"}), \
+        with mock.patch.dict(os.environ, {"SPEC2SCIENCE_START_CLAIM_ROOT": "relclaims"}), \
                 self.assertRaisesRegex(ValueError, "must be an absolute path"):
             run_workflow._start_claims_root()
-        for absolute in ("/tmp/atmofab-abs-claims", "~/atmofab-claims"):
+        for absolute in ("/tmp/spec2science-abs-claims", "~/spec2science-claims"):
             with self.subTest(value=absolute), \
-                    mock.patch.dict(os.environ, {"ATMOFAB_START_CLAIM_ROOT": absolute}):
+                    mock.patch.dict(os.environ, {"SPEC2SCIENCE_START_CLAIM_ROOT": absolute}):
                 self.assertTrue(run_workflow._start_claims_root().is_absolute())
 
     def test_an_unresolvable_claim_root_degrades_to_proceed(self) -> None:
@@ -1798,12 +1798,12 @@ class RunWorkflowTests(unittest.TestCase):
 
         `tools/tests/conftest.py` wraps `_start_claims_root` in a guard that raises
         `AssertionError` when a test is about to resolve the operator's real
-        `~/.atmofab`. Catching it in `_exclusive_claim` would turn that guard into a
+        `~/.spec2science`. Catching it in `_exclusive_claim` would turn that guard into a
         silent "proceed" — the suite would go back to writing into the operator's tree
         and nothing would say so, which is the failure mode the guard exists to replace.
         """
         self.assertTrue(
-            getattr(run_workflow._start_claims_root, "_atmofab_private_root_guard_installed", False),
+            getattr(run_workflow._start_claims_root, "_spec2science_private_root_guard_installed", False),
             "the suite's operator-private-root guard is a conftest fixture and is not "
             "installed: run the suite under pytest")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1875,7 +1875,7 @@ class RunWorkflowTests(unittest.TestCase):
         """
         from tools.operator_private_root import operator_secret_root
         self.assertTrue(
-            getattr(run_workflow._start_claims_root, "_atmofab_private_root_guard_installed", False),
+            getattr(run_workflow._start_claims_root, "_spec2science_private_root_guard_installed", False),
             "the suite's operator-private-root guard is a conftest fixture and is not "
             "installed: run the suite under pytest")
         real_root = operator_secret_root() / "start_claims"
@@ -3406,14 +3406,14 @@ class RunWorkflowTests(unittest.TestCase):
             self._seed_resumable_orchestration(
                 repo_root, oid, spec_ref="spec/problem/test.md", until_phase="Generate",
                 mode="dev", backend="claude", invocation={"generate_executor": "pure"})
-            prev = os.environ.pop("ATMOFAB_GENERATE_EXECUTOR", None)
+            prev = os.environ.pop("SPEC2SCIENCE_GENERATE_EXECUTOR", None)
             try:
                 code, out = self._resume_capture(repo_root, oid, [])
                 self.assertEqual(code, 0, out)
-                self.assertNotIn("ATMOFAB_GENERATE_EXECUTOR", os.environ)
+                self.assertNotIn("SPEC2SCIENCE_GENERATE_EXECUTOR", os.environ)
             finally:
                 if prev is not None:
-                    os.environ["ATMOFAB_GENERATE_EXECUTOR"] = prev
+                    os.environ["SPEC2SCIENCE_GENERATE_EXECUTOR"] = prev
 
     def test_resume_legacy_recorded_orchestration_fails_closed(self) -> None:
         # M-F: a legacy-recorded run cannot be resumed — legacy execution was removed. Resume must
@@ -3504,7 +3504,7 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["reason"], "generate_executor_legacy_removed")
 
     def test_ambient_env_executor_is_inert(self) -> None:
-        # M-F: ATMOFAB_GENERATE_EXECUTOR was removed and is fully inert. A stale ambient value (even
+        # M-F: SPEC2SCIENCE_GENERATE_EXECUTOR was removed and is fully inert. A stale ambient value (even
         # an old "legacy" or a typo) neither blocks a pure resume nor changes its outcome.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -3513,16 +3513,16 @@ class RunWorkflowTests(unittest.TestCase):
             self._seed_resumable_orchestration(
                 repo_root, oid, spec_ref="spec/problem/test.md", until_phase="Generate",
                 mode="dev", backend="claude", invocation={"generate_executor": "pure"})
-            prev = os.environ.get("ATMOFAB_GENERATE_EXECUTOR")
-            os.environ["ATMOFAB_GENERATE_EXECUTOR"] = "legacy"  # stale ambient value: must be inert
+            prev = os.environ.get("SPEC2SCIENCE_GENERATE_EXECUTOR")
+            os.environ["SPEC2SCIENCE_GENERATE_EXECUTOR"] = "legacy"  # stale ambient value: must be inert
             try:
                 code, out = self._resume_capture(repo_root, oid, [])
                 self.assertEqual(code, 0, out)
             finally:
                 if prev is not None:
-                    os.environ["ATMOFAB_GENERATE_EXECUTOR"] = prev
+                    os.environ["SPEC2SCIENCE_GENERATE_EXECUTOR"] = prev
                 else:
-                    os.environ.pop("ATMOFAB_GENERATE_EXECUTOR", None)
+                    os.environ.pop("SPEC2SCIENCE_GENERATE_EXECUTOR", None)
 
     def test_generate_executor_flag_removed(self) -> None:
         # M-F: the --generate-executor flag was deleted. A cold run that still passes it (legacy OR
@@ -8086,7 +8086,7 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertEqual(
             timeout_line,
             "    [warn   ] leaf timeout in generate.generate: no answer after 7205.3s "
-            "(cap 7200s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
+            "(cap 7200s, SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS) — process group killed, "
             "phase fails closed",
         )
         # A workshop lineage's bound (issue #534) is named as the bound that fired, not as the
@@ -8131,7 +8131,7 @@ class StdoutFormatTests(unittest.TestCase):
                "timeout_seconds": 7200, "elapsed_seconds": 7205.3, "leaf_exit": -9,
                "stdout_chars": 0, "stderr_chars": 812, "orchestration_id": "o"}),
             "    [warn   ] leaf timeout in build.step: no answer after 7205.3s "
-            "(cap 7200s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
+            "(cap 7200s, SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS) — process group killed, "
             "phase fails closed",
         )
         # An opt-in usage-limit wait: the run is deliberately parked, so the wait is announced —
@@ -10072,7 +10072,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                 f"    workdir: {Path(tmp) / 'jobs'}\n    executes: [cpu, gpu]\n"
                 f"    scheduler: none\ntargets:\n  t_cpu: box\n", encoding="utf-8")
             env = {"PATH": f"{shims}{os.pathsep}{os.environ['PATH']}", "SHIM_LOG": str(log),
-                   "SHIM_SSH_FAIL": "atmofab-probe"}
+                   "SHIM_SSH_FAIL": "spec2science-probe"}
             rc, ran, events = self._closure_until(repo_root, "generate", "t_cpu", **env)
             self.assertEqual(rc, 2)
             self.assertEqual(ran, [])
@@ -10846,7 +10846,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         self._remote()
         for until in ("compile", "generate"):
             with self.subTest(until=until):
-                code, events, _calls = self._main(until=until, SHIM_SSH_FAIL="atmofab-probe")
+                code, events, _calls = self._main(until=until, SHIM_SSH_FAIL="spec2science-probe")
                 self.assertEqual(code, 0, events)
                 self.assertEqual(self._probes(), [])
 
@@ -10855,14 +10855,14 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
         at Build is probed like one reaching Validate — and asked for the build compiler, not
         for what the binary runs under."""
         self._remote()
-        code, events, calls = self._main(until="build", SHIM_SSH_FAIL="atmofab-probe")
+        code, events, calls = self._main(until="build", SHIM_SSH_FAIL="spec2science-probe")
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "site_unreachable")
         self.assertEqual(calls, [])
 
     def test_a_site_that_does_not_answer_is_refused_before_anything_runs(self) -> None:
         self._remote()
-        code, events, calls = self._main(SHIM_SSH_FAIL="atmofab-probe")
+        code, events, calls = self._main(SHIM_SSH_FAIL="spec2science-probe")
         self.assertEqual(code, 2)
         self.assertEqual(events[-1]["reason"], "site_unreachable")
         self.assertEqual(events[-1]["site"], "box")

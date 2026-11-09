@@ -623,7 +623,7 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
             orch_root = repo / "workspace" / "orchestrations" / self.ORCH_ID
             orch_root.mkdir(parents=True)
             _open_dangling_window(orch_root)
-            private = home / ".atmofab" / "homes" / self.ORCH_ID / "claude"
+            private = home / ".spec2science" / "homes" / self.ORCH_ID / "claude"
             (private / "projects").mkdir(parents=True)
             (orch_root / "orchestration_meta.json").write_text(
                 json.dumps({"claude_workflow_home": str(private)}), encoding="utf-8")
@@ -681,7 +681,7 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
         self.assertNotIn("leaf transcripts are machine-local", md)
 
     def test_an_unexpandable_homes_root_keeps_the_window_facts_and_names_the_variable(self) -> None:
-        """Round 3 of issue #565: with `ATMOFAB_WORKFLOW_HOMES_ROOT='~nosuchacct/x'` the
+        """Round 3 of issue #565: with `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT='~nosuchacct/x'` the
         resolver's `RuntimeError` escaped the locator to `audit()`'s boundary, and the report
         said dangling-launch DETECTION had failed and the window was UNKNOWN — false, since
         detection had succeeded. The miss is typed now: the window table is rendered, the
@@ -729,9 +729,9 @@ class IncidentMatchMethodRenderTests(unittest.TestCase):
 
     def test_a_live_incident_appends_the_root_it_matched_under(self) -> None:
         md = self._md({"found": True, "path": "/x.jsonl", "match_method": "session_id",
-                       "matched_projects_root": "/home/op/.atmofab/homes/o/claude/projects"})
+                       "matched_projects_root": "/home/op/.spec2science/homes/o/claude/projects"})
         self.assertIn(
-            "(matched via `session_id` under `/home/op/.atmofab/homes/o/claude/projects`)", md)
+            "(matched via `session_id` under `/home/op/.spec2science/homes/o/claude/projects`)", md)
 
 
 class IncidentApiErrorRenderTests(unittest.TestCase):

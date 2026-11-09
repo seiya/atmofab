@@ -69,13 +69,13 @@ def setUpModule() -> None:
     # workshop lineage home binds the operator's credentials file
     # (`_prepare_claude_workshop_home`), which `record_launch` re-checks. The file the
     # preparer reads is a temporary one, never the operator's (and CI has none); the homes
-    # are redirected off the operator's real `~/.atmofab/homes`.
+    # are redirected off the operator's real `~/.spec2science/homes`.
     import os
     from unittest import mock
 
     from tools import operator_private_root as _opr
     redirect_isolated_homes_root_for_module(__name__)
-    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-claude-cred-")
+    tmp = tempfile.TemporaryDirectory(prefix="spec2science-test-claude-cred-")
     cred = Path(tmp.name) / ".credentials.json"
     cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
     os.chmod(cred, 0o600)
@@ -101,10 +101,10 @@ _PROVIDER_BLOCKS = {
     "openai_compatible": (
         "        provider: openai_compatible\n"
         "        base_url: http://localhost:8000/v1\n"
-        "        api_key_env: ATMOFAB_TEST_KEY\n        model: local-model\n"),
+        "        api_key_env: SPEC2SCIENCE_TEST_KEY\n        model: local-model\n"),
     "anthropic_api": (
         "        provider: anthropic_api\n"
-        "        api_key_env: ATMOFAB_TEST_KEY\n        model: claude-opus-5\n"),
+        "        api_key_env: SPEC2SCIENCE_TEST_KEY\n        model: claude-opus-5\n"),
 }
 
 
@@ -155,7 +155,7 @@ class EveryLlmLaunchIsAWorkshopLeafTests(unittest.TestCase):
     def _conductor(self, provider: str, shape: str | None) -> _DispatchProbe:
         c = _DispatchProbe(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            env={"ATMOFAB_TEST_KEY": "sk-test"},
+            env={"SPEC2SCIENCE_TEST_KEY": "sk-test"},
             llm_config=_config_on(provider, self.repo))
         # The shape is stubbed rather than built from an IR per shape: what this row is about
         # is the DISPATCH's dependence on the shape, and `_bundle_shape`'s own answer for each
@@ -268,7 +268,7 @@ class SpawnLeafRefusesTheRetiredReadonlyProfileTests(unittest.TestCase):
         tmp = self.repo
         return _PureFakeConductor(
             repo_root=tmp, orchestration_id="o", orchestration_agent_run_id="orch",
-            env={"ATMOFAB_TEST_KEY": "sk-test"},
+            env={"SPEC2SCIENCE_TEST_KEY": "sk-test"},
             llm_config=_config_on("claude_cli", tmp))
 
     def _write_profile(self, child_arid: str, readonly: bool | None) -> None:
@@ -326,7 +326,7 @@ class SpawnLeafRefusesTheRetiredReadonlyProfileTests(unittest.TestCase):
         `SandboxEnforcementError`."""
         c = _PureFakeConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            env={"ATMOFAB_TEST_KEY": "sk-test"},
+            env={"SPEC2SCIENCE_TEST_KEY": "sk-test"},
             llm_config=_config_on("anthropic_api", self.repo))
         entry = c.entry_for("generate", "generate")
         self.assertTrue(entry.is_http)
@@ -569,7 +569,7 @@ class HostDefectRefusalsTests(unittest.TestCase):
     FOUND BY THE ROUND-0 MUTATION SWEEP, not by review: each of these three replaced a branch
     that used to lead somewhere, and deleting the refusal left the whole suite green. None is
     reachable from the conductor — that is the point of them, and it is also why nothing was
-    driving them. `.claude/skills/atmofab-enforcement-change` rule 1-b says a surviving mutant
+    driving them. `.claude/skills/spec2science-enforcement-change` rule 1-b says a surviving mutant
     is grounds for a pin, never for deletion, so they are kept and pinned here.
 
     Each is a HOST defect rather than a leaf one: the leaf cannot reach any of these three, and
@@ -590,7 +590,7 @@ class HostDefectRefusalsTests(unittest.TestCase):
             repo = Path(tmp)
             c = _PureFakeConductor(
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                env={"ATMOFAB_TEST_KEY": "sk-test"},
+                env={"SPEC2SCIENCE_TEST_KEY": "sk-test"},
                 llm_config=_config_on("claude_cli", repo))
             refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/x@0.1.0", spec_path="spec/component/x",
@@ -951,7 +951,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
              {**det, "orchestration_id": "orch_other_001"}, None,
              ValueError, "template field values"),
             ("4 sandbox profile refused", "orch_to_001", "orch_run_to_001", leaf,
-             {"ATMOFAB_CHILD_AGENT_RUN_ID": "not_this_arid"},
+             {"SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "not_this_arid"},
              RuntimeError, "sandbox enforcement failed.*disagrees"),
             ("5 validate.execute without source_binary_id", "orch_001", "orch_run_001",
              execute, None, ValueError, "validate.execute launch requires `source_binary_id`"),
@@ -1117,7 +1117,7 @@ class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
             repo = Path(tmp)
             c = _PureFakeConductor(
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                env={"ATMOFAB_TEST_KEY": "sk-test"},
+                env={"SPEC2SCIENCE_TEST_KEY": "sk-test"},
                 llm_config=_config_on("claude_cli", repo))
             refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/x@0.1.0", spec_path="spec/component/x",
@@ -1139,7 +1139,7 @@ class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
             repo = Path(tmp)
             c = _PureFakeConductor(
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                env={"ATMOFAB_TEST_KEY": "sk-test"},
+                env={"SPEC2SCIENCE_TEST_KEY": "sk-test"},
                 llm_config=_config_on("claude_cli", repo))
             refs = wc.NodeRefs(target_id=_TARGET_ID,
                 node_key="component/x@0.1.0", spec_path="spec/component/x",
@@ -1162,7 +1162,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
     inlined; round 2 fixed those three; round 3 found a fourth, in a document neither sweep had
     listed, spelled `generate-generate` where round 2 had grepped `workflow-generate-generate`.
     Three rounds, three token lists, three blind spots — which is
-    `.claude/skills/atmofab-enforcement-change` rule 3-a's trigger exactly: when the sweep keeps
+    `.claude/skills/spec2science-enforcement-change` rule 3-a's trigger exactly: when the sweep keeps
     losing, couple the documents to the rule with a check.
 
     WHY IT MATTERS MORE HERE than in a document nobody reads: these are the leaf's own input.
@@ -1283,7 +1283,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
             refs = _write_compile_node(repo, stage_ir=True)
             c = _PureFakeConductor(
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                env={"ATMOFAB_TEST_KEY": "sk-test"}, llm_config=_config_on("claude_cli", repo))
+                env={"SPEC2SCIENCE_TEST_KEY": "sk-test"}, llm_config=_config_on("claude_cli", repo))
             derived = self._inlined_documents()
             for builder in (c._build_leaf_compile_context, c._build_leaf_compile_verify_context):
                 ctx = builder(refs)
@@ -1757,7 +1757,7 @@ class ServerHasOneValidationModeTests(unittest.TestCase):
         leaf's declared environment and switched the mode. They are still set — the
         conductor puts them on the leaf environment and `AGENTS.md` documents them — and
         this library does not read them: an unattributed call is served."""
-        env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "orch_x"}
+        env = {"SPEC2SCIENCE_WORKFLOW_MODE": "1", "SPEC2SCIENCE_ORCHESTRATION_ID": "orch_x"}
         result = self._call({}, env)
         self.assertIsInstance(result, dict)
         self.assertIn("return_code", result)  # make ran (and failed: no Makefile)

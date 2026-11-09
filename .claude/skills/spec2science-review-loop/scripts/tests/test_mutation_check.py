@@ -641,7 +641,7 @@ class MutationCheckScenarioTests(unittest.TestCase):
     def test_a_red_baseline_names_the_two_paths_this_harness_chose(self) -> None:
         """The message must accuse the HARNESS before the suite.
 
-        Both of these defaults were once inputs to atmofab's own suite — a `/dev/shm` scratch
+        Both of these defaults were once inputs to Spec2Science's own suite — a `/dev/shm` scratch
         root reddened the two tests that reason about `/dev/shm`, and the default worktree
         location reddened the hook tests that resolved `..` against the checkout's depth (issue
         #84 closed the second on 2026-09-02; the lever stays named because it is a class). The
@@ -875,7 +875,7 @@ class DiffEntryPathTests(unittest.TestCase):
         assert spec and spec.loader
         cls.module = importlib.util.module_from_spec(spec)
         # Import without leaving a `__pycache__` beside the script: a stale `.pyc` there is the
-        # handwritten-sweep trap `.claude/skills/atmofab-review-loop/references/mutation-testing.md`
+        # handwritten-sweep trap `.claude/skills/spec2science-review-loop/references/mutation-testing.md`
         # records, where consecutive same-byte-length rewrites reuse cached bytecode. This file's
         # own bytecode under `tests/__pycache__/` is gitignored and harmless.
         previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True

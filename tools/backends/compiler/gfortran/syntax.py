@@ -34,10 +34,10 @@ VERSION_ARGV: tuple[str, ...] = (EXECUTABLE, "--version")
 #: canary with the same argv separates a broken invocation from broken sources by the compiler's
 #: own verdict, without enumerating the stds a given compiler version happens to accept (`f2023`
 #: exists on GCC>=13 but not before, so any hard-coded set is wrong on some machine).
-CANARY_SOURCE = "module atmofab_syntax_canary\n  implicit none\nend module atmofab_syntax_canary\n"
+CANARY_SOURCE = "module spec2science_syntax_canary\n  implicit none\nend module spec2science_syntax_canary\n"
 
 #: The name the canary is staged under; its suffix is one the language's source rule accepts.
-CANARY_FILENAME = "atmofab_syntax_canary.f90"
+CANARY_FILENAME = "spec2science_syntax_canary.f90"
 
 #: How this driver spells a standard, for the remedy an operator reads when the canary shows the
 #: invocation itself is refused (the usual cause: the profile's `toolchain.standard` spelled the

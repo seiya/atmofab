@@ -178,9 +178,9 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
                      "checks": claude_launch_checks()}
         for patcher in (
             mock.patch.dict(os.environ, {
-                "ATMOFAB_WORKFLOW_HOMES_ROOT": str(self.homes),
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
-                "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}),
+                "SPEC2SCIENCE_WORKFLOW_HOMES_ROOT": str(self.homes),
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+                "SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1"}),
             mock.patch.object(operator_private_root, "claude_credentials_file",
                               lambda: credentials),
             mock.patch.object(ort, "probe_execution_platform",

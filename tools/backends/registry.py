@@ -135,7 +135,7 @@ AXES: dict[str, Axis] = {
         name="compiler",
         source=(
             "target profile toolchain.compiler (optional; pins the build compiler, "
-            "spec/targets/<target_id>.yaml) and ATMOFAB_SYNTAX_COMPILERS plus the mandatory "
+            "spec/targets/<target_id>.yaml) and SPEC2SCIENCE_SYNTAX_COMPILERS plus the mandatory "
             "syntax-only stage each language backend names"
         ),
         description=(

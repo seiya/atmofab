@@ -91,7 +91,7 @@ std::string emit_nested(const dp* data, const long* extent, const long* stride, 
 }
 
 template <int R>
-std::string emit_view(const atmofab::View<const dp, R>& a) {
+std::string emit_view(const spec2science::View<const dp, R>& a) {
     long stride[R];
     stride[0] = 1;
     for (int d = 1; d < R; ++d) {
@@ -164,22 +164,22 @@ std::string harness_cpp_gpu__emit_bool(
 }
 
 std::string harness_cpp_gpu__emit_array_r1(
-    atmofab::View<const dp, 1> a) {
+    spec2science::View<const dp, 1> a) {
     return emit_view<1>(a);
 }
 
 std::string harness_cpp_gpu__emit_array_r2(
-    atmofab::View<const dp, 2> a) {
+    spec2science::View<const dp, 2> a) {
     return emit_view<2>(a);
 }
 
 std::string harness_cpp_gpu__emit_array_r3(
-    atmofab::View<const dp, 3> a) {
+    spec2science::View<const dp, 3> a) {
     return emit_view<3>(a);
 }
 
 std::string harness_cpp_gpu__emit_array_r4(
-    atmofab::View<const dp, 4> a) {
+    spec2science::View<const dp, 4> a) {
     return emit_view<4>(a);
 }
 
@@ -482,21 +482,21 @@ void harness_cpp_gpu__get_array_r1(const std::string& name, std::vector<dp>& a) 
     array_entry<1>(name, a, extent);
 }
 
-void harness_cpp_gpu__get_array_r2(const std::string& name, atmofab::Array<dp, 2>& a) {
+void harness_cpp_gpu__get_array_r2(const std::string& name, spec2science::Array<dp, 2>& a) {
     array_entry<2>(name, a.data, a.extent);
 }
 
-void harness_cpp_gpu__get_array_r3(const std::string& name, atmofab::Array<dp, 3>& a) {
+void harness_cpp_gpu__get_array_r3(const std::string& name, spec2science::Array<dp, 3>& a) {
     array_entry<3>(name, a.data, a.extent);
 }
 
-void harness_cpp_gpu__get_array_r4(const std::string& name, atmofab::Array<dp, 4>& a) {
+void harness_cpp_gpu__get_array_r4(const std::string& name, spec2science::Array<dp, 4>& a) {
     array_entry<4>(name, a.data, a.extent);
 }
 
 int harness_cpp_gpu__block_size() {
     static const int value = []() {
-        const char* env = std::getenv("ATMOFAB_CUDA_BLOCK");
+        const char* env = std::getenv("SPEC2SCIENCE_CUDA_BLOCK");
         if (env == nullptr || env[0] == '\0') {
             return 256;
         }
@@ -519,7 +519,7 @@ int harness_cpp_gpu__block_size() {
         if (s == "1024") {
             return 1024;
         }
-        std::cerr << "harness_cpp_gpu: ATMOFAB_CUDA_BLOCK='" << s
+        std::cerr << "harness_cpp_gpu: SPEC2SCIENCE_CUDA_BLOCK='" << s
                   << "' is not one of 32, 64, 128, 256, 512, 1024\n";
         std::exit(2);
     }();

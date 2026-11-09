@@ -4,7 +4,7 @@
 > canonical source for *what the `runner` must emit* and *how it serializes it* — §3
 > (`raw/` evidence) is what the judge holds the run's evidence against. There is no §1:
 > the diagnostics document it specified was retired by
-> [issue #582](https://github.com/seiya/atmofab/issues/582), and the other sections keep
+> [issue #582](https://github.com/seiya/spec2science/issues/582), and the other sections keep
 > their numbers so that a citation holds. It supersedes the runner-output rules once duplicated in
 > `phase_02_generate.md` §2-1, `phase_04_validate.md` §4-1, and
 > `PERFORMANCE_DIAGNOSTICS.md` §2/§6. The deterministic `Build` / `Validate.execute`
@@ -105,7 +105,7 @@ source; do not uniformly require a fixed minimal composition.
   `raw/state_snapshots/` in the run directory of every runner, and
   `raw/state_snapshots/initial/`, `history/` and `series/` only for a host-rendered one, so a
   hand-authored runner's run directory `raw/state_snapshots/` holds exactly the files it writes
-  ([issue #368](https://github.com/seiya/atmofab/issues/368)).
+  ([issue #368](https://github.com/seiya/spec2science/issues/368)).
 - **`raw/state_snapshots/history/<case_id>__<k>.json`** (a host-rendered runner on a node whose
   `drive` declares `loop`, when the IR requires `state_history`) — a sample of the full state at
   committed step `<k>`, every `every` committed steps (`every` = 0: none), of the per-case shape

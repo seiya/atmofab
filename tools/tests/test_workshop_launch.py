@@ -104,9 +104,9 @@ class _Env(unittest.TestCase):
         self.credentials = Path(cred.name) / ".credentials.json"
         self.credentials.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
         os.chmod(self.credentials, 0o600)
-        env = {"ATMOFAB_WORKFLOW_HOMES_ROOT": str(self.homes),
-               "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
-               "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}
+        env = {"SPEC2SCIENCE_WORKFLOW_HOMES_ROOT": str(self.homes),
+               "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+               "SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1"}
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -783,7 +783,7 @@ class SpawnTimeoutTests(unittest.TestCase):
     """`spawn_leaf(timeout_seconds=, timeout_name=)` bounds THIS leaf and names the bound."""
 
     def test_the_marker_names_the_bound_that_killed_the_leaf(self) -> None:
-        self.assertIn("leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=5",
+        self.assertIn("leaf exceeded SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS=5",
                       wc._leaf_timeout_marker(5, 6.0))
         self.assertIn("leaf exceeded lineage_timeout_s=7",
                       wc._leaf_timeout_marker(7, 8.0, "lineage_timeout_s"))
@@ -802,7 +802,7 @@ class SpawnTimeoutTests(unittest.TestCase):
             c._bwrap_enabled = lambda: False  # type: ignore[assignment]
             c.leaf_command = lambda *a, **k: ["sleep", "60"]  # type: ignore[assignment]
             entry = c.entry_for("generate", "verify")
-            with mock.patch.dict(os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "3600"}):
+            with mock.patch.dict(os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": "3600"}):
                 result = wc.Conductor.spawn_leaf(
                     c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, entry,
                     child_arid="child", timeout_seconds=1, timeout_name="lineage_timeout_s")
@@ -1246,9 +1246,9 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
             for kwargs, expected in (
                     ({"timeout_seconds": 1, "timeout_name": "lineage_timeout_s"},
                      "leaf exceeded lineage_timeout_s=1"),
-                    ({}, "leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=1")):
+                    ({}, "leaf exceeded SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS=1")):
                 with self.subTest(kwargs=kwargs), mock.patch.dict(
-                        os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS":
+                        os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS":
                                      "1" if not kwargs else "3600"}):
                     result = wc.Conductor.spawn_leaf(c, "", env, c.entry_for(None, None),
                                                      child_arid="child", **kwargs)
@@ -1266,7 +1266,7 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
                                    llm_config=lc.load_llm_config(cfg))
             events: list[tuple[str, dict]] = []
             c.emit = lambda name, **f: events.append((name, f))  # type: ignore[assignment]
-            with mock.patch.dict(os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "3600"}):
+            with mock.patch.dict(os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": "3600"}):
                 result = wc.Conductor._spawn_codex_json_leaf(
                     c, ["sleep", "60"], {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
                     "child", prompt_text="", entry=c.entry_for(None, None),
@@ -1308,12 +1308,12 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         head = cmd[:cmd.index("--")]
         self.assertIn("--unshare-net", head)
         self.assertIn("--unshare-pid", head)
-        bind = ["--ro-bind", block["socket_dir"], "/run/atmofab/net"]
+        bind = ["--ro-bind", block["socket_dir"], "/run/spec2science/net"]
         self.assertTrue(any(head[i:i + 3] == bind for i in range(len(head))), head)
         self.assertEqual(cmd[cmd.index("--") + 1:], [
-            "/usr/bin/python3", "-I", "/run/atmofab/net/relay.py",
-            "--proxy", "3128", "/run/atmofab/net/provider.sock",
-            "--tunnel", "4242", "/run/atmofab/net/wrapper.sock", "--", "claude", "-p"])
+            "/usr/bin/python3", "-I", "/run/spec2science/net/relay.py",
+            "--proxy", "3128", "/run/spec2science/net/provider.sock",
+            "--tunnel", "4242", "/run/spec2science/net/wrapper.sock", "--", "claude", "-p"])
         reading = self._profile(network=network_block("claude"))
         tail = render_bwrap_command(profile=reading, command_argv=["claude"])
         self.assertNotIn("--tunnel", tail)
@@ -1381,7 +1381,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
         inside.mkdir(mode=0o700)
         for label, value, needle in (
                 ("absent", None, "needs its network namespace's socket directory"),
-                ("missing", "/tmp/atmofab-net-does-not-exist", "does not exist"),
+                ("missing", "/tmp/spec2science-net-does-not-exist", "does not exist"),
                 ("not private", loose, "mode 0700"),
                 ("a link", str(link), "not a link"),
                 ("inside the checkout", str(inside), "outside the checkout")):
@@ -1423,7 +1423,7 @@ class LeafNetworkNamespaceTests(WorkshopRecordLaunchTests):
                 ("no --unshare-net", [t for t in cmd if t != "--unshare-net"]),
                 ("no --unshare-pid", [t for t in cmd if t != "--unshare-pid"]),
                 ("no -I", cmd[:split + 2] + cmd[split + 3:]),
-                ("no ro-bind", [t if t != "/run/atmofab/net" else "/run/x" for t in cmd]),
+                ("no ro-bind", [t if t != "/run/spec2science/net" else "/run/x" for t in cmd]),
                 ("not rendered", None)):
             with self.subTest(label):
                 self.assertTrue(vps._workshop_profile_violations(

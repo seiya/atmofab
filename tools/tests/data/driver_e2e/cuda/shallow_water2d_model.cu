@@ -87,9 +87,9 @@ __global__ void reconstruct_flux_kernel(const double* __restrict__ ext, const do
   double ay = 0.0;
   bool guard_ok = true;
   flx::dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(
-      atmofab::View<const double, 1>{ul, {3}}, atmofab::View<const double, 1>{ur, {3}},
-      atmofab::View<const double, 1>{ub, {3}}, atmofab::View<const double, 1>{ut, {3}}, g,
-      atmofab::View<double, 1>{fo, {3}}, atmofab::View<double, 1>{go, {3}}, ax, ay, guard_ok);
+      spec2science::View<const double, 1>{ul, {3}}, spec2science::View<const double, 1>{ur, {3}},
+      spec2science::View<const double, 1>{ub, {3}}, spec2science::View<const double, 1>{ut, {3}}, g,
+      spec2science::View<double, 1>{fo, {3}}, spec2science::View<double, 1>{go, {3}}, ax, ay, guard_ok);
   if (!guard_ok) {
     flags[1] = 1.0;
   }
@@ -153,7 +153,7 @@ __global__ void ssprk2_combine_kernel(const double* __restrict__ ext, const doub
 // flux and source on the device, the time-update component on the host. u_in and u_out are [3, nx, ny].
 bool run_stage(int nx, int ny, double g, double dx, double dy, double dt, const double* u_in, double* gin,
                double* gout, double* d_ext, const double* d_zext, double* d_f, double* d_g, double* d_hs,
-               double* d_ls, double* d_flags, double* ls, double* flags, atmofab::View<const double, 2> z_b,
+               double* d_ls, double* d_flags, double* ls, double* flags, spec2science::View<const double, 2> z_b,
                double* u_out) {
   const long nxl = static_cast<long>(nx);
   const long nyl = static_cast<long>(ny);
@@ -177,8 +177,8 @@ bool run_stage(int nx, int ny, double g, double dx, double dy, double dt, const 
   for (int c = 0; c < 3; ++c) {
     bool grid_valid = false;
     bnd::dynamics_shallow_water_boundary_2d_periodic_copy__apply(
-        nx, ny, ng, nx_total, ny_total, atmofab::View<const double, 2>{gin + c * ntot, {nxt, ny_total}},
-        atmofab::View<double, 2>{gout + c * ntot, {nxt, ny_total}}, grid_valid);
+        nx, ny, ng, nx_total, ny_total, spec2science::View<const double, 2>{gin + c * ntot, {nxt, ny_total}},
+        spec2science::View<double, 2>{gout + c * ntot, {nxt, ny_total}}, grid_valid);
     valid = valid && grid_valid;
   }
   if (!valid) {
@@ -192,7 +192,7 @@ bool run_stage(int nx, int ny, double g, double dx, double dy, double dt, const 
   if (cudaMemset(d_flags, 0, 2 * sizeof(double)) != cudaSuccess) {
     return false;
   }
-  const int block = atmofab::launch_block_size;
+  const int block = spec2science::launch_block_size;
   const long grid = (block > 0) ? (ncell + block - 1) / block : 1;
   reconstruct_flux_kernel<<<static_cast<unsigned int>(grid), block>>>(d_ext, d_zext, nx, ny, g, d_f, d_g, d_hs,
                                                                        d_flags);
@@ -217,17 +217,17 @@ bool run_stage(int nx, int ny, double g, double dx, double dy, double dt, const 
   }
   bool guard_pass = false;
   tup::dynamics_shallow_water_time_update_2d_ssprk2__advance(
-      3, nx, ny, atmofab::View<const double, 3>{u_in, {3, nxl, nyl}},
-      atmofab::View<const double, 3>{ls, {3, nxl, nyl}}, atmofab::View<const double, 3>{ls + 3 * ncell, {3, nxl, nyl}},
-      z_b, dt, dx, dy, atmofab::View<double, 3>{u_out, {3, nxl, nyl}}, guard_pass);
+      3, nx, ny, spec2science::View<const double, 3>{u_in, {3, nxl, nyl}},
+      spec2science::View<const double, 3>{ls, {3, nxl, nyl}}, spec2science::View<const double, 3>{ls + 3 * ncell, {3, nxl, nyl}},
+      z_b, dt, dx, dy, spec2science::View<double, 3>{u_out, {3, nxl, nyl}}, guard_pass);
   return guard_pass;
 }
 
 }  // namespace
 
 void shallow_water2d__step(int nx, int ny, dp dx, dp dy, dp g, dp dt, dp t,
-                           atmofab::View<const dp, 2> z_b, atmofab::View<dp, 2> h,
-                           atmofab::View<dp, 2> hu, atmofab::View<dp, 2> hv, bool& ok) {
+                           spec2science::View<const dp, 2> z_b, spec2science::View<dp, 2> h,
+                           spec2science::View<dp, 2> hu, spec2science::View<dp, 2> hv, bool& ok) {
   ok = false;
   const long nxl = static_cast<long>(nx);
   const long nyl = static_cast<long>(ny);
@@ -235,7 +235,7 @@ void shallow_water2d__step(int nx, int ny, dp dx, dp dy, dp g, dp dt, dp t,
   const long nxt = nxl + 2;
   const long nyt = nyl + 2;
   const long ntot = nxt * nyt;
-  const int block = atmofab::launch_block_size;
+  const int block = spec2science::launch_block_size;
   const long grid = (block > 0) ? (ncell + block - 1) / block : 1;
 
   // Device buffer: two halo stage states, z_b_ext, F*, G*, h*, L_flux|S_b, U_2, h|hu|hv, flags, block extrema.

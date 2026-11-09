@@ -734,12 +734,12 @@ def missing_dependency_call_message(spec_id: str) -> str:
 # The C++ reading of the Fortran binding's gates (`tools/backends/language/fortran/source.py`
 # `run_problem_model_gates`), over `declarations.read`'s namespace-scope function definitions. A
 # parameter is an OUTPUT when the function can write through it: a non-const reference, a pointer
-# to non-const, or a non-const `atmofab::View`; everything else is an input. A function returning
+# to non-const, or a non-const `spec2science::View`; everything else is an input. A function returning
 # a value has that value as one more output (the Fortran function result), read off its `return`
 # statements. An assignment is `<name> [index...] op= <expr>;` over the masked body, with the
 # name the base of the target (`u[i] = ...`, `u.data[i] = ...`).
 
-_OUT_VIEW_RE = re.compile(r"^(?:atmofab::)?View<(?P<element>.+),\d+>$")
+_OUT_VIEW_RE = re.compile(r"^(?:spec2science::)?View<(?P<element>.+),\d+>$")
 _ARRAY_TYPE_RE = re.compile(r"\b(?:View|Array|vector)\s*<|\*$")
 _ASSIGNMENT_HEAD_RE = re.compile(
     r"(?<![\w.>:])(?P<lhs>[A-Za-z_]\w*)\s*"
@@ -916,7 +916,7 @@ _RUNTIME_COPIES: dict[str, Summary] = {
 _CALL_RE = re.compile(
     r"(?<![\w.])(?<!->)(?:[A-Za-z_]\w*\s*::\s*)*(?P<name>[A-Za-z_]\w*)\s*"
     r"(?:<[^<>;(){}]*>\s*)?(?:<<<.*?>>>\s*)?\(", re.DOTALL)
-_VIEW_BRACE_RE = re.compile(r"^(?:atmofab\s*::\s*)?View\s*<[^{}]*>\s*\{(?P<body>.*)\}$", re.DOTALL)
+_VIEW_BRACE_RE = re.compile(r"^(?:spec2science\s*::\s*)?View\s*<[^{}]*>\s*\{(?P<body>.*)\}$", re.DOTALL)
 
 
 def _payload(arg: str) -> str:
@@ -1118,7 +1118,7 @@ def _dependency_out_positions(model_file: Path, spec_id: str) -> dict[str, list[
 
 def _dependency_array_outputs(model_file: Path, spec_id: str) -> dict[str, set[int]]:
     """`{operation: positions of its ARRAY-typed output parameters}` of dependency `spec_id` (a
-    non-const `atmofab::View`, `atmofab::Array&` / `std::vector&`, a pointer), from its header;
+    non-const `spec2science::View`, `spec2science::Array&` / `std::vector&`, a pointer), from its header;
     empty when the header is not there."""
     try:
         text = (model_file.parent / cpp_header.basename(spec_id)).read_text(
@@ -1164,7 +1164,7 @@ _ARRAY_DECLARATION_RE = re.compile(
     _STATEMENT_START + _STORAGE_QUALIFIERS
     + r"(?P<type>[A-Za-z_][\w:]*)\s+(?P<name>[A-Za-z_]\w*)\s*\[", re.MULTILINE)
 _CONTAINER_DECLARATION_RE = re.compile(
-    r"\b(?:std\s*::\s*vector|(?:atmofab\s*::\s*)?(?:View|Array))\s*<[^;{}]*?>\s*&?\s*"
+    r"\b(?:std\s*::\s*vector|(?:spec2science\s*::\s*)?(?:View|Array))\s*<[^;{}]*?>\s*&?\s*"
     r"(?P<name>[A-Za-z_]\w*)\s*(?=[=;,({])")
 _NOT_A_TYPE = frozenset({"return", "else", "case", "delete", "throw", "goto", "do", "new"})
 
@@ -1443,8 +1443,8 @@ def _validate_problem_metric_only_scalar_kernel(
 ) -> None:
     """On a multi-dimensional `problem` node, a function with five or more outputs (output
     parameters, plus the returned value) and neither an array input nor a loop derives metrics
-    without a kernel. An array input is a parameter of an array type (`atmofab::View`,
-    `atmofab::Array`, `std::vector`, a pointer); a loop is a `for`, a `while` or a kernel launch
+    without a kernel. An array input is a parameter of an array type (`spec2science::View`,
+    `spec2science::Array`, `std::vector`, a pointer); a loop is a `for`, a `while` or a kernel launch
     (`<<<`)."""
     if multidim_spec_id is None:
         return

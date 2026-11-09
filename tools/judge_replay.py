@@ -392,12 +392,12 @@ def create_replay_orchestration(repo_root: Path, source: SourceLaunch, llm_confi
     oid = new_replay_id()
     workflow_mode = str(invocation.get("mode") or "dev")
     env = dict(os.environ)
-    env["ATMOFAB_WORKFLOW_MODE"] = "1"
-    env["ATMOFAB_WORKFLOW_EXEC_MODE"] = workflow_mode
+    env["SPEC2SCIENCE_WORKFLOW_MODE"] = "1"
+    env["SPEC2SCIENCE_WORKFLOW_EXEC_MODE"] = workflow_mode
     env["PYTHONPATH"] = str(repo_root) + (
         f":{env['PYTHONPATH']}" if env.get("PYTHONPATH") else "")
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    env["ATMOFAB_ORCHESTRATION_ID"] = oid
+    env["SPEC2SCIENCE_ORCHESTRATION_ID"] = oid
     llm, llm_command = llm_config.cli_launch_identity()
     init_args = [
         "init", "--repo-root", str(repo_root), "--orchestration-id", oid,

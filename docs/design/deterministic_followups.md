@@ -1,6 +1,6 @@
 # Deterministic build/execute migration — follow-up issues to address
 
-Status: **frozen** (2026-09-06, issue #181). Closed to NEW entries: a design that lands after this date is recorded in its own note under `docs/design/` with its own `Status`, and open work is in `TODO.md` (`docs/DEVELOPMENT.md` §Record placement is canonical for both). Nothing below is moved or renamed, so every citation into this document stays valid — and the freeze is on GROWTH, not on truth: where a heading below is cited as canonical for CURRENT behaviour (`docs/ORCHESTRATION.md`, `docs/workflow/phases/phase_02_generate.md` and `phase_04_validate.md` do; `tools/prompt_templates/substep_agent.txt` §G1-slim did until Z4, [issue #171](https://github.com/seiya/atmofab/issues/171), deleted that template with the agentic leaf), correcting it when that behaviour changes is required, not forbidden, and so is repairing a citation that has moved. A heading below that still reads as open is history and was NOT re-verified when this line was written: §D2 was, and is closed (`validate_pipeline_semantics._closure_node_validated_in_own_pipeline`); the others were not, so read an open-sounding heading as a question for whoever needs it, not as a tracked item.
+Status: **frozen** (2026-09-06, issue #181). Closed to NEW entries: a design that lands after this date is recorded in its own note under `docs/design/` with its own `Status`, and open work is in `TODO.md` (`docs/DEVELOPMENT.md` §Record placement is canonical for both). Nothing below is moved or renamed, so every citation into this document stays valid — and the freeze is on GROWTH, not on truth: where a heading below is cited as canonical for CURRENT behaviour (`docs/ORCHESTRATION.md`, `docs/workflow/phases/phase_02_generate.md` and `phase_04_validate.md` do; `tools/prompt_templates/substep_agent.txt` §G1-slim did until Z4, [issue #171](https://github.com/seiya/spec2science/issues/171), deleted that template with the agentic leaf), correcting it when that behaviour changes is required, not forbidden, and so is repairing a citation that has moved. A heading below that still reads as open is history and was NOT re-verified when this line was written: §D2 was, and is closed (`validate_pipeline_semantics._closure_node_validated_in_own_pipeline`); the others were not, so read an open-sounding heading as a question for whoever needs it, not as a tracked item.
 
 The Build / Validate.execute in-process migration is complete and the Codex review
 findings are fixed. While chasing a fully-green end-to-end run, three classes of
@@ -810,8 +810,8 @@ dependency facts and gate runbook (the resumed leaf already holds them). The win
 the warm leaf already skips re-reading the must-read docs on its own. Token cost drops ~11.5KB→
 ~1–2KB as a secondary benefit.
 
-**Gate.** Always-on — the former opt-in env flags `ATMOFAB_CONDUCTOR_REUSE_SLIM_PROMPT` and
-`ATMOFAB_CONDUCTOR_REUSE_RESUME` were removed (warm resume + slim are now the default). Slim applies
+**Gate.** Always-on — the former opt-in env flags `SPEC2SCIENCE_CONDUCTOR_REUSE_SLIM_PROMPT` and
+`SPEC2SCIENCE_CONDUCTOR_REUSE_RESUME` were removed (warm resume + slim are now the default). Slim applies
 **only** when a warm resume is actually resolved (session resumable) AND a findings excerpt is
 present — i.e. the `Generate.gate`/`Compile.static` deterministic-gate reopens;
 a warm reuse without findings (e.g. a cross-phase code repair) or a cold fallback keeps the full
@@ -962,7 +962,7 @@ false-fail when source_meta is fresh).
 Two operator-directed changes to the repair loop, on top of G2:
 
 **Warm-resume + slim are now always-on (env flags removed).** The opt-in env flags
-`ATMOFAB_CONDUCTOR_REUSE_RESUME` / `ATMOFAB_CONDUCTOR_REUSE_SLIM_PROMPT` and their
+`SPEC2SCIENCE_CONDUCTOR_REUSE_RESUME` / `SPEC2SCIENCE_CONDUCTOR_REUSE_SLIM_PROMPT` and their
 `_reuse_resume_enabled` / `_reuse_slim_prompt_enabled` gates were deleted. `_resolve_reuse_resume`
 warm-`--resume`s (forks) the producer session for ANY `repair_strategy=reuse` repair (claude,
 session resumable); `restart` stays cold (anchoring avoidance) — so warm/cold is driven purely by
@@ -2043,7 +2043,7 @@ path enumeration is skipped.
 
 ## R6-lite — dependency-freshness readiness: a dependency spec update regenerates its dependents (IMPLEMENTED 2026-07-10; SUPERSEDED 2026-09-18)
 
-> **Superseded by the derivation key ([issue #250](https://github.com/seiya/atmofab/issues/250) Z5 PR-2).** The sidecar node-set comparison (`_dependency_resolution_freshness`) and the closure-binding comparison of issue #153 below (`_dependency_binding_freshness`) are deleted; both are projections of the compile / build derivation keys, and readiness is one lookup of the key (`docs/ORCHESTRATION.md` §13a). The text below is the record of what these mechanisms were and why.
+> **Superseded by the derivation key ([issue #250](https://github.com/seiya/spec2science/issues/250) Z5 PR-2).** The sidecar node-set comparison (`_dependency_resolution_freshness`) and the closure-binding comparison of issue #153 below (`_dependency_binding_freshness`) are deleted; both are projections of the compile / build derivation keys, and readiness is one lookup of the key (`docs/ORCHESTRATION.md` §13a). The text below is the record of what these mechanisms were and why.
 
 **The problem R3-core surfaced.** Bumping `harness_fortran_cpu` to 0.3.0 must re-certify the five nodes that depend
 on it. The obvious lever — bump each dependent's `spec_version` so its artifacts miss — was rejected: their content
@@ -2599,7 +2599,7 @@ would deterministically fail on `.f90`; the compiler/linker is now validated aga
 
 ## Z2 — Host-mediated `generate.generate` + `generate.verify` (pure-function leaf) (LANDED 2026-07-16)
 
-> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+> (Superseded by [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/spec2science/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
 
 `zero_base_architecture.md` Z2. The Z0-pinned `CodegenBundle` contract now has a producer: the dominant-cost Generate
 leaves run as **pure-function leaves** (`claude -p` with tools disabled, the host inlining a fully closed context, the
@@ -2631,7 +2631,7 @@ until the billed A/B passed; the adoption commit (2026-07-18, see "Z2 adoption" 
   staged-source == `files[]` ∪ host glue byte-for-byte, single-node `optimization_unit.members`, literal `<spec_id>_model.f90`
   + module name) and the launch-record sweep mirror (pure↔prompt consistency, no output manifest, `pure_readonly`
   capability, pure terminal `output_refs` non-empty = violation).
-- `tools/run_workflow.py` — the `--generate-executor {legacy,pure}` flag (env `ATMOFAB_GENERATE_EXECUTOR`), persisted once
+- `tools/run_workflow.py` — the `--generate-executor {legacy,pure}` flag (env `SPEC2SCIENCE_GENERATE_EXECUTOR`), persisted once
   to `orchestration_meta.json#invocation.generate_executor` and **immutable across `--resume`** (recovered value always
   wins; a resume-time flag conflict is rejected; the ambient env is ignored — validated on cold init only).
 - Tests: `tools/tests/test_pure_leaf.py`, `test_pure_leaf_wiring.py`, `test_pure_leaf_producer.py`, `test_pure_leaf_verify.py`.
@@ -2791,7 +2791,7 @@ usage channel existed and failed.
 
 ## Z2 first billed A/B E2E — the pure executor had never run: one fixed defect, two information gaps (FILED 2026-07-16; defects FIXED 2026-07-17 — flux A/B established 2026-07-17, `shallow_water2d` P arm passed 2026-07-18; see "Z2 adoption" below)
 
-> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+> (Superseded by [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/spec2science/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
 
 `Z2` above is recorded `LANDED`, and its unit suite is green, but the `pure` `generate-executor` had never executed
 against the real runtime. The first billed A/B E2E ran it and it failed twice, for three distinct reasons. `LANDED`
@@ -2970,7 +2970,7 @@ information gap surfaced within the run and is recorded below.
 
 ## Z2 pure `generate.generate` — `state_bindings` on an IR that declares no state (FIXED 2026-07-17)
 
-> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+> (Superseded by [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/spec2science/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
 
 **Symptom.** In the flux P arm the first pipeline (`src_20260717_001`) was terminated with
 `bundle_state_binding_mismatch` after exhausting its repair budget:
@@ -3070,7 +3070,7 @@ Regression coverage registers a SECOND harness manifest, since that is the only 
 the leaf is shown its own harness alone; each test was confirmed to FAIL against the pre-fix context assembly.
 ## Z2 pure `generate.generate` — the checks-module ABI was never shown to the producer (FIXED 2026-07-17)
 
-> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+> (Superseded by [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/spec2science/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
 
 **Symptom.** The `shallow_water2d` P arm (`orch_20260717T061125Z_a508d4df`, commit `951c7ea` = `pure-3`) was
 terminated `retry_budget_exhausted` / `generate exceeded 3`. Every attempt died at the `Generate.gate` syntax check on the
@@ -3247,7 +3247,7 @@ or a longer spec_id lands.
 
 ## Z2 adoption — the billed A/B passed on both target nodes; `pure` is the default `generate-executor` (ADOPTED 2026-07-18)
 
-> (Superseded by [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/atmofab/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
+> (Superseded by [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b, [PR #557](https://github.com/seiya/spec2science/pull/557): every `LLM` substep is a `workshop leaf`; the pure-function leaf below is history, and `generate_executor: "pure"` remains a recorded stamp.)
 
 The acceptance gate the `Z2` section set — an operator-run billed A/B (L arm `legacy` vs P arm `pure`) over a single
 kernel and a dependency-bearing multi-module node, adopted only at `aggregate_verdict=pass` with equal-or-better
@@ -3269,7 +3269,7 @@ certified-outcome accuracy — is satisfied, and the adoption commit flips the d
   the P arm's leaf savings were offset by those dev-mode retries, the known residual.
 
 **What the adoption commit changes.** `run_workflow.py`'s cold-run resolution (`--generate-executor` /
-`ATMOFAB_GENERATE_EXECUTOR` / default) now defaults to `pure`, as does `run_conductor`'s env fallback (reached only
+`SPEC2SCIENCE_GENERATE_EXECUTOR` / default) now defaults to `pure`, as does `run_conductor`'s env fallback (reached only
 without run_workflow's stamp); `_build_invocation_record` takes the executor as a required keyword so no call site can
 silently record a wrong provenance. Everything else is unchanged: `legacy` remains explicitly selectable until M-F
 removes it, the recorded executor stays immutable across `--resume`, an orchestration whose invocation predates the
@@ -3290,7 +3290,7 @@ The final `Z2` migration milestone: legacy generate execution is deleted so `pur
 is *migration-scope* removal only — the broad hook / preflight / contract-doc teardown remains `Z4`.
 
 **What was removed.**
-- The `--generate-executor {legacy,pure}` CLI flag and the `ATMOFAB_GENERATE_EXECUTOR` env var (`run_workflow.py`).
+- The `--generate-executor {legacy,pure}` CLI flag and the `SPEC2SCIENCE_GENERATE_EXECUTOR` env var (`run_workflow.py`).
   The executor is no longer selectable or threaded through the environment.
 - The cold-run executor resolution + validation block (and its `generate_executor_invalid` reason), the conductor's
   `generate_executor` dataclass field + its `run_conductor` env read, and the resume-time
@@ -3436,7 +3436,7 @@ the same `na_allowed` mechanism, so the omission cannot mislead a downstream ver
 half is the `tests.md` §5/§6 → IR transcription, which is `Compile.verify`'s R2 fidelity item, NOT a deterministic
 gate: no gate requires a given test's predicate to carry a metric condition (`degenerate_predicate_violations` is
 deliberately set-level, and the sibling `checks.*` pass tests already clear it — that gate was retired by Z6 PR-3,
-[issue #255](https://github.com/seiya/atmofab/issues/255), for the per-test coverage gate over `quantity` names,
+[issue #255](https://github.com/seiya/spec2science/issues/255), for the per-test coverage gate over `quantity` names,
 which still does not pin a metric address against `tests.md` §5), so an IR that reduced
 `l0_metric_leaf_pass` to its `checks.metric_leaf.status` condition alone would be schema-conformant and would
 re-certify the drop silently. Tightening that would mean a deterministic Compile-stage pin of
@@ -3843,7 +3843,7 @@ build whenever the operation is exercised.
 > **STATUS NOTE (2026-09-05).** The paragraph below opens "No billed run has been made". That was true
 > when written and is not now: two complete `--with-deps` closures ran at `61d5712` on 2026-09-04 and
 > 09-05, ten node orchestrations, all `pass`. The issue #153 entry — whose finished parts issue #181 moved to
-> https://github.com/seiya/atmofab/issues/153#issuecomment-5559622300 , its open residues staying
+> https://github.com/seiya/spec2science/issues/153#issuecomment-5559622300 , its open residues staying
 > in `TODO.md` — carries the evidence and,
 > more importantly, what those runs did and did NOT exercise. Everything else in the paragraph — the
 > standing test, the removed row, the `2dd73cd` measurement — still holds as written, except that the
@@ -3877,7 +3877,7 @@ re-checked to render to the same atoms. `dims` survives the lowering (`['nx - 1'
 ## R4-a — target-free IR and the target-owned harness (LANDED, issue #284)
 
 Record of the stage of `workflow_scaling_redesign.md` R4 that makes the semantic layer target-free
-([issue #284](https://github.com/seiya/atmofab/issues/284); PR #285, PR #286, and the PR that closes
+([issue #284](https://github.com/seiya/spec2science/issues/284); PR #285, PR #286, and the PR that closes
 the issue). Canonical for the current behaviour: `docs/IMPL_PLAN_SPEC.md` (target profile and
 lowering plan), `docs/SPEC.md` req. 9, `docs/GLOSSARY.md` §1 (`target profile`, `infrastructure
 spec`), and `docs/ORCHESTRATION.md` §13d.

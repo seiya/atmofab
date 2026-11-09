@@ -59,7 +59,7 @@ def package(out: Path, node: str, *, arch: str = "sm_60") -> list[str]:
         + f"nvcc -rdc=true -arch={arch} *.o -o bin\n"
         + "mkdir -p " + " ".join(f"run/raw/state_snapshots/{d}"
                                  for d in ("initial", "history", "series")) + "\n"
-        + f'cd run\nATMOFAB_CUDA_BLOCK=128 ../bin --cases "$PWD/../ir/spec.ir.yaml" {ids}\n')
+        + f'cd run\nSPEC2SCIENCE_CUDA_BLOCK=128 ../bin --cases "$PWD/../ir/spec.ir.yaml" {ids}\n')
     return stems
 
 

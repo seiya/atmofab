@@ -1,6 +1,6 @@
 """Per-test isolation of the operator-private root, for the suite.
 
-Every test that drives `record_launch` writes under `~/.atmofab/homes`, and without a
+Every test that drives `record_launch` writes under `~/.spec2science/homes`, and without a
 redirect that is the OPERATOR'S OWN tree. These helpers give each test module — and, outside
 pytest, each test — a root of its own, and hand a codex-backed fixture its own credential
 instead of reading the developer's.
@@ -21,7 +21,7 @@ def seed_codex_auth(directory: Path) -> Path:
     """Give a test its OWN codex credential, and return the directory to set `CODEX_HOME` to.
 
     `_prepare_codex_workflow_home` refuses a launch whose `auth.json` it cannot find, resolving
-    `CODEX_HOME` -> `ATMOFAB_HOME` -> `~/.codex`. Every codex-backed launch fixture without this
+    `CODEX_HOME` -> `SPEC2SCIENCE_HOME` -> `~/.codex`. Every codex-backed launch fixture without this
     therefore READ THE OPERATOR'S OWN CREDENTIAL and passed because the developer happened to have
     one — which means the refusal was witnessed by nothing, and the tests were not hermetic.
 
@@ -43,7 +43,7 @@ def seed_codex_auth(directory: Path) -> Path:
 # --------------------------------------------------------------------------------------
 # Operator-private-root redirect for test MODULES, not only for pytest.
 #
-# TWO subtrees of `~/.atmofab` are written by this repository, each behind one
+# TWO subtrees of `~/.spec2science` are written by this repository, each behind one
 # environment name, and both are redirected together here — issue #133 is what
 # happened while only the first was: a suite run deposited a few hundred operator tokens
 # into the operator's real store (measured at `e0bae3d`: 249 files from
@@ -52,10 +52,10 @@ def seed_codex_auth(directory: Path) -> Path:
 # else.
 #
 # `tools/tests/conftest.py` points these names at each test's `tmp_path` and raises if a
-# resolver is about to return the operator's real `~/.atmofab`. Neither half is loaded by
+# resolver is about to return the operator's real `~/.spec2science`. Neither half is loaded by
 # plain `unittest`, so any module that prepares a backend home or calls
 # `init_orchestration` writes into the operator's durable tree when run that way — and
-# this branch's own commit messages prescribe `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3
+# this branch's own commit messages prescribe `env -u SPEC2SCIENCE_WORKFLOW_HOMES_ROOT python3
 # -m unittest …` as the way to check the production resolution. Two reviewers had to
 # prune entries out of the real tree afterwards.
 #
@@ -71,7 +71,7 @@ def seed_codex_auth(directory: Path) -> Path:
 # pytest conftest redirects anyway, so a mutant deleting this changes nothing that the
 # suite can see. `test_a_module_run_outside_pytest_writes_nothing_into_the_home` runs two
 # dependent classes under plain `unittest` in a subprocess with a fake `$HOME` and
-# asserts that `.atmofab` never appears there at all — one of them prepares a home, the
+# asserts that `.spec2science` never appears there at all — one of them prepares a home, the
 # other calls `init_orchestration`, and until the second was added the witness observed
 # only the homes half.
 _MODULE_HOMES_REDIRECTS: dict[str, tuple] = {}
@@ -128,7 +128,7 @@ def isolated_homes_per_test_suite(tests):
             for test in self:
                 if result.shouldStop:
                     break
-                with tempfile.TemporaryDirectory(prefix="atmofab-test-homes-") as td:
+                with tempfile.TemporaryDirectory(prefix="spec2science-test-homes-") as td:
                     previous = {}
                     for env_name, subdir in redirects:
                         root = Path(td) / subdir
@@ -197,7 +197,7 @@ def redirect_isolated_homes_root_for_module(module_name: str) -> None:
     import os
     import tempfile
 
-    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-homes-")
+    tmp = tempfile.TemporaryDirectory(prefix="spec2science-test-homes-")
     previous = {}
     for env_name, subdir in _private_root_redirects():
         root = Path(tmp.name) / subdir

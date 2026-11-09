@@ -58,7 +58,7 @@ class LaunchCanaryTests(unittest.TestCase):
     reads as one run."""
 
     def _out(self, *sizes: object, noise: str = "") -> str:
-        return noise + "".join(f"atmofab-mpi-size {n}\n" for n in sizes)
+        return noise + "".join(f"spec2science-mpi-size {n}\n" for n in sizes)
 
     def test_one_run_of_the_canary_count_passes_with_runtime_noise_around_it(self) -> None:
         n = launcher.LAUNCH_CANARY_RANKS
@@ -74,7 +74,7 @@ class LaunchCanaryTests(unittest.TestCase):
                 (0, self._out(n), "reported run sizes ['2']"),
                 (0, self._out(*[n] * (n + 1)), "reported run sizes"),
                 (0, "", "reported run sizes none"),
-                (0, "atmofab-mpi-size 2 extra\natmofab-mpi-size 2\n", "reported run sizes"),
+                (0, "spec2science-mpi-size 2 extra\nspec2science-mpi-size 2\n", "reported run sizes"),
                 (1, self._out(*[n] * n), "the launch exited 1")):
             with self.subTest(rc=rc, out=out):
                 problem = launcher.launch_canary_problem(rc, out)
@@ -154,7 +154,7 @@ class RealToolchainCanaryTests(unittest.TestCase):
             alone = subprocess.run([exe], capture_output=True, text=True, check=False,
                                    timeout=120, cwd=tmp, stdin=subprocess.DEVNULL)
             self.assertEqual(alone.returncode, 0, alone.stderr)
-            self.assertIn("atmofab-mpi-size 1", alone.stdout)
+            self.assertIn("spec2science-mpi-size 1", alone.stdout)
 
 
 class WrapperTests(unittest.TestCase):
@@ -192,9 +192,9 @@ class ExecutionTests(unittest.TestCase):
     def test_an_imposed_process_grid_is_the_variable_the_harness_reads(self) -> None:
         """Issue #512: the grid a profile imposes travels as `PROCESS_GRID_VARIABLE`, spelled
         `p1,p2` as `harness_fortran_cpu_mpi` §3.3 parses it; a malformed grid is refused."""
-        self.assertEqual(execution.PROCESS_GRID_VARIABLE, "ATMOFAB_PROCESS_GRID")
+        self.assertEqual(execution.PROCESS_GRID_VARIABLE, "SPEC2SCIENCE_PROCESS_GRID")
         self.assertEqual(execution.environment(1, process_grid=(2, 3)),
-                         {"ATMOFAB_PROCESS_GRID": "2,3"})
+                         {"SPEC2SCIENCE_PROCESS_GRID": "2,3"})
         self.assertEqual(execution.environment(1, process_grid=None), {})
         for bad in ((2,), (2, 0), (2.0, 2), (True, 2), "2,2", (1, 2, 3)):
             with self.subTest(grid=bad), self.assertRaises(ValueError):

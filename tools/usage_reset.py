@@ -8,7 +8,7 @@ declaration, keyed by every provider `tools/llm_config.SUPPORTED_PROVIDERS` decl
 provider with no structured source declares `None`.
 
 What is read, per provider (measured 2026-10-04, codex-cli 0.159.2, Claude Code 2.1.289; the
-measurements are recorded on issue #405, https://github.com/seiya/atmofab/issues/405#issuecomment-5981915756):
+measurements are recorded on issue #405, https://github.com/seiya/spec2science/issues/405#issuecomment-5981915756):
 
   codex_cli   `codex app-server --stdio`, JSON-RPC `account/rateLimits/read`. Its `primary` /
               `secondary` windows each carry `usedPercent` and `resetsAt` (unix seconds). The
@@ -144,7 +144,7 @@ def _read_codex_cli(*, command_base: list[str], model: str, env: Mapping[str, st
     probe_env["CODEX_HOME"] = str(codex_origin_home())
     send = "".join(json.dumps(msg) + "\n" for msg in (
         {"method": "initialize", "id": 0,
-         "params": {"clientInfo": {"name": "atmofab", "title": "atmofab", "version": "0"}}},
+         "params": {"clientInfo": {"name": "spec2science", "title": "spec2science", "version": "0"}}},
         {"method": "initialized"},
         {"method": "account/rateLimits/read", "id": 1},
     ))

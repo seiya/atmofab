@@ -3,15 +3,15 @@
 Repository-maintenance reference for the hook system. There is ONE hook layer and its audience is
 the OPERATOR's own interactive session.
 
-Until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) there were two, separated all
+Until Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)) there were two, separated all
 the way down to the entrypoint by issue #102: a LEAF layer (`leaf_config/claude/settings.json`,
 `leaf_config/codex/hooks.json`, both naming `tools/hooks/cli.py`) that decided what a workflow leaf
 could read, write and run, and this DEV layer. The leaf layer is deleted with the agentic leaf that
 made it necessary: the `pure-function leaf` that replaced it launched with no tools and no shell
-(until [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b deleted it in turn), so it issued no tool call for a hook to judge, and the read-boundary, write-boundary and Bash-grammar machinery that
+(until [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b deleted it in turn), so it issued no tool call for a hook to judge, and the read-boundary, write-boundary and Bash-grammar machinery that
 layer carried — `read_manifest_read_guard`, `output_manifest_write_guard`, `forbid_python_inline_write`,
 `forbid_tools_direct_read`, `extract_bash_read_targets` and the rest — has no subject left. A
-`workshop leaf` ([issue #534](https://github.com/seiya/atmofab/issues/534)) does make tool calls —
+`workshop leaf` ([issue #534](https://github.com/seiya/spec2science/issues/534)) does make tool calls —
 file tools confined to its work tree by `--restricted`, and the operations the host-served
 wrapper serves a producing substep (a judging substep's reading lineage is served none) — and no hook judges them either: what bounds them is the launch placement
 (an empty tmpfs at the checkout path, a private config home), the writable profile limited to
@@ -19,7 +19,7 @@ its own lineage, and the wrapper, which resolves every path under the tree and c
 (`docs/ORCHESTRATION.md` §workshop leaf). What
 that machinery enforced, why each grammar was bounded the way it was, and what it measurably did
 NOT reach are in the record rather than here: `git log` at the Z4 PR-1 commit that removed it, and
-the episode files under `.claude/skills/atmofab-enforcement-change/references/`.
+the episode files under `.claude/skills/spec2science-enforcement-change/references/`.
 
 ## The DEV layer
 - `.claude/settings.json` and `.codex/hooks.json` register `tools/hooks/dev_cli.py`. It applies two
@@ -46,4 +46,4 @@ the episode files under `.claude/skills/atmofab-enforcement-change/references/`.
   `ZzNeverMatches` and every test that reads that file stayed green.
 
 ## Not event hooks
-- `tools/hooks/lint_evidence.py` / `tools/hooks/syntax_evidence.py` are not event hooks but the host-authored, leaf-non-writable evidence certificates of the deterministic `Generate.gate` substep's lint and syntax checks (`<pipeline_root>/lint_evidence/<source_id>.json` / `<pipeline_root>/syntax_evidence/<source_id>.json`). The conductor writes them in-process (`workflow_conductor._gate_lint_check` / `_gate_syntax_check`, composed by `_gate_inproc`); `validate_pipeline_semantics --stage post_generate` certifies them. Non-forgeability is now a property of WHO writes them — the conductor's own process, from a host-authored launch request — since no leaf holds write authority at all; the write-attribution exemption that used to carry half the argument went with the terminal FS-diff ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2). See each module's docstring. Every leaf has `write_roots: []` and is pinned to nothing, because it writes nothing: the bwrap profile is read-only and the terminal FS-diff is trivially empty. The per-substep single-file `write_roots` pinning this paragraph used to describe — `ir_meta.json` / `source_meta.json` / `semantic_review.json` for an AGENTIC `compile.verify` / `generate.verify` / `validate.judge`, and the "second layer beneath the pattern-based file-tool hook" it formed — went with that leaf and with the hook in Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)); `docs/ORCHESTRATION.md` §capability / write_root carries the historical accounting.
+- `tools/hooks/lint_evidence.py` / `tools/hooks/syntax_evidence.py` are not event hooks but the host-authored, leaf-non-writable evidence certificates of the deterministic `Generate.gate` substep's lint and syntax checks (`<pipeline_root>/lint_evidence/<source_id>.json` / `<pipeline_root>/syntax_evidence/<source_id>.json`). The conductor writes them in-process (`workflow_conductor._gate_lint_check` / `_gate_syntax_check`, composed by `_gate_inproc`); `validate_pipeline_semantics --stage post_generate` certifies them. Non-forgeability is now a property of WHO writes them — the conductor's own process, from a host-authored launch request — since no leaf holds write authority at all; the write-attribution exemption that used to carry half the argument went with the terminal FS-diff ([issue #171](https://github.com/seiya/spec2science/issues/171) PR-2). See each module's docstring. Every leaf has `write_roots: []` and is pinned to nothing, because it writes nothing: the bwrap profile is read-only and the terminal FS-diff is trivially empty. The per-substep single-file `write_roots` pinning this paragraph used to describe — `ir_meta.json` / `source_meta.json` / `semantic_review.json` for an AGENTIC `compile.verify` / `generate.verify` / `validate.judge`, and the "second layer beneath the pattern-based file-tool hook" it formed — went with that leaf and with the hook in Z4 ([issue #171](https://github.com/seiya/spec2science/issues/171)); `docs/ORCHESTRATION.md` §capability / write_root carries the historical accounting.

@@ -12,7 +12,7 @@ grid imposed the environment is empty, and the harness arranges the ranks as `(r
 from __future__ import annotations
 
 #: The variable the harness reads the process grid from, `"p1,p2"`.
-PROCESS_GRID_VARIABLE = "ATMOFAB_PROCESS_GRID"
+PROCESS_GRID_VARIABLE = "SPEC2SCIENCE_PROCESS_GRID"
 
 
 def environment(threads_per_rank: int,

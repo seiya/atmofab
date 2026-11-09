@@ -4,10 +4,10 @@ This document defines the reference conventions for the `skills` used in the pro
 
 > **No workflow leaf reads a `SKILL`.** Every LLM substep of the core workflow — the five LLM
 > substeps and the `escalate` diagnostician — runs as a `workshop leaf`
-> ([issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b; `docs/ORCHESTRATION.md`
+> ([issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b; `docs/ORCHESTRATION.md`
 > §workshop leaf): it reads its contract from the prompt the host renders
 > (`tools/prompt_templates/workshop_*.txt`) and the `seed` files the host places in its
-> `work tree`, and no `SKILL` is among them. (From Z4, [issue #171](https://github.com/seiya/atmofab/issues/171),
+> `work tree`, and no `SKILL` is among them. (From Z4, [issue #171](https://github.com/seiya/spec2science/issues/171),
 > until PR-J4-b the default was a `pure-function leaf`, which held no tools and received its whole
 > contract inlined in a `pure_*.txt` prompt.) The five core phase `SKILL`s are deleted with the
 > agentic leaf that read them. What is left under `skills/` is the procedures an OPERATOR runs — the
@@ -55,7 +55,7 @@ This document defines the reference conventions for the `skills` used in the pro
 Every row is host-side: a `workshop leaf` reading one template and its `seed` files, or a deterministic substep the conductor runs in-process. No row
 names a `SKILL`.
 
-- `Compile generate`: a producing `workshop leaf` authoring the whole IR, rendered from `tools/prompt_templates/workshop_compile_generate.txt` with `phase_01_compile.md` and the node's `spec` documents as `seed` files (`_build_leaf_compile_context`), its repair turns from `workshop_ir_repair.txt` (`docs/ORCHESTRATION.md` §workshop leaf). Until [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b a `pure-function leaf` authored the IR core and then the verification entries per group of `tests.md` tests (issue #526).
+- `Compile generate`: a producing `workshop leaf` authoring the whole IR, rendered from `tools/prompt_templates/workshop_compile_generate.txt` with `phase_01_compile.md` and the node's `spec` documents as `seed` files (`_build_leaf_compile_context`), its repair turns from `workshop_ir_repair.txt` (`docs/ORCHESTRATION.md` §workshop leaf). Until [issue #534](https://github.com/seiya/spec2science/issues/534) PR-J4-b a `pure-function leaf` authored the IR core and then the verification entries per group of `tests.md` tests (issue #526).
 - `Compile static`: conductor in-process (deterministic `validate_workspace_root` + `validate_pipeline_semantics --stage compile`, see `docs/workflow/phases/phase_01_compile.md`)
 - `Compile verify`: a reading `workshop leaf` rendered from `tools/prompt_templates/workshop_compile_verify.txt` (`_build_leaf_compile_verify_context`)
 - `Generate generate`: a producing `workshop leaf` rendered from `tools/prompt_templates/workshop_generate_generate.txt` on the `m3c` bundle shape, `workshop_generate_generate_harness.txt` on the `harness` shape, its repair turns from `workshop_bundle_repair.txt`

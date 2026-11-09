@@ -21,7 +21,7 @@ import yaml
 # `_dependency_ready` now fails closed when live recompute cannot run; tests
 # explicitly opt into the legacy persisted-boolean fallback so existing
 # fixtures keep working. Production environments do NOT set this variable.
-os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any, Callable, ClassVar
 from datetime import datetime, timedelta, timezone
@@ -201,14 +201,14 @@ _MODULE_CREDENTIALS: list = []
 def setUpModule() -> None:
     # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
     # backend homes, and without this it writes them into the operator's real
-    # `~/.atmofab/homes` whenever it is run outside pytest.
+    # `~/.spec2science/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
     # A claude `workshop leaf` lineage home binds the operator's credentials file
     # (`_prepare_claude_workshop_home`, issue #534), which `record_launch` re-checks on every
     # workshop launch. The fixtures here launch claude workshop leaves as SETUP for something
     # else, so the file the preparer reads is a temporary one, never the operator's (and CI
     # has none).
-    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-claude-cred-")
+    tmp = tempfile.TemporaryDirectory(prefix="spec2science-test-claude-cred-")
     cred = Path(tmp.name) / ".credentials.json"
     cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
     os.chmod(cred, 0o600)
@@ -257,7 +257,7 @@ def _discard_isolated_homes(orchestration_id: str) -> None:
     ids carry a timestamp and 8 random hex characters and do not repeat.
 
     `tools/tests/conftest.py` points the root at this test's `tmp_path`, so this never
-    touches the operator's `~/.atmofab/homes`; the environment name is read rather than
+    touches the operator's `~/.spec2science/homes`; the environment name is read rather than
     assumed so that a test which overrides it is followed rather than bypassed.
     """
     root = os.environ.get(ort.WORKFLOW_HOMES_ROOT_ENV, "").strip()
@@ -393,7 +393,7 @@ def _fixture_generate_downstream_ready(repo_root: Path, *, source_id: str = "src
 
 def _mark_dependencies_ready(repo_root: Path, orchestration_id: str = "orch_001") -> None:
     """Inject `dependency_readiness` so `_dependency_ready` accepts the launch (under the
-    suite's `ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1`, where a fixture with no
+    suite's `SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1`, where a fixture with no
     deps.yaml falls back to these persisted booleans)."""
     # What a real launch also has (issue #284): the target profile its pipeline names, in the
     # repository `record_launch` loads it from, and the target recorded on the orchestration.
@@ -686,12 +686,12 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                                         side_effect=_credential_paths)
         credential_patch.start()
         self.addCleanup(credential_patch.stop)
-        self._old_live_preflight = os.environ.get("ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT")
-        self._old_assume_bwrap = os.environ.get("ATMOFAB_ORCHESTRATION_ASSUME_BWRAP")
-        self._old_codex_home = os.environ.get("ATMOFAB_HOME")
-        os.environ["ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
-        os.environ["ATMOFAB_ORCHESTRATION_ASSUME_BWRAP"] = "1"
-        os.environ["ATMOFAB_HOME"] = "/tmp/codex-orchestration-test-home"
+        self._old_live_preflight = os.environ.get("SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT")
+        self._old_assume_bwrap = os.environ.get("SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP")
+        self._old_codex_home = os.environ.get("SPEC2SCIENCE_HOME")
+        os.environ["SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
+        os.environ["SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP"] = "1"
+        os.environ["SPEC2SCIENCE_HOME"] = "/tmp/codex-orchestration-test-home"
         # `_prepare_codex_workflow_home` binds the operator's real `auth.json` into
         # the isolated home read-only and refuses to launch without it. This class's
         # codex launches began reaching that code once the isolation branch keyed on
@@ -706,17 +706,17 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         if self._old_live_preflight is None:
-            os.environ.pop("ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
+            os.environ.pop("SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
         else:
-            os.environ["ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = self._old_live_preflight
+            os.environ["SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = self._old_live_preflight
         if self._old_assume_bwrap is None:
-            os.environ.pop("ATMOFAB_ORCHESTRATION_ASSUME_BWRAP", None)
+            os.environ.pop("SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP", None)
         else:
-            os.environ["ATMOFAB_ORCHESTRATION_ASSUME_BWRAP"] = self._old_assume_bwrap
+            os.environ["SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP"] = self._old_assume_bwrap
         if self._old_codex_home is None:
-            os.environ.pop("ATMOFAB_HOME", None)
+            os.environ.pop("SPEC2SCIENCE_HOME", None)
         else:
-            os.environ["ATMOFAB_HOME"] = self._old_codex_home
+            os.environ["SPEC2SCIENCE_HOME"] = self._old_codex_home
 
     def test_terminal_statuses_do_not_include_fail_closed(self) -> None:
         self.assertEqual(TERMINAL_STATUSES, {"pass", "fail", "blocked", "timeout", "cancel"})
@@ -838,7 +838,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         """The refusal every codex launch depends on, and which nothing observed.
 
         `_prepare_codex_workflow_home` resolves the operator's credential
-        `CODEX_HOME` -> `ATMOFAB_HOME` -> `~/.codex`, and refuses when it is not a regular file.
+        `CODEX_HOME` -> `SPEC2SCIENCE_HOME` -> `~/.codex`, and refuses when it is not a regular file.
         Until this row, every test that reached that line PASSED BY READING THE DEVELOPER'S OWN
         `~/.codex/auth.json` — so the fixtures were not hermetic, and the refusal itself had no
         witness at all. CI is what made that visible: three of those tests failed on a runner with
@@ -847,7 +847,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         other direction. This row is the half that keeps the refusal observed.
 
         All three resolution steps are driven, in order, because pointing only `CODEX_HOME` at an
-        empty directory leaves `ATMOFAB_HOME` and the home directory untested — and the last of
+        empty directory leaves `SPEC2SCIENCE_HOME` and the home directory untested — and the last of
         the three is the one a real operator actually uses.
         """
         from tools.orchestration_runtime import _prepare_codex_workflow_home
@@ -861,9 +861,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         # home and the code appends `.codex`. Writing that down is what makes the path assertion
         # below distinguish the three steps instead of restating the message.
         for index, variables, relative in (
-                (0, {"CODEX_HOME": "<empty>", "ATMOFAB_HOME": ""}, "auth.json"),
-                (1, {"CODEX_HOME": "", "ATMOFAB_HOME": "<empty>"}, "auth.json"),
-                (2, {"CODEX_HOME": "", "ATMOFAB_HOME": "", "HOME": "<empty>"},
+                (0, {"CODEX_HOME": "<empty>", "SPEC2SCIENCE_HOME": ""}, "auth.json"),
+                (1, {"CODEX_HOME": "", "SPEC2SCIENCE_HOME": "<empty>"}, "auth.json"),
+                (2, {"CODEX_HOME": "", "SPEC2SCIENCE_HOME": "", "HOME": "<empty>"},
                  ".codex/auth.json")):
             resolved_by = next((k for k, v in variables.items() if v), "HOME")
             with self.subTest(resolved_by=resolved_by), tempfile.TemporaryDirectory() as tmp:
@@ -1297,7 +1297,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
             raise AssertionError(args)
 
-        with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "0"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "0"}):
             with patch("tools.orchestration_runtime.shutil.which", return_value=None):
                 result = probe_execution_platform(backend="codex", runner=runner)
         self.assertEqual(result["status"], "fail")
@@ -1314,8 +1314,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "ATMOFAB_HOME": "/__codex_preflight_missing_parent__/home/.codex",
-                "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1",
+                "SPEC2SCIENCE_HOME": "/__codex_preflight_missing_parent__/home/.codex",
+                "SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1",
             },
         ):
             result = probe_execution_platform(backend="codex", runner=runner)
@@ -6374,7 +6374,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
-            os.environ["ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "1"
+            os.environ["SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "1"
             with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
                 probe_mock.return_value = {
                     "checked_at": "2026-04-15T12:00:00Z",
@@ -6444,7 +6444,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
-            os.environ["ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
+            os.environ["SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
             with patch(
                 "tools.orchestration_runtime.probe_execution_platform",
                 side_effect=AssertionError("live probe must not run"),
@@ -8489,7 +8489,7 @@ class ClaudeGlobalConfigEnvCheckTests(unittest.TestCase):
             (Path(home) / ".claude.json").write_text('{"env": {"ANTHROPIC_MODEL": "x"}}',
                                                      encoding="utf-8")
             with patch.dict(os.environ, {"HOME": home,
-                                         "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}):
+                                         "SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1"}):
                 result = probe_execution_platform(backend="claude", runner=runner)
         self.assertEqual(result["status"], "fail")
         self.assertFalse(result["can_launch_step_agents"])
@@ -10621,7 +10621,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
         """The ONE fact from the deleted `driver` block that has no substitute.
 
         The claim that replaced the driver probe lives under the operator's own
-        `~/.atmofab/start_claims/`, so it is host-scoped: with host-local homes (a container
+        `~/.spec2science/start_claims/`, so it is host-scoped: with host-local homes (a container
         and its host bind-mounting the checkout, a cluster with local `/home` and shared
         `/work`) two drivers each take their own claim and both proceed, and nothing else in
         the tree can notice. `origin/main` recorded the hostname precisely here.
@@ -11185,7 +11185,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "preflight_only_orch"
-            with patch.dict(os.environ, {"ATMOFAB_ALLOW_PARALLEL_NODES": "1"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "1"}):
                 write_preflight(
                     repo_root=repo,
                     orchestration_id=orch,
@@ -11201,7 +11201,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "preflight_then_init"
-            with patch.dict(os.environ, {"ATMOFAB_ALLOW_PARALLEL_NODES": "true"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "true"}):
                 write_preflight(
                     repo_root=repo,
                     orchestration_id=orch,
@@ -11272,7 +11272,7 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
             codex_home = seed_codex_auth(repo / "codex-home")
             stack = patch.dict(
                 os.environ,
-                {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+                {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
                  "CODEX_HOME": str(codex_home)})
             stack.start()
             self.addCleanup(stack.stop)
@@ -11362,14 +11362,14 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orch = "orch_parallel_audit"
-            with patch.dict(os.environ, {"ATMOFAB_ALLOW_PARALLEL_NODES": "1"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ALLOW_PARALLEL_NODES": "1"}):
                 out1 = pre_orchestration_start(repo, orch, event="init")
             self.assertTrue(out1["parallel_nodes_explicit"])
             meta_path = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
             meta1 = json.loads(meta_path.read_text(encoding="utf-8"))
             self.assertTrue(meta1.get("parallel_nodes_explicit"))
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("ATMOFAB_ALLOW_PARALLEL_NODES", None)
+                os.environ.pop("SPEC2SCIENCE_ALLOW_PARALLEL_NODES", None)
                 out2 = pre_orchestration_start(repo, orch, event="preflight")
             self.assertTrue(out2["parallel_nodes_explicit"])
             meta2 = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -11525,45 +11525,45 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
 
 class PreflightLiveProbeTtlTests(unittest.TestCase):
     def test_live_preflight_mode_never_on_zero(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
             self.assertEqual(_live_preflight_mode(), "never")
 
     def test_live_preflight_mode_never_on_false(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "false"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "false"}):
             self.assertEqual(_live_preflight_mode(), "never")
 
     def test_live_preflight_mode_always_on_one(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
             self.assertEqual(_live_preflight_mode(), "always")
 
     def test_live_preflight_mode_ttl_when_unset(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
+            os.environ.pop("SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT", None)
             self.assertEqual(_live_preflight_mode(), "ttl")
 
     def test_live_preflight_mode_ttl_on_unknown_value(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
             self.assertEqual(_live_preflight_mode(), "ttl")
 
     def test_live_preflight_ttl_seconds_default(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("ATMOFAB_PREFLIGHT_TTL_SECONDS", None)
+            os.environ.pop("SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS", None)
             self.assertEqual(_live_preflight_ttl_seconds(), 1800)
 
     def test_live_preflight_ttl_seconds_custom(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_PREFLIGHT_TTL_SECONDS": "300"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "300"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 300)
 
     def test_live_preflight_ttl_seconds_zero(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_PREFLIGHT_TTL_SECONDS": "0"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "0"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 0)
 
     def test_live_preflight_ttl_seconds_invalid_value(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_PREFLIGHT_TTL_SECONDS": "abc"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "abc"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 1800)
 
     def test_live_preflight_ttl_seconds_negative(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_PREFLIGHT_TTL_SECONDS": "-1"}):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "-1"}):
             self.assertEqual(_live_preflight_ttl_seconds(), 0)
 
     def test_is_within_preflight_ttl_true_when_recent(self) -> None:
@@ -11678,8 +11678,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch(
@@ -11702,8 +11702,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -11728,8 +11728,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -11751,8 +11751,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             path.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -11775,7 +11775,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                     probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=5)),
                 ),
             )
-            with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
                     probe_mock.return_value = _launchable_preflight_dict(
                         checked_at="2026-04-15T11:00:00Z",
@@ -11795,7 +11795,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                     probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=2000)),
                 ),
             )
-            with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}):
                 with patch(
                     "tools.orchestration_runtime.probe_execution_platform",
                     side_effect=AssertionError("probe must not run"),
@@ -11816,8 +11816,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             )
             new_checked = "2026-04-15T15:30:00Z"
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -11843,8 +11843,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             )
             fallback = "2099-01-01T00:00:00Z"
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -11874,8 +11874,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 ),
             )
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "0",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "0",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -11909,8 +11909,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 checked_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=30)),
             )
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -12000,8 +12000,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                 encoding="utf-8",
             )
             env = {
-                "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
             }
             with patch.dict(os.environ, env):
                 with patch("tools.orchestration_runtime.probe_execution_platform") as probe_mock:
@@ -12090,8 +12090,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                    "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                    "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
                 },
             ):
                 st = get_preflight_ttl_status(repo, "o1")
@@ -12105,7 +12105,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1")
             _mark_dependencies_ready(repo, "o1")
-            with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto"}):
                 st = get_preflight_ttl_status(repo, "o1")
             self.assertFalse(st["preflight_exists"])
             self.assertFalse(st["probe_skippable"])
@@ -12122,7 +12122,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                     probed_at=_iso_utc_z(datetime.now(timezone.utc) - timedelta(seconds=5)),
                 ),
             )
-            with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "1"}):
                 st = get_preflight_ttl_status(repo, "o1")
             self.assertFalse(st["probe_skippable"])
 
@@ -12142,8 +12142,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
-                    "ATMOFAB_PREFLIGHT_TTL_SECONDS": "1800",
+                    "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "auto",
+                    "SPEC2SCIENCE_PREFLIGHT_TTL_SECONDS": "1800",
                 },
             ):
                 with redirect_stdout(buf):
@@ -12661,7 +12661,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
             fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
             with patch.dict(os.environ, {}, clear=False):
-                for name in ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID"):
+                for name in ("SPEC2SCIENCE_WORKFLOW_MODE", "SPEC2SCIENCE_ORCHESTRATION_ID"):
                     os.environ.pop(name, None)
                 with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
                     result = tool_compile_project({"project_dir": str(project_dir)})
@@ -13476,7 +13476,7 @@ class SignatureDriftCanaryTests(unittest.TestCase):
     #
     # So the comparison stays a MEASUREMENT, taken once and recorded where a measurement belongs (the
     # `spec:` commit's message and issue #153's record,
-    # https://github.com/seiya/atmofab/issues/153#issuecomment-5559622300): at `2dd73cd`,
+    # https://github.com/seiya/spec2science/issues/153#issuecomment-5559622300): at `2dd73cd`,
     # every component's §5.1 agreed with its
     # certified source on argument names, order, `intent` and `rank`, except
     # `dynamics_advection_diffusion_boundary_1d_periodic_copy`, whose ABI the operator decided to
@@ -15407,9 +15407,9 @@ class RecordTimeoutTests(unittest.TestCase):
         """
         authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home",
                     "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
-                    "ATMOFAB_ORCHESTRATION_ID": "orch_to_001",
-                    "ATMOFAB_CHILD_AGENT_RUN_ID": "substep_run_to_001",
-                    "ATMOFAB_WORKFLOW_MODE": "1",
+                    "SPEC2SCIENCE_ORCHESTRATION_ID": "orch_to_001",
+                    "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "substep_run_to_001",
+                    "SPEC2SCIENCE_WORKFLOW_MODE": "1",
                     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
         with tempfile.TemporaryDirectory() as td:
             repo_root = Path(td)
@@ -15739,7 +15739,7 @@ class RecordTimeoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            with _patch.dict(os.environ, {"ATMOFAB_ENFORCE_REPLY_BUDGET": "1"}):
+            with _patch.dict(os.environ, {"SPEC2SCIENCE_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     finalize_child(
                         repo_root=repo_root,
@@ -15782,7 +15782,7 @@ class RecordTimeoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            with _patch.dict(os.environ, {"ATMOFAB_ENFORCE_REPLY_BUDGET": "1"}):
+            with _patch.dict(os.environ, {"SPEC2SCIENCE_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     finalize_child(
                         repo_root=repo_root,
@@ -17460,7 +17460,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
             # Disable persisted-boolean fallback for this assertion: we want
             # production strict-mode behavior where the gate uses fail_reason.
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
+                os.environ.pop("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
                 ok, reason = _dependency_ready(repo_root, "frp", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_malformed_schema",
@@ -17497,7 +17497,7 @@ class DependencyReadyFailReasonPropagationTests(unittest.TestCase):
             }
             meta_path.write_text(json.dumps(meta) + "\n", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
+                os.environ.pop("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None)
                 ok, reason = _dependency_ready(repo_root, "frp2", step="compile")
             self.assertFalse(ok)
             self.assertEqual(reason, "deps_yaml_missing_or_unparseable")
@@ -18038,7 +18038,7 @@ class MarkDependencyReadinessMalformedCliTests(unittest.TestCase):
 class DependencyReadinessStrictModeTests(unittest.TestCase):
     """Codex round 20 F1: production launch checks fail closed when live
     recompute cannot run (no deps.yaml). The persisted-boolean fallback is
-    gated behind ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1, which only
+    gated behind SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1, which only
     test scaffolding sets."""
 
     def test_strict_mode_rejects_when_recompute_unavailable(self) -> None:
@@ -18049,11 +18049,11 @@ class DependencyReadinessStrictModeTests(unittest.TestCase):
             _mark_dependencies_ready(repo_root, "strict")
             # No spec_ref / deps.yaml on disk. Disable the fallback.
             with patch.dict(os.environ, {
-                "ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK": "",
+                "SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK": "",
             }, clear=False):
                 # patch.dict can't truly "unset" a var unless we ensure it.
                 os.environ.pop(
-                    "ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None,
+                    "SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", None,
                 )
                 ok, reason = _dependency_ready(repo_root, "strict", step="compile")
             self.assertFalse(ok,
@@ -18071,7 +18071,7 @@ class DependencyReadinessStrictModeTests(unittest.TestCase):
             _mark_dependencies_ready(repo_root, "fb")
             # Module-level setdefault already set the env var to "1".
             self.assertEqual(
-                os.environ.get("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK"),
+                os.environ.get("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK"),
                 "1",
             )
             ok, reason = _dependency_ready(repo_root, "fb", step="compile")
@@ -21522,7 +21522,7 @@ class TerseResultProjectionTests(unittest.TestCase):
 
 class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
     """Issue #589 PR-1b, the three places a deterministic substep's outputs are named
-    (`atmofab-enforcement-change` §"Adding a DELIVERABLE"), for what the host-rendered driver adds
+    (`spec2science-enforcement-change` §"Adding a DELIVERABLE"), for what the host-rendered driver adds
     under `raw/state_snapshots/`:
 
     1. `build_launch_request`'s list names `initial/<case_id>.json` and neither of the new two: no
@@ -21882,13 +21882,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 59810->59990 at the round-4 HEAD (measured 59837): the `major` bullet regained a
         # subject category for the `fail`s the verify `SKILL` mandates outside V1-V8, which
         # round 3 had narrowed away and left ungradable. Measured with `wc -c` in
-        # /home/seiya/atmofab, and set by the ~150 B slack rule THIS entry follows. Not every
+        # the checkout, and set by the ~150 B slack rule THIS entry follows. Not every
         # entry does, and a round-5 reviewer was right to say so: measured at that HEAD the
         # slacks ran 152 / 71 / 35 / 153 / 174 / 156 / 105 / 137 / 22 B down the table, so three
         # of the nine sit in the band this block's own header calls a tripwire. Nothing is red
         # today; re-measure the entry you are bumping rather than trusting a table-wide rule.
         # Bumped 59990->66780 (issue #168, Z1) — measured 66618 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack
+        # the checkout at the commit that takes this bump, plus this entry's ~150 B slack
         # rule. §substep structure states that both LLM substeps of this phase now run as
         # `pure-function leaf`s and what the host inlines for each; §`ir_meta.json` required keys
         # states the values the HOST writes (and why `verification_status` is `"pending"`);
@@ -21923,7 +21923,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # section that defines it, because the document had been stating it four ways and the
         # narrowest reading dropped the one invariant family no gate re-checks.)
         # Bumped 66780->68623 (issue #175) — measured 68473 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B
+        # the checkout at the commit that takes this bump, plus this entry's ~150 B
         # slack rule. The growth is one rule and one sidecar key a compile leaf cannot get
         # right without being told: `<ir_ref>/dependency_graph.json` now carries `profiles`,
         # `direct_deps` is sourced from the graph rather than from `deps.yaml` (an adopted
@@ -21962,7 +21962,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # compile prompts and still described the AGENTIC path in the present tense to the leaf
         # reading it ("An agentic leaf writes `ir_meta.json` itself"). Three sentences rewritten
         # to address the one leaf there is, ~170 bytes.
-        # Bumped 70900->71960 (issue #233) — measured 71813 with `wc -c` in /home/seiya/atmofab
+        # Bumped 70900->71960 (issue #233) — measured 71813 with `wc -c` in the checkout
         # at the commit that takes this bump, plus this entry's ~150 B slack rule. The growth is
         # the single-resolved-shape rule of §V3, which the document had NAMED since `537475dc`
         # without stating: a compile leaf reading "each element references `variables[].name`
@@ -21971,7 +21971,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # takes that reading. The rule is stated in the form the gate applies, with both refusal
         # messages, and `test_validate_pipeline_semantics.py` pins the document to the gate's
         # own message text.
-        # Bumped 71960->72480 (issue #235) — measured 72326 with `wc -c` in /home/seiya/atmofab
+        # Bumped 71960->72480 (issue #235) — measured 72326 with `wc -c` in the checkout
         # at the commit that takes this bump (72104 at `41676641`; PR #236's round 1 reworded
         # the remedy into the form the producer supports, +166 B; round 2 un-narrowed it to
         # the value's own shape, +56 B), plus this entry's ~150 B slack rule. The enum
@@ -21998,39 +21998,39 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # a condition's `quantity`, five worked translations of `tests.md` prose (the fidelity V3
         # reads), and the V3 rule itself. A grammar stated anywhere but here reaches no leaf
         # (a pure leaf reads only what is inlined). Measured 82034 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump, plus this entry's ~150 B slack.
+        # the checkout at the commit that takes this bump, plus this entry's ~150 B slack.
         # Bumped 82200->84200 (Z6 PR-2 round 1): the grammar block gains the cross-case
         # `at('<case>').inputs` / `at('<case>').<coordinate>` roots, the operand-pairing rule
         # (what a leaf must reduce before comparing two resolutions), the arity caps and the
         # coordinate-name rule; the worked examples spell the cell size from the inputs the
-        # cases declare; V3 gains item (iv). Measured 84045 with `wc -c` in /home/seiya/atmofab
+        # cases declare; V3 gains item (iv). Measured 84045 with `wc -c` in the checkout
         # at the commit that takes this bump, plus this entry's ~150 B slack.
         # Bumped 84200->85300 (Z6 PR-2 round 2): a coordinate carries the state's shape (a
         # norm over a reference field counts every cell), the time variable's provenance, the
         # `at()` case_id spelling, finite thresholds, the reference at the declared end time.
-        # Measured 85136 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 85136 with `wc -c` in the checkout at the commit that takes this bump.
         # Bumped 85300->86200 (Z6 PR-2 round 3): every entry reads captured state, the xfail
         # semantics, the depth bound, the end-state-minimum note on the positivity example.
-        # Measured 86007 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 86007 with `wc -c` in the checkout at the commit that takes this bump.
         # Bumped 86200->88600 (Z6 PR-3): `quantity` is required and the coverage gate is stated
         # at the condition, the COVERAGE block replaces the NOT DEGENERATE one, grammar 2's
         # numeric-list inputs and the harness-shape capture errors, the same-name rule for a
         # run-wide metric and the harness sentinel example, V3 (i)'s window / vacuity clauses.
-        # Measured 88398 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 88398 with `wc -c` in the checkout at the commit that takes this bump.
         # Bumped 88600->89300 (Z6 PR-3 round 1): the coverage block and V3 state the scope rule.
-        # Measured 89070 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # Measured 89070 with `wc -c` in the checkout at the commit that takes this bump.
         # Round 2: the rule is stated over the cases a corroborant reads; measured 89207, no bump.
         # Bumped 89300->90200 (Z6 PR-3 round 3): the harness self-test carve-out beside the
         # "primary state only" rule and V3 (iv). Measured 89999 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump.
+        # the checkout at the commit that takes this bump.
         # Bumped 90200->91000 (issue #266 PR-2): the `public_api.interfaces` carrier in the
         # authoring bullet and its V8 pin (name set and argument set; a legacy IR passes only
-        # when §5.1 declares no prototype). Measured 90688 with `wc -c` in /home/seiya/atmofab
+        # when §5.1 declares no prototype). Measured 90688 with `wc -c` in the checkout
         # at the commit that takes this bump. Round 1: the IR example names the key; measured
         # 90818, no bump.
         # Bumped 91000->93100 (issue #346 PR-1): the runtime/provenance classification of the
         # case inputs, the Compile.generate route bullet, V9 (case input routing) and the scope
-        # sentence naming it. Measured 92850 with `wc -c` in /home/seiya/atmofab at the commit
+        # sentence naming it. Measured 92850 with `wc -c` in the checkout at the commit
         # that takes this bump. Round 1 (judgment keys, null member): bumped 93100->94000;
         # measured 93188 at the commit that takes this bump. Round 2 (one criterion, "a value
         # the algorithm takes", replaces the judgment class): measured 93249, no bump. Round 3 (V9's route
@@ -22040,17 +22040,17 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 94000->95000 (issue #386): V3 and the schema block's `checks[].id` comment add
         # the non-gating judgment (and exclude an `informational_only` one) to the coverage
         # rule, the `minor` bullet names its absence. Measured 94663 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V3 says what each id
+        # the checkout at the commit that takes this bump. Round 1 (V3 says what each id
         # answers to instead of "neither more nor less"): measured 94689, no bump.
         # Round 2 (a cross-target judgment is no check-id source): measured 94899, no bump.
         # Round 3 (the `major` example names the Diagnostics contract too): 94943, no bump.
         # Issue #437 (`checks[].per_case_status` in the schema block and V3; the stale
         # "(Generate never reads tests.md)" comment shortened to pay for it): measured 94998
-        # with `wc -c` in /home/seiya/atmofab at d36bd436, no bump.
+        # with `wc -c` in the checkout at d36bd436, no bump.
         # Bumped 95000->95900 (issue #440): the `coordinates:` line defines the STATE's shape
         # for a mixed-rank schema, the grammar header and the V3 gate list state the static
         # operand-rank check, and V3 gains (vi) (`count` against the `axis` token). Measured
-        # 95710 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
+        # 95710 with `wc -c` in the checkout at the commit that takes this bump. Round 1
         # (the lower-rank remedy is a component mask over the stacked variables, since a stacked
         # output keeps the stacked capture): bumped 95900->96100; measured 95879 at the commit
         # that takes this bump. Round 2 (the component coordinate's `count` and `length` are both
@@ -22059,7 +22059,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 96200->96600 (issue #483): the reads-state rule in the schema block states that
         # a read only inside a term constant by form is no read, the `required_raw_variables`
         # bullet covers the corroborant's reads, and V3 (i)/(ii) trade the now-gated example for
-        # the shapes the gate cannot see. Measured 96399 with `wc -c` in /home/seiya/atmofab at
+        # the shapes the gate cannot see. Measured 96399 with `wc -c` in the checkout at
         # the commit that takes this bump. Round 1 (V3 (i)'s CFL example narrowed to a `le`
         # bound, the `xfail` guard's exceedance excluded): measured 96486, no bump. Round 2 (the
         # time variable excluded from the `required_raw_variables` clause; the negated-add form
@@ -22072,7 +22072,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # name-half bullet and the V4c-ii gate bullet say so, V4c-iii (a procedure passed to a
         # dependency's procedure-typed argument states the listed prototype) is new, and
         # §On-failure says the surface is an input. Measured 97923 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V4c-iii's backstop
+        # the checkout at the commit that takes this bump. Round 1 (V4c-iii's backstop
         # narrowed to what the syntax probe refuses — measured with gfortran 11.4.0
         # `-fsyntax-only`: permuted shape bounds and swapped same-typed arguments pass): bumped
         # 98000->98200; measured 98038 at the commit that takes this bump. Round 2 (V4c-iii names
@@ -22088,7 +22088,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # that takes this bump. Issue #526 PR-1 (§1-1 and the schema block state a `Compile fail`
         # as the structured `compile_fail` object, and that a declaration naming no admissible
         # input is a document violation retried like any producer failure): bumped 99000->99600;
-        # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
+        # measured 99487 with `wc -c` in the checkout at the commit that takes this bump. Round 1
         # (§Acceptance of retry from Validate names `compile_fail`): measured 99479, no bump.
         # Round 3 (§1-1 lists a `compile_fail` beside a non-null `ir`): measured 99507, no bump.
         # Issue #526 PR-2 (the substep-14 bullet says the host assembles the IR from a core call
@@ -22097,11 +22097,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # lists): measured 99610, no bump. Issue #532 (the schema block, the grammar's
         # `inputs.<a>.<b>` entry, V3 and V9's floor say an own-case input resolves in every case
         # the predicate's scope evaluates, and an `at('<case>')` one in that case): bumped
-        # 99800->100200; measured 99971 with `wc -c` in /home/seiya/atmofab at the commit that
+        # 99800->100200; measured 99971 with `wc -c` in the checkout at the commit that
         # takes this bump. Issue #567 (the COVERAGE block says a corroborant reads the cases an
         # at('<case>') that enters its value names, the schema block's bind comment says a bind
         # expr does not reach enters no value, V3 (ii) names what the coverage gate no longer
-        # counts): bumped 100200->100800; measured 100691 with `wc -c` in /home/seiya/atmofab at
+        # counts): bumped 100200->100800; measured 100691 with `wc -c` in the checkout at
         # the commit that takes this bump. Review round 1 of the same issue (the COVERAGE block
         # counts only captured STATE reads): bumped 100800->101400; measured 101116 the same way
         # at the commit that takes this bump; the same round's two comment rewordings (the bind
@@ -22110,7 +22110,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # per-case `initial_state` / `derived`, `state_history` / `step_series`, grammar 6's
         # `history.*` / `series.*` / `derived.*` / `smax`, and `public_api` on a `problem`; the
         # `source` classes, the reported-read gate and the checks-module seed deleted): bumped
-        # 102000->103400; measured 102790 with `wc -c` in /home/seiya/atmofab at the commit that
+        # 102000->103400; measured 102790 with `wc -c` in the checkout at the commit that
         # takes this bump. Its review round 2 (R2-1: the driver's counters and an unwritten
         # variable's history are no state read; R2-2 / R2-3: the classes, the unbound array's
         # extents and the reads-a-capture rule PER CASE on a list-form `drive.step`; R2-4: D7
@@ -22172,7 +22172,7 @@ class ReplyBudgetTests(unittest.TestCase):
     def test_over_budget_hard_raises_under_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root, ref = self._write_reply(tmp, "y" * (REPLY_BUDGET_CHARS + 1))
-            with patch.dict(os.environ, {"ATMOFAB_ENFORCE_REPLY_BUDGET": "1"}):
+            with patch.dict(os.environ, {"SPEC2SCIENCE_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     _evaluate_reply_budget(repo_root, "o1", agent_run_id="a", reply_ref=ref)
 
@@ -23484,7 +23484,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
             # A symlink DEEP INSIDE the cache (the mirrored source path) is rejected: CPython
             # follows it when loading cached modules.
             repo = Path(tmp).resolve()
-            mirrored = repo / prefix / "home" / "u" / "atmofab"
+            mirrored = repo / prefix / "home" / "u" / "spec2science"
             mirrored.mkdir(parents=True)
             target = repo.parent / "leaf_writable"
             target.mkdir(exist_ok=True)
@@ -23639,31 +23639,31 @@ class MultiProviderPreflightTests(unittest.TestCase):
               "phases:\n  generate:\n    substeps:\n      generate:\n"
               "        provider: openai_compatible\n"
               "        base_url: http://localhost:8000/v1\n"
-              "        api_key_env: ATMOFAB_TEST_LOCAL_KEY\n        model: local-model\n")
+              "        api_key_env: SPEC2SCIENCE_TEST_LOCAL_KEY\n        model: local-model\n")
 
     # --- the HTTP prober -------------------------------------------------------------
 
     def _row(self, **kw):
         row = {"backend": "openai_compatible", "provider": "openai_compatible",
-               "base_url": "http://localhost:8000/v1", "api_key_env": "ATMOFAB_TEST_LOCAL_KEY"}
+               "base_url": "http://localhost:8000/v1", "api_key_env": "SPEC2SCIENCE_TEST_LOCAL_KEY"}
         row.update(kw)
         return row
 
     def test_http_provider_probes_launchable_when_all_three_checks_pass(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "secret-value"}, clear=False):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "secret-value"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
         self.assertTrue(out["launchable"])
         self.assertEqual(len(out["checks"]), 3)
         self.assertEqual(out["provider_type"], "openai_compatible")
 
     def test_http_provider_never_records_the_key_value(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "super-secret"}, clear=False):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "super-secret"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
         self.assertNotIn("super-secret", json.dumps(out))
-        self.assertIn("ATMOFAB_TEST_LOCAL_KEY", json.dumps(out))
+        self.assertIn("SPEC2SCIENCE_TEST_LOCAL_KEY", json.dumps(out))
 
     def test_http_provider_fails_closed_when_the_key_variable_is_unset(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "ATMOFAB_TEST_LOCAL_KEY"}
+        env = {k: v for k, v in os.environ.items() if k != "SPEC2SCIENCE_TEST_LOCAL_KEY"}
         with patch.dict(os.environ, env, clear=True):
             out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
         self.assertFalse(out["launchable"])
@@ -23671,7 +23671,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             [c for c in out["checks"] if c["name"].endswith("api_key_env_set")][0]["pass"])
 
     def test_http_provider_fails_closed_on_a_malformed_base_url(self) -> None:
-        with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False):
             out = ort._probe_http_provider(
                 self._row(base_url="localhost:8000"), opener=lambda *a, **k: object())
         self.assertFalse(out["launchable"])
@@ -23683,7 +23683,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_http_provider_fails_closed_when_nothing_is_listening(self) -> None:
         def _refuse(*_a, **_k):
             raise OSError("Connection refused")
-        with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=_refuse)
         self.assertFalse(out["launchable"])
 
@@ -23694,15 +23694,15 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
         def _unauthorized(*_a, **_k):
             raise urllib.error.HTTPError("http://x", 401, "Unauthorized", {}, None)
-        with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False):
+        with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False):
             out = ort._probe_http_provider(self._row(), opener=_unauthorized)
         self.assertTrue(out["launchable"])
         self.assertIn("HTTP 401",
                       [c["detail"] for c in out["checks"] if "reachable" in c["name"]][0])
 
     def test_the_reachability_escape_hatch_never_skips_the_other_two(self) -> None:
-        env = {k: v for k, v in os.environ.items() if k != "ATMOFAB_TEST_LOCAL_KEY"}
-        env["ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILITY"] = "1"
+        env = {k: v for k, v in os.environ.items() if k != "SPEC2SCIENCE_TEST_LOCAL_KEY"}
+        env["SPEC2SCIENCE_HTTP_PREFLIGHT_SKIP_REACHABILITY"] = "1"
         with patch.dict(os.environ, env, clear=True):
             out = ort._probe_http_provider(self._row(), opener=None)
         self.assertFalse(out["launchable"])       # the missing key still fails it
@@ -23731,7 +23731,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         endpoint, endpoint_seen = self._serve()
         env = _env_without_proxies()
         env.update({"HTTP_PROXY": proxy, "http_proxy": proxy, "HTTPS_PROXY": proxy,
-                    "ATMOFAB_TEST_LOCAL_KEY": "k"})
+                    "SPEC2SCIENCE_TEST_LOCAL_KEY": "k"})
         with patch.dict(os.environ, env, clear=True):
             out = ort._probe_http_provider(self._row(base_url=f"{endpoint}/v1"), opener=None)
             self.assertTrue(out["launchable"], out)
@@ -23751,7 +23751,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         proxy, proxy_seen = self._serve()
         proxy_with_userinfo = proxy.replace("http://", "http://user:pw@")
         env = _env_without_proxies()
-        env.update({"HTTP_PROXY": proxy_with_userinfo, "ATMOFAB_TEST_LOCAL_KEY": "k"})
+        env.update({"HTTP_PROXY": proxy_with_userinfo, "SPEC2SCIENCE_TEST_LOCAL_KEY": "k"})
         base_url = f"http://127.0.0.1:{_dead_loopback_port()}/v1"
         with patch.dict(os.environ, env, clear=True):
             out = ort._probe_http_provider(self._row(base_url=base_url), opener=None)
@@ -23771,7 +23771,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         target, target_seen = self._serve()
         endpoint, endpoint_seen = self._serve(status=302, location=f"{target}/elsewhere")
         env = _env_without_proxies()
-        env["ATMOFAB_TEST_LOCAL_KEY"] = "k"
+        env["SPEC2SCIENCE_TEST_LOCAL_KEY"] = "k"
         with patch.dict(os.environ, env, clear=True):
             out = ort._probe_http_provider(self._row(base_url=f"{endpoint}/v1"), opener=None)
         self.assertTrue(out["launchable"], out)
@@ -23785,7 +23785,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         from tools import llm_http_leaf
 
         host = {"HTTPS_PROXY": "http://user:pw@proxy:3128", "NO_PROXY": "localhost",
-                "all_proxy": "socks5://p:1", "ATMOFAB_TEST_LOCAL_KEY": "k"}
+                "all_proxy": "socks5://p:1", "SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}
         self.assertEqual(llm_http_leaf._env_proxies(ort.leaf_env_from(host)), {})
         captured: list[Any] = []
 
@@ -23813,7 +23813,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         def _opener_factory(env=None):
             return lambda *_a, **kw: calls.append(kw)
 
-        with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False), \
+        with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False), \
                 patch.object(llm_http_leaf, "_default_opener", _opener_factory):
             out = ort._probe_http_provider(self._row(), opener=None)
         self.assertTrue(out["launchable"])
@@ -23827,7 +23827,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         for extra in ({}, {"NO_PROXY": "localhost", "no_proxy": "localhost"},
                       {"HTTP_PROXY": "", "https_proxy": "  "}):
             env = _env_without_proxies()
-            env.update(extra, ATMOFAB_TEST_LOCAL_KEY="k")
+            env.update(extra, SPEC2SCIENCE_TEST_LOCAL_KEY="k")
             with self.subTest(extra=extra), patch.dict(os.environ, env, clear=True):
                 out = ort._probe_http_provider(self._row(base_url=base_url), opener=None)
                 self.assertFalse(out["launchable"])
@@ -23840,7 +23840,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             cfg = self._config(Path(tmp), self._MIXED)
             # `defaults` is a reading workshop surface (issue #534 PR-J4-a), so the claude row
             # also takes the CLI's workshop `--help` probe; CI has no `claude` on PATH.
-            with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False), \
+            with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
                               return_value=_launchable_preflight_dict(backend="claude")), \
                  patch.object(ort, "_workshop_flag_set_check",
@@ -23995,7 +23995,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                            "checks": [], "launchable": True},
                 "openai_compatible": {"provider_type": "openai_compatible",
                                       "base_url": "http://localhost:8000/v1",
-                                      "api_key_env": "ATMOFAB_TEST_LOCAL_KEY",
+                                      "api_key_env": "SPEC2SCIENCE_TEST_LOCAL_KEY",
                                       "checks": [], "launchable": True},
             }
             self._orch_with_preflight(repo_root, payload)
@@ -24003,7 +24003,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             def _refuse(*_a, **_k):
                 raise OSError("Connection refused")
 
-            with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False), \
+            with patch.dict(os.environ, {"SPEC2SCIENCE_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
                               return_value=_launchable_preflight_dict(backend="claude")), \
                  patch("tools.llm_http_leaf._default_opener",
@@ -24644,7 +24644,7 @@ class JsonPayloadFileArgTests(unittest.TestCase):
 
 class AgentRoleFailClosedTests(unittest.TestCase):
     """`agent_role` must be fail-closed at BOTH chokepoints (high; recorded on PR #57,
-    https://github.com/seiya/atmofab/pull/57#issuecomment-5559631060).
+    https://github.com/seiya/spec2science/pull/57#issuecomment-5559631060).
 
     WHAT IS PINNED vs WHAT IS SAMPLED is declared in `_DEFINITION_DRIVEN` /
     `_SAMPLE_DRIVEN` below and CHECKED BY A TEST
@@ -26248,11 +26248,11 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def setUp(self) -> None:
         """Own the homes root rather than borrowing the suite's.
 
-        `tools/tests/conftest.py` redirects `ATMOFAB_WORKFLOW_HOMES_ROOT` for every test,
+        `tools/tests/conftest.py` redirects `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` for every test,
         and this class read it straight out of the environment — so it worked under
-        pytest and, run any other way, resolved the OPERATOR's real `~/.atmofab/homes`
+        pytest and, run any other way, resolved the OPERATOR's real `~/.spec2science/homes`
         and created directories in it. That is not hypothetical: a reviewer ran the exact
-        `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3 -m unittest …` command this branch's
+        `env -u SPEC2SCIENCE_WORKFLOW_HOMES_ROOT python3 -m unittest …` command this branch's
         own commit message prescribes and had to prune three entries out of the operator's
         tree afterwards. The prevent-not-detect guard lives in conftest, so it is not
         there either when conftest is not.
@@ -26263,7 +26263,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         self._homes_tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._homes_tmp.cleanup)
-        root = Path(self._homes_tmp.name) / "atmofab-homes"
+        root = Path(self._homes_tmp.name) / "spec2science-homes"
         root.mkdir(mode=0o700)
         patcher = mock.patch.dict(
             os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(root)}, clear=False)
@@ -26301,7 +26301,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertNotIn("claude_workflow_home", meta)
 
     def test_without_an_override_the_root_is_the_operator_secret_root(self) -> None:
-        """`~/.atmofab/homes`, resolved through the SAME `$HOME` reading as the guard.
+        """`~/.spec2science/homes`, resolved through the SAME `$HOME` reading as the guard.
 
         This is the assertion that connects the new location to the protection it
         depended on (until Z4, issue #171, deleted the leaf hook layer with the guard and
@@ -26326,7 +26326,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual(Path(iso["home"]),
                              secret_root / "homes" / "orch_d" / "codex" / "lineage-d")
             self.assertTrue(Path(iso["home"]).is_relative_to(secret_root))
-            # `~/.atmofab` itself is NOT forced to 0700 (the operator-token writer has
+            # `~/.spec2science` itself is NOT forced to 0700 (the operator-token writer has
             # created it best-effort since long before this change, so requiring a mode
             # here would refuse every launch on a host whose root predates that), but
             # everything this code creates below it is.
@@ -26340,7 +26340,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         A run's metadata records its container. The reuse branch reads that path and, while
         the directory is still there, prepares into it — a new lineage lands UNDER it (issue
         #245) — so `--resume` keeps the tree in one place even when the homes root in force
-        has moved (`ATMOFAB_WORKFLOW_HOMES_ROOT` relocated). Only a container that has
+        has moved (`SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` relocated). Only a container that has
         VANISHED is re-created, at the new deterministic location. A stale
         `codex_workflow_home_generation` key in such metadata is left as it stands and read
         by nothing.
@@ -26348,7 +26348,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         The recorded container here follows the `<homes-root>/<oid>/codex` layout under an
         OLD root, because a workshop lineage's paths are derived from its container's
         grandparent (`workshop_tree.LineagePaths`; the codex lineage is a workshop one since
-        issue #534 PR-J4-b). The pre-issue-#64 `/tmp/atmofab-codex-*` container this row first
+        issue #534 PR-J4-b). The pre-issue-#64 `/tmp/spec2science-codex-*` container this row first
         reused fits no such layout and was reusable only by the pure codex thread lineage,
         which went with the pure leaf; a run that recorded one is behind the J4-a / J4-b
         `--resume` barriers."""
@@ -26449,9 +26449,9 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         randomness could be dropped only once the tree became private. But a mode is
         something this code can simply set, and REFUSING made two pieces of correct
         operator behaviour fail every launch: `docs/RUNBOOK.md` offers
-        `ATMOFAB_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
+        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
         creating it 0755 under the default umask bricked the lever; and a mode drift on
-        `~/.atmofab/homes` — a backup restored without permissions — bricked every
+        `~/.spec2science/homes` — a backup restored without permissions — bricked every
         orchestration. Both measured before the change.
 
         What must still hold afterwards is the property, so that is what is asserted: the
@@ -26472,7 +26472,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
     def test_the_operator_secret_root_itself_is_never_re_moded(self) -> None:
-        """`~/.atmofab` is left exactly as the operator has it. Nothing observed that.
+        """`~/.spec2science` is left exactly as the operator has it. Nothing observed that.
 
         `_require_secure_home_ancestor`'s docstring and `docs/RUNBOOK.md` both state it —
         the root is shared with `operator_tokens/` and `start_claims/`, the operator-token
@@ -26486,7 +26486,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td) / "home"
-            secret_root = fake_home / ".atmofab"
+            secret_root = fake_home / ".spec2science"
             secret_root.mkdir(parents=True)
             os.chmod(secret_root, 0o755)
             root = self._claude_repo(str(Path(td) / "repo_parent"))
@@ -26496,7 +26496,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 iso = self._prepare_home(root, "orch_d")
             self.assertEqual(secret_root.stat().st_mode & 0o777, 0o755,
-                             "the operator's own `~/.atmofab` was re-moded")
+                             "the operator's own `~/.spec2science` was re-moded")
             self.assertEqual((secret_root / "homes").stat().st_mode & 0o777, 0o700)
             self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
@@ -26815,7 +26815,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         this code puts one.
 
         TWO cases, because the first version of this test only reached the first guard.
-        `atmofab-codex-old` is not a declared backend name, so
+        `spec2science-codex-old` is not a declared backend name, so
         `_workflow_backend_home_path` raised and returned before the path comparison ever
         ran — a mutant replacing that comparison with `if False:` left the whole suite
         green. The second case is a home whose directory IS named `codex` but sits under
@@ -26827,7 +26827,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             root = self._claude_repo(td)
             legacy_parent = Path(tempfile.mkdtemp())
             self.addCleanup(shutil.rmtree, legacy_parent, True)
-            legacy = legacy_parent / "atmofab-codex-old"
+            legacy = legacy_parent / "spec2science-codex-old"
             legacy.mkdir(mode=0o700)
             os.chmod(legacy, 0o700)
             (root / "workspace" / "orchestrations" / "orch_d"
@@ -26900,13 +26900,13 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         `tools/tests/conftest.py` redirects all three operator-private roots for every
         test, so under pytest the module-level redirect changes nothing and a mutant
         deleting it stays green — while the thing it exists to prevent happens only where
-        conftest is NOT loaded. Two reviewers ran `env -u ATMOFAB_WORKFLOW_HOMES_ROOT
+        conftest is NOT loaded. Two reviewers ran `env -u SPEC2SCIENCE_WORKFLOW_HOMES_ROOT
         python3 -m unittest …`, the command this branch's own commit messages prescribe,
-        and had to prune entries out of the operator's real `~/.atmofab/homes` afterwards.
+        and had to prune entries out of the operator's real `~/.spec2science/homes` afterwards.
 
         So this witness leaves the process: it runs classes that rely on the module
         redirect under plain `unittest`, with all three variables cleared and `$HOME`
-        pointed at a temporary directory, and asserts that `.atmofab` was not created
+        pointed at a temporary directory, and asserts that `.spec2science` was not created
         under it AT ALL — not just its `homes/` subtree.
 
         TWO classes, because one observed only half the question. The backend-home half was
@@ -26920,9 +26920,9 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         observation.
 
         The other half is `init_orchestration`: measured under a fake `$HOME` at `e0bae3d`,
-        the home class created no `.atmofab` at all while `SetStatusIdempotencyTests`, which
+        the home class created no `.spec2science` at all while `SetStatusIdempotencyTests`, which
         calls `init_orchestration` without patching `$HOME`, left three
-        `.atmofab/operator_tokens/ssi_*.txt`. That is issue #133 in one line, and it is why
+        `.spec2science/operator_tokens/ssi_*.txt`. That is issue #133 in one line, and it is why
         the token half needs its own class here.
         """
         import subprocess
@@ -26951,15 +26951,15 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     proc.returncode, 0,
                     f"{target} did not pass outside pytest:\n{proc.stderr[-2000:]}")
                 self.assertFalse(
-                    (fake_home / ".atmofab").exists(),
-                    f"{target} wrote into $HOME/.atmofab when run outside pytest: "
-                    f"{sorted(p.name for p in (fake_home / '.atmofab').glob('*'))}"
-                    if (fake_home / ".atmofab").exists() else "")
+                    (fake_home / ".spec2science").exists(),
+                    f"{target} wrote into $HOME/.spec2science when run outside pytest: "
+                    f"{sorted(p.name for p in (fake_home / '.spec2science').glob('*'))}"
+                    if (fake_home / ".spec2science").exists() else "")
 
     def test_a_tilde_homes_root_override_is_expanded(self) -> None:
         """`~` is expanded, and nothing observed that either.
 
-        A quoted `ATMOFAB_WORKFLOW_HOMES_ROOT='~/big/homes'` is a plausible spelling — the
+        A quoted `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT='~/big/homes'` is a plausible spelling — the
         RUNBOOK says these accumulate, so pointing them at a bigger disk is the reason the
         lever exists — and the shell does not expand inside quotes. Without `expanduser`
         the value would be a literal `~` directory under whoever's working directory, and
@@ -27005,7 +27005,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         with `if False:` left all 5022 tests green. A safety net surviving mutation is
         expected — nothing normally trips it — but this one was introduced at the cost of
         a reviewer's mutant leaving four real directories in the operator's
-        `~/.atmofab/homes`, and the conftest docstring calls it "the one that actually
+        `~/.spec2science/homes`, and the conftest docstring calls it "the one that actually
         holds". A layer described that way and observed by nothing is a claim, not a
         layer.
 
@@ -27017,7 +27017,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         import tools.orchestration_runtime as runtime
         from tools.operator_private_root import operator_secret_root
         self.assertTrue(
-            getattr(runtime._workflow_homes_root, "_atmofab_private_root_guard_installed", False),
+            getattr(runtime._workflow_homes_root, "_spec2science_private_root_guard_installed", False),
             "the suite's operator-private-root guard is a conftest fixture and is not "
             "installed: run the suite under pytest")
         real_root = operator_secret_root() / "homes"
@@ -27055,7 +27055,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
         The guard runs inside a HOOK process and the writer inside the conductor, and the
         two need not share a working directory — so a relative
-        `ATMOFAB_WORKFLOW_HOMES_ROOT` would have made the two resolve different trees, which
+        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` would have made the two resolve different trees, which
         is the same failure the override closure was supposed to end. Measured before the
         fix: `../outside_homes` came back relative from the resolver both sides share.
         """
@@ -27142,9 +27142,9 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     self.assertTrue(made.is_dir())
 
     def test_an_override_whose_parent_is_absent_is_refused(self) -> None:
-        """A typo'd `ATMOFAB_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.
+        """A typo'd `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.
 
-        The default resolution may create `~/.atmofab` itself (a host that has never run
+        The default resolution may create `~/.spec2science` itself (a host that has never run
         `init_orchestration` has none), but an override names a location the caller
         chose, and creating several levels under a misspelled one is the failure that
         costs most — the homes are then somewhere nobody looks, and the run appears to
@@ -27168,7 +27168,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
         The sibling of the token-store rule, and MEASURED for this caller rather than
         argued from that one: before the refusal existed,
-        `ATMOFAB_WORKFLOW_HOMES_ROOT=<repo>/spec/homes` was accepted and
+        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT=<repo>/spec/homes` was accepted and
         `_create_workflow_backend_home` built the tree there. Every agentic leaf's
         `allowed_read_roots` contains `docs/` and `spec/` unconditionally
         (`_write_read_access_manifest`), and the Read tool does not consult
@@ -27384,14 +27384,14 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         """Single-route rule: the config home reaches a leaf through the bwrap
         profile's `--setenv` alone, so the filter must never forward a host copy."""
         poisoned = {var: "/host/leak" for var in ort._BACKEND_HOME_ENV_VARS}
-        poisoned["ATMOFAB_HOME"] = "/host/leak"
+        poisoned["SPEC2SCIENCE_HOME"] = "/host/leak"
         got = ort.leaf_env_from({**poisoned, "PATH": "/usr/bin"})
         self.assertEqual(set(got), {"PATH"})
 
     def test_the_filter_drops_strangers_and_keeps_the_declared_verbatim(self) -> None:
         host = {
             "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
-            "ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ANYTHING_NEW": "x",
+            "SPEC2SCIENCE_WORKFLOW_MODE": "1", "SPEC2SCIENCE_ANYTHING_NEW": "x",
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:9", "ANTHROPIC_MODEL": "haiku",
             "HTTPS_PROXY": "http://user:pw@proxy:3128", "LD_PRELOAD": "/evil.so",
             "EMPTY": "",
@@ -27399,18 +27399,18 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         got = ort.leaf_env_from(host)
         self.assertEqual(got, {
             "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
-            "ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ANYTHING_NEW": "x",
+            "SPEC2SCIENCE_WORKFLOW_MODE": "1", "SPEC2SCIENCE_ANYTHING_NEW": "x",
         })
 
     def test_the_allowed_prefix_is_exactly_the_repo_namespace(self) -> None:
         """The prefix's SPELLING, which anchoring alone does not pin.
 
-        Shortening it to `ATMOFA` still anchors and still passes every other test, while
-        admitting `ATMOFAX_*` — a namespace this repository does not own. The surviving
+        Shortening it to `SPEC2SCIENC` still anchors and still passes every other test, while
+        admitting `SPEC2SCIENCX_*` — a namespace this repository does not own. The surviving
         justification for prefix-passing is that it admits only the repo's own namespace,
         so the exact string is the justification's load-bearing half."""
-        self.assertEqual(ort.LEAF_ENV_ALLOWED_PREFIXES, ("ATMOFAB_",))
-        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "ATMOFAX_FOO": "y"}),
+        self.assertEqual(ort.LEAF_ENV_ALLOWED_PREFIXES, ("SPEC2SCIENCE_",))
+        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "SPEC2SCIENCX_FOO": "y"}),
                          {"PATH": "/b"})
 
     def test_a_non_string_key_or_value_is_skipped_not_forwarded(self) -> None:
@@ -27422,27 +27422,27 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         converter — without it a non-string key raises `AttributeError` from
         `startswith` rather than being filtered."""
         got = ort.leaf_env_from({"PATH": "/b", "HOME": object(), 1: "x",
-                                 "ATMOFAB_OK": "yes"})
-        self.assertEqual(got, {"PATH": "/b", "ATMOFAB_OK": "yes"})
+                                 "SPEC2SCIENCE_OK": "yes"})
+        self.assertEqual(got, {"PATH": "/b", "SPEC2SCIENCE_OK": "yes"})
 
     def test_the_prefix_is_ANCHORED_not_a_substring_match(self) -> None:
         """Anchoring is the whole load-bearing half of the prefix justification.
 
         The comment's surviving claim is that the names known to redirect a leaf are
         outside the prefix BY CONSTRUCTION. That is only true while the match is
-        anchored: with a substring match `MY_ATMOFAB_API_KEY` and even
-        `ANTHROPIC_ATMOFAB_X` are admitted, and the construction argument evaporates.
+        anchored: with a substring match `MY_SPEC2SCIENCE_API_KEY` and even
+        `ANTHROPIC_SPEC2SCIENCE_X` are admitted, and the construction argument evaporates.
         Measured as a surviving mutation — replacing `startswith` with `in` in BOTH
         copies of the rule kept all 4972 tests green — so it is pinned here and in the
         renderer's sibling below."""
         got = ort.leaf_env_from({
             "PATH": "/b",
-            "ATMOFAB_REAL": "kept",
-            "MY_ATMOFAB_API_KEY": "sk-live",
-            "OPERATOR_ATMOFAB_X": "y",
-            "XATMOFAB_Z": "z",
+            "SPEC2SCIENCE_REAL": "kept",
+            "MY_SPEC2SCIENCE_API_KEY": "sk-live",
+            "OPERATOR_SPEC2SCIENCE_X": "y",
+            "XSPEC2SCIENCE_Z": "z",
         })
-        self.assertEqual(got, {"PATH": "/b", "ATMOFAB_REAL": "kept"})
+        self.assertEqual(got, {"PATH": "/b", "SPEC2SCIENCE_REAL": "kept"})
 
     def test_an_unanchored_prefix_name_is_refused_at_render_too(self) -> None:
         """The renderer spells the same rule a second time, so it needs its own probe:
@@ -27460,16 +27460,16 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
             "runtime_ro_bind_paths": [],
             **workshop,
             "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(root / "ws"),
-                    **workshop["env"], "MY_ATMOFAB_API_KEY": "sk-live"},
+                    **workshop["env"], "MY_SPEC2SCIENCE_API_KEY": "sk-live"},
         }
         # Control: the same profile without the name renders.
         ort.render_bwrap_command(
             profile={**profile, "env": {k: v for k, v in profile["env"].items()
-                                        if k != "MY_ATMOFAB_API_KEY"}},
+                                        if k != "MY_SPEC2SCIENCE_API_KEY"}},
             command_argv=["claude"])
         with self.assertRaises(ValueError) as ctx:
             ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-        self.assertIn("MY_ATMOFAB_API_KEY", str(ctx.exception))
+        self.assertIn("MY_SPEC2SCIENCE_API_KEY", str(ctx.exception))
 
     def test_an_empty_value_never_becomes_a_declared_name(self) -> None:
         """The filter's `or not value` skip, measured as a surviving mutation.
@@ -27483,7 +27483,7 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         self.assertEqual(ort.leaf_env_from({"PATH": ""})["PATH"],
                          ort.LEAF_ENV_PATH_DEFAULT)
         # ...and a declared-but-empty name is absent rather than present-and-empty
-        got = ort.leaf_env_from({"PATH": "/b", "HOME": "", "ATMOFAB_X": ""})
+        got = ort.leaf_env_from({"PATH": "/b", "HOME": "", "SPEC2SCIENCE_X": ""})
         self.assertEqual(got, {"PATH": "/b"})
 
     def test_path_falls_back_when_the_host_has_none(self) -> None:
@@ -27577,7 +27577,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             "runtime_ro_bind_paths": [],
             **workshop,
             "env": {"PATH": "/usr/bin:/bin", "HOME": "/h",
-                    "ATMOFAB_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws"),
+                    "SPEC2SCIENCE_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws"),
                     **workshop["env"]},
         }
         base.update(over)
@@ -27686,7 +27686,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         """A stranger here means something built an environment outside `leaf_env_from`
         — the one question this layer exists to answer — so it is refused rather than
         delivered and recorded as though it had been declared."""
-        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "ATMOFAB_HOME", "SHELL"):
+        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "SPEC2SCIENCE_HOME", "SHELL"):
             with self.subTest(name=name):
                 profile = self._profile()
                 profile["env"] = {**profile["env"], name: "x"}
@@ -27749,7 +27749,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         `spawn_leaf` renders a profile READ OFF DISK, including one persisted before the
         environment became declared — whose `env` predates the ids entirely. Under
-        `--clearenv` that leaf gets no `ATMOFAB_ORCHESTRATION_ID`, and its MCP server then
+        `--clearenv` that leaf gets no `SPEC2SCIENCE_ORCHESTRATION_ID`, and its MCP server then
         reads "not under a run" and stops requiring a capability token.
 
         Filled from the profile's own recorded ids rather than refused, because refusing
@@ -27768,8 +27768,8 @@ class LeafEnvClosureTests(unittest.TestCase):
         profile["agent_run_id"] = "arid-recorded"
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         setenv = self._setenv_map(argv)
-        self.assertEqual(setenv["ATMOFAB_ORCHESTRATION_ID"], "orch-recorded")
-        self.assertEqual(setenv["ATMOFAB_CHILD_AGENT_RUN_ID"], "arid-recorded")
+        self.assertEqual(setenv["SPEC2SCIENCE_ORCHESTRATION_ID"], "orch-recorded")
+        self.assertEqual(setenv["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "arid-recorded")
         # ...and the id-less profile is RENDERED, not refused
         self.assertEqual(setenv["HOME"], "/h")
 
@@ -27777,10 +27777,10 @@ class LeafEnvClosureTests(unittest.TestCase):
         """The fill must not become a silent correction: a profile that DECLARES an id
         keeps it, so the record and the delivery still cannot disagree."""
         profile = self._profile()
-        profile["env"] = {**profile["env"], "ATMOFAB_ORCHESTRATION_ID": "from-env"}
+        profile["env"] = {**profile["env"], "SPEC2SCIENCE_ORCHESTRATION_ID": "from-env"}
         profile["orchestration_id"] = "from-field"
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
-        self.assertEqual(self._setenv_map(argv)["ATMOFAB_ORCHESTRATION_ID"], "from-env")
+        self.assertEqual(self._setenv_map(argv)["SPEC2SCIENCE_ORCHESTRATION_ID"], "from-env")
 
     def test_an_empty_value_is_dropped_rather_than_declared_empty(self) -> None:
         """`--setenv CODEX_HOME ""` points the CLI at the empty path; absent lets its own
@@ -27804,7 +27804,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         repo = Path(d)
         authored = {"PATH": "/a/bin", "HOME": "/a/home", "LANG": "C.UTF-8",
-                    "ATMOFAB_ORCHESTRATION_ID": "o", "ATMOFAB_CHILD_AGENT_RUN_ID": "A"}
+                    "SPEC2SCIENCE_ORCHESTRATION_ID": "o", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "A"}
         with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
@@ -27822,12 +27822,12 @@ class LeafEnvClosureTests(unittest.TestCase):
 
     def test_a_child_env_naming_another_leafs_ids_fails_closed(self) -> None:
         """Threading only helps if the dict belongs to THIS launch. A profile carrying
-        another leaf's `ATMOFAB_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
+        another leaf's `SPEC2SCIENCE_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
         different run, and the record and the reality would be one object describing two."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for name, bad in (("ATMOFAB_ORCHESTRATION_ID", "other-orch"),
-                          ("ATMOFAB_CHILD_AGENT_RUN_ID", "other-arid")):
+        for name, bad in (("SPEC2SCIENCE_ORCHESTRATION_ID", "other-orch"),
+                          ("SPEC2SCIENCE_CHILD_AGENT_RUN_ID", "other-arid")):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     ort.build_lineage_bwrap_profile(
@@ -27840,8 +27840,8 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         A `record-launch` run from inside a leaf — documented in `docs/CLI_REFERENCE.md`,
         granted by `leaf_config/claude/settings.json` — builds from that leaf's own
-        environment, which carries the PARENT's `ATMOFAB_CHILD_AGENT_RUN_ID`; and under
-        the workflow `run_workflow.py` puts `ATMOFAB_ORCHESTRATION_ID` into every node's
+        environment, which carries the PARENT's `SPEC2SCIENCE_CHILD_AGENT_RUN_ID`; and under
+        the workflow `run_workflow.py` puts `SPEC2SCIENCE_ORCHESTRATION_ID` into every node's
         environment, so a stale id is present essentially always. Carrying it into the
         child's profile is wrong (the hook selects a capability by that name), but so is
         REFUSING: this path's whole job is to rebuild an environment from an unrelated
@@ -27853,15 +27853,15 @@ class LeafEnvClosureTests(unittest.TestCase):
         where it belongs."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        with mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ID": "OTHER-ORCH",
-                                          "ATMOFAB_CHILD_AGENT_RUN_ID": "PARENT-ARID",
+        with mock.patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ID": "OTHER-ORCH",
+                                          "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "PARENT-ARID",
                                           "PATH": "/usr/bin"}):
             profile = ort.build_lineage_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o",
                 agent_run_id="CHILD-ARID", backend_command="claude",
                 backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
-        self.assertEqual(profile["env"]["ATMOFAB_ORCHESTRATION_ID"], "o")
-        self.assertEqual(profile["env"]["ATMOFAB_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
+        self.assertEqual(profile["env"]["SPEC2SCIENCE_ORCHESTRATION_ID"], "o")
+        self.assertEqual(profile["env"]["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
 
     def test_an_EMPTY_per_launch_id_is_refused_not_quietly_filled(self) -> None:
         """The `is not None` guard, which a census found unpinned.
@@ -27873,7 +27873,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         -id whose MCP server stops requiring a capability token. Refusing at the boundary
         is right: this arrives over `--child-env-from-stdin`, and an empty id there is a
         malformed payload, not an omission."""
-        for name in ("ATMOFAB_ORCHESTRATION_ID", "ATMOFAB_CHILD_AGENT_RUN_ID"):
+        for name in ("SPEC2SCIENCE_ORCHESTRATION_ID", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID"):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     ort._profile_child_env({"PATH": "/b", name: ""},
@@ -27894,7 +27894,7 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         The threaded check only compares a key that EXISTS, so a `child_env` omitting an
         id used to produce a profile without it — and since the profile is now the only
-        route into the leaf, a leaf without `ATMOFAB_ORCHESTRATION_ID` makes its
+        route into the leaf, a leaf without `SPEC2SCIENCE_ORCHESTRATION_ID` makes its
         build-runtime MCP server read "not under a run" (`_workflow_mode_env_signal()`
         returns None) and stop requiring a capability token. An ungated server, from an
         omission rather than an attack.
@@ -27902,37 +27902,37 @@ class LeafEnvClosureTests(unittest.TestCase):
         Filled rather than refused: the ids are this builder's own arguments, so an
         absence contradicts nothing. Only a disagreement does, and that still raises."""
         for child_env in ({"PATH": "/b"},
-                          {"PATH": "/b", "ATMOFAB_ORCHESTRATION_ID": "o"},
-                          {"PATH": "/b", "ATMOFAB_CHILD_AGENT_RUN_ID": "A"},
+                          {"PATH": "/b", "SPEC2SCIENCE_ORCHESTRATION_ID": "o"},
+                          {"PATH": "/b", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "A"},
                           None):
             with self.subTest(child_env=child_env):
                 got = ort._profile_child_env(child_env, orchestration_id="o",
                                              agent_run_id="A")
-                self.assertEqual(got["ATMOFAB_ORCHESTRATION_ID"], "o")
-                self.assertEqual(got["ATMOFAB_CHILD_AGENT_RUN_ID"], "A")
+                self.assertEqual(got["SPEC2SCIENCE_ORCHESTRATION_ID"], "o")
+                self.assertEqual(got["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "A")
 
     def test_a_stale_ambient_id_does_not_make_a_profile_build_fail(self) -> None:
         """The regression itself, stated as the property rather than as a value.
 
-        `run_workflow.py` exports `ATMOFAB_ORCHESTRATION_ID` into every node, so ANY
+        `run_workflow.py` exports `SPEC2SCIENCE_ORCHESTRATION_ID` into every node, so ANY
         conductor-less profile build under the workflow sees one. If that can raise, the
         suite becomes coupled to the operator's shell and a leaf-initiated
         `record-launch` terminalizes the run through `record_launch`'s `except
         Exception` -> `sandbox_enforcement_violation` -> `fail_closed`."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for ambient in ({"ATMOFAB_ORCHESTRATION_ID": "OTHER-ORCH"},
-                        {"ATMOFAB_CHILD_AGENT_RUN_ID": "OTHER-ARID"},
-                        {"ATMOFAB_ORCHESTRATION_ID": "OTHER-ORCH",
-                         "ATMOFAB_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
+        for ambient in ({"SPEC2SCIENCE_ORCHESTRATION_ID": "OTHER-ORCH"},
+                        {"SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "OTHER-ARID"},
+                        {"SPEC2SCIENCE_ORCHESTRATION_ID": "OTHER-ORCH",
+                         "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
             with self.subTest(ambient=sorted(ambient)):
                 with mock.patch.dict(os.environ, {**ambient, "PATH": "/usr/bin"}):
                     profile = ort.build_lineage_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
                         backend_type="claude", **_workshop_build_kwargs(self), network=network_block("claude"))
-                self.assertEqual(profile["env"]["ATMOFAB_ORCHESTRATION_ID"], "o")
-                self.assertEqual(profile["env"]["ATMOFAB_CHILD_AGENT_RUN_ID"], "A")
+                self.assertEqual(profile["env"]["SPEC2SCIENCE_ORCHESTRATION_ID"], "o")
+                self.assertEqual(profile["env"]["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "A")
 
     def test_a_non_mapping_or_mistyped_child_env_fails_closed(self) -> None:
         """The type validations, which review found undriven by any test.
@@ -27969,7 +27969,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             home.symlink_to(physical, target_is_directory=True)
         else:
             home = physical
-        repo = physical / "work" / "atmofab"
+        repo = physical / "work" / "spec2science"
         dialogs = repo / "workspace" / "orchestrations" / "o" / "agents" / "P" / "dialogs"
         dialogs.mkdir(parents=True)
         (dialogs / "leaf.stdout.jsonl").write_text("PRODUCER REASONING\n", encoding="utf-8")
@@ -28021,13 +28021,13 @@ class LeafEnvClosureTests(unittest.TestCase):
 
     def test_an_install_root_that_is_the_checkout_itself_under_another_name_is_refused(self) -> None:
         # The equality boundary of the ancestor walk (a `resolved_repo != physical` exemption
-        # survived the round-3 sweep): `~/x -> ~/atmofab` with the wrapper at `~/x/bin/` makes
+        # survived the round-3 sweep): `~/x -> ~/spec2science` with the wrapper at `~/x/bin/` makes
         # the root the checkout ITSELF under a second name, and every hidden tree is readable
         # at `~/x/workspace/...` (measured under real bwrap by the round-3 security axis).
         d = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
-        repo = home / "atmofab"
+        repo = home / "spec2science"
         (repo / "workspace").mkdir(parents=True)
         (home / "x").symlink_to(repo, target_is_directory=True)
         bindir = repo / "bin"
@@ -28056,7 +28056,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
         home.mkdir()
-        repo = d / "data" / "atmofab"
+        repo = d / "data" / "spec2science"
         bindir = repo / "workspace" / "bin"
         bindir.mkdir(parents=True)
         (bindir / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -28087,7 +28087,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
         home.mkdir()
-        repo = home / "atmofab"
+        repo = home / "spec2science"
         (repo / "workspace").mkdir(parents=True)
         (d / "alias").symlink_to(repo, target_is_directory=True)
         ort._ensure_orchestration_audit_dirs(repo, "o")
@@ -28109,12 +28109,12 @@ class LeafEnvClosureTests(unittest.TestCase):
         fake.write_text(
             "20 1 8:1 / / rw - xfs /dev/sda1 rw\n"
             "30 20 8:2 / /mnt/my\\040disk rw - xfs /dev/sdb1 rw\n"
-            "40 20 8:1 /data/atmofab/workspace /home/u/tools rw - xfs /dev/sda1 rw\n",
+            "40 20 8:1 /data/spec2science/workspace /home/u/tools rw - xfs /dev/sda1 rw\n",
             encoding="utf-8")
         table = ort._mount_table(fake)
         self.assertEqual(table[1][0], "/mnt/my disk")
         self.assertEqual(ort._fs_identity(Path("/home/u/tools/bin"), table),
-                         ("8:1", Path("/data/atmofab/workspace/bin")))
+                         ("8:1", Path("/data/spec2science/workspace/bin")))
         self.assertEqual(ort._fs_identity(Path("/home/u/other"), table),
                          ("8:1", Path("/home/u/other")))
         self.assertEqual(ort._fs_identity(Path("/mnt/my disk/x"), table), ("8:2", Path("/x")))
@@ -28129,7 +28129,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         d = Path(tempfile.mkdtemp()).resolve()
         self.addCleanup(shutil.rmtree, d, True)
         home = d / "home"
-        repo = home / "atmofab"
+        repo = home / "spec2science"
         ws = repo / "workspace"
         ws.mkdir(parents=True)
         (ws / "cli-sim").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -28443,7 +28443,7 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
             "runtime_ro_bind_paths": ["/usr", "/bin", "/lib", "/lib64"],
             **workshop,
             "env": {"PATH": "/usr/bin:/bin", "HOME": "/leaf/home", "LANG": "C.UTF-8",
-                    "ATMOFAB_ORCHESTRATION_ID": "o", "ATMOFAB_CHILD_AGENT_RUN_ID": "A",
+                    "SPEC2SCIENCE_ORCHESTRATION_ID": "o", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID": "A",
                     "TMPDIR": str(root / "ws"), **workshop["env"]},
         }
         # The relay the rendered command runs is installed by the host half (issue #534 step 4).
@@ -28637,7 +28637,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     review rounds each found a different copy still stating the old fact — four of them in text a leaf acts on, each costing that leaf a `Compile fail` on
     every attempt.
 
-    That count is what `atmofab-enforcement-change` rule 3-a calls the point where sweeping has
+    That count is what `spec2science-enforcement-change` rule 3-a calls the point where sweeping has
     already lost, and its remedy is what this class is: the sites that must repeat the rule
     (a leaf-read contract has to be self-contained) are COUPLED to it by an allowlist, so a new
     statement is refused until a person reads it and adds an entry. This decides nothing about
@@ -30438,7 +30438,7 @@ class LeafNetnsPreflightTests(unittest.TestCase):
                 "docs/BWRAP_ENABLEMENT.md (CI lifts kernel.apparmor_restrict_unprivileged_userns)")
 
     def setUp(self) -> None:
-        patcher = mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": ""})
+        patcher = mock.patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": ""})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -30481,7 +30481,7 @@ class LeafNetnsPreflightTests(unittest.TestCase):
         self.assertIs(rows["sandbox_netns_route"]["pass"], False)
 
     def test_the_env_override_assumes_both_rows(self) -> None:
-        with mock.patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}):
+        with mock.patch.dict(os.environ, {"SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1"}):
             rows, enforced = self._rows()
         self.assertTrue(enforced)
         self.assertIs(rows["sandbox_netns_route"]["pass"], True)

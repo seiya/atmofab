@@ -261,7 +261,7 @@ def parallel_toolchain_problems(selection: dict[str, str], *, launches: bool,
         return []
     launcher = _parallel_capability_module(parallel, "launcher")
     launcher_path = shutil.which(str(launcher.EXECUTABLE)) if launcher is not None else None
-    with tempfile.TemporaryDirectory(prefix="atmofab_parallel_canary_") as scratch:
+    with tempfile.TemporaryDirectory(prefix="spec2science_parallel_canary_") as scratch:
         source = Path(scratch) / str(wrapper.BINDING_CANARY_FILENAME)
         source.write_text(str(wrapper.BINDING_CANARY_SOURCE), encoding="utf-8")
         completed = _canary_run(

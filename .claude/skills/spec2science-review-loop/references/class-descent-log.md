@@ -566,7 +566,7 @@ The class transitions, one per round, and where each came from:
 - **Round 1 — a hole in the PLAN.** Decision 4's premise ("`--with-deps` runs the new clause on
   every closure node") was never executed and was false; both up-model axes found it by driving
   the closure driver on the real corpus. The sibling skill's rule 1-d owns the episode
-  (`atmofab-enforcement-change/references/judgment-episodes.md` §Rule 1-d, issue #238). The same
+  (`spec2science-enforcement-change/references/judgment-episodes.md` §Rule 1-d, issue #238). The same
   round: a §13c sentence written to deny a behaviour the validator has (it reads `tests.md`), and
   the fixture fallout of the change's own reclassification (below).
 - **Round 2 — holes in the WITNESSES of round 1's fixes.** The per-finding wrap was pinned by
@@ -602,7 +602,7 @@ the real corpus twice — and the superior condition not met, which the PR body 
 ## Issue #589 PR-0 (PR #590) — round 0 plus three, budget stop; the disclosure round found a displaced witness
 
 Round 1's blocker was a wiring miss in the author's own change (a new Build deliverable the
-runtime's phase-contract matcher refused; `atmofab-enforcement-change`
+runtime's phase-contract matcher refused; `spec2science-enforcement-change`
 `references/deterministic-substep-wiring.md` §"Adding a deliverable"), round 2 found only
 unpinned mechanisms, and round 3 — both reviewers on the disclosure axis — found that the
 original commit's fixture change had silently re-targeted three existing witnesses. The fixture

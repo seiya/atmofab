@@ -56,11 +56,11 @@ _CITATION_SOURCES = (
 
 # The regression issue #84 opens with: under the workflow the MCP server (deleted in issue
 # #444) refused a caller-named `repo_root`, and a test asserted the OUTSIDE-a-run branch. An operator
-# with `ATMOFAB_ORCHESTRATION_ID` exported got a failure belonging to no change.
+# with `SPEC2SCIENCE_ORCHESTRATION_ID` exported got a failure belonging to no change.
 # The end-to-end witness: ONE poison name and ONE test that reads it from the ambient
 # environment, so the guarded run and the unguarded control differ. The subject was
 # `test_build_runtime_server.OrchestratedEnvAllowlistTests` under
-# `ATMOFAB_ORCHESTRATION_ID` until PR-2 of issue #171 retired the orchestration gate: that
+# `SPEC2SCIENCE_ORCHESTRATION_ID` until PR-2 of issue #171 retired the orchestration gate: that
 # server no longer reads the workflow environment at all, so nothing in the tree is poisoned
 # by that name any more (measured — every reader of it is now a WRITER, putting it on a
 # leaf's environment). Re-anchored on `CODEX_HOME`, whose reader is
@@ -68,7 +68,7 @@ _CITATION_SOURCES = (
 # resolves the home: measured clean-OK / poisoned-FAILED / guarded-pass on the commit that
 # moved it. The witness needs the control to FAIL, so `test_a_poisoned_environment_...`
 # asserts exactly that and tells you to find a new subject when it stops.
-_SUBJECT_POISON = {"CODEX_HOME": "/tmp/atmofab_witness_codex_home"}
+_SUBJECT_POISON = {"CODEX_HOME": "/tmp/spec2science_witness_codex_home"}
 _SUBJECT_MODULE = "tools.tests.test_orchestration_runtime"
 _SUBJECT_CLASS = "CodexOrchestrationRuntimeTests"
 _SUBJECT_TEST = "test_probe_codex_cli_passes_without_running_features_list"
@@ -82,7 +82,7 @@ def _environment_names_read_by(repo_root: Path) -> set[str]:
     disagreed — 17, 23 and 25 — each answering a different question about spellings.
 
     A read through a MODULE CONSTANT counts too — `_LIVENESS_TTL_ENV =
-    "ATMOFAB_ORCH_LIVENESS_TTL_SECONDS"` then `os.environ.get(_LIVENESS_TTL_ENV)`. Six names
+    "SPEC2SCIENCE_ORCH_LIVENESS_TTL_SECONDS"` then `os.environ.get(_LIVENESS_TTL_ENV)`. Six names
     in this tree are spelled that way and a literal-only reader misses every one of them,
     which is one of the reasons the hand-counts disagreed. Resolved one level, against
     module-scope assignments in the same file; a name computed at runtime or imported from
@@ -211,13 +211,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def test_no_ambient_operator_name_survives_into_a_running_test(self) -> None:
         """The guard's effect, observed from inside a test rather than inferred.
 
-        TWO claims, because "no `ATMOFAB_*` name is set during a test" is false and would
+        TWO claims, because "no `SPEC2SCIENCE_*` name is set during a test" is false and would
         be the wrong thing to pin:
 
         1. Nothing a test sees carries the OPERATOR's value. Vacuous on a clean host —
            there was nothing to strip — which is why the end-to-end case below drives a
            real poisoned process rather than relying on this one.
-        2. Every `ATMOFAB_*` name that IS set during a test is one the SUITE set, and is
+        2. Every `SPEC2SCIENCE_*` name that IS set during a test is one the SUITE set, and is
            declared in `suite_env_guard.SUITE_OWNED_ENV`. That is a ratchet: a new process-global environment dependence
            cannot appear without someone naming it here and saying who sets it.
 
@@ -239,7 +239,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             if name in SUITE_OWNED_ENV and os.environ.get(name) == operator_value:
                 # Undecidable by VALUE, and only for these two. The suite sets them itself
                 # AFTER the strip, so an operator who exported the value the suite happens
-                # to use — `ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1` is the suite's
+                # to use — `SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK=1` is the suite's
                 # own — cannot be told apart here from the suite having set it.
                 #
                 # The exemption is narrow ON PURPOSE, and the first version of it was NOT.
@@ -293,8 +293,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         declared = dict.fromkeys(SUITE_OWNED_ENV, "x")
         self.assertEqual(undeclared_operator_env_names(declared), set())
         self.assertEqual(
-            undeclared_operator_env_names({**declared, "ATMOFAB_A_NEW_KNOB": "1"}),
-            {"ATMOFAB_A_NEW_KNOB"})
+            undeclared_operator_env_names({**declared, "SPEC2SCIENCE_A_NEW_KNOB": "1"}),
+            {"SPEC2SCIENCE_A_NEW_KNOB"})
         self.assertEqual(
             undeclared_operator_env_names({**declared, "CODEX_HOME": "/tmp/x"}),
             {"CODEX_HOME"})
@@ -316,14 +316,14 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # those too — the table exempts them from the RATCHET, not from the guard — and a
         # mutant that records one without popping it is the shape a reviewer found
         # surviving. Here nothing else writes to the mapping, so it is decidable.
-        environ = {"ATMOFAB_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9", "PATH": "/b"}
+        environ = {"SPEC2SCIENCE_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9", "PATH": "/b"}
         removed = suite_env_guard.strip_operator_env(environ)
-        self.assertEqual(removed, sorted(["CODEX_HOME", "ATMOFAB_A_KNOB", owned]))
+        self.assertEqual(removed, sorted(["CODEX_HOME", "SPEC2SCIENCE_A_KNOB", owned]))
         self.assertEqual(environ, {"PATH": "/b"})
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
-                         {"ATMOFAB_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9"})
+                         {"SPEC2SCIENCE_A_KNOB": "1", "CODEX_HOME": "/tmp/x", owned: "9"})
         suite_env_guard.restore_operator_env(environ)
-        self.assertEqual(environ, {"ATMOFAB_A_KNOB": "1", "CODEX_HOME": "/tmp/x",
+        self.assertEqual(environ, {"SPEC2SCIENCE_A_KNOB": "1", "CODEX_HOME": "/tmp/x",
                                    owned: "9", "PATH": "/b"})
         self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV, {})
 
@@ -331,20 +331,20 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """Coupled by POINTER: the prefix is defined once, in the production constant.
 
         `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES` is what decides which host names
-        reach a leaf; a `ATMOFAB_*` knob added later must be neutralized here without
-        anyone remembering this file exists. Pinning the string `"ATMOFAB_"` in a second
+        reach a leaf; a `SPEC2SCIENCE_*` knob added later must be neutralized here without
+        anyone remembering this file exists. Pinning the string `"SPEC2SCIENCE_"` in a second
         place would state the rule twice and let the two drift, so what is pinned is that
         the function FOLLOWS the constant — moving the constant moves the answer.
         """
         import tools.orchestration_runtime as runtime
 
-        sample = {"ATMOFAB_ORCHESTRATION_ID": "x", "ZZTOP_KNOB": "y", "PATH": "/b"}
-        self.assertEqual(operator_env_names_to_strip(sample), ["ATMOFAB_ORCHESTRATION_ID"])
+        sample = {"SPEC2SCIENCE_ORCHESTRATION_ID": "x", "ZZTOP_KNOB": "y", "PATH": "/b"}
+        self.assertEqual(operator_env_names_to_strip(sample), ["SPEC2SCIENCE_ORCHESTRATION_ID"])
         with mock.patch.object(runtime, "LEAF_ENV_ALLOWED_PREFIXES", ("ZZTOP_",)):
             self.assertEqual(operator_env_names_to_strip(sample), ["ZZTOP_KNOB"])
 
     def test_the_backend_configuration_homes_are_covered_too(self) -> None:
-        """`CODEX_HOME` carries no `ATMOFAB_` prefix and cost 10 failures when exported.
+        """`CODEX_HOME` carries no `SPEC2SCIENCE_` prefix and cost 10 failures when exported.
 
         Measured on `165c26f` over `tools/tests/test_orchestration_runtime.py` alone,
         spelling the names `METDSL_*` there: that commit predates the rename and the
@@ -360,11 +360,11 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def test_every_environment_name_the_tree_reads_is_stripped_or_declared(self) -> None:
         """The ratchet that replaces a count three enumerations disagreed on.
 
-        The first version of this test collected `ATMOFAB_*` LITERALS with a regex and
+        The first version of this test collected `SPEC2SCIENCE_*` LITERALS with a regex and
         asked whether the strip covers them. Two reviewers found the same thing from
-        different angles: the regex harvests only names beginning with `ATMOFAB_` and the
-        rule covers exactly names beginning with `ATMOFAB_`, so the equality was true by
-        construction. Adding `GEMINI_CONFIG_DIR` or `ATMOFAB2_NEW_KNOB` to the tree — both
+        different angles: the regex harvests only names beginning with `SPEC2SCIENCE_` and the
+        rule covers exactly names beginning with `SPEC2SCIENCE_`, so the equality was true by
+        construction. Adding `GEMINI_CONFIG_DIR` or `SPEC2SCIENCE2_NEW_KNOB` to the tree — both
         uncovered — left it green. It pinned nothing about the tree, and its docstring
         said it could not go stale.
 
@@ -390,17 +390,17 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # `PYTHONPATH` anchored the second scanned root, `mcp_servers/`, because it was read
         # ONLY there; issue #444 moved that module to `tools/build_runtime.py`, where it is
         # still the one file reading the name, so it now anchors that file.
-        # The `tools/hooks` anchor was `("ATMOFAB_HOOK_REPO_ROOT", "tools/hooks/cli.py")` until
+        # The `tools/hooks` anchor was `("SPEC2SCIENCE_HOOK_REPO_ROOT", "tools/hooks/cli.py")` until
         # Z4 (issue #171) deleted the leaf hook entrypoint with the agentic leaf, then
         # `tools/hooks/common.py` until PR-2 of the same issue moved what survived of it to
         # `tools/operator_private_root.py` and deleted the module. The anchor follows the NAME,
         # which is read there and nowhere else under the scanned roots — measured, not assumed.
         # It no longer anchors the `tools/hooks` subtree specifically; what is left under
         # `tools/hooks/` reads no environment name of its own, so there is none to anchor on.
-        for name, where in (("ATMOFAB_WORKFLOW_HOMES_ROOT", "tools/operator_private_root.py"),
+        for name, where in (("SPEC2SCIENCE_WORKFLOW_HOMES_ROOT", "tools/operator_private_root.py"),
                             ("PYTHONPATH", "tools/build_runtime.py"),
-                            ("ATMOFAB_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
-                            ("ATMOFAB_START_CLAIM_ROOT", "tools/run_workflow.py")):
+                            ("SPEC2SCIENCE_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
+                            ("SPEC2SCIENCE_START_CLAIM_ROOT", "tools/run_workflow.py")):
             # NOT PINNED BY ANYTHING ITSELF: removing these four assertions survives a
             # sweep, because an assertion inside a test is not a mechanism. The regress
             # stops here — what it buys is that the walk's scope cannot shrink silently,
@@ -459,7 +459,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         with suite_env_guard.isolated_record():
             with self.assertRaisesRegex(RuntimeError, "without removing it"):
                 suite_env_guard.strip_operator_env(
-                    _KeepsWhatItPops({"ATMOFAB_A_KNOB": "1"}))
+                    _KeepsWhatItPops({"SPEC2SCIENCE_A_KNOB": "1"}))
 
     def test_the_stripped_or_declared_decision_reports_an_undecided_name(self) -> None:
         """The decision above, driven where the answer is not "nothing".
@@ -470,13 +470,13 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """
         self.assertEqual(
             suite_env_guard.undecided_environment_names(
-                {"ATMOFAB_A_KNOB", "CODEX_HOME"} | set(MUST_BE_INHERITED)), set())
+                {"SPEC2SCIENCE_A_KNOB", "CODEX_HOME"} | set(MUST_BE_INHERITED)), set())
         self.assertEqual(
             suite_env_guard.undecided_environment_names({"GEMINI_CONFIG_DIR"}),
             {"GEMINI_CONFIG_DIR"})
         self.assertEqual(
-            suite_env_guard.undecided_environment_names({"ATMOFAB2_NEW_KNOB"}),
-            {"ATMOFAB2_NEW_KNOB"},
+            suite_env_guard.undecided_environment_names({"SPEC2SCIENCE2_NEW_KNOB"}),
+            {"SPEC2SCIENCE2_NEW_KNOB"},
             "a near-miss prefix is not the prefix")
 
     def test_driving_the_strip_leaves_no_global_state_behind(self) -> None:
@@ -502,19 +502,19 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
             # measured, dropping the record restore survived a sweep once the DECLINED
             # block was added, because a later `__enter__` cleared the residue the
             # assertion at the end would have seen.
-            suite_env_guard.STRIPPED_OPERATOR_ENV["ATMOFAB_SENTINEL"] = "outer"
+            suite_env_guard.STRIPPED_OPERATOR_ENV["SPEC2SCIENCE_SENTINEL"] = "outer"
             with suite_env_guard.isolated_record():
-                environ = {"ATMOFAB_A_KNOB": "1", "PATH": "/b"}
+                environ = {"SPEC2SCIENCE_A_KNOB": "1", "PATH": "/b"}
                 suite_env_guard.strip_operator_env(environ)
                 self.assertTrue(suite_env_guard.CONFIGURED)
                 self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
-                                 {"ATMOFAB_A_KNOB": "1"})
+                                 {"SPEC2SCIENCE_A_KNOB": "1"})
             self.assertEqual(suite_env_guard.STRIPPED_OPERATOR_ENV,
-                             {"ATMOFAB_SENTINEL": "outer"},
+                             {"SPEC2SCIENCE_SENTINEL": "outer"},
                              "isolated_record did not restore the record")
             self.assertFalse(suite_env_guard.CONFIGURED,
                              "isolated_record did not restore CONFIGURED")
-            del suite_env_guard.STRIPPED_OPERATOR_ENV["ATMOFAB_SENTINEL"]
+            del suite_env_guard.STRIPPED_OPERATOR_ENV["SPEC2SCIENCE_SENTINEL"]
             # DECLINED too. It was left out of the first version and survived a sweep,
             # because nothing in the suite calls `decline_strip` — a latent leak that a
             # future test inside this context would turn into "the operator declined" for
@@ -537,8 +537,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """
         self.assertEqual(
             suite_env_guard.import_reads_that_would_be_stripped(
-                {"ATMOFAB_A_KNOB", "CODEX_HOME"}),
-            {"ATMOFAB_A_KNOB", "CODEX_HOME"})
+                {"SPEC2SCIENCE_A_KNOB", "CODEX_HOME"}),
+            {"SPEC2SCIENCE_A_KNOB", "CODEX_HOME"})
         self.assertEqual(
             suite_env_guard.import_reads_that_would_be_stripped(
                 set(MUST_BE_INHERITED) | {"_PYTHON_SUBPROCESS_USE_POSIX_SPAWN"}),
@@ -635,8 +635,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
                 # exactly what the walk was added to stop printing.
                 self.assertTrue(
                     self._last_import_reads[expected].endswith(
-                        "atmofab_probe_module.py:" + str(body.count("\n") + 2))
-                    or "atmofab_probe_module.py:" in self._last_import_reads[expected],
+                        "spec2science_probe_module.py:" + str(body.count("\n") + 2))
+                    or "spec2science_probe_module.py:" in self._last_import_reads[expected],
                     f"the spy did not attribute the read to the probe file: "
                     f"{self._last_import_reads[expected]}")
 
@@ -659,10 +659,10 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def _names_read_during_import_of_source(self, body: str) -> set[str]:
         """Run the spy over a synthetic module built from `body`."""
         with tempfile.TemporaryDirectory() as td:
-            module = Path(td) / "atmofab_probe_module.py"
+            module = Path(td) / "spec2science_probe_module.py"
             module.write_text("import os\n" + body + "\n", encoding="utf-8")
             return self._names_read_during_import(
-                "atmofab_probe_module", extra_path=td)
+                "spec2science_probe_module", extra_path=td)
 
     def _names_read_during_import(self, module: str,
                                   extra_path: str | None = None) -> set[str]:
@@ -673,7 +673,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         that does not happen reads nothing.
         """
         with tempfile.TemporaryDirectory() as td:
-            spy = Path(td) / "atmofab_import_spy.py"
+            spy = Path(td) / "spec2science_import_spy.py"
             spy.write_text(_IMPORT_SPY_SOURCE, encoding="utf-8")
             argv = [sys.executable, str(spy), module]
             if extra_path:
@@ -694,12 +694,12 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         load-bearing sentence — the one telling a maintainer what stands between the
         snapshot and the operator's cached value. Both were caught by review, in
         consecutive rounds, which is the definition of a discipline that has stopped
-        working; `.claude/skills/atmofab-enforcement-change` rule 3-a says to couple the
+        working; `.claude/skills/spec2science-enforcement-change` rule 3-a says to couple the
         documents to the rule with a check at that point, and this is the check.
 
         Scoped to the files this change owns, and to CODE — a document may legitimately
         name a deleted test as deleted, and issue #84's record does
-        (https://github.com/seiya/atmofab/issues/84#issuecomment-5560395673). A code comment
+        (https://github.com/seiya/spec2science/issues/84#issuecomment-5560395673). A code comment
         pointing at a test is telling the reader where to look, so it has to lead somewhere.
         """
         cited_names = set()
@@ -773,7 +773,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
     def test_the_strip_is_reported_and_can_be_declined(self) -> None:
         """Silence here is a check recorded as run and not run — so both are witnessed.
 
-        `ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` was 84 failures and 482s of real
+        `SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` was 84 failures and 482s of real
         probing on `165c26f` (spelled `METDSL_*` there — `docs/GLOSSARY.md` §13); with
         the strip it is 1242 passed in 49s and nothing probed.
         An operator who set it deliberately has to be able to see that, and to say they
@@ -858,7 +858,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         """
         accepted = _run(
             [sys.executable, "-m", "pytest", "--keep-operator-env", "--co", "-q",
-             "-k", "atmofab_no_such_test_name"], {})
+             "-k", "spec2science_no_such_test_name"], {})
         self.assertEqual(
             accepted.returncode, 5,          # 5 = collected, nothing selected
             "a bare `pytest` did not accept --keep-operator-env, so tools/tests/"
@@ -873,7 +873,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # a test does not make this fail.
         explicit = _run(
             [sys.executable, "-m", "pytest", "tools/tests/", "--co", "-q",
-             "-k", "atmofab_no_such_test_name"], {})
+             "-k", "spec2science_no_such_test_name"], {})
         deselected = re.search(r"(\d+) deselected", accepted.stdout)
         expected = re.search(r"(\d+) deselected", explicit.stdout)
         self.assertTrue(deselected and expected, accepted.stdout + explicit.stdout)

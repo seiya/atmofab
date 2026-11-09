@@ -104,7 +104,7 @@ like a declared `none`: its reason must be about the loop itself (a carried depe
 reduction, a copy that only reshapes host state), not about a gate or a run in which a kernel did
 not execute. The
 producer is told the same, and told that a kernel the trace never saw is launched where the cases
-reach it, in blocks of the run's `atmofab::launch_block_size` threads (§7) with a grid computed from
+reach it, in blocks of the run's `spec2science::launch_block_size` threads (§7) with a grid computed from
 it, and removed only when its work is not needed, never moved to a host loop (issue #307 PR-3).
 
 ## 5. The `problem` model gates
@@ -112,7 +112,7 @@ it, and removed only when its work is not needed, never moved to a host loop (is
 The Fortran binding's three gates, read over the namespace-scope function definitions of the
 model source (`source.run_problem_model_gates`); a source whose brackets do not balance is
 refused rather than read in part. A parameter is an OUTPUT when the function can write through
-it — a non-const reference, a pointer to non-const, a non-const `atmofab::View` — and a returned
+it — a non-const reference, a pointer to non-const, a non-const `spec2science::View` — and a returned
 value is one more output, whether or not its `return` names anything.
 
 - **Literal outputs.** A function every one of whose output parameters is assigned whole
@@ -181,7 +181,7 @@ value is one more output, whether or not its `return` names anything.
   other declaration spelling are read as live, and so is a dead branch (`if (false) { … }`):
   the gates do not read control flow.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
-  more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
+  more outputs and neither an array parameter (`spec2science::View`, `spec2science::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
 
 ## 6. The allocation and transfer default
@@ -247,7 +247,7 @@ IR.
 The threads per block of every kernel launch is the host's (issue #512). The target profile
 names it (`execution.block_size`) and its execution-shape sweep varies it
 (`execution.sweep.block_size`); `Validate.execute` runs the binary once per shape, each with
-`ATMOFAB_CUDA_BLOCK` set to the shape's block size (`tools/backends/parallel/cuda/execution.py`),
+`SPEC2SCIENCE_CUDA_BLOCK` set to the shape's block size (`tools/backends/parallel/cuda/execution.py`),
 and the quality check compares each run's checks, verdict and captured state with the reference
 run under the IR's cross-target predicates (`docs/workflow/phases/phase_04_validate.md`). A
 kernel whose result depends on the block it ran in — a race between blocks, a shared-memory tile
@@ -255,12 +255,12 @@ or a reduction that is correct at one block size — is caught there, at the sha
 
 The harness reads the variable and publishes the value (`harness_cpp_gpu` §3.3,
 `__block_size`); the host-rendered runner calls it once, before the first case, and stores it in
-`atmofab::launch_block_size`, which the host-rendered header declares for every source of the
+`spec2science::launch_block_size`, which the host-rendered header declares for every source of the
 program (`tools/backends/language/cuda_cpp/header.py`). The node's sources read that variable:
 they never name the harness (§3's rule is unchanged), and never assign it.
 
 - **B.1 Launch with the imposed block.** Every `<<<grid, block>>>` launch takes
-  `atmofab::launch_block_size` threads per block, read when the operation runs: a
+  `spec2science::launch_block_size` threads per block, read when the operation runs: a
   namespace-scope copy initialized before `main` runs holds `0`, which the device refuses.
 - **B.2 The grid follows from the block.** The launch's grid covers the range with that block:
   `(n + block - 1) / block` blocks for `n` elements, and a kernel guards the threads past `n`. A
@@ -283,7 +283,7 @@ compared across every other block size the profile names (its certified one and 
 The `Generate.gate` static check holds a necessary condition of B.1
 (`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every leaf source but the runner of a
 `component` / `problem` node, whatever the plan and the loop count): a
-source whose code launches a kernel (`<<<`) and never names `atmofab::launch_block_size` is
+source whose code launches a kernel (`<<<`) and never names `spec2science::launch_block_size` is
 refused, and so is a source that writes it through its qualified name (an assignment, compound or
 plain, or an increment; a local, parameter or member that merely shares the name is not refused,
 and a write through `using` or a reference is G6's). That is the shape every `cpp_gpu` problem
@@ -305,7 +305,7 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   `namespace <spec_id>_model` it declares every module parameter (`using dp = double;`,
   `inline constexpr int case_id_len = 64;`), every published type as a `struct`, every
   `interfaces` entry as a function-pointer alias, and every published operation's declaration;
-  it also defines the array view `atmofab::View`. The model source `<spec_id>_model.cu` begins
+  it also defines the array view `spec2science::View`. The model source `<spec_id>_model.cu` begins
   with `#include "<spec_id>_model.cuh"` and, inside `namespace <spec_id>_model { ... }`, gives
   each published operation a body with EXACTLY the declared return type, parameter types and
   parameter names, in order. It declares no published type, alias, module parameter or
@@ -318,7 +318,7 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   | §5.1 argument | `intent(in)` | `intent(out)` / `inout` |
   |---|---|---|
   | `real` / `integer` / `logical`, rank 0 | `K name` | `K& name` |
-  | the same, rank R ≥ 1 | `atmofab::View<const K, R> name` | `atmofab::View<K, R> name` |
+  | the same, rank R ≥ 1 | `spec2science::View<const K, R> name` | `spec2science::View<K, R> name` |
   | the same, `alloc: true` | `const O& name` | `O& name` |
   | `string`, rank 0 | `const std::string& name` | `std::string& name` |
   | `derived T`, rank 0 | `const T& name` | `T& name` |
@@ -326,11 +326,11 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   | `procedure` naming entry `P` | `P name` | — |
 
   `O` is the OWNING container of the element type: `std::vector<X>` at rank 1, the header's
-  `atmofab::Array<X, R>` (members `std::vector<X> data` and `long extent[R]`, column-major) at
+  `spec2science::Array<X, R>` (members `std::vector<X> data` and `long extent[R]`, column-major) at
   rank R ≥ 2. A `subroutine` returns `void`; a `function` returns its result's type
   (`std::string` for a string, `T` for a derived type, `O` for an array). A component is the
   scalar type or `O`. A string's `len` and an argument's `dims` are not part of the C++ type.
-- **The array view.** `atmofab::View<T, R>` has public members `T* data` and `long extent[R]`;
+- **The array view.** `spec2science::View<T, R>` has public members `T* data` and `long extent[R]`;
   the element at 0-based indices `(i1, ..., iR)` is
   `data[i1 + extent[0] * (i2 + extent[1] * (... + extent[R-2] * iR))]` — column-major, the first
   index fastest. It does not own its data.

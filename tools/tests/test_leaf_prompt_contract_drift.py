@@ -212,7 +212,7 @@ PINNED: dict[str, str] = {
     "pure-22": "771d0659d2341bb372d1dde2c7afd71b2a25d4383ce900ed94c20c828826e94d",
     # pure-23: the project rename (issue #127; `docs/GLOSSARY.md` §13 is canonical for the
     # name and for what it was called before) reached the opening sentence of both pure
-    # templates ("the `generate.generate` producer of the atmofab workflow"). No rule, gate, or ABI constant moved. The bump is here because
+    # templates (the "producer of the … workflow" clause names the project). No rule, gate, or ABI constant moved. The bump is here because
     # `orchestration_runtime._resolve_exemplar_source` gates prior-art exemplars on this
     # version, and a bundle produced under the old text must not be silently treated as
     # having been produced under the new one; re-pinning in place would have been the
@@ -1027,7 +1027,7 @@ PINNED: dict[str, str] = {
     # rationale: each run's thread limit caps `num_threads(k)`, so only k = 1 or `if` defeats it).
     "pure-79": "e2b9d6485c50322732b833372485f7a69ecc90cbbadae3bac3daa845c2aec521",
     # pure-80 (issue #512 PR-4c): the CUDA C++ producer and reviewer fragments state the launch
-    # configuration the host imposes — every kernel launches with `atmofab::launch_block_size`
+    # configuration the host imposes — every kernel launches with `spec2science::launch_block_size`
     # threads per block (the host-rendered header declares it, the host-rendered runner sets it
     # from the harness's `__block_size`), its grid, shared memory and grid-stride loops follow
     # from it, and a literal or device-chosen block size is a G6 finding — because the host now
@@ -1037,7 +1037,7 @@ PINNED: dict[str, str] = {
     # fragment's repair sentence and its plan-override sentence no longer leave the threads per
     # block to the leaf or its plan, and the admitted sizes are named as such. Round 2: both
     # fragments say the `Generate.gate` floor refuses a launching source that never names
-    # `atmofab::launch_block_size` and a source that writes it; the inlined
+    # `spec2science::launch_block_size` and a source that writes it; the inlined
     # `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` lists `parallelism.block_size`. Round 3: the
     # producer's launch paragraph is scoped to component / problem nodes and compares captured
     # state only where the IR's cross-target predicates do.
@@ -1087,7 +1087,7 @@ PINNED: dict[str, str] = {
     # different profile inputs. Member moved: `pure_compile_generate_verification.txt`.
     # Shipped at origin/main 9c5e5902 (PR #556, issue #534 PR-J4-a, which touched no pure
     # member), and re-keyed here so the revert check still holds it (rule 1-b of
-    # `.claude/skills/atmofab-enforcement-change`, the `pure-50@3c117410` precedent).
+    # `.claude/skills/spec2science-enforcement-change`, the `pure-50@3c117410` precedent).
     "pure-84@9c5e5902": "22008342688579a1a2496bb9d3bc9e2ad3d94fb2145509e20b57431f1e9f2351",
     # pure-84, RE-PINNED IN PLACE (issue #534 PR-J4-b, operator decision: the VALUE is kept, so
     # no derivation key moves): the pure path is deleted, and the tuple becomes the UNION of the
@@ -1149,6 +1149,16 @@ PINNED: dict[str, str] = {
     # distributed driver (what it does, what reaches an operation, what is the kernel's).
     # Moved: those two fragments alone.
     "leaf-94": "653bc46d21c10c79e4a528f578588dbb8f1290265f35a83e71072c7ae9c8ac2a",
+    # leaf-95 (issue #619, the rename to Spec2Science): the first line of each of the eight
+    # `workshop_*.txt` templates that named the project (the three `*_repair.txt` never did) names "the Spec2Science workflow" (the former name before),
+    # and the `cuda_cpp` fragments name the namespace `spec2science::`. Moved: those eight
+    # templates and the three `cuda_cpp` fragments. Re-pinned in place once before it shipped
+    # (K5 of the same PR): the host-rendered `gate_guards_section` and `dependency_facts_render`
+    # name the CUDA C++ namespace the header now declares, `spec2science::`.
+    # Re-pinned in place again before it shipped (K6 of the same PR): the runner-output contract links
+    # issues at `github.com/seiya/spec2science`. Again in review round 1: two `cuda_cpp` reviewer
+    # fragments read "a `spec2science::View`" (the substitution had left "an").
+    "leaf-95": "ace7ba72d063b767308ae0fe4223111ab99abdd0efa402555ca16064d9e263bc",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1160,6 +1170,8 @@ PINNED_READER: dict[str, str] = {
     # compile-verify-3 (issue #589, PR-1a): V3 (iv) judges each `initial_state` / `derived`
     # entry and the history stride against tests.md.
     "compile-verify-3": "a17e90f9f3a50e55da26f365e3a6d59d33dd928b9d1fc13aca8d7903159c80e3",
+    # compile-verify-4 (issue #619): the reviewer template names the Spec2Science workflow.
+    "compile-verify-4": "dae8e1d336a363d721549da1489b647ae03f08d78d61667e4cdc35b9757b0364",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
@@ -1175,6 +1187,12 @@ PINNED_READER: dict[str, str] = {
     # generate-verify-6 (issue #610, PR-B2): the `mpi` reviewer fragment judges a kernel under the
     # distributed driver. Moved: that fragment alone.
     "generate-verify-6": "2f77c144dbf55ae8796b5a610e21a1429f0403ae16a7d4897db13e48c79a12c6",
+    # generate-verify-7 (issue #619): both verify templates name the Spec2Science workflow, and
+    # the two `cuda_cpp` reviewer fragments name the namespace `spec2science::`. Re-pinned in place
+    # once before it shipped (K5): `dependency_facts_render` names `spec2science::`.
+    # Re-pinned in place again (K6): the runner-output contract's issue links. Again in review
+    # round 1: the article before `spec2science::View` in the two `cuda_cpp` reviewer fragments.
+    "generate-verify-7": "180b0bf2f57d54f8d54466db66a9cb0b0a6ea949a675e8c5c4af126668efc481",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
@@ -1183,6 +1201,11 @@ PINNED_READER: dict[str, str] = {
     "validate-judge-4": "67e52883deef5f306c1128e6f9276171f8c11b6599bfee39b99a5ce1cef1cf63",
     # validate-judge-5 (issue #602): the rank rule and the gate sentence state the zero-extent row.
     "validate-judge-5": "809aa51ea05643a0525adbc1cedf9f3f60cd04dd63126dbae1cfe7a22397ade6",
+    # validate-judge-6 (issue #619): the judge template names the Spec2Science workflow.
+    # Re-pinned in place once before it shipped (K5): `dependency_facts_render` names
+    # `spec2science::`.
+    # Re-pinned in place again (K6): the issue links in §1+§3 of the runner-output contract.
+    "validate-judge-6": "7dc2fe5e397f6cd92b88f6e4a70b27f51ffa8a921775f301c9bc3ed656b9ffc0",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",
@@ -1201,7 +1224,7 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
         # file under the directory, keyed by its path below it, so a new language's fragments
         # join the pin by existing (the `project_pure_prompt_gate_drift_guard_gap` class issue
         # #289's R4-b plan closed,
-        # https://github.com/seiya/atmofab/issues/289#issuecomment-5824025920).
+        # https://github.com/seiya/spec2science/issues/289#issuecomment-5824025920).
         "language_fragments": {
             str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
             for path in sorted((tpl_dir / "backends").rglob("*.txt"))

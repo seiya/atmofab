@@ -33,7 +33,7 @@ Each fix narrowed the scan, and **each was broken by one byte**:
 enters that text. If it does, **change the channel rather than narrowing the sample** — exit
 code, exception type, a dedicated field, a sidecar. Each of these is written by the side that
 knows and cannot be written by the caller. This is the classification-channel version of
-`atmofab-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
+`spec2science-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
 one place".
 
 The same shape usually exists several times in the same repository. In L174 the twin survived
@@ -240,7 +240,7 @@ not.
 - **Enumerate the LAYERS that enforce the claim, not only the configurations that move the
   thing.** The bullets above ask "what can move it"; this one asks "who else decides whether a
   leaf may reach it", and PR #140 shows the two are different questions. Adding
-  `ATMOFAB_OPERATOR_TOKENS_ROOT` to the dismiss-violation token store (both deleted by issue
+  `SPEC2SCIENCE_OPERATOR_TOKENS_ROOT` to the dismiss-violation token store (both deleted by issue
   #176; the episode is what this bullet is for, and the LAYER question it teaches is unchanged
   — the homes root's relocator is live and answers to it) re-ran the whole
   configuration enumeration against the Bash guard, correctly — every spelling of a relocated
@@ -260,7 +260,7 @@ not.
   the containment DROP — three lines away, the same list, the same root — still conditional on
   the default location: the code's own justification was "dropping one costs attribution, not
   enforcement, because this root still covers it", which is true only while the tree sits under
-  `~/.atmofab`. With the homes root containing the checkout a leaf could read a sibling
+  `~/.spec2science`. With the homes root containing the checkout a leaf could read a sibling
   orchestration's transcript (measured). **When you close this surface for an entry, grep the
   other decisions that name the same root** — membership, exemption, sort order, attribution —
   and re-check each in the moved configuration
@@ -352,7 +352,7 @@ writing). The plan's own §4 asked one question about it: is that write attribut
 an unauthorized write?
 
 Reading said no. The probe said yes, and the probe is the record. **The mechanism below is
-deleted** ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2 — a pure leaf has no
+deleted** ([issue #171](https://github.com/seiya/spec2science/issues/171) PR-2 — a pure leaf has no
 write authority to attribute), so the code will not run at HEAD; it is kept because the
 EPISODE is the lesson — reading a layer said one thing and driving it said another:
 
@@ -698,6 +698,6 @@ is what `AGENTS.md` §"Dedicated rule documents" already prescribes, and it is n
 to open a tree the reader has been told not to read.
 
 **The generalization worth carrying.** Deleting a summary because it keeps coming out wrong is the
-right move (`atmofab-review-loop`'s "a summary of a spread is a claim with no witness"). What that
+right move (`spec2science-review-loop`'s "a summary of a spread is a claim with no witness"). What that
 move costs is that the mechanism has to be stated instead, and stating a mechanism invites
 pointers. On a guarded surface, decide where each pointer LANDS before you write it.
