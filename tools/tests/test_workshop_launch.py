@@ -223,6 +223,22 @@ class CredentialIdentityTests(_Env):
         self.credentials.unlink()
         self.assertIsNone(self.identity())
 
+    def test_the_identity_follows_a_symlinked_credential_file(self) -> None:
+        """`os.stat`, not `os.lstat`: bwrap binds the file a symlink resolves to, so the
+        identity is the target's, and a rename over the TARGET (the link untouched) changes
+        it. Kills an `lstat` identity, which would read the link and decline the stale death
+        `credential_unchanged`."""
+        target = self.credentials.with_name("real.credentials.json")
+        os.replace(self.credentials, target)
+        self.credentials.symlink_to(target)
+        st = os.stat(target)
+        self.assertEqual(self.identity(), (st.st_dev, st.st_ino))
+        staged = target.with_name("staged.json")
+        staged.write_text("{}", encoding="utf-8")
+        os.replace(staged, target)
+        self.assertEqual(self.identity(), (os.stat(target).st_dev, os.stat(target).st_ino))
+        self.assertNotEqual(self.identity(), (st.st_dev, st.st_ino))
+
 
 class WorkshopProfileTests(_Env):
     def _profile(self, **over) -> tuple[dict, dict]:
