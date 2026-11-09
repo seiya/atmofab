@@ -8093,10 +8093,16 @@ def build_lineage_bwrap_profile(
     `codex_workshop_profile_kwargs`). Both rw binds are OUTSIDE the checkout (the lineage home),
     so `write_roots` stays empty and the checkout is an empty tmpfs (issue #227): what a
     workshop leaf can write is its own tree and its own CLI home, and the one file mapping is
-    the credential the claude CLI refreshes in place (it writes through a bind of a single file
-    — measured on CLI 2.1.309 with `.claude.json` bound the same way, which the CLI writes with
-    the same file writer: the write landed on the host file; the credential write itself
-    happens only on a token refresh, which an unbilled run cannot provoke).
+    the claude credential, bound read-write so a leaf's token refresh reaches the host. The CLI
+    writes its credential store by staging and rename; a rename onto the bound file fails
+    `EBUSY` and the writer then writes in place onto the bound inode (read off the CLI 2.1.319
+    binary). Measured on CLI 2.1.309 with `.claude.json` bound the same way, which the CLI
+    writes with the same file writer: the write landed on the host file — consistent with that
+    path, which was not measured on 2.1.309; the credential write itself happens only on a
+    token refresh, which an unbilled run cannot provoke. A bind pins the inode: a HOST-side
+    rename during a launch replaces the host file's inode and the leaf's view is stale from
+    then on (issue #616; the conductor detects it by the file's identity and re-launches once,
+    `Conductor._stale_credential_relaunch`).
     `Conductor.spawn_leaf` admits it only with exactly those two rw paths.
 
     `network` (issue #534 step 4) is the leaf's network namespace, `leaf_netns.network_block`:
@@ -8148,8 +8154,10 @@ def build_lineage_bwrap_profile(
         raise ValueError("a workshop profile needs its network block (leaf_netns.network_block)"
                          "; every CLI leaf runs in a network namespace since issue #534 step 4")
     child_env.update(leaf_netns.PROXY_ENV)
-    # The claude CLI refreshes its OAuth token in place, so its credential is bound
-    # read-write; codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
+    # The claude CLI's token refresh renames onto the bound credential, fails `EBUSY`, and
+    # writes in place onto the bound inode, so the credential is bound read-write and the
+    # refresh reaches the host (a host-side rename leaves the leaf a stale inode: issue #616,
+    # detected by the conductor); codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
     # kwargs`), and a codex workshop profile binding a credential read-write is refused.
     if (credential_rw_mapping is not None) != (family == "claude"):
         raise ValueError(
@@ -13522,7 +13530,8 @@ def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, cont
                    + "]\ntrust_level = \"untrusted\"\n")
     config_toml = config / "config.toml"
     _secure_backend_home_file(config_toml, config_text.encode("utf-8"))
-    auth = codex_origin_home() / "auth.json"
+    auth = workshop_credential_source("codex")
+    assert auth is not None
     if not auth.is_file():
         raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
     auth_destination = config / "auth.json"
@@ -13575,9 +13584,13 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
 
     What the lineage home holds that this function places: `config/` (0700), the leaf's
     `CLAUDE_CONFIG_DIR`, created empty but for a `.credentials.json` placeholder over which
-    the operator's credentials file is bound READ-WRITE (the CLI refreshes the OAuth token and
-    writes it back; a read-only bind would leave the refreshed token in no file the next
-    launch reads). The CLI creates its own `.claude.json`, `projects/<slug>/<sid>.jsonl`,
+    the operator's credentials file is bound READ-WRITE (the CLI writes its credential store by
+    staging and rename; the rename onto the bound file fails `EBUSY` and the writer writes in
+    place onto the bound inode, read off CLI 2.1.319, so a leaf's refresh reaches the host
+    while both hold the same inode; a read-only bind would leave the refreshed token in no file
+    the next launch reads). A host-side rename during a launch replaces the host inode and the
+    leaf's view is stale from then on (issue #616; the conductor detects it by identity and
+    re-launches once). The bind source is `workshop_credential_source("claude")`. The CLI creates its own `.claude.json`, `projects/<slug>/<sid>.jsonl`,
     `backups/`, caches and telemetry there (measured, CLI 2.1.309, unbilled: an empty
     `CLAUDE_CONFIG_DIR` runs `-p` with no onboarding state). Nothing in `config/` is
     host-authored but the placeholder, so nothing needs a read-only remount; the leaf's file
@@ -13588,8 +13601,6 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
     homes_root}`; `homes_root` is the root `LineagePaths` takes, derived from the container
     actually used (the recorded one on a reuse, so a relocated `ATMOFAB_WORKFLOW_HOMES_ROOT`
     does not split one orchestration's lineages across two roots)."""
-    from tools.operator_private_root import claude_credentials_file
-
     lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
     if not _is_safe_path_id(lineage_token):
         raise ValueError(
@@ -13649,7 +13660,8 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
                          orchestration_id=orchestration_id, lineage_id=lineage_token,
                          orchestration_dir=_orchestration_root(repo_root, orchestration_id),
                          ).make_work_dirs()
-        credentials = claude_credentials_file()
+        credentials = workshop_credential_source("claude")
+        assert credentials is not None
         if not credentials.is_file():
             raise ValueError(
                 f"Claude credentials file not found for the workshop home: {credentials}. A "
@@ -13777,6 +13789,25 @@ def codex_origin_home() -> Path:
     before either runs."""
     raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("ATMOFAB_HOME", "").strip()
     return Path(raw).expanduser() if raw else Path.home() / ".codex"
+
+
+def workshop_credential_source(cli_family: str) -> Path | None:
+    """The operator's credential file a workshop lineage of `cli_family` binds, or None for a
+    family that binds none (`http`: the key is read from the leaf environment per request).
+
+    ONE source for two readers that must name the same file: the preparers' bind source
+    (`_prepare_claude_workshop_home`, `_prepare_codex_workflow_home`) and the conductor's
+    launch-time identity (`Conductor._credential_identity`, issue #616), so the inode the host
+    stats is the inode the sandbox binds. Resolved at CALL time: `claude_credentials_file` is
+    looked up on its module here, never bound at import, so a test that patches
+    `operator_private_root.claude_credentials_file` reaches both readers; `codex_origin_home`
+    reads `$CODEX_HOME` / `$ATMOFAB_HOME` on each call."""
+    if cli_family == "claude":
+        from tools import operator_private_root
+        return operator_private_root.claude_credentials_file()
+    if cli_family == "codex":
+        return codex_origin_home() / "auth.json"
+    return None
 
 
 #: The two preflight rows of the leaf's network namespace (issue #534 step 4).

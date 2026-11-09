@@ -179,6 +179,11 @@ class _PureFakeConductor(wc.Conductor):
 
     envelopes: list[str] = []
 
+    def _credential_identity(self, entry):  # type: ignore[override]
+        # Never stat the operator's real credential file (issue #616): a row that pins the
+        # identity gate opts into the real method on its own class.
+        return None
+
     @property
     def target(self):  # type: ignore[override]
         from tools.tests.target_fixtures import fixture_target

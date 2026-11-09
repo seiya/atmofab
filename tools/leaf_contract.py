@@ -614,8 +614,11 @@ def workshop_leaf_flags(mcp_config_json: str | None, *, reading: bool = False) -
     `CLAUDE_CONFIG_DIR` set to its lineage's private `config/` (`orchestration_runtime.
     _prepare_claude_workshop_home`), so the CLI's global config, transcripts and caches of this
     lineage live there and the operator's `~/.claude` is not bound at all; the operator's
-    credentials file is bound over `config/.credentials.json`, read-write, because the CLI
-    refreshes the OAuth token in place."""
+    credentials file is bound over `config/.credentials.json`, read-write, so a leaf's token
+    refresh reaches the host: the CLI writes its credential store by staging and rename, the
+    rename onto the bound file fails `EBUSY`, and the writer then writes in place onto the
+    bound inode (read off CLI 2.1.319). A host-side rename during a launch leaves the leaf a
+    stale inode (issue #616; the conductor detects it and re-launches once)."""
     if reading:
         if mcp_config_json is not None:
             raise ValueError("workshop_leaf_flags: a reading lineage is served no endpoint")

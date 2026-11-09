@@ -8302,6 +8302,34 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertIsNone(f({"status": "info", "event": "unknown_marker"}))
         self.assertIsNone(f({"hello": "world"}))
 
+    def test_format_event_human_stale_credential_lines(self) -> None:
+        """Issue #616's two events render as progress lines, not raw JSON; the declined one
+        names its reason, which `docs/RUNBOOK.md` routes the operator on. Kills a renderer arm
+        dropped (the raw-JSON fallback) or a declined line that loses the reason."""
+        f = run_workflow._format_event_human
+        self.assertEqual(
+            f({"status": "info", "event": "leaf_stale_credential_relaunch", "node_key": "n",
+               "step": "generate", "substep": "generate", "tag": "llm_auth_expired",
+               "dead_agent_run_id": "ar_dead", "evidence": "e",
+               "identity_at_launch": [64769, 11], "identity_now": [64769, 12],
+               "attempt": 1, "max_relaunches": 1, "orchestration_id": "o"}),
+            "    [warn   ] stale credential (llm_auth_expired) in generate.generate "
+            "[re-launch 1/1]: the operator's credential file was replaced during the launch; "
+            "re-launching on the current one")
+        for reason in ("budget_spent", "no_credential_file", "credential_file_missing",
+                       "credential_unchanged"):
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    f({"status": "info", "event": "leaf_stale_credential_relaunch_declined",
+                       "node_key": "n", "step": "compile", "substep": "verify",
+                       "tag": "llm_auth_expired", "reason": reason,
+                       "dead_agent_run_id": "ar_dead", "evidence": "e",
+                       "identity_at_launch": None, "identity_now": None, "attempt": 1,
+                       "orchestration_id": "o"}),
+                    "    [warn   ] credential failure (llm_auth_expired) in compile.verify: "
+                    f"no re-launch ({reason}) — the run fails closed; see docs/RUNBOOK.md "
+                    "(llm_auth_expired)")
+
     def test_fail_detail_elision_is_the_default_and_is_opt_outable(self) -> None:
         """The fail arm's two lossy operations — newline collapse and the 240-char head cut —
         were unpinned, which is what let `elide_detail` be added without any test noticing

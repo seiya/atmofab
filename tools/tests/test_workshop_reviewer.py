@@ -28,7 +28,11 @@ from tools.tests.test_leaf_compile import _write_compile_node
 from tools.tests.test_leaf_judge import _review, _write_run_node
 from tools.tests.test_leaf_producer import _PureFakeConductor, _valid_bundle
 from tools.tests.test_leaf_verify import _verdict, _verify_node
-from tools.tests.test_workshop_producer import _codex_proc
+from tools.tests.test_workshop_producer import (
+    _OAUTH_DEATH_STDOUT,
+    _codex_proc,
+    _replace_file,
+)
 
 _ORCH = "o"
 
@@ -1240,6 +1244,73 @@ class ClaudeReadingLineageIsNotScannedTests(_Base):
     def test_a_claude_attempt_row_carries_no_cut_outputs(self) -> None:
         self.assertEqual(self.run_substep().status, "pass")
         self.assertNotIn("cut_outputs", self.attempt_meta()["per_attempt"][0])
+
+
+class _StaleCredentialReviewerFake(_ReviewerFake):
+    _credential_identity = wc.Conductor._credential_identity
+
+
+class StaleCredentialReviewerTests(_Base):
+    """`Conductor._stale_credential_relaunch` in the reviewer loop (issue #616), on a claude
+    entry, with the real identity read of a temporary credentials file the real resolver is
+    patched to name. A class of its own, so the claude-only patch is not inherited by the
+    codex pairs."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        cred = tempfile.TemporaryDirectory()
+        self.addCleanup(cred.cleanup)
+        self.cred = Path(cred.name) / ".credentials.json"
+        self.cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
+        from tools import operator_private_root
+        patcher = mock.patch.object(operator_private_root, "claude_credentials_file",
+                                    lambda: self.cred)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.c = _StaleCredentialReviewerFake(
+            repo_root=self.repo, orchestration_id=_ORCH, orchestration_agent_run_id="orch",
+            llm_config=_config(self.repo, self.PHASE, self.SUBSTEP), env={})
+        self.c.calls = []
+        self.c.homes = self.repo.parent / (self.repo.name + "_homes")
+        self.events: list[dict] = []
+        self.c.emit = lambda event, **f: self.events.append({"event": event, **f})  # type: ignore
+
+    def writes_pass_and_dies(self, *, replace: bool):
+        def action(c, tree, kwargs):
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+            if replace:
+                _replace_file(self.cred)
+            return wc.ProcResult(1, _OAUTH_DEATH_STDOUT, "")
+        return action
+
+    def named(self, event: str) -> list[dict]:
+        return [e for e in self.events if e["event"] == event]
+
+    def test_a_changed_identity_re_launches_from_the_seeds_alone(self) -> None:
+        """The dead reviewer wrote a passing document and died on a replaced credential: one
+        re-launch in a NEW lineage seeded from the seeds alone (the reading kind's reseed rule),
+        so a retry that writes nothing does not certify the dead leaf's document. Kills a
+        reviewer branch that does not re-launch, and one that carries the dead tree."""
+        self.c.leaf_actions = [self.writes_pass_and_dies(replace=True), _writes_nothing]
+        outcome = self.run_substep()
+        self.assertEqual(len(self.named("leaf_stale_credential_relaunch")), 1)
+        self.assertEqual(self.requests()[1]["workshop_lineage_id"], "child-2")
+        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
+        self.assertFalse((self.paths("child-2").tree / self.OUTPUT).exists())
+        self.assertEqual(outcome.status, "fail")
+        self.assertNotEqual(self.attempt_meta()["result"], "pass")
+
+    def test_an_unchanged_identity_is_terminal(self) -> None:
+        """Same inode: declined `credential_unchanged`, one launch, the tag on the outcome.
+        Kills a reviewer gate that re-launches without an identity change."""
+        self.c.leaf_actions = [self.writes_pass_and_dies(replace=False)]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.infra_error[0], "llm_auth_expired")
+        self.assertEqual(len(self.c.spawns), 1)
+        (event,) = self.named("leaf_stale_credential_relaunch_declined")
+        self.assertEqual(event["reason"], "credential_unchanged")
+        self.assertEqual(self.named("leaf_stale_credential_relaunch"), [])
 
 
 class JsonSeedLayoutTests(unittest.TestCase):

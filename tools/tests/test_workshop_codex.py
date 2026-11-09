@@ -763,5 +763,78 @@ class CodexWarmUsageTests(unittest.TestCase):
             self.assertIsNone(self.c._codex_thread_resumed_usage("t1", "child-2"))
 
 
+class CodexStaleCredentialRelaunchTests(unittest.TestCase):
+    """The stale-credential gate (issue #616) on a `codex_cli` producer: the identity is
+    `$CODEX_HOME/auth.json`'s, and the stale-inode `turn.failed` sentence, driven through the
+    real codex splice (`_absorb_codex_event`), is re-launched when that file was replaced
+    during the launch. The claude resolver is patched to a temporary file too, so a gate that
+    stats the claude file for a codex entry sees it unchanged and declines."""
+
+    _MESSAGE = ("Your access token could not be refreshed because your refresh token was "
+                "already used. Please log out and sign in again.")
+
+    def setUp(self) -> None:
+        from tools import operator_private_root
+        from tools.tests.test_workshop_producer import (
+            _StaleCredentialFake,
+            _codex_config as _producer_codex_config,
+            _write_bundle,
+            _write_node,
+        )
+        self._write_bundle = _write_bundle
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name) / "repo"
+        (self.repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+        self.origin = Path(tmp.name) / "codex_home"
+        self.origin.mkdir()
+        self.auth = self.origin / "auth.json"
+        self.auth.write_text("{}\n", encoding="utf-8")
+        claude = Path(tmp.name) / ".credentials.json"
+        claude.write_text("{}\n", encoding="utf-8")
+        for patcher in (mock.patch.dict(os.environ, {"CODEX_HOME": str(self.origin)}),
+                        mock.patch.object(operator_private_root, "claude_credentials_file",
+                                          lambda: claude)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.refs = _write_node(self.repo)
+        self.c = _StaleCredentialFake(
+            repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
+            llm_config=_producer_codex_config(self.repo), env={})
+        self.c.homes = Path(tmp.name) / "homes"
+        self.c.slept = []
+        self.c._session_id_for_child = (  # type: ignore[assignment]
+            lambda arid, entry=None: f"thread-{arid}")
+        self.events: list[dict] = []
+        self.c.emit = lambda event, **f: self.events.append({"event": event, **f})  # type: ignore
+
+    def _dies_on_a_replaced_auth(self, c, tree, kwargs):
+        staged = self.origin / "auth.json.staged"
+        staged.write_text('{"tokens": "refreshed"}\n', encoding="utf-8")
+        os.replace(staged, self.auth)
+        failure_events: list[str] = []
+        wc._absorb_codex_event({"type": "turn.failed", "error": {"message": self._MESSAGE}},
+                               None, None, None, False, failure_events)
+        return wc.ProcResult(1, "", "\n".join(failure_events))
+
+    def test_a_replaced_auth_json_re_launches_the_stale_inode_death(self) -> None:
+        """Kills a codex family mapped to any path but `$CODEX_HOME/auth.json` (the claude file
+        is unchanged), and a codex `turn.failed` sentence left untagged."""
+        from tools.tests.test_workshop_producer import _codex_proc
+        before = os.stat(self.auth)
+        self.c.leaf_actions = [
+            self._dies_on_a_replaced_auth,
+            lambda c, tree, kw: (self._write_bundle(tree), _codex_proc())[1]]
+        outcome = self.c.run_substep(self.refs, "generate", "generate")
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 2)
+        (event,) = [e for e in self.events if e["event"] == "leaf_stale_credential_relaunch"]
+        after = os.stat(self.auth)
+        self.assertEqual(event["tag"], "llm_auth_expired")
+        self.assertEqual(event["identity_at_launch"], [before.st_dev, before.st_ino])
+        self.assertEqual(event["identity_now"], [after.st_dev, after.st_ino])
+        self.assertEqual(self.c.slept, [])
+
+
 if __name__ == "__main__":
     unittest.main()

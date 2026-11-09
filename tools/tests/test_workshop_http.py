@@ -13,11 +13,14 @@ row). `compile.generate` runs the REAL `_freeze_ir_check_context` and `check_ir`
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import yaml
@@ -70,6 +73,38 @@ def _unmarked(value):
     if isinstance(value, list):
         return [_unmarked(v) for v in value]
     return value
+
+
+@contextlib.contextmanager
+def _cli_credential_files():
+    """Both CLI credential files present (issue #616): the claude resolver and `CODEX_HOME`
+    patched to temporary existing files, so a stat of either for an HTTP entry would succeed."""
+    from tools import operator_private_root
+    with tempfile.TemporaryDirectory() as tmp:
+        claude = Path(tmp) / ".credentials.json"
+        claude.write_text("{}\n", encoding="utf-8")
+        (Path(tmp) / "auth.json").write_text("{}\n", encoding="utf-8")
+        with mock.patch.object(operator_private_root, "claude_credentials_file",
+                               lambda: claude), \
+                mock.patch.dict(os.environ, {"CODEX_HOME": tmp}):
+            yield
+
+
+class HttpCredentialIdentityTests(unittest.TestCase):
+    def test_an_http_entry_has_no_identity_while_both_cli_files_exist(self) -> None:
+        """Kills an identity method that stats a CLI file for an HTTP entry (the handler row
+        cannot: the family check runs before the identity is read). The CLI entries answer an
+        identity in the same setup, so the None is the family's, not a missing file's."""
+        c = wc.Conductor.__new__(wc.Conductor)
+        with _cli_credential_files():
+            for provider in ("anthropic_api", "openai_compatible"):
+                with self.subTest(provider=provider):
+                    self.assertIsNone(wc.Conductor._credential_identity(
+                        c, SimpleNamespace(provider=provider)))
+            for provider in ("claude_cli", "codex_cli"):
+                with self.subTest(provider=provider):
+                    self.assertIsNotNone(wc.Conductor._credential_identity(
+                        c, SimpleNamespace(provider=provider)))
 
 
 class _HttpMixin:
@@ -309,6 +344,32 @@ class _GenerateProducer(_GenerateHarness):
         # The cold retry's first request holds the launch prompt alone.
         self.assertEqual([m["role"] for m in self.api.main_requests()[1]["messages"]
                           if m["role"] != "system"], ["user"])
+
+    def test_an_oauth_expiry_from_an_http_provider_is_declined_no_credential_file(
+            self) -> None:
+        """Issue #616 on an HTTP entry: a death whose text carries `OAuth token has expired` is
+        `llm_auth_expired`, declined `no_credential_file` and terminal, with the REAL identity
+        read and both CLI credential files present. The family check runs first, so this row
+        kills a gate that skips it (a stat of a CLI file would decline `credential_unchanged`);
+        `HttpCredentialIdentityTests` kills an identity method that stats one for HTTP."""
+        self.conductor([{"status": 401, "body": json.dumps(
+            {"type": "error", "error": {"type": "authentication_error",
+                                        "message": "OAuth token has expired."}})}])
+        events: list[dict] = []
+        self.c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        with _cli_credential_files(), \
+                mock.patch.object(_HttpProducerFake, "_credential_identity",
+                                  wc.Conductor._credential_identity):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail", outcome)
+        self.assertEqual(outcome.infra_error[0], "llm_auth_expired")
+        self.assertEqual(len(self.requests()), 1)
+        (event,) = [e for e in events
+                    if e["event"] == "leaf_stale_credential_relaunch_declined"]
+        self.assertEqual((event["reason"], event["identity_at_launch"], event["identity_now"]),
+                         ("no_credential_file", None, None))
+        self.assertEqual([e for e in events if e["event"] == "leaf_stale_credential_relaunch"],
+                         [])
 
     def test_a_fresh_process_does_not_resume_the_history(self) -> None:
         self.conductor([self.calls(*_bundle_writes()), self.done()])

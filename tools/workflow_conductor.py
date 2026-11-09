@@ -3459,8 +3459,46 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"|\brate[ _-]?limit(?:ed)?\b(?=\s*(?:$|[—–-]\s))"
         rf"|{_API_STATUS_CONTEXT}\b429\b"
         r"|\btoo many requests\b|\btemporarily limiting requests\b")),
-    # A 4xx from the API: the REQUEST is wrong (a bad/expired credential, an unsupported
-    # parameter, an oversized prompt), so every re-launch reproduces it byte-for-byte. Ranked
+    # The CLI's credential store could not renew its OAuth session (issue #616). Ranked ABOVE
+    # `llm_client_error`, so a 401 line in the same stream does not outrank it, and kept OUT of
+    # _RETRYABLE_LEAF_INFRA_TAGS: terminal by default. The host re-launches ONCE when the
+    # operator's credential file changed identity (`(st_dev, st_ino)`) during the launch —
+    # `Conductor._stale_credential_relaunch`; the discriminator is a host `stat`, never this
+    # text. A bwrap file bind pins the inode, so a host-side refresh that renames a new file over
+    # `~/.claude/.credentials.json` leaves the leaf refreshing with the refresh token the host
+    # already consumed. The sentence may also follow a transient failure of the token endpoint:
+    # when the operator's own session still works, a `--resume` without `/login` is the first
+    # thing to try.
+    #   - claude: the CLI's own terminal sentence (`OAuthRefreshDeadError`, CLI 2.1.319), anchored
+    #     as `_USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE` is — it opens the line or the envelope's
+    #     `result` value, so a leaf's final text that merely contains it later does not match.
+    #     Recorded: `orch_20261108T120034Z_f727c989`, agent `34dbd3a7-…`, `leaf.stdout.log`.
+    #   - `oauth token (has )?expired`, moved here from `llm_client_error`.
+    #   - codex: ONE phrase family from codex-cli 0.167.0's `login/src/auth/manager.rs` and its
+    #     guarded-reload path (`Your access token could not be refreshed …`; `… because your
+    #     refresh token was already used` is the stale-inode signature), from the string table,
+    #     no recorded run. Matched only on the `turn.failed` line `_absorb_codex_event` splices
+    #     into stderr — NOT `error|turn.failed` as the credits and capacity alternatives are: an
+    #     `error` event is non-terminal, and an `error` match beside an unrelated stream
+    #     disconnect would take that flake's retries. Every recorded terminal codex error reached
+    #     `turn.failed` with the same message. Excluded: `your session has expired. please
+    #     reauthenticate` (the AWS SSO / Bedrock login provider's string, not `auth.json`'s),
+    #     `your authentication session could not be refreshed automatically` (path not
+    #     identified), and `failed to refresh token` (recorded non-fatal: the EROFS persist
+    #     failure of a codex leaf that passed, `orch_20261026T085505Z_d87e8903`). The next codex
+    #     death after a host-side `codex login` or refresh is read against its `leaf.stderr.log`
+    #     `Failed to refresh token:` lines, and this alternative revisited from that record.
+    # `please run /login` stays in `llm_client_error` (`Not logged in`, `Invalid API key` are not
+    # credential-store failures); `this login reached its time limit` is a genuine expiry and is
+    # not matched.
+    ("llm_auth_expired", re.compile(
+        r'^(?:\s*|\{[^\n]*"result"\s*:\s*")failed to authenticate: oauth session expired and '
+        r"could not be refreshed\b"
+        r"|\boauth token (?:has )?expired\b"
+        r'|^\{"type": "turn\.failed", [^\n]*\byour access token could not be refreshed\b')),
+    # A 4xx from the API: the REQUEST is wrong (a missing login or a rejected key, an
+    # unsupported parameter, an oversized prompt), so every re-launch reproduces it
+    # byte-for-byte. Ranked
     # ABOVE the transport tag and deliberately kept OUT of _RETRYABLE_LEAF_INFRA_TAGS: without
     # it the `^api error` catch-all below would swallow a 4xx and retry it three times, then
     # report a deterministic misconfiguration as a provider outage the operator should wait out.
@@ -3482,7 +3520,7 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         r"|\bnot_found_error\b|\brequest_too_large\b"
         r"|\bprompt is too long\b|\brequest body too large\b"
         r"|\binvalid (?:api key|x-api-key|bearer token)\b"
-        r"|\boauth token (?:has )?expired\b|\bplease run /login\b")),
+        r"|\bplease run /login\b")),
     ("llm_permission_probe_unavailable", re.compile(
         r"temporarily unavailable, so auto mode cannot determine")),
     # LEAST severe, and deliberately LAST: a transient transport fault (the connection to the
@@ -3538,8 +3576,12 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #     DESIGN; see deterministic_followups L5). The opt-in `--wait-usage-reset` waits it out on its
 #     own budget, until the provider-reported reset instant or, failing one, on its own schedule
 #     (`USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`, below).
-#   - `llm_client_error` (4xx) is a rejected REQUEST: an expired credential, an unsupported
-#     parameter, an oversized prompt. Every re-launch sends the same request and gets the same 4xx.
+#   - `llm_client_error` (4xx) is a rejected REQUEST: a missing login or a rejected key, an
+#     unsupported parameter, an oversized prompt. Every re-launch sends the same request and gets
+#     the same 4xx.
+#   - `llm_auth_expired` is terminal here and re-launched on its OWN gated branch
+#     (`Conductor._stale_credential_relaunch`): once, and only when the operator's credential
+#     file changed identity during the launch (issue #616).
 #   - `llm_permission_probe_unavailable` needs an operator/config fix, not another attempt.
 #   - `leaf_timeout` (not a pattern above — see `_leaf_infra_error`) is the one tag whose retry
 #     cost is bounded from BELOW by the cap itself: a re-launch stakes another FULL cap (2h by
@@ -3593,24 +3635,58 @@ _LEAF_RETRY_BACKOFF_SECONDS: dict[str, tuple[float, ...]] = {
 # `_RETRYABLE_LEAF_INFRA_TAGS` gives for excluding `leaf_timeout` (a re-launch stakes another
 # full cap of wall-clock on a leaf that already proved it can consume one), applied by
 # measurement instead of by tag.
+#
+# It does NOT bound the stale-credential re-launch (`MAX_STALE_CREDENTIAL_RELAUNCHES`): that
+# death is a function of when another process refreshed the operator's credential, not of how
+# long the request ran.
 TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS = 600.0
 
-# Tags that may be promoted OUT OF STDOUT over a match already found in stderr. Deliberately just
-# these two: stdout is a `claude -p` leaf's own prose, so letting it outrank stderr in general
-# would hand the retry decision to whatever the model happened to write. These two are the
-# exception because (a) the CLI reports both as its RESULT TEXT — i.e. on stdout, with stderr
-# often empty (the E2E #4 incident line arrived exactly that way) — and (b) both are
-# NON-TRANSIENT, so by default promoting them can only ever remove a re-launch, never add one:
+# At most this many re-launches per substep invocation of an `llm_auth_expired` death whose
+# operator credential file changed identity during the launch (issue #616,
+# `Conductor._stale_credential_relaunch`). One: a second stale death in one substep needs a
+# second host refresh inside the re-launch, which a token lifetime of about 8 h makes improbable,
+# and `leaf_stale_credential_relaunch_declined` (`budget_spent`) keeps it greppable. Its own
+# counter, apart from the transient retries and the usage waits; an outer reopen that re-enters
+# the loop starts a fresh one, as the transient budget does.
+MAX_STALE_CREDENTIAL_RELAUNCHES = 1
+
+# Tags that may be promoted OUT OF STDOUT over a match already found in stderr. Deliberately
+# only these three: stdout is a `claude -p` leaf's own prose, so letting it outrank stderr in
+# general would hand the retry decision to whatever the model happened to write. These three are
+# the exception because (a) the CLI reports each as its RESULT TEXT — i.e. on stdout, with
+# stderr often empty (the E2E #4 incident line arrived exactly that way, and so did the issue
+# #616 OAuth death) — and (b) none is TRANSIENT, so a promotion replaces the stderr tag's
+# policy with a terminal one or with a bounded policy of its own:
 #   - a usage limit retried is three re-launches into a multi-hour hard stop, burning the budget
 #     the post-reset resume needs;
-#   - a 4xx retried is three re-launches of a request the API rejects identically every time.
+#   - a 4xx retried is three re-launches of a request the API rejects identically every time;
+#   - a promoted (or same-stream-outranking) `llm_auth_expired` is terminal, unless the host
+#     credential identity changed during that launch, in which case at most
+#     `MAX_STALE_CREDENTIAL_RELAUNCHES` re-launch on a counter of its own, outside both the
+#     transient count and the wall-clock budget. It never grants more than that budget per
+#     substep invocation, and grants nothing without a host identity change. Over
+#     `llm_transport_flake`, the one retryable tag it outranks, it therefore removes the flake's
+#     remaining retries and may add the one gated launch — including after the transient count
+#     or `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS` is spent, when the stderr tag would have
+#     granted none; over a terminal stderr tag it may add the one gated launch. Keeping it
+#     promoting keeps the mixed-stream case (a stdout OAuth sentence over a stderr transient) at
+#     the gated 0-or-1 re-launch instead of the stderr tag's two — `oauth token (has )?expired`
+#     was promoting under `llm_client_error` before issue #616 moved it.
+# Promotion is only upward (`rank < best`), so none of them overrides a stderr `llm_overloaded`
+# / `llm_rate_limit` / `llm_usage_limit` that outranks it.
+# On codex and HTTP stdout is leaf-controlled text, so a leaf's final message can rename a
+# death's tag by promotion. Over a stderr transient that only removes the leaf's own retries;
+# toward a re-launch `llm_auth_expired` needs the operator's own file to change inode during
+# that launch, and the codex `llm_usage_limit` alternative has the same exposure. What the
+# leaf gains is nothing: no re-launch reads its tree into a verdict.
 # Under the opt-in `--wait-usage-reset` a promoted `llm_usage_limit` can ARM a wait, bounded at
 # `MAX_USAGE_LIMIT_WAITS` sleeps of at most `MAX_USAGE_RESET_WAIT_SECONDS` each (the instant
 # comes from the provider, never from the leaf's output). A leaf whose own stdout
 # names a quota gains nothing by it — what it arms is the SAME turn again with the same repair
 # carriers (cold for a first attempt, the same `reuse` repair for an interrupted repair turn),
 # not a weaker judgment of its result — so the promotion is not narrowed for the flag.
-_CROSS_STREAM_PROMOTING_TAGS = frozenset({"llm_usage_limit", "llm_client_error"})
+_CROSS_STREAM_PROMOTING_TAGS = frozenset({
+    "llm_usage_limit", "llm_auth_expired", "llm_client_error"})
 
 # A TRANSIENT retry notice — the CLI prints `API Error (429 …) · Retrying in 1 seconds… (attempt
 # 1/10)` and then RECOVERS. Blaming a recovered retry for a leaf that actually died of a hook
@@ -7725,6 +7801,10 @@ class Conductor:
         ended_reason: str | None = None
         #: Whether any reply of an HTTP launch made a tool call. None on a CLI launch.
         tool_call_made: bool | None = None
+        #: The operator credential file's `(st_dev, st_ino)` read immediately before this
+        #: launch's spawn (`Conductor._credential_identity`, issue #616). None on an HTTP
+        #: launch, and on a CLI launch whose file could not be stat'ed.
+        credential_identity: tuple[int, int] | None = None
 
     def _workshop_seeds(self, refs: NodeRefs, pure_context: Mapping[str, str],
                         request: Mapping[str, Any],
@@ -8224,6 +8304,12 @@ class Conductor:
             if not warm:
                 write_host_file(paths.tree, self._WORKSHOP_CONTRACT_SEED,
                                 str(rec["launch_prompt_text"]))
+            # The operator credential's identity for THIS launch (issue #616): read after
+            # `record_launch`, whose host-side probes (`claude --version`, the TTL re-probe's
+            # `claude -p`) may themselves refresh the token, and before `spawn_leaf`, so the
+            # identity is the inode the sandbox binds a few host calls later. Per launch, never
+            # per lineage: a warm repair launch binds the file afresh.
+            credential_identity = None if http else self._credential_identity(entry)
             self._launch_instant(child_arid)
             launched_monotonic = time.monotonic()
             timeout_seconds, timeout_name = self._workshop_timeout(lineage.deadline)
@@ -8334,7 +8420,8 @@ class Conductor:
             command_outputs,
             truncated=(loop.truncated if loop is not None else None),
             ended_reason=(loop.ended if loop is not None else None),
-            tool_call_made=(loop.tool_call_made if loop is not None else None))
+            tool_call_made=(loop.tool_call_made if loop is not None else None),
+            credential_identity=credential_identity)
 
     class _WorkshopLineageMachine:
         """The lineage state machine both workshop loops share (issue #534 step 3): which
@@ -8693,6 +8780,7 @@ class Conductor:
         usage_waits = 0
         transient_retries = 0
         transient_spent = 0.0
+        stale_relaunches = 0
         while True:
             child_arid = self.new_agent_run_id()
             warm = machine.next_launch()
@@ -8879,6 +8967,19 @@ class Conductor:
                                                child_arid=child_arid, waits_done=usage_waits,
                                                infra_error=infra_error, entry=entry)):
                 usage_waits += 1
+                machine.after_transport()
+                continue
+            # A stale-credential death (issue #616): re-launched once, in a new lineage that
+            # binds the operator's CURRENT credential inode, when that file changed identity
+            # during the launch; on its own counter, before the transient branch charges
+            # `transient_spent` (which refuses this tag without emitting anything).
+            if (category == "pure_transport" and infra_error is not None
+                    and infra_error[0] == "llm_auth_expired"
+                    and self._stale_credential_relaunch(
+                        refs=refs, phase=phase, substep=substep, child_arid=child_arid,
+                        infra_error=infra_error, entry=entry, turn=turn,
+                        relaunches_done=stale_relaunches)):
+                stale_relaunches += 1
                 machine.after_transport()
                 continue
             if category == "pure_transport":
@@ -9574,6 +9675,7 @@ class Conductor:
         # Wall-clock spent on transient attempts that already died, against
         # `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`.
         transient_spent = 0.0
+        stale_relaunches = 0
         while True:
             child_arid = self.new_agent_run_id()
             warm = machine.next_launch()
@@ -9838,6 +9940,18 @@ class Conductor:
                                                child_arid=child_arid, waits_done=usage_waits,
                                                infra_error=infra_error, entry=entry)):
                 usage_waits += 1
+                machine.after_transport()
+                continue
+            # A stale-credential death (issue #616): one re-launch from the seeds alone when the
+            # operator's credential file changed identity during the launch. Mirrors the
+            # producer loop.
+            if (category == "pure_transport" and infra_error is not None
+                    and infra_error[0] == "llm_auth_expired"
+                    and self._stale_credential_relaunch(
+                        refs=refs, phase=phase, substep=substep, child_arid=child_arid,
+                        infra_error=infra_error, entry=entry, turn=turn,
+                        relaunches_done=stale_relaunches)):
+                stale_relaunches += 1
                 machine.after_transport()
                 continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
@@ -14001,9 +14115,9 @@ class Conductor:
         endpoint, or one dropped CLI connection, fail-closes a run that has already paid for
         every earlier phase.
 
-        Budgeted SEPARATELY from the usage-limit waits and from the bundle repair turns: a
-        transient tag is never `llm_usage_limit`, and a transport death is never
-        bundle-repairable, so the three cannot compound. The dead arid is tombstoned here
+        Budgeted SEPARATELY from the usage-limit waits, the stale-credential re-launches and the
+        bundle repair turns: a transient tag is never `llm_usage_limit` or `llm_auth_expired`,
+        and a transport death is never bundle-repairable, so the four cannot compound. The dead arid is tombstoned here
         because it was finalized as a terminal row and nothing will vouch for it — the same
         reason, and the same call, as the agentic loop's retry."""
         if infra_error is None or infra_error[0] not in _RETRYABLE_LEAF_INFRA_TAGS:
@@ -14091,6 +14205,100 @@ class Conductor:
                   reset_window=reading.window, fallback_reason=fallback_reason,
                   reset_detail=reading.detail)
         self._sleep_backoff(delay)
+        return True
+
+    def _credential_identity(self, entry: Any) -> tuple[int, int] | None:
+        """`(st_dev, st_ino)` of the operator credential file a workshop launch of `entry`
+        binds (`orchestration_runtime.workshop_credential_source`), or None: for an HTTP entry
+        (no file is bound; nothing is stat'ed) and when the file cannot be stat'ed.
+
+        The identity is the inode, not the mtime (issue #616): the leaf's own refresh writes in
+        place onto the shared inode and moves its mtime while host and leaf still agree, so an
+        mtime in the identity would buy a spurious re-launch; the identity changes exactly when
+        the host path names another inode, which is exactly when the leaf's bound view is
+        stale. `os.stat` follows symlinks, as the preparers' bind source does. The helper is
+        looked up at CALL time so the stat cannot drift from the bind. Isolated like
+        `_sleep_backoff` so tests replace it."""
+        from tools import orchestration_runtime
+        source = orchestration_runtime.workshop_credential_source(self._workshop_backend(entry))
+        if source is None:
+            return None
+        try:
+            st = os.stat(source)
+        except OSError:
+            return None
+        return (st.st_dev, st.st_ino)
+
+    def _stale_credential_relaunch(self, *, refs: NodeRefs, phase: str, substep: str | None,
+                                   child_arid: str, infra_error: tuple[str, str], entry: Any,
+                                   turn: "Conductor._WorkshopTurn",
+                                   relaunches_done: int) -> bool:
+        """Return True when an `llm_auth_expired` death may be re-launched because the
+        operator's credential file changed identity during the launch (issue #616); False
+        leaves the death terminal.
+
+        A bwrap file bind pins the inode: a host-side refresh that renames a new credentials
+        file over the operator's path leaves the leaf reading — and refreshing with — the
+        refresh token the host already consumed, and the CLI then reports its session as
+        expired. The new launch binds the CURRENT inode, so nothing is waited for. The sibling
+        of `_usage_limit_wait`, on a budget of its own (`MAX_STALE_CREDENTIAL_RELAUNCHES`),
+        outside the transient count and `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`. The
+        discriminator is a host `stat` of a file outside every sandbox, never the dead leaf's
+        text. Checks, in order, each decline naming its reason on
+        `leaf_stale_credential_relaunch_declined`:
+          - `budget_spent`: `relaunches_done` reached the budget;
+          - `no_credential_file`: the entry's family binds no file (an HTTP entry, decided by
+            family, not by the identity);
+          - `credential_file_missing`: the launch identity (`turn.credential_identity`) or the
+            current one is None — the file could not be stat'ed at launch, or is gone or
+            unreadable now (`identity_at_launch` / `identity_now` say which half);
+          - `credential_unchanged`: the same inode — a genuine expiry or revocation, or a
+            transient failure of the token endpoint.
+        Otherwise `leaf_stale_credential_relaunch` is emitted and True returned.
+
+        Two residual windows, both bounded by the budget at one extra launch of a launch that
+        had already died, and nothing reaching `pass`: (1) stat to mount — the identity is read
+        immediately before `spawn_leaf` and bwrap resolves the bind a few host calls later, so a
+        host rename inside that window makes a genuine expiry compare as changed; (2) death to
+        comparison — the gate stats the host file after the dead attempt is finalized, and a
+        host rename in that window means the host held a live refresh token of the chain the
+        leaf shared, so the leaf's failure was most likely a token-endpoint transient and the
+        re-launch is appropriate. Fail-closed sibling: two host renames, the second reusing the
+        freed original inode number, compare as unchanged; `--resume` recovers.
+
+        Called by the producer and reviewer loops only. The failure diagnostician
+        (`_diagnose_turn`) launches once with no retry of any kind, and a stale death there
+        stays terminal."""
+        from tools import orchestration_runtime
+        tag, evidence = infra_error
+        assert tag == "llm_auth_expired"
+        identity_at_launch = turn.credential_identity
+        common = dict(node_key=refs.node_key, step=phase, substep=substep, tag=tag,
+                      dead_agent_run_id=child_arid, evidence=evidence)
+        reason: str | None = None
+        identity_now: tuple[int, int] | None = None
+        if relaunches_done >= MAX_STALE_CREDENTIAL_RELAUNCHES:
+            reason = "budget_spent"
+        elif orchestration_runtime.workshop_credential_source(
+                self._workshop_backend(entry)) is None:
+            reason = "no_credential_file"
+        else:
+            identity_now = self._credential_identity(entry)
+            if identity_at_launch is None or identity_now is None:
+                reason = "credential_file_missing"
+            elif identity_now == identity_at_launch:
+                reason = "credential_unchanged"
+        as_list = (lambda ident: list(ident) if ident is not None else None)
+        if reason is not None:
+            self.emit("leaf_stale_credential_relaunch_declined", reason=reason,
+                      identity_at_launch=as_list(identity_at_launch),
+                      identity_now=as_list(identity_now), attempt=relaunches_done + 1,
+                      **common)
+            return False
+        self.emit("leaf_stale_credential_relaunch",
+                  identity_at_launch=as_list(identity_at_launch),
+                  identity_now=as_list(identity_now), attempt=relaunches_done + 1,
+                  max_relaunches=MAX_STALE_CREDENTIAL_RELAUNCHES, **common)
         return True
 
     def _read_usage_reset(self, entry: ResolvedLeafEntry,
@@ -15347,7 +15555,8 @@ class Conductor:
             # The LAUNCH COUNT, and only that. It is worth printing — a bare transport error
             # invites an instant `--resume` that dies the same way — but it does NOT say which
             # budget ended the substep, and must not be read as if it did: it counts bundle
-            # repair turns and usage-limit waits alongside the transient retries, so a
+            # repair turns, usage-limit waits and stale-credential re-launches alongside the
+            # transient retries, so a
             # wall-clock decline can print `attempts=3` and a count exhaustion `attempts=4`.
             # `leaf_transient_retry_declined` is what distinguishes them, and `docs/RUNBOOK.md`
             # routes the operator on that event rather than on this number, because the two
@@ -15575,7 +15784,9 @@ class Conductor:
         launch (`last_launch`), and a bound or a dead leaf ended it in the turn's tail — and an
         HTTP conversation is dropped: nothing continues it. A `ValueError` escaping the turn's
         TAIL after the leaf ran (a lineage record the tail cannot read) is the residual the
-        two loops share."""
+        two loops share. No retry of any kind runs here: an `llm_auth_expired` death on a
+        replaced credential file stays terminal (`_stale_credential_relaunch` is the producer
+        and reviewer loops' alone; the identity `_spawn_workshop_turn` captures is unused)."""
         from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
         spec = self._diagnose_spec()
         machine = self._WorkshopLineageMachine(self, refs, entry, spec)
