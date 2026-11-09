@@ -1648,9 +1648,6 @@ class CodexWorkshopLoopTests(OuterReopenTests):
             orchestration_dir=paths.orchestration_dir)
         self.assertFalse(check(self.c, claude, "01a1-thread"))
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 # --- `compile.generate` (issue #534 step 2) -----------------------------------------------
 
@@ -2319,3 +2316,7 @@ class StaleCredentialRelaunchTests(_Base):
         self.assertEqual(len(self.named("leaf_transient_retry")), 1)
         self.assertEqual(self.named("leaf_stale_credential_relaunch"), [])
         self.assertEqual(self.named("leaf_stale_credential_relaunch_declined"), [])
+
+
+if __name__ == "__main__":
+    unittest.main()
