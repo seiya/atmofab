@@ -276,7 +276,8 @@ TTL re-probe asks it of every CLI surface, a row recorded without the stamp incl
 leaf runs with a
 private `CLAUDE_CONFIG_DIR` under its lineage home (§operator-private root) over which the
 operator's `~/.claude/.credentials.json` is bound read-write (a leaf's token refresh writes in
-place onto the bound inode and so reaches the host; a host-side refresh that replaces the file
+place onto the bound inode and so reaches the host — read off the CLI 2.1.319 binary, not
+measured on a credential write; a host-side refresh that replaces the file
 during a launch leaves the leaf a stale inode, which the conductor detects and re-launches once —
 `llm_auth_expired` in §3), so that file must exist — a machine
 that authenticates by any other means fails the workshop launch naming it, when the lineage
