@@ -477,8 +477,8 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
     surviving justification for passing `SPEC2SCIENCE_*` by prefix was "the names that redirect a leaf
     are outside the prefix BY CONSTRUCTION" — true only because the match is anchored, and
     `startswith` -> `in` kept all 4972 tests green, admitting `MY_SPEC2SCIENCE_API_KEY`. The neighbouring
-    spelling too: the prefix STRING was separately unpinned, and shortening `"SPEC2SCIENCE_"` to
-    `"ATMOFA"` stayed green while widening the namespace to one the repo does not own. Read your own
+    spelling too: the prefix STRING was separately unpinned, and shortening it to one letter
+    short of the repo's name (`"SPEC2SCIENC"`) stayed green while widening the namespace to one the repo does not own. Read your own
     justification as a list of claims and write one mutant per claim — and note this is the sign's
     other half: rewriting a justification three times (`SKILL.md` §"Signs to catch mid-loop") is
     when its supporting property is

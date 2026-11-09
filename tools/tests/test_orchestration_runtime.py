@@ -27405,12 +27405,12 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
     def test_the_allowed_prefix_is_exactly_the_repo_namespace(self) -> None:
         """The prefix's SPELLING, which anchoring alone does not pin.
 
-        Shortening it to `ATMOFA` still anchors and still passes every other test, while
-        admitting `ATMOFAX_*` — a namespace this repository does not own. The surviving
+        Shortening it to `SPEC2SCIENC` still anchors and still passes every other test, while
+        admitting `SPEC2SCIENCX_*` — a namespace this repository does not own. The surviving
         justification for prefix-passing is that it admits only the repo's own namespace,
         so the exact string is the justification's load-bearing half."""
         self.assertEqual(ort.LEAF_ENV_ALLOWED_PREFIXES, ("SPEC2SCIENCE_",))
-        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "ATMOFAX_FOO": "y"}),
+        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "SPEC2SCIENCX_FOO": "y"}),
                          {"PATH": "/b"})
 
     def test_a_non_string_key_or_value_is_skipped_not_forwarded(self) -> None:
