@@ -6,7 +6,7 @@
 
 #ifndef SPEC2SCIENCE_VIEW_DEFINED
 #define SPEC2SCIENCE_VIEW_DEFINED
-namespace atmofab {
+namespace spec2science {
 // A rank-R, column-major, non-owning array view: `data` points at extent[0] * ... * extent[R-1]
 // elements, the first index fastest.
 template <class T, int R>
@@ -25,7 +25,7 @@ struct Array {
 // imposed on the run, which the host-rendered runner sets once, before the first case. 0 until
 // then, so a launch that reads it before the runner sets it is refused by the device.
 inline int launch_block_size = 0;
-}  // namespace atmofab
+}  // namespace spec2science
 #endif
 
 // An operation declared __host__ __device__ is pointwise: a kernel may call it.
@@ -35,13 +35,13 @@ void dynamics_shallow_water_time_update_2d_ssprk2__advance(
     int ncomp,
     int nx,
     int ny,
-    atmofab::View<const dp, 3> U_n,
-    atmofab::View<const dp, 3> L_flux,
-    atmofab::View<const dp, 3> S_b,
-    atmofab::View<const dp, 2> z_b,
+    spec2science::View<const dp, 3> U_n,
+    spec2science::View<const dp, 3> L_flux,
+    spec2science::View<const dp, 3> S_b,
+    spec2science::View<const dp, 2> z_b,
     dp dt,
     dp dx,
     dp dy,
-    atmofab::View<dp, 3> U_np1,
+    spec2science::View<dp, 3> U_np1,
     bool& guard_pass);
 }  // namespace dynamics_shallow_water_time_update_2d_ssprk2_model

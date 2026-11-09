@@ -1090,7 +1090,7 @@ PINNED_RENDER: dict[str, str] = {
     # other.) The digest `render-10` shipped with at 79e90e32:
     "render-10@79e90e32": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
     # render-11 (issue #512, PR-4c): the CUDA C++ runner calls the harness's `__block_size`
-    # before the first case and stores it in `atmofab::launch_block_size`, which the rendered
+    # before the first case and stores it in `spec2science::launch_block_size`, which the rendered
     # header now declares for every source of the program; the renderer's pin gains the
     # operation (`harness_cpp_gpu@0.2.0` §5.1). Rows moved: `cuda_cpp/runner.py`,
     # `cuda_cpp/header.py`, and `tools/host_execution.py` (the block size reaches the launch
@@ -1161,8 +1161,11 @@ PINNED_RENDER: dict[str, str] = {
     # renders guards its `View` with `SPEC2SCIENCE_VIEW_DEFINED` (was `ATMOFAB_VIEW_DEFINED`).
     # A bump, because rendered bytes move. Rows moved, measured against origin/main 9360d799:
     # `cuda_cpp/header.py` (the guard) and `fortran/bundle.py` (a comment naming
-    # `SPEC2SCIENCE_SYNTAX_COMPILERS`).
-    "render-17": "e90a9d321f65894842ad9e744a8ae1dd56a2cb6a6e069afa627d9e041b580755",
+    # `SPEC2SCIENCE_SYNTAX_COMPILERS`). Re-pinned in place once before it shipped (K5 of the same
+    # PR): the CUDA C++ header, runner and gates declare and read the namespace `spec2science`
+    # (`cuda_cpp/header.py`, `runner.py`, `signatures.py`, `source.py`) — rendered bytes, covered
+    # by this same bump.
+    "render-17": "ec9287e95a485ed5799659fda48eef73b6a8c10f2a35fefaa44f6d0de5db67ab",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

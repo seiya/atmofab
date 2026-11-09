@@ -38,9 +38,9 @@ void dynamics_shallow_water_source_2d_coriolis__apply(
     int ncomp,
     int nx,
     int ny,
-    atmofab::View<const dp, 2> f,
-    atmofab::View<const dp, 3> U,
-    atmofab::View<dp, 3> S,
+    spec2science::View<const dp, 2> f,
+    spec2science::View<const dp, 3> U,
+    spec2science::View<dp, 3> S,
     bool& guard_pass) {
   // step_01: input guard.
   guard_pass = (ncomp == 3) && (nx >= 1) && (ny >= 1);
@@ -78,7 +78,7 @@ void dynamics_shallow_water_source_2d_coriolis__apply(
     return;
   }
 
-  const int block = atmofab::launch_block_size;
+  const int block = spec2science::launch_block_size;
   const long n = static_cast<long>(ncell);
   const int grid = static_cast<int>((n + block - 1) / block);
   coriolis_source_kernel<<<grid, block>>>(ncomp, n, d_f, d_u, d_s);

@@ -264,7 +264,7 @@ class SpecSurfaceTests(unittest.TestCase):
         self.assertIn("std::vector<dp>& a", rendered)
         for r in (2, 3, 4):
             rendered = cuda_signatures.render_symbol(procedures[f"harness_cpp_gpu__get_array_r{r}"])
-            self.assertIn(f"atmofab::Array<dp, {r}>& a", rendered)
+            self.assertIn(f"spec2science::Array<dp, {r}>& a", rendered)
 
 
 SENTINELS = _sentinels("harness_fortran_cpu", "l0_read_case_roundtrip_pass")

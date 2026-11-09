@@ -1977,15 +1977,15 @@ class PureRenderTests(unittest.TestCase):
         "interface_language": "cuda_cpp",
         "published_operations": [
             {"operation": "bc__advance",
-             "interface": "void bc__advance(atmofab::View<dp, 1> U, bc_rhs_1d rhs, dp t)",
+             "interface": "void bc__advance(spec2science::View<dp, 1> U, bc_rhs_1d rhs, dp t)",
              "argument_order": ["U", "rhs", "t"],
-             "arguments": [{"name": "U", "type": "atmofab::View<dp, 1>", "rank": 1},
+             "arguments": [{"name": "U", "type": "spec2science::View<dp, 1>", "rank": 1},
                            {"name": "rhs", "type": "bc_rhs_1d", "rank": 0,
                             "procedure_interface": "bc_rhs_1d"},
                            {"name": "t", "type": "dp", "rank": 0}],
              "procedure_interfaces": {"bc_rhs_1d": [
                  "using bc_rhs_1d = void(*)(u, dudt)",
-                 "atmofab::View<const dp, 1> u", "atmofab::View<dp, 1> dudt"]}},
+                 "spec2science::View<const dp, 1> u", "spec2science::View<dp, 1> dudt"]}},
         ],
     }
     # Both branches of `_build_dependency_surface_facts`' per-entry loop. The `unresolved` entry

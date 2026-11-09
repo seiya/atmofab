@@ -119,13 +119,13 @@ def _smoke_model() -> str:
         #include "{RANK_SID}_model.cuh"
 
         namespace {RANK_SID}_model {{
-        void {SMOKE_OP}(int mode, dp& s, atmofab::View<dp, 1> u, atmofab::View<dp, 2> a2,
-                        atmofab::View<dp, 3> a3, atmofab::View<dp, 4> a4, bool& ok) {{
+        void {SMOKE_OP}(int mode, dp& s, spec2science::View<dp, 1> u, spec2science::View<dp, 2> a2,
+                        spec2science::View<dp, 3> a3, spec2science::View<dp, 4> a4, bool& ok) {{
           ok = mode == 0;
           if (!ok) {{
             return;
           }}
-          s = 2.0 * s + atmofab::launch_block_size;
+          s = 2.0 * s + spec2science::launch_block_size;
           u.data[0] = 9.0;
           a2.data[0] = 9.0;
           a3.data[0] = 9.0;
@@ -156,7 +156,7 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("hm::harness_cpp_gpu__emit_array_r1(cv(st_u))", self.text)
         for rank in (2, 3, 4):
             self.assertIn(f"hm::harness_cpp_gpu__emit_array_r{rank}(cv(st_a{rank}))", self.text)
-            self.assertIn(f"atmofab::Array<double, {rank}> st_a{rank}{{}};", self.text)
+            self.assertIn(f"spec2science::Array<double, {rank}> st_a{rank}{{}};", self.text)
         self.assertIn("std::vector<double> st_u{};", self.text)
 
     def test_the_captures_bracket_the_call_and_the_case_file_is_read_before_either(self) -> None:
@@ -175,8 +175,8 @@ class RenderShapeTest(unittest.TestCase):
     def test_the_imposed_block_size_is_set_before_any_operation(self) -> None:
         """Issue #512 (PR-4c): the harness's `__block_size` is called once, after the case set
         is parsed and before the first operation, and its value is stored where the node's
-        sources read it (`atmofab::launch_block_size`, declared by the rendered header)."""
-        call = "  atmofab::launch_block_size = hm::harness_cpp_gpu__block_size();\n"
+        sources read it (`spec2science::launch_block_size`, declared by the rendered header)."""
+        call = "  spec2science::launch_block_size = hm::harness_cpp_gpu__block_size();\n"
         self.assertEqual(1, self.text.count(call))
         self.assertEqual(1, self.text.count("harness_cpp_gpu__block_size("))
         self.assertLess(self.text.index("harness_cpp_gpu__parse_cases("), self.text.index(call))
@@ -295,7 +295,7 @@ class RenderErrorDifferentialTest(unittest.TestCase):
     def test_a_state_named_like_a_library_or_a_retired_callback_renders_under_its_prefix(
             self) -> None:
         # A state's variable is the driver's, `st_<name>`, in the driver's own scope.
-        for name in ("case_run", "get_time", "std", "atmofab", "md", "hm"):
+        for name in ("case_run", "get_time", "std", "spec2science", "md", "hm"):
             with self.subTest(name):
                 ir = copy.deepcopy(_boundary_ir())
                 ft_tests._rename_state(ir, "guard_fired", name)
@@ -534,7 +534,7 @@ class NvccSmokeTest(unittest.TestCase):
             self.assertEqual(16, perf["cells_updated"])
 
     def test_the_runner_hands_the_imposed_block_size_to_the_node_s_sources(self) -> None:
-        """Issue #512 (PR-4c): the runner sets `atmofab::launch_block_size` from the harness's
+        """Issue #512 (PR-4c): the runner sets `spec2science::launch_block_size` from the harness's
         `__block_size` before the first case, so a node's operation already reads the block the
         host imposed through `SPEC2SCIENCE_CUDA_BLOCK`; the node's sources never name the harness."""
         with tempfile.TemporaryDirectory() as td:

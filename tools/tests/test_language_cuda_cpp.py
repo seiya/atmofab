@@ -87,7 +87,7 @@ _SOURCE = r'''
 #pragma once
 #include <string>
 #include <vector>
-namespace atmofab { template <class T, int R> struct View { T* data; long extent[R]; }; }
+namespace spec2science { template <class T, int R> struct View { T* data; long extent[R]; }; }
 // namespace commented { void no(); }
 namespace demo_model {
 using dp = double;
@@ -100,7 +100,7 @@ struct demo__h_check {
   public:
     bool flag = false;
 };
-using demo__rhs = void (*)(atmofab::View<const dp, 2> u, dp t);
+using demo__rhs = void (*)(spec2science::View<const dp, 2> u, dp t);
 typedef void (*old_rhs)(int a);
 [[nodiscard]] inline std::string demo__emit(dp x) { return "{"; }
 void demo__parse(const std::vector<std::string> &tokens, int n, bool& ok);
@@ -202,7 +202,7 @@ class DeclarationReaderTests(unittest.TestCase):
     def test_aliases_variables_and_skipped_templates(self) -> None:
         aliases = {a.name: a.target for a in self.decls.aliases}
         self.assertEqual("double", aliases["dp"])
-        self.assertEqual("void(*)(atmofab::View<const dp,2>u,dp t)", aliases["demo__rhs"])
+        self.assertEqual("void(*)(spec2science::View<const dp,2>u,dp t)", aliases["demo__rhs"])
         self.assertEqual("void(*)(int a)", aliases["old_rhs"])
         self.assertEqual(["case_id_len"], [v.name for v in self.decls.variables])
         self.assertNotIn("View", {s.name for s in self.decls.structs})
@@ -241,8 +241,8 @@ class LoweringTests(unittest.TestCase):
             (_arg("n", "integer", intent="inout"), "int& n"),
             (_arg("b", "logical"), "bool b"),
             (_arg("x", "real"), "float x"),
-            (_arg("u", "real", rank=2, kind="dp"), "atmofab::View<const dp, 2> u"),
-            (_arg("u", "real", rank=3, kind="dp", intent="out"), "atmofab::View<dp, 3> u"),
+            (_arg("u", "real", rank=2, kind="dp"), "spec2science::View<const dp, 2> u"),
+            (_arg("u", "real", rank=3, kind="dp", intent="out"), "spec2science::View<dp, 3> u"),
             (_arg("s", "string", len="assumed"), "const std::string& s"),
             (_arg("s", "string", len="4", intent="out"), "std::string& s"),
             (_arg("t", "derived", name="T"), "const T& t"),
@@ -289,15 +289,15 @@ class LoweringTests(unittest.TestCase):
     def test_arrays_of_rank_two_and_more_that_own_their_storage_lower_to_array(self) -> None:
         """Every shape Fortran renders but a keyword name and a logical kind has a C++ lowering
         (the target-free Compile renders §5.1 in both): rank >= 2 owning arrays are the header's
-        `atmofab::Array<X, R>`."""
-        self.assertEqual("const atmofab::Array<std::string, 2>& v", self._param(
+        `spec2science::Array<X, R>`."""
+        self.assertEqual("const spec2science::Array<std::string, 2>& v", self._param(
             _arg("v", "string", rank=2, len="assumed")))
-        self.assertEqual("atmofab::Array<dp, 2>& v", self._param(
+        self.assertEqual("spec2science::Array<dp, 2>& v", self._param(
             _arg("v", "real", rank=2, kind="dp", intent="inout", alloc=True)))
-        self.assertEqual("struct T {\n    atmofab::Array<dp, 2> a;\n};\n", cs.render_symbol(
+        self.assertEqual("struct T {\n    spec2science::Array<dp, 2> a;\n};\n", cs.render_symbol(
             {"name": "T", "components": [{"name": "a", "rank": 2,
                                           "spec": {"type": "real", "kind": "dp", "alloc": True}}]}))
-        self.assertEqual("atmofab::Array<dp, 3> d__r();\n", cs.render_symbol(
+        self.assertEqual("spec2science::Array<dp, 3> d__r();\n", cs.render_symbol(
             {"kind": "function", "name": "d__r", "args": [],
              "result": {"name": "r", "rank": 3, "spec": {"type": "real", "kind": "dp"}}}))
         self.assertIn("struct Array {", cpp_header.VIEW_DEFINITION)
@@ -378,7 +378,7 @@ _HEADER = cpp_header.render("h", _public_api(_HARNESS_LIKE), spec_kind="infrastr
 
 _GOOD_MODEL = """#include "h_model.cuh"
 namespace h_model {
-void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok) { (void)u; cb(0.0); ok = true; }
+void h__run(spec2science::View<dp, 1> u, h__cb cb, bool& ok) { (void)u; cb(0.0); ok = true; }
 std::string h__emit(dp x) { (void)x; return "0"; }
 }  // namespace h_model
 """
@@ -487,7 +487,7 @@ class GeneratedSourcePinTests(unittest.TestCase):
     def test_a_faithful_model_passes_whatever_its_spacing(self) -> None:
         self.assertEqual([], self._violations(_GOOD_MODEL))
         respaced = _GOOD_MODEL.replace("bool& ok", "bool &ok").replace(
-            "atmofab::View<dp, 1> u", "atmofab::View< dp,1 >  u")
+            "spec2science::View<dp, 1> u", "spec2science::View< dp,1 >  u")
         self.assertNotEqual(respaced, _GOOD_MODEL)
         self.assertEqual([], self._violations(respaced))
 
@@ -503,15 +503,15 @@ class GeneratedSourcePinTests(unittest.TestCase):
         parameters unnamed; both are one function with the header's declaration."""
         variant = _GOOD_MODEL.replace("std::string h__emit(dp x)", "std::string h__emit(const dp x)")
         variant = variant.replace(
-            "namespace h_model {\n", "namespace h_model {\nvoid h__run(atmofab::View<dp, 1>, h__cb, bool&);\n")
+            "namespace h_model {\n", "namespace h_model {\nvoid h__run(spec2science::View<dp, 1>, h__cb, bool&);\n")
         self.assertNotEqual(variant, _GOOD_MODEL)
         self.assertEqual([], self._violations(variant))
 
     def test_each_drift_is_named(self) -> None:
-        run = "void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok)"
+        run = "void h__run(spec2science::View<dp, 1> u, h__cb cb, bool& ok)"
         emit_def = 'std::string h__emit(dp x) { (void)x; return "0"; }'
         cases = {
-            "argument order": (_GOOD_MODEL.replace(run, "void h__run(h__cb cb, atmofab::View<dp, 1> u, bool& ok)"),
+            "argument order": (_GOOD_MODEL.replace(run, "void h__run(h__cb cb, spec2science::View<dp, 1> u, bool& ok)"),
                                "different signatures"),
             "argument name": (_GOOD_MODEL.replace("h__cb cb, bool& ok) { (void)u; cb(0.0)",
                                                   "h__cb f, bool& ok) { (void)u; f(0.0)"),
@@ -604,10 +604,10 @@ _POINTWISE = _struct(
 
 _POINTWISE_MODEL = """#include "c_model.cuh"
 namespace c_model {
-__host__ __device__ void c__flux(atmofab::View<const dp, 1> u, dp g, atmofab::View<dp, 1> f) {
+__host__ __device__ void c__flux(spec2science::View<const dp, 1> u, dp g, spec2science::View<dp, 1> f) {
   for (int k = 0; k < 3; ++k) { f.data[k] = g * u.data[k]; }
 }
-void c__field(atmofab::View<const dp, 1> u, atmofab::View<dp, 1> f) { f.data[0] = u.data[0]; }
+void c__field(spec2science::View<const dp, 1> u, spec2science::View<dp, 1> f) { f.data[0] = u.data[0]; }
 }  // namespace c_model
 """
 
@@ -818,7 +818,7 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
 
     def test_every_launch_reads_the_imposed_block_and_none_writes_it(self) -> None:
         """Issue #512 (PR-4c, round 2): a leaf source that launches a kernel must read
-        `atmofab::launch_block_size` somewhere in its code, and no leaf source may write it — every
+        `spec2science::launch_block_size` somewhere in its code, and no leaf source may write it — every
         model source, under any plan and any loop count. The shape it
         refuses is the real corpus's: every `cpp_gpu` problem model certified before the block
         was imposed launched with a literal block of its own. Reads in every operator form pass,
@@ -831,17 +831,17 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
         from tools.backends.parallel.cuda import directives as cd
         from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
 
-        read = "const int b = atmofab::launch_block_size;\n"
+        read = "const int b = spec2science::launch_block_size;\n"
         launch = "k<<<(n + b - 1) / b, b>>>(d, n);\n"
         literal = "const int kBlock = 256;\nk<<<(n + kBlock - 1) / kBlock, kBlock>>>(d, n);\n"
         refused = {
             "a literal block": literal,
-            "an assignment": read + launch + "void s() { atmofab::launch_block_size = 128; }\n",
-            "a compound assignment": "void s() { atmofab::launch_block_size *= 2; }\n",
-            "a shift assignment": "void s() { atmofab::launch_block_size >>= 1; }\n",
-            "a pre-increment": "void s() { ++atmofab::launch_block_size; }\n",
-            "a post-decrement": "void s() { atmofab::launch_block_size--; }\n",
-            "a write through an alias": "namespace a = atmofab;\nvoid s() { a::launch_block_size = 1; }\n",
+            "an assignment": read + launch + "void s() { spec2science::launch_block_size = 128; }\n",
+            "a compound assignment": "void s() { spec2science::launch_block_size *= 2; }\n",
+            "a shift assignment": "void s() { spec2science::launch_block_size >>= 1; }\n",
+            "a pre-increment": "void s() { ++spec2science::launch_block_size; }\n",
+            "a post-decrement": "void s() { spec2science::launch_block_size--; }\n",
+            "a write through an alias": "namespace a = spec2science;\nvoid s() { a::launch_block_size = 1; }\n",
             "a name that only contains it": "const int my_launch_block_size = 256;\n"
                                             "k<<<(n + my_launch_block_size - 1) / my_launch_block_size, "
                                             "my_launch_block_size>>>(d, n);\n",
@@ -849,17 +849,17 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
         admitted = {
             "a read and a launch": read + launch,
             "no launch": "void f() {}\n",
-            "comparisons": "".join(f"bool z{i}(int b) {{ return atmofab::launch_block_size {op} b; }}\n"
+            "comparisons": "".join(f"bool z{i}(int b) {{ return spec2science::launch_block_size {op} b; }}\n"
                                    for i, op in enumerate(("==", "!=", "<=", ">=", "<", ">"))),
-            "a shift read": "int z() { return atmofab::launch_block_size << 1; }\n",
+            "a shift read": "int z() { return spec2science::launch_block_size << 1; }\n",
             "a local copy of the same name": "void f(double* d, long n) {\n"
-                "  const int launch_block_size = atmofab::launch_block_size;\n"
+                "  const int launch_block_size = spec2science::launch_block_size;\n"
                 "  k<<<(n + launch_block_size - 1) / launch_block_size, launch_block_size>>>(d, n);\n}\n",
             "a parameter default": "void go(double* d, int n, int launch_block_size = "
-                                   "atmofab::launch_block_size);\n",
+                                   "spec2science::launch_block_size);\n",
             "a member": "struct C { int launch_block_size; };\n"
-                        "void f(C& c) { c.launch_block_size = atmofab::launch_block_size; }\n",
-            "comment and string": "// k<<<g, 256>>>(); atmofab::launch_block_size = 1;\n"
+                        "void f(C& c) { c.launch_block_size = spec2science::launch_block_size; }\n",
+            "comment and string": "// k<<<g, 256>>>(); spec2science::launch_block_size = 1;\n"
                                   "const char* s = \"<<< launch_block_size = 2\";\n",
         }
         for name, text in refused.items():
@@ -912,10 +912,10 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
 
     def test_a_consumer_is_shown_the_pair_unqualified(self) -> None:
         facts = cs.published_interface(_POINTWISE_MODEL, "c__flux")
-        self.assertEqual("__host__ __device__ void c__flux(atmofab::View<const c_model::dp,1> u, "
-                         "c_model::dp g, atmofab::View<c_model::dp,1> f)", facts["interface"])
-        self.assertEqual("void c__field(atmofab::View<const c_model::dp,1> u, "
-                         "atmofab::View<c_model::dp,1> f)",
+        self.assertEqual("__host__ __device__ void c__flux(spec2science::View<const c_model::dp,1> u, "
+                         "c_model::dp g, spec2science::View<c_model::dp,1> f)", facts["interface"])
+        self.assertEqual("void c__field(spec2science::View<const c_model::dp,1> u, "
+                         "spec2science::View<c_model::dp,1> f)",
                          cs.published_interface(_POINTWISE_MODEL, "c__field")["interface"])
         self.assertEqual(["c__flux", "c__field"],
                          cs.prefixed_procedures(_POINTWISE_MODEL, "c__"))
@@ -930,7 +930,7 @@ class DependencyInterfaceTests(unittest.TestCase):
         self.assertEqual([1, 0, 0], [a["rank"] for a in facts["arguments"]])
         # A consumer's sources declare no `dp` and no `h__cb`: each header name is shown
         # qualified by the dependency's namespace, and what is already qualified stays as it is.
-        self.assertEqual(["atmofab::View<h_model::dp,1>", "h_model::h__cb", "bool&"],
+        self.assertEqual(["spec2science::View<h_model::dp,1>", "h_model::h__cb", "bool&"],
                          [a["type"] for a in facts["arguments"]])
         self.assertEqual("std::string h__emit(h_model::dp x)",
                          cs.published_interface(_GOOD_MODEL, "h__emit")["interface"])
@@ -1110,7 +1110,7 @@ class SourceGateTests(unittest.TestCase):
 
 
 _DEP_HEADER = """namespace dep_model {
-void dep__flux(atmofab::View<const double, 1> u, atmofab::View<double, 1> f, double dt);
+void dep__flux(spec2science::View<const double, 1> u, spec2science::View<double, 1> f, double dt);
 double dep__norm(const std::vector<double>& u);
 }
 """
@@ -1313,10 +1313,10 @@ class PhysicsGateTests(unittest.TestCase):
         element write is not a whole assignment, every output must be assigned whole, an
         input-dependent right-hand side exempts, and a boolean literal is a literal."""
         cases = {
-            "suffix-letter local": ("void p__f(atmofab::View<const double, 1> h, double& energy) "
+            "suffix-letter local": ("void p__f(spec2science::View<const double, 1> h, double& energy) "
                                     "{ double e = 0.0; for (long i = 0; i < h.extent[0]; ++i) "
                                     "{ e += h.data[i]; } energy = e; }", False),
-            "element write": ("void p__f(atmofab::View<double, 1> u, double x) "
+            "element write": ("void p__f(spec2science::View<double, 1> u, double x) "
                               "{ u.data[0] = 1.0; (void)x; }", False),
             "one output not a literal": ("void p__f(double& a, double& b, double x) "
                                          "{ a = 1.0; b = b * x; }", False),
@@ -1333,10 +1333,10 @@ class PhysicsGateTests(unittest.TestCase):
                 self.assertEqual(refused, any("literal-only assignments" in v for v in out), out)
 
     def test_a_discarded_dependency_output_is_refused(self) -> None:
-        good = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        good = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {\n"
                 "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
-                "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+                "  spec2science::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
                 "  dep_model::dep__flux(u, fv, dt);\n"
                 "  for (long i = 0; i < u.extent[0]; ++i) {\n"
                 "    u_new.data[i] = u.data[i] + dt * flux[static_cast<std::size_t>(i)];\n"
@@ -1353,10 +1353,10 @@ class PhysicsGateTests(unittest.TestCase):
     # assignments must not feed the closure (or exempt the function from the other two gates).
     # Measured at `c9f46eee` (before the fix): every DEAD row below returned no violation.
     _DEAD_LAMBDA_BAD = (
-        "void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        "void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
         " double dt) {\n"
         "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
-        "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+        "  spec2science::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
         "  dep_model::dep__flux(u, fv, dt);\n"
         "{lambda}"
         "  for (long i = 0; i < u.extent[0]; ++i) {\n"
@@ -1440,10 +1440,10 @@ class PhysicsGateTests(unittest.TestCase):
         # nothing in `p__bind`'s body writes the name again. A plain assignment is not a
         # declaration, so the lambda is live and the flux it consumes reaches `u_new`; read as
         # dead, the dependency's result is discarded and the gate refuses a correct function.
-        body = ("void p__bind(std::function<void()>& task, atmofab::View<const double, 1> u,\n"
-                "            atmofab::View<double, 1> u_new, double dt) {\n"
+        body = ("void p__bind(std::function<void()>& task, spec2science::View<const double, 1> u,\n"
+                "            spec2science::View<double, 1> u_new, double dt) {\n"
                 "  std::vector<double> flux(4);\n"
-                "  atmofab::View<double, 1> fv{flux.data(), {4}};\n"
+                "  spec2science::View<double, 1> fv{flux.data(), {4}};\n"
                 "  dep_model::dep__flux(u, fv, dt);\n"
                 "  task = [=]() { u_new.data[0] = flux[0]; };\n}")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1456,12 +1456,12 @@ class PhysicsGateTests(unittest.TestCase):
         # function whose only dependency call sits in a dead lambda — with its consumer, or with
         # an assignment to its input before it — calls no dependency. At `c9f46eee` the variant
         # with the consumer inside the lambda passed both gates.
-        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        body = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {\n"
                 "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
-                "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+                "  spec2science::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
                 "  std::vector<double> g(4);\n"
-                "  atmofab::View<double, 1> gv{g.data(), {4}};\n"
+                "  spec2science::View<double, 1> gv{g.data(), {4}};\n"
                 "  auto unused = [&]() { g[0] = u.data[0]; dep_model::dep__flux(u, gv, dt);"
                 " u_new.data[0] = g[0]; };\n"
                 "{live}"
@@ -1552,9 +1552,9 @@ class PhysicsGateTests(unittest.TestCase):
         passed. The Fortran binding's assignment pattern matches no declaration either."""
         for decl in ("std::vector<double> flux(4);", "std::vector<double> flux = "
                      "std::vector<double>(4);", "auto flux = std::vector<double>(4);"):
-            body = ("void p__run(atmofab::View<const double, 1> u, double& out, double dt) {\n"
+            body = ("void p__run(spec2science::View<const double, 1> u, double& out, double dt) {\n"
                     f"  {decl}\n"
-                    "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                    "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, dt);\n"
                     "  out = dt;\n}")
             with self.subTest(decl), tempfile.TemporaryDirectory() as tmp:
                 model = self._model(tmp, body)
@@ -1571,22 +1571,22 @@ class PhysicsGateTests(unittest.TestCase):
     _DISCARD = ("  for (long i = 0; i < 4; ++i) {\n    u_new.data[i] = u.data[i];\n  }\n")
     _SHAPES: ClassVar[dict[str, str]] = {
         "pointer": ("  double* fp = flux.data();\n"
-                    "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {4}}, dt);\n"),
-        "auto view": ("  auto fv = atmofab::View<double, 1>{flux.data(), {4}};\n"
+                    "  dep_model::dep__flux(u, spec2science::View<double, 1>{fp, {4}}, dt);\n"),
+        "auto view": ("  auto fv = spec2science::View<double, 1>{flux.data(), {4}};\n"
                       "  dep_model::dep__flux(u, fv, dt);\n"),
         "copy-initialized view": (
-            "  atmofab::View<double, 1> fv = atmofab::View<double, 1>{flux.data(), {4}};\n"
+            "  spec2science::View<double, 1> fv = spec2science::View<double, 1>{flux.data(), {4}};\n"
             "  dep_model::dep__flux(u, fv, dt);\n"),
-        "member-assigned view": ("  atmofab::View<double, 1> fv;\n  fv.data = flux.data();\n"
+        "member-assigned view": ("  spec2science::View<double, 1> fv;\n  fv.data = flux.data();\n"
                                  "  fv.extent[0] = 4;\n  dep_model::dep__flux(u, fv, dt);\n"),
         "helper": ("  dep_model::dep__flux(u, as_view(flux), dt);\n"),
-        "address": ("  dep_model::dep__flux(u, atmofab::View<double, 1>{&flux[0], {4}}, dt);\n"),
+        "address": ("  dep_model::dep__flux(u, spec2science::View<double, 1>{&flux[0], {4}}, dt);\n"),
     }
 
     def _flux_model(self, tmp: str, shape: str, tail: str) -> Path:
-        body = ("namespace {\natmofab::View<double, 1> as_view(std::vector<double>& v) {\n"
-                "  return atmofab::View<double, 1>{v.data(), {static_cast<long>(v.size())}};\n}\n}\n"
-                "void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        body = ("namespace {\nspec2science::View<double, 1> as_view(std::vector<double>& v) {\n"
+                "  return spec2science::View<double, 1>{v.data(), {static_cast<long>(v.size())}};\n}\n}\n"
+                "void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {\n  std::vector<double> flux(4);\n" + shape + tail + "}")
         return self._model(tmp, body)
 
@@ -1604,9 +1604,9 @@ class PhysicsGateTests(unittest.TestCase):
         kernel this file defines, and copied back (round 2 of this change's review: refused)."""
         kernel = ("__global__ void upd(const double* u, const double* f, double* out, double dt) {\n"
                   "  const int i = threadIdx.x;\n  out[i] = u[i] + dt * f[i];\n}\n")
-        call = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        call = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {\n  std::vector<double> flux(4);\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, dt);\n"
                 "  double* du = nullptr;\n  double* df = nullptr;\n  double* dn = nullptr;\n"
                 "  cudaMemcpy(du, u.data, 32, cudaMemcpyHostToDevice);\n"
                 "  cudaMemcpy(df, flux.data(), 32, cudaMemcpyHostToDevice);\n"
@@ -1621,9 +1621,9 @@ class PhysicsGateTests(unittest.TestCase):
 
     _KERNEL = ("__global__ void upd(const double* u, const double* f, double* {restrict}out,"
                " double dt) {{\n  const int i = threadIdx.x;\n  out[i] = u[i] + dt * {use};\n}}\n")
-    _ROUND_TRIP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+    _ROUND_TRIP = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                    " double dt) {{\n  std::vector<double> flux(4);\n"
-                   "  dep_model::dep__flux(u, atmofab::View<double, 1>{{flux.data(), {{4}}}}, dt);\n"
+                   "  dep_model::dep__flux(u, spec2science::View<double, 1>{{flux.data(), {{4}}}}, dt);\n"
                    "  double* du = nullptr;\n  double* df = nullptr;\n  double* dn = nullptr;\n"
                    "  cudaMemcpy(du, u.data, 32, cudaMemcpyHostToDevice);\n"
                    "  cudaMemcpy(df, {copied}.data(), {count}, cudaMemcpyHostToDevice);\n"
@@ -1662,21 +1662,21 @@ class PhysicsGateTests(unittest.TestCase):
     # time from inside a kernel the model defines — or from a host helper. `{use}` is what the
     # update kernel adds to `u`: the faces' flux (consumed) or nothing of it (discarded).
     _PW_HEADER = ("namespace dep_model {\n__host__ __device__ void dep__face(\n"
-                  "    atmofab::View<const double, 1> u,\n    double g,\n"
-                  "    atmofab::View<double, 1> f);\n}\n")
+                  "    spec2science::View<const double, 1> u,\n    double g,\n"
+                  "    spec2science::View<double, 1> f);\n}\n")
     _PW_FACES = ("__global__ void faces(const double* u, double* f, double g, long n) {\n"
                  "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n"
                  "  if (i < n) {\n"
-                 "    dep_model::dep__face(atmofab::View<const double, 1>{u + 3 * i, {3}}, g,\n"
-                 "                         atmofab::View<double, 1>{f + 3 * i, {3}});\n  }\n}\n")
+                 "    dep_model::dep__face(spec2science::View<const double, 1>{u + 3 * i, {3}}, g,\n"
+                 "                         spec2science::View<double, 1>{f + 3 * i, {3}});\n  }\n}\n")
     _PW_HELPER = ("void faces_on_host(const double* u, double* f, double g, long n) {\n"
                   "  for (long i = 0; i < n; ++i) {\n"
-                  "    dep_model::dep__face(atmofab::View<const double, 1>{u + 3 * i, {3}}, g,\n"
-                  "                         atmofab::View<double, 1>{f + 3 * i, {3}});\n  }\n}\n")
+                  "    dep_model::dep__face(spec2science::View<const double, 1>{u + 3 * i, {3}}, g,\n"
+                  "                         spec2science::View<double, 1>{f + 3 * i, {3}});\n  }\n}\n")
     _PW_UPDATE = ("__global__ void upd(const double* u, const double* f, double* out, double dt,"
                   " long n) {{\n  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n"
                   "  if (i < n) {{ out[i] = u[i] + dt * {use}; }}\n}}\n")
-    _PW_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+    _PW_STEP = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {{\n  double* du = nullptr;\n  double* df = nullptr;\n"
                 "  double* dn = nullptr;\n"
                 "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
@@ -1710,7 +1710,7 @@ class PhysicsGateTests(unittest.TestCase):
     # result through parameters, not through a namespace-scope name a function merely reads.
     _NS_BUFFERS = ("namespace {\ndouble* g_u = nullptr;\ndouble* g_f = nullptr;\n"
                    "double* g_n = nullptr;\nlong g_cap = 0;\n}\n")
-    _NS_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+    _NS_STEP = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {{\n{grow}"
                 "  cudaMemcpy(g_u, u.data, 96, cudaMemcpyHostToDevice);\n{launch}"
                 "  cudaMemcpy(u_new.data, g_n, 96, cudaMemcpyDeviceToHost);\n}}")
@@ -1768,9 +1768,9 @@ class PhysicsGateTests(unittest.TestCase):
         """The "assigned before the call" exemption compares against THIS call's position (round
         0 of #380 PR-1: with the position taken from the last call of any kind in the body, the
         later `std::sqrt(...)` moved it past `flux[0] = 0.0;` and the overwritten result passed)."""
-        body = ("void p__f(atmofab::View<const double, 1> u, double& out, double dt) {\n"
+        body = ("void p__f(spec2science::View<const double, 1> u, double& out, double dt) {\n"
                 "  std::vector<double> flux(4);\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, dt);\n"
                 "  flux[0] = 0.0;\n  out = std::sqrt(dt);\n}")
         with tempfile.TemporaryDirectory() as tmp:
             model = self._model(tmp, body)
@@ -1785,13 +1785,13 @@ class PhysicsGateTests(unittest.TestCase):
                    " {flag}* bad) {{\n"
                    "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n  if (i < n) {{\n"
                    "    bool gok = true;\n"
-                   "    dep_model::dep__face_ok(atmofab::View<const double, 1>{{u + 3 * i, {{3}}}}, g,\n"
-                   "        atmofab::View<double, 1>{{f + 3 * i, {{3}}}}, gok);\n"
+                   "    dep_model::dep__face_ok(spec2science::View<const double, 1>{{u + 3 * i, {{3}}}}, g,\n"
+                   "        spec2science::View<double, 1>{{f + 3 * i, {{3}}}}, gok);\n"
                    "    if (!gok) {{ *bad = 1; }}\n  }}\n}}\n")
     _PW_FLAGGED_HEADER = ("namespace dep_model {\n__host__ __device__ void dep__face_ok(\n"
-                          "    atmofab::View<const double, 1> u,\n    double g,\n"
-                          "    atmofab::View<double, 1> f,\n    bool& ok);\n}\n")
-    _PW_FLAGGED_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                          "    spec2science::View<const double, 1> u,\n    double g,\n"
+                          "    spec2science::View<double, 1> f,\n    bool& ok);\n}\n")
+    _PW_FLAGGED_STEP = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                         " bool& ok) {{\n  double* du = nullptr;\n  double* df = nullptr;\n"
                         "  double* dn = nullptr;\n  {flag}* dbad = nullptr;\n  {flag} bad = 0;\n"
                         "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
@@ -1844,8 +1844,8 @@ class PhysicsGateTests(unittest.TestCase):
         closure rule would call it propagated.)"""
         helper = ("void flux_host(const std::vector<double>& u, std::vector<double>& f, bool& fok)"
                   " {\n  for (long i = 0; i < 4; ++i) {\n    bool gok = true;\n"
-                  "    dep_model::dep__face_ok(atmofab::View<const double, 1>{u.data() + 3 * i, {3}},"
-                  " 9.81,\n        atmofab::View<double, 1>{f.data() + 3 * i, {3}}, gok);\n"
+                  "    dep_model::dep__face_ok(spec2science::View<const double, 1>{u.data() + 3 * i, {3}},"
+                  " 9.81,\n        spec2science::View<double, 1>{f.data() + 3 * i, {3}}, gok);\n"
                   "    fok = gok;\n  }\n}\n")
         step = ("void p__step(const std::vector<double>& u, std::vector<double>& u_new, bool& ok)"
                 " {{\n  std::vector<double> fh(12);\n  bool fok = true;\n"
@@ -1870,7 +1870,7 @@ class PhysicsGateTests(unittest.TestCase):
                   "    double& c);\n}\n")
         helper = ("void wave_speed(const std::vector<double>& w, double& c) {\n"
                   "  double cl = 0.0;\n  dep_model::dep__speed(w[0], cl);\n  c = cl;\n}\n")
-        step = ("void p__f(atmofab::View<const double, 1> u, double& out) {{\n"
+        step = ("void p__f(spec2science::View<const double, 1> u, double& out) {{\n"
                 "  std::vector<double> w(u.data, u.data + 3);\n  double c = 0.0;\n"
                 "  wave_speed(w, c);\n  out = {use};\n}}")
         with tempfile.TemporaryDirectory() as tmp:
@@ -1890,10 +1890,10 @@ class PhysicsGateTests(unittest.TestCase):
         kernel = ("__global__ void faces(const double* u, double* f, double g, long n,"
                   " long* seen, long base) {\n"
                   "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n  if (i < n) {\n"
-                  "    dep_model::dep__face(atmofab::View<const double, 1>{u + 3 * (base + i), {3}},"
-                  " g,\n                         atmofab::View<double, 1>{f + 3 * (base + i), {3}});\n"
+                  "    dep_model::dep__face(spec2science::View<const double, 1>{u + 3 * (base + i), {3}},"
+                  " g,\n                         spec2science::View<double, 1>{f + 3 * (base + i), {3}});\n"
                   "    seen[i] = base + i;\n  }\n}\n")
-        step = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        step = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " long& count) {{\n  double* du = nullptr;\n  double* df = nullptr;\n"
                 "  double* dn = nullptr;\n  long* dseen = nullptr;\n"
                 "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
@@ -1915,13 +1915,13 @@ class PhysicsGateTests(unittest.TestCase):
     # Round 2 of #380 PR-1's review. `_PW2_HEADER`'s operation writes two arrays and a guard,
     # the shape of the rusanov flux (F_star, G_star, ok).
     _PW2_HEADER = ("namespace dep_model {\n__host__ __device__ void dep__face2(\n"
-                   "    atmofab::View<const double, 1> u,\n    double g,\n"
-                   "    atmofab::View<double, 1> f,\n    atmofab::View<double, 1> h,\n"
+                   "    spec2science::View<const double, 1> u,\n    double g,\n"
+                   "    spec2science::View<double, 1> f,\n    spec2science::View<double, 1> h,\n"
                    "    bool& ok);\n__host__ __device__ void dep__speed(\n    double h,\n"
                    "    double& c);\n}\n")
     _PW2_UPDATE = ("__global__ void upd(const double* u, const double* f, double* out, long n) {{\n"
                    "  const long i = threadIdx.x;\n  if (i < n) {{ out[i] = u[i] + {use}; }}\n}}\n")
-    _PW2_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+    _PW2_STEP = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                  " bool& ok) {\n  double* du = nullptr;\n  double* df = nullptr;\n"
                  "  double* dn = nullptr;\n  int* dbad = nullptr;\n  int bad = 0;\n"
                  "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
@@ -1930,8 +1930,8 @@ class PhysicsGateTests(unittest.TestCase):
                  "  cudaMemcpy(&bad, dbad, 4, cudaMemcpyDeviceToHost);\n  ok = !bad;\n}")
     _PW2_HELPER = ("__device__ {ret} face_flux(const double* u, double* f, double g, long i) {{\n"
                    "  double fx[3];\n  double gy[3];\n  bool gok = true;\n"
-                   "  dep_model::dep__face2(atmofab::View<const double, 1>{{u + 3 * i, {{3}}}}, g,\n"
-                   "      atmofab::View<double, 1>{{fx, {{3}}}}, atmofab::View<double, 1>{{gy, {{3}}}},"
+                   "  dep_model::dep__face2(spec2science::View<const double, 1>{{u + 3 * i, {{3}}}}, g,\n"
+                   "      spec2science::View<double, 1>{{fx, {{3}}}}, spec2science::View<double, 1>{{gy, {{3}}}},"
                    " gok);\n  for (int k = 0; k < 3; ++k) {{ f[3 * i + k] = fx[k]; }}\n"
                    "  (void)gy;\n  return {returned};\n}}\n")
     _PW2_KERNELS: ClassVar[dict[str, tuple[str, str, str]]] = {
@@ -2012,10 +2012,10 @@ class PhysicsGateTests(unittest.TestCase):
             kernel = (prelude + "__global__ void faces(const double* u, double* f, double g,"
                       " long n, int* bad, long n0 = 0) {\n" + index
                       + "  if (k < n) {\n    double gy[3];\n    bool gok = true;\n"
-                      f"    dep_model::dep__face2(atmofab::View<const double, 1>{{u + {stride},"
+                      f"    dep_model::dep__face2(spec2science::View<const double, 1>{{u + {stride},"
                       " {3}}, g,\n"
-                      f"        atmofab::View<double, 1>{{f + {stride}, {{3}}}},"
-                      " atmofab::View<double, 1>{gy, {3}}, gok);\n"
+                      f"        spec2science::View<double, 1>{{f + {stride}, {{3}}}},"
+                      " spec2science::View<double, 1>{gy, {3}}, gok);\n"
                       "    bad[k] = gok ? 0 : 1;\n  }\n}\n")
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
                 (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
@@ -2032,9 +2032,9 @@ class PhysicsGateTests(unittest.TestCase):
                   " {\n  __shared__ double sf[96];\n  const int t = threadIdx.x;\n"
                   "  const long q = blockIdx.x * blockDim.x + t;\n  double gy[3];\n"
                   "  bool gok = true;\n"
-                  "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * q, {3}}, g,\n"
-                  "      atmofab::View<double, 1>{sf + 3 * t, {3}},"
-                  " atmofab::View<double, 1>{gy, {3}}, gok);\n"
+                  "  dep_model::dep__face2(spec2science::View<const double, 1>{u + 3 * q, {3}}, g,\n"
+                  "      spec2science::View<double, 1>{sf + 3 * t, {3}},"
+                  " spec2science::View<double, 1>{gy, {3}}, gok);\n"
                   "  f[q] = u[q];\n  bad[q] = gok ? 0 : 1;\n}\n")
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
@@ -2049,15 +2049,15 @@ class PhysicsGateTests(unittest.TestCase):
         being dropped from the candidates and the pointer not read as pointing into `f`. Each
         still refuses a caller that drops `f`."""
         spellings = {
-            "address": ("", "atmofab::View<double, 1>{&f[3 * q], {3}}"),
-            "pointer": ("    double* fq = f + 3 * q;\n", "atmofab::View<double, 1>{fq, {3}}"),
+            "address": ("", "spec2science::View<double, 1>{&f[3 * q], {3}}"),
+            "pointer": ("    double* fq = f + 3 * q;\n", "spec2science::View<double, 1>{fq, {3}}"),
         }
         for label, (pointer, view) in spellings.items():
             kernel = ("__global__ void faces(const double* u, double* f, double g, long n,"
                       " int* bad) {\n  const long q = threadIdx.x;\n  if (q < n) {\n"
                       + pointer + "    double go[3];\n    bool gok = true;\n"
-                      "    dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * q, {3}},"
-                      f" g,\n        {view}, atmofab::View<double, 1>{{go, {{3}}}}, gok);\n"
+                      "    dep_model::dep__face2(spec2science::View<const double, 1>{u + 3 * q, {3}},"
+                      f" g,\n        {view}, spec2science::View<double, 1>{{go, {{3}}}}, gok);\n"
                       "    bad[q] = gok ? 0 : 1;\n  }\n}\n")
             with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
                 (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
@@ -2072,23 +2072,23 @@ class PhysicsGateTests(unittest.TestCase):
         a buffer obtained from a function, a bare `int&` result, a namespace-scope
         `double* const`. A dropped result is refused in each; origin/main refused all three."""
         header = ("namespace dep_model {\n"
-                  "void dep__flux(atmofab::View<const double, 1> u, atmofab::View<double, 1> f);\n"
-                  "void dep__count(atmofab::View<const double, 1> u, int& n);\n}\n")
+                  "void dep__flux(spec2science::View<const double, 1> u, spec2science::View<double, 1> f);\n"
+                  "void dep__count(spec2science::View<const double, 1> u, int& n);\n}\n")
         cases = {
             "buffer from a function": (
                 "double* buf_of(int k) { static double b[12]; return b + 3 * k; }\n"
-                "void p__f(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new) {\n"
+                "void p__f(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new) {\n"
                 "  for (int k = 0; k < 4; ++k) {\n"
-                "    dep_model::dep__flux(u, atmofab::View<double, 1>{buf_of(k), {3}});\n  }\n"
+                "    dep_model::dep__flux(u, spec2science::View<double, 1>{buf_of(k), {3}});\n  }\n"
                 "  for (long i = 0; i < 12; ++i) { u_new.data[i] = u.data[i]; }\n}"),
             "bare integer result": (
-                "void p__f(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new) {\n"
+                "void p__f(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new) {\n"
                 "  int n = 0;\n  dep_model::dep__count(u, n);\n"
                 "  for (long i = 0; i < 12; ++i) { u_new.data[i] = u.data[i]; }\n}"),
             "namespace-scope const pointer": (
                 "double g_store[12];\ndouble* const g_fl = g_store;\n"
-                "void p__f(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new) {\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{g_fl, {3}});\n"
+                "void p__f(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new) {\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{g_fl, {3}});\n"
                 "  for (long i = 0; i < 12; ++i) { u_new.data[i] = u.data[i]; }\n}"),
         }
         for label, body in cases.items():
@@ -2105,8 +2105,8 @@ class PhysicsGateTests(unittest.TestCase):
                   " {\n  __shared__ double sf[96];\n  const int t = threadIdx.x;\n"
                   "  const long q = blockIdx.x * blockDim.x + t;\n  double* fq = sf + 3 * t;\n"
                   "  double gy[3];\n  bool gok = true;\n"
-                  "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * q, {3}}, g,\n"
-                  "      atmofab::View<double, 1>{fq, {3}}, atmofab::View<double, 1>{gy, {3}}, gok);\n"
+                  "  dep_model::dep__face2(spec2science::View<const double, 1>{u + 3 * q, {3}}, g,\n"
+                  "      spec2science::View<double, 1>{fq, {3}}, spec2science::View<double, 1>{gy, {3}}, gok);\n"
                   "  fq[0] = u[q];\n  f[q] = u[q];\n  bad[q] = gok ? 0 : 1;\n}\n")
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
@@ -2120,8 +2120,8 @@ class PhysicsGateTests(unittest.TestCase):
         same way (`to_flag(face(...))` must not make the flag stand for the dropped flux)."""
         helper = ("__device__ double face(const double* u, double* fo, double g, long k) {\n"
                   "  double go[3];\n  bool gok = true;\n"
-                  "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * k, {3}}, g,\n"
-                  "      atmofab::View<double, 1>{fo, {3}}, atmofab::View<double, 1>{go, {3}},"
+                  "  dep_model::dep__face2(spec2science::View<const double, 1>{u + 3 * k, {3}}, g,\n"
+                  "      spec2science::View<double, 1>{fo, {3}}, spec2science::View<double, 1>{go, {3}},"
                   " gok);\n  const double s = fo[0] + go[0];\n  return s;\n}\n")
         carried = ("__global__ void faces(const double* u, double* f, double g, long n,"
                    " int* bad) {\n  const long k = threadIdx.x;\n  if (k < n) {\n"
@@ -2129,8 +2129,8 @@ class PhysicsGateTests(unittest.TestCase):
                    "  }\n}\n")
         guard = ("__device__ bool face_ok(const double* u, double* fo, double g, long k) {\n"
                  "  double go[3];\n  bool gok = true;\n"
-                 "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * k, {3}}, g,\n"
-                 "      atmofab::View<double, 1>{fo, {3}}, atmofab::View<double, 1>{go, {3}},"
+                 "  dep_model::dep__face2(spec2science::View<const double, 1>{u + 3 * k, {3}}, g,\n"
+                 "      spec2science::View<double, 1>{fo, {3}}, spec2science::View<double, 1>{go, {3}},"
                  " gok);\n  (void)go;\n  return gok;\n}\n"
                  "__device__ int to_flag(bool ok) { return ok ? 0 : 1; }\n"
                  "__global__ void faces(const double* u, double* f, double g, long n,"
@@ -2183,9 +2183,9 @@ class PhysicsGateTests(unittest.TestCase):
         minus those when an actual names no storage (a member, `w.buf + 3 * i`)."""
         fn = cpp_decls.read(
             "__global__ void k(const double* u, double* __restrict__ f, long n, int* bad,"
-            " atmofab::View<double, 1> v, std::vector<double>& w, int base, const int t) {\n"
+            " spec2science::View<double, 1> v, std::vector<double>& w, int base, const int t) {\n"
             "  __shared__ double sf[96];\n  double gy[3];\n  double* fq = f + 3 * n;\n"
-            "  std::vector<double> fh(12);\n  atmofab::View<double, 1> fv{fh.data(), {3}};\n"
+            "  std::vector<double> fh(12);\n  spec2science::View<double, 1> fv{fh.data(), {3}};\n"
             "  const long i = 0;\n  std::size_t o = 3;\n  for (int j = 0; j < 3; ++j) {}\n"
             "  unsigned long m = 0;\n  std::int64_t big = 0;\n  double a = 1.0;\n"
             "  double b = a * n;\n  if (n) { return; }\n}\n").functions[0]
@@ -2245,9 +2245,9 @@ class PhysicsGateTests(unittest.TestCase):
     def test_a_loop_step_does_not_carry_a_discarded_result_to_the_output(self) -> None:
         """Round 5: `i += 1)` swallowed `finite = finite && isfinite(flux[i])`, making `i` take
         `flux`, and the index carried the discarded result to the output."""
-        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        body = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {\n  std::vector<double> flux(4);\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, dt);\n"
                 "  bool finite = true;\n"
                 "  for (long i = 0; i < 4; i += 1) { finite = finite && flux[i] == flux[i]; }\n"
                 "  for (long i = 0; i < 4; ++i) { u_new.data[i] = u.data[i]; }\n}")
@@ -2259,9 +2259,9 @@ class PhysicsGateTests(unittest.TestCase):
         helper = ("namespace detail {{\nvoid axpy(double* y, const double* x, const double* f,"
                   " double a, long n) {{\n  for (long i = 0; i < n; ++i) {{ y[i] = x[i] + a * {use}; }}"
                   "\n}}\n}}\n")
-        call = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        call = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {\n  std::vector<double> flux(4);\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, dt);\n"
                 "  detail::axpy(u_new.data, u.data, flux.data(), dt, 4);\n}")
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual([], self._gates(self._model(tmp, helper.format(use="f[i]") + call),
@@ -2275,10 +2275,10 @@ class PhysicsGateTests(unittest.TestCase):
         initializer, so the "assigned before the call" clause does not drop it — round 4 found
         an earlier version of this row assigning it by a statement, which made the row pass
         with the fix disabled."""
-        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        body = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt) {\n  std::vector<double> flux(4);\n  long n = u.extent[0];\n"
                 "  double* fp = flux.data();\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {n}}, dt);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{fp, {n}}, dt);\n"
                 "  for (long i = 0; i < 4; ++i) {\n    long j;\n    j = (i + 1) % n;\n"
                 "    u_new.data[i] = 0.5 * (u.data[i] + u.data[j]);\n  }\n}")
         with tempfile.TemporaryDirectory() as tmp:
@@ -2288,12 +2288,12 @@ class PhysicsGateTests(unittest.TestCase):
     def test_each_dependency_call_s_result_must_reach_an_output(self) -> None:
         """Round 3 of this change's review: the candidates of every call were pooled, so one
         consumed result passed a second, discarded one — against the authoring rules."""
-        header = ("namespace dep_model {\nvoid dep__flux(atmofab::View<const double, 1> u, "
-                  "atmofab::View<double, 1> f, double dt);\nvoid dep__norm("
-                  "atmofab::View<const double, 1> u, double& m);\n}\n")
-        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        header = ("namespace dep_model {\nvoid dep__flux(spec2science::View<const double, 1> u, "
+                  "spec2science::View<double, 1> f, double dt);\nvoid dep__norm("
+                  "spec2science::View<const double, 1> u, double& m);\n}\n")
+        body = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double& m_out, double dt) {\n  std::vector<double> flux(4);\n  double m;\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, dt);\n"
                 "  dep_model::dep__norm(u, m);\n  m_out = m;\n"
                 "  for (long i = 0; i < 4; ++i) {\n    u_new.data[i] = u.data[i]{use};\n  }\n}")
         with tempfile.TemporaryDirectory() as tmp:
@@ -2310,11 +2310,11 @@ class PhysicsGateTests(unittest.TestCase):
         """Round 5 of this change's review: every advdiff / shallow-water dependency publishes a
         guard flag, and `ok = guard;` alone made the call \"propagated\" while its flux was
         discarded. An operation with an array output needs an array result to reach an output."""
-        header = ("namespace dep_model {\nvoid dep__flux(atmofab::View<const double, 1> u, "
-                  "atmofab::View<double, 1> f, double dt, bool& guard_pass);\n}\n")
-        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        header = ("namespace dep_model {\nvoid dep__flux(spec2science::View<const double, 1> u, "
+                  "spec2science::View<double, 1> f, double dt, bool& guard_pass);\n}\n")
+        body = ("void p__step(spec2science::View<const double, 1> u, spec2science::View<double, 1> u_new,"
                 " double dt, bool& ok) {\n  std::vector<double> flux(4);\n  bool guard;\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt, guard);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, dt, guard);\n"
                 "  ok = guard;\n"
                 "  for (long i = 0; i < 4; ++i) {\n    u_new.data[i] = u.data[i]{use};\n  }\n}")
         with tempfile.TemporaryDirectory() as tmp:
@@ -2329,14 +2329,14 @@ class PhysicsGateTests(unittest.TestCase):
 
     def test_a_pointer_taken_by_address_aliases_the_storage(self) -> None:
         shape = ("  double* fp = &flux[0];\n"
-                 "  dep_model::dep__flux(u, atmofab::View<double, 1>{fp, {4}}, dt);\n")
+                 "  dep_model::dep__flux(u, spec2science::View<double, 1>{fp, {4}}, dt);\n")
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual([], self._gates(self._flux_model(tmp, shape, self._CONSUME), ["dep"]))
             out = self._gates(self._flux_model(tmp, shape, self._DISCARD), ["dep"])
             self.assertTrue(any("does not propagate" in v for v in out), out)
 
     def test_output_parameter_qualifiers(self) -> None:
-        for ctype in ("double*__restrict__", "atmofab::View<double,1>const", "double*const"):
+        for ctype in ("double*__restrict__", "spec2science::View<double,1>const", "double*const"):
             self.assertTrue(cpp_source.is_output_parameter(ctype), ctype)
         for ctype in ("double const&", "const double*__restrict__"):
             self.assertFalse(cpp_source.is_output_parameter(ctype), ctype)
@@ -2344,9 +2344,9 @@ class PhysicsGateTests(unittest.TestCase):
     def test_an_address_of_actual_and_an_assignment_after_a_keyword(self) -> None:
         """`&m` hands the storage of `m` over; after `else`, `do` or a ternary `?` an assignment
         is a STATEMENT, not a declaration's initializer (each clause of `_is_declaration`)."""
-        header = ("namespace dep_model {\nvoid dep__norm(atmofab::View<const double, 1> u, "
+        header = ("namespace dep_model {\nvoid dep__norm(spec2science::View<const double, 1> u, "
                   "double& m);\n}\n")
-        base = ("void p__run(atmofab::View<const double, 1> u, double& out, bool c) {\n"
+        base = ("void p__run(spec2science::View<const double, 1> u, double& out, bool c) {\n"
                 "  double m;\n{pre}  dep_model::dep__norm(u, {arg});\n  out = c ? 1.0 : 0.0;\n}")
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "dep_model.cuh").write_text(header)
@@ -2365,9 +2365,9 @@ class PhysicsGateTests(unittest.TestCase):
     def test_a_value_returning_function_always_has_an_output(self) -> None:
         """Round 1 of this change's review: a function returning a literal had no output the
         gate could see, so it was skipped and its discarded dependency result passed."""
-        body = ("double p__run(atmofab::View<const double, 1> u) {\n"
+        body = ("double p__run(spec2science::View<const double, 1> u) {\n"
                 "  std::vector<double> flux(4);\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, 0.1);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{flux.data(), {4}}, 0.1);\n"
                 "  return 1.0;\n}")
         with tempfile.TemporaryDirectory() as tmp:
             model = self._model(tmp, body)
@@ -2380,10 +2380,10 @@ class PhysicsGateTests(unittest.TestCase):
     def test_an_inert_call_with_every_actual_assigned_before_is_silent(self) -> None:
         """The neutral authoring rule 5: an inert dependency call assigns every actual before
         the call, which keeps this gate silent — at an output position of the header too."""
-        body = ("void p__run(atmofab::View<const double, 1> u, double& out, double dt) {\n"
+        body = ("void p__run(spec2science::View<const double, 1> u, double& out, double dt) {\n"
                 "  std::vector<double> work(4);\n"
                 "  for (int i = 0; i < 4; ++i) { work[static_cast<std::size_t>(i)] = 0.0; }\n"
-                "  dep_model::dep__flux(u, atmofab::View<double, 1>{work.data(), {4}}, dt);\n"
+                "  dep_model::dep__flux(u, spec2science::View<double, 1>{work.data(), {4}}, dt);\n"
                 "  out = dt;\n}")
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual([], self._gates(self._model(tmp, body), ["dep"]))
@@ -2451,7 +2451,7 @@ class PhysicsGateTests(unittest.TestCase):
                               "inputs or update loops"], self._gates(model, [], multidim="p"))
             looped = body.replace("a = x;", "for (int i = 0; i < 2; ++i) { a = x; }")
             self.assertEqual([], self._gates(self._model(tmp, looped), [], multidim="p"))
-            viewed = body.replace("double x,", "atmofab::View<const double, 2> x,").replace(
+            viewed = body.replace("double x,", "spec2science::View<const double, 2> x,").replace(
                 "= x;", "= x.data[0];")
             self.assertEqual([], self._gates(self._model(tmp, viewed), [], multidim="p"))
 
@@ -2482,9 +2482,9 @@ class PhysicsGateTests(unittest.TestCase):
             self.assertTrue(any("cannot read this source's declarations" in v for v in out), out)
 
     def test_output_parameter_classification(self) -> None:
-        outs = ["double&", "std::vector<double>&", "atmofab::View<double,1>", "View<double,2>",
-                "double*", "atmofab::Array<double,2>&"]
-        ins = ["double", "const double&", "atmofab::View<const double,1>", "const double*",
+        outs = ["double&", "std::vector<double>&", "spec2science::View<double,1>", "View<double,2>",
+                "double*", "spec2science::Array<double,2>&"]
+        ins = ["double", "const double&", "spec2science::View<const double,1>", "const double*",
                "const std::vector<double>&", "int"]
         for ctype in outs:
             self.assertTrue(cpp_source.is_output_parameter(ctype), ctype)
@@ -3142,8 +3142,8 @@ class RealDriverTests(unittest.TestCase):
         consumer = ('#include "c_model.cuh"\n'
                     "namespace {\n__global__ void faces(const double* u, double* f, long n) {\n"
                     "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n"
-                    "  if (i < n) {\n    c_model::c__flux(atmofab::View<const double, 1>{u + 3 * i, {3}},"
-                    " 9.81,\n                     atmofab::View<double, 1>{f + 3 * i, {3}});\n"
+                    "  if (i < n) {\n    c_model::c__flux(spec2science::View<const double, 1>{u + 3 * i, {3}},"
+                    " 9.81,\n                     spec2science::View<double, 1>{f + 3 * i, {3}});\n"
                     "  }\n}\n}  // namespace\n"
                     "void launch(const double* u, double* f, long n) { faces<<<1, 32>>>(u, f, n); }\n"
                     "int main() { return 0; }\n")
@@ -3259,7 +3259,7 @@ class RealDriverTests(unittest.TestCase):
         from tools import build_runtime as server
 
         model = ('#include <cstdio>\n#include "h_model.cuh"\nnamespace h_model {\n'
-                 "void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok) {\n"
+                 "void h__run(spec2science::View<dp, 1> u, h__cb cb, bool& ok) {\n"
                  "  for (long i = 0; i < u.extent[0]; ++i) { u.data[i] += 1.0; }\n"
                  "  cb(0.0);\n  ok = true;\n}\n"
                  "std::string h__emit(dp x) {\n  char buf[32];\n"
@@ -3269,7 +3269,7 @@ class RealDriverTests(unittest.TestCase):
                   "static void on_step(h_model::dp t) { (void)t; }\n"
                   "int main(int argc, char** argv) {\n  (void)argc;\n  (void)argv;\n"
                   "  double d[2] = {0.0, 0.0};\n"
-                  "  atmofab::View<h_model::dp, 1> v{d, {2}};\n  bool ok = false;\n"
+                  "  spec2science::View<h_model::dp, 1> v{d, {2}};\n  bool ok = false;\n"
                   "  h_model::h__run(v, on_step, ok);\n"
                   "  std::puts(h_model::h__emit(d[0]).c_str());\n  return ok ? 0 : 1;\n}\n")
         doc = {"optimization_unit": {"members": ["infrastructure/h@0.1.0"]}, "files": [

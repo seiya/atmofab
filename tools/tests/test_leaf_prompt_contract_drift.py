@@ -1027,7 +1027,7 @@ PINNED: dict[str, str] = {
     # rationale: each run's thread limit caps `num_threads(k)`, so only k = 1 or `if` defeats it).
     "pure-79": "e2b9d6485c50322732b833372485f7a69ecc90cbbadae3bac3daa845c2aec521",
     # pure-80 (issue #512 PR-4c): the CUDA C++ producer and reviewer fragments state the launch
-    # configuration the host imposes — every kernel launches with `atmofab::launch_block_size`
+    # configuration the host imposes — every kernel launches with `spec2science::launch_block_size`
     # threads per block (the host-rendered header declares it, the host-rendered runner sets it
     # from the harness's `__block_size`), its grid, shared memory and grid-stride loops follow
     # from it, and a literal or device-chosen block size is a G6 finding — because the host now
@@ -1037,7 +1037,7 @@ PINNED: dict[str, str] = {
     # fragment's repair sentence and its plan-override sentence no longer leave the threads per
     # block to the leaf or its plan, and the admitted sizes are named as such. Round 2: both
     # fragments say the `Generate.gate` floor refuses a launching source that never names
-    # `atmofab::launch_block_size` and a source that writes it; the inlined
+    # `spec2science::launch_block_size` and a source that writes it; the inlined
     # `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` lists `parallelism.block_size`. Round 3: the
     # producer's launch paragraph is scoped to component / problem nodes and compares captured
     # state only where the IR's cross-target predicates do.
@@ -1152,8 +1152,10 @@ PINNED: dict[str, str] = {
     # leaf-95 (issue #619, the rename to spec2science): the first line of each of the nine
     # `workshop_*.txt` templates names "the Spec2Science workflow" (was "the atmofab workflow"),
     # and the `cuda_cpp` fragments name the namespace `spec2science::`. Moved: those nine
-    # templates and the three `cuda_cpp` fragments.
-    "leaf-95": "9717911a100f260d586941fef7c33fb04f99887ee5254ee845ea8ce09b48cc15",
+    # templates and the three `cuda_cpp` fragments. Re-pinned in place once before it shipped
+    # (K5 of the same PR): the host-rendered `gate_guards_section` and `dependency_facts_render`
+    # name the CUDA C++ namespace the header now declares, `spec2science::`.
+    "leaf-95": "dd5e3137d6c8db6dc5b425350057f7e286c9609675cdb96f972395f6d325cd17",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1183,8 +1185,9 @@ PINNED_READER: dict[str, str] = {
     # distributed driver. Moved: that fragment alone.
     "generate-verify-6": "2f77c144dbf55ae8796b5a610e21a1429f0403ae16a7d4897db13e48c79a12c6",
     # generate-verify-7 (issue #619): both verify templates name the Spec2Science workflow, and
-    # the two `cuda_cpp` reviewer fragments name the namespace `spec2science::`.
-    "generate-verify-7": "2518f69f9302b536ad0020b4cc12a5bdbabf1873df6478eeacee2e62a14620b8",
+    # the two `cuda_cpp` reviewer fragments name the namespace `spec2science::`. Re-pinned in place
+    # once before it shipped (K5): `dependency_facts_render` names `spec2science::`.
+    "generate-verify-7": "e315bd4b78d2f0ca279a4e2f74911b14b7810564e4540f6653ffffa8e8fad301",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
@@ -1194,7 +1197,9 @@ PINNED_READER: dict[str, str] = {
     # validate-judge-5 (issue #602): the rank rule and the gate sentence state the zero-extent row.
     "validate-judge-5": "809aa51ea05643a0525adbc1cedf9f3f60cd04dd63126dbae1cfe7a22397ade6",
     # validate-judge-6 (issue #619): the judge template names the Spec2Science workflow.
-    "validate-judge-6": "81f0963aee5296619974dd345a5cad07cf21746df67835c2a8e65f2267241650",
+    # Re-pinned in place once before it shipped (K5): `dependency_facts_render` names
+    # `spec2science::`.
+    "validate-judge-6": "48bf0c741e4667f6d3e4915ee323d5df66b4099908586eaf2de3317b6ebff72d",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

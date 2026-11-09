@@ -56,14 +56,14 @@ void dynamics_shallow_water_time_update_2d_ssprk2__advance(
     int ncomp,
     int nx,
     int ny,
-    atmofab::View<const dp, 3> U_n,
-    atmofab::View<const dp, 3> L_flux,
-    atmofab::View<const dp, 3> S_b,
-    atmofab::View<const dp, 2> z_b,
+    spec2science::View<const dp, 3> U_n,
+    spec2science::View<const dp, 3> L_flux,
+    spec2science::View<const dp, 3> S_b,
+    spec2science::View<const dp, 2> z_b,
     dp dt,
     dp dx,
     dp dy,
-    atmofab::View<dp, 3> U_np1,
+    spec2science::View<dp, 3> U_np1,
     bool& guard_pass) {
   (void)z_b;  // z_b is inert at L0 (derived_field_rules z_b).
 
@@ -106,8 +106,8 @@ void dynamics_shallow_water_time_update_2d_ssprk2__advance(
     return;
   }
 
-  // Launch shape: atmofab::launch_block_size threads per block, a grid covering every element.
-  const int block = atmofab::launch_block_size;
+  // Launch shape: spec2science::launch_block_size threads per block, a grid covering every element.
+  const int block = spec2science::launch_block_size;
   const int grid = static_cast<int>((n + static_cast<std::size_t>(block) - 1) /
                                     static_cast<std::size_t>(block));
 

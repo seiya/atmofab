@@ -90,8 +90,8 @@ void dynamics_shallow_water_boundary_2d_periodic_copy__apply(
     int ng,
     int nx_total,
     int ny_total,
-    atmofab::View<const dp, 2> U_in,
-    atmofab::View<dp, 2> U_out,
+    spec2science::View<const dp, 2> U_in,
+    spec2science::View<dp, 2> U_out,
     bool& grid_valid) {
   // step_01_grid_guard
   grid_valid = !(nx < 2 || ny < 2 || ng < 1);
@@ -108,7 +108,7 @@ void dynamics_shallow_water_boundary_2d_periodic_copy__apply(
     return;
   }
 
-  const int block = atmofab::launch_block_size;
+  const int block = spec2science::launch_block_size;
 
   // step_02_copy_and_x_wrap
   const long grid_x = (n + block - 1) / block;

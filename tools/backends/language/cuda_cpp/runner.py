@@ -20,9 +20,9 @@ Split of authorship on a physics node:
 - ``src/Makefile`` — the build system's control-file renderer              (host)
 
 Every snapshot variable is a namespace-scope variable of the driver, ``st_<var>``: a scalar is a
-``double``, a rank-1 array a ``std::vector<double>``, a rank-R array an ``atmofab::Array<double, R>``
+``double``, a rank-1 array a ``std::vector<double>``, a rank-R array an ``spec2science::Array<double, R>``
 (the owning column-major array the published-surface header defines); the driver hands the
-operations and the emitters a non-owning ``atmofab::View`` over it. So no generated function can
+operations and the emitters a non-owning ``spec2science::View`` over it. So no generated function can
 filter, compute or rewrite a captured value on its way to the emitters, and a state's type is never
 declared across two translation units.
 
@@ -355,7 +355,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # node's sources through the rendered header before any of their code runs: their kernels
     # launch with it, and never name the harness.
     a("  // --- the threads per block the host imposed on this run's kernels (harness §3.3) ----")
-    a(f"  atmofab::launch_block_size = {H('block_size')}();")
+    a(f"  spec2science::launch_block_size = {H('block_size')}();")
     a("")
     a("  int steps_total = 0;")
     a("  std::int64_t cells_total = 0;")
@@ -414,10 +414,10 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
 def _render_views(a: Any, plan: runner_ir.DriverPlan) -> None:
     """The small overloads the driver reaches its storage through."""
     a("// A non-owning view of a state array: writable (`mv`) or read-only (`cv`).")
-    a("[[maybe_unused]] inline atmofab::View<double, 1> mv(std::vector<double>& s) {")
+    a("[[maybe_unused]] inline spec2science::View<double, 1> mv(std::vector<double>& s) {")
     a("  return {s.data(), {static_cast<long>(s.size())}};")
     a("}")
-    a("[[maybe_unused]] inline atmofab::View<const double, 1> cv(const std::vector<double>& s) {")
+    a("[[maybe_unused]] inline spec2science::View<const double, 1> cv(const std::vector<double>& s) {")
     a("  return {s.data(), {static_cast<long>(s.size())}};")
     a("}")
     a("[[maybe_unused]] inline std::size_t flat_size(const std::vector<double>& s) {")
@@ -432,20 +432,20 @@ def _render_views(a: Any, plan: runner_ir.DriverPlan) -> None:
     host_ranks = {v.rank for v in plan.hosts if v.rank}
     for rank in sorted((set(plan.array_ranks) | host_ranks) - {1}):
         idx = ", ".join(f"s.extent[{k}]" for k in range(rank))
-        a(f"[[maybe_unused]] inline atmofab::View<double, {rank}> mv(atmofab::Array<double, {rank}>& s) {{")
+        a(f"[[maybe_unused]] inline spec2science::View<double, {rank}> mv(spec2science::Array<double, {rank}>& s) {{")
         a(f"  return {{s.data.data(), {{{idx}}}}};")
         a("}")
-        a(f"[[maybe_unused]] inline atmofab::View<const double, {rank}> cv(const atmofab::Array<double, {rank}>& s)"
+        a(f"[[maybe_unused]] inline spec2science::View<const double, {rank}> cv(const spec2science::Array<double, {rank}>& s)"
           " {")
         a(f"  return {{s.data.data(), {{{idx}}}}};")
         a("}")
-        a(f"[[maybe_unused]] inline std::size_t flat_size(const atmofab::Array<double, {rank}>& s) {{")
+        a(f"[[maybe_unused]] inline std::size_t flat_size(const spec2science::Array<double, {rank}>& s) {{")
         a("  return s.data.size();")
         a("}")
-        a(f"[[maybe_unused]] inline const double* flat_data(const atmofab::Array<double, {rank}>& s) {{")
+        a(f"[[maybe_unused]] inline const double* flat_data(const spec2science::Array<double, {rank}>& s) {{")
         a("  return s.data.data();")
         a("}")
-        a(f"[[maybe_unused]] inline void fill(atmofab::Array<double, {rank}>& s, double x) {{")
+        a(f"[[maybe_unused]] inline void fill(spec2science::Array<double, {rank}>& s, double x) {{")
         a("  std::fill(s.data.begin(), s.data.end(), x);")
         a("}")
     a("")

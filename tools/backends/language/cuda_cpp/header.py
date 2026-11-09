@@ -9,8 +9,8 @@ the procedure declarations. The host renders them into `<spec_id>_model.cuh` fro
 source includes this header and DEFINES the procedures, and a definition that disagrees with the
 declaration is a different overload the §5.1 pin refuses, never a silent change of the ABI.
 
-The header also carries the array view `atmofab::View<T, R>` the lowering names, and
-`atmofab::launch_block_size`, the threads per block the host imposed on the run's kernels (issue
+The header also carries the array view `spec2science::View<T, R>` the lowering names, and
+`spec2science::launch_block_size`, the threads per block the host imposed on the run's kernels (issue
 #512; the runner sets it from the harness), guarded so that several headers in one translation
 unit define them once.
 
@@ -29,7 +29,7 @@ from tools.backends.language.cuda_cpp import signatures as cpp_signatures
 VIEW_DEFINITION = """\
 #ifndef SPEC2SCIENCE_VIEW_DEFINED
 #define SPEC2SCIENCE_VIEW_DEFINED
-namespace atmofab {
+namespace spec2science {
 // A rank-R, column-major, non-owning array view: `data` points at extent[0] * ... * extent[R-1]
 // elements, the first index fastest.
 template <class T, int R>
@@ -48,7 +48,7 @@ struct Array {
 // imposed on the run, which the host-rendered runner sets once, before the first case. 0 until
 // then, so a launch that reads it before the runner sets it is refused by the device.
 inline int launch_block_size = 0;
-}  // namespace atmofab
+}  // namespace spec2science
 #endif
 """
 

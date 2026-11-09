@@ -6,7 +6,7 @@
 
 #ifndef SPEC2SCIENCE_VIEW_DEFINED
 #define SPEC2SCIENCE_VIEW_DEFINED
-namespace atmofab {
+namespace spec2science {
 // A rank-R, column-major, non-owning array view: `data` points at extent[0] * ... * extent[R-1]
 // elements, the first index fastest.
 template <class T, int R>
@@ -25,20 +25,20 @@ struct Array {
 // imposed on the run, which the host-rendered runner sets once, before the first case. 0 until
 // then, so a launch that reads it before the runner sets it is refused by the device.
 inline int launch_block_size = 0;
-}  // namespace atmofab
+}  // namespace spec2science
 #endif
 
 // An operation declared __host__ __device__ is pointwise: a kernel may call it.
 namespace dynamics_shallow_water_flux_2d_rusanov_p0_model {
 using dp = double;
 __host__ __device__ void dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(
-    atmofab::View<const dp, 1> U_L,
-    atmofab::View<const dp, 1> U_R,
-    atmofab::View<const dp, 1> U_B,
-    atmofab::View<const dp, 1> U_T,
+    spec2science::View<const dp, 1> U_L,
+    spec2science::View<const dp, 1> U_R,
+    spec2science::View<const dp, 1> U_B,
+    spec2science::View<const dp, 1> U_T,
     dp g,
-    atmofab::View<dp, 1> F_star,
-    atmofab::View<dp, 1> G_star,
+    spec2science::View<dp, 1> F_star,
+    spec2science::View<dp, 1> G_star,
     dp& a_x,
     dp& a_y,
     bool& guard_ok);
