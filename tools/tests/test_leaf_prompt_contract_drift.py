@@ -1149,7 +1149,7 @@ PINNED: dict[str, str] = {
     # distributed driver (what it does, what reaches an operation, what is the kernel's).
     # Moved: those two fragments alone.
     "leaf-94": "653bc46d21c10c79e4a528f578588dbb8f1290265f35a83e71072c7ae9c8ac2a",
-    # leaf-95 (issue #619, the rename to spec2science): the first line of each of the eight
+    # leaf-95 (issue #619, the rename to Spec2Science): the first line of each of the eight
     # `workshop_*.txt` templates that named the project (the three `*_repair.txt` never did) names "the Spec2Science workflow" (the former name before),
     # and the `cuda_cpp` fragments name the namespace `spec2science::`. Moved: those eight
     # templates and the three `cuda_cpp` fragments. Re-pinned in place once before it shipped

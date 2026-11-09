@@ -836,7 +836,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # extent-dummy exception, and review round 2 scoped the whole-count clause to a node with
     # an axis (the version was unreleased, so its digest moved in place each time).
     "compile-docs-29": "c32a21eb875b67af5aa43881584f4bc033b7f813cd08499fbe2de58539c1e578",
-    # compile-docs-30 (issue #619, the rename to spec2science): `phase_01_compile.md`, the seed
+    # compile-docs-30 (issue #619, the rename to Spec2Science): `phase_01_compile.md`, the seed
     # both compile leaves read, carries seven issue links, now at `github.com/seiya/spec2science`
     # (no other site). Measured 111222 bytes with `wc -c` in the checkout at the
     # commit that takes it (ceiling 111250, no bump).
@@ -1162,7 +1162,7 @@ PINNED_RENDER: dict[str, str] = {
     # and seven toy IRs, for fortran_cpu and cpp_gpu (sha256, measured). Re-pinned in place once
     # before it shipped (review round 2: the perf cell count is sized per drive entry).
     "render-16": "442f58ba9a64b90a1f39d6ebd7218958d7b7da19f43a46a0856b504f895064b5",
-    # render-17 (issue #619, the rename to spec2science): the CUDA C++ model header the host
+    # render-17 (issue #619, the rename to Spec2Science): the CUDA C++ model header the host
     # renders guards its `View` with `SPEC2SCIENCE_VIEW_DEFINED` (the former name's prefix before).
     # A bump, because rendered bytes move. Rows moved, measured against origin/main 9360d799:
     # `cuda_cpp/header.py` (the guard) and `fortran/bundle.py` (a comment naming
@@ -1472,7 +1472,7 @@ PINNED_BUILD: dict[str, str] = {
     # `DRIVER_DISTRIBUTED_PENDING`, which no build reads (its readers were the preflight refusal
     # and the render backstop, both deleted). Measured against 84c5ff88: that file is the one
     # member that moved. The digest `build-4` shipped with at 84c5ff88 is `build-4@84c5ff88`.
-    # Re-pinned for issue #619 (the rename to spec2science), NOT bumped: a comment in
+    # Re-pinned for issue #619 (the rename to Spec2Science), NOT bumped: a comment in
     # `fortran/bundle.py` names `SPEC2SCIENCE_SYNTAX_COMPILERS` under the new prefix; no code moved.
     # Measured against 9360d799: that file is the one member that moved. Re-pinned in place
     # once before it shipped (K3 of the same PR): `tools/remote_execution.py`'s site probe names
@@ -1817,7 +1817,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # or binary run differs. A verdict `quality_check.json` carries can, and the
     # `verdict-16` bump moves the same Validate key.
     "execute-16@719970bc": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
-    # execute-17 (issue #619, the rename to spec2science): the environment variables the host
+    # execute-17 (issue #619, the rename to Spec2Science): the environment variables the host
     # passes a program are `SPEC2SCIENCE_CUDA_BLOCK` and `SPEC2SCIENCE_PROCESS_GRID` (the
     # former prefix before); the harness specs name the same variables. Rows moved, measured against
     # origin/main 9360d799: the registry launch rows of `parallel/cuda/execution.py` and
