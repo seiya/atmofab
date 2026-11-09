@@ -13796,7 +13796,8 @@ def workshop_credential_source(cli_family: str) -> Path | None:
     family that binds none (`http`: the key is read from the leaf environment per request).
 
     ONE source for two readers that must name the same file: the preparers' bind source
-    (`_prepare_claude_workshop_home`, `_prepare_codex_workflow_home`) and the conductor's
+    (`_prepare_claude_workshop_home`, and `_prepare_codex_workshop_lineage` under
+    `_prepare_codex_workflow_home`) and the conductor's
     launch-time identity (`Conductor._credential_identity`, issue #616), so the inode the host
     stats is the inode the sandbox binds. Resolved at CALL time: `claude_credentials_file` is
     looked up on its module here, never bound at import, so a test that patches
