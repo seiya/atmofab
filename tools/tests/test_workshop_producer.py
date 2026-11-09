@@ -2262,6 +2262,28 @@ class StaleCredentialRelaunchTests(_Base):
                          ["child-1", "child-1"])
         self.assertEqual(self.declined()["reason"], "credential_unchanged")
 
+    def test_a_stale_death_of_a_warm_repair_is_re_launched_cold(self) -> None:
+        """Launch 1 leaves an empty tree (a repairable defect, so launch 2 is a WARM repair of
+        lineage child-1); the warm repair dies on a replaced credential → launch 3 is COLD, in
+        a new lineage, resuming no session (the dead session still holds the stale view).
+        Kills deleting `machine.after_transport()` from the producer stale branch: with it
+        gone the open lineage and its session id survive, so launch 3 warm-resumes child-1.
+        (Every other row dies on a cold first launch, where that mutant is equivalent.)"""
+        def empty(c, tree, kwargs):
+            return None
+
+        self.c.leaf_actions = [empty, self.dies(replace=True), _writes_bundle]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        self.assertEqual(len(self.c.spawns), 3)
+        self.assertEqual(self.c.spawns[1]["resume_session_id"], "child-1")
+        self.assertIsNone(self.c.spawns[2]["resume_session_id"])
+        lineages = [r["workshop_lineage_id"] for r in self.requests()]
+        self.assertEqual(lineages, ["child-1", "child-1", "child-3"])
+        self.assertFalse(self.requests()[2].get("warm_resume"))
+        (event,) = self.named("leaf_stale_credential_relaunch")
+        self.assertEqual(event["dead_agent_run_id"], "child-2")
+
     def test_the_identity_is_read_after_record_launch(self) -> None:
         """Round-3 L1: `record_launch`'s host-side probes may refresh the token, so a rename
         inside `record_launch` is the launch's own identity, not a change during it → declined
