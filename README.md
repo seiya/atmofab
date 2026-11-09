@@ -1,6 +1,6 @@
-# atmofab
+# Spec2Science
 
-`atmofab` generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
+Spec2Science generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
 
 `controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the build-runtime library (`tools/build_runtime.py`).
 
