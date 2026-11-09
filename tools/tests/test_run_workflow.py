@@ -8316,6 +8316,9 @@ class StdoutFormatTests(unittest.TestCase):
             "    [warn   ] stale credential (llm_auth_expired) in generate.generate "
             "[re-launch 1/1]: the operator's credential file was replaced during the launch; "
             "re-launching on the current one")
+        hints = {
+            "no_credential_file": " — an HTTP entry: fix the provider key, not a CLI login",
+            "credential_file_missing": " — the CLI credential file could not be read"}
         for reason in ("budget_spent", "no_credential_file", "credential_file_missing",
                        "credential_unchanged"):
             with self.subTest(reason=reason):
@@ -8327,7 +8330,8 @@ class StdoutFormatTests(unittest.TestCase):
                        "identity_at_launch": None, "identity_now": None, "attempt": 1,
                        "orchestration_id": "o"}),
                     "    [warn   ] credential failure (llm_auth_expired) in compile.verify: "
-                    f"no re-launch ({reason}) — the run fails closed; see docs/RUNBOOK.md "
+                    f"no re-launch ({reason}{hints.get(reason, '')}) — the run fails closed; "
+                    "see docs/RUNBOOK.md "
                     "(llm_auth_expired)")
 
     def test_fail_detail_elision_is_the_default_and_is_opt_outable(self) -> None:

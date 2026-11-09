@@ -3443,9 +3443,14 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         # The reason is what docs/RUNBOOK.md routes the operator on (`llm_auth_expired`).
         phase = payload.get("step", "?")
         substep = payload.get("substep") or "step"
+        reason = payload.get("reason", "?")
+        # Two reasons read alike and want opposite remedies; name which one this is.
+        hint = {"no_credential_file": "an HTTP entry: fix the provider key, not a CLI login",
+                "credential_file_missing": "the CLI credential file could not be read"}.get(reason)
         return (f"    [warn   ] credential failure ({payload.get('tag', '?')}) in "
-                f"{phase}.{substep}: no re-launch ({payload.get('reason', '?')}) — the run "
-                f"fails closed; see docs/RUNBOOK.md (llm_auth_expired)")
+                f"{phase}.{substep}: no re-launch ({reason}"
+                + (f" — {hint}" if hint else "")
+                + ") — the run fails closed; see docs/RUNBOOK.md (llm_auth_expired)")
 
     if status == "info" and event in ("start_claim_degraded", "start_claim_waiting"):
         kind = payload.get("claim_kind", "?")
