@@ -1,19 +1,19 @@
-"""Test-session hygiene for the OPERATOR-PRIVATE ROOT (`~/.atmofab`).
+"""Test-session hygiene for the OPERATOR-PRIVATE ROOT (`~/.spec2science`).
 
 `_prepare_claude_workflow_home` (and its codex twin) create a private per-orchestration
 home and nothing removes it. Since issue #64 that home is DURABLE — `<homes-root>/<oid>/
-<backend>` under `~/.atmofab/homes` — because it holds the leaf's only conversation
+<backend>` under `~/.spec2science/homes` — because it holds the leaf's only conversation
 record, and losing it makes a billed run unauditable after the fact. Retention is manual:
 `tools/prune_workflow_homes.py`, never anything automatic.
 
 A TEST RUN must not participate in that. Every fixture that drives `record_launch` for a
 claude-shaped leaf prepares a home, so a suite would otherwise write a few hundred
-directories into the operator's real `~/.atmofab/homes` and leave them there — mixed in
+directories into the operator's real `~/.spec2science/homes` and leave them there — mixed in
 with the homes of real runs, where the prune tool would find them unverifiable (their
 "owner" checkouts are temporary directories that no longer exist).
 
 TWO SUBTREES, and the homes were only ever one of them (issue #133). This repository
-writes `homes/` and `start_claims/` under `~/.atmofab`, and until this file covered every
+writes `homes/` and `start_claims/` under `~/.spec2science`, and until this file covered every
 one of them the rest went into the operator's real root on every run: measured at
 `e0bae3d`, `tools/tests/test_orchestration_runtime.py` alone left 249 files in the
 `operator_tokens/` store (deleted with `dismiss-violation` by issue #176), and
@@ -31,7 +31,7 @@ TWO LAYERS, and the second is the one that actually holds:
   2. ENFORCE, BEFORE THE FACT. A session-scoped guard wraps the two functions that
      decide WHERE each tree goes — `orchestration_runtime._workflow_homes_root` and
      `run_workflow._start_claims_root` — and raises if one is about to return something
-     inside the operator's REAL `~/.atmofab`. The redirect is a default a test can undo
+     inside the operator's REAL `~/.spec2science`. The redirect is a default a test can undo
      (`patch.dict(os.environ, ..., clear=True)` without re-setting the name is one line
      away), and this turns "the suite wrote into the operator's tree" from something
      noticed weeks later into a failure at the call that did it.
@@ -46,7 +46,7 @@ TWO LAYERS, and the second is the one that actually holds:
      guard wrapped the two PREPARERS and raised on the path they RETURNED, so by the time
      it fired the directory was already on disk and nothing removed it. A reviewer
      running one mutant that made `_workflow_homes_root` ignore the redirect left four
-     real directories in the operator's `~/.atmofab/homes` — permanent, unverifiable
+     real directories in the operator's `~/.spec2science/homes` — permanent, unverifiable
      residue in the one tree whose retention is manual. Wrapping the resolver means the
      mutant that reaches past the redirect cannot create anything at all.
 
@@ -73,7 +73,7 @@ DIFFERENT checkout, whose metadata is not visible from here. Redirecting is what
 question not arise — the suite never names the real root, so it never has to decide what
 inside it is safe to remove.
 
-ONE MORE TREE, outside `~/.atmofab`: a leaf's per-launch socket directory
+ONE MORE TREE, outside `~/.spec2science`: a leaf's per-launch socket directory
 (`leaf_netns.make_socket_dir`, issue #534 step 4) is created under `$XDG_RUNTIME_DIR`, and
 every test that serves or records a CLI launch makes one. A test removes its own, but a test
 process that is killed does not — measured 2026-10-29: 173 `atmofab-net-*` directories in the
@@ -235,13 +235,13 @@ def pytest_unconfigure(config) -> None:
 
 @pytest.fixture(autouse=True)
 def _redirect_operator_private_roots(tmp_path, monkeypatch):
-    """Point every tree this test writes under `~/.atmofab` into `tmp_path`.
+    """Point every tree this test writes under `~/.spec2science` into `tmp_path`.
 
     Both subtrees, not just the homes: the isolated backend homes and the start-claim
     locks. Only the first was redirected until issue #133, and the rest were writing
     into the operator's real root the whole time (measured at `e0bae3d`:
     `test_orchestration_runtime.py` alone left 249 files in the `operator_tokens/` store
-    that issue #176 deleted, and `~/.atmofab/start_claims/` held 40).
+    that issue #176 deleted, and `~/.spec2science/start_claims/` held 40).
 
     Per-TEST rather than per-session on purpose: the home path is deterministic now, so
     two tests using the same fixed orchestration id would collide on the exclusive
@@ -278,7 +278,7 @@ def _no_real_usage_reset_probe(monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_anything_in_operator_secret_root():
-    """Fail any test about to resolve one of the private roots to the real `~/.atmofab`."""
+    """Fail any test about to resolve one of the private roots to the real `~/.spec2science`."""
     import tools.orchestration_runtime as runtime
     from tools import run_workflow
     from tools.operator_private_root import operator_secret_root

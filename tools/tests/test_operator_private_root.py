@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""The operator-private root (`~/.atmofab`) resolves in ONE place per subtree.
+"""The operator-private root (`~/.spec2science`) resolves in ONE place per subtree.
 
 Issues #132 and #133. Writers create trees under the operator-private root and one guard
 forbids a leaf from reading it, and until this file existed nothing tied them together:
 `tools/operator_private_root.py::operator_secret_root` was the guard's anchor, while the leaf
 launcher, `init_orchestration`'s operator-token writer and
-`tools/run_workflow.py::_claim_lock_path` each spelled `Path.home() / ".atmofab" / ...`
+`tools/run_workflow.py::_claim_lock_path` each spelled `Path.home() / ".spec2science" / ...`
 for themselves. Moving the root was a four-site coordinated edit, and the #127 rename had
 already split one of them. Issue #176 deleted the token writer with `dismiss-violation`,
 leaving two writers and the guard.
@@ -20,7 +20,7 @@ What is PINNED here and what is only SAMPLED:
   * PINNED — that the writers and the guard land in one root, by driving the real
     `_claim_lock_path` / `_workflow_homes_root` / `protected_host_read_roots`
     under one patched `$HOME` (`test_the_two_writers_and_the_guard_resolve_one_root`);
-  * PINNED — that `".atmofab"` is spelled exactly ONCE across `tools/`, and in
+  * PINNED — that `".spec2science"` is spelled exactly ONCE across `tools/`, and in
     `tools/operator_private_root.py`
     (`test_the_dot_atmofab_constant_is_spelled_once`). The FILE and the COUNT, not the
     function name: hoisting the literal to a module constant in that file strengthens the
@@ -182,7 +182,7 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
                  private_root.WORKFLOW_HOMES_ROOT_ENV: "   "},
                 clear=False):
             self.assertEqual(private_root.workflow_homes_root(),
-                             Path("/tmp/fake-home-probe/.atmofab/homes"))
+                             Path("/tmp/fake-home-probe/.spec2science/homes"))
 
 
 class OnePrivateRootTests(unittest.TestCase):
@@ -193,7 +193,7 @@ class OnePrivateRootTests(unittest.TestCase):
 
         The two sites are `run_workflow._claim_lock_path` (writes a start claim) and
         `orchestration_runtime._workflow_homes_root` (writes the isolated homes). Before
-        issue #132 each writer built `Path.home() / ".atmofab" / …` for itself, so they
+        issue #132 each writer built `Path.home() / ".spec2science" / …` for itself, so they
         agreed by coincidence: the #127 rename moved one and the others stayed. There
         were four sites; the operator-token writer and its `dismiss_violation` reader
         went with issue #176, and the READ GUARD — `protected_host_read_roots`, which
@@ -223,7 +223,7 @@ class OnePrivateRootTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True), \
                     mock.patch.object(private_root, "_home_dir",
                                       return_value=fake_home):
-                atmofab = (fake_home / ".atmofab").resolve()
+                atmofab = (fake_home / ".spec2science").resolve()
 
                 # WRITER 1 — the start claim.
                 self.assertEqual(
@@ -237,15 +237,15 @@ class OnePrivateRootTests(unittest.TestCase):
                 # with the tool it guarded (see the docstring).
 
     def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
-        """`".atmofab"` is spelled exactly ONCE across `tools/`, in
+        """`".spec2science"` is spelled exactly ONCE across `tools/`, in
         `tools/operator_private_root.py`.
 
         A BOUND ON GROWTH, not a detector, and the difference matters. What it catches is
         the ordinary way this splits again: someone needs a path under the operator-private
-        root, writes `Path.home() / ".atmofab" / "something"` where they are, and the
+        root, writes `Path.home() / ".spec2science" / "something"` where they are, and the
         guard never learns about it. What it CANNOT catch, stated rather than implied:
 
-          * an f-string (`f"{home}/.atmofab/x"`) — the constant is not a bare `".atmofab"`
+          * an f-string (`f"{home}/.spec2science/x"`) — the constant is not a bare `".spec2science"`
             node;
           * the same string inside a longer one — `tools/operator_private_root.py` carries several
             marker regexes and argparse help texts that spell the path in prose, and they
@@ -254,7 +254,7 @@ class OnePrivateRootTests(unittest.TestCase):
 
         So a green row here is not evidence that a change respects the rule — it is
         evidence that the rule was not broken in the one shape that has actually broken it
-        three times. `tools/tests` is excluded: a test builds fake `~/.atmofab` layouts on
+        three times. `tools/tests` is excluded: a test builds fake `~/.spec2science` layouts on
         purpose.
 
         RED on `origin/main`, where the set has three more members.
@@ -285,7 +285,7 @@ class OnePrivateRootTests(unittest.TestCase):
         # census aiming the over-refusal question at the instrument.
         self.assertEqual(
             {rel for rel, _fn in found}, {"tools/operator_private_root.py"},
-            "`.atmofab` is spelled outside the module that owns the resolvers. Reach the "
+            "`.spec2science` is spelled outside the module that owns the resolvers. Reach the "
             "location through `operator_secret_root()` / `workflow_homes_root()` / "
             "`run_workflow._start_claims_root()` instead "
             "(issue #132). If a NEW site genuinely has to spell the literal — a migration "
@@ -302,12 +302,12 @@ class OnePrivateRootTests(unittest.TestCase):
 
     @staticmethod
     def _atmofab_constants(tree: ast.AST, rel: str) -> list[tuple[str, str]]:
-        """`(relative path, enclosing function)` for every bare `".atmofab"` constant.
+        """`(relative path, enclosing function)` for every bare `".spec2science"` constant.
 
         A LIST, one entry per CONSTANT NODE. It was a set, and both round-3 reviewers
         found the same thing independently: two spellings in one scope collapsed to one
         tuple, so `len(found) == 1` counted scopes rather than spellings and a second
-        `".atmofab"` inside `operator_secret_root` itself passed. The commit message that
+        `".spec2science"` inside `operator_secret_root` itself passed. The commit message that
         introduced the count asserted the stronger property, which the instrument did not
         have.
         """
@@ -318,7 +318,7 @@ class OnePrivateRootTests(unittest.TestCase):
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     walk(child, child.name)
                     continue
-                if isinstance(child, ast.Constant) and child.value == ".atmofab":
+                if isinstance(child, ast.Constant) and child.value == ".spec2science":
                     out.append((rel, enclosing))
                 walk(child, enclosing)
 
@@ -328,7 +328,7 @@ class OnePrivateRootTests(unittest.TestCase):
     def test_the_constant_reader_sees_a_synthetic_spelling(self) -> None:
         """Self-test for the bound above: an empty walk must not be able to pass it.
 
-        Three halves now. That the reader FINDS a plain `Path.home() / ".atmofab" / "x"`;
+        Three halves now. That the reader FINDS a plain `Path.home() / ".spec2science" / "x"`;
         that it reports the enclosing function rather than the module, because a reader
         returning `<module>` for everything would make the assertion above trivially
         satisfiable by moving the spelling into a function; and that it counts NODES
@@ -338,15 +338,15 @@ class OnePrivateRootTests(unittest.TestCase):
         source = (
             "from pathlib import Path\n"
             "def somewhere():\n"
-            "    return Path.home() / '.atmofab' / 'x'\n"
-            "TOP = Path.home() / '.atmofab'\n"
+            "    return Path.home() / '.spec2science' / 'x'\n"
+            "TOP = Path.home() / '.spec2science'\n"
         )
         self.assertEqual(
             len(OnePrivateRootTests._atmofab_constants(
                 ast.parse("from pathlib import Path\n"
                           "def twice():\n"
-                          "    a = Path.home() / '.atmofab' / 'x'\n"
-                          "    b = Path.home() / '.atmofab' / 'y'\n"
+                          "    a = Path.home() / '.spec2science' / 'x'\n"
+                          "    b = Path.home() / '.spec2science' / 'y'\n"
                           "    return a, b\n"), "probe.py")),
             2, "two spellings in ONE scope must count as two")
         self.assertEqual(
@@ -418,8 +418,8 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
                 f"docs/RUNBOOK.md §{self.ANCHOR.strip('# (')} does not name "
                 f"{env_name}; an operator reading it would not know the tree can move")
             self.assertTrue(
-                f"| `~/.atmofab/{subdir}" in section,
-                f"the inventory table has no row opening on ~/.atmofab/{subdir}")
+                f"| `~/.spec2science/{subdir}" in section,
+                f"the inventory table has no row opening on ~/.spec2science/{subdir}")
 
     def test_the_bound_excludes_text_on_both_sides_of_the_section(self) -> None:
         """The self-test for the bound, in the shapes that would actually defeat it.

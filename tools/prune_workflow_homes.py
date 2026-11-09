@@ -3,7 +3,7 @@
 
 Since issue #64 each orchestration's isolated backend homes live at
 `<homes-root>/<orchestration_id>/{claude,codex}`, where the root is
-`~/.atmofab/homes` (relocatable with `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`). The `codex`
+`~/.spec2science/homes` (relocatable with `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`). The `codex`
 entry is a CONTAINER since issue #245: each codex thread's own `CODEX_HOME` is a
 lineage directory beneath it (`codex/<codex_lineage_id>/` for a pre-PR-J4-b pure thread,
 issue #534; such directories may still exist on disk). The `claude` entry is a run's
@@ -120,7 +120,7 @@ def _workflow_homes_root() -> Path:
     `from orchestration_runtime import _workflow_homes_root` binds the function at import
     time, so anything that later replaces the module attribute — the suite's guard in
     `tools/tests/conftest.py`, which exists to stop a test writing into the operator's
-    real `~/.atmofab` — does not reach this module at all. Measured: with the guard
+    real `~/.spec2science` — does not reach this module at all. Measured: with the guard
     installed and the redirect cleared, `prune --all` resolved the operator's real root
     and the guard never fired. Report-only, so nothing was removed, but the ONE module
     that deletes was the one outside the guard, and the conftest docstring claimed it
@@ -525,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Report on, and optionally delete, durable isolated backend homes.")
     parser.add_argument("--homes-root", default="",
                         help=f"override the homes root (default: ${WORKFLOW_HOMES_ROOT_ENV} "
-                             "or ~/.atmofab/homes)")
+                             "or ~/.spec2science/homes)")
     parser.add_argument("--orchestration-id", action="append", default=[],
                         help="limit to this orchestration id (repeatable)")
     parser.add_argument("--all", action="store_true",

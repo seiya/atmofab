@@ -84,14 +84,14 @@ def _home_env(home: Path) -> dict[str, str]:
     has already pointed `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` at one directory per TEST, which every
     subtest of a row would share; under plain `unittest` the `HOME` half alone decides it."""
     from tools.operator_private_root import WORKFLOW_HOMES_ROOT_ENV
-    return {"HOME": str(home), WORKFLOW_HOMES_ROOT_ENV: str(home / ".atmofab" / "homes")}
+    return {"HOME": str(home), WORKFLOW_HOMES_ROOT_ENV: str(home / ".spec2science" / "homes")}
 
 
 def _lineage_projects(orchestration_id: str = ORCH_ID, lineage_id: str = LINEAGE_ID) -> Path:
     """The lineage's `config/projects`, from `workflow_homes_root()` read NOW.
 
     Call it INSIDE the `HOME` patch: under plain `unittest` nothing else redirects the homes
-    root, and a value read outside the patch is the operator's real `~/.atmofab/homes`."""
+    root, and a value read outside the patch is the operator's real `~/.spec2science/homes`."""
     from tools.operator_private_root import workflow_homes_root
     return (workflow_homes_root() / orchestration_id / "claude" / lineage_id / "config"
             / "projects")

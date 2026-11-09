@@ -69,7 +69,7 @@ def setUpModule() -> None:
     # workshop lineage home binds the operator's credentials file
     # (`_prepare_claude_workshop_home`), which `record_launch` re-checks. The file the
     # preparer reads is a temporary one, never the operator's (and CI has none); the homes
-    # are redirected off the operator's real `~/.atmofab/homes`.
+    # are redirected off the operator's real `~/.spec2science/homes`.
     import os
     from unittest import mock
 

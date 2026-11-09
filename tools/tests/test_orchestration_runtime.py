@@ -201,7 +201,7 @@ _MODULE_CREDENTIALS: list = []
 def setUpModule() -> None:
     # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
     # backend homes, and without this it writes them into the operator's real
-    # `~/.atmofab/homes` whenever it is run outside pytest.
+    # `~/.spec2science/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
     # A claude `workshop leaf` lineage home binds the operator's credentials file
     # (`_prepare_claude_workshop_home`, issue #534), which `record_launch` re-checks on every
@@ -257,7 +257,7 @@ def _discard_isolated_homes(orchestration_id: str) -> None:
     ids carry a timestamp and 8 random hex characters and do not repeat.
 
     `tools/tests/conftest.py` points the root at this test's `tmp_path`, so this never
-    touches the operator's `~/.atmofab/homes`; the environment name is read rather than
+    touches the operator's `~/.spec2science/homes`; the environment name is read rather than
     assumed so that a test which overrides it is followed rather than bypassed.
     """
     root = os.environ.get(ort.WORKFLOW_HOMES_ROOT_ENV, "").strip()
@@ -10621,7 +10621,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
         """The ONE fact from the deleted `driver` block that has no substitute.
 
         The claim that replaced the driver probe lives under the operator's own
-        `~/.atmofab/start_claims/`, so it is host-scoped: with host-local homes (a container
+        `~/.spec2science/start_claims/`, so it is host-scoped: with host-local homes (a container
         and its host bind-mounting the checkout, a cluster with local `/home` and shared
         `/work`) two drivers each take their own claim and both proceed, and nothing else in
         the tree can notice. `origin/main` recorded the hostname precisely here.
@@ -26250,7 +26250,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
         `tools/tests/conftest.py` redirects `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` for every test,
         and this class read it straight out of the environment — so it worked under
-        pytest and, run any other way, resolved the OPERATOR's real `~/.atmofab/homes`
+        pytest and, run any other way, resolved the OPERATOR's real `~/.spec2science/homes`
         and created directories in it. That is not hypothetical: a reviewer ran the exact
         `env -u SPEC2SCIENCE_WORKFLOW_HOMES_ROOT python3 -m unittest …` command this branch's
         own commit message prescribes and had to prune three entries out of the operator's
@@ -26301,7 +26301,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertNotIn("claude_workflow_home", meta)
 
     def test_without_an_override_the_root_is_the_operator_secret_root(self) -> None:
-        """`~/.atmofab/homes`, resolved through the SAME `$HOME` reading as the guard.
+        """`~/.spec2science/homes`, resolved through the SAME `$HOME` reading as the guard.
 
         This is the assertion that connects the new location to the protection it
         depended on (until Z4, issue #171, deleted the leaf hook layer with the guard and
@@ -26326,7 +26326,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual(Path(iso["home"]),
                              secret_root / "homes" / "orch_d" / "codex" / "lineage-d")
             self.assertTrue(Path(iso["home"]).is_relative_to(secret_root))
-            # `~/.atmofab` itself is NOT forced to 0700 (the operator-token writer has
+            # `~/.spec2science` itself is NOT forced to 0700 (the operator-token writer has
             # created it best-effort since long before this change, so requiring a mode
             # here would refuse every launch on a host whose root predates that), but
             # everything this code creates below it is.
@@ -26451,7 +26451,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         operator behaviour fail every launch: `docs/RUNBOOK.md` offers
         `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
         creating it 0755 under the default umask bricked the lever; and a mode drift on
-        `~/.atmofab/homes` — a backup restored without permissions — bricked every
+        `~/.spec2science/homes` — a backup restored without permissions — bricked every
         orchestration. Both measured before the change.
 
         What must still hold afterwards is the property, so that is what is asserted: the
@@ -26472,7 +26472,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
     def test_the_operator_secret_root_itself_is_never_re_moded(self) -> None:
-        """`~/.atmofab` is left exactly as the operator has it. Nothing observed that.
+        """`~/.spec2science` is left exactly as the operator has it. Nothing observed that.
 
         `_require_secure_home_ancestor`'s docstring and `docs/RUNBOOK.md` both state it —
         the root is shared with `operator_tokens/` and `start_claims/`, the operator-token
@@ -26486,7 +26486,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as td:
             fake_home = Path(td) / "home"
-            secret_root = fake_home / ".atmofab"
+            secret_root = fake_home / ".spec2science"
             secret_root.mkdir(parents=True)
             os.chmod(secret_root, 0o755)
             root = self._claude_repo(str(Path(td) / "repo_parent"))
@@ -26496,7 +26496,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 iso = self._prepare_home(root, "orch_d")
             self.assertEqual(secret_root.stat().st_mode & 0o777, 0o755,
-                             "the operator's own `~/.atmofab` was re-moded")
+                             "the operator's own `~/.spec2science` was re-moded")
             self.assertEqual((secret_root / "homes").stat().st_mode & 0o777, 0o700)
             self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
@@ -26902,11 +26902,11 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         deleting it stays green — while the thing it exists to prevent happens only where
         conftest is NOT loaded. Two reviewers ran `env -u SPEC2SCIENCE_WORKFLOW_HOMES_ROOT
         python3 -m unittest …`, the command this branch's own commit messages prescribe,
-        and had to prune entries out of the operator's real `~/.atmofab/homes` afterwards.
+        and had to prune entries out of the operator's real `~/.spec2science/homes` afterwards.
 
         So this witness leaves the process: it runs classes that rely on the module
         redirect under plain `unittest`, with all three variables cleared and `$HOME`
-        pointed at a temporary directory, and asserts that `.atmofab` was not created
+        pointed at a temporary directory, and asserts that `.spec2science` was not created
         under it AT ALL — not just its `homes/` subtree.
 
         TWO classes, because one observed only half the question. The backend-home half was
@@ -26920,9 +26920,9 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         observation.
 
         The other half is `init_orchestration`: measured under a fake `$HOME` at `e0bae3d`,
-        the home class created no `.atmofab` at all while `SetStatusIdempotencyTests`, which
+        the home class created no `.spec2science` at all while `SetStatusIdempotencyTests`, which
         calls `init_orchestration` without patching `$HOME`, left three
-        `.atmofab/operator_tokens/ssi_*.txt`. That is issue #133 in one line, and it is why
+        `.spec2science/operator_tokens/ssi_*.txt`. That is issue #133 in one line, and it is why
         the token half needs its own class here.
         """
         import subprocess
@@ -26951,10 +26951,10 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     proc.returncode, 0,
                     f"{target} did not pass outside pytest:\n{proc.stderr[-2000:]}")
                 self.assertFalse(
-                    (fake_home / ".atmofab").exists(),
-                    f"{target} wrote into $HOME/.atmofab when run outside pytest: "
-                    f"{sorted(p.name for p in (fake_home / '.atmofab').glob('*'))}"
-                    if (fake_home / ".atmofab").exists() else "")
+                    (fake_home / ".spec2science").exists(),
+                    f"{target} wrote into $HOME/.spec2science when run outside pytest: "
+                    f"{sorted(p.name for p in (fake_home / '.spec2science').glob('*'))}"
+                    if (fake_home / ".spec2science").exists() else "")
 
     def test_a_tilde_homes_root_override_is_expanded(self) -> None:
         """`~` is expanded, and nothing observed that either.
@@ -27005,7 +27005,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         with `if False:` left all 5022 tests green. A safety net surviving mutation is
         expected — nothing normally trips it — but this one was introduced at the cost of
         a reviewer's mutant leaving four real directories in the operator's
-        `~/.atmofab/homes`, and the conftest docstring calls it "the one that actually
+        `~/.spec2science/homes`, and the conftest docstring calls it "the one that actually
         holds". A layer described that way and observed by nothing is a claim, not a
         layer.
 
@@ -27144,7 +27144,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
     def test_an_override_whose_parent_is_absent_is_refused(self) -> None:
         """A typo'd `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.
 
-        The default resolution may create `~/.atmofab` itself (a host that has never run
+        The default resolution may create `~/.spec2science` itself (a host that has never run
         `init_orchestration` has none), but an override names a location the caller
         chose, and creating several levels under a misspelled one is the failure that
         costs most — the homes are then somewhere nobody looks, and the run appears to

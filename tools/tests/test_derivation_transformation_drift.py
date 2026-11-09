@@ -1463,9 +1463,12 @@ PINNED_BUILD: dict[str, str] = {
     # member that moved. The digest `build-4` shipped with at 84c5ff88 is `build-4@84c5ff88`.
     # Re-pinned for issue #619 (the rename to spec2science), NOT bumped: a comment in
     # `fortran/bundle.py` names `SPEC2SCIENCE_SYNTAX_COMPILERS` (was `ATMOFAB_…`); no code moved.
-    # Measured against 9360d799: that file is the one member that moved. The digest `build-4`
-    # shipped with at 9360d799 is `build-4@9360d799`.
-    "build-4": "7d6dcaf397c0a3c7e2d2eaf4e986a6e26044b625e4e98b8ceaf04e9a7d619be6",
+    # Measured against 9360d799: that file is the one member that moved. Re-pinned in place
+    # once before it shipped (K3 of the same PR): `tools/remote_execution.py`'s site probe names
+    # its scratch executable `.spec2science-probe-$$` (was `.atmofab-probe-$$`); the file is made,
+    # run and removed in the remote workdir, and no build input or output moves. The digest
+    # `build-4` shipped with at 9360d799 is `build-4@9360d799`.
+    "build-4": "3403b9e46d31a1a1d2c1e591e2415502b473b2f2d22322f6fbc6b058aa71de7c",
     "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
@@ -1804,8 +1807,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # passes a program are `SPEC2SCIENCE_CUDA_BLOCK` and `SPEC2SCIENCE_PROCESS_GRID` (were
     # `ATMOFAB_…`); the harness specs name the same variables. Rows moved, measured against
     # origin/main 9360d799: the registry launch rows of `parallel/cuda/execution.py` and
-    # `parallel/mpi/execution.py`.
-    "execute-17": "5810de9cdd6ca28e72fc2a6b273bb24b8daafb0355a34a018f48c580e1410183",
+    # `parallel/mpi/execution.py`. Re-pinned in place once before it shipped (K3 of the same PR):
+    # `tools/remote_execution.py`'s site probe names its scratch executable
+    # `.spec2science-probe-$$`, made, run and removed in the remote workdir.
+    "execute-17": "d47a8aa766d3880d5c1fc36c7aa655488952090548fe7b5f835ef1bff2c51b7b",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

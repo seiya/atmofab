@@ -73,7 +73,7 @@ from tools.target_profile import (
 # unlike the homes root and the token store it does not live in `tools/operator_private_root.py`,
 # because the claims are not a protected read root and nothing in the hooks layer needs
 # to resolve them. What is shared with those two is the DEFAULT: it hangs off
-# `operator_secret_root()`, so the one place `~/.atmofab` is spelled decides where all
+# `operator_secret_root()`, so the one place `~/.spec2science` is spelled decides where all
 # three subtrees go (issue #132).
 #
 # Why the claims are deliberately NOT protected: the files are 0-byte advisory flocks. A
@@ -1541,7 +1541,7 @@ def _warn_claim_degraded(kind: str, key: str, reason: str, *, cause: str = "",
 
 
 def _start_claims_root() -> Path:
-    """`~/.atmofab/start_claims` — where the cold-start claim locks live.
+    """`~/.spec2science/start_claims` — where the cold-start claim locks live.
 
     A module-level function, not an expression inside `_claim_lock_path`, for two
     reasons: the suite's session guard wraps it the way it wraps
@@ -1670,7 +1670,7 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
     `.encode("utf-8")` when `repo_root` carries a surrogate. `AssertionError` is
     deliberately NOT caught — `tools/tests/conftest.py` wraps `_start_claims_root` in a
     session guard that raises one when a test is about to resolve the operator's real
-    `~/.atmofab`, and swallowing it here would turn that guard into a silent "proceed",
+    `~/.spec2science`, and swallowing it here would turn that guard into a silent "proceed",
     the failure mode the guard exists to replace.
 
     The degradation no longer has to be inferred: like the `fcntl` and unwritable-home arms

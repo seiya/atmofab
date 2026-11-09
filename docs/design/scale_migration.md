@@ -142,7 +142,7 @@ Rules of the separation:
 
 What the separation owes, measured on this tree:
 - `repo_root` appears on 1,549 lines in 18 modules under `tools/`. A literal join `repo_root / "<dir>"`, with `REPO_ROOT` and `Path(repo_root)` as equivalent spellings, occurs 74 times: `workspace` 66, `spec` 7, `tools` 1.
-- The root that State hangs from is undefined after the separation. `llm.yaml` and `sites.yaml` resolve against `--repo-root`, and `~/.atmofab/` holds further runtime state.
+- The root that State hangs from is undefined after the separation. `llm.yaml` and `sites.yaml` resolve against `--repo-root`, and `~/.spec2science/` holds further runtime state.
 - `spec/schema` is read two ways: from `Path(__file__)` in `tools/codegen_bundle.py`, and from `repo_root` in `tools/run_workflow.py` and `tools/validate_pipeline_semantics.py`.
 - A derivation key holds content hashes, node keys and the target's toolchain identity, and no path that depends on the tree. Measured: the four keys of `problem/shallow_water2d_channel@0.2.5` recompute to their stamps under another root and with the nodes under another directory. Moving the root invalidates no certification.
 - Moving a node directory relative to the root does invalidate them. A certified IR's `meta.source_refs` are root-relative paths, and `_phase_certification` re-runs the compile validator, which resolves them (`ir_rejected_by_current_validator`). The separation therefore makes the Project root the root those paths are read against, and keeps `spec/<kind>/...` under it.

@@ -130,7 +130,7 @@ The whole JSONL event stream of each Codex leaf is kept at
 where a failed Codex leaf is diagnosed.
 
 For every Codex THREAD, the host creates an isolated `CODEX_HOME` outside the repository:
-`~/.atmofab/homes/<orchestration_id>/codex/<codex_lineage_id>/`, one per lineage (the cold launch
+`~/.spec2science/homes/<orchestration_id>/codex/<codex_lineage_id>/`, one per lineage (the cold launch
 that started the thread plus every warm resume of it) since [issue #245](https://github.com/seiya/atmofab/issues/245);
 the orchestration's `codex/` directory above it is a container that is bound into no leaf. The
 original home contributes only `auth.json`, as a read-only bwrap bind. Each lineage home's

@@ -40,7 +40,7 @@ Usage:
                         else ~/.claude" made every pre-migration leaf of a resumed
                         run look non-LLM. <slug> is the repo abs-path with '/' -> '-'.
                         Since issue #64 that private home is durable
-                        (~/.atmofab/homes/<orch_id>/claude), so an older run stays
+                        (~/.spec2science/homes/<orch_id>/claude), so an older run stays
                         analysable; before it, a host restart took the transcripts.
 
 MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):

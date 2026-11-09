@@ -758,7 +758,7 @@ def probe_site(site: Site, executables: tuple[str, ...]) -> SiteProbe:
     workdir = str(site.workdir)
     # The shipped runner is executed from beneath the workdir, so a file there must run: one is
     # made, run and removed (the job script refuses a program that is not an executable file).
-    exe = f"{workdir}/.atmofab-probe-$$"
+    exe = f"{workdir}/.spec2science-probe-$$"
     tests = {
         "workdir": f"mkdir -p {q(workdir)} 2>/dev/null && [ -d {q(workdir)} ] && [ -w {q(workdir)} ]",
         "workdir_exec": (f"{{ printf '#!/bin/sh\\nexit 0\\n' > \"{exe}\" && chmod +x \"{exe}\" && "

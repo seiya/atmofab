@@ -90,7 +90,7 @@ atexit.register(shutil.rmtree, _SHARED_REPO_ROOT, ignore_errors=True)
 def setUpModule() -> None:
     # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
     # backend homes through `record_launch`, and without this it writes them into
-    # the operator's real `~/.atmofab/homes` whenever it is run outside pytest.
+    # the operator's real `~/.spec2science/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
     # No real provider CLI is probed for a reset instant outside pytest either (issue #405).
     refuse_provider_probes_for_module(__name__)
@@ -8317,7 +8317,7 @@ class DiagnosticianTest(unittest.TestCase):
             orchestration_agent_run_id="ORCH", llm_config=llm_config, env={},
         )
         c.calls = []
-        # OUTSIDE /tmp, as production's `~/.atmofab/homes` is: a codex reading lineage whose
+        # OUTSIDE /tmp, as production's `~/.spec2science/homes` is: a codex reading lineage whose
         # home a codex shell can write is refused (`_codex_shell_writable_root`).
         homes = tempfile.TemporaryDirectory(dir="/var/tmp")
         self.addCleanup(homes.cleanup)
@@ -10894,7 +10894,7 @@ class LeafSpawnTest(unittest.TestCase):
         exactly the lineage's `config/` and `tree/` writable, the tree the working directory,
         the CLI home naming `config/` with the credential (claude) or the read-only `auth.json`
         / `config.toml` (codex) mapped into it — with the lineage home in a scratch directory
-        OUTSIDE `repo`, as production's `~/.atmofab/homes` is. It is the one profile any leaf
+        OUTSIDE `repo`, as production's `~/.spec2science/homes` is. It is the one profile any leaf
         runs under since issue #534 PR-J4-b; the read-only profile (`readonly: true`, no
         `leaf_mode`) these fixtures wrote until then is refused by name
         (`test_leaf_model.SpawnLeafRefusesTheRetiredReadonlyProfileTests`). The rows

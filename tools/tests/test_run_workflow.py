@@ -126,7 +126,7 @@ def setUpModule() -> None:
 
     Every test drives a fresh temporary repo root, and the claim path is keyed on it,
     so without this the suite deposits one 0-byte file per (root, spec/orchestration)
-    under `~/.atmofab/start_claims/` on every run — thousands of dentries that nothing
+    under `~/.spec2science/start_claims/` on every run — thousands of dentries that nothing
     ever reaps. Production leaves the variable unset.
     """
     global _CLAIM_ROOT_TMPDIR, _SAVED_CLAIM_ROOT, _TARGET_REDIRECT
@@ -1600,10 +1600,10 @@ class RunWorkflowTests(unittest.TestCase):
         """The DEFAULT is the half `test_claim_root_is_relocatable` cannot see.
 
         That test sets the override, which is also what this module's `setUpModule`
-        does, so the production resolution — no override, `~/.atmofab/start_claims` —
+        does, so the production resolution — no override, `~/.spec2science/start_claims` —
         ran in no test at all. It is the branch that matters for issue #132: the claims
         are the third writer under the operator-private root, and until this commit it
-        spelled `Path.home() / ".atmofab"` for itself.
+        spelled `Path.home() / ".spec2science"` for itself.
 
         Pinned at the SHARED resolver, not against a transcribed path: `_home_dir` is
         patched in `tools.operator_private_root`, the module `operator_secret_root` reads, so if
@@ -1618,7 +1618,7 @@ class RunWorkflowTests(unittest.TestCase):
                     mock.patch.object(private_root, "_home_dir",
                                       return_value=fake_home):
                 path = run_workflow._claim_lock_path(Path(tmp), "spec", "spec/x")
-            self.assertEqual(path.parent, (fake_home / ".atmofab").resolve()
+            self.assertEqual(path.parent, (fake_home / ".spec2science").resolve()
                              / "start_claims")
 
     def test_a_tilde_claim_root_override_is_expanded(self) -> None:
@@ -1798,7 +1798,7 @@ class RunWorkflowTests(unittest.TestCase):
 
         `tools/tests/conftest.py` wraps `_start_claims_root` in a guard that raises
         `AssertionError` when a test is about to resolve the operator's real
-        `~/.atmofab`. Catching it in `_exclusive_claim` would turn that guard into a
+        `~/.spec2science`. Catching it in `_exclusive_claim` would turn that guard into a
         silent "proceed" — the suite would go back to writing into the operator's tree
         and nothing would say so, which is the failure mode the guard exists to replace.
         """

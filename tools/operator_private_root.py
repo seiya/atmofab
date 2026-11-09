@@ -1,6 +1,6 @@
-"""The operator-private root (`~/.atmofab`) and the backend homes under it.
+"""The operator-private root (`~/.spec2science`) and the backend homes under it.
 
-ONE place resolves `~/.atmofab` and each relocatable subtree beneath it, because the side
+ONE place resolves `~/.spec2science` and each relocatable subtree beneath it, because the side
 that CREATES a tree there and the side that names it elsewhere must agree: issue #132 is what
 happens without that — the root was spelled four times and only one spelling was the guard's.
 
@@ -33,15 +33,15 @@ def _home_dir() -> Path:
     return Path(raw) if raw else Path.home()
 
 def operator_secret_root() -> Path:
-    """`~/.atmofab/` — the root of the operator-private trees (`homes/`, `start_claims/`)."""
-    return (_home_dir() / ".atmofab").resolve()
+    """`~/.spec2science/` — the root of the operator-private trees (`homes/`, `start_claims/`)."""
+    return (_home_dir() / ".spec2science").resolve()
 
 # The environment name that relocates a subtree of the operator-private root, and its
 # resolver. Defined HERE, in the module that also owns
 # `operator_secret_root` and the protected-read-root list, and imported by
 # `tools/orchestration_runtime.py` — the same arrangement as
 # `backend_credential_home_paths`, and for the same reason: the side that CREATES a tree
-# under `~/.atmofab` and the side that FORBIDS reading it must resolve the location
+# under `~/.spec2science` and the side that FORBIDS reading it must resolve the location
 # identically. Issue #132 is what happens without that: the root was spelled four times
 # and only one of the spellings was the guard's.
 #
@@ -52,7 +52,7 @@ def operator_secret_root() -> Path:
 WORKFLOW_HOMES_ROOT_ENV = "SPEC2SCIENCE_WORKFLOW_HOMES_ROOT"
 
 def workflow_homes_root() -> Path:
-    """`~/.atmofab/homes` — the durable root of every isolated backend home.
+    """`~/.spec2science/homes` — the durable root of every isolated backend home.
 
     Under the operator-secret root by default. That placement was chosen so
     `protected_host_read_roots` could cover EVERY orchestration's home through one entry
@@ -62,7 +62,7 @@ def workflow_homes_root() -> Path:
     want one root, not a scatter.
 
     `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
-    coverage: with the override pointing outside `~/.atmofab`, a leaf's Bash read of a
+    coverage: with the override pointing outside `~/.spec2science`, a leaf's Bash read of a
     SIBLING orchestration's transcript was allowed (measured), while
     `docs/HOOKS.md` and this module's own docstrings asserted that closure without
     naming the condition. The root is returned here so the guard protects wherever the

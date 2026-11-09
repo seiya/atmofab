@@ -623,7 +623,7 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
             orch_root = repo / "workspace" / "orchestrations" / self.ORCH_ID
             orch_root.mkdir(parents=True)
             _open_dangling_window(orch_root)
-            private = home / ".atmofab" / "homes" / self.ORCH_ID / "claude"
+            private = home / ".spec2science" / "homes" / self.ORCH_ID / "claude"
             (private / "projects").mkdir(parents=True)
             (orch_root / "orchestration_meta.json").write_text(
                 json.dumps({"claude_workflow_home": str(private)}), encoding="utf-8")
@@ -729,9 +729,9 @@ class IncidentMatchMethodRenderTests(unittest.TestCase):
 
     def test_a_live_incident_appends_the_root_it_matched_under(self) -> None:
         md = self._md({"found": True, "path": "/x.jsonl", "match_method": "session_id",
-                       "matched_projects_root": "/home/op/.atmofab/homes/o/claude/projects"})
+                       "matched_projects_root": "/home/op/.spec2science/homes/o/claude/projects"})
         self.assertIn(
-            "(matched via `session_id` under `/home/op/.atmofab/homes/o/claude/projects`)", md)
+            "(matched via `session_id` under `/home/op/.spec2science/homes/o/claude/projects`)", md)
 
 
 class IncidentApiErrorRenderTests(unittest.TestCase):

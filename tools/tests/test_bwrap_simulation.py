@@ -2306,7 +2306,7 @@ class _CodexLeafCliCase(unittest.TestCase):
         self.repo = base / "repo"
         self.repo.mkdir()
         self.origin = seed_codex_auth(base / "operator-codex")
-        # The homes root OUTSIDE /tmp, as production's `~/.atmofab/homes` is: codex's own
+        # The homes root OUTSIDE /tmp, as production's `~/.spec2science/homes` is: codex's own
         # `workspace-write` sandbox keeps /tmp writable, so a lineage home under it would make
         # `config/` and the home's other paths writable to the shell and the MX3 row would be
         # measuring bwrap alone (round 1 of step 2 PR-2 measured exactly that).

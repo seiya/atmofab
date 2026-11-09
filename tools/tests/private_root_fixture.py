@@ -1,6 +1,6 @@
 """Per-test isolation of the operator-private root, for the suite.
 
-Every test that drives `record_launch` writes under `~/.atmofab/homes`, and without a
+Every test that drives `record_launch` writes under `~/.spec2science/homes`, and without a
 redirect that is the OPERATOR'S OWN tree. These helpers give each test module — and, outside
 pytest, each test — a root of its own, and hand a codex-backed fixture its own credential
 instead of reading the developer's.
@@ -43,7 +43,7 @@ def seed_codex_auth(directory: Path) -> Path:
 # --------------------------------------------------------------------------------------
 # Operator-private-root redirect for test MODULES, not only for pytest.
 #
-# TWO subtrees of `~/.atmofab` are written by this repository, each behind one
+# TWO subtrees of `~/.spec2science` are written by this repository, each behind one
 # environment name, and both are redirected together here — issue #133 is what
 # happened while only the first was: a suite run deposited a few hundred operator tokens
 # into the operator's real store (measured at `e0bae3d`: 249 files from
@@ -52,7 +52,7 @@ def seed_codex_auth(directory: Path) -> Path:
 # else.
 #
 # `tools/tests/conftest.py` points these names at each test's `tmp_path` and raises if a
-# resolver is about to return the operator's real `~/.atmofab`. Neither half is loaded by
+# resolver is about to return the operator's real `~/.spec2science`. Neither half is loaded by
 # plain `unittest`, so any module that prepares a backend home or calls
 # `init_orchestration` writes into the operator's durable tree when run that way — and
 # this branch's own commit messages prescribe `env -u SPEC2SCIENCE_WORKFLOW_HOMES_ROOT python3
@@ -71,7 +71,7 @@ def seed_codex_auth(directory: Path) -> Path:
 # pytest conftest redirects anyway, so a mutant deleting this changes nothing that the
 # suite can see. `test_a_module_run_outside_pytest_writes_nothing_into_the_home` runs two
 # dependent classes under plain `unittest` in a subprocess with a fake `$HOME` and
-# asserts that `.atmofab` never appears there at all — one of them prepares a home, the
+# asserts that `.spec2science` never appears there at all — one of them prepares a home, the
 # other calls `init_orchestration`, and until the second was added the witness observed
 # only the homes half.
 _MODULE_HOMES_REDIRECTS: dict[str, tuple] = {}

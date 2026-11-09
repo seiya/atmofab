@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The suite's own operator-private-root layers, observed from OUTSIDE them.
 
-`tools/tests/conftest.py` has two layers over `~/.atmofab` (issues #132 / #133): a
+`tools/tests/conftest.py` has two layers over `~/.spec2science` (issues #132 / #133): a
 per-test REDIRECT of every relocator environment name, and a session GUARD wrapping every
 resolver. (There were three of each until issue #176 deleted the operator token store; the
 count is deliberately not written here — `_private_root_redirects` is where it lives.) Nothing
@@ -20,7 +20,7 @@ attempt to fix that observed only half:
 
 So this file exists to carry NO redirect of its own — no `setUpModule`, no `load_tests`, no
 override set anywhere in it. That absence IS the fixture; adding either would make these
-assertions observe the wrong layer again. Its own tests write nothing under `~/.atmofab`,
+assertions observe the wrong layer again. Its own tests write nothing under `~/.spec2science`,
 so it needs no protection of its own.
 """
 
@@ -54,7 +54,7 @@ class SuiteHarnessCoversAllPrivateRootsTests(unittest.TestCase):
             self.assertTrue(
                 getattr(resolver, "_atmofab_private_root_guard_installed", False),
                 f"the session guard does not wrap the {label} resolver — a test can "
-                "resolve it into the operator's real ~/.atmofab and nothing will say so "
+                "resolve it into the operator's real ~/.spec2science and nothing will say so "
                 "(tools/tests/conftest.py)")
 
     def test_every_operator_private_root_is_redirected_away_from_the_real_one(self) -> None:

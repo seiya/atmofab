@@ -260,7 +260,7 @@ not.
   the containment DROP — three lines away, the same list, the same root — still conditional on
   the default location: the code's own justification was "dropping one costs attribution, not
   enforcement, because this root still covers it", which is true only while the tree sits under
-  `~/.atmofab`. With the homes root containing the checkout a leaf could read a sibling
+  `~/.spec2science`. With the homes root containing the checkout a leaf could read a sibling
   orchestration's transcript (measured). **When you close this surface for an entry, grep the
   other decisions that name the same root** — membership, exemption, sort order, attribution —
   and re-check each in the moved configuration

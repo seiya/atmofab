@@ -5032,7 +5032,7 @@ def _clear_stale_active_child_markers(
     this function verifies nothing — it deletes the legacy active-child file and every per-arid
     marker unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
     and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
-    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    CLAIM (an advisory `flock` under `~/.spec2science/start_claims/`, released by the OS when the
     holding process dies) rather than by the recorded status. A terminal status still implies it;
     a `running` status no longer contradicts it, which is why `resume_orchestration` now
     reconciles a `running` prior too.
@@ -5215,7 +5215,7 @@ def _reset_stale_child_running_node_steps(
     this function verifies nothing — it resets every `child_running` node/step in
     `phase_state.json` to `not_started` unconditionally. What has to be true is that NO DRIVER IS RUNNING THIS ORCHESTRATION,
     and since issue #177's PR-3 that is established by the caller holding the run's EXCLUSIVE
-    CLAIM (an advisory `flock` under `~/.atmofab/start_claims/`, released by the OS when the
+    CLAIM (an advisory `flock` under `~/.spec2science/start_claims/`, released by the OS when the
     holding process dies) rather than by the recorded status. A terminal status still implies it;
     a `running` status no longer contradicts it, which is why `resume_orchestration` now
     reconciles a `running` prior too.
@@ -11036,7 +11036,7 @@ def resume_orchestration(
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
     meta.pop("driver", None)
     # ONE fact from that block survives it, and only one: the HOST. The exclusive claim that
-    # replaced the driver probe lives under the operator's own `~/.atmofab/start_claims/`, so
+    # replaced the driver probe lives under the operator's own `~/.spec2science/start_claims/`, so
     # it is host-scoped — with host-local homes (a container and its host bind-mounting the
     # checkout, a cluster with local `/home` and shared `/work`) two drivers each take their
     # own claim and both proceed. Nothing else in the tree can notice that.
@@ -11062,7 +11062,7 @@ def resume_orchestration(
                 "to": meta["last_driver_host"],
                 "note": (
                     "this orchestration was last driven on another host; the start claim is "
-                    "host-scoped (~/.atmofab/start_claims/), so it cannot prove the other "
+                    "host-scoped (~/.spec2science/start_claims/), so it cannot prove the other "
                     "host is not still running it — see docs/RUNBOOK.md §3-1"
                 ),
             },
@@ -12749,11 +12749,11 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 # `tools/operator_private_root.py`, not defined here. TWO subtrees of the operator-private root are
 # relocatable, and each name moves exactly one of them:
 #
-#   * `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`  -> `~/.atmofab/homes` (this module writes it)
-#   * `SPEC2SCIENCE_START_CLAIM_ROOT`     -> `~/.atmofab/start_claims` (`tools/run_workflow.py`)
+#   * `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`  -> `~/.spec2science/homes` (this module writes it)
+#   * `SPEC2SCIENCE_START_CLAIM_ROOT`     -> `~/.spec2science/start_claims` (`tools/run_workflow.py`)
 #
 # Both exist for the same reason: a test, or an operator with a reason, needs the
-# tree somewhere other than the real `~/.atmofab`. (`SPEC2SCIENCE_HOME` is deliberately NOT
+# tree somewhere other than the real `~/.spec2science`. (`SPEC2SCIENCE_HOME` is deliberately NOT
 # reused — it already means "the operator's `~/.codex`" on the codex auth path, and one
 # name with two meanings is how two resolutions silently drift apart.) The ROOT itself is
 # deliberately not relocatable: it is the Bash read guard's anchor.
@@ -12761,7 +12761,7 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 # The homes one resolves in the hooks module because the side that CREATES that tree and
 # the side that FORBIDS a leaf from reading it have to resolve the same location — the
 # arrangement `backend_credential_home_paths` already uses. When `WORKFLOW_HOMES_ROOT_ENV`
-# lived here, the Bash guard knew only `~/.atmofab`, so setting the override moved the
+# lived here, the Bash guard knew only `~/.spec2science`, so setting the override moved the
 # homes out from under the one protected root that covers every orchestration and a leaf
 # could read a SIBLING run's transcript (measured). Codex found that; the fix is that
 # there is now one resolver. (A third relocatable subtree, the dismiss-violation operator
@@ -12788,7 +12788,7 @@ WORKFLOW_HOME_OWNER_FILENAME = "owner.json"
 
 
 def _workflow_homes_root() -> Path:
-    """`~/.atmofab/homes` — the durable root of every isolated backend home.
+    """`~/.spec2science/homes` — the durable root of every isolated backend home.
 
     A thin alias over `tools/operator_private_root.py::workflow_homes_root`, kept as a name because
     this module's tests and `tools/prune_workflow_homes.py` patch it, and because the
@@ -12973,12 +12973,12 @@ def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bo
     made an operator following `docs/RUNBOOK.md` — which offers
     `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` with no stated precondition — fail EVERY launch after a
     plain `mkdir` created the root 0755 under the default umask; and it made a mode drift
-    on `~/.atmofab/homes` (a backup restored without permissions) refuse every launch of
+    on `~/.spec2science/homes` (a backup restored without permissions) refuse every launch of
     every orchestration. The chmod is exactly what the create path does one branch away,
     so tightening here makes the two agree rather than adding an authority.
 
     The tightening is `require_private`-gated for the same reason the check was:
-    `~/.atmofab` ITSELF is left alone. The homes writer here and `tools/run_workflow.py`'s
+    `~/.spec2science` ITSELF is left alone. The homes writer here and `tools/run_workflow.py`'s
     start-claim writer both create it best-effort and neither forces its mode, it is
     shared with `start_claims/`, and it is the one level here that this code did not
     necessarily create. `docs/RUNBOOK.md` recommends
@@ -13039,7 +13039,7 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     override_used = bool(os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip())
     # With an override in play, only the root itself is created: the override names a
     # location the caller chose, and silently building a deep tree under a typo'd path is
-    # the failure mode that costs most. Without one, `~/.atmofab` may legitimately not
+    # the failure mode that costs most. Without one, `~/.spec2science` may legitimately not
     # exist yet (a host that has never run `init_orchestration`).
     ancestors: list[tuple[Path, bool]] = []
     if override_used:
@@ -13052,8 +13052,8 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
             repo_root=repo_root)
         ancestors.append((root, True))
     else:
-        ancestors.append((root.parent, False))  # ~/.atmofab — mode not forced
-        ancestors.append((root, True))          # ~/.atmofab/homes
+        ancestors.append((root.parent, False))  # ~/.spec2science — mode not forced
+        ancestors.append((root, True))          # ~/.spec2science/homes
     ancestors.append((home.parent, True))  # <homes-root>/<oid>
     for path, require_private in ancestors:
         if path.exists() or path.is_symlink():
@@ -14864,7 +14864,7 @@ def init_orchestration(
         meta["invocation"] = invocation
         _record_until_phase_high_water(invocation)
     # No `driver` block: issue #177 deleted the liveness probe that read it, and the exclusive
-    # claim (`~/.atmofab/start_claims/`, released by the OS when the process dies) answers
+    # claim (`~/.spec2science/start_claims/`, released by the OS when the process dies) answers
     # "is another driver running this?" without a recorded identity to go stale.
     meta.pop("driver", None)
     if not orchestration_agent_run_id:
