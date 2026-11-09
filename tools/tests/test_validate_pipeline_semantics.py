@@ -17661,7 +17661,7 @@ class ProfileSelectionGateTests(unittest.TestCase):
 
     The set of adopted profiles comes from the conductor-authored sidecar, never from the IR:
     a field the leaf authors must not decide whether the leaf is gated
-    (`atmofab-enforcement-change` surface 11)."""
+    (`spec2science-enforcement-change` surface 11)."""
 
     _PROFILE = {"node_key": "profile/pr@0.1.1", "profile_id": "pr", "profile_version": "0.1.1",
                 "version_constraint": ">=0.1.0 <1.0.0",

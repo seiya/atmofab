@@ -39,7 +39,7 @@ this file: `.claude/skills/**` matches none of the scanner's globs, so the ratch
 kind of growth elsewhere does not read it at all. And the debt is **new to the repository**, since
 until 2026-08-19 these files lived in one operator's home directory. Most of it is not in this
 checklist, either: the majority of the sampled tokens under `.claude/skills/` are in episodes and
-identifier names, in both skills, and `atmofab-review-loop` carries some while having no checklist
+identifier names, in both skills, and `spec2science-review-loop` carries some while having no checklist
 at all. The development-documentation entry, now [a comment on PR #90](https://github.com/seiya/atmofab/pull/90#issuecomment-5559633234), holds the measurement and the command that
 reproduces it — do not quote a figure from here, because every edit to these files moves it.
 

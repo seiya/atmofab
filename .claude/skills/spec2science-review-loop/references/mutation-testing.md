@@ -62,7 +62,7 @@ question, opposite answers, and the disagreement was entirely in the choice of m
 **What it cost**: nothing, because a second axis happened to ask the same question properly. Had
 only the first run, the honest response to "this block observes nothing" is to delete the block —
 and the branch would have shipped having removed a real growth bound on a leaf-read host literal,
-justified by a measurement of the wrong thing. That is `atmofab-enforcement-change` rule 1-b's
+justified by a measurement of the wrong thing. That is `spec2science-enforcement-change` rule 1-b's
 failure mode arriving through a reviewer rather than through the author.
 
 **The rule** (SKILL.md, "Running a round"): tell reviewers to mutate the subject, ask for the
@@ -139,7 +139,7 @@ repository's only standing suite failure: `test_skill_citations` READ a backtick
 repo-relative path in a skill file as a POINTER and REQUIRED it to be tracked, and the whole
 point of this one is that it is not. The rule is right and the citation was the defect —
 name the shape, not a path a reader would try to open. #183 retired that test, so nothing is
-red for this any more; `atmofab-enforcement-change/SKILL.md` states the manual check.)
+red for this any more; `spec2science-enforcement-change/SKILL.md` states the manual check.)
 
 The behaviour is right and should not change: a sweep that mixed in uncommitted work would
 report about a tree no one can reproduce. What the rule has to say is the ORDER — commit the
@@ -282,7 +282,7 @@ back. It nearly became "this pin works" in the prose — the pin was in fact fal
 against `origin/main`'s wording, which only replacing the whole file revealed.
 
 - Count the occurrences before substituting and **exit non-zero on zero matches**.
-  `.claude/skills/atmofab-review-loop/scripts/mutation_check.py` does this for the case that
+  `.claude/skills/spec2science-review-loop/scripts/mutation_check.py` does this for the case that
   matches it — a hunk it cannot revert is
   reported as SKIPPED and exits 1 (witnessed for the rename cause; no scenario has yet produced a
   bare `git apply -R` refusal, so that half is asserted from the code, not measured) (until 2026-08-19 it was counted as neither a survivor
@@ -377,7 +377,7 @@ was never observed at all. A kill from a setup error is worth exactly as much as
 
 **Rewriting a test can delete a witness.** PR #57's round 3 replaced a test with a better one and
 removed the only test observing a validator-side backstop it had deliberately kept. The mechanism
-lived on, and mutants went green. Sibling of `atmofab-enforcement-change` §4's "Pin at the handler, not the helper".
+lived on, and mutants went green. Sibling of `spec2science-enforcement-change` §4's "Pin at the handler, not the helper".
 
 **Reproducing the wiring is not observing the wiring.** A test meant to pin what `run_substep`
 passes as `pure=` computed `pure` itself and handed it to `_resolve_reuse_resume` directly, so

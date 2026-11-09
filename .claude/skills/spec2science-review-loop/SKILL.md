@@ -1,5 +1,5 @@
 ---
-name: atmofab-review-loop
+name: spec2science-review-loop
 description: Use when implementation in this repository reaches a pause and review begins, when running subagent or Codex review rounds, when fixing findings and moving to the next round, and when judging whether the loop has converged. Required reading for 「レビューして」「レビュー回して」「指摘を直して」「codex review」「この PR merge していい？」「まだ見るべきところある？」 and immediately after finishing the implementation of an audit finding or an issue. The subject is **review of changes you made**; do not use it for reading existing spec, docs, or implementation to judge whether they are sound (review without a change).
 ---
 
@@ -7,7 +7,7 @@ description: Use when implementation in this repository reaches a pause and revi
 
 What this skill holds is **how to run a review**: round structure, what to tell reviewers,
 convergence criteria, mutation checking. If the change touches enforcement machinery (a gate,
-validator, hook, or capability), **start `atmofab-enforcement-change` as well** — it owns the
+validator, hook, or capability), **start `spec2science-enforcement-change` as well** — it owns the
 domain-specific traps (dual-read pairs, failure attribution, verification commands) and they
 are not duplicated here.
 
@@ -112,7 +112,7 @@ Episodes for all of the above: `references/round-conduct.md`.
 
 ```bash
 # right after a fix commit (the default)
-python3 .claude/skills/atmofab-review-loop/scripts/mutation_check.py \
+python3 .claude/skills/spec2science-review-loop/scripts/mutation_check.py \
   --range HEAD~1..HEAD --paths <sources you touched> \
   --test-cmd "python3 -m pytest tools/tests/<relevant file> -q -p no:randomly -x"
 # to look at the whole branch at once (three-dot, like the review target: it excludes the
@@ -120,7 +120,7 @@ python3 .claude/skills/atmofab-review-loop/scripts/mutation_check.py \
 #   --range origin/main...HEAD
 # if you changed scripts/mutation_check.py itself, its tests live beside it;
 # `pytest tools/tests` does not collect them:
-#   python3 -m pytest .claude/skills/atmofab-review-loop/scripts/tests -q -p no:randomly
+#   python3 -m pytest .claude/skills/spec2science-review-loop/scripts/tests -q -p no:randomly
 ```
 
 **Pass `-x` — but only with a `--test-cmd` whose baseline is green** (see the handwritten-sweep
@@ -527,7 +527,7 @@ when a rule does not obviously apply:
    Episodes: `references/measurement-records.md`.
 
 3. **Run the verification set** and record the measurements. The commands are in
-   `.claude/skills/atmofab-enforcement-change/references/verification.md` (suite baseline, ruff
+   `.claude/skills/spec2science-enforcement-change/references/verification.md` (suite baseline, ruff
    diff against origin/main, doc size ceilings; its end-to-end section, which drives the
    build-runtime library by import, is for enforcement machinery). **Run it again after every later commit of the loop, a comment-only
    one included**: a file that a derivation transformation tuple hashes
@@ -810,7 +810,7 @@ assertion you would call vacuous, the witness is not one.
 route the reviewer stated is a claim, not the reproduction** — a route you cannot drive is not a
 route, and a finding whose route was reconstructed by reading is the shape "verify a reviewer's
 POSITIVE claims by asking what it EXECUTED" below is about. Treat
-"the implementation is right but the test is weak" as real. (`atmofab-enforcement-change` judgment
+"the implementation is right but the test is weak" as real. (`spec2science-enforcement-change` judgment
 rules 1 and 1-b own the residual / unreachable half and state what a "record" has to be there;
 the false-positive and out-of-scope classes are this skill's own, below. This line is the round's
 trigger, not a second statement of the rule.)
@@ -1012,7 +1012,7 @@ cut, and it runs both ways:
 - **Buying the leaf nothing toward done** — the operator's credentials, a read outside the
   checkout, another `orchestration`, anything outliving the run. **Out of scope however real the
   mechanism**, and saying so **costs no reproduction**: name what the leaf would gain, show it is
-  nothing, stop. That permission is narrow and is not rule 1's — `atmofab-enforcement-change`
+  nothing, stop. That permission is narrow and is not rule 1's — `spec2science-enforcement-change`
   rule 1-e states the two apart
 
 **Both halves have a recorded failure, in opposite directions, so apply both** (episodes:
@@ -1313,7 +1313,7 @@ that tells you how it closed.
   module — it did, in a CONSUMER the same sentence says never runs — so the check ratified the
   error (`references/signs-episodes.md`).
   **The sharpest form is a correction you make ON A REVIEWER'S MEASUREMENT**, where the rule you
-  already know does not fire: `atmofab-enforcement-change` rule 3 says not to write someone else's
+  already know does not fire: `spec2science-enforcement-change` rule 3 says not to write someone else's
   measurement as your own, and issue #153 broke it there — replacing a correct figure with a wrong
   one, one item after condemning that substitution. **A reviewer's finding arrives already carrying
   evidence, so the correction feels verified before you write it**, and a corrections entry is the
@@ -1344,7 +1344,7 @@ that tells you how it closed.
 - **You DELETED a summary that kept coming out wrong and stated the mechanism instead** → right
   move, and it has a price: stating a mechanism invites POINTERS, and a pointer onto a guarded
   surface walks past the guard, because every guard here reads for a token and a `file:line`
-  contains none. `atmofab-enforcement-change` surface 13 owns the rule and the repair; the sign is
+  contains none. `spec2science-enforcement-change` surface 13 owns the rule and the repair; the sign is
   here because the trigger is a review-loop move — the same rewrite this file's "rewritten the
   same string three times" row tells you to make. **Criterion: for each pointer the rewrite adds,
   name what its TARGET holds that this surface forbids.** Issue #168 added four `tools/*.py:<line>`
@@ -1355,9 +1355,9 @@ that tells you how it closed.
   0 before, 4 after
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
-  (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one
+  (`.claude/skills/spec2science-enforcement-change/references/verification.md`). **Rewriting one
   statement repeatedly is a SWEEP problem, which this row owns; several sites that each state the
-  rule is a COUPLING problem, which `atmofab-enforcement-change` rule 3-a owns and states the
+  rule is a COUPLING problem, which `spec2science-enforcement-change` rule 3-a owns and states the
   threshold for.** Do not restate its number here — that is the drift this pair is about.
   **A sweep does not help when the sentence SUMMARISES a measurement** — "at the top of the band",
   "above every rate observed" — because there is one site and it is wrong on its own terms. PR #100
@@ -1451,7 +1451,7 @@ that tells you how it closed.
   it decides whether a MISS is loud or silent. Criterion, one question: **if I never think about
   element X, what happens to it, and would I notice?** **The answer decides the polarity; the sign
   does not.** Where dropping X produces a REFUSAL — a gate allowlist, a write root, an import
-  roster — drop-by-default is the loud direction and is correct, which is `atmofab-enforcement-change`
+  roster — drop-by-default is the loud direction and is correct, which is `spec2science-enforcement-change`
   surface 8 and not negotiable. Where dropping X produces silence, keeping unless explicitly
   dropped costs size and nothing else. A third answer is often the best: make an unconsidered X
   REFUSE until someone decides, which is what `_UNSCANNED_ROOT_FILES` does after two files landed
@@ -1494,7 +1494,7 @@ that tells you how it closed.
   findings, one of them a fail-open regression against `origin/main`
   (`references/class-descent-log.md`)
 - **A reviewer said "it is environment-dependent"** → do not close it with a mock on the test side.
-  Ask first what happens in production on that environment (`atmofab-enforcement-change` rule 2
+  Ask first what happens in production on that environment (`spec2science-enforcement-change` rule 2
   owns this)
 - **You rebuilt the design and tests carrying the old mechanism's name remain** → test names are
   read as evidence that the mechanism is still protected. **Do not delete them; annotate at the
@@ -1519,7 +1519,7 @@ that tells you how it closed.
   reproduced `leaf shortcut` and a green suite. **Parse the structured form** (the diagnostic
   line's `path:line:col: CODE` shape, or `--output-format json`) **and add the negative control**:
   the same input WITHOUT the mechanism must lose exactly what the mechanism was supposed to keep.
-  This is `atmofab-enforcement-change`'s surface 5 — caller-controlled data mixed into a
+  This is `spec2science-enforcement-change`'s surface 5 — caller-controlled data mixed into a
   classification channel — asked of a TEST rather than of a gate
 - **You appended a test class to the END of a file** → check where the `if __name__ ==
   "__main__": unittest.main()` guard sits. A class defined below it is collected by pytest

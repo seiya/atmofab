@@ -569,7 +569,7 @@ class HostDefectRefusalsTests(unittest.TestCase):
     FOUND BY THE ROUND-0 MUTATION SWEEP, not by review: each of these three replaced a branch
     that used to lead somewhere, and deleting the refusal left the whole suite green. None is
     reachable from the conductor — that is the point of them, and it is also why nothing was
-    driving them. `.claude/skills/atmofab-enforcement-change` rule 1-b says a surviving mutant
+    driving them. `.claude/skills/spec2science-enforcement-change` rule 1-b says a surviving mutant
     is grounds for a pin, never for deletion, so they are kept and pinned here.
 
     Each is a HOST defect rather than a leaf one: the leaf cannot reach any of these three, and
@@ -1162,7 +1162,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
     inlined; round 2 fixed those three; round 3 found a fourth, in a document neither sweep had
     listed, spelled `generate-generate` where round 2 had grepped `workflow-generate-generate`.
     Three rounds, three token lists, three blind spots — which is
-    `.claude/skills/atmofab-enforcement-change` rule 3-a's trigger exactly: when the sweep keeps
+    `.claude/skills/spec2science-enforcement-change` rule 3-a's trigger exactly: when the sweep keeps
     losing, couple the documents to the rule with a check.
 
     WHY IT MATTERS MORE HERE than in a document nobody reads: these are the leaf's own input.

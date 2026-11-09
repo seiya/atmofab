@@ -597,7 +597,7 @@ worth stating: its sole call site is guarded by `not self._leaf_substep(refs,
 "generate", "generate")`, so it now runs only for a node with no bundle shape — the shape
 `run_substep` then fails closed. It is kept because the parity test below is what pins the
 derived object order against it, and because narrowing a renderer's reachability is not
-the same claim as it being dead (`atmofab-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
+the same claim as it being dead (`spec2science-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
 `derive_build_graph(...)["link"]["objects"]` against the object list parsed out of the
 `_write_makefile`-authored control file. Since `Z2` an `M3c` node renders its control
 file from this derived graph (`_render_leaf_makefile_from_graph`, the build system's

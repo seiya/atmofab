@@ -361,7 +361,7 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
     inventory table and the hook-recovery row; `docs/HOOKS.md` twice;
     and the module comments in `orchestration_runtime`, `run_workflow` and
     `operator_private_root`. Three or more statement sites is where
-    `.claude/skills/atmofab-enforcement-change` rule 3-a says discipline has already
+    `.claude/skills/spec2science-enforcement-change` rule 3-a says discipline has already
     lost, and the site an OPERATOR reads is the one to check first — a RUNBOOK that
     names one of two relocators sends them to a shell without the export that decides
     where their homes are.

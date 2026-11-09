@@ -312,7 +312,7 @@ class PureVerifyContextTests(unittest.TestCase):
                 self.assertNotIn(absent, doc)
 
     def test_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
-        """Enumeration coupling (`atmofab-enforcement-change` rule 3-a): the rubric must state
+        """Enumeration coupling (`spec2science-enforcement-change` rule 3-a): the rubric must state
         each severity the CODE accepts, at its own bullet, and state no other.
 
         PINNED: that every member of `VERDICT_SEVERITIES` except the pass-side `none` opens

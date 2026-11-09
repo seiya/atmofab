@@ -884,7 +884,7 @@ class BuildCommandTests(unittest.TestCase):
         double space; an `ast` walk over `==` and `in <literal>` missed `bs = build_system` bound
         to an alias, and missed `if build_system in _EXTRA:` against a module-level dict — which
         is THIS MODULE'S OWN IDIOM (`_LINT_PRESET_COMMANDS` is exactly that). Each fix produced
-        the next spelling, which `.claude/skills/atmofab-review-loop` names as the sign that the
+        the next spelling, which `.claude/skills/spec2science-review-loop` names as the sign that the
         pin is in the wrong place rather than the wrong shape.
 
         So the question is now one a LOOKUP can answer: `build_command` raises `ValueError` for

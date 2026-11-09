@@ -136,9 +136,9 @@ python3 -m pytest tools/tests/ -q -m "not slow"
 opt-out because nothing else runs the full set: deselecting it by default would leave the
 leaf deadline / abandon / teardown guards executed by nobody.
 
-The review instrument under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py` —
+The review instrument under `.claude/skills/` — `spec2science-review-loop/scripts/mutation_check.py` —
 carries its tests beside it in `scripts/tests/`. Its skill states the command that runs them
-(`.claude/skills/atmofab-review-loop/SKILL.md`), because no command in this section collects
+(`.claude/skills/spec2science-review-loop/SKILL.md`), because no command in this section collects
 them — measured at `dfeb73dc`: `pytest tools/tests/` and a bare `pytest` each collect 6266, and
 that directory holds 52 tests. (A second instrument, `measure_claude_tool.py`, measured the
 leaf tools that went in issue #171, and was deleted in issue #445.)

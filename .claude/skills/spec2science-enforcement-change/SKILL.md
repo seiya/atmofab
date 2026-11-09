@@ -1,5 +1,5 @@
 ---
-name: atmofab-enforcement-change
+name: spec2science-enforcement-change
 description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime library's argument checks, the launch-record refusals (a new pure launch among them), the workshop leaf's writable lineage profile, its wrapper's path resolution under the work tree, its per-lineage operation set and its call cap, `check_ir`'s scratch IR directory under the lineage home, the READING workshop leaf of a judging substep or the `escalate` diagnostician (no endpoint, its one output document, the seed restore, the seeds-only reseed after a transport death, the launch-record endpoint row), the HTTP host tool-use loop of a workshop leaf (its file tools' path resolution and reserved names, the cut / timeout / transport rules, the in-memory warm history, `loop_turns.jsonl`, the HTTP workshop record audit), the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `tools/build_runtime.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
@@ -8,7 +8,7 @@ description: Use when changing this repository's enforcement machinery — the d
 What this skill holds is the **traps specific to the enforcement domain**: dual-read pairs,
 failure attribution, verification commands, and the judgment rules you never drop. **How to
 run a review** — round structure, exclusion lists, when Codex enters, convergence, mutation
-checking — is owned by `atmofab-review-loop`, so start that one too once you reach the review
+checking — is owned by `spec2science-review-loop`, so start that one too once you reach the review
 stage.
 
 Fixing enforcement machinery in this repository carries a high probability that **the fix
@@ -84,7 +84,7 @@ a fail-open that way, on the strength of **one** compiler probe).
   docstring or the class name — and keep the rows (or their first halves) whose subject
   survives.** The tell is a row whose docstring is about the deleted mechanism and whose body
   starts with a call into something else. This is the test-side form of "what CHECK went with
-  what was deleted" (`atmofab-review-loop` §Stopping conditions), which otherwise fires only in
+  what was deleted" (`spec2science-review-loop` §Stopping conditions), which otherwise fires only in
   the disclosure round, i.e. two rounds too late. Episode: `references/judgment-episodes.md`
   §Rule 1-b (issue #170)
 - **MOVING a fact is deleting a defense you never classified**, and it is the one shape here that
@@ -96,7 +96,7 @@ a fail-open that way, on the strength of **one** compiler probe).
   **Rule: before moving a fact between structures, list the readers of the OLD structure and say
   for each what it sees now.** The tell is a diff that ADDS a key rather than changing a value —
   nothing looks removed. Nothing in a review loop finds this except comparing the two revisions,
-  which is why it is `atmofab-review-loop`'s disclosure axis that caught it and not the sweep, the
+  which is why it is `spec2science-review-loop`'s disclosure axis that caught it and not the sweep, the
   census, or a blank-slate reviewer, all of which compare HEAD against itself
 - **Two more forms of the same loss, both from issue #316 PR-2 (PR #319), and neither looks like
   a move of a FACT.** (a) **Text moved to a new FILE leaves every check that names files by
@@ -314,7 +314,7 @@ CORRECTION**: a reviewer's finding arrives already carrying evidence, so it feel
 write it, and issue #153 wrote a reviewer's HEAD-measured count into a corrections bullet as the count
 "when that commit landed" — replacing a correct figure with a wrong one, one item after condemning
 that exact substitution. **Re-measure at the commit you are about to NAME, not at HEAD**
-(`atmofab-review-loop`'s "the fix was to a RECORD" sign owns the procedure).
+(`spec2science-review-loop`'s "the fix was to a RECORD" sign owns the procedure).
 **Keep a list of every place you wrote a number and
 re-measure them together at the end**; a commit message cannot be fixed afterwards, so either
 mark the number as measured at a point or rewrite it in the final round.
@@ -442,7 +442,7 @@ prompt assembled at runtime **that nothing renders under test**. For those the o
 remove the statement or to make it derived; say in the commit which sites you could not couple.
 **Check before assuming a site is out of reach** — an issue or PR body can be edited
 (`gh issue edit --body`), and `docs/examples/*.yaml` is coupled today by
-`tools/tests/test_llm_config.py`. THIS file is not: no test checks that a path cited in a skill document is tracked (#183 retired `test_skill_citations.py`), so check a cited path with `git ls-files --error-unmatch -- <path>` before you commit. **Resolve it against the right base or it reports a correct pointer as missing**, which is the failure that gets a check disregarded: a pointer starting `references/` or `scripts/` is skill-relative (the form a reader follows most often — the retired test resolved these); one starting with another skill's NAME, as `atmofab-review-loop/references/mutation-testing.md` does, resolves against `.claude/skills/` (the retired test emitted no target at all for these, so here the manual check is stricter than what it replaces); everything else is repository-root relative. Both non-root forms occur in this tree today. **And this check answers only half of what was retired**: `test_skill_citations.py` also refused a file under a skill that no `SKILL.md` reaches by any pointer, and no command finds an orphan — for that, walk the skill yourself when you add a `references/` file. What stays uncoupled is the CLAIM a sentence makes, not the paths it cites. **A runtime-assembled prompt stops being out of reach the moment
+`tools/tests/test_llm_config.py`. THIS file is not: no test checks that a path cited in a skill document is tracked (#183 retired `test_skill_citations.py`), so check a cited path with `git ls-files --error-unmatch -- <path>` before you commit. **Resolve it against the right base or it reports a correct pointer as missing**, which is the failure that gets a check disregarded: a pointer starting `references/` or `scripts/` is skill-relative (the form a reader follows most often — the retired test resolved these); one starting with another skill's NAME, as `spec2science-review-loop/references/mutation-testing.md` does, resolves against `.claude/skills/` (the retired test emitted no target at all for these, so here the manual check is stricter than what it replaces); everything else is repository-root relative. Both non-root forms occur in this tree today. **And this check answers only half of what was retired**: `test_skill_citations.py` also refused a file under a skill that no `SKILL.md` reaches by any pointer, and no command finds an orphan — for that, walk the skill yourself when you add a `references/` file. What stays uncoupled is the CLAIM a sentence makes, not the paths it cites. **A runtime-assembled prompt stops being out of reach the moment
 you render it through the production entry point with a fixed payload**: issue #149's sweep drives
 `build_launch_request` -> `prepare_launch_request_payload` -> `render_launch_prompt_text` over every
 `(step, substep)` an LLM leaf runs, in every renderer shape, and scans the render minus the lines a
@@ -473,7 +473,7 @@ the optional space in a two-word keyword, omitted `::`, statement labels, the 18
 forms) and the boundary note that governs them are in `references/source-text-surface.md`.
 
 When a rule derives its safety from an enumeration, **write a test that kills each element of the
-enumeration by mutation** (round 0 in `atmofab-review-loop`). A missing element shows up in no
+enumeration by mutation** (round 0 in `spec2science-review-loop`). A missing element shows up in no
 other test.
 
 The surfaces that are none of exec / env / argv / FS / evidence paths and none of the
@@ -487,7 +487,7 @@ recipes are in `references/input-surfaces.md`:
   and each narrowing was defeated by one byte. **Rule: change the channel rather than narrowing
   the sample** — exit code, exception type, a dedicated field, a sidecar; each is written by the
   side that knows and cannot be written by the caller. This is the classification-channel version
-  of `atmofab-review-loop`'s sign "the pin was broken in a different shape every time — move the
+  of `spec2science-review-loop`'s sign "the pin was broken in a different shape every time — move the
   definition to one place". Then **count every site that makes the same
   decision** (there were six, and two further sites scanned neither marker), and at three or more
   change the channel design instead of fixing them individually. Two follow-through traps: **a
@@ -600,7 +600,7 @@ recipes are in `references/input-surfaces.md`:
   safe by construction (a root whose own spelling contains the thing: the later bind stacks on
   top).** The tells: a fix that adds `normpath`/`realpath`/`resolve()` to a comparison (each is
   one alias class, and the next round brings the next), and a docstring that says "the overlay
-  covers it" without saying at which spelling. `atmofab-review-loop`'s "same family two rounds
+  covers it" without saying at which spelling. `spec2science-review-loop`'s "same family two rounds
   running → change shape" fired at round 3 there and the shape still needed two more rounds,
   because each identity instrument sees one alias class; enumerate the classes (lexical,
   symlink, bind mount) FIRST and pick the instrument that sees all of them, or state which one
@@ -675,7 +675,7 @@ recipes are in `references/input-surfaces.md`:
   instead, which is where that rule says the knowledge already lives.
   **Nothing in this repository's review loop finds this except rendering the prompt** — the
   mutation sweep mutates code, the census enumerates code, a blank-slate reviewer reads code, and
-  all three were green on it; see `atmofab-review-loop`'s "what does a LEAF see" clause.
+  all three were green on it; see `spec2science-review-loop`'s "what does a LEAF see" clause.
   **The MIRROR is the same surface and reads as an unrelated task: changing what a leaf is TOLD
   without changing what it is GIVEN.** Issue #175 corrected the agentic compile producer's
   `SKILL` to say the direct dependency set is read from `<ir_ref>/dependency_graph.json` — and
@@ -833,7 +833,7 @@ that could not converge in principle).
 - **A refusal that carries ANOTHER PROGRAM's message keeps its HEAD, and one reason is not all
   the reasons.** A tool states why it refused near its start and ends with generic advice; a
   `[-N:]` cut keeps the advice and drops the diagnosis, and a fixture with a one-line fake
-  message cannot see the difference (`atmofab-review-loop`'s threshold rule: the fixture must
+  message cannot see the difference (`spec2science-review-loop`'s threshold rule: the fixture must
   straddle the cut). And a refusal that blames one cause for every failure of a step (a failed
   launch reported as "the two programs are from different installations") sends the reader to
   fix what is already right: split the branches by what the observation can actually tell
@@ -904,8 +904,8 @@ Revert your fix one hunk at a time and confirm the tests **fail**. In PR #51 the
 **42 mutants**, and the tests passing for the wrong reason, were things I learned only when a later
 round pointed them out.
 
-The procedure and the script are **owned by `atmofab-review-loop`**
-(`.claude/skills/atmofab-review-loop/scripts/mutation_check.py`).
+The procedure and the script are **owned by `spec2science-review-loop`**
+(`.claude/skills/spec2science-review-loop/scripts/mutation_check.py`).
 The same thing runs before review, so read its "Before you hand it over (round 0)".
 
 ### 6. Verify and record
@@ -932,7 +932,7 @@ Signs to look for:
   `references/deterministic-substep-wiring.md`
 - **A new input surface, or a new episode of an existing one** → `references/input-surfaces.md`
 - **The mutation check gave a false positive, or missed something** →
-  `.claude/skills/atmofab-review-loop/scripts/mutation_check.py`
+  `.claude/skills/spec2science-review-loop/scripts/mutation_check.py`
 - **The skill did not fire when it should have, or fired when it should not** → `description`
 - **You broke one of the three judgment rules while following the procedure** → SKILL.md itself.
   Distinguish "the rule was missing" from "the rule was there but its trigger point was

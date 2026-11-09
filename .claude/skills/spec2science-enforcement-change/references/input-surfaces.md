@@ -33,7 +33,7 @@ Each fix narrowed the scan, and **each was broken by one byte**:
 enters that text. If it does, **change the channel rather than narrowing the sample** — exit
 code, exception type, a dedicated field, a sidecar. Each of these is written by the side that
 knows and cannot be written by the caller. This is the classification-channel version of
-`atmofab-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
+`spec2science-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
 one place".
 
 The same shape usually exists several times in the same repository. In L174 the twin survived
@@ -698,6 +698,6 @@ is what `AGENTS.md` §"Dedicated rule documents" already prescribes, and it is n
 to open a tree the reader has been told not to read.
 
 **The generalization worth carrying.** Deleting a summary because it keeps coming out wrong is the
-right move (`atmofab-review-loop`'s "a summary of a spread is a claim with no witness"). What that
+right move (`spec2science-review-loop`'s "a summary of a spread is a claim with no witness"). What that
 move costs is that the mechanism has to be stated instead, and stating a mechanism invites
 pointers. On a guarded surface, decide where each pointer LANDS before you write it.

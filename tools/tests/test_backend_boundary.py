@@ -1203,7 +1203,7 @@ class ScopePinTests(unittest.TestCase):
         hand, and deleting the new §Scope bullet left this file green.
 
         Coupled by POINTER, not by wording: each glob's root path must appear somewhere in the
-        §Scope section. That is `atmofab-enforcement-change` rule 3-a's middle option, chosen
+        §Scope section. That is `spec2science-enforcement-change` rule 3-a's middle option, chosen
         because §Scope is prose that explains each entry rather than a list of globs, and pinning
         the prose would refuse every legitimate rewording. What it catches is the failure that
         actually happened — a glob added with no bullet, or a bullet deleted while the glob stays.

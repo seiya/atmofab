@@ -1087,7 +1087,7 @@ PINNED: dict[str, str] = {
     # different profile inputs. Member moved: `pure_compile_generate_verification.txt`.
     # Shipped at origin/main 9c5e5902 (PR #556, issue #534 PR-J4-a, which touched no pure
     # member), and re-keyed here so the revert check still holds it (rule 1-b of
-    # `.claude/skills/atmofab-enforcement-change`, the `pure-50@3c117410` precedent).
+    # `.claude/skills/spec2science-enforcement-change`, the `pure-50@3c117410` precedent).
     "pure-84@9c5e5902": "22008342688579a1a2496bb9d3bc9e2ad3d94fb2145509e20b57431f1e9f2351",
     # pure-84, RE-PINNED IN PLACE (issue #534 PR-J4-b, operator decision: the VALUE is kept, so
     # no derivation key moves): the pure path is deleted, and the tuple becomes the UNION of the

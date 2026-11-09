@@ -15,6 +15,6 @@ The development-facing counterpart of `AGENTS.md` is `docs/DEVELOPMENT.md`: fres
 Claude-specific operator / maintenance references (not needed by a running sub-agent):
 - Claude backend preflight requirements: [docs/RUNBOOK.md](docs/RUNBOOK.md) §0-2. No server registration or tool permission is required since the MCP layer was deleted in [issue #444](https://github.com/seiya/atmofab/issues/444).
 - Hook implementation, the matcher rule, and the dev-layer / leaf-layer split: [docs/HOOKS.md](docs/HOOKS.md).
-- How a review loop over your own change is run — rounds, exclusion lists, when Codex enters, how convergence is judged: the `atmofab-review-loop` skill in `.claude/skills/`.
-- The traps specific to changing enforcement machinery, and the rules for classifying a review finding as residual or out of scope: the `atmofab-enforcement-change` skill in `.claude/skills/`.
+- How a review loop over your own change is run — rounds, exclusion lists, when Codex enters, how convergence is judged: the `spec2science-review-loop` skill in `.claude/skills/`.
+- The traps specific to changing enforcement machinery, and the rules for classifying a review finding as residual or out of scope: the `spec2science-enforcement-change` skill in `.claude/skills/`.
 - There is ONE hook layer now, and it is the DEV one: `.claude/settings.json` and `.codex/hooks.json`, for an operator's interactive session, naming `tools/hooks/dev_cli.py`. The LEAF layer — `leaf_config/claude/settings.json`, `leaf_config/codex/hooks.json` and `tools/hooks/cli.py` — went with the agentic leaf in Z4 (issue #171): a `workshop leaf`'s tool calls are bounded by placement and by the host-served wrapper, not by a hook. `docs/HOOKS.md` is canonical for what remains.

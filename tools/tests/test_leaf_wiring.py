@@ -893,7 +893,7 @@ class PureRenderTests(unittest.TestCase):
 
     # Every document that states the ROUTING consequence of `issue_severity`, paired with a
     # sentence that PRECEDES the pointer on the same line and is byte-identical in the wording
-    # this issue refuses (`atmofab-enforcement-change` rule 3-a, trap 1), and the `step`s whose
+    # this issue refuses (`spec2science-enforcement-change` rule 3-a, trap 1), and the `step`s whose
     # rubric that line must reach. The rubric is defined once PER PHASE — `compile` in phase_01
     # §1-2 (issue #148), `generate` in phase_02 §2-2 (issue #143); these sites carry a pointer
     # only, so what is coupled is that a reader who meets the routing can reach the rule for
@@ -913,7 +913,7 @@ class PureRenderTests(unittest.TestCase):
          ("compile", "generate")),
     )
     # Where each phase's rubric lives. The DOCUMENT is derived from the code's own step ->
-    # phase-doc map (`atmofab-enforcement-change` rule 3-a: the rule is defined once, in the
+    # phase-doc map (`spec2science-enforcement-change` rule 3-a: the rule is defined once, in the
     # code, and the documents are checked against it), so a moved phase doc breaks both together;
     # only the section number is spelled here, having no representation in the code, and
     # `test_each_rubric_section_number_is_a_heading_of_its_phase_doc` holds it to the heading.
@@ -929,7 +929,7 @@ class PureRenderTests(unittest.TestCase):
     # at all. Each rewrite also refused a legitimate rewording, in the other direction.
     #
     # The question "does this prose grade on the repair-route axis?" is not answerable by
-    # pattern (`atmofab-enforcement-change` §1: when a gate reads source TEXT rather than the
+    # pattern (`spec2science-enforcement-change` §1: when a gate reads source TEXT rather than the
     # meaning of an input, enumerating spellings is the losing line). So it is replaced by a
     # question that IS answerable: "has this text changed since a human last read it against the
     # axis?" That is the instrument this file already uses for `_SEVERITY_ROUTING_ALLOWLIST` and
@@ -1451,7 +1451,7 @@ class PureRenderTests(unittest.TestCase):
     # one round: a hand-assignment written WITH the pointer (`it is a `fail` (`major`) — see
     # …§2-2`) passed, while correct routing prose about `prod` escalation, and about
     # `Compile.verify`'s own rule, was refused with a message calling it an assignment. Deciding
-    # "routes" from "assigns" by pattern is the losing line (`atmofab-enforcement-change`
+    # "routes" from "assigns" by pattern is the losing line (`spec2science-enforcement-change`
     # §"when the gate reads the source text"), so the rule is now: a NEW severity mention on a
     # leaf-read surface is refused until someone reads it and adds it here. That is a review
     # gate, not a judgment, and adding an entry is one line.
@@ -2759,7 +2759,7 @@ class PureRenderTests(unittest.TestCase):
                                   f"severity mention and the allowlist would have to absorb it")
 
     def test_compile_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
-        """Enumeration coupling (`atmofab-enforcement-change` rule 3-a) for phase_01 §1-2's
+        """Enumeration coupling (`spec2science-enforcement-change` rule 3-a) for phase_01 §1-2's
         rubric (issue #148) — the mirror of `test_leaf_verify
         .test_severity_rubric_states_every_verdict_severity_at_its_own_bullet`, which holds
         phase_02 §2-2 to the same rule.

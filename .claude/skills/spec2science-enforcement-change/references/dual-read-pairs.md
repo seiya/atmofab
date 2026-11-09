@@ -113,7 +113,7 @@ second, and no exclusion list makes both right.
 - **The tell**: a fix that narrows what a shared reader resolves in order to stop one gate
   over-refusing, in a change where the same reader feeds a gate that treats "unresolved" as
   "nothing to check". The same family appearing a second round running is the moment to ask the
-  polarity question (`atmofab-review-loop` §"The same family appeared two rounds running").
+  polarity question (`spec2science-review-loop` §"The same family appeared two rounds running").
 - **The cost of splitting, stated**: the over-reading gate gains false violations (here: a
   non-dependency procedure a rename's local name also names), and the two readers can now
   disagree by design — record the pair in the table above so the next maintainer does not

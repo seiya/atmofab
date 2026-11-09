@@ -875,7 +875,7 @@ class DiffEntryPathTests(unittest.TestCase):
         assert spec and spec.loader
         cls.module = importlib.util.module_from_spec(spec)
         # Import without leaving a `__pycache__` beside the script: a stale `.pyc` there is the
-        # handwritten-sweep trap `.claude/skills/atmofab-review-loop/references/mutation-testing.md`
+        # handwritten-sweep trap `.claude/skills/spec2science-review-loop/references/mutation-testing.md`
         # records, where consecutive same-byte-length rewrites reuse cached bytecode. This file's
         # own bytecode under `tests/__pycache__/` is gitignored and harmless.
         previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True

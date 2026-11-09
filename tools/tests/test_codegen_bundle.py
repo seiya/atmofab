@@ -1663,7 +1663,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         exactly how the PREVIOUS quote (`is a profile and publishes no operation`) survived on
         `origin/main` after issue #175 changed the message underneath it.
 
-        The direction is the one `atmofab-enforcement-change` rule 3-a requires: the message is
+        The direction is the one `spec2science-enforcement-change` rule 3-a requires: the message is
         defined once, in `codegen_bundle`, and the document is checked against what the code
         EMITS when driven — never the reverse, and neither side spells it out independently."""
         profile = "profile/adv1d_default@0.1.0"

@@ -895,7 +895,7 @@ class PureIrDocumentViolationTests(_Fixture):
         NOT PINNED, and said rather than implied: the violating direction has no witness. Every
         value `json.loads` can produce survives `safe_dump` -> `safe_load` on this loader, so the
         branch is a fail-closed defence against a future serializer change, not a reachable
-        classification. `atmofab-enforcement-change` rule 1-b is why it stays.
+        classification. `spec2science-enforcement-change` rule 1-b is why it stays.
         """
         ir = _valid_ir()
         ir["algorithm"]["temporaries"] = [

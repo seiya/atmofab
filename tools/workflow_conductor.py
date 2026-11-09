@@ -5929,7 +5929,7 @@ class Conductor:
         The `infrastructure` question is asked of the NODE_KEY, not of the IR's self-declared
         `meta.spec_kind`: the shape decides which admissibility rules the bundle is judged
         against, and a fact a gate reads off the document under review is a switch the leaf
-        holds (`.claude/skills/atmofab-enforcement-change`, surface 11). The two are pinned
+        holds (`.claude/skills/spec2science-enforcement-change`, surface 11). The two are pinned
         equal for a pure node anyway by `_leaf_ir_document_violations`, so this costs nothing
         and cannot be turned off from inside a document. `validate_pipeline_semantics
         ._ir_bundle_shape` is the twin the deterministic tamper gate asks the same question of;

@@ -39,7 +39,7 @@ the case history that tells you how it closed.
   - A fourth, smaller: a mutant result was written into a commit message from a round-2
     reviewer's report without re-running it, and round 3 re-ran it and found the opposite. The
     standing rule "do not write someone else's measurement as your own"
-    (`atmofab-enforcement-change` rule 3) covers it and was broken anyway, in a COMMIT MESSAGE,
+    (`spec2science-enforcement-change` rule 3) covers it and was broken anyway, in a COMMIT MESSAGE,
     which is the site the rule most often gets skipped on because nothing there is red.
   A fifth, hit while WRITING this entry, which is the reason the sign is worth its lines: the
   citation fix below was verified by re-running `test_skill_citations` against an unstaged edit.
@@ -57,9 +57,9 @@ the case history that tells you how it closed.
   and a `grep` lands on the dead half first.
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
-  (`.claude/skills/atmofab-enforcement-change/references/verification.md`). **Rewriting one statement
+  (`.claude/skills/spec2science-enforcement-change/references/verification.md`). **Rewriting one statement
   repeatedly is a SWEEP problem, which this row owns; several sites that each state the rule is a
-  COUPLING problem, which `atmofab-enforcement-change` rule 3-a owns and states the threshold
+  COUPLING problem, which `spec2science-enforcement-change` rule 3-a owns and states the threshold
   for.** Do not restate its number here — that is the drift this pair is about.
   - **The quantifier variant (issue #178, PR #221, 2026-09-15).** A gate comment justified a
     no-short-circuit loop with "short-circuiting would change EVERY recorded `dep_set_fingerprint`".
@@ -132,7 +132,7 @@ the case history that tells you how it closed.
   weaker question that can be answered** (is there no other declaration anywhere in the file).
   **If the simple and the complex version give identical measured diffs, the complexity bought
   nothing** — take that diff first
-- **A reviewer said "it is environment-dependent"** (`atmofab-enforcement-change` judgment rule 2
+- **A reviewer said "it is environment-dependent"** (`spec2science-enforcement-change` judgment rule 2
   owns this rule; this row is the episode) → do not close it with a mock on the test side.
   Ask first what happens in production on that environment
 - **You rebuilt the design and tests carrying the old mechanism's name remain** → test names are
@@ -266,7 +266,7 @@ the case history that tells you how it closed.
   `docs/BACKEND_BOUNDARY.md`, and the same claim in `TODO.md`, `tools/backends/registry.py`, the
   module docstring and both dev skills — had been false since that commit. Do not take that list
   as a count: what makes it long is that a claim about what the default run does gets restated
-  wherever the rule is cited, which is `atmofab-enforcement-change` rule 3-a's trigger.
+  wherever the rule is cited, which is `spec2science-enforcement-change` rule 3-a's trigger.
 
   **Why every instrument missed it for a round.** The mechanism was in a test file: the round-4
   sweep mutated the production functions and all of them died, because they are genuinely pinned —
@@ -340,7 +340,7 @@ repository. `tools/hooks/common.py`'s `_PIPE_TAIL_ALLOWED_IMPORT_ROOTS` excludes
 `string.Formatter().get_field()` is a primitive the AST inspector cannot see; a module nobody
 considered must fall OUTSIDE it. `tools/validate_workspace_root.py`'s active-status set says so in
 its own comment: anything outside it, including an unreadable meta file, is treated as not active
-so leaked scratch is surfaced. `atmofab-enforcement-change` surface 8 states the rule those follow —
+so leaked scratch is surfaced. `spec2science-enforcement-change` surface 8 states the rule those follow —
 bind ro and allowlist only the writable places, so unknown names fall on the inert side.
 **Drop-by-default is correct wherever dropping an element produces a REFUSAL**, because a refusal is
 loud; the sign's question answers that correctly on its own terms and the polarity follows from the

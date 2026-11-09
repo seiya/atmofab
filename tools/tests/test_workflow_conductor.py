@@ -6853,7 +6853,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         """`docs/ORCHESTRATION.md` "leaf transient retry" states the schedule in words ("15 min,
         then 1 h, then 4 h (5 h 15 min in total)") and the budget as a number; every other
         site (`--help`, the events) is derived from the constant. Coupled by NUMBER
-        (atmofab-enforcement-change rule 3-a): the words are rendered from
+        (spec2science-enforcement-change rule 3-a): the words are rendered from
         `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` here and looked for in the sentence that OPENS with
         the constant's name, so a schedule edit that leaves the prose behind — or a prose edit
         that invents a schedule — is red. Self-test: the render is checked against the literal
@@ -19694,7 +19694,7 @@ class GateRoutingTerminalCategoryTests(unittest.TestCase):
 
     Z4 (issue #171) deleted that SKILL with the agentic leaf, and the coupling has no target.
     The honest accounting, because "the rule now reaches nobody" is the defect this repository
-    names (`atmofab-enforcement-change` surface 12) and has to be ruled out rather than assumed:
+    names (`spec2science-enforcement-change` surface 12) and has to be ruled out rather than assumed:
 
       * the statement was ALREADY dead for production. Every in-tree node's `generate.generate`
         has run pure since issue #169, and a pure leaf reads no SKILL — so no live leaf had

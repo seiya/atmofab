@@ -104,7 +104,7 @@ correction attributed a later commit's figure to `8c77ad4`. So the bullet perfor
 wrong-attribution error one item after condemning it, and replaced a correct number with a wrong one.
 
 **The cause is nameable and it is not carelessness about arithmetic.** Two round-1 reviewers reported
-227, both measured at branch HEAD. `atmofab-enforcement-change` rule 3 says, in these words, not to
+227, both measured at branch HEAD. `spec2science-enforcement-change` rule 3 says, in these words, not to
 write someone else's measurement as your own — cite it or re-measure. I had read that rule the same
 session. What defeated it: **a reviewer's finding arrives already carrying evidence.** The number came
 with a table and a command, so the correction felt verified before it was written, and the one thing
@@ -187,7 +187,7 @@ for line in log:
 ```
 
 **What makes this worth a rule of its own** is that every existing guard here is about someone
-else's number. `atmofab-enforcement-change` rule 3 says do not write a reviewer's measurement as
+else's number. `spec2science-enforcement-change` rule 3 says do not write a reviewer's measurement as
 your own; issue #153 above says re-measure at the commit you are about to name. Both assume the
 danger is a figure you did not produce. This one I produced myself, from a command I ran, on a log I
 opened — and running the command is not what makes the reading a measurement.
@@ -259,7 +259,7 @@ either looking edited. Any record split across a body and its comments has this 
 
 The same pull request produced the mirror case a round later and it is NOT a new rule:
 a figure a reviewer measured at one commit was quoted in the present tense about a later one whose
-measured set had changed. `atmofab-enforcement-change` rule 3 covers it in its own words — "the
+measured set had changed. `spec2science-enforcement-change` rule 3 covers it in its own words — "the
 place this fires that you will not expect is a CORRECTION: a reviewer's finding arrives already
 carrying evidence, so it feels verified before you write it" — and this file states the same rule
 above, under issue #153. **Correct attribution is not what rule 3 is about**; the commit is. Read

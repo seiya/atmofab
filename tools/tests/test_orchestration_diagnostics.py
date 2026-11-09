@@ -1537,7 +1537,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         map cannot silently fall behind the table again.
 
         Coupled ELEMENT BY ELEMENT AT ITS STATEMENT POSITION rather than by "the name occurs
-        somewhere in the file" (`atmofab-enforcement-change` rule 3-a): a basename that appears
+        somewhere in the file" (`spec2science-enforcement-change` rule 3-a): a basename that appears
         only inside another row's prose — `compile_generate_meta.json` is named in
         `bundle_meta.json`'s own row, as its `compile` twin — must not satisfy the requirement
         for itself. Measured: with that row's own entry deleted the document still holds two

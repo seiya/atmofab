@@ -1,6 +1,6 @@
 """Unit tests for the host-evaluated primary predicates (Z6, issue #255, PR-2).
 
-What is PINNED here and what is SAMPLED (`atmofab-enforcement-change` §4):
+What is PINNED here and what is SAMPLED (`spec2science-enforcement-change` §4):
 
 * The grammar allowlist is pinned by ELEMENT: every `ast` expression node type the Python
   grammar can produce is driven through `parse_expr`, and the set that parses must equal the

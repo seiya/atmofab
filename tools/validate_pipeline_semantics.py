@@ -10743,7 +10743,7 @@ def _validate_profile_selection(
     second copy of a fact ``all_nodes`` already carries, and the drift this gate exists to stop.
 
     WHICH nodes the field is required on comes from the SIDECAR, never from the IR
-    (`atmofab-enforcement-change` surface 11): a field the leaf authors must not decide whether
+    (`spec2science-enforcement-change` surface 11): a field the leaf authors must not decide whether
     the leaf is gated. A sidecar with ``profiles: []`` is a node that adopts none, and the field
     is not read there at all. The phase_01 schema block says no case of such a node declares one
     (issue #358: the harness `tests.md` files no longer give the name a meaning of their own),

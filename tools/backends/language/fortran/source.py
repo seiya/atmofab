@@ -805,7 +805,7 @@ def _dead_contained_spans(
     the text of a contained procedure already found live, to a fixed point; every other one is
     dead. A call, an actual argument, a pointer assignment, a function reference and a generic
     interface's `procedure` statement are not enumerated — they all WRITE THE NAME, which is the
-    one thing this reads (`atmofab-enforcement-change` §1: the source-text surface is not closed
+    one thing this reads (`spec2science-enforcement-change` §1: the source-text surface is not closed
     by enumerating grammar). Polarity: a name that occurs is live, which is how every contained
     procedure was read before this; a dead one is the new case. Calling a live one dead needs a
     reference that does not write the name, which neither F2008 nor this tree has.

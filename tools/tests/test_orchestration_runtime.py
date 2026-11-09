@@ -21522,7 +21522,7 @@ class TerseResultProjectionTests(unittest.TestCase):
 
 class ValidateExecuteDriverDeliverableTests(unittest.TestCase):
     """Issue #589 PR-1b, the three places a deterministic substep's outputs are named
-    (`atmofab-enforcement-change` §"Adding a DELIVERABLE"), for what the host-rendered driver adds
+    (`spec2science-enforcement-change` §"Adding a DELIVERABLE"), for what the host-rendered driver adds
     under `raw/state_snapshots/`:
 
     1. `build_launch_request`'s list names `initial/<case_id>.json` and neither of the new two: no
@@ -28637,7 +28637,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     review rounds each found a different copy still stating the old fact — four of them in text a leaf acts on, each costing that leaf a `Compile fail` on
     every attempt.
 
-    That count is what `atmofab-enforcement-change` rule 3-a calls the point where sweeping has
+    That count is what `spec2science-enforcement-change` rule 3-a calls the point where sweeping has
     already lost, and its remedy is what this class is: the sites that must repeat the rule
     (a leaf-read contract has to be self-contained) are COUPLED to it by an allowlist, so a new
     statement is refused until a person reads it and adds an entry. This decides nothing about

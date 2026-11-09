@@ -19,7 +19,7 @@ its own lineage, and the wrapper, which resolves every path under the tree and c
 (`docs/ORCHESTRATION.md` §workshop leaf). What
 that machinery enforced, why each grammar was bounded the way it was, and what it measurably did
 NOT reach are in the record rather than here: `git log` at the Z4 PR-1 commit that removed it, and
-the episode files under `.claude/skills/atmofab-enforcement-change/references/`.
+the episode files under `.claude/skills/spec2science-enforcement-change/references/`.
 
 ## The DEV layer
 - `.claude/settings.json` and `.codex/hooks.json` register `tools/hooks/dev_cli.py`. It applies two
