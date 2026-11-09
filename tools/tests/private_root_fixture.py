@@ -21,7 +21,7 @@ def seed_codex_auth(directory: Path) -> Path:
     """Give a test its OWN codex credential, and return the directory to set `CODEX_HOME` to.
 
     `_prepare_codex_workflow_home` refuses a launch whose `auth.json` it cannot find, resolving
-    `CODEX_HOME` -> `ATMOFAB_HOME` -> `~/.codex`. Every codex-backed launch fixture without this
+    `CODEX_HOME` -> `SPEC2SCIENCE_HOME` -> `~/.codex`. Every codex-backed launch fixture without this
     therefore READ THE OPERATOR'S OWN CREDENTIAL and passed because the developer happened to have
     one — which means the refusal was witnessed by nothing, and the tests were not hermetic.
 
@@ -55,7 +55,7 @@ def seed_codex_auth(directory: Path) -> Path:
 # resolver is about to return the operator's real `~/.atmofab`. Neither half is loaded by
 # plain `unittest`, so any module that prepares a backend home or calls
 # `init_orchestration` writes into the operator's durable tree when run that way — and
-# this branch's own commit messages prescribe `env -u ATMOFAB_WORKFLOW_HOMES_ROOT python3
+# this branch's own commit messages prescribe `env -u SPEC2SCIENCE_WORKFLOW_HOMES_ROOT python3
 # -m unittest …` as the way to check the production resolution. Two reviewers had to
 # prune entries out of the real tree afterwards.
 #

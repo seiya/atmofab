@@ -3,7 +3,7 @@
 
 Since issue #64 each orchestration's isolated backend homes live at
 `<homes-root>/<orchestration_id>/{claude,codex}`, where the root is
-`~/.atmofab/homes` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`). The `codex`
+`~/.atmofab/homes` (relocatable with `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`). The `codex`
 entry is a CONTAINER since issue #245: each codex thread's own `CODEX_HOME` is a
 lineage directory beneath it (`codex/<codex_lineage_id>/` for a pre-PR-J4-b pure thread,
 issue #534; such directories may still exist on disk). The `claude` entry is a run's

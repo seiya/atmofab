@@ -22,8 +22,8 @@ nothing else — which is why the resolvers are named below rather than the tree
 
 TWO LAYERS, and the second is the one that actually holds:
 
-  1. REDIRECT. A function-scoped autouse fixture points `ATMOFAB_WORKFLOW_HOMES_ROOT`
-     and `ATMOFAB_START_CLAIM_ROOT` at a per-test
+  1. REDIRECT. A function-scoped autouse fixture points `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT`
+     and `SPEC2SCIENCE_START_CLAIM_ROOT` at a per-test
      `tmp_path`, so both land where pytest already cleans up. Per-TEST rather
      than per-session on purpose: the home path is deterministic now, so two tests using
      the same fixed orchestration id would collide on the exclusive `os.mkdir` under a
@@ -95,24 +95,24 @@ reviewer's round: on PR #81 a reviewer reported 152 failures as a branch regress
 
 Measured on `165c26f`, whole suite, one variable at a time unless noted. **That commit
 predates the `met-dsl` -> `atmofab` rename (issue #127), so to RE-TAKE any figure below
-spell the names `METDSL_*` there — `ATMOFAB_*` matches nothing at `165c26f` and every
+spell the names `METDSL_*` there — `SPEC2SCIENCE_*` matches nothing at `165c26f` and every
 row comes back 0.** The names are written in the current spelling because the record
 is about which names the tree reads, not about that commit's text:
 
   clean                                              5280 passed / 114s
-  ATMOFAB_ORCHESTRATION_ID + ATMOFAB_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
-  every `ATMOFAB_*` name found in the tree, plus
+  SPEC2SCIENCE_ORCHESTRATION_ID + SPEC2SCIENCE_CHILD_AGENT_RUN_ID    9 failed   (the pair issue #84 named)
+  every `SPEC2SCIENCE_*` name found in the tree, plus
     CODEX_HOME and CLAUDE_CONFIG_DIR, together         181 failed / 356s
 
 Attributed on `tools/tests/test_orchestration_runtime.py` alone (1242 tests, 20s clean):
-`ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
-then run the real probes; `CODEX_HOME` 10; `ATMOFAB_HOME` 3; `ATMOFAB_ENFORCE_REPLY_BUDGET`
+`SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` 84 failed **and 482s**, because the tests
+then run the real probes; `CODEX_HOME` 10; `SPEC2SCIENCE_HOME` 3; `SPEC2SCIENCE_ENFORCE_REPLY_BUDGET`
 1; every other name measured that way 0. So the pair in the issue was a small part of the
 surface, and the expensive member was not in it.
 
 NO COUNT of those names appears here or anywhere else in the code, deliberately — and the
 sentence that replaced the first count was itself wrong, which is the argument. This
-paragraph said "the 17 `ATMOFAB_*` names the tree reads" for four commits; its replacement
+paragraph said "the 17 `SPEC2SCIENCE_*` names the tree reads" for four commits; its replacement
 credited the constant-resolving reader with 21, the figure that reader returns with its
 constant resolution REMOVED (it returns 27). Reviewers counting literals got 23 and 25.
 Every one of those is a right answer to a different question about which files and which
@@ -127,7 +127,7 @@ every test already does.
 
 BY PREFIX, not by list: the names are taken from
 `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES` — the same constant that decides which
-host names reach a leaf — so a `ATMOFAB_*` knob added later is neutralized without anyone
+host names reach a leaf — so a `SPEC2SCIENCE_*` knob added later is neutralized without anyone
 remembering this file. The two exact names beside it (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`)
 are the backend configuration homes, which carry no such prefix; `CODEX_HOME` is the one
 measured above, and `CLAUDE_CONFIG_DIR` is its twin, included by symmetry rather than by
@@ -160,7 +160,7 @@ from tools.tests import suite_env_guard
 def pytest_addoption(parser) -> None:
     parser.addoption(
         "--keep-operator-env", action="store_true", default=False,
-        help="do not strip the operator's ATMOFAB_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
+        help="do not strip the operator's SPEC2SCIENCE_* / CODEX_HOME / CLAUDE_CONFIG_DIR "
              "from the environment (issue #84). For deliberately running the suite "
              "against a knob you have set; expect failures that belong to the knob.")
 
@@ -172,7 +172,7 @@ def pytest_configure(config) -> None:
     runs earlier than any fixture.
 
     The removal is REPORTED. A knob discarded in silence is a check recorded as run and not
-    run — `ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
+    run — `SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT=1` is the sharp case, worth 84
     failures and 482s of real probing on `165c26f`, and an operator who sets it now gets
     1242 passed in 49s with nothing probed. `--keep-operator-env` is the way to mean it.
     """

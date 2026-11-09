@@ -46,7 +46,7 @@ from tools import workflow_conductor as wc
 from tools.leaf_contract import HTTP_FILE_TOOL_DECLARATIONS
 from tools.tests.llm_samples import workshop_yaml
 
-KEY_ENV = "ATMOFAB_TEST_HTTP_KEY"
+KEY_ENV = "SPEC2SCIENCE_TEST_HTTP_KEY"
 KEY_VALUE = "sk-test-do-not-log-me"
 
 

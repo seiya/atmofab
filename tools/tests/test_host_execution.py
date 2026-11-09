@@ -299,8 +299,8 @@ class LauncherLaunchTests(unittest.TestCase):
                             execution={"threads_per_rank": 1, "ranks": 4,
                                        "process_grid": [1, 4]})
         shape = he.launch_shape(grid)
-        self.assertEqual(shape.env, {"ATMOFAB_PROCESS_GRID": "1,4"})
-        self.assertEqual(shape.record()["env"], {"ATMOFAB_PROCESS_GRID": "1,4"})
+        self.assertEqual(shape.env, {"SPEC2SCIENCE_PROCESS_GRID": "1,4"})
+        self.assertEqual(shape.record()["env"], {"SPEC2SCIENCE_PROCESS_GRID": "1,4"})
         self.assertEqual(he.launch_shape(self.MPI4).env, {})
         for backend in ("openmp", "none"):
             with self.subTest(backend=backend):
@@ -415,13 +415,13 @@ class ExecutionShapeLaunchTests(unittest.TestCase):
                                       "sweep": {"grids": [[3, 1], [1, 2]]}})
         certified = he.launch_shape(mpi)
         self.assertEqual(certified.argv_prefix, tuple(launcher.argv_prefix(4)))
-        self.assertEqual(certified.env, {"ATMOFAB_PROCESS_GRID": "2,2"})
+        self.assertEqual(certified.env, {"SPEC2SCIENCE_PROCESS_GRID": "2,2"})
         self.assertEqual(he.launch_shape(mpi, None, mpi.certified_shape), certified)
         for shape, ranks, grid in zip(mpi.sweep_shapes, (3, 2), ("3,1", "1,2")):
             with self.subTest(shape=shape.label):
                 launch = he.launch_shape(mpi, None, shape)
                 self.assertEqual(launch.argv_prefix, tuple(launcher.argv_prefix(ranks)))
-                self.assertEqual(launch.env, {"ATMOFAB_PROCESS_GRID": grid})
+                self.assertEqual(launch.env, {"SPEC2SCIENCE_PROCESS_GRID": grid})
 
     def test_a_thread_shape_launches_its_thread_count(self) -> None:
         cpu = profile_with(execution={"threads_per_rank": 4,
@@ -445,12 +445,12 @@ class ExecutionShapeLaunchTests(unittest.TestCase):
     def test_the_serial_reference_runs_one_thread_and_one_rank(self) -> None:
         self.assertEqual(he.serial_execution_env("openmp"),
                          {"OMP_NUM_THREADS": "1", "OMP_THREAD_LIMIT": "1"})
-        self.assertEqual(he.serial_execution_env("mpi"), {"ATMOFAB_PROCESS_GRID": "1,1"})
+        self.assertEqual(he.serial_execution_env("mpi"), {"SPEC2SCIENCE_PROCESS_GRID": "1,1"})
         self.assertEqual(he.serial_execution_env("cuda"), {})
         self.assertEqual(he.serial_execution_env("none"), {})
         # A device backend's kernels have no serial launch: the reference runs them in the
         # certified shape's block (issue #512, PR-4c).
-        self.assertEqual(he.serial_execution_env("cuda", 256), {"ATMOFAB_CUDA_BLOCK": "256"})
+        self.assertEqual(he.serial_execution_env("cuda", 256), {"SPEC2SCIENCE_CUDA_BLOCK": "256"})
 
     def test_a_block_shape_launches_its_kernels_in_its_block(self) -> None:
         """Issue #512 (PR-4c): the profile's `execution.block_size` reaches the certified
@@ -463,12 +463,12 @@ class ExecutionShapeLaunchTests(unittest.TestCase):
                                       "sweep": {"block_size": [64, 128]}})
         site = Site("gpu_box", ("gpu",), host="box", workdir="/w")
         certified = he.launch_shape(gpu, site)
-        self.assertEqual(certified.env, {"ATMOFAB_CUDA_BLOCK": "256"})
+        self.assertEqual(certified.env, {"SPEC2SCIENCE_CUDA_BLOCK": "256"})
         self.assertIsNotNone(certified.trace)
         for shape, block in zip(gpu.sweep_shapes, ("64", "128")):
             with self.subTest(shape=shape.label):
                 launch = he.launch_shape(gpu, site, shape)
-                self.assertEqual(launch.env, {"ATMOFAB_CUDA_BLOCK": block})
+                self.assertEqual(launch.env, {"SPEC2SCIENCE_CUDA_BLOCK": block})
                 self.assertIsNone(launch.trace)
         self.assertTrue(he.imposes_block_size("cuda"))
         for backend in ("openmp", "mpi", "none"):

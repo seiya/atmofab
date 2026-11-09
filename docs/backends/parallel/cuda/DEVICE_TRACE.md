@@ -20,7 +20,7 @@ make test    # the quality check, unchanged and untraced
 <binary> --cases <spec.ir.yaml> <case_id>...   # once per block size of execution.sweep, untraced
 ```
 
-Every run of the binary carries `ATMOFAB_CUDA_BLOCK` (issue #512): the profiled run and
+Every run of the binary carries `SPEC2SCIENCE_CUDA_BLOCK` (issue #512): the profiled run and
 `make test` the profile's `execution.block_size`, each sweep run its own block size; the summary
 command runs no binary and is handed no environment of its own. The
 trace runs on the certified shape alone: the gate of §5 reads one summary, the certifying run's,

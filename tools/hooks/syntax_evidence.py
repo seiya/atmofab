@@ -4,7 +4,7 @@
 The compiler syntax gate is the syntax checker of the deterministic `generate.gate` substep,
 run in-process by the conductor (`Conductor._gate_inproc -> _gate_syntax_check`), NOT by the leaf. It runs the build-runtime `run_syntax_check`
 compiler adapters (the target language's mandatory syntax-only stage first, then any optional
-target-compiler stages from `ATMOFAB_SYNTAX_COMPILERS`) over the staged sources. The
+target-compiler stages from `SPEC2SCIENCE_SYNTAX_COMPILERS`) over the staged sources. The
 `post_generate` validator certifies that the gate actually ran with the language's mandatory
 stage (`bundle_facts.MANDATORY_SYNTAX_COMPILER`) passing. That
 certificate must NOT be forgeable by the leaf, so it lives at the **pipeline root**

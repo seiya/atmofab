@@ -104,9 +104,9 @@ class _Env(unittest.TestCase):
         self.credentials = Path(cred.name) / ".credentials.json"
         self.credentials.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
         os.chmod(self.credentials, 0o600)
-        env = {"ATMOFAB_WORKFLOW_HOMES_ROOT": str(self.homes),
-               "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
-               "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}
+        env = {"SPEC2SCIENCE_WORKFLOW_HOMES_ROOT": str(self.homes),
+               "SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+               "SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1"}
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -783,7 +783,7 @@ class SpawnTimeoutTests(unittest.TestCase):
     """`spawn_leaf(timeout_seconds=, timeout_name=)` bounds THIS leaf and names the bound."""
 
     def test_the_marker_names_the_bound_that_killed_the_leaf(self) -> None:
-        self.assertIn("leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=5",
+        self.assertIn("leaf exceeded SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS=5",
                       wc._leaf_timeout_marker(5, 6.0))
         self.assertIn("leaf exceeded lineage_timeout_s=7",
                       wc._leaf_timeout_marker(7, 8.0, "lineage_timeout_s"))
@@ -802,7 +802,7 @@ class SpawnTimeoutTests(unittest.TestCase):
             c._bwrap_enabled = lambda: False  # type: ignore[assignment]
             c.leaf_command = lambda *a, **k: ["sleep", "60"]  # type: ignore[assignment]
             entry = c.entry_for("generate", "verify")
-            with mock.patch.dict(os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "3600"}):
+            with mock.patch.dict(os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": "3600"}):
                 result = wc.Conductor.spawn_leaf(
                     c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, entry,
                     child_arid="child", timeout_seconds=1, timeout_name="lineage_timeout_s")
@@ -1246,9 +1246,9 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
             for kwargs, expected in (
                     ({"timeout_seconds": 1, "timeout_name": "lineage_timeout_s"},
                      "leaf exceeded lineage_timeout_s=1"),
-                    ({}, "leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=1")):
+                    ({}, "leaf exceeded SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS=1")):
                 with self.subTest(kwargs=kwargs), mock.patch.dict(
-                        os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS":
+                        os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS":
                                      "1" if not kwargs else "3600"}):
                     result = wc.Conductor.spawn_leaf(c, "", env, c.entry_for(None, None),
                                                      child_arid="child", **kwargs)
@@ -1266,7 +1266,7 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
                                    llm_config=lc.load_llm_config(cfg))
             events: list[tuple[str, dict]] = []
             c.emit = lambda name, **f: events.append((name, f))  # type: ignore[assignment]
-            with mock.patch.dict(os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "3600"}):
+            with mock.patch.dict(os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": "3600"}):
                 result = wc.Conductor._spawn_codex_json_leaf(
                     c, ["sleep", "60"], {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
                     "child", prompt_text="", entry=c.entry_for(None, None),

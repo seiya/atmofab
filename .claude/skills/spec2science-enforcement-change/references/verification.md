@@ -477,7 +477,7 @@ python3 -c 'import json; from tools.build_runtime import tool_run_linter as f; p
 
 A refusal is a `ValueError` raised by the entry point. The library reads no workflow environment
 variable (issue #171 PR-2 retired the orchestrated mode), so the same call answers the same way
-with or without `ATMOFAB_WORKFLOW_MODE`.
+with or without `SPEC2SCIENCE_WORKFLOW_MODE`.
 
 ## What an LLM CLI actually does (unbilled capture harness)
 

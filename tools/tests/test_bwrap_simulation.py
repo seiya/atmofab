@@ -155,7 +155,7 @@ def _prepared_lineage(test: unittest.TestCase, repo: Path, orch: str, backend: s
     if not meta.exists():
         meta.parent.mkdir(parents=True, exist_ok=True)
         meta.write_text("{}", encoding="utf-8")
-    env = {"ATMOFAB_WORKFLOW_HOMES_ROOT": str(base / "homes")}
+    env = {"SPEC2SCIENCE_WORKFLOW_HOMES_ROOT": str(base / "homes")}
     patches = []
     if backend == "codex":
         env["CODEX_HOME"] = str(seed_codex_auth(base / "operator-codex"))
@@ -698,7 +698,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         import uuid
         # One homes root per invocation: the cases of one row share `d`, and a container's
         # owner marker names the checkout that claimed it.
-        os.environ["ATMOFAB_WORKFLOW_HOMES_ROOT"] = str(d / f"homes_{uuid.uuid4().hex}")
+        os.environ["SPEC2SCIENCE_WORKFLOW_HOMES_ROOT"] = str(d / f"homes_{uuid.uuid4().hex}")
         iso = ort._prepare_codex_workflow_home(repo, "o", uuid.uuid4().hex, resume=False)
         import atexit
         from tools import leaf_netns
@@ -1073,7 +1073,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         Each lineage is a `workshop leaf` lineage (issue #534 PR-J4-b retired the pure codex
         thread lineage this fixture first served): its `CODEX_HOME` is the lineage home's
         `config/`, beside its `tree/`. The homes root is the suite's redirected
-        `ATMOFAB_WORKFLOW_HOMES_ROOT` and the
+        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` and the
         operator credential is this test's own (`seed_codex_auth`), so the container these
         rows walk — holding SEVERAL lineages of one orchestration — is the one production
         would build; a row that prepares one lineage (`_prepared_lineage`) cannot tell a
@@ -1146,7 +1146,7 @@ class BwrapLineageProfileTests(unittest.TestCase):
         from tools.orchestration_runtime import _prepare_codex_workflow_home
         repo, orch, conductor, server = self._codex_lineage_fixture()
         arid_a, arid_b = str(uuid.uuid4()), str(uuid.uuid4())
-        marker = "ATMOFAB_LINEAGE_MARKER_" + uuid.uuid4().hex
+        marker = "SPEC2SCIENCE_LINEAGE_MARKER_" + uuid.uuid4().hex
         iso_a = _prepare_codex_workflow_home(repo, orch, arid_a, resume=False)
         home_a = Path(iso_a["home"])
         container = home_a.parent
@@ -1797,7 +1797,7 @@ class WorkshopLeafCliTests(unittest.TestCase):
         self.credentials.write_text('{"claudeAiOauth": {"accessToken": "placeholder"}}',
                                     encoding="utf-8")
         os.chmod(self.credentials, 0o600)
-        patches = [mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_HOMES_ROOT":
+        patches = [mock.patch.dict(os.environ, {"SPEC2SCIENCE_WORKFLOW_HOMES_ROOT":
                                                 str(base / "homes")}),
                    mock.patch.object(operator_private_root, "claude_credentials_file",
                                      lambda: self.credentials)]
@@ -2315,7 +2315,7 @@ class _CodexLeafCliCase(unittest.TestCase):
         homes_root = Path(homes.name).resolve() / "homes"
         self.assertFalse(homes_root.is_relative_to("/tmp"), homes_root)
         patcher = mock.patch.dict(os.environ, {
-            "ATMOFAB_WORKFLOW_HOMES_ROOT": str(homes_root),
+            "SPEC2SCIENCE_WORKFLOW_HOMES_ROOT": str(homes_root),
             "CODEX_HOME": str(self.origin)})
         patcher.start()
         self.addCleanup(patcher.stop)

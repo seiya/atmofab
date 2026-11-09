@@ -496,7 +496,7 @@ void harness_cpp_gpu__get_array_r4(const std::string& name, atmofab::Array<dp, 4
 
 int harness_cpp_gpu__block_size() {
     static const int value = []() {
-        const char* env = std::getenv("ATMOFAB_CUDA_BLOCK");
+        const char* env = std::getenv("SPEC2SCIENCE_CUDA_BLOCK");
         if (env == nullptr || env[0] == '\0') {
             return 256;
         }
@@ -519,7 +519,7 @@ int harness_cpp_gpu__block_size() {
         if (s == "1024") {
             return 1024;
         }
-        std::cerr << "harness_cpp_gpu: ATMOFAB_CUDA_BLOCK='" << s
+        std::cerr << "harness_cpp_gpu: SPEC2SCIENCE_CUDA_BLOCK='" << s
                   << "' is not one of 32, 64, 128, 256, 512, 1024\n";
         std::exit(2);
     }();

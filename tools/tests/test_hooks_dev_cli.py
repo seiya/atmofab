@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _run(backend: str, event: str, command, extra_env=None) -> tuple[int, str, str]:
     payload = {"tool_name": "Bash", "tool_input": {"command": command}}
     out, err = io.StringIO(), io.StringIO()
-    env = {k: v for k, v in os.environ.items() if k != "ATMOFAB_WORKFLOW_EXEC_MODE"}
+    env = {k: v for k, v in os.environ.items() if k != "SPEC2SCIENCE_WORKFLOW_EXEC_MODE"}
     env.update(extra_env or {})
     with patch.dict(os.environ, env, clear=True):
         with redirect_stdout(out), redirect_stderr(err):
@@ -47,13 +47,13 @@ class DevCliRefusesTheTwoOperatorSafetyCommands(unittest.TestCase):
 
     def test_each_verify_bypass_flag_on_the_validator_is_refused(self) -> None:
         """One row per flag, so a flag dropped from the tuple fails by name. The exported
-        `ATMOFAB_WORKFLOW_EXEC_MODE` that used to exempt a command is set here and changes
+        `SPEC2SCIENCE_WORKFLOW_EXEC_MODE` that used to exempt a command is set here and changes
         nothing (issue #445 deleted that branch)."""
         from tools.hooks.operator_safety import VERIFY_BYPASS_TOKENS
         self.assertEqual(VERIFY_BYPASS_TOKENS,
                          ("--allow-missing-orchestration", "--allow-missing-llm-review"))
         for flag in VERIFY_BYPASS_TOKENS:
-            for env in ({}, {"ATMOFAB_WORKFLOW_EXEC_MODE": "workflow"}):
+            for env in ({}, {"SPEC2SCIENCE_WORKFLOW_EXEC_MODE": "workflow"}):
                 with self.subTest(flag=flag, env=env):
                     code, _out, err = _run(
                         "claude", "PreToolUse",
@@ -407,7 +407,7 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
                 # assignment survive — the module resolved through the ambient value
                 # instead. The rows then proved nothing about the wrapper.
                 env = {k: v for k, v in os.environ.items()
-                       if not k.startswith("ATMOFAB_") and k != "PYTHONPATH"}
+                       if not k.startswith("SPEC2SCIENCE_") and k != "PYTHONPATH"}
                 # FROM A SUBDIRECTORY, like the leaf wrapper's own test: run from the
                 # repository root and `python3 -m` resolves the module through the cwd,
                 # so the wrapper's `PYTHONPATH=` assignment is doing nothing observable
@@ -428,7 +428,7 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
             (r, e, c) for r, e, c in self._dev_commands() if "PreToolUse" in e)
         payload = {"tool_name": "Bash", "tool_input": {"command": "echo hello"}}
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith("ATMOFAB_") and k != "PYTHONPATH"}
+               if not k.startswith("SPEC2SCIENCE_") and k != "PYTHONPATH"}
         proc = subprocess.run(
             command, cwd=str(REPO_ROOT / "tools"), env=env, text=True,
             capture_output=True, input=json.dumps(payload), shell=True)

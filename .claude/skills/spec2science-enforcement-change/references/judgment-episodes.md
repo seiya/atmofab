@@ -519,7 +519,7 @@ with the keep-text mask.
 ## Rule 1-d: a certification on the degenerate grid, and a node certified under its own runner only (issue #512 PR-4a / PR #519, 2026-10-17)
 
 The PR moved `harness_fortran_cpu_mpi` to a host-imposed two-dimensional process grid
-(`ATMOFAB_PROCESS_GRID`; unset → `(ranks, 1)`). Three things went wrong, and each shows the
+(`SPEC2SCIENCE_PROCESS_GRID`; unset → `(ranks, 1)`). Three things went wrong, and each shows the
 same premise from a different side: **what the certifying run actually exercised**.
 
 **The degenerate member.** The first commit deferred the host side that sets the grid, so the

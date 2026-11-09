@@ -4681,7 +4681,7 @@ def _validate_generate_syntax_command_logs(
     language backend names the MANDATORY stage (`bundle_facts.MANDATORY_SYNTAX_COMPILER`),
     and it must have passed; a language that declares no syntax stage
     (`syntax_promotions`) cannot be certified at all. Optional additional stages (the
-    ATMOFAB_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
+    SPEC2SCIENCE_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
     their compiler has no registered adapter or no installed binary, or when the stage
     refused before running (a staged source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
     either way, as does a recorded `fail` stage."""

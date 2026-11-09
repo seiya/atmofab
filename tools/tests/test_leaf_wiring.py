@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 # Trust the persisted dependency-readiness booleans _mark_dependencies_ready injects, so a
 # record_launch test does not need a real deps.yaml on disk (mirrors test_orchestration_runtime).
-os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
@@ -3187,10 +3187,10 @@ class PureRecordLaunchTests(unittest.TestCase):
         credentials = Path(cred.name) / ".credentials.json"
         credentials.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
         os.chmod(credentials, 0o600)
-        env = {"ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
-               "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1",
-               "ATMOFAB_HOME": "/tmp/pure-leaf-test-home",
-               "ATMOFAB_WORKFLOW_HOMES_ROOT": str(self.homes)}
+        env = {"SPEC2SCIENCE_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+               "SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP": "1",
+               "SPEC2SCIENCE_HOME": "/tmp/pure-leaf-test-home",
+               "SPEC2SCIENCE_WORKFLOW_HOMES_ROOT": str(self.homes)}
         for patcher in (patch.dict(os.environ, env),
                         patch.object(operator_private_root, "claude_credentials_file",
                                      lambda: credentials)):

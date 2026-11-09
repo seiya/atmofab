@@ -504,7 +504,7 @@ def _locate_leaf_transcript(child_arid: str, repo_root: Path,
 
     The resolver's ``ValueError`` / ``OSError`` and a glob's ``OSError`` degrade to a miss, and
     so does the homes-root override's ``RuntimeError`` (a ``~account`` naming no account), as
-    a miss naming ``ATMOFAB_WORKFLOW_HOMES_ROOT``: left to propagate it made the report say
+    a miss naming ``SPEC2SCIENCE_WORKFLOW_HOMES_ROOT``: left to propagate it made the report say
     detection had failed and the window was unknown, which was false.
     """
     arid = str(child_arid or "").strip()

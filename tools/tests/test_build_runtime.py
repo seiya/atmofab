@@ -58,7 +58,7 @@ class _StandaloneServerEnvMixin:
     handler without `orchestration_id`.
 
     Those calls are refused when the library runs under the workflow
-    (`ATMOFAB_WORKFLOW_MODE` / `ATMOFAB_ORCHESTRATION_ID` in its environment), so without
+    (`SPEC2SCIENCE_WORKFLOW_MODE` / `SPEC2SCIENCE_ORCHESTRATION_ID` in its environment), so without
     this the verdict would depend on the shell that started the suite — and commands in
     this repository are routinely prefixed with those variables."""
 
@@ -67,8 +67,8 @@ class _StandaloneServerEnvMixin:
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)  # type: ignore[attr-defined]
-        os.environ.pop("ATMOFAB_WORKFLOW_MODE", None)
-        os.environ.pop("ATMOFAB_ORCHESTRATION_ID", None)
+        os.environ.pop("SPEC2SCIENCE_WORKFLOW_MODE", None)
+        os.environ.pop("SPEC2SCIENCE_ORCHESTRATION_ID", None)
 
 
 class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
@@ -541,7 +541,7 @@ class CallerEnvTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in ("ATMOFAB_WORKFLOW_MODE", "ATMOFAB_ORCHESTRATION_ID"):
+        for name in ("SPEC2SCIENCE_WORKFLOW_MODE", "SPEC2SCIENCE_ORCHESTRATION_ID"):
             os.environ.pop(name, None)
         self.project_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)

@@ -186,7 +186,7 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     #   - lint   (Conductor._gate_lint_check):   runs run_linter. Always runs.
     #   - syntax (Conductor._gate_syntax_check): runs the build-runtime run_syntax_check compiler
     #     front-end gate (the language's mandatory syntax-only stage, plus optional
-    #     target-compiler stages from ATMOFAB_SYNTAX_COMPILERS) over the staged node +
+    #     target-compiler stages from SPEC2SCIENCE_SYNTAX_COMPILERS) over the staged node +
     #     dependency-closure sources, so the whole class of syntax / standard-conformance
     #     compile_errors surfaces here instead of at Build (a language that declares no
     #     `syntax_promotions` is a transport fail_closed, not a pass-through). Always runs
@@ -2086,7 +2086,7 @@ LEAF_TIMEOUT_MAX_SECONDS = 2_147_483
 
 
 def _leaf_timeout_seconds() -> int:
-    """The per-leaf cap in seconds: `ATMOFAB_LEAF_TIMEOUT_SECONDS`, else the default.
+    """The per-leaf cap in seconds: `SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS`, else the default.
 
     A value that parses to `0` (`0`, `00`, `+0`) disables the cap, restoring the unbounded wait
     for an operator deliberately running a leaf longer than the default — the leaf's EXIT is
@@ -2104,7 +2104,7 @@ def _leaf_timeout_seconds() -> int:
     value that disables the cap, so the "a negative never disables the backstop" rule would be
     false for exactly one spelling of a negative.
     """
-    raw = os.environ.get("ATMOFAB_LEAF_TIMEOUT_SECONDS", "").strip()
+    raw = os.environ.get("SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS", "").strip()
     if not raw or raw.startswith("-"):
         return LEAF_TIMEOUT_DEFAULT_SECONDS
     try:
@@ -2118,7 +2118,7 @@ def _leaf_timeout_seconds() -> int:
 #: none: the environment cap. A caller that passes its own bound (`spawn_leaf(timeout_seconds=,
 #: timeout_name=)` — a workshop lineage's remaining `lineage_timeout_s`, issue #534) names it,
 #: so the kill is not misattributed to a cap the operator did not set.
-LEAF_TIMEOUT_ENV_BOUND_NAME = "ATMOFAB_LEAF_TIMEOUT_SECONDS"
+LEAF_TIMEOUT_ENV_BOUND_NAME = "SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS"
 
 
 def _leaf_timeout_marker(timeout_seconds: int, elapsed: float,
@@ -4345,7 +4345,7 @@ class Conductor:
         leaf, and `timeout_name` names that bound in the `leaf_timeout` marker and event. It
         REPLACES the cap, so a caller with a bound of its own passes the SMALLER of the two
         and names the one it passed: a workshop lineage (issue #534) passes
-        `min(ATMOFAB_LEAF_TIMEOUT_SECONDS, remaining lineage_timeout_s)` — the environment cap
+        `min(SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS, remaining lineage_timeout_s)` — the environment cap
         is still the per-process bound the design note keeps, and its `0` means "no cap", so
         then the remaining lineage time alone. An explicit bound is an integer >= 1 — a lineage
         with no time left is not launched at all — clamped to `LEAF_TIMEOUT_MAX_SECONDS`.
@@ -4473,7 +4473,7 @@ class Conductor:
             # The leaf executable could not be found. Under mandatory bwrap argv[0] is
             # `bwrap`, so a missing binary means the host cannot sandbox the leaf at all
             # (e.g. the startup preflight was bypassed via
-            # ATMOFAB_ORCHESTRATION_ASSUME_BWRAP on a host where bwrap is absent — the
+            # SPEC2SCIENCE_ORCHESTRATION_ASSUME_BWRAP on a host where bwrap is absent — the
             # probe lied). Funnel it into the SAME fail-closed path as a missing/invalid
             # profile rather than letting a raw OSError bubble up as a generic
             # conductor_error: every "leaf cannot be sandboxed" condition terminalizes
@@ -8518,7 +8518,7 @@ class Conductor:
                         f"the lineage home {self.lineage.paths.home} is under {writable}, which "
                         "a codex leaf's shell can write: a codex reading lineage's rollout would "
                         "not be a record the leaf cannot edit (issue #547). Point "
-                        "ATMOFAB_WORKFLOW_HOMES_ROOT outside it, or unset it")
+                        "SPEC2SCIENCE_WORKFLOW_HOMES_ROOT outside it, or unset it")
 
         def home_gone(self) -> None:
             """The lineage's home is gone: nothing to resume and no snapshot to seed from. Its
@@ -10256,20 +10256,20 @@ class Conductor:
         )
         env = leaf_env_from(self.env)
         # A name the configuration DECLARES as an `api_key_env` holds a credential — the
-        # file has said so — and the filter cannot know that: `ATMOFAB_*` is passed by
-        # prefix, so an operator who named their key `ATMOFAB_..._KEY` would have it
+        # file has said so — and the filter cannot know that: `SPEC2SCIENCE_*` is passed by
+        # prefix, so an operator who named their key `SPEC2SCIENCE_..._KEY` would have it
         # forwarded to every leaf and, for a CLI leaf, written verbatim into the persisted
         # `sandbox_profiles/<arid>.json`. Drop every declared key name here; the ONE entry
         # that is entitled to its own gets it back in the HTTP branch below.
         for declared in self._declared_api_key_env_names():
             env.pop(declared, None)
-        env["ATMOFAB_ORCHESTRATION_ID"] = self.orchestration_id
+        env["SPEC2SCIENCE_ORCHESTRATION_ID"] = self.orchestration_id
         # Codex assigns a thread id internally, so stdout-based discovery can
         # race its first hook.  The hook command inherits this immutable parent
         # process environment and uses the recorded child id to select the
         # already-created capability until the parent replaces the provisional
         # session-index token with the authoritative thread id.
-        env["ATMOFAB_CHILD_AGENT_RUN_ID"] = child_arid
+        env["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"] = child_arid
         env["TMPDIR"] = str(self.repo_root / "workspace" / "tmp" / child_arid)
         # Lift the claude leaf's output ceiling off the CLI default (see LEAF_MAX_OUTPUT_TOKENS:
         # thinking is billed against it, so the default truncates a hard leaf mid-think). Set
@@ -10313,15 +10313,15 @@ class Conductor:
             # `env_overrides` and `--setenv` alone (`claude_workshop_profile_kwargs`); the pop
             # below keeps this dict from carrying a second spelling of it.
         elif entry.provider == "codex_cli":
-            # ATMOFAB_HOME was the historical private alias for CODEX_HOME. An operator
+            # SPEC2SCIENCE_HOME was the historical private alias for CODEX_HOME. An operator
             # who set BOTH to different homes has said two incompatible things, and the
             # run must not pick one silently — so the conflict still raises. Read from
             # the HOST environment, not from `env`: neither name survives the allowlist
             # (both are on the single-route side), so `env` can no longer answer this.
             canonical = (self.env.get("CODEX_HOME") or "").strip()
-            legacy = (self.env.get("ATMOFAB_HOME") or "").strip()
+            legacy = (self.env.get("SPEC2SCIENCE_HOME") or "").strip()
             if canonical and legacy and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve():
-                raise SandboxEnforcementError("CODEX_HOME and deprecated ATMOFAB_HOME conflict")
+                raise SandboxEnforcementError("CODEX_HOME and deprecated SPEC2SCIENCE_HOME conflict")
             # No promotion of `legacy` into CODEX_HOME here. The home the leaf reads is
             # the one `record_launch` PREPARED and the bwrap profile `--setenv`s
             # (`_prepare_codex_workshop_lineage`); a host-side spelling could name a
@@ -12082,7 +12082,7 @@ class Conductor:
         staged (issue #389). Its failure is a leaf content failure (the model reached another
         file of its own bundle — a `helper` / `internal_module` file), logged
         to the canonical command log and recorded as a `scope: "model_alone"` stage. Optional
-        additional stages from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids — the
+        additional stages from SPEC2SCIENCE_SYNTAX_COMPILERS (comma-separated adapter ids — the
         future target-compiler second stage) are recorded as skipped when their compiler has no
         registered adapter, reads another language's sources, or its binary is not installed,
         so one configuration runs on machines with and without the target compiler.
@@ -12174,7 +12174,7 @@ class Conductor:
             self._refuse_unstaged_closure(refs, staged_deps, "generate.gate syntax check")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
-            raw = self.env.get("ATMOFAB_SYNTAX_COMPILERS", mandatory)
+            raw = self.env.get("SPEC2SCIENCE_SYNTAX_COMPILERS", mandatory)
             compilers = [c.strip().lower() for c in raw.split(",") if c.strip()]
             # The mandatory stage runs regardless of the env list's content/order: it is the one
             # stage post_generate certification requires to have passed. Its identity is the
@@ -14310,7 +14310,7 @@ class Conductor:
         passes `--model`, so the reading is judged against the same per-model windows) and its
         filtered environment; `tools/usage_reset.py` owns the per-provider readers, so no
         provider name is spelled here. The WHOLE body is guarded: `_child_env` can raise (a
-        `CODEX_HOME` / `ATMOFAB_HOME` conflict), and a raise here — after the dead attempt is
+        `CODEX_HOME` / `SPEC2SCIENCE_HOME` conflict), and a raise here — after the dead attempt is
         already finalized — must read as `probe_failed`, the schedule fallback, not crash the
         run. A provider that declares no reader is answered before the environment is built,
         so its reading is `no_source` rather than whatever building a probe it will never run

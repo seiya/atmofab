@@ -247,7 +247,7 @@ IR.
 The threads per block of every kernel launch is the host's (issue #512). The target profile
 names it (`execution.block_size`) and its execution-shape sweep varies it
 (`execution.sweep.block_size`); `Validate.execute` runs the binary once per shape, each with
-`ATMOFAB_CUDA_BLOCK` set to the shape's block size (`tools/backends/parallel/cuda/execution.py`),
+`SPEC2SCIENCE_CUDA_BLOCK` set to the shape's block size (`tools/backends/parallel/cuda/execution.py`),
 and the quality check compares each run's checks, verdict and captured state with the reference
 run under the IR's cross-target predicates (`docs/workflow/phases/phase_04_validate.md`). A
 kernel whose result depends on the block it ran in — a race between blocks, a shared-memory tile

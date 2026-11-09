@@ -80,7 +80,7 @@ from tools.target_profile import (
 # leaf that reads one is no closer to reporting a substep done, which is the test
 # `AGENTS.md` §Development premises applies (rule 1-e) — so the answer is to name what
 # the leaf would gain and show it is nothing, not to add a guard entry.
-START_CLAIMS_ROOT_ENV = "ATMOFAB_START_CLAIM_ROOT"
+START_CLAIMS_ROOT_ENV = "SPEC2SCIENCE_START_CLAIM_ROOT"
 
 
 # Orchestration is conductor-only (the deterministic Python phase loop in
@@ -1483,7 +1483,7 @@ def _terminalize_owned_orchestration(
 # not a refusal (a host that cannot lock must still be able to run), but it is no longer silent.
 _CLAIM_DEGRADATIONS: dict[str, str] = {
     "claim_root_unresolvable": (
-        "the claims root could not be resolved (check ATMOFAB_START_CLAIM_ROOT)"
+        "the claims root could not be resolved (check SPEC2SCIENCE_START_CLAIM_ROOT)"
     ),
     "claim_no_fcntl": "this platform has no fcntl, so advisory locking is unavailable",
     "claim_file_unopenable": (
@@ -1548,7 +1548,7 @@ def _start_claims_root() -> Path:
     `orchestration_runtime._workflow_homes_root`, and this is the one place the location
     is decided.
 
-    `ATMOFAB_START_CLAIM_ROOT` relocates the whole set. It exists so a caller that
+    `SPEC2SCIENCE_START_CLAIM_ROOT` relocates the whole set. It exists so a caller that
     drives many throwaway repo roots — the test suite does exactly this — does not
     accumulate one 0-byte file per (root, key) in the operator's home. Production
     leaves it unset: one file per orchestration and per spec, which the OS releases
@@ -1556,7 +1556,7 @@ def _start_claims_root() -> Path:
 
     `expanduser` before `absolute`, matching `workflow_homes_root` in
     `tools/operator_private_root.py`. It is a behaviour CHANGE: a quoted
-    `ATMOFAB_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
+    `SPEC2SCIENCE_START_CLAIM_ROOT='~/claims'` used to become a literal `~` directory under
     the caller's working directory, because the shell does not expand inside quotes.
 
     ONE thing is validated: the override must be ABSOLUTE. A relative one resolves against
@@ -1659,9 +1659,9 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
     RESOLVING the path is inside that promise, and it did not used to be. `expanduser()`
     raises `RuntimeError` for a `~account` spelling naming no account, and
     `_claim_lock_path` was called outside every `except` here — so a typo'd
-    `ATMOFAB_START_CLAIM_ROOT` came out of the driver as an uncaught traceback while this
+    `SPEC2SCIENCE_START_CLAIM_ROOT` came out of the driver as an uncaught traceback while this
     docstring, `_start_claims_root` and `docs/RUNBOOK.md` all said it degrades to
-    "proceed". Found by a round-4 reviewer; measured, `ATMOFAB_START_CLAIM_ROOT='~nosuchacct/claims'`
+    "proceed". Found by a round-4 reviewer; measured, `SPEC2SCIENCE_START_CLAIM_ROOT='~nosuchacct/claims'`
     raised at HEAD and yielded True at `origin/main`.
 
     The three caught types are each reachable and each is pinned: `RuntimeError` from
@@ -1675,7 +1675,7 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
 
     The degradation no longer has to be inferred: like the `fcntl` and unwritable-home arms
     beside it, this one calls `_warn_claim_degraded`, so a mistyped or relative
-    `ATMOFAB_START_CLAIM_ROOT` costs the claim, says that it did, and does not crash. It was
+    `SPEC2SCIENCE_START_CLAIM_ROOT` costs the claim, says that it did, and does not crash. It was
     silent until issue #177's PR-3 review; what changed is not the contract (proceed) but
     whether the operator finds out.
     """
@@ -2225,7 +2225,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     ):
         parser.add_argument(removed, action=_RemovedFlagAction, replacement=replacement,
                             dest=f"_removed{removed.replace('-', '_')}", default=None)
-    # NOTE (M-F): the `--generate-executor` flag and the `ATMOFAB_GENERATE_EXECUTOR` env var were
+    # NOTE (M-F): the `--generate-executor` flag and the `SPEC2SCIENCE_GENERATE_EXECUTOR` env var were
     # removed when legacy generate execution was deleted — `pure` is the only executor. A cold run
     # that still passes `--generate-executor …` therefore fails at argparse ("unrecognized
     # arguments", SystemExit 2), not via a JSON envelope. The JSON fail-close (with reason
@@ -2544,7 +2544,7 @@ def _run_main(
     # condition this comment used to state stopped being true when codex joined the pure path).
     # A node with no shape used to fall through to the shared agentic leaf loop; Z4 (issue #171)
     # deleted that loop, and the pair now fails closed (`node_has_no_bundle_shape`). The `--generate-executor` flag and
-    # ATMOFAB_GENERATE_EXECUTOR env were deleted; a cold run that still passes the flag fails at
+    # SPEC2SCIENCE_GENERATE_EXECUTOR env were deleted; a cold run that still passes the flag fails at
     # argparse. On RESUME the recorded executor is recovered below and a non-`pure` record is
     # rejected fail-closed (`generate_executor_legacy_removed`) — legacy runs cannot be resumed.
 
@@ -3057,13 +3057,13 @@ def _run_main(
         return 2
     sites_config = sites_rejection
 
-    # Base env shared by every node. ATMOFAB_ORCHESTRATION_ID / TMPDIR /
+    # Base env shared by every node. SPEC2SCIENCE_ORCHESTRATION_ID / TMPDIR /
     # ORCHESTRATION_AGENT_RUN_ID are per-node and set inside _run_node so a
     # dependency-closure run (one orchestration per node) never leaks the
     # previous node's ids/tmp into the next.
     base_env = dict(os.environ)
-    base_env["ATMOFAB_WORKFLOW_MODE"] = "1"
-    base_env["ATMOFAB_WORKFLOW_EXEC_MODE"] = workflow_mode
+    base_env["SPEC2SCIENCE_WORKFLOW_MODE"] = "1"
+    base_env["SPEC2SCIENCE_WORKFLOW_EXEC_MODE"] = workflow_mode
     # Warm-resume minor-fix repairs are ALWAYS active (claude only; no env gate): a
     # generate.gate / compile.static finding (and the build->generate reuse
     # repairs) re-run the phase's producer substep (generate.generate / compile.generate) by
@@ -3396,7 +3396,7 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         # The bound that fired, as the event names it: the environment cap, or a workshop
         # lineage's remaining `lineage_timeout_s` (issue #534). An event from before the field
         # existed was always the environment cap.
-        bound = payload.get("timeout_bound") or "ATMOFAB_LEAF_TIMEOUT_SECONDS"
+        bound = payload.get("timeout_bound") or "SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS"
         # A workshop leaf's kill ends its lineage, and the host judges the tree it left: the
         # phase goes on (a defective tree is repaired by a cold reuse), so saying it fails
         # closed would be false.
@@ -3777,7 +3777,7 @@ def _run_node(
     if target_profile is None:
         target_profile = resolve_run_target(repo_root, None, until_phase=until_phase)
     env = dict(base_env)
-    env["ATMOFAB_ORCHESTRATION_ID"] = orchestration_id
+    env["SPEC2SCIENCE_ORCHESTRATION_ID"] = orchestration_id
 
     tmp_parent = repo_root / "workspace" / "tmp"
     # TMPDIR must match output_manifest.allowed_tmp_root for the active agent (orchestration uses
@@ -4282,8 +4282,8 @@ def _run_node(
             "target_id": target_profile.target_id,
             "until_phase": until_phase,
             "workflow_mode": workflow_mode,
-            "atmofab_workflow_mode": env["ATMOFAB_WORKFLOW_MODE"],
-            "atmofab_workflow_exec_mode": env["ATMOFAB_WORKFLOW_EXEC_MODE"],
+            "spec2science_workflow_mode": env["SPEC2SCIENCE_WORKFLOW_MODE"],
+            "spec2science_workflow_exec_mode": env["SPEC2SCIENCE_WORKFLOW_EXEC_MODE"],
             "workflow_status": workflow_status,
             "prompt_ref": str(prompt_path.relative_to(repo_root)),
             "llm_invoked": launched,

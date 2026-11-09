@@ -482,7 +482,7 @@ class NvccSmokeTest(unittest.TestCase):
     def _run(d: Path, *cases: str, env: dict | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(["./runner", "--cases", "ir/spec.ir.yaml", *cases], cwd=d,
                               capture_output=True, text=True, check=False,
-                              env={**os.environ, "ATMOFAB_CUDA_BLOCK": "", **(env or {})})
+                              env={**os.environ, "SPEC2SCIENCE_CUDA_BLOCK": "", **(env or {})})
 
     def _assert_lints_clean(self, ir: dict, sid: str, model: str) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -536,12 +536,12 @@ class NvccSmokeTest(unittest.TestCase):
     def test_the_runner_hands_the_imposed_block_size_to_the_node_s_sources(self) -> None:
         """Issue #512 (PR-4c): the runner sets `atmofab::launch_block_size` from the harness's
         `__block_size` before the first case, so a node's operation already reads the block the
-        host imposed through `ATMOFAB_CUDA_BLOCK`; the node's sources never name the harness."""
+        host imposed through `SPEC2SCIENCE_CUDA_BLOCK`; the node's sources never name the harness."""
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             self._tree(d, _smoke_ir(), RANK_SID)
             self._build(d, RANK_SID)
-            for env, block in (({}, 256), ({"ATMOFAB_CUDA_BLOCK": "64"}, 64)):
+            for env, block in (({}, 256), ({"SPEC2SCIENCE_CUDA_BLOCK": "64"}, 64)):
                 with self.subTest(block=block):
                     r = self._run(d, "c0", "c1_xfail", env=env)
                     self.assertEqual(0, r.returncode, r.stdout + r.stderr)

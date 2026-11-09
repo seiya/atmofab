@@ -1157,6 +1157,12 @@ PINNED_RENDER: dict[str, str] = {
     # and seven toy IRs, for fortran_cpu and cpp_gpu (sha256, measured). Re-pinned in place once
     # before it shipped (review round 2: the perf cell count is sized per drive entry).
     "render-16": "442f58ba9a64b90a1f39d6ebd7218958d7b7da19f43a46a0856b504f895064b5",
+    # render-17 (issue #619, the rename to spec2science): the CUDA C++ model header the host
+    # renders guards its `View` with `SPEC2SCIENCE_VIEW_DEFINED` (was `ATMOFAB_VIEW_DEFINED`).
+    # A bump, because rendered bytes move. Rows moved, measured against origin/main 9360d799:
+    # `cuda_cpp/header.py` (the guard) and `fortran/bundle.py` (a comment naming
+    # `SPEC2SCIENCE_SYNTAX_COMPILERS`).
+    "render-17": "e90a9d321f65894842ad9e744a8ae1dd56a2cb6a6e069afa627d9e041b580755",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source
@@ -1455,7 +1461,12 @@ PINNED_BUILD: dict[str, str] = {
     # `DRIVER_DISTRIBUTED_PENDING`, which no build reads (its readers were the preflight refusal
     # and the render backstop, both deleted). Measured against 84c5ff88: that file is the one
     # member that moved. The digest `build-4` shipped with at 84c5ff88 is `build-4@84c5ff88`.
-    "build-4": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
+    # Re-pinned for issue #619 (the rename to spec2science), NOT bumped: a comment in
+    # `fortran/bundle.py` names `SPEC2SCIENCE_SYNTAX_COMPILERS` (was `ATMOFAB_…`); no code moved.
+    # Measured against 9360d799: that file is the one member that moved. The digest `build-4`
+    # shipped with at 9360d799 is `build-4@9360d799`.
+    "build-4": "7d6dcaf397c0a3c7e2d2eaf4e986a6e26044b625e4e98b8ceaf04e9a7d619be6",
+    "build-4@9360d799": "f925375af62254708ae667732af21fd04f7173d55c8fd4cd1415db5193a172a6",
     "build-4@84c5ff88": "e8cc5bf4cf9ad95aaac5e491818e0312f2c6334eb59f7c490efdf33018795434",
 }
 PINNED_EXECUTE: dict[str, str] = {
@@ -1698,7 +1709,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # other.) The digest `execute-8` shipped with at f4158bfa:
     "execute-8@f4158bfa": "2006092142e7b93ec637d4c5589ba5b2f9aac95bad8565525cf02f1708bc9dce",
     # execute-9 (issue #512, PR-4a): a launcher target's run is launched with the process grid
-    # its profile imposes (`execution.process_grid` -> `ATMOFAB_PROCESS_GRID` through the mpi
+    # its profile imposes (`execution.process_grid` -> `SPEC2SCIENCE_PROCESS_GRID` through the mpi
     # backend's `execution_env`). Rows moved: `tools/host_execution.py` and the mpi
     # `execution_env` module.
     "execute-9": "498b82394e172d1a5c391e6a0e31e9596180770b52d29e5673cbf841cc165b52",
@@ -1789,6 +1800,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # or binary run differs. A verdict `quality_check.json` carries can, and the
     # `verdict-16` bump moves the same Validate key.
     "execute-16@719970bc": "126f988a9463f525777a4eb54f187f44c56338516e8efdb1a87c3d37dc629352",
+    # execute-17 (issue #619, the rename to spec2science): the environment variables the host
+    # passes a program are `SPEC2SCIENCE_CUDA_BLOCK` and `SPEC2SCIENCE_PROCESS_GRID` (were
+    # `ATMOFAB_…`); the harness specs name the same variables. Rows moved, measured against
+    # origin/main 9360d799: the registry launch rows of `parallel/cuda/execution.py` and
+    # `parallel/mpi/execution.py`.
+    "execute-17": "5810de9cdd6ca28e72fc2a6b273bb24b8daafb0355a34a018f48c580e1410183",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

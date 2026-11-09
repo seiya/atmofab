@@ -11,7 +11,7 @@ the execution site's fact, not the parallel model's (`tools/execution_sites.py`,
 from __future__ import annotations
 
 #: The variable the harness reads the threads per block from, a decimal integer.
-BLOCK_SIZE_VARIABLE = "ATMOFAB_CUDA_BLOCK"
+BLOCK_SIZE_VARIABLE = "SPEC2SCIENCE_CUDA_BLOCK"
 #: The block sizes a run may be launched with: the powers of two from a warp to the largest
 #: block every device of the class accepts. The harness stops a run handed any other value.
 BLOCK_SIZES = frozenset({32, 64, 128, 256, 512, 1024})

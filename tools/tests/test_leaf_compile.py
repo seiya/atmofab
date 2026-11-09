@@ -27,7 +27,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 
-os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
+os.environ.setdefault("SPEC2SCIENCE_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
 
 import yaml
 

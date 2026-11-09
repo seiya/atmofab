@@ -681,7 +681,7 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
         self.assertNotIn("leaf transcripts are machine-local", md)
 
     def test_an_unexpandable_homes_root_keeps_the_window_facts_and_names_the_variable(self) -> None:
-        """Round 3 of issue #565: with `ATMOFAB_WORKFLOW_HOMES_ROOT='~nosuchacct/x'` the
+        """Round 3 of issue #565: with `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT='~nosuchacct/x'` the
         resolver's `RuntimeError` escaped the locator to `audit()`'s boundary, and the report
         said dangling-launch DETECTION had failed and the window was UNKNOWN — false, since
         detection had succeeded. The miss is typed now: the window table is rendered, the

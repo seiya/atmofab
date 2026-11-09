@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 
-#ifndef ATMOFAB_VIEW_DEFINED
-#define ATMOFAB_VIEW_DEFINED
+#ifndef SPEC2SCIENCE_VIEW_DEFINED
+#define SPEC2SCIENCE_VIEW_DEFINED
 namespace atmofab {
 // A rank-R, column-major, non-owning array view: `data` points at extent[0] * ... * extent[R-1]
 // elements, the first index fastest.

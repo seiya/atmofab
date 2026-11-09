@@ -27,8 +27,8 @@ from tools.backends.language.cuda_cpp import signatures as cpp_signatures
 #: element at 0-based indices (i1, ..., iR) is
 #: `data[i1 + extent[0] * (i2 + extent[1] * (... + extent[R-2] * iR))]`.
 VIEW_DEFINITION = """\
-#ifndef ATMOFAB_VIEW_DEFINED
-#define ATMOFAB_VIEW_DEFINED
+#ifndef SPEC2SCIENCE_VIEW_DEFINED
+#define SPEC2SCIENCE_VIEW_DEFINED
 namespace atmofab {
 // A rank-R, column-major, non-owning array view: `data` points at extent[0] * ... * extent[R-1]
 // elements, the first index fastest.

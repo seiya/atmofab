@@ -159,7 +159,7 @@ class CheckedInProfileTests(unittest.TestCase):
         it, so a kernel whose state depends on the block meets the reference run. The certified
         block is not the harness's default (round 1 of the PR's review): the post-execute gate
         ties the harness self-test's captured block to the certified run's, and at the default a
-        harness that ignores `ATMOFAB_CUDA_BLOCK` satisfies the tie. The default is read from
+        harness that ignores `SPEC2SCIENCE_CUDA_BLOCK` satisfies the tie. The default is read from
         the harness spec's §3.3, so a change of either side is red here."""
         import re
         profile = tp.load_target_profile(REPO_ROOT, "cpp_gpu")

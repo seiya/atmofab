@@ -192,9 +192,9 @@ class ExecutionTests(unittest.TestCase):
     def test_an_imposed_process_grid_is_the_variable_the_harness_reads(self) -> None:
         """Issue #512: the grid a profile imposes travels as `PROCESS_GRID_VARIABLE`, spelled
         `p1,p2` as `harness_fortran_cpu_mpi` §3.3 parses it; a malformed grid is refused."""
-        self.assertEqual(execution.PROCESS_GRID_VARIABLE, "ATMOFAB_PROCESS_GRID")
+        self.assertEqual(execution.PROCESS_GRID_VARIABLE, "SPEC2SCIENCE_PROCESS_GRID")
         self.assertEqual(execution.environment(1, process_grid=(2, 3)),
-                         {"ATMOFAB_PROCESS_GRID": "2,3"})
+                         {"SPEC2SCIENCE_PROCESS_GRID": "2,3"})
         self.assertEqual(execution.environment(1, process_grid=None), {})
         for bad in ((2,), (2, 0), (2.0, 2), (True, 2), "2,2", (1, 2, 3)):
             with self.subTest(grid=bad), self.assertRaises(ValueError):

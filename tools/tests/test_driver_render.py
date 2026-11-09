@@ -267,7 +267,7 @@ def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
             raise AssertionError(stem + build.stdout[:2000] + build.stderr[:2000])
         objs.append(f"{stem}.o")
     subprocess.run(["nvcc", *objs, "-o", "bin"], cwd=tmp, check=True, capture_output=True)
-    return _exec(tmp, ids, {"ATMOFAB_CUDA_BLOCK": "64"})
+    return _exec(tmp, ids, {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
 
 
 class _DriverBehaviour:

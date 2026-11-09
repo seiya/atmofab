@@ -240,7 +240,7 @@ not.
 - **Enumerate the LAYERS that enforce the claim, not only the configurations that move the
   thing.** The bullets above ask "what can move it"; this one asks "who else decides whether a
   leaf may reach it", and PR #140 shows the two are different questions. Adding
-  `ATMOFAB_OPERATOR_TOKENS_ROOT` to the dismiss-violation token store (both deleted by issue
+  `SPEC2SCIENCE_OPERATOR_TOKENS_ROOT` to the dismiss-violation token store (both deleted by issue
   #176; the episode is what this bullet is for, and the LAYER question it teaches is unchanged
   — the homes root's relocator is live and answers to it) re-ran the whole
   configuration enumeration against the Bash guard, correctly — every spelling of a relocated

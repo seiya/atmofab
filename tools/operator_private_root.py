@@ -49,7 +49,7 @@ def operator_secret_root() -> Path:
 # function is the guard's anchor, and it is what several hook tests patch `$HOME` to
 # reason about; an override there would make them reason about a layout production never
 # creates.
-WORKFLOW_HOMES_ROOT_ENV = "ATMOFAB_WORKFLOW_HOMES_ROOT"
+WORKFLOW_HOMES_ROOT_ENV = "SPEC2SCIENCE_WORKFLOW_HOMES_ROOT"
 
 def workflow_homes_root() -> Path:
     """`~/.atmofab/homes` — the durable root of every isolated backend home.
@@ -61,7 +61,7 @@ def workflow_homes_root() -> Path:
     placement is kept because `tools/prune_workflow_homes.py` and the resolvers below still
     want one root, not a scatter.
 
-    `ATMOFAB_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
+    `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
     coverage: with the override pointing outside `~/.atmofab`, a leaf's Bash read of a
     SIBLING orchestration's transcript was allowed (measured), while
     `docs/HOOKS.md` and this module's own docstrings asserted that closure without
@@ -113,7 +113,7 @@ def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], 
     if btype == "codex":
         # Mirror preflight's codex-home resolution so the guarded path is the
         # bound one even when CODEX_HOME relocates it.
-        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("ATMOFAB_HOME", "").strip()
+        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("SPEC2SCIENCE_HOME", "").strip()
         codex_home = Path(raw).expanduser() if raw else home / ".codex"
         if not codex_home.is_absolute():
             codex_home = codex_home.resolve()

@@ -6100,15 +6100,15 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], str(wc.LEAF_MAX_OUTPUT_TOKENS))
         self.assertEqual(wc.LEAF_MAX_OUTPUT_TOKENS, 128000)  # the Opus 4.8 synchronous ceiling
         # the pre-existing leaf env is untouched
-        self.assertEqual(env["ATMOFAB_ORCHESTRATION_ID"], "orch_x")
+        self.assertEqual(env["SPEC2SCIENCE_ORCHESTRATION_ID"], "orch_x")
         self.assertTrue(env["TMPDIR"].endswith("/workspace/tmp/child-1"))
         # THE CHILD'S OWN ARID, not the orchestration's. The hook selects a capability by
         # this value, so labelling a leaf with the parent's id hands it the wrong one.
         # Measured as a surviving mutation: swapping `child_arid` for
         # `self.orchestration_agent_run_id` here kept the whole suite green, because the
         # set-identity test names the KEY and never checked the VALUE.
-        self.assertEqual(env["ATMOFAB_CHILD_AGENT_RUN_ID"], "child-1")
-        self.assertNotEqual(env["ATMOFAB_CHILD_AGENT_RUN_ID"], "ORCH")
+        self.assertEqual(env["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "child-1")
+        self.assertNotEqual(env["SPEC2SCIENCE_CHILD_AGENT_RUN_ID"], "ORCH")
 
     def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
         """Auto-memory is NOT a settings file, so no `--setting-sources` value reaches it.
@@ -6160,7 +6160,7 @@ class LeafChildEnvTest(unittest.TestCase):
         "PATH": "/host/bin", "HOME": "/host/home", "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8", "TERM": "xterm", "USER": "op", "LOGNAME": "op",
         "PYTHONPATH": "/repo", "PYTHONDONTWRITEBYTECODE": "1",
-        "ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_WORKFLOW_EXEC_MODE": "hybrid",
+        "SPEC2SCIENCE_WORKFLOW_MODE": "1", "SPEC2SCIENCE_WORKFLOW_EXEC_MODE": "hybrid",
     }
 
     def _poisoned(self, backend: str) -> wc.Conductor:
@@ -6186,7 +6186,7 @@ class LeafChildEnvTest(unittest.TestCase):
         env = self._poisoned("claude")._child_env("child-1")
         for name in ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME",
                      "PYTHONPATH", "PYTHONDONTWRITEBYTECODE",
-                     "ATMOFAB_WORKFLOW_MODE", "ATMOFAB_WORKFLOW_EXEC_MODE"):
+                     "SPEC2SCIENCE_WORKFLOW_MODE", "SPEC2SCIENCE_WORKFLOW_EXEC_MODE"):
             with self.subTest(name=name):
                 self.assertEqual(env[name], self._POISONED_HOST[name])
 
@@ -6199,7 +6199,7 @@ class LeafChildEnvTest(unittest.TestCase):
         host_side = set(ort.LEAF_ENV_ALLOWLIST) | {
             k for k in self._POISONED_HOST
             if any(k.startswith(p) for p in ort.LEAF_ENV_ALLOWED_PREFIXES)}
-        conductor_side = {"ATMOFAB_ORCHESTRATION_ID", "ATMOFAB_CHILD_AGENT_RUN_ID", "TMPDIR",
+        conductor_side = {"SPEC2SCIENCE_ORCHESTRATION_ID", "SPEC2SCIENCE_CHILD_AGENT_RUN_ID", "TMPDIR",
                           *ort.CLAUDE_LEAF_ENV_EXTRAS}
         self.assertEqual(set(env), host_side | conductor_side)
 
@@ -6250,16 +6250,16 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertNotIn("CODEX_HOME", env)
 
     def test_child_env_drops_atmofab_home_despite_the_prefix(self) -> None:
-        """`ATMOFAB_HOME` is inside the allowed prefix and still must not travel: it is
+        """`SPEC2SCIENCE_HOME` is inside the allowed prefix and still must not travel: it is
         the deprecated alias for codex's config home, so it is on the single-route side.
         The prefix exception is what keeps the general rule general."""
         c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"ATMOFAB_HOME": "/host/.codex", "ATMOFAB_KEPT": "yes",
+                         env={"SPEC2SCIENCE_HOME": "/host/.codex", "SPEC2SCIENCE_KEPT": "yes",
                               "PATH": "/host/bin"})
         env = c._child_env("child-1")
-        self.assertNotIn("ATMOFAB_HOME", env)
-        self.assertEqual(env["ATMOFAB_KEPT"], "yes")   # the prefix still works
+        self.assertNotIn("SPEC2SCIENCE_HOME", env)
+        self.assertEqual(env["SPEC2SCIENCE_KEPT"], "yes")   # the prefix still works
 
     def test_codex_home_conflict_still_raises_after_the_filter(self) -> None:
         """The conflict check reads two names the filter now drops, so it had to move to
@@ -6267,19 +6267,19 @@ class LeafChildEnvTest(unittest.TestCase):
         would have gone quietly dead — two incompatible operator settings, no complaint."""
         c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"CODEX_HOME": "/a/one", "ATMOFAB_HOME": "/b/two",
+                         env={"CODEX_HOME": "/a/one", "SPEC2SCIENCE_HOME": "/b/two",
                               "PATH": "/host/bin"})
         with self.assertRaises(wc.SandboxEnforcementError):
             c._child_env("child-1")
 
     def test_codex_home_is_not_promoted_from_the_legacy_alias(self) -> None:
-        """The old code promoted `ATMOFAB_HOME` into `child_env["CODEX_HOME"]`. No
+        """The old code promoted `SPEC2SCIENCE_HOME` into `child_env["CODEX_HOME"]`. No
         host-side reader consumes that, and the home the leaf actually reads is the one
         `record_launch` prepared and the profile `--setenv`s — so the promotion could
         only ever name a DIFFERENT home than the one whose settings were pinned."""
         c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
-                         env={"ATMOFAB_HOME": "/b/two", "PATH": "/host/bin"})
+                         env={"SPEC2SCIENCE_HOME": "/b/two", "PATH": "/host/bin"})
         self.assertNotIn("CODEX_HOME", c._child_env("child-1"))
 
     def _http_conductor(self, env: dict) -> wc.Conductor:
@@ -6291,7 +6291,7 @@ class LeafChildEnvTest(unittest.TestCase):
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: http://localhost:8000/v1\n"
-            "        api_key_env: ATMOFAB_TEST_HTTP_KEY\n"
+            "        api_key_env: SPEC2SCIENCE_TEST_HTTP_KEY\n"
             "        model: local-coder\n"), encoding="utf-8")
         return _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH",
@@ -6301,15 +6301,15 @@ class LeafChildEnvTest(unittest.TestCase):
         """The one name the allowlist structurally cannot carry: the configuration FILE
         chooses it, so it is forwarded by entry lookup, not by enumeration. `_api_key`
         reads `child_env`, so without this every HTTP leaf would fail `missing_api_key`."""
-        c = self._http_conductor({"ATMOFAB_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
+        c = self._http_conductor({"SPEC2SCIENCE_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
-        self.assertEqual(env["ATMOFAB_TEST_HTTP_KEY"], "sk-declared")
+        self.assertEqual(env["SPEC2SCIENCE_TEST_HTTP_KEY"], "sk-declared")
 
     def test_an_http_leaf_gets_only_the_credential_its_entry_names(self) -> None:
         """Forwarding by ENTRY, not by shape. A `*_API_KEY` the operator happens to have
         exported is a credential the run did not choose; sending it to a base_url the run
         DID choose is how a key reaches the wrong endpoint."""
-        c = self._http_conductor({"ATMOFAB_TEST_HTTP_KEY": "sk-declared",
+        c = self._http_conductor({"SPEC2SCIENCE_TEST_HTTP_KEY": "sk-declared",
                                   "OPENAI_API_KEY": "sk-stranger",
                                   "ANTHROPIC_API_KEY": "sk-stranger-2", "PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
@@ -6322,22 +6322,22 @@ class LeafChildEnvTest(unittest.TestCase):
         conductor must not manufacture a `""` that would make the header look present."""
         c = self._http_conductor({"PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("generate", "generate"))
-        self.assertNotIn("ATMOFAB_TEST_HTTP_KEY", env)
+        self.assertNotIn("SPEC2SCIENCE_TEST_HTTP_KEY", env)
 
     def test_a_cli_leaf_does_not_get_the_http_credential(self) -> None:
         """The delta is per-KIND. `defaults` in the same file is a claude_cli entry, and a
         CLI leaf's environment is rendered into a persisted bwrap profile — a credential
         landing there would be written to disk in `sandbox_profiles/<arid>.json`.
 
-        The fixture name is deliberately inside the `ATMOFAB_` prefix, because that is the
+        The fixture name is deliberately inside the `SPEC2SCIENCE_` prefix, because that is the
         case that actually bites: the prefix would forward it, and only the "a declared
         `api_key_env` name is a credential" rule takes it back out. With a name outside
         the prefix this test would have passed while the hole stayed open — it did, and
         that is how the hole was found."""
-        c = self._http_conductor({"ATMOFAB_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
+        c = self._http_conductor({"SPEC2SCIENCE_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
         env = c._child_env("child-1", c.entry_for("compile", "generate"))
         self.assertFalse(c.entry_for("compile", "generate").is_http)
-        self.assertNotIn("ATMOFAB_TEST_HTTP_KEY", env)
+        self.assertNotIn("SPEC2SCIENCE_TEST_HTTP_KEY", env)
 
 
 class LeafEnvThreadingSiteTest(unittest.TestCase):
@@ -6777,7 +6777,7 @@ class LeafTransientRetryTest(unittest.TestCase):
 
     def test_a_raising_probe_reads_as_probe_failed(self) -> None:
         """`_read_usage_reset` guards its whole body: a `_child_env` raise (the CODEX_HOME /
-        ATMOFAB_HOME conflict) after the dead attempt is finalized is the schedule fallback,
+        SPEC2SCIENCE_HOME conflict) after the dead attempt is finalized is the schedule fallback,
         not a crashed run."""
         dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
         c = self._wait_conductor([dead, wc.ProcResult(0, "done", "")])
@@ -10943,7 +10943,7 @@ class LeafSpawnTest(unittest.TestCase):
         # Phase-2 (Linux+bwrap-only): bwrap leaf sandboxing is unconditionally mandatory;
         # there is no opt-out env value. _bwrap_enabled() always returns True.
         self.assertTrue(self._c(env={})._bwrap_enabled())
-        self.assertTrue(self._c(env={"ATMOFAB_CONDUCTOR_BWRAP": "off"})._bwrap_enabled())
+        self.assertTrue(self._c(env={"SPEC2SCIENCE_CONDUCTOR_BWRAP": "off"})._bwrap_enabled())
 
     def test_spawn_leaf_wraps_in_bwrap(self) -> None:
         # With a recorded sandbox profile, the leaf argv is wrapped in
@@ -11228,7 +11228,7 @@ class LeafSpawnTest(unittest.TestCase):
         # The prefix, not a reconstruction: the event carries `round(elapsed, 1)` while the
         # marker formatted the raw value, so rebuilding the string here would differ whenever
         # rounding crosses a whole second.
-        marker_prefix = "[conductor] leaf_timeout: leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=0.05"
+        marker_prefix = "[conductor] leaf_timeout: leaf exceeded SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS=0.05"
         self.assertTrue(proc.stderr.splitlines()[-1].startswith(marker_prefix),
                         proc.stderr.splitlines()[-1])
         self.assertTrue(wc._leaf_infra_error(proc)[1].startswith(marker_prefix))
@@ -12196,7 +12196,7 @@ class LeafSpawnTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._profile_repo(tmp)
             with patch.object(wc.subprocess, "Popen", _QuickPopen), \
-                    patch.dict(wc.os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "0"}):
+                    patch.dict(wc.os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": "0"}):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
                     "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"), **_leaf_kind("generate", "generate"))
         # No deadline at all: the wait runs until the leaf ends, however long it takes. It is
@@ -12213,7 +12213,7 @@ class LeafSpawnTest(unittest.TestCase):
         from unittest.mock import patch
 
         with patch.dict(wc.os.environ, {}, clear=False):
-            wc.os.environ.pop("ATMOFAB_LEAF_TIMEOUT_SECONDS", None)
+            wc.os.environ.pop("SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS", None)
             self.assertEqual(wc._leaf_timeout_seconds(), wc.LEAF_TIMEOUT_DEFAULT_SECONDS)
         cases = [
             ("60", 60), ("0", 0), ("  900 ", 900),
@@ -12243,7 +12243,7 @@ class LeafSpawnTest(unittest.TestCase):
         ]
         for raw, expected in cases:
             with self.subTest(raw=raw):
-                with patch.dict(wc.os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": raw}):
+                with patch.dict(wc.os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": raw}):
                     self.assertEqual(wc._leaf_timeout_seconds(), expected)
         self.assertEqual(wc.LEAF_TIMEOUT_DEFAULT_SECONDS, 7200)
         # The tuning constants are pinned by VALUE because every test patches them: a poll
@@ -14194,7 +14194,7 @@ class LeafSpawnTest(unittest.TestCase):
                 gets.clear()
                 waits.clear()
                 with patch.object(wc.queue, "Queue", _RecordingQueue), \
-                        patch.dict(wc.os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": raw}):
+                        patch.dict(wc.os.environ, {"SPEC2SCIENCE_LEAF_TIMEOUT_SECONDS": raw}):
                     proc = self._codex_stream_result(stream, wait_recorder=waits)
                 self.assertEqual(proc.stdout, "done")
                 self.assertIs(proc.timed_out, False)
@@ -17895,12 +17895,12 @@ class DeterministicBuildTest(unittest.TestCase):
                               else "sweep" if sweep else "run", dict(args)))
                 _write_c_alpha_captures(run_tmp)
                 # An honest distributed harness reports the grid it was launched on (#512).
-                grid = (args.get("env") or {}).get("ATMOFAB_PROCESS_GRID")
+                grid = (args.get("env") or {}).get("SPEC2SCIENCE_PROCESS_GRID")
                 perf = {} if grid is None else {"parallelism": {
                     "mpi_ranks": int(grid.split(",")[0]) * int(grid.split(",")[1]),
                     "process_grid": [int(g) for g in grid.split(",")]}}
                 # And an honest device harness the block size it was launched with (PR-4c).
-                block = (args.get("env") or {}).get("ATMOFAB_CUDA_BLOCK")
+                block = (args.get("env") or {}).get("SPEC2SCIENCE_CUDA_BLOCK")
                 if block is not None:
                     perf = {"parallelism": {"block_size": int(block)}}
                 (run_tmp / "perf.json").write_text(json.dumps(perf), encoding="utf-8")
@@ -17971,7 +17971,7 @@ class DeterministicBuildTest(unittest.TestCase):
         checked = calls[2][1]
         self.assertNotIn(launcher.EXECUTABLE, json.dumps(checked["command"]))
         self.assertEqual(Path(checked["command"][0]).parent.name, "bin_checked")
-        self.assertEqual(checked["env"]["ATMOFAB_PROCESS_GRID"], "1,1")
+        self.assertEqual(checked["env"]["SPEC2SCIENCE_PROCESS_GRID"], "1,1")
         self.assertIs(quality["shapes"][1]["launch_match"], True)
 
     def test_execute_inproc_runs_each_grid_of_the_sweep_under_its_launcher(self) -> None:
@@ -17989,14 +17989,14 @@ class DeterministicBuildTest(unittest.TestCase):
         result, calls, node_dir, _shape, _repo, _refs = self._drive_traced_execute(target)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([tag for tag, _ in calls], ["run", "qc", "sweep", "sweep", "checked"])
-        self.assertEqual(calls[1][1]["env"]["ATMOFAB_PROCESS_GRID"], "1,1")
+        self.assertEqual(calls[1][1]["env"]["SPEC2SCIENCE_PROCESS_GRID"], "1,1")
         self.assertNotIn(launcher.EXECUTABLE, json.dumps(calls[1][1]))
         for (_tag, call), ranks, grid, label in zip(calls[2:], (4, 3), ("4,1", "1,3"),
                                                     ("grid_4x1", "grid_1x3")):
             with self.subTest(label=label):
                 self.assertEqual(call["command"][:3], list(launcher.argv_prefix(ranks)))
                 self.assertEqual(call["command"][3:], calls[0][1]["command"][3:])
-                self.assertEqual(call["env"], {"ATMOFAB_PROCESS_GRID": grid})
+                self.assertEqual(call["env"], {"SPEC2SCIENCE_PROCESS_GRID": grid})
                 self.assertEqual(Path(call["project_dir"]).name, label)
                 self.assertEqual(call["command_log_path"], calls[0][1]["command_log_path"])
         quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
@@ -18009,7 +18009,7 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual([s["label"] for s in trial["environment"]["sweep"]],
                          ["grid_4x1", "grid_1x3"])
         self.assertEqual(trial["environment"]["serial_reference_env"],
-                         {"ATMOFAB_PROCESS_GRID": "1,1"})
+                         {"SPEC2SCIENCE_PROCESS_GRID": "1,1"})
 
     def test_execute_inproc_runs_each_block_size_of_the_sweep(self) -> None:
         """Issue #512 (PR-4c): a target that imposes a thread-block size runs the certified
@@ -18025,11 +18025,11 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([tag for tag, _ in calls],
                          ["run", "trace", "qc", "sweep", "sweep", "checked"])
-        self.assertEqual(calls[0][1]["env"], {"ATMOFAB_CUDA_BLOCK": "256"})
-        self.assertEqual(calls[2][1]["env"]["ATMOFAB_CUDA_BLOCK"], "256")
+        self.assertEqual(calls[0][1]["env"], {"SPEC2SCIENCE_CUDA_BLOCK": "256"})
+        self.assertEqual(calls[2][1]["env"]["SPEC2SCIENCE_CUDA_BLOCK"], "256")
         for (_tag, call), block in zip(calls[3:], ("64", "128")):
             with self.subTest(block=block):
-                self.assertEqual(call["env"], {"ATMOFAB_CUDA_BLOCK": block})
+                self.assertEqual(call["env"], {"SPEC2SCIENCE_CUDA_BLOCK": block})
                 self.assertEqual(Path(call["project_dir"]).name, f"block_{block}")
         quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
         self.assertEqual(quality["status"], "pass", quality)
@@ -18042,10 +18042,10 @@ class DeterministicBuildTest(unittest.TestCase):
                           ("checked", 256, 256, True)])
         trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
         self.assertEqual(trial["environment"]["serial_reference_env"],
-                         {"ATMOFAB_CUDA_BLOCK": "256"})
+                         {"SPEC2SCIENCE_CUDA_BLOCK": "256"})
         self.assertEqual([(s["label"], s["launch"]["env"]) for s in trial["environment"]["sweep"]],
-                         [("block_64", {"ATMOFAB_CUDA_BLOCK": "64"}),
-                          ("block_128", {"ATMOFAB_CUDA_BLOCK": "128"})])
+                         [("block_64", {"SPEC2SCIENCE_CUDA_BLOCK": "64"}),
+                          ("block_128", {"SPEC2SCIENCE_CUDA_BLOCK": "128"})])
 
     def test_execute_inproc_a_sweep_shape_that_fails_routes_back_to_generate(self) -> None:
         """A shape whose run fails, or whose harness reports another grid, fails the quality
@@ -20109,7 +20109,7 @@ class DeterministicLintTest(unittest.TestCase):
         So nothing checked that the probes thread `orchestration_id` / `agent_run_id` /
         `capability_token` through — and the census reviewer confirmed against the real tool that
         dropping any of them raises `run_linter requires capability_token when orchestration_id
-        is set` under `ATMOFAB_WORKFLOW_MODE=1`. A regression there breaks BOTH probes in
+        is set` under `SPEC2SCIENCE_WORKFLOW_MODE=1`. A regression there breaks BOTH probes in
         production while the suite stays green, which is the over-refusing direction and the
         largest unpinned surface the census found.
 
@@ -20411,7 +20411,7 @@ class DeterministicLintTest(unittest.TestCase):
 class DeterministicSyntaxTest(unittest.TestCase):
     """The generate.gate syntax checker (_gate_syntax_check) runs in-process: it stages the node
     (+ dep closure) sources, runs the build-runtime run_syntax_check compiler gate (mandatory gfortran,
-    optional ATMOFAB_SYNTAX_COMPILERS stages), returns the `syntax` section of gate_meta and
+    optional SPEC2SCIENCE_SYNTAX_COMPILERS stages), returns the `syntax` section of gate_meta and
     writes the host-side syntax evidence. An unfixable attribution raises (transport
     fail_closed); the unioned gate_meta.json is exercised by DeterministicGateTest."""
 
@@ -21056,7 +21056,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             # frt is a REGISTERED adapter here (temporarily — a record declaring
             # `syntax_check` over the gfortran package) but its binary is not installed:
             # the tool returns skipped, the gate records it and still passes.
-            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "frt,gfortran"})
+            c = self._conductor(repo, env={"SPEC2SCIENCE_SYNTAX_COMPILERS": "frt,gfortran"})
             frt = backend_registry.Backend(
                 "compiler", "frt", "tools.backends.compiler.gfortran",
                 backend_provides=frozenset({"syntax_check"}))
@@ -21112,7 +21112,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
 
     def test_an_optional_stage_for_another_language_is_skipped_not_run(self) -> None:
         """An adapter reads ITS language's sources. Listing one of another language in
-        ATMOFAB_SYNTAX_COMPILERS must not hand it this node's files (it would refuse their
+        SPEC2SCIENCE_SYNTAX_COMPILERS must not hand it this node's files (it would refuse their
         names, or compile them as the wrong language); the stage is recorded skipped."""
         import sys
         import tempfile
@@ -21123,7 +21123,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             repo = Path(td)
             refs = self._refs()
             self._seed(repo, refs)
-            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "gfortran,zzc"})
+            c = self._conductor(repo, env={"SPEC2SCIENCE_SYNTAX_COMPILERS": "gfortran,zzc"})
             pkg = types.ModuleType("zz_other_compiler")
             pkg.syntax = types.ModuleType("zz_other_compiler.syntax")
             pkg.syntax.LANGUAGE = "cpp"
@@ -21483,7 +21483,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             repo = Path(td)
             refs = self._refs()
             self._seed(repo, refs)
-            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "gfortran,frt"})
+            c = self._conductor(repo, env={"SPEC2SCIENCE_SYNTAX_COMPILERS": "gfortran,frt"})
             frt = backend_registry.Backend(
                 "compiler", "frt", "tools.backends.compiler.gfortran",
                 backend_provides=frozenset({"syntax_check"}))
@@ -21751,7 +21751,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertIn("no IMPLICIT type", meta["failure_excerpt"])
 
     def test_gate_syntax_check_unregistered_optional_compiler_skipped(self) -> None:
-        # An optional ATMOFAB_SYNTAX_COMPILERS entry with no registered adapter is recorded
+        # An optional SPEC2SCIENCE_SYNTAX_COMPILERS entry with no registered adapter is recorded
         # skipped, NOT crashed: the tool raises ValueError for an unknown compiler, which
         # would otherwise propagate as a transport fail_closed even though gfortran passed.
         import tempfile
@@ -21760,7 +21760,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             repo = Path(td)
             refs = self._refs()
             self._seed(repo, refs)
-            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "gfortran,frtxx"})
+            c = self._conductor(repo, env={"SPEC2SCIENCE_SYNTAX_COMPILERS": "gfortran,frtxx"})
 
             def fake(args):
                 # frtxx is unregistered, so the tool must never be called for it.

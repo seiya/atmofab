@@ -91,7 +91,7 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
     """
 
     def _prepare_under(self, override: str, repo: Path, oid: str = "opr_1"):
-        """Drive the homes preparer with `ATMOFAB_WORKFLOW_HOMES_ROOT` set to `override`."""
+        """Drive the homes preparer with `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` set to `override`."""
         env = {k: v for k, v in os.environ.items()
                if k != private_root.WORKFLOW_HOMES_ROOT_ENV}
         env[private_root.WORKFLOW_HOMES_ROOT_ENV] = override
@@ -139,9 +139,9 @@ class WorkflowHomesRootOverrideTests(unittest.TestCase):
         matches the command's tokens, not only its read targets. Measured at the time through the
         real `evaluate_common_policy` (deleted with the leaf hook layer in Z4, issue #171, so
         the measurement is a record and cannot be re-run here) with
-        `ATMOFAB_WORKFLOW_HOMES_ROOT` set to the checkout's parent: `cat README.md`, `ls`, `python3 tools/x.py` and `echo hi` all BLOCK. It used
+        `SPEC2SCIENCE_WORKFLOW_HOMES_ROOT` set to the checkout's parent: `cat README.md`, `ls`, `python3 tools/x.py` and `echo hi` all BLOCK. It used
         to read "with either root", and that quantifier died with the operator token store
-        (issue #176): the relocator left beside this one, `ATMOFAB_START_CLAIM_ROOT`, is in no
+        (issue #176): the relocator left beside this one, `SPEC2SCIENCE_START_CLAIM_ROOT`, is in no
         `protected_host_read_roots` entry, so all four of those commands ALLOW under it.
 
         `docs/RUNBOOK.md` described this as costing "every recursive in-repo read", which
@@ -375,7 +375,7 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
     which precedes every sentence this checks and is byte-identical at `e0bae3d`, so it
     pins that the rule is stated rather than that a correction survived. The READER is
     BOUNDED to that section and the bound is self-tested below, or a document that
-    mentions `ATMOFAB_START_CLAIM_ROOT` anywhere — it does, in the cold-start-guard
+    mentions `SPEC2SCIENCE_START_CLAIM_ROOT` anywhere — it does, in the cold-start-guard
     bullet 90 lines earlier — would satisfy this on the strength of an unrelated
     sentence.
 
@@ -425,7 +425,7 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
         """The self-test for the bound, in the shapes that would actually defeat it.
 
         BOTH directions, because the first version only had one. Backward:
-        `ATMOFAB_START_CLAIM_ROOT` appears in the cold-start-guard bullet of §Failure
+        `SPEC2SCIENCE_START_CLAIM_ROOT` appears in the cold-start-guard bullet of §Failure
         modes, far above this section — if the slice reached that far, deleting the
         relocator from the inventory would leave the row above green. Forward: the round-2
         census measured that mutating `rest.find("\n## ")` to `-1` left all twelve tests
@@ -447,14 +447,14 @@ class RunbookStatesTheRelocatorsTests(unittest.TestCase):
             "satisfiable by a sentence somewhere else in the document")
         # `assertTrue`, not `assertIn`: the haystack here is the whole 163 KB document.
         self.assertTrue(
-            "(relocatable with `ATMOFAB_START_CLAIM_ROOT`) and a cold start takes one" in text,
+            "(relocatable with `SPEC2SCIENCE_START_CLAIM_ROOT`) and a cold start takes one" in text,
             "the claim bullet this bound is tested against has moved or was reworded; "
             "re-choose a control sentence that names a relocator and sits OUTSIDE the "
             "operator-private-root section. (It has moved once already: issue #177 "
             "rewrote §3-1's concurrency bullet when the driver-liveness probe was "
             "deleted, and this control had pinned that sentence's exact wording.)")
         self.assertFalse(
-            "(relocatable with `ATMOFAB_START_CLAIM_ROOT`) and a cold start takes one" in section,
+            "(relocatable with `SPEC2SCIENCE_START_CLAIM_ROOT`) and a cold start takes one" in section,
             "the section slice reached outside the section — the bound is broken")
 
 

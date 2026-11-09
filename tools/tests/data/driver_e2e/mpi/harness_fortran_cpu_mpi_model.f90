@@ -381,18 +381,18 @@ contains
     call MPI_Init()
     call MPI_Comm_size(MPI_COMM_WORLD, grid_size)
     call MPI_Comm_rank(MPI_COMM_WORLD, grid_rank)
-    call get_environment_variable('ATMOFAB_PROCESS_GRID', length=elen, status=est)
+    call get_environment_variable('SPEC2SCIENCE_PROCESS_GRID', length=elen, status=est)
     if (est == 1 .or. (est == 0 .and. elen == 0)) then
       grid_p1 = grid_size
       grid_p2 = 1
     else if (est /= 0) then
-      error stop 'harness_fortran_cpu_mpi__init: cannot read ATMOFAB_PROCESS_GRID'
+      error stop 'harness_fortran_cpu_mpi__init: cannot read SPEC2SCIENCE_PROCESS_GRID'
     else
       allocate(character(len=elen) :: env)
-      call get_environment_variable('ATMOFAB_PROCESS_GRID', value=env)
+      call get_environment_variable('SPEC2SCIENCE_PROCESS_GRID', value=env)
       call parse_grid(env, grid_p1, grid_p2)
       if (grid_p1 * grid_p2 /= grid_size) then
-        error stop 'harness_fortran_cpu_mpi__init: ATMOFAB_PROCESS_GRID p1*p2 /= ranks'
+        error stop 'harness_fortran_cpu_mpi__init: SPEC2SCIENCE_PROCESS_GRID p1*p2 /= ranks'
       end if
     end if
     grid_c1 = grid_rank / grid_p2
@@ -794,7 +794,7 @@ contains
     do i = 1, len(s)
       if (s(i:i) == ',') ncomma = ncomma + 1
     end do
-    if (ncomma /= 1) error stop 'harness_fortran_cpu_mpi__init: malformed ATMOFAB_PROCESS_GRID'
+    if (ncomma /= 1) error stop 'harness_fortran_cpu_mpi__init: malformed SPEC2SCIENCE_PROCESS_GRID'
     ic = index(s, ',')
     call parse_positive(s(1:ic - 1), p1)
     call parse_positive(s(ic + 1:), p2)
@@ -805,15 +805,15 @@ contains
     integer, intent(out) :: v
     integer :: i, ios
 
-    if (len(t) == 0) error stop 'harness_fortran_cpu_mpi__init: malformed ATMOFAB_PROCESS_GRID'
+    if (len(t) == 0) error stop 'harness_fortran_cpu_mpi__init: malformed SPEC2SCIENCE_PROCESS_GRID'
     do i = 1, len(t)
       if (t(i:i) < '0' .or. t(i:i) > '9') then
-        error stop 'harness_fortran_cpu_mpi__init: malformed ATMOFAB_PROCESS_GRID'
+        error stop 'harness_fortran_cpu_mpi__init: malformed SPEC2SCIENCE_PROCESS_GRID'
       end if
     end do
     read(t, *, iostat=ios) v
-    if (ios /= 0) error stop 'harness_fortran_cpu_mpi__init: malformed ATMOFAB_PROCESS_GRID'
-    if (v <= 0) error stop 'harness_fortran_cpu_mpi__init: malformed ATMOFAB_PROCESS_GRID'
+    if (ios /= 0) error stop 'harness_fortran_cpu_mpi__init: malformed SPEC2SCIENCE_PROCESS_GRID'
+    if (v <= 0) error stop 'harness_fortran_cpu_mpi__init: malformed SPEC2SCIENCE_PROCESS_GRID'
   end subroutine parse_positive
 
   function line_rank(dim, c) result(r)
