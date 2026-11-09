@@ -2126,9 +2126,10 @@ class StaleCredentialRelaunchTests(_Base):
 
     def test_a_death_on_a_replaced_credential_is_re_launched_in_a_new_lineage(self) -> None:
         """Changed identity: a cold reuse in a NEW lineage seeded from the dead one's snapshot,
-        one `leaf_stale_credential_relaunch` naming both identities, no sleep, then pass.
-        Kills a capture after `spawn_leaf` (it would read the post-rename inode twice), a
-        stat of any other path, and a branch that does not re-launch."""
+        one `leaf_stale_credential_relaunch` naming both identities and the classifier's
+        evidence, no sleep, then pass. Kills a capture after `spawn_leaf` (it would read the
+        post-rename inode twice), a stat of any other path, a branch that does not re-launch,
+        and an event whose `evidence` is emptied."""
         before = _identity(self.cred)
         seen: list[str] = []
 
@@ -2150,6 +2151,11 @@ class StaleCredentialRelaunchTests(_Base):
         self.assertEqual((event["tag"], event["attempt"], event["max_relaunches"],
                           event["dead_agent_run_id"], event["substep"]),
                          ("llm_auth_expired", 1, 1, "child-1", "generate"))
+        # The classifier's evidence line for the death's streams, carried as it is.
+        tag, evidence = wc._classify_leaf_infra_error("", _OAUTH_DEATH_STDOUT)
+        self.assertEqual(tag, "llm_auth_expired")
+        self.assertTrue(evidence)
+        self.assertEqual(event["evidence"], evidence)
         self.assertEqual(event["identity_at_launch"], before)
         self.assertEqual(event["identity_now"], _identity(self.cred))
         self.assertNotEqual(event["identity_at_launch"], event["identity_now"])
