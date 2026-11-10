@@ -1183,10 +1183,12 @@ PINNED_RENDER: dict[str, str] = {
     # shipped, in the same PR. First: a host-rendered procedure's name is numbered over the plan
     # (two entries binding one each both took `driver_rhs_1`, and neither language's driver
     # compiled), and the Fortran procedure module's `public` statement is continued through
-    # `_wrap`, which continues any export list longer than its 88-character width, in either
-    # drive form (seven procedures made a 108-column line the render refused, and a mapping-form
-    # node whose two procedures' dummy names are 31 characters long now renders two lines where
-    # it rendered one of 94 columns). Second,
+    # `_wrap`, which continues a `public ::` statement longer than its 88-character width (an
+    # export list longer than 78), in either drive form: a statement of 89 to 97 characters
+    # rendered one line before and renders two now (a mapping-form node whose two procedures'
+    # dummy names are 31 characters long: one line of 94 columns before), and one of 98 or more
+    # made a line of 100 columns or more, which the render refused (seven procedures: 108).
+    # Second,
     # behaviour-preserving: the `DriverPlan.record_states` comment (review round 1). Moved:
     # `runner_ir.py`, `fortran/runner.py`. Census against a `git archive 4eb23e7f` tree: of 89 renders (the 17
     # bench IRs and two drive fixtures for fortran_cpu, cpp_gpu and fortran_cpu_mpi; the seven
