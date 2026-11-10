@@ -9,6 +9,7 @@ the C++ rows need `nvcc` and no device (the toy model is host code).
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -187,6 +188,32 @@ def list_ir(*modes: int) -> dict[str, Any]:
     entry = ir["drive"]["step"]
     ir["drive"]["step"] = [{**entry, "cases": [f"m{m}"]} for m in modes]
     return ir
+
+
+def list_record_ir(record_first: bool) -> dict[str, Any]:
+    """The list form over a procedure record (issue #613): case `c`'s entry is `procedure_ir`'s
+    call, recording `n_calls`, `stage_t`, `stage_u1` and `stage_u2`; case `p`'s entry binds no
+    procedure, so in case `p` all four are read from the case file — an array record, the rank-1
+    record of a rank-0 dummy and the scalar `calls` state. ``record_first`` lists the recording
+    entry first."""
+    record = {"operation": "drv_toy__advance", "result": "ok", "cases": ["c"], "arguments": {
+        "nx": "inputs.grid.nx", "t": "inputs.t", "dt": "inputs.dt", "u_n": "state.u_n",
+        "rhs": {"procedure": "inputs.lam * u", "calls": "state.n_calls",
+                "record": {"t": "state.stage_t", "u": ["state.stage_u1", "state.stage_u2"]}},
+        "u_np1": "state.u_np1", "ok": "state.ok"}}
+    plain = {"operation": "drv_toy__apply", "result": "ok", "cases": ["p"], "arguments": {
+        "nx": "inputs.grid.nx", "mode": "inputs.mode", "a": "state.stage_u1", "b": "state.u_np1",
+        "c": "state.u_n", "s": "state.s", "ok": "state.ok"}}
+    cases = [
+        {"case_id": "p", "inputs": {"grid": {"nx": 3}, "mode": 0},
+         "initial_state": {"stage_u1": [1.0, 2.0, 4.0], "stage_u2": [7.0, 8.0, 9.0],
+                           "stage_t": [0.5, 0.25], "n_calls": 9.0, "u_n": [5.0, 5.0, 5.0],
+                           "u_np1": -9.0, "s": -7.0}},
+        {"case_id": "c", "inputs": {"grid": {"nx": 3}, "t": 0.25, "dt": 0.5, "lam": -2.0},
+         "initial_state": {"u_n": [1.0, 2.0, 4.0], "u_np1": -9.0, "s": -7.0}}]
+    return _ir({"stage_t": "[2]", "u_n": "[nx]", "u_np1": "[nx]", "ok": "scalar",
+                "n_calls": "scalar", "stage_u1": "[nx]", "stage_u2": "[nx]", "s": "scalar"},
+               {"step": [record, plain] if record_first else [plain, record]}, cases)
 
 
 class Run:
@@ -591,6 +618,40 @@ class _DriverBehaviour:
         self.assertEqual(final["n_calls"], 0.0)
         self.assertEqual(final["stage_t"], [0.0, 0.0])
         self.assertEqual(final["ok"], 0.0)
+
+    def test_a_state_another_entry_records_is_read_from_the_file_in_either_entry_order(
+            self) -> None:
+        """Issue #613: a state entry `c` records is read from the case file in entry `p`, which
+        records nothing — whichever entry is listed first and whichever case runs first. Before
+        the fix a recording entry listed first zeroed the four records in `p` as well."""
+        for record_first in (False, True):
+            ir = list_record_ir(record_first)
+            self.assertEqual(pe.drive_violations(
+                {**ir, "drive": {**ir["drive"], "distribute": {"axes": []}}},
+                kind="component"), [])
+            for reversed_cases in (False, True):
+                with self.subTest(record_first=record_first, reversed_cases=reversed_cases):
+                    tmp = Path(self._tmp.name) / f"r{int(record_first)}c{int(reversed_cases)}"
+                    tmp.mkdir()
+                    built = copy.deepcopy(ir)
+                    if reversed_cases:
+                        built["case"]["test_case_set"].reverse()
+                    run = type(self).build_and_run(tmp, built)
+                    self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+                    initial_p, final_p = run.snapshot("initial/p"), run.snapshot("p")
+                    self.assertEqual(initial_p["stage_u1"], [1.0, 2.0, 4.0])
+                    self.assertEqual(initial_p["stage_u2"], [7.0, 8.0, 9.0])
+                    self.assertEqual(initial_p["stage_t"], [0.5, 0.25])
+                    self.assertEqual(initial_p["n_calls"], 9.0)
+                    self.assertEqual(final_p["u_np1"], [2.0, 4.0, 8.0])
+                    self.assertEqual(final_p["n_calls"], 9.0)
+                    initial_c, final_c = run.snapshot("initial/c"), run.snapshot("c")
+                    self.assertEqual(initial_c["n_calls"], 0.0)
+                    self.assertEqual(initial_c["stage_t"], [0.0, 0.0])
+                    self.assertEqual(initial_c["stage_u1"], [0.0, 0.0, 0.0])
+                    self.assertEqual(final_c["n_calls"], 2.0)
+                    self.assertEqual(final_c["stage_u1"], [1.0, 2.0, 4.0])
+                    self.assertEqual(final_c["stage_t"], [0.25, 0.75])
 
 
 class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
@@ -1157,12 +1218,14 @@ def loop_mpi_ir() -> dict[str, Any]:
                    tests, predicates, interfaces=(proto,))
 
 
-def lst_ir() -> dict[str, Any]:
+def lst_ir(record_first: bool = False) -> dict[str, Any]:
     """Model (5), a list-form `component` with axis `x` (review round 2 of PR-B2): case `a`'s
     entry reads `q [nx]` from the case file, case `b`'s entry has `q` recorded by a procedure
-    binding (the prototype's `in` dummy `q`), so `q` is file-backed in the first entry and
-    driver-written in the second. `a` has 8 cells and `b` 6, so with `min_block` 2 both
-    distribute on `(2, 1)` and `(2, 2)` and `b` alone replicates on `(4, 1)`."""
+    binding (the prototype's `in` dummy `q`), so `q` is file-backed in `a`'s entry and
+    driver-written in `b`'s. ``record_first`` lists `b`'s entry first (issue #613: the entry
+    order carries no meaning, so the captures are the same). `a` has 8 cells and `b` 6, so with
+    `min_block` 2 both distribute on `(2, 1)` and `(2, 2)` and `b` alone replicates on
+    `(4, 1)`."""
     sid = "fx_lst"
     proto = {"kind": "subroutine", "name": "fx_lst_proto", "args": [
         _arg("nx", "in", INT), _arg("q", "in", REAL, ["nx"]), _arg("dqdt", "out", REAL, ["nx"])]}
@@ -1186,11 +1249,19 @@ def lst_ir() -> dict[str, Any]:
               "initial_state": {"q": [1.0 + i for i in range(8)], "w": -999.0}},
              {"case_id": "b", "inputs": {"nx": 6, "lam": 0.5},
               "initial_state": {"w": -999.0}}]
+    if record_first:
+        drive["step"].reverse()
     tests, predicates = _one_test_per_case(cases, [("ok", "final.ok", "eq", 1),
                                                    ("w", "maxabs(final.w)", "gt", 0.0)])
     return _mpi_ir(sid, "component", ops, drive, cases,
                    {"q": "[nx]", "w": "[nx]", "ok": "scalar"}, tests, predicates,
                    interfaces=(proto,))
+
+
+def _lst_entry(ir: dict[str, Any], operation: str) -> dict[str, Any]:
+    """The `drive.step` entry of `lst_ir`'s IR that runs ``operation``, in either entry order."""
+    (entry,) = [e for e in ir["drive"]["step"] if e["operation"] == operation]
+    return entry
 
 
 MPI_FIXTURES = {"fx_recon": recon_ir, "fx_prob": prob_ir, "fx_wit": wit_ir,
@@ -1523,17 +1594,124 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         or first). Under the `checked` flags, on the singleton, on grids that distribute both
         cases, and on `(4, 1)`, which replicates `b` alone (6 cells under 4 ranks of
         `min_block` 2)."""
-        ir = lst_ir()
-        cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
-        self.assertFalse(runner_ir.distribute_plan(ir, cases["b"], (4, 1)))
-        self.assertTrue(runner_ir.distribute_plan(ir, cases["a"], (4, 1)))
-        build = self._build(ir, flags="checked")
-        for ids, cells in ((["a", "b"], 14), (["b"], 6), (["b", "a"], 14), (["a"], 8)):
-            for grid in (SINGLETON, (2, 1), (4, 1), (2, 2)):
-                with self.subTest(cases=ids, grid=grid):
-                    run = build.run(grid, cases=ids, timeout=60)
-                    self.assertEqual(run.rc, 0, run.stderr[-1000:])
-                    self.assertEqual(run.perf()["cells_updated"], cells)
+        for record_first in (False, True):     # the entry order too (issue #613)
+            ir = lst_ir(record_first)
+            cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+            self.assertFalse(runner_ir.distribute_plan(ir, cases["b"], (4, 1)))
+            self.assertTrue(runner_ir.distribute_plan(ir, cases["a"], (4, 1)))
+            build = self._build(ir, flags="checked")
+            for ids, cells in ((["a", "b"], 14), (["b"], 6), (["b", "a"], 14), (["a"], 8)):
+                for grid in (SINGLETON, (2, 1), (4, 1), (2, 2)):
+                    with self.subTest(record_first=record_first, cases=ids, grid=grid):
+                        run = build.run(grid, cases=ids, timeout=60)
+                        self.assertEqual(run.rc, 0, run.stderr[-1000:])
+                        self.assertEqual(run.perf()["cells_updated"], cells)
+
+    def test_a_recording_entry_listed_first_leaves_the_other_entry_s_state_file_backed(
+            self) -> None:
+        """Issue #613: model (5) in either entry order reads `q` from the case file in case
+        `a` (whose entry records nothing) and zeroes it in case `b` (whose procedure records
+        it), under both flag sets, on the singleton, on every grid and on the serial driver.
+        Before the fix the recording entry listed first zeroed `q` in case `a` too."""
+        for record_first in (False, True):
+            ir = lst_ir(record_first)
+            for flags in ("checked", "release"):
+                with self.subTest(record_first=record_first, flags=flags):
+                    build = self._build(ir, flags=flags)
+                    single = build.run(SINGLETON)
+                    self.assertEqual(single.rc, 0, single.stderr[-2000:])
+                    self._assert_lst_captures(single.snapshots())
+                    self.assertEqual(build.verdict(single), {"t_a": "pass", "t_b": "pass"})
+                    self.assertIsNone(self._first_disagreement(build, single.snapshots()))
+                    serial = self._build(ir, flags=flags, harness="harness_fortran_cpu")
+                    run = serial.run(SINGLETON)
+                    self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                    self._assert_lst_captures(run.snapshots())
+
+    def _assert_lst_captures(self, snaps: dict[str, Any]) -> None:
+        self.assertEqual(snaps["initial/a.json"]["q"], [1.0 + i for i in range(8)])
+        self.assertEqual(snaps["a.json"]["w"], [2.0 * (1.0 + i) for i in range(8)])
+        self.assertEqual(snaps["initial/b.json"]["q"], [0.0] * 6)
+        self.assertEqual(snaps["b.json"]["q"], [3.0] * 6)
+
+    def test_a_wrong_kernel_fails_a_relative_predicate_in_either_entry_order(self) -> None:
+        """Issue #613, the certification consequence: case `a`'s predicate judges `final.w`
+        against `initial.q`, an IR the gates admit. A model computing `w = 3q` instead of `2q`
+        fails it in either entry order, on the serial driver and on `(2, 2)`. Before the fix the
+        recording entry listed first zeroed `q` in case `a`, so `initial.q` and `final.w` were
+        both zero and the wrong kernel passed."""
+        model = (MPI_DATA / "fx_lst_model.f90").read_text()
+        self.assertEqual(model.count("w = 2.0_dp * q"), 1)
+        wrong = model.replace("w = 2.0_dp * q", "w = 3.0_dp * q")
+        for record_first in (False, True):
+            ir = lst_ir(record_first)
+            for pred in ir["io_contract"]["predicates"]:
+                if pred["test_id"] == "t_a" and pred["quantity"] == "w":
+                    pred["expr"], pred["op"], pred["value"] = (
+                        "maxabs(final.w - 2.0 * initial.q)", "le", 1e-12)
+            tests, preds = ir["io_contract"]["tests"], ir["io_contract"]["predicates"]
+            cases = {c["case_id"]: c for c in ir["case"]["test_case_set"]}
+            self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+            self.assertEqual(pe.quantity_violations(tests, preds), [])
+            self.assertEqual(list(pe.validate_primary_predicate_schema(
+                preds, case_ids=set(cases), test_ids=[t["test_id"] for t in tests],
+                schema=pe.snapshot_schema(ir), cases=cases,
+                test_target_cases={t["test_id"]: t["target_cases"] for t in tests},
+                **pe.predicate_schema_context(ir))), [])
+            for harness, grid in (("harness_fortran_cpu", SINGLETON), (MPI_HARNESS, (2, 2))):
+                for kernel, text, outcome in (("correct", None, "pass"), ("wrong", wrong, "fail")):
+                    with self.subTest(record_first=record_first, harness=harness, kernel=kernel):
+                        build = self._build(ir, flags="checked", harness=harness, model=text)
+                        run = build.run(grid, timeout=60)
+                        self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                        self.assertEqual(run.snapshots()["initial/a.json"]["q"],
+                                         [1.0 + i for i in range(8)])
+                        self.assertEqual(build.verdict(run)["t_a"], outcome)
+
+    def test_a_state_bound_to_no_dummy_of_its_entry_is_read_from_the_file_on_every_grid(
+            self) -> None:
+        """Issue #613: `rhs` records `q` over two calls (`q`, then `d`) and counts them in `nc`,
+        so in case `a`, whose entry binds no procedure, `d` and `nc` are file-backed and bound to
+        no dummy of the entry. `d` is a spatial `cell` array, so the distributed driver
+        block-copies it at the extents derived from the schema token `nx` through the entry's
+        `nx` dummy. Either entry order, both flag sets, the singleton and every grid."""
+        model = (MPI_DATA / "fx_lst_model.f90").read_text()
+        one = "    call rhs(nx, z, w)\n"
+        self.assertEqual(model.count(one), 1)
+        model = model.replace(one, one + "    z = w\n" + one)
+        for record_first in (False, True):
+            ir = lst_ir(record_first)
+            rhs = _lst_entry(ir, "fx_lst__proc")["arguments"]["rhs"]
+            rhs["record"], rhs["calls"] = {"q": ["state.q", "state.d"]}, "state.nc"
+            ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"][
+                "variables"] += [{"name": "d", "shape_expr": "[nx]"},
+                                 {"name": "nc", "shape_expr": "scalar"}]
+            case_a = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == "a")
+            case_a["initial_state"].update({"d": [10.0 + i for i in range(8)], "nc": 5.0})
+            self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+            variables = {v["name"]: v["shape_expr"] for v in pe.snapshot_schema(ir)["variables"]}
+            self.assertEqual(runner_ir.distribute_layouts(ir, variables)[0]["d"], ((0, "cell"),))
+            entry_a = next(e for e in runner_ir.driver_plan(ir, variables).entries
+                           if e.cases == ("a",))
+            self.assertIn("d", entry_a.from_file)
+            self.assertEqual(entry_a.extents["d"], ("h1",))
+            for flags in ("checked", "release"):
+                build = self._build(ir, flags=flags, model=model)
+                reference = None
+                for grid in (SINGLETON, *MPI_GRIDS):
+                    with self.subTest(record_first=record_first, flags=flags, grid=grid):
+                        run = build.run(grid, timeout=60)
+                        self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                        snaps = run.snapshots()
+                        reference = snaps if reference is None else reference
+                        self.assertEqual(snaps["initial/a.json"]["d"], [10.0 + i for i in range(8)])
+                        self.assertEqual(snaps["a.json"]["d"], [10.0 + i for i in range(8)])
+                        self.assertEqual(snaps["initial/a.json"]["nc"], 5.0)
+                        self.assertEqual(snaps["initial/b.json"]["d"], [0.0] * 6)
+                        self.assertEqual(snaps["b.json"]["d"], [1.5] * 6)
+                        self.assertEqual(snaps["b.json"]["nc"], 2.0)
+                        self.assertEqual(snaps, reference)
+                        self.assertEqual(build.verdict(run), {"t_a": "pass", "t_b": "pass"})
 
     def test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed(self) -> None:
         """Every cell is held by the same number of ranks on every shape the driver runs (a

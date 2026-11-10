@@ -791,7 +791,9 @@ class EntryPlan:
     from the case file before any capture; ``from_file`` the states with an `initial_state`
     entry; ``zero_arrays`` state -> extent tokens over the entry's integer locals (allocated and
     zeroed by the driver); ``zero_scalars`` likewise; ``extent_exprs`` of the state arrays in
-    schema order are what the perf record multiplies at run time."""
+    schema order are what the perf record multiplies at run time. ``from_file`` and ``zero_*``
+    are computed from the entry's own calls — its `init` and `step` bindings and the records of
+    their procedures — never from another entry's (issue #613)."""
     cases: tuple[str, ...] | None
     hosts: tuple[HostValue, ...]
     from_file: tuple[str, ...]
@@ -828,6 +830,8 @@ class DriverPlan:
     work_vars: tuple[str, ...]
     logical_states: tuple[str, ...]
     integer_states: tuple[str, ...]
+    #: The union over the entries of the states a procedure's `calls` / `record` writes: what the
+    #: renderers declare storage from. Which of them an entry zeroes is that entry's own set.
     record_states: tuple[str, ...]
     hosts: tuple[HostValue, ...]
     procedure_hosts: tuple[HostValue, ...]
@@ -989,8 +993,6 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
                                        procedure_hosts, used)
                 procedures.append(plan)
                 actuals.append(Actual("procedure", plan))
-                record_states.update([plan.calls] if plan.calls else [])
-                record_states.update(r for _d, refs in plan.record for r in refs)
                 continue
             if dtype not in ("real", "integer", "logical"):
                 raise RenderError(f"dummy {name!r} of type {dtype!r} cannot be driven")
@@ -1058,8 +1060,15 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
         locals_ = {**step_locals, **init_locals}
         classes = _case_classes(init, step)
         written_by_init = classes["init_written"]
+        # The records of THIS entry's procedures (its `init` and `step` bindings) and no other's:
+        # a state another entry records is read from the case file here, as the gate's per-case
+        # classes require (issue #613). The plan-wide union is what the storage is declared from.
+        entry_records = frozenset(
+            [p.calls for p in procedures if p.calls]
+            + [ref for p in procedures for _dummy, refs in p.record for ref in refs])
+        record_states |= entry_records
         driver_written = written_by_init | frozenset(step_plan.logical) \
-            | frozenset(init_plan.logical if init_plan else ()) | frozenset(record_states)
+            | frozenset(init_plan.logical if init_plan else ()) | entry_records
         from_file = tuple(v for v in variables if v not in driver_written)
         zero_scalars = tuple(v for v in variables if v in driver_written and ranks[v] == 0)
         zero_arrays: dict[str, tuple[str, ...]] = {}

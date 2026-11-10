@@ -1174,6 +1174,13 @@ PINNED_RENDER: dict[str, str] = {
     # named `spec2science_mpi_binding_canary`. Again in review round 1: an article in a docstring
     # of `cuda_cpp/runner.py` and of `cuda_cpp/signatures.py`.
     "render-17": "131dacb348a66b80f47ebe5e2cbd9965548eac550e75c815dbdcce87d82ac21c",
+    # render-18 (issue #613): in a list-form `drive.step`, each entry's driver-written set is
+    # computed from the records of its own procedures, where an entry listed after a recording
+    # entry also zeroed that entry's records, so a state the gate's per-case classes require from
+    # the case file was allocated and zeroed instead. Under a predicate that judges `final.*`
+    # against `initial.*` the old text could certify a wrong kernel (its `initial/` capture held
+    # the zeros). A bump, because rendered bytes move. Moved: `runner_ir.py`.
+    "render-18": "380ecb26edbfa74ff2c60691552ea9bea52d9be9e709052ff4f2778456d60839",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

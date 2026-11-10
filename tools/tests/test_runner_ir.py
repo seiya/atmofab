@@ -14,6 +14,7 @@ import yaml
 from tools import primary_evidence as pe
 from tools import runner_ir as r
 from tools.host_render import RenderError
+from tools.tests.test_driver_render import lst_ir, procedure_ir
 from tools.tests.test_primary_evidence import (_BENCH_DIR, _DRIVE_DIR, _coriolis, _rk4_renamed,
                                                _rus, _toy, _toyi)
 
@@ -187,6 +188,37 @@ class DriveAgreementTest(unittest.TestCase):
                          for v in pe.snapshot_schema(irs[f"rk4_{new}"])["variables"]}
             layouts, _ = r.distribute_layouts(irs[f"rk4_{new}"], variables)
             self.assertEqual(layouts["stage_U1"], (None, (0, "cell"), (1, "cell")))
+
+    def _assert_entries_read_what_their_cases_need(self, ir: dict) -> r.DriverPlan:
+        """Every case's entry reads from the file exactly what gate (f)'s per-case model
+        requires, and the driver writes the rest of the schema (issue #613)."""
+        variables = {v["name"]: v["shape_expr"] for v in pe.snapshot_schema(ir)["variables"]}
+        plan, model = r.driver_plan(ir, variables), pe.drive_model(ir)
+        for case in ir["case"]["test_case_set"]:
+            cid = case["case_id"]
+            (entry,) = [e for e in plan.entries if e.cases is None or cid in e.cases]
+            with self.subTest(case=cid):
+                self.assertEqual(set(entry.from_file), set(model.for_case(cid).needs_initial()))
+                self.assertEqual(set(entry.zero_scalars) | set(entry.zero_arrays),
+                                 set(variables) - set(entry.from_file))
+        return plan
+
+    def test_each_entry_reads_from_the_file_what_its_cases_need(self) -> None:
+        """Issue #613: `runner_ir.driver_plan`'s per-entry `from_file` equals
+        `primary_evidence`'s per-case `needs_initial` on every fixture, the list-form one in
+        both entry orders. Before the fix an entry listed after a recording entry zeroed what
+        that entry records, so `lst_ir` reversed read `q` from no file in case `a`."""
+        irs = {**self._fixtures(), "lst": lst_ir(), "lst_record_first": lst_ir(record_first=True),
+               "procedure": procedure_ir()}
+        for name, ir in irs.items():
+            with self.subTest(ir=name):
+                self._assert_entries_read_what_their_cases_need(ir)
+        variables = {v["name"]: v["shape_expr"]
+                     for v in pe.snapshot_schema(irs["lst_record_first"])["variables"]}
+        plan = r.driver_plan(irs["lst_record_first"], variables)
+        self.assertEqual([(e.cases, e.from_file, dict(e.zero_arrays)) for e in plan.entries],
+                         [(("b",), ("w",), {"q": ("h1",)}), (("a",), ("q", "w"), {})])
+        self.assertEqual(plan.record_states, ("q",))
 
     def test_the_classes_on_the_known_fixtures(self) -> None:
         self.assertEqual(r.drive_state_classes(_toyi())["init_written"],
