@@ -14,6 +14,8 @@ import yaml
 from tools import primary_evidence as pe
 from tools import runner_ir as r
 from tools.host_render import RenderError
+from tools.tests.test_driver_render import (_lst_entry, list_record_ir, lst_init_procedure_ir,
+                                            lst_ir, procedure_ir)
 from tools.tests.test_primary_evidence import (_BENCH_DIR, _DRIVE_DIR, _coriolis, _rk4_renamed,
                                                _rus, _toy, _toyi)
 
@@ -187,6 +189,75 @@ class DriveAgreementTest(unittest.TestCase):
                          for v in pe.snapshot_schema(irs[f"rk4_{new}"])["variables"]}
             layouts, _ = r.distribute_layouts(irs[f"rk4_{new}"], variables)
             self.assertEqual(layouts["stage_U1"], (None, (0, "cell"), (1, "cell")))
+
+    def _assert_entries_read_what_their_cases_need(self, ir: dict) -> r.DriverPlan:
+        """Every case's entry reads from the file exactly what gate (f)'s per-case model
+        requires, and the driver writes the rest of the schema (issue #613)."""
+        variables = {v["name"]: v["shape_expr"] for v in pe.snapshot_schema(ir)["variables"]}
+        plan, model = r.driver_plan(ir, variables), pe.drive_model(ir)
+        for case in ir["case"]["test_case_set"]:
+            cid = case["case_id"]
+            (entry,) = [e for e in plan.entries if e.cases is None or cid in e.cases]
+            with self.subTest(case=cid):
+                self.assertEqual(set(entry.from_file), set(model.for_case(cid).needs_initial()))
+                self.assertEqual(set(entry.zero_scalars) | set(entry.zero_arrays),
+                                 set(variables) - set(entry.from_file))
+        return plan
+
+    def test_each_entry_reads_from_the_file_what_its_cases_need(self) -> None:
+        """Issue #613: `runner_ir.driver_plan`'s per-entry `from_file` equals
+        `primary_evidence`'s per-case `needs_initial` on every fixture, the two list-form ones
+        in both entry orders. Before the fix an entry listed after a recording entry zeroed what
+        that entry records, so `lst_ir` reversed read `q` from no file in case `a`.
+        `list_record_ir` carries the record kinds `lst_ir` does not: the scalar `calls` state
+        and the rank-1 record of a rank-0 dummy, beside an array record."""
+        irs = {**self._fixtures(), "lst": lst_ir(), "lst_record_first": lst_ir(record_first=True),
+               "list_record": list_record_ir(False), "list_record_first": list_record_ir(True),
+               "procedure": procedure_ir()}
+        for name, ir in irs.items():
+            with self.subTest(ir=name):
+                self._assert_entries_read_what_their_cases_need(ir)
+        variables = {v["name"]: v["shape_expr"]
+                     for v in pe.snapshot_schema(irs["lst_record_first"])["variables"]}
+        plan = r.driver_plan(irs["lst_record_first"], variables)
+        self.assertEqual([(e.cases, e.from_file, dict(e.zero_arrays)) for e in plan.entries],
+                         [(("b",), ("w",), {"q": ("h1",)}), (("a",), ("q", "w"), {})])
+        self.assertEqual(plan.record_states, ("q",))
+
+    def test_a_procedure_name_is_unique_in_the_plan(self) -> None:
+        """Issue #613: a host-rendered procedure is numbered over the plan, not per entry, so two
+        entries that each bind `rhs` name `driver_rhs_1` and `driver_rhs_2`."""
+        ir = lst_ir()
+        proc = _lst_entry(ir, "fx_lst__proc")
+        ir["drive"]["step"] = [{**copy.deepcopy(proc), "cases": ["a"]}, proc]
+        case_a = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == "a")
+        del case_a["initial_state"]["q"]
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+        plan = self._assert_entries_read_what_their_cases_need(ir)
+        self.assertEqual([[p.name for p in e.procedures] for e in plan.entries],
+                         [["driver_rhs_1"], ["driver_rhs_2"]])
+        variables = {v["name"]: v["shape_expr"]
+                     for v in pe.snapshot_schema(procedure_ir())["variables"]}
+        self.assertEqual([[p.name for p in e.procedures]
+                          for e in r.driver_plan(procedure_ir(), variables).entries],
+                         [["driver_rhs_1"]])
+
+    def test_an_init_procedure_is_planned_per_entry(self) -> None:
+        """Issue #613: an `init` binding a procedure is planned in each entry, its record `r` is
+        driver-written in every entry, the step's record `q` only in its own, and each copy of
+        `init`'s procedure takes its own name (an entry lists `init`'s procedure first)."""
+        names = {False: [["driver_rhs_1"], ["driver_rhs_2", "driver_rhs_3"]],
+                 True: [["driver_rhs_1", "driver_rhs_2"], ["driver_rhs_3"]]}
+        for record_first in (False, True):
+            with self.subTest(record_first=record_first):
+                ir = lst_init_procedure_ir(record_first)
+                self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+                plan = self._assert_entries_read_what_their_cases_need(ir)
+                for entry in plan.entries:
+                    self.assertIn("r", entry.zero_arrays)
+                self.assertEqual(plan.record_states, ("q", "r"))
+                self.assertEqual([[p.name for p in e.procedures] for e in plan.entries],
+                                 names[record_first])
 
     def test_the_classes_on_the_known_fixtures(self) -> None:
         self.assertEqual(r.drive_state_classes(_toyi())["init_written"],

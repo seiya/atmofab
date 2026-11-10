@@ -1174,6 +1174,35 @@ PINNED_RENDER: dict[str, str] = {
     # named `spec2science_mpi_binding_canary`. Again in review round 1: an article in a docstring
     # of `cuda_cpp/runner.py` and of `cuda_cpp/signatures.py`.
     "render-17": "131dacb348a66b80f47ebe5e2cbd9965548eac550e75c815dbdcce87d82ac21c",
+    # render-18 (issue #613): in a list-form `drive.step`, each entry's driver-written set is
+    # computed from the `calls` and `record` states of its own procedures, where an entry listed
+    # after such an entry also zeroed that entry's, so a state the gate's per-case classes require
+    # from the case file was allocated and zeroed instead. So, of the nodes `render-17` rendered,
+    # this part moves bytes exactly where
+    # some entry is listed after an entry whose procedures write a state by `calls` or `record`
+    # and does not write that state itself (by its own procedures, its `init`'s outputs or a
+    # logical `out`); a node whose only such entry is listed last renders the same bytes. Where
+    # such a state is an array whose extent names no rank-0 dummy of the later entry, `render-17`
+    # could not zero it and refused the node, which renders now (review round 3). Under
+    # a predicate that judges `final.*` against `initial.*` the old text could certify a wrong
+    # kernel (its `initial/` capture held the zeros). A bump, because rendered bytes move. Re-pinned in place twice before it
+    # shipped, in the same PR. First: a host-rendered procedure's name is numbered over the plan
+    # (two entries binding one each both took `driver_rhs_1`, and neither language's driver
+    # compiled), and the Fortran procedure module's `public` statement is continued through
+    # `_wrap`, which continues a `public ::` statement longer than its 88-character width (an
+    # export list longer than 78), in either drive form: a statement of 89 to 97 characters
+    # rendered one line before and renders two now (a mapping-form node whose two procedures'
+    # dummy names are 31 characters long: one line of 94 columns before), and one of 98 or more
+    # made a line of 100 columns or more, which the render refused (seven procedures: 108).
+    # Second,
+    # behaviour-preserving: the `DriverPlan.record_states` comment (review round 1). Moved:
+    # `runner_ir.py`, `fortran/runner.py`. Census against a `git archive 4eb23e7f` tree: of 89 renders (the 17
+    # bench IRs and two drive fixtures for fortran_cpu, cpp_gpu and fortran_cpu_mpi; the seven
+    # toy IRs for fortran_cpu and cpp_gpu; the five MPI fixtures and `lst_ir` with its entries
+    # reversed for the three targets) exactly the three reversed `lst_ir` renders differ; the
+    # 105 renders of the 35 drive-carrying IRs under `workspace/ir/` and `releases/` of the
+    # operator's checkout are byte-identical; none raises.
+    "render-18": "5a2efead32d294df963d93fa69916039346c1b2d448cc83e53fd7122f4f2ebbe",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source
