@@ -1729,9 +1729,10 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                         build = self._build(ir, flags="checked", harness=harness, model=text)
                         run = build.run(grid, timeout=60)
                         self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                        # the verdict first: before the fix the reversed wrong kernel PASSED
+                        self.assertEqual(build.verdict(run)["t_a"], outcome)
                         self.assertEqual(run.snapshots()["initial/a.json"]["q"],
                                          [1.0 + i for i in range(8)])
-                        self.assertEqual(build.verdict(run)["t_a"], outcome)
 
     def test_a_state_bound_to_no_dummy_of_its_entry_is_read_from_the_file_on_every_grid(
             self) -> None:
@@ -1755,11 +1756,13 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
             case_a["initial_state"].update({"d": [10.0 + i for i in range(8)], "nc": 5.0})
             self.assertEqual(pe.drive_violations(ir, kind="component"), [])
             variables = {v["name"]: v["shape_expr"] for v in pe.snapshot_schema(ir)["variables"]}
-            self.assertEqual(runner_ir.distribute_layouts(ir, variables)[0]["d"], ((0, "cell"),))
-            entry_a = next(e for e in runner_ir.driver_plan(ir, variables).entries
-                           if e.cases == ("a",))
-            self.assertIn("d", entry_a.from_file)
-            self.assertEqual(entry_a.extents["d"], ("h1",))
+            with self.subTest(record_first=record_first, plan=True):
+                self.assertEqual(runner_ir.distribute_layouts(ir, variables)[0]["d"],
+                                 ((0, "cell"),))
+                entry_a = next(e for e in runner_ir.driver_plan(ir, variables).entries
+                               if e.cases == ("a",))
+                self.assertIn("d", entry_a.from_file)
+                self.assertEqual(entry_a.extents["d"], ("h1",))
             for flags in ("checked", "release"):
                 build = self._build(ir, flags=flags, model=model)
                 reference = None
