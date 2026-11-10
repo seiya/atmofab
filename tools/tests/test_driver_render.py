@@ -631,14 +631,13 @@ class _DriverBehaviour:
         `driver_<dummy>_1`, longer than the language's 63, and the runner did not compile. 54 is
         the longest whose name fits, 55 the shortest that does not, 63 the longest legal dummy."""
         for width in (54, 55, 63):
-            with self.subTest(width=width):
-                with tempfile.TemporaryDirectory() as tmp:
-                    run = type(self).build_and_run(
-                        Path(tmp), with_dummy(procedure_ir("inputs.lam * u"), "r" * width))
-                    self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
-                    final = run.snapshot("c")
-                    self.assertEqual(final["n_calls"], 2.0)
-                    self.assertEqual(final["stage_t"], [0.25, 0.75])
+            with self.subTest(width=width), tempfile.TemporaryDirectory() as tmp:
+                run = type(self).build_and_run(
+                    Path(tmp), with_dummy(procedure_ir("inputs.lam * u"), "r" * width))
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+                final = run.snapshot("c")
+                self.assertEqual(final["n_calls"], 2.0)
+                self.assertEqual(final["stage_t"], [0.25, 0.75])
 
     def test_a_refusing_operation_leaves_the_records_at_zero(self) -> None:
         final = self._run(procedure_ir("u", dt=-1.0)).snapshot("c")
