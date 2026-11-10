@@ -14,8 +14,8 @@ import yaml
 from tools import primary_evidence as pe
 from tools import runner_ir as r
 from tools.host_render import RenderError
-from tools.tests.test_driver_render import (_lst_entry, lst_init_procedure_ir, lst_ir,
-                                            procedure_ir)
+from tools.tests.test_driver_render import (_lst_entry, list_record_ir, lst_init_procedure_ir,
+                                            lst_ir, procedure_ir)
 from tools.tests.test_primary_evidence import (_BENCH_DIR, _DRIVE_DIR, _coriolis, _rk4_renamed,
                                                _rus, _toy, _toyi)
 
@@ -206,10 +206,13 @@ class DriveAgreementTest(unittest.TestCase):
 
     def test_each_entry_reads_from_the_file_what_its_cases_need(self) -> None:
         """Issue #613: `runner_ir.driver_plan`'s per-entry `from_file` equals
-        `primary_evidence`'s per-case `needs_initial` on every fixture, the list-form one in
-        both entry orders. Before the fix an entry listed after a recording entry zeroed what
-        that entry records, so `lst_ir` reversed read `q` from no file in case `a`."""
+        `primary_evidence`'s per-case `needs_initial` on every fixture, the two list-form ones
+        in both entry orders. Before the fix an entry listed after a recording entry zeroed what
+        that entry records, so `lst_ir` reversed read `q` from no file in case `a`.
+        `list_record_ir` carries the record kinds `lst_ir` does not: the scalar `calls` state
+        and the rank-1 record of a rank-0 dummy, beside an array record."""
         irs = {**self._fixtures(), "lst": lst_ir(), "lst_record_first": lst_ir(record_first=True),
+               "list_record": list_record_ir(False), "list_record_first": list_record_ir(True),
                "procedure": procedure_ir()}
         for name, ir in irs.items():
             with self.subTest(ir=name):
