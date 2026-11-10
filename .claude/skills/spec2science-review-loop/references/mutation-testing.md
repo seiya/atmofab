@@ -769,3 +769,16 @@ by running each earlier file of the `--test-cmd` paired with the red row; only
 starts. A file that imports the binding module at collection (`test_workshop_mcp.py`) cannot show
 the leak, which is why only one pairing reproduced it.
 
+## A probe that edited a shared fixture (PR #624, 2026-11-10)
+
+`tools/tests/test_driver_render.py::procedure_ir` builds a fresh IR on each call, and its
+`public_api.interfaces[0].signature` is the module-level `PROTOTYPE` itself (`_api()`), so the same
+object comes back from every call. A probe measuring a `TODO.md` item renamed the prototype argument
+`t` across widths 36, 37 and 63, in one process, by reassigning `itf["signature"]["args"]` on what
+the builder returned, and dropped `t`'s record entry. The first width rewrote `PROTOTYPE` to a
+36-character name; the later ones found no `t` to rename and rendered that 36-character name again,
+so the run reported `[]` for all three (a rendered line at widths 37 and 60 showed 36 characters).
+With `copy.deepcopy` the same probe gave `[]` at 36 and the 100-column refusal at 37 and 63, which
+is what the item now records. Nothing failed loudly: each row printed a plausible answer. The round-2 and round-3 launch prompts on that branch said "deep-copy before
+renaming anything", and both reviewers' measurements of the same builder came out consistent.
+
