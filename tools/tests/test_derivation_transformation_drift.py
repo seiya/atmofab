@@ -841,6 +841,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # (no other site). Measured 111222 bytes with `wc -c` in the checkout at the
     # commit that takes it (ceiling 111250, no bump).
     "compile-docs-30": "c0cf513daed0331c6c70d36c14d39476752debe02019679c6bb732935bb93799",
+    # compile-docs-31 (the system tier's Part 1): `phase_01_compile.md` states a `problem`
+    # declared under `problems:` as a direct dependency a node calls (its `operations` gated as a
+    # component's, V4c-i and V4c-ii) and the three spec-input refusals of a `problems:` entry.
+    "compile-docs-31": "1bda06e459f7e6c5540c2a2dfd4ad20f2c5f03dcc50aac96bc1eae434ea5e0d2",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

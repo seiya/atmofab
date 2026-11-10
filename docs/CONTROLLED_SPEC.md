@@ -11,7 +11,7 @@ This project divides the specification into the following 2 layers.
 
 1. `Controlled Spec` (this document)
 - The `Controlled Spec` has a `spec_kind` and is classified into the 4 kinds `problem` / `component` / `profile` / `infrastructure`.
-- `problem` defines the equation system to be integrated and the runtime input contract, and references the dependent `component` and adopted `profile`.
+- `problem` defines the equation system to be integrated and the runtime input contract, and references the dependent `component`, the dependent `problem` and the adopted `profile`. A `problem` that depends on `problem`s is an assembled model: its `__step` composes theirs.
 - `component` defines the input/output contract of a reusable physics operation and the published `operation`.
 - `profile` defines the selection rules and parameter constraints for a `component`. The selection is resolved at Compile time, by the host, for the `node` that adopts the profile; a `profile` is not a certified code `node` (`docs/SPEC.md` §Design Policy, issue #175), so nothing is generated or executed for it.
 - `infrastructure` (R1 harness) defines the shared runner plumbing (argv/case parsing, case-loop driver, JSON/snapshot/perf emission) as a certified node per `(language, hardware)` target, carrying no physics.
@@ -62,12 +62,13 @@ Place **0. Meta information** at the top. The subsequent sections are fixed per 
 4. **Dependent `component` and adopted `profile`**
 - Required statement: state the adopted `profile_id` and the `component_id` it selects, the application order, and the compatibility constraints.
 - Required statement: for a `component` this `spec` declares DIRECTLY (one no adopted `profile` selects), state its compatibility constraint here as well. A `component` an adopted `profile` selects is not declared again in this `spec`'s own `deps.yaml` — it has exactly one source.
+- Required statement, when this `spec` composes `problem`s (`deps.yaml` `problems:`): each member `problem_id`, its compatibility constraint, and what this `spec` takes from it. A member is admitted only when the procedure names of §5.1 of its own `Controlled Spec` are exactly `<member>__step`; a member that publishes `__init` or any further procedure is refused at spec-input (`problem_dependency_surface_not_step_only`), because the rule for a member's private state is not yet defined.
 
 5. **Integration algorithm**
-- Required statement: state the `component` call order, data passing, and time-update order.
+- Required statement: state the `component` call order, data passing, and time-update order. In a `spec` that composes `problem`s, state the call order of the members and the components, and when each is called: a call interval and a process switched at run time are `in` arguments of `__step`, the interval compared against the driver's `step` (bound as an `in` integer, which holds the committed step count during the call) and the switch an `in` integer selector bound to a case input.
 - Required statement: the published surface ([issue #589](https://github.com/seiya/spec2science/issues/589)). The published `operation_id`s are exactly `<spec_id>__step` and, when the discrete initial state is not a closed form `tests.md` can state over the inputs, `<spec_id>__init`, each a backtick span carrying the `<spec_id>__` prefix. `__step` advances the state by ONE step: every state array is an `inout` argument or an `in` / `out` pair, the time step `dt`, the time `t` and the runtime inputs are `in` arguments, exactly one logical `out` is its result, and it has no rank-0 real or integer `out`. `__init` computes the discrete initial state and the values derived from it (a time step, a step count) as `out` arguments, with its own logical result. The time loop is not the operation's: the host-rendered driver calls `__step` once per step from the IR's `drive` block (`docs/workflow/phases/phase_01_compile.md`).
 - The subsection `### 5.1` is required: the canonical interface block of `__step` and `__init`, under the rules the `infrastructure` §5.1 states below. The `Compile` gate reads `## 5.` and `### 5.1` of a `problem` by number, as it does a `component`'s.
-- The model may keep private module state between `__init` and `__step` (a field `__init` computes for `__step` to read). It is not a schema variable and is captured in no file, and the driver does not reset it between cases: `__init`, called once per case, establishes every private field `__step` reads.
+- The model may keep private module state in two forms, neither a schema variable nor captured in any file, and the driver does not reset either between cases. (a) A field `__init` computes for `__step` to read: `__init`, called once per case, establishes every such field. (b) State `__step` sets from its own arguments at every call before reading it, such as a value a procedure passed to a dependency reads, or a flag `__step` resets and reads after the dependency call.
 
 6. **Model parameters and the runtime input contract**
 - Required statement: state the fixed / variable physical constants, units, and default values.
@@ -186,7 +187,7 @@ An `infrastructure spec` takes the `component spec` section shape **minus sectio
 - The meta information (`spec_id`, `spec_version`, `status`, `spec_kind`, `domain`, `family`) is at the top of the document.
 - All required sections corresponding to the `spec_kind` exist.
 - The physics / algorithm definition and the test input conditions are not mixed.
-- For a `problem spec`, the dependent `component` and adopted `profile` are stated.
+- For a `problem spec`, the dependent `component`, the dependent `problem` and the adopted `profile` are stated.
 - For a `problem spec`, §5 publishes `<spec_id>__step` (and `<spec_id>__init` where it is needed) and carries the `### 5.1` block.
 - For a `component spec`, the published `operation` and failure conditions are stated.
 - For a `profile spec`, the application conditions and exclusion conditions are stated.

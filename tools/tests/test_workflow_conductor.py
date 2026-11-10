@@ -14652,7 +14652,8 @@ class WriteDependencyGraphTest(unittest.TestCase):
 
 class WriteDependencySurfaceTest(unittest.TestCase):
     """L2: the conductor authors <ir_ref>/dependency_surface.json host-side at Compile start,
-    resolving each COMPONENT dep's published op NAMES (and, since issue #486, its IR `public_api`
+    resolving each called dep's published op NAMES — a `component` or, since the system tier's
+    Part 1, a `problem` — (and, since issue #486, its IR `public_api`
     ABI keys) from the dependency_graph it just wrote."""
 
     def _conductor(self, repo: Path) -> _FakeConductor:

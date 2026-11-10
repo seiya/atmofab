@@ -14140,10 +14140,11 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertNotIn("published_operations", facts[0])
 
     def test_empty_operations_fallback_suppressed_for_profile_dep(self) -> None:
-        # A profile/problem dep authors `operations: []` legitimately and must NOT be called;
-        # the fallback is component-only, so even a profile source carrying `<spec_id>__`
-        # subroutines surfaces no published_operations (else Generate is tempted into an
-        # undeclared call the validator + docs exempt). Codex round-2 P2.
+        # A profile dep is never called (a `profile` is not even a node since issue #175); the
+        # fallback covers the called kinds only (`component`, and `problem` since the system
+        # tier's Part 1), so even a profile source carrying `<spec_id>__` subroutines surfaces
+        # no published_operations (else Generate is tempted into an undeclared call).
+        # Codex round-2 P2.
         from tools.orchestration_runtime import _resolve_dependency_facts
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -14301,7 +14302,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
 
 class ResolveComponentDepSurfaceTests(unittest.TestCase):
-    """_resolve_component_dep_surface reads the consumer's direct COMPONENT deps from the
+    """_resolve_component_dep_surface reads the consumer's direct called deps (`component`, and
+    `problem` since the system tier's Part 1) from the
     conductor-authored dependency_graph (all_nodes − self − transitive) and resolves each
     dep's published operation NAMES from the dep IR public_api (the L1 pin), plus that IR's
     `module_parameters` / `interfaces` / `signatures` verbatim (issue #486), for the
@@ -14528,7 +14530,7 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self.assertEqual(surface[0]["published_operations"], [])
 
     def test_transitive_and_non_component_deps_excluded(self) -> None:
-        # Only DIRECT component deps are surfaced: a transitive component and a direct
+        # Only DIRECT called deps are surfaced: a transitive component and a direct
         # infrastructure dep are both excluded.
         from tools.orchestration_runtime import _resolve_component_dep_surface
         with tempfile.TemporaryDirectory() as tmp:
@@ -22135,7 +22137,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `extended` count): bumped 110650->111100; measured 111036 at 98fc4ead. Review
         # round 2 (the whole-count clause scoped to a node with an axis): bumped
         # 111100->111250; measured 111187.
-        "docs/workflow/phases/phase_01_compile.md": 111250,
+        # The system tier's Part 1 (a `problems:` member is a direct dependency a node calls:
+        # V4c-i / V4c-ii and the three spec-input refusals of a `problems:` entry): bumped
+        # 111250->111850; measured 111758 with `wc -c` at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 111850,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -25699,9 +25704,11 @@ class DerivationInputsTests(unittest.TestCase):
                 self._inputs(repo, refs, "compile")
 
     def test_a_member_without_section_51_has_a_null_surface_and_a_position(self) -> None:
-        """A `problem` publishes nothing a consumer calls, and it is still linked. The fixture's
-        members have no §5.1, which is the form the key reads; the gate refuses a certified
-        `component` without one (`test_component_without_section51_is_a_compile_fail`)."""
+        """A member whose spec has no §5.1 is still linked, by its `node_key` and position. The
+        fixture's members have no §5.1, which is the form the key reads; the gate refuses a
+        certified `component` without one (`test_component_without_section51_is_a_compile_fail`),
+        and a `problem` publishes `__step` since issue #589 and is called by a composing
+        `problem` since the system tier's Part 1."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -28764,7 +28771,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
         # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:17bf88cb81265028":
+        "tools/prompt_templates/workshop_compile_generate.txt:4bdaaa4eeaf71d71":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28788,10 +28795,14 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "unchanged; re-keyed again 2026-11-04 when rule 5 took the flag predicate's form "
             "(review round 5, R5-2) and the `expected_outcome:` line (R5-1) — rule 3 unchanged; "
             "re-keyed 2026-11-08 when rule 9 took `drive.distribute`, issue #610 PR-B1 — rule 3 "
+            "unchanged; re-keyed 2026-11-11 when rule 3 said a `problem` the declaration names "
+            "under `problems:` is in the set too, the system tier's Part 1 — the set's source "
             "unchanged)",
-        "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
+        "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
-            "infrastructure node in it (issue #284)",
+            "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "
+            "in it as a `component` is, and its `operations` are non-empty (re-keyed 2026-11-11, "
+            "the system tier's Part 1)",
         "docs/GLOSSARY.md:a03f3d618914d955":
             "infrastructure spec: the harness is a target attribute no deps.yaml declares; "
             "the host adds it as a direct dependency after Compile (issue #284)",

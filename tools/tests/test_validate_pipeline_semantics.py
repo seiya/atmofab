@@ -21941,10 +21941,11 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
 
 
 class ComponentDepOperationsGateTests(unittest.TestCase):
-    """`_validate_component_dep_operations` (compile stage): a `component/` direct dep must
-    author a non-empty `operations` list. The empty-list wobble otherwise starves the injected
-    `<dependency_facts>` while the generate gate still requires `use`/`call`, leaving the pure
-    leaf no way to converge. Only component deps are gated (infra correctly authors `[]`)."""
+    """`_validate_component_dep_operations` (compile stage): a `component/` or `problem/`
+    direct dep must author a non-empty `operations` list. The empty-list wobble otherwise starves
+    the injected `<dependency_facts>` while the generate gate still requires `use`/`call`,
+    leaving the pure leaf no way to converge. Only the called kinds are gated (infra correctly
+    authors `[]`)."""
 
     def _run(self, direct_deps: object) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
@@ -22831,8 +22832,8 @@ class ProblemDependencyCallGateTests(unittest.TestCase):
 
 
 class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
-    """`_validate_component_dep_operations_membership` (L3, compile stage): a component dep's
-    non-empty declared `operations` must be a subset of the `dependency_surface.json` sidecar's
+    """`_validate_component_dep_operations_membership` (L3, compile stage): a `component` or
+    `problem` dep's non-empty declared `operations` must be a subset of the `dependency_surface.json` sidecar's
     published surface, with the certified catalog embedded in the violation message."""
 
     def _run(self, direct_deps: object, sidecar: object = _OMIT) -> list[str]:

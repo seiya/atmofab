@@ -37,13 +37,13 @@ from typing import Any, NamedTuple
 # PR-J4, and `leaf-85` is the first bump after it (the leaf-read text PR-J4 deferred, the
 # `inlined`-to-seed wording, and issue #545's judge sentence). It is in no derivation key since
 # issue #574, whose `leaf-86` deleted the certified refs from `DEPENDENCIES.md`.
-LEAF_PROMPT_CONTRACT_VERSION = "leaf-95"
+LEAF_PROMPT_CONTRACT_VERSION = "leaf-96"
 
 # The keyed half of the contract (issue #574): what one phase's READING leaf reads, which is what
 # "valid" means for that phase. Each is a member of its phase's transformation tuple
 # (`tools/derivation.py`), so a bump re-derives that phase of every node. A producer's text is
 # advisory and moves `LEAF_PROMPT_CONTRACT_VERSION` alone. The drift pin names each one's members.
-COMPILE_VERIFY_CONTRACT_VERSION = "compile-verify-4"
+COMPILE_VERIFY_CONTRACT_VERSION = "compile-verify-5"
 # Before bumping this for a change to H7b of `workshop_generate_verify_harness.txt`: three seeded
 # defects in a harness's reading operations (a case emitting its own literals, a getter returning
 # a default, a refused read keeping the previous case) pass every host predicate, and a replayed
