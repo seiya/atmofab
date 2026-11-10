@@ -1175,11 +1175,14 @@ PINNED_RENDER: dict[str, str] = {
     # of `cuda_cpp/runner.py` and of `cuda_cpp/signatures.py`.
     "render-17": "131dacb348a66b80f47ebe5e2cbd9965548eac550e75c815dbdcce87d82ac21c",
     # render-18 (issue #613): in a list-form `drive.step`, each entry's driver-written set is
-    # computed from the records of its own procedures, where an entry listed after a recording
-    # entry also zeroed that entry's records, so a state the gate's per-case classes require from
-    # the case file was allocated and zeroed instead. Under a predicate that judges `final.*`
-    # against `initial.*` the old text could certify a wrong kernel (its `initial/` capture held
-    # the zeros). A bump, because rendered bytes move. Re-pinned in place twice before it
+    # computed from the `calls` and `record` states of its own procedures, where an entry listed
+    # after such an entry also zeroed that entry's, so a state the gate's per-case classes require
+    # from the case file was allocated and zeroed instead. So this part moves bytes exactly where
+    # some entry is listed after an entry whose procedures write a state by `calls` or `record`
+    # and does not write that state itself (by its own procedures, its `init`'s outputs or a
+    # logical `out`); a node whose only such entry is listed last renders the same bytes. Under
+    # a predicate that judges `final.*` against `initial.*` the old text could certify a wrong
+    # kernel (its `initial/` capture held the zeros). A bump, because rendered bytes move. Re-pinned in place twice before it
     # shipped, in the same PR. First: a host-rendered procedure's name is numbered over the plan
     # (two entries binding one each both took `driver_rhs_1`, and neither language's driver
     # compiled), and the Fortran procedure module's `public` statement is continued through
