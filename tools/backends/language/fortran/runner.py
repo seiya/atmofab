@@ -432,7 +432,8 @@ def _procedure_name(proc: runner_ir.ProcedurePlan) -> str:
     """The Fortran name of a host-rendered procedure: the plan's ``driver_<dummy>_<number>``, or
     ``driver_<number>`` where that name is longer than the language allows. The dummy comes from
     a §5.1 signature, so a re-authored IR cannot shorten it, and a dummy of a legal length still
-    makes the plan's name too long from 55 characters on."""
+    makes the plan's name too long: from 55 characters for a procedure numbered 1 to 9, from 54
+    for 10 to 99."""
     if len(proc.name) <= bundle.IDENTIFIER_MAX:
         return proc.name
     return f"driver_{proc.number}"

@@ -1208,17 +1208,18 @@ PINNED_RENDER: dict[str, str] = {
     # returned (a render that hung, found by issue #613's review round 3; the `TODO.md` item that
     # recorded it is removed by the commit that re-pins), and the new one leaves the remainder
     # whole, which the column check refuses from 100 columns. So every render that returned
-    # before returns the same bytes. Re-pinned again, behaviour-preserving: the Fortran renderer
-    # names a host-rendered procedure `driver_<n>` where the plan's `driver_<dummy>_<n>` is past
-    # the language's 63 characters, a dummy of 55 characters or more; a name that fits is
-    # unchanged (`ProcedurePlan.number`). From 55 to 72 the old runner rendered and did not
+    # before returns the same bytes. Re-pinned again, and no driver that compiled before changes:
+    # the Fortran renderer names a host-rendered procedure `driver_<n>` where the plan's
+    # `driver_<dummy>_<n>` is past the language's 63 characters (a dummy of 55 characters or more
+    # for n of 1 to 9, 54 for 10 to 99); a name that fits is unchanged (`ProcedurePlan.number`).
+    # The cuda_cpp renderer is unchanged. On a node with one procedure, from 55 to 72 the old runner rendered and did not
     # compile (a dummy of 64 or more is not a legal name either, so its own model does not
     # compile now); from 73 the old render was refused at 100 columns and the new one renders.
     # No such runner ever compiled, so no certified driver changes. Census against `8bd76fb1`:
     # the 105 renders of the 35 drive-carrying IRs under `workspace/ir/` and `releases/` of the
     # operator's checkout and the 57 of the 19 under `tools/tests/data/`, each for fortran_cpu,
     # fortran_cpu_mpi and cpp_gpu, are byte-identical; none raises.
-    "render-18": "9ec6c8c25d72b3b1e3853cad4aa2b7b2c75fd0a55ccdd592f0cdfbed6b072509",
+    "render-18": "dabba79c328665766932a222e9be736080d97ab9abc2ccd06a2373ca641405cf",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:
