@@ -3016,9 +3016,15 @@ def _validate_component_generated_surface(
     # The kind is the CATALOG's (issue #589), by the spec_id the conductor's node_key carries;
     # the IR's `meta.spec_kind` is the leaf's label (an exact match on it once let
     # `"  component  "` skip this pin). A node_key naming a component the registry cannot
-    # answer for is refused rather than skipped. Component-only: the L1b subject is the name
-    # set a CONSUMER calls; a `problem`'s operations are called by the host-rendered driver,
-    # whose surface `_validate_generated_signatures` pins.
+    # answer for is refused rather than skipped. Component-only, which is a decision rather than
+    # a fact about callers: a `problem` member is called by a composing `problem` too (the system
+    # tier, Part 1). A member's generated surface is bounded instead by
+    # `_validate_generated_signatures` (every §5.1 signature present; "no more" is not checked
+    # for a `problem`), by the spec-input rule that admits only a member whose §5.1 publishes
+    # exactly `<member>__step` (`spec_input_gates.problem_dependency_surface_violation`), and by
+    # the composite's membership gate (`_validate_component_dep_operations_membership`): an
+    # extra generated procedure is callable only by a composite naming it in `operations`, which
+    # that gate refuses.
     key_spec_id = _spec_id_from_node_key(str(execution.node_key))
     kind_by_key = str(execution.node_key).split("/", 1)[0].strip()
     catalog_kind, catalog_reason = (_catalog_spec_kind(repo_root, key_spec_id) if key_spec_id
@@ -6078,7 +6084,25 @@ def _validate_algorithm_contract_schema(
     )
 
 
+# The dependency kinds a model CALLS through their `<dep>__*` operations: a `component`, and a
+# `problem` composed by a `problem` (the system tier, Part 1). An `infrastructure` dependency is
+# the target's harness, which only the host-rendered runner calls.
+_CALLED_DEP_KIND_PREFIXES: tuple[str, ...] = ("component/", "problem/")
+
+
+def _called_dep_kind_prefix(node_key: str) -> str | None:
+    """The `_CALLED_DEP_KIND_PREFIXES` member `node_key` starts with, else None."""
+    for prefix in _CALLED_DEP_KIND_PREFIXES:
+        if node_key.startswith(prefix):
+            return prefix
+    return None
+
+
 def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[str]:
+    """The spec_ids of the node's direct dependencies a model calls — `component/` and
+    `problem/` (`_CALLED_DEP_KIND_PREFIXES`) — which the language's
+    `validate_dependency_operations` and the dataflow gate read. The name predates `problem`
+    dependencies."""
     dep_data = _dependency_resolved_for_execution(repo_root, execution)
     if dep_data is None:
         return []
@@ -6099,10 +6123,11 @@ def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[s
 
         if not isinstance(dep_token, str):
             continue
-        # Expected format: component/<spec_id>@<spec_version>
-        if not dep_token.startswith("component/"):
+        # Expected format: component/<spec_id>@<spec_version> (or problem/...)
+        prefix = _called_dep_kind_prefix(dep_token)
+        if prefix is None:
             continue
-        body = dep_token[len("component/") :]
+        body = dep_token[len(prefix) :]
         spec_id = body.split("@", 1)[0].strip()
         if spec_id:
             result.append(spec_id)
@@ -8689,12 +8714,13 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
 def _validate_component_dep_operations(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
-    """Deterministic compile gate: every ``component/`` direct dependency must author a
-    NON-EMPTY ``operations`` list (each entry a non-empty string).
+    """Deterministic compile gate: every ``component/`` and ``problem/`` direct dependency
+    (``_CALLED_DEP_KIND_PREFIXES``) must author a NON-EMPTY ``operations`` list (each entry a
+    non-empty string).
 
     The failure this pins is a closure fail_closed with no repairable signal. The
-    generate-side gate (the language's ``validate_dependency_operations``) requires a
-    component dep's model to import ``<dep>_model`` and call a ``<dep>__*`` operation
+    generate-side gate (the language's ``validate_dependency_operations``) requires the model of
+    a node with such a dep to import ``<dep>_model`` and call a ``<dep>__*`` operation
     (by its name, or through an import rename the language binding reads) UNCONDITIONALLY, while
     the host injects that dependency's published call-site interfaces
     (``_resolve_dependency_facts``) keyed off the IR's ``operations`` list. When Compile
@@ -8709,11 +8735,12 @@ def _validate_component_dep_operations(
     ``operations`` is empty) so an already-certified wobbly IR still converges; this gate is
     the forward-looking pin that stops the wobble from being certified in the first place.
 
-    Only ``component/`` deps are gated: an ``infrastructure`` (harness) dep correctly
-    authors ``operations: []`` (the physics leaf never calls the harness API — the
-    host-rendered runner is the sole caller), and a ``problem`` dep is not
-    called through the ``<dep>__*`` operation surface. No-op on a missing / unparseable IR
-    (already flagged upstream) or a node with no component dependency."""
+    Only ``component/`` and ``problem/`` deps are gated: an ``infrastructure`` (harness) dep
+    correctly authors ``operations: []`` (the physics leaf never calls the harness API — the
+    host-rendered runner is the sole caller). A ``problem`` dep is a member a composing
+    ``problem`` calls (the system tier, Part 1), so it lists its operations as a component
+    does. No-op on a missing / unparseable IR (already flagged upstream) or a node with no
+    such dependency."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return
@@ -8742,7 +8769,7 @@ def _validate_component_dep_operations(
             ops_present = "operations" in entry
         else:
             continue
-        if not node_key.startswith("component/"):
+        if _called_dep_kind_prefix(node_key) is None:
             continue
         # EVERY entry must be a non-empty string — a single malformed entry (a non-string or
         # blank) is enough to fail, not merely "no valid entry exists". A mixed list like
@@ -8775,7 +8802,7 @@ def _validate_component_dep_operations(
         # the generate gate's requirement is stated as what it is, not as a spelling of it
         # (issue #289, R4-b PR-4; it said `use <dep>_model` + `call <dep>__*` until then).
         violations.append(
-            f"{derived_path}: component dependency {node_key!r} {detail}; a component "
+            f"{derived_path}: dependency {node_key!r} {detail}; a `component` or `problem` "
             "dependency must author a non-empty `operations` list naming the "
             "`<dep_spec_id>__*` operations this node calls. The generate gate requires "
             "the model to import `<dep>_model` and invoke `<dep>__*`, and the host injects those "
@@ -8788,8 +8815,8 @@ def _validate_component_dep_operations(
 def _validate_component_dep_operations_membership(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
-    """L3 deterministic compile gate: every ``component/`` direct dependency's declared
-    ``operations`` (when NON-EMPTY and all-valid — the empty / malformed shapes are
+    """L3 deterministic compile gate: every ``component/`` and ``problem/`` direct dependency's
+    declared ``operations`` (when NON-EMPTY and all-valid — the empty / malformed shapes are
     ``_validate_component_dep_operations``'s province) must be a SUBSET of that dependency's
     published operation names, as resolved host-side into the ``dependency_surface.json``
     sidecar the conductor authors at compile-phase start.
@@ -8809,7 +8836,7 @@ def _validate_component_dep_operations_membership(
     the wrong shape, is fail-closed. The skip→fail-closed asymmetry is a deliberate rollout
     affordance; its removal after fleet re-auth is tracked in
     ``docs/design/deterministic_followups.md``. No-op on a missing/unparseable IR or a node
-    with no component dependency."""
+    with no ``component`` or ``problem`` dependency."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return
@@ -8845,7 +8872,7 @@ def _validate_component_dep_operations_membership(
             continue
         nk = entry.get("node_key")
         node_key = nk.strip() if isinstance(nk, str) else ""
-        if not node_key.startswith("component/"):
+        if _called_dep_kind_prefix(node_key) is None:
             continue
         ops = entry.get("operations")
         # Only a non-empty, all-valid operations list is membership-checked here; the empty /
@@ -8896,7 +8923,7 @@ def _validate_component_dep_operations_membership(
         if unknown:
             catalog = ", ".join(sorted(published)) or "(none)"
             violations.append(
-                f"{derived_path}: component dependency {node_key!r} declares operation(s) "
+                f"{derived_path}: dependency {node_key!r} declares operation(s) "
                 f"{unknown} that are NOT in its published surface. The published operations of "
                 f"{node_key} are exactly: [{catalog}] (source: {source_tag or 'unknown'}). "
                 "Author dependency.direct_deps[].operations using ONLY names from that "

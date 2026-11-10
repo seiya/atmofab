@@ -7701,6 +7701,82 @@ class NodeAllocationTest(unittest.TestCase):
             node_key, _ = wc.resolve_node(repo, "spec/x/n1")
             self.assertEqual(node_key, "infrastructure/n1@0.1.0")
 
+    @staticmethod
+    def _composite_repo(tmp: str, *, declaring_kind: str, declared_kind: str | None = None,
+                        member_procedures: tuple[str, ...] = ("m__step",),
+                        register_member: bool = True) -> Path:
+        """A tmp repo with `n1` (catalogued as `declaring_kind`; its deps.yaml's self-declared
+        `spec_kind:` line is `declared_kind`, default the same) declaring one `problems:` entry,
+        `m`, whose §5.1 publishes `member_procedures`."""
+        repo = Path(tmp)
+        (repo / "spec" / "registry").mkdir(parents=True)
+        catalog = ["specs:",
+                   f"  - spec_kind: {declaring_kind}", "    spec_id: n1",
+                   "    spec_version: \"0.1.0\"",
+                   "    controlled_spec_path: spec/x/n1/controlled_spec.md",
+                   "    deps_path: spec/x/n1/deps.yaml"]
+        if register_member:
+            catalog += ["  - spec_kind: problem", "    spec_id: m",
+                        "    spec_version: \"0.1.0\"",
+                        "    controlled_spec_path: spec/problem/m/controlled_spec.md",
+                        "    deps_path: spec/problem/m/deps.yaml"]
+        (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
+            "\n".join(catalog) + "\n", encoding="utf-8")
+        n1 = repo / "spec" / "x" / "n1"
+        n1.mkdir(parents=True)
+        (n1 / "deps.yaml").write_text(
+            f"spec_id: n1\nspec_kind: {declared_kind or declaring_kind}\ndependencies:\n"
+            "  components: []\n  profiles: []\n  problems:\n    - problem_id: m\n"
+            "      version_constraint: \">=0.1.0\"\n", encoding="utf-8")
+        m = repo / "spec" / "problem" / "m"
+        m.mkdir(parents=True)
+        (m / "deps.yaml").write_text(
+            "spec_id: m\nspec_kind: problem\ndependencies:\n  components: []\n"
+            "  profiles: []\n", encoding="utf-8")
+        procs = "".join(f"  - name: {name}\n    args: []\n" for name in member_procedures)
+        (m / "controlled_spec.md").write_text(
+            "# m\n\n## 5. Interface\n\n### 5.1 Canonical interface\n\n```yaml\n"
+            f"procedures:\n{procs}```\n\n## 6. Tests\n", encoding="utf-8")
+        return repo
+
+    def test_resolve_node_admits_a_problem_composing_a_step_only_member(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._composite_repo(tmp, declaring_kind="problem")
+            self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0], "problem/n1@0.1.0")
+
+    def test_resolve_node_refuses_a_component_with_a_problems_entry(self) -> None:
+        """The system tier, Part 1: a `problems:` entry is admitted on a `problem` only, and the
+        kind is the CATALOG's — a deps.yaml declaring itself a `problem` does not pass."""
+        for catalog_kind in ("component", "infrastructure"):
+            with self.subTest(catalog_kind=catalog_kind), tempfile.TemporaryDirectory() as tmp:
+                repo = self._composite_repo(tmp, declaring_kind=catalog_kind,
+                                            declared_kind="problem")
+                with self.assertRaises(ValueError) as ctx:
+                    wc.resolve_node(repo, "spec/x/n1")
+                self.assertIn("spec-input rejected", str(ctx.exception))
+                self.assertIn("problem_dependency_on_non_problem", str(ctx.exception))
+                self.assertIn(f"a `{catalog_kind}`", str(ctx.exception))
+
+    def test_resolve_node_refuses_a_member_that_is_not_step_only(self) -> None:
+        """D11 of the system tier's Part 1: a member publishing anything but exactly
+        `<member>__step` is refused before any phase runs, and so is a member the catalog does
+        not resolve. The ValueError text carries the reason, which `_run_node` records."""
+        for procedures in (("m__step", "m__init"), ("m__init",), ("m__step", "m__reset")):
+            with self.subTest(procedures=procedures), tempfile.TemporaryDirectory() as tmp:
+                repo = self._composite_repo(tmp, declaring_kind="problem",
+                                            member_procedures=procedures)
+                with self.assertRaises(ValueError) as ctx:
+                    wc.resolve_node(repo, "spec/x/n1")
+                self.assertIn("spec-input rejected", str(ctx.exception))
+                self.assertIn("problem_dependency_surface_not_step_only", str(ctx.exception))
+                self.assertIn("spec/problem/m", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._composite_repo(tmp, declaring_kind="problem", register_member=False)
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("problem_dependency_surface_not_step_only", str(ctx.exception))
+            self.assertIn("(problem/m)", str(ctx.exception))
+
     def test_the_unreadable_deps_exemption_uses_the_same_spelling_rule(self) -> None:
         # The unreadable-deps branch exempts an `infrastructure` node, and must spell the kind
         # the way every downstream reader does: stripped, never case-folded. A mis-cased

@@ -5278,6 +5278,182 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(err["reason"], "spec_catalog_corrupt")
             self.assertNotIn(err["reason"], ort._PROFILE_EXPANSION_REASONS)
 
+    @staticmethod
+    def _add_problems(repo_root: Path, spec_ref: str, members: list[str]) -> None:
+        """Append a `problems:` block naming `members` to <spec_ref>/deps.yaml."""
+        deps = repo_root / spec_ref / "deps.yaml"
+        lines = deps.read_text(encoding="utf-8").rstrip("\n").split("\n")
+        lines.append("  problems:")
+        for mid in members:
+            lines += [f"    - problem_id: {mid}", "      version_constraint: \">=0.1.0\""]
+        deps.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _write_member_spec(repo_root: Path, spec_ref: str, procedures: tuple[str, ...]) -> None:
+        """A controlled_spec.md whose §5.1 publishes exactly `procedures`."""
+        procs = "".join(f"  - name: {name}\n    args: []\n" for name in procedures)
+        (repo_root / spec_ref / "controlled_spec.md").write_text(
+            "# member\n\n## 5. Interface\n\n### 5.1 Canonical interface\n\n```yaml\n"
+            f"procedures:\n{procs}```\n\n## 6. Tests\n", encoding="utf-8")
+
+    def _seed_composite(self, repo_root: Path, *, member_procedures: tuple[str, ...]) -> None:
+        """problem/a composes problem/m (whose own closure is component/c); m's §5.1 publishes
+        `member_procedures`."""
+        _write_catalog(repo_root, [
+            {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.1.0",
+             "deps_path": "spec/problem/a/deps.yaml"},
+            {"spec_kind": "problem", "spec_id": "m", "spec_version": "0.1.0",
+             "deps_path": "spec/problem/m/deps.yaml"},
+            {"spec_kind": "component", "spec_id": "c", "spec_version": "0.1.0",
+             "deps_path": "spec/component/c/deps.yaml"},
+        ])
+        _write_deps(repo_root, "spec/problem/a", "problem", "a")
+        self._add_problems(repo_root, "spec/problem/a", ["m"])
+        _write_deps(repo_root, "spec/problem/m", "problem", "m",
+                    components=[("c", ">=0.1.0")])
+        self._write_member_spec(repo_root, "spec/problem/m", member_procedures)
+        _write_deps(repo_root, "spec/component/c", "component", "c")
+
+    def test_a_problem_composing_a_step_only_member_resolves_its_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step",))
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            refs = [n["spec_ref"] for n in ordered]
+            self.assertLess(refs.index("spec/component/c"), refs.index("spec/problem/m"))
+            by_ref = {n["spec_ref"]: n for n in ordered}
+            self.assertEqual(by_ref["spec/problem/m"]["spec_kind"], "problem")
+
+    def test_the_closure_walk_refuses_a_ready_component_with_a_problems_entry(self) -> None:
+        """The non-`problem` rule runs on every VISITED spec, a dependency included: the walk
+        visits a member whatever its readiness (readiness is asked of `ordered` afterwards), so
+        a component that is already certified is refused here like any other. The kind is the
+        catalog's edge kind, so the component's own deps.yaml calling itself a `problem` does
+        not pass."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step",))
+            # c is a COMPONENT by the catalog, reached through the step-only member m; its
+            # deps.yaml self-declares `problem` and names a `problems:` entry.
+            _write_deps(repo_root, "spec/component/c", "problem", "c")
+            self._add_problems(repo_root, "spec/component/c", ["m"])
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "problem_dependency_on_non_problem")
+            self.assertIn("spec/component/c", err["detail"])
+            self.assertIn("a `component`", err["detail"])
+
+    def test_the_closure_walk_refuses_a_member_that_is_not_step_only_before_visiting_it(
+            self) -> None:
+        """D11: the member is refused after it resolves and BEFORE `visit(member)`, so its own
+        closure is never walked (and so never certified first)."""
+        import tools.orchestration_runtime as ort
+        for procedures in (("m__step", "m__init"), ("m__init",)):
+            with self.subTest(procedures=procedures), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_composite(repo_root, member_procedures=procedures)
+                read: list[str] = []
+                real = ort._read_deps_yaml
+
+                def _spy(root, spec_ref, _real=real, _read=read):
+                    _read.append(spec_ref)
+                    return _real(root, spec_ref)
+
+                with mock.patch.object(ort, "_read_deps_yaml", _spy):
+                    ordered, err = run_workflow._resolve_dependency_closure(
+                        repo_root, "spec/problem/a")
+                self.assertEqual(ordered, [])
+                self.assertEqual(err["reason"], "problem_dependency_surface_not_step_only")
+                self.assertIn("spec/problem/m", err["detail"])
+                self.assertIn("spec/problem/a", read)
+                self.assertNotIn("spec/problem/m", read)
+                self.assertNotIn("spec/component/c", read)
+
+    def test_the_launch_refusal_names_a_member_that_is_not_step_only(self) -> None:
+        """`_refuse_non_certifiable_target` refuses the member before the single-node preflight;
+        a step-only member, a component target and an unregistered ref pass through."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step", "m__init"))
+            for spelling in ("spec/problem/a", "spec/problem/a/deps.yaml",
+                             "spec/problem/a/"):
+                with self.subTest(spelling=spelling):
+                    with self.assertRaises(ValueError) as caught:
+                        run_workflow._refuse_non_certifiable_target(repo_root, spelling)
+                    self.assertIn("problem_dependency_surface_not_step_only",
+                                  str(caught.exception))
+                    self.assertIn("spec/problem/m", str(caught.exception))
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/component/c")
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/nope")
+            self._write_member_spec(repo_root, "spec/problem/m", ("m__step",))
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/a")
+        # A registry that cannot be read while the member is resolved refuses the member rather
+        # than raising past the caller, which turns only a ValueError into a refusal.
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step",))
+
+            def _boom(*_a, **_k):
+                raise ort.SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+
+            with mock.patch.object(ort, "resolve_spec_ref_for", _boom):
+                with self.assertRaises(ValueError) as caught:
+                    run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/a")
+            self.assertIn("problem_dependency_surface_not_step_only", str(caught.exception))
+            self.assertIn("(problem/m)", str(caught.exception))
+
+    def test_the_declaring_kind_is_the_catalogs_not_the_deps_files(self) -> None:
+        """`_kind_for_gate` answers from the catalog where it can; a `problems:` entry is refused
+        on either fallback (the registry unreadable, or the spec registered under no kind),
+        whatever the spec's own deps.yaml declares."""
+        import tools.orchestration_runtime as ort
+        # (1) The catalog answers: a `component` declaring itself a `problem` is refused, and
+        # a catalogued `problem` is admitted.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step",))
+            ordered, err = run_workflow._resolve_dependency_closure(repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            _write_catalog(repo_root, [
+                {"spec_kind": "component", "spec_id": "a", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                {"spec_kind": "problem", "spec_id": "m", "spec_version": "0.1.0",
+                 "deps_path": "spec/problem/m/deps.yaml"},
+                {"spec_kind": "component", "spec_id": "c", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/c/deps.yaml"},
+            ])
+            ordered, err = run_workflow._resolve_dependency_closure(repo_root, "spec/problem/a")
+            self.assertEqual(err["reason"], "problem_dependency_on_non_problem")
+            self.assertIn("a `component`", err["detail"])
+        # (2) The registry cannot be read: the declared `problem` is not trusted.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step",))
+
+            def _corrupt(*_args, **_kwargs):
+                raise ort.SpecCatalogCorruption("spec_catalog.yaml is unreadable")
+
+            with mock.patch.object(ort, "_load_spec_catalog", _corrupt):
+                ordered, err = run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/problem/a")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "problem_dependency_on_non_problem")
+            self.assertIn("could not be read", err["detail"])
+        # (3) Registered under no kind: the declared `problem` decides nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step",))
+            _write_deps(repo_root, "spec/problem/z", "problem", "z")
+            self._add_problems(repo_root, "spec/problem/z", ["m"])
+            ordered, err = run_workflow._resolve_dependency_closure(repo_root, "spec/problem/z")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "problem_dependency_on_non_problem")
+            self.assertIn("kind the catalog does not confirm", err["detail"])
+
     def test_a_profile_target_is_refused_at_launch(self) -> None:
         """The launch-time half of the refusal (`resolve_node` keeps the backstop). Detected
         before anything is launched, like `REQUIRED_CLI_TOOLS`."""

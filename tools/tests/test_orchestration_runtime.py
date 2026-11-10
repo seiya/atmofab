@@ -13091,15 +13091,21 @@ class DependencyFactsRenderTests(unittest.TestCase):
                  "published_operations": ["flux__compute_flux"], "source": "ir_public_api"},
                 {"node_key": "component/bnd@0.1.0",
                  "published_operations": [], "source": "unresolved"},
+                {"node_key": "problem/member@0.5.1",
+                 "published_operations": ["member__step"], "source": "ir_public_api"},
             ])
         block = _build_dependency_facts(payload)
         self.assertIn("AUTHORITATIVE op-name catalog", block)
         self.assertIn("VERBATIM", block)
-        # The "author your own public_api" guidance is scoped to component consumers (a profile
-        # consumer — the common case — must omit public_api).
-        self.assertIn("IF YOUR node is a `component`", block)
-        self.assertIn("`profile`/`problem` node OMITS `public_api`", block)
+        # The catalog names both called kinds (the system tier, Part 1), and the "author your
+        # own public_api" guidance holds for every node: a `problem` publishes `__step` since
+        # issue #589, so the clause that told a `profile`/`problem` node to omit it is gone.
+        self.assertIn("`component` or `problem`", block)
+        self.assertIn("author your OWN `public_api.published_operations`", block)
+        self.assertNotIn("OMITS `public_api`", block)
+        self.assertNotIn("IF YOUR node is a `component`", block)
         self.assertIn("- component/flux@0.1.0: flux__compute_flux (source: ir_public_api)", block)
+        self.assertIn("- problem/member@0.5.1: member__step (source: ir_public_api)", block)
         # An unresolved dep points at its own §5, and its (empty) surface is not listed as real.
         self.assertIn("component/bnd@0.1.0", block)
         self.assertIn("surface unresolved", block)
@@ -25172,6 +25178,72 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(inputs["dependency_graph"], tools_derivation.sha256_hex(
                 tools_derivation.canonical_json_bytes(ort._closure_signature(graph))))
 
+    def test_a_problem_direct_dependency_enters_the_dependency_surface_and_the_compile_key(
+            self) -> None:
+        """The system tier, Part 1: a `problem` named under `problems:` is a direct dependency a
+        consumer calls, so it enters both readers of `_component_direct_deps` — the
+        `dependency_surface.json` the leaves read (from its certified IR's `public_api`) and the
+        compile key's `dependency_surface` (by its §5.1) — beside the component dependency, in
+        `all_nodes` order. A §5.1 edit of the member moves the consumer's compile key."""
+        import yaml as _yaml
+
+        from tools.dependency_graph import build_dependency_graph
+        member = "problem/mem@0.1.0"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            catalog = repo / "spec/registry/spec_catalog.yaml"
+            doc = _yaml.safe_load(catalog.read_text(encoding="utf-8"))
+            doc["specs"].append({
+                "spec_kind": "problem", "spec_id": "mem", "spec_version": "0.1.0",
+                "domain": "dynamics", "family": "fam",
+                "deps_path": f"{self._spec_dir('problem', 'mem')}/deps.yaml"})
+            catalog.write_text(_yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+            mem_dir = repo / self._spec_dir("problem", "mem")
+            self._write(mem_dir / "tests.md", "# tests of mem\n")
+            self._write(mem_dir / "deps.yaml",
+                        "spec_id: mem\nspec_kind: problem\ndependencies:\n  components: []\n"
+                        "  profiles: []\n")
+            step_only = "procedures:\n  - name: mem__step\n    args: []\n"
+            public_api = {"published_operations": [{"operation_id": "mem__step"}],
+                          "signatures": [{"symbol": "mem__step", "signature": {
+                              "kind": "subroutine", "name": "mem__step", "args": []}}]}
+            self._publish(repo, "problem", "mem", member, step_only,
+                          ir_text=_yaml.safe_dump({"public_api": public_api}))
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            spec = self._spec_dir("problem", "spec_x")
+            before = self._inputs(repo, refs, "compile")["dependency_surface"]
+            deps = repo / spec / "deps.yaml"
+            deps.write_text(deps.read_text(encoding="utf-8")
+                            + "  problems:\n    - problem_id: mem\n"
+                            "      version_constraint: \">=0.1.0\"\n", encoding="utf-8")
+            graph, err = build_dependency_graph(repo, target_spec_ref=spec,
+                                                target_node_key=self._NK, include_via=False)
+            self.assertIsNone(err, err)
+            direct = ort._component_direct_deps(graph, self._NK)
+            self.assertEqual(sorted(direct), sorted([self._DEP, member]))
+            inputs = self._inputs(repo, refs, "compile")
+            self.assertNotEqual(before, inputs["dependency_surface"])
+            surface_by_nk = {self._DEP: self._surface_hash(self._SURFACE_A),
+                             member: self._surface_hash(step_only)}
+            self.assertEqual(inputs["dependency_surface"], tools_derivation.sha256_hex(
+                tools_derivation.canonical_json_bytes([
+                    {"node_key": nk, "surface": surface_by_nk[nk]} for nk in direct])))
+            surface = {e["node_key"]: e for e in ort._resolve_component_dep_surface(
+                repo, self._NK, graph)}
+            self.assertEqual(set(surface), {self._DEP, member})
+            self.assertEqual(surface[member]["source"], "ir_public_api")
+            self.assertEqual(surface[member]["published_operations"], ["mem__step"])
+            self.assertEqual(surface[member]["public_api"]["signatures"],
+                             public_api["signatures"])
+            # The member's §5.1 moves the consumer's compile key.
+            self._publish(repo, "problem", "mem", member,
+                          "procedures:\n  - name: mem__step\n    args:\n"
+                          "      - {name: dt, type: real, kind: dp, intent: in}\n",
+                          ir_text=_yaml.safe_dump({"public_api": public_api}))
+            self.assertNotEqual(inputs["dependency_surface"],
+                                self._inputs(repo, refs, "compile")["dependency_surface"])
+
     def test_generate_inputs_bind_the_ir_the_harness_and_the_closure_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -30486,6 +30558,175 @@ class LeafNetnsPreflightTests(unittest.TestCase):
         self.assertTrue(enforced)
         self.assertIs(rows["sandbox_netns_route"]["pass"], True)
         self.assertIs(rows["sandbox_netns_python"]["pass"], True)
+
+
+class ProblemsDependencyKeyTests(unittest.TestCase):
+    """The `problems:` deps.yaml key (the system tier, Part 1): parsed into `problem` entries,
+    ALLOWED and not required, paired in both key tables, refused inside a profile, and moving
+    no corpus graph."""
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+    def test_a_problems_entry_parses_to_a_problem_dependency(self) -> None:
+        from tools.orchestration_runtime import _parse_dep_entries
+        entries, well_formed = _parse_dep_entries({"dependencies": {
+            "components": [{"component_id": "c", "version_constraint": ">=0.1.0"}],
+            "profiles": [],
+            "problems": [{"problem_id": "m", "version_constraint": ">=0.5.1 <1.0.0"},
+                         {"problem_id": "n"}],
+        }})
+        self.assertTrue(well_formed)
+        self.assertEqual(entries, [("component", "c", ">=0.1.0"),
+                                   ("problem", "m", ">=0.5.1 <1.0.0"),
+                                   ("problem", "n", None)])
+        # The entry grammar is the other keys': the id field is `problem_id`, a bare string or
+        # a traversal token is malformed, and the key's value must be a list.
+        for bad in ([{"component_id": "m"}], ["m"], [{"problem_id": "../m"}],
+                    [{"problem_id": "m", "version_constraint": 3}], "m", None):
+            with self.subTest(bad=bad):
+                _entries, ok = _parse_dep_entries({"dependencies": {
+                    "components": [], "profiles": [], "problems": bad}})
+                self.assertFalse(ok)
+
+    def test_a_deps_yaml_without_problems_is_well_formed(self) -> None:
+        from tools.orchestration_runtime import (
+            _deps_yaml_bytes_are_canonical_empty, _parse_dep_entries)
+        entries, ok = _parse_dep_entries({"dependencies": {"components": [], "profiles": []}})
+        self.assertEqual((entries, ok), ([], True))
+        # `problems` alone does not replace a required key.
+        _e, ok = _parse_dep_entries({"dependencies": {"components": [], "problems": []}})
+        self.assertFalse(ok)
+        # The byte-level empty recognizer tracks the parser: an empty `problems: []` is still
+        # the canonical empty form, and a duplicate or a populated one is not.
+        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  profiles: []\n"))
+        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  problems: []\n  profiles: []\n"))
+        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  problems: []\n  problems: []\n"
+            b"  profiles: []\n"))
+        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  profiles: []\n  problems:\n"
+            b"    - problem_id: m\n"))
+        # Every deps.yaml of the corpus parses well-formed, with no `problem` entry today.
+        for deps in sorted((self._REPO_ROOT / "spec").rglob("deps.yaml")):
+            with self.subTest(deps=str(deps.relative_to(self._REPO_ROOT))):
+                import yaml as _yaml
+                entries, ok = _parse_dep_entries(
+                    _yaml.safe_load(deps.read_text(encoding="utf-8")))
+                self.assertTrue(ok)
+                self.assertNotIn("problem", {k for k, _s, _c in entries})
+
+    def test_the_deps_key_tables_name_the_same_keys(self) -> None:
+        """The parse loop iterates the pair table only, so an allowed key it does not name
+        would parse well-formed with its entries dropped. The module asserts the coupling at
+        import; this row pins that the assertion exists and fires."""
+        import importlib
+
+        import tools.orchestration_runtime as ort
+        self.assertEqual({k for k, _f in ort._DEPS_KEY_KIND_FIELDS},
+                         set(ort._DEPS_YAML_ALLOWED_KEYS))
+        self.assertIn(("problems", "problem_id"), ort._DEPS_KEY_KIND_FIELDS)
+        self.assertNotIn("problems", ort._DEPS_YAML_REQUIRED_KEYS)
+        self.assertLessEqual(ort._DEPS_YAML_REQUIRED_KEYS, ort._DEPS_YAML_ALLOWED_KEYS)
+        # Every pair's kind is the key's singular: the kind the gates test for.
+        self.assertEqual({k.rstrip("s") for k, _f in ort._DEPS_KEY_KIND_FIELDS},
+                         {"component", "problem", "profile", "infrastructure"})
+        source = Path(ort.__file__).read_text(encoding="utf-8")
+        broken = source.replace('    ("problems", "problem_id"),\n', "", 1)
+        self.assertNotEqual(broken, source)
+        spec = importlib.util.spec_from_loader("_ort_broken_tables", loader=None)
+        module = importlib.util.module_from_spec(spec)
+        module.__dict__["__file__"] = ort.__file__
+        with self.assertRaisesRegex(AssertionError, "must name the same deps.yaml keys"):
+            exec(compile(broken, ort.__file__, "exec"), module.__dict__)
+
+    def test_a_profile_declaring_a_problem_is_refused(self) -> None:
+        """D7: once `problems` is an allowed key, a profile's `problems:` entry would parse
+        well-formed and the expansion's component loop would drop it. It is refused by name,
+        through the reason constructor."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import (
+            _PROFILE_EXPANSION_REASONS, _load_spec_catalog, _parse_dep_entries,
+            _read_deps_yaml, expand_profile_dependencies)
+        self.assertIn("profile_declares_problem", _PROFILE_EXPANSION_REASONS)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            lines = ["catalog_version: 0.2.0", "specs:"]
+            for kind, sid in (("problem", "a"), ("profile", "pr"), ("component", "c"),
+                              ("problem", "m")):
+                lines += [f"  - spec_kind: {kind}", f"    spec_id: {sid}",
+                          "    spec_version: \"0.1.0\"",
+                          f"    deps_path: spec/{kind}/{sid}/deps.yaml"]
+            (repo / "spec" / "registry").mkdir(parents=True)
+            (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8")
+            deps = {
+                "spec/problem/a": "  components: []\n  profiles:\n    - profile_id: pr\n"
+                                  "      version_constraint: \">=0.1.0\"\n",
+                "spec/profile/pr": "  components:\n    - component_id: c\n"
+                                   "      version_constraint: \">=0.1.0\"\n  profiles: []\n"
+                                   "  problems:\n    - problem_id: m\n"
+                                   "      version_constraint: \">=0.1.0\"\n",
+                "spec/component/c": "  components: []\n  profiles: []\n",
+                "spec/problem/m": "  components: []\n  profiles: []\n",
+            }
+            for ref, body in deps.items():
+                (repo / ref).mkdir(parents=True)
+                (repo / ref / "deps.yaml").write_text("dependencies:\n" + body, encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            entries, ok = _parse_dep_entries(_read_deps_yaml(repo, "spec/problem/a"))
+            self.assertTrue(ok)
+            seen: list[str] = []
+            real = ort._profile_expansion_failure
+
+            def _spy(reason, detail):
+                seen.append(reason)
+                return real(reason, detail)
+
+            with mock.patch.object(ort, "_profile_expansion_failure", _spy):
+                expanded, record, err = expand_profile_dependencies(
+                    repo, "spec/problem/a", entries, _load_spec_catalog(str(repo.resolve())))
+            self.assertEqual(seen, ["profile_declares_problem"])
+            self.assertEqual(err["reason"], "profile_declares_problem")
+            self.assertIn("['m']", err["detail"])
+            self.assertEqual((expanded, record), ([], []))
+            # The graph builder carries the refusal rather than the selection.
+            from tools.dependency_graph import build_dependency_graph
+            graph, gerr = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/a", target_node_key="problem/a@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(gerr["reason"], "profile_declares_problem")
+            _load_spec_catalog.cache_clear()
+
+    def test_the_corpus_graphs_do_not_move_with_the_problems_key(self) -> None:
+        """For the three corpus problems, the closure signature and the direct-dependency set
+        the compile key reads are the same with the `problems` key in the tables and with the
+        tables put back to their previous members. Over the real `spec/`, no `workspace/`."""
+        import tools.orchestration_runtime as ort
+        from tools.dependency_graph import build_dependency_graph
+        old_allowed = frozenset({"components", "profiles", "infrastructure"})
+        old_pairs = tuple(p for p in ort._DEPS_KEY_KIND_FIELDS if p[0] != "problems")
+        self.assertNotEqual(old_pairs, ort._DEPS_KEY_KIND_FIELDS)
+        for sid in ("advdiff1d_linear", "shallow_water2d", "shallow_water2d_channel"):
+            with self.subTest(sid=sid):
+                ref = ort.resolve_spec_ref_for(self._REPO_ROOT, "problem", sid)
+                self.assertTrue(ref)
+                version = ort._load_spec_catalog(str(self._REPO_ROOT))[("problem", sid)][0]
+                nk = f"problem/{sid}@{version}"
+                results = []
+                for allowed, pairs in ((ort._DEPS_YAML_ALLOWED_KEYS, ort._DEPS_KEY_KIND_FIELDS),
+                                       (old_allowed, old_pairs)):
+                    with mock.patch.object(ort, "_DEPS_YAML_ALLOWED_KEYS", allowed), \
+                            mock.patch.object(ort, "_DEPS_KEY_KIND_FIELDS", pairs):
+                        graph, err = build_dependency_graph(
+                            self._REPO_ROOT, target_spec_ref=ref, target_node_key=nk,
+                            include_via=False)
+                        self.assertIsNone(err, err)
+                        results.append((ort._closure_signature(graph),
+                                        ort._component_direct_deps(graph, nk)))
+                self.assertEqual(results[0], results[1])
+                self.assertTrue(results[0][1])
 
 
 if __name__ == "__main__":

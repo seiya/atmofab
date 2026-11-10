@@ -219,15 +219,15 @@ def _read_deps_yaml(repo_root: Path, spec_ref: Any) -> dict[str, Any] | None:
 
 # A single canonical empty-deps line: `  <key>: []` for one of the deps keys (2-space indent,
 # empty list). Keyed on the same key vocabulary as `_parse_dep_entries` (byte-level, no parse).
-_EMPTY_DEPS_LINE_RE = re.compile(r"^  (components|profiles|infrastructure): \[\]$")
+_EMPTY_DEPS_LINE_RE = re.compile(r"^  (components|problems|profiles|infrastructure): \[\]$")
 
 
 def _deps_yaml_bytes_are_canonical_empty(deps_bytes: bytes) -> bool:
     """Codex round 34 F1 (+ R1/M3a): a CONSERVATIVE byte-level recognizer for the canonical
     empty-deps form of `deps.yaml`. Returns True only when the file declares, under a single
     `dependencies:` key, an empty list `[]` for BOTH required keys `components` / `profiles`
-    and — optionally — the R1 `infrastructure` key, in ANY ordering, with NO other key and NO
-    populated list. Any deviation (extra keys, populated lists, exotic YAML syntax) returns
+    and — optionally — the `problems` key and the R1 `infrastructure` key, in ANY ordering, with
+    NO other key and NO populated list. Any deviation (extra keys, populated lists, exotic YAML syntax) returns
     False so the caller falls back to full YAML parsing.
 
     This lets `_compute_initial_dependency_readiness` recognize a true leaf without invoking
@@ -647,18 +647,33 @@ def _resolve_dep_version(
 # PARSED, so that a declaration is refused by name at spec-input
 # (`spec_input_gates.infra_dep_declared_violation`, issue #284: a harness is a target attribute)
 # rather than reported as an unknown key; no deps.yaml may carry an entry under it.
+# `problems` is ALLOWED and not required (the system tier, Part 1): a `problem` may compose
+# other `problem`s, and a deps.yaml without the key stays well-formed with its bytes unmoved. An
+# entry under it is admitted on a `problem` only, and only for a member whose §5.1 publishes
+# exactly `<member>__step` (`spec_input_gates.problem_dep_on_non_problem_violation`,
+# `problem_dependency_surface_violation`).
 _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
-_DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset({"components", "profiles", "infrastructure"})
-# (deps key, per-item id field). `kind = key.rstrip("s")` yields component/profile/infrastructure.
+_DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {"components", "problems", "profiles", "infrastructure"})
+# (deps key, per-item id field). `kind = key.rstrip("s")` yields
+# component/problem/profile/infrastructure.
 # A `profile` entry is expanded into the components it selects by
 # `expand_profile_dependencies` and never becomes a node of any closure (issue #175); the two
 # readers that deliberately see the RAW declaration are `_dependency_readiness_state`'s
 # trivial-leaf test and `workflow_conductor._direct_infra_dep_count` (the spec-input refusal).
 _DEPS_KEY_KIND_FIELDS: tuple[tuple[str, str], ...] = (
     ("components", "component_id"),
+    ("problems", "problem_id"),
     ("profiles", "profile_id"),
     ("infrastructure", "infrastructure_id"),
 )
+# The parse loop of `_parse_dep_entries` iterates `_DEPS_KEY_KIND_FIELDS` alone, so a key in
+# `_DEPS_YAML_ALLOWED_KEYS` that the pair table does not name would parse as well-formed with
+# its entries DROPPED. The two tables therefore name the same keys, checked at import.
+if {key for key, _field in _DEPS_KEY_KIND_FIELDS} != _DEPS_YAML_ALLOWED_KEYS:
+    raise AssertionError(
+        "_DEPS_KEY_KIND_FIELDS and _DEPS_YAML_ALLOWED_KEYS must name the same deps.yaml keys: "
+        "a key allowed but not paired is parsed with its entries dropped")
 
 # Codex round 15 F2: identifiers from deps.yaml / spec_catalog.yaml are
 # interpolated into workspace/<kind>/<safe>/ paths. ANY of `spec_kind`,
@@ -699,7 +714,8 @@ def _parse_dep_entries(
 
     Strict schema enforced (Codex round 12 F1): the `dependencies` block must
     be a dict containing the REQUIRED keys `{"components", "profiles"}`, MAY also
-    carry the optional `infrastructure` key (the R1 harness dependency), and
+    carry the optional `problems` key (a `problem` composing `problem`s, the system tier's
+    Part 1) and the optional `infrastructure` key (the R1 harness dependency), and
     NOTHING else. An unknown key (e.g. typoed `component:`) or a missing required
     key marks the document as malformed — previously these silently yielded an
     empty entry list which readiness collapsed to
@@ -718,13 +734,15 @@ def _parse_dep_entries(
     well_formed = True
     for kind_key, id_field in _DEPS_KEY_KIND_FIELDS:
         if kind_key not in deps:
-            # Optional key (infrastructure) omitted — skip without penalty.
+            # Optional key (problems / infrastructure) omitted — skip without penalty.
             continue
         items = deps.get(kind_key)
         if not isinstance(items, list):
             well_formed = False
             continue
-        kind = kind_key.rstrip("s")  # components->component, profiles->profile, infrastructure->infrastructure
+        # components->component, problems->problem, profiles->profile,
+        # infrastructure->infrastructure
+        kind = kind_key.rstrip("s")
         for item in items:
             if not isinstance(item, dict):
                 # Codex round 22 F1: only canonical dict form is accepted.
@@ -767,6 +785,7 @@ _PROFILE_EXPANSION_REASONS: frozenset[str] = frozenset({
     "profile_deps_malformed",
     "profile_nesting_unsupported",
     "profile_declares_infrastructure",
+    "profile_declares_problem",
     "profile_component_declared_twice",
     "profile_component_conflict",
 })
@@ -895,6 +914,17 @@ def expand_profile_dependencies(
             return _fail(
                 "profile_declares_infrastructure",
                 f"{spec_ref}: profile/{sid}: {infra_violation}",
+            )
+        # A profile selects COMPONENTS (issue #175). Since `problems` is an allowed deps.yaml key
+        # (the system tier, Part 1), a profile's `problems:` entry would parse well-formed and
+        # the component loop below would drop it silently; it is refused by name instead.
+        declared_problems = sorted(s for k, s, _c in p_entries if k == "problem")
+        if declared_problems:
+            return _fail(
+                "profile_declares_problem",
+                f"{spec_ref}: profile/{sid} declares problem(s) {declared_problems}; a profile "
+                f"selects components only, and a `problem` dependency is declared by the "
+                f"composing `problem` itself",
             )
         record_components: list[dict[str, Any]] = []
         for p_kind, cid, c_constraint in p_entries:
@@ -2260,7 +2290,8 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               (`_closure_signature` of `build_dependency_graph(include_via=False)`: node
 #               set, heights, direct/transitive split and the adopted profile set);
 #             dependency_surface — the published surface (`_published_surface`) of each
-#               component direct dep. A closure member's IR or source body is not a member: no
+#               direct dep a consumer calls, a `component` or a `problem`
+#               (`_component_direct_deps`). A closure member's IR or source body is not a member: no
 #               compile leaf reads one, and a dep's non-interface edit must not re-derive its
 #               consumers (issue #574).
 #             Nothing here names a target: the graph is `deps.yaml`'s alone (no harness since
@@ -2661,8 +2692,9 @@ def _published_surface(
     canonical structured form of §5.1 of the dependency's `controlled_spec.md`, the form
     `Compile.static` pins its IR's `public_api` to. It rests on a file no leaf writes rather
     than on what a leaf authored, so a re-derived dependency keeps its surface, and a prose edit
-    outside §5.1 moves nothing. A dependency whose spec has no §5.1 (a `problem`) answers `None`,
-    which still pins its membership and its position.
+    outside §5.1 moves nothing. A dependency whose spec has no §5.1 answers `None`, which still
+    pins its membership and its position; every `component` and `problem` spec of the corpus
+    carries one (a `problem` publishes `__step` since issue #589).
 
     The dependency must have a certified compile output, whose hash is not bound. A §5.1 that is
     present and does not load raises: the surface cannot be stated."""
@@ -3541,21 +3573,22 @@ def _resolve_dependency_facts(
     ``published_operations`` and keeps its pipeline/run/verdict fact. A consumer whose language
     declares no ``signatures`` gets no interfaces — never another language's reading of them.
 
-    FALLBACK: when a ``component/`` dep's ``operations`` is empty / absent — an IR
-    authoring wobble the ``_validate_component_dep_operations`` compile gate is meant to
+    FALLBACK: when a ``component/`` or ``problem/`` dep's ``operations`` is empty / absent —
+    an IR authoring wobble the ``_validate_component_dep_operations`` compile gate is meant to
     catch, but which a resume can still step over on an already-certified IR — the
     interfaces of ALL ``<dep_spec_id>__``-prefixed public subroutines in the certified
-    source are surfaced instead. Scoped to ``component/`` deps: a ``problem`` dep authors
-    ``operations: []`` legitimately and must not be called, so its prefixed subroutines are
-    never surfaced (matching the ``_validate_component_dep_operations`` scope). Without this, the ``use``/``call`` the generate-side gate
-    unconditionally requires for a component dep has no facts to build against, and the
+    source are surfaced instead. Scoped to the called kinds (``_SURFACED_DEPENDENCY_KINDS``):
+    a ``problem`` composed by a ``problem`` is called and lists its operations as a component
+    is (the system tier, Part 1), matching the ``_validate_component_dep_operations`` scope; an
+    ``infrastructure`` dep is never called. Without this, the ``use``/``call`` the generate-side
+    gate unconditionally requires for such a dep has no facts to build against, and the
     pure closed-context leaf must invent symbol names / argument orders that ``Generate.gate``
     rejects every retry — the closure fail_closed this fallback closes. The empty-list
     fallback fires ONLY when ``operations`` is empty/absent; when the IR enumerates real
     operations, only that enumerated surface is injected (IR is the sole carrier; never
     unioned).
 
-    L4 (silent-drop abolition, ``component/`` deps only): when the IR enumerates operations
+    L4 (silent-drop abolition, ``component/`` and ``problem/`` deps only): when the IR enumerates operations
     but one or more of the enumerated names do not exist in the certified source (a name
     drift the compile gate is meant to catch but a resume on an already-certified IR steps
     over), the enumeration forfeits its authority WHOLESALE — it is replaced (never unioned)
@@ -3650,7 +3683,9 @@ def _resolve_dependency_facts(
             # (its entry — the target's harness, `with_target_harness` — carries `operations: []`).
             dep_kind = node_key.split("/", 1)[0].strip()
             is_infra_dep = dep_kind == "infrastructure"
-            is_component_dep = dep_kind == "component"
+            # A `problem` composed by a `problem` is called as a component is (the system tier,
+            # Part 1), so it takes this branch too.
+            is_component_dep = dep_kind in _SURFACED_DEPENDENCY_KINDS
             ops = entry.get("operations") if isinstance(entry, dict) else None
             if consumer_signatures is not None and not is_infra_dep:
                 try:
@@ -3673,22 +3708,20 @@ def _resolve_dependency_facts(
                         declared_unresolved: list[str] = []
                         if is_component_dep and dep_spec_id:
                             if not enumerated:
-                                # FALLBACK (empty-list-only, COMPONENT deps only): the IR authored
-                                # no operations for this component dep. Surface every
+                                # FALLBACK (empty-list-only, called deps only): the IR authored
+                                # no operations for this `component` / `problem` dep. Surface every
                                 # `<dep_spec_id>__` subroutine from the certified source so the
                                 # leaf's mandatory call of a `<dep>__*` operation has a real
-                                # interface to build against. Scoped to `component/` deps because the empty-ops
-                                # fail_closed loop this closes is driven by the component-only
-                                # generate gate (the language's `validate_dependency_operations`); a
-                                # problem dep authors `operations: []` legitimately and must
-                                # NOT be called (the validator + docs exempt it), so surfacing its
-                                # prefixed subroutines would tempt Generate into an undeclared call.
-                                # See `_validate_component_dep_operations`.
+                                # interface to build against. Scoped to the called kinds because the
+                                # empty-ops fail_closed loop this closes is driven by the generate
+                                # gate over those kinds (the language's
+                                # `validate_dependency_operations`); an `infrastructure` dep is
+                                # never called. See `_validate_component_dep_operations`.
                                 op_names = consumer_signatures.prefixed_procedures(
                                     source_text, f"{dep_spec_id}__"
                                 )
                             else:
-                                # L4 (COMPONENT deps only): silent-drop abolition. When the IR
+                                # L4 (called deps only): silent-drop abolition. When the IR
                                 # ENUMERATES operations but one or more do not exist in the certified
                                 # source (a name-drift authoring wobble the compile gate is meant to
                                 # catch, but which a resume on an already-certified IR steps over),
@@ -3754,9 +3787,18 @@ def _resolve_dependency_facts(
     return facts
 
 
+# The dependency kinds whose published surface a consumer is shown and bound by: a `component`,
+# and a `problem` composed by a `problem` (the system tier, Part 1). An `infrastructure` node is
+# the target's harness, which the host-rendered runner alone calls.
+_SURFACED_DEPENDENCY_KINDS: frozenset[str] = frozenset({"component", "problem"})
+
+
 def _component_direct_deps(graph: Mapping[str, Any], node_key: str) -> list[str]:
-    """The COMPONENT direct dependencies of `node_key` in the derived graph, in `all_nodes` order:
-    `all_nodes − {self} − transitive_deps`. A graph without a list of nodes has none."""
+    """The direct dependencies of `node_key` in the derived graph whose kind publishes a surface a
+    consumer calls (`_SURFACED_DEPENDENCY_KINDS`: `component` and `problem`), in `all_nodes`
+    order: `all_nodes − {self} − transitive_deps`. A graph without a list of nodes has none.
+    The name predates `problem` dependencies; its two readers are the compile key's
+    `dependency_surface` and `_resolve_component_dep_surface`."""
     all_nodes = graph.get("all_nodes")
     if not isinstance(all_nodes, list):
         return []
@@ -3778,7 +3820,7 @@ def _component_direct_deps(graph: Mapping[str, Any], node_key: str) -> list[str]
         if nk == self_nk or nk in transitive_nks or nk in seen:
             continue
         seen.add(nk)
-        if nk.split("/", 1)[0].strip() == "component":
+        if nk.split("/", 1)[0].strip() in _SURFACED_DEPENDENCY_KINDS:
             direct.append(nk)
     return direct
 
@@ -3788,9 +3830,10 @@ def _resolve_component_dep_surface(
     *, resolver: DerivationResolver | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve, host-side at COMPILE phase start, the published surface (operation names and
-    ``public_api`` ABI) of each COMPONENT direct dependency of ``node_key`` (the consumer, whose own IR does not yet
-    exist), for the conductor to author into ``<ir_ref>/dependency_surface.json`` and inject
-    into ``compile.generate``.
+    ``public_api`` ABI) of each direct dependency of ``node_key`` that a consumer calls — a
+    ``component`` or a ``problem`` (``_component_direct_deps``) — for the consumer, whose own IR
+    does not yet exist, for the conductor to author into ``<ir_ref>/dependency_surface.json``
+    and inject into ``compile.generate``.
 
     The consumer's IR is absent at compile start, so the direct-dep set is read from the
     conductor-authored ``dependency_graph.json`` ``graph`` — ``all_nodes − {self} −
@@ -3798,9 +3841,10 @@ def _resolve_component_dep_surface(
     not-yet-existing consumer IR (this is the L2 correction: ``_resolve_dependency_facts`` is
     keyed on the consumer IR's ``direct_deps`` and cannot run before compile authors it).
 
-    Only ``component/`` deps are surfaced — a ``problem`` dep is not
-    operation-enumerated by the consumer's ``public_api`` gate, and an ``infrastructure`` dep
-    is never called (the runner harness is host-rendered). Each entry is ``{node_key,
+    ``component/`` and ``problem/`` deps are surfaced: a ``problem`` composed by a ``problem``
+    is called and lists its operations as a component is (the system tier, Part 1). An
+    ``infrastructure`` dep is never called (the runner harness is host-rendered). Each entry is
+    ``{node_key,
     published_operations: [op_name, ...], source}`` where ``source`` is:
       - ``ir_public_api``   — names read from the dep's CERTIFIED IR
         ``public_api.published_operations[].operation_id`` (the L1 name pin), and the entry
@@ -9456,8 +9500,8 @@ def _load_launch_prompt_templates() -> dict[str, str]:
 
 
 def _build_dependency_surface_facts(surface: Any) -> str:
-    """Render the L2 ``compile.generate`` dependency-surface catalog: for each COMPONENT
-    dependency, its published operation NAMES and, under each resolved one, a fenced YAML block
+    """Render the L2 ``compile.generate`` dependency-surface catalog: for each direct dependency
+    the consumer calls (a ``component`` or a ``problem``), its published operation NAMES and, under each resolved one, a fenced YAML block
     of its IR ``public_api`` ``module_parameters`` / ``interfaces`` / ``signatures`` (the keys the
     entry carries; conductor-resolved into ``<ir_ref>/dependency_surface.json`` at compile-phase
     start). The block is what lets a consumer's IR state a local procedure it passes to a
@@ -9473,15 +9517,14 @@ def _build_dependency_surface_facts(surface: Any) -> str:
     if not isinstance(surface, list) or not surface:
         return ""
     lines = [
-        "**Published dependency operations (conductor-resolved from each COMPONENT dependency's "
-        "certified public API — the AUTHORITATIVE op-name catalog):** these are the ONLY valid "
-        "operation names for your component dependencies. Copy each listed name VERBATIM into that "
-        "dependency's `dependency.direct_deps[].operations`; a name NOT in this catalog is rejected "
-        "by a deterministic compile gate (never invent one). SEPARATELY, IF YOUR node is a "
-        "`component`, author your OWN `public_api.published_operations` by transcribing YOUR "
-        "controlled_spec §5 operation_id(s) verbatim, AND its §5.1 signatures / "
-        "module_parameters (issue #153 PR-2 — a component pins its full ABI, not only names); a "
-        "`profile`/`problem` node OMITS `public_api`. For a "
+        "**Published dependency operations (conductor-resolved from each direct dependency's "
+        "certified public API, `component` or `problem` — the AUTHORITATIVE op-name catalog):** "
+        "these are the ONLY valid operation names for your dependencies. Copy each listed name "
+        "VERBATIM into that dependency's `dependency.direct_deps[].operations`; a name NOT in this "
+        "catalog is rejected by a deterministic compile gate (never invent one). SEPARATELY, "
+        "author your OWN `public_api.published_operations` by transcribing YOUR controlled_spec "
+        "§5 operation_id(s) verbatim, AND its §5.1 signatures / module_parameters (a node pins "
+        "its full ABI, not only names). For a "
         "dependency shown as `unresolved` below, use the operation_id(s) that dependency's "
         "controlled_spec §5 declares, verbatim. Under each resolved dependency is its published "
         "ABI, copied verbatim from its certified IR `public_api` (the §5.1 block that "
@@ -9546,7 +9589,8 @@ def _build_dependency_facts(request_payload: dict[str, Any]) -> str:
 
     For ``compile.generate`` the block is DIFFERENT: the consumer IR does not exist yet, so there
     is no ``resolved_dependencies``. Instead the conductor injects ``dependency_surface`` — the
-    L2 published-surface catalog of the node's component dependencies — and this renderer
+    L2 published-surface catalog of the node's direct dependencies a consumer calls
+    (``component`` and ``problem``) — and this renderer
     formats that: op names (an AUTHORING input: the deterministic L3 gate rejects any dep
     ``operations`` name not in it) and each dependency's ``public_api`` ABI block (issue #486).
 

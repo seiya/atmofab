@@ -5634,8 +5634,9 @@ class Conductor:
         return None
 
     def _write_dependency_surface(self, refs: NodeRefs) -> list[dict[str, Any]]:
-        """Author `<ir_ref>/dependency_surface.json` host-side at Compile start: for each COMPONENT
-        direct dependency, its published operation NAME surface (`published_operations` + a `source`
+        """Author `<ir_ref>/dependency_surface.json` host-side at Compile start: for each direct
+        dependency a consumer calls (a `component` or a `problem`), its published operation NAME
+        surface (`published_operations` + a `source`
         tag), resolved from the dep's certified IR public_api (the L1 pin), and — for a resolved
         dependency — that IR's `module_parameters` / `interfaces` / `signatures` verbatim under
         `public_api` (issue #486), which the producer is shown and the reviewer reads in the file.
@@ -16954,6 +16955,50 @@ def _direct_infra_dep_count(repo_root: Path, spec_path: str) -> int | None:
     return sum(1 for kind, _sid, _constraint in entries if kind == "infrastructure")
 
 
+def _direct_problem_dep_ids(repo_root: Path, spec_path: str) -> list[str]:
+    """The `spec_id`s declared under `problems:` in <spec_path>/deps.yaml, in declaration order
+    (the system tier, Part 1). A missing or malformed file answers `[]`: `resolve_node` reads
+    `_direct_infra_dep_count` first, which refuses that file on every node that builds."""
+    from tools.orchestration_runtime import _parse_dep_entries, _read_deps_yaml
+    deps_doc = _read_deps_yaml(repo_root, spec_path)
+    if not isinstance(deps_doc, dict):
+        return []
+    entries, well_formed = _parse_dep_entries(deps_doc)
+    if not well_formed:
+        return []
+    return [sid for kind, sid, _constraint in entries if kind == "problem"]
+
+
+def _problem_dependency_violations(
+    repo_root: Path, declaring_kind: Any, problem_ids: list[str],
+) -> list[str]:
+    """The spec-input refusals of a node's `problems:` entries (the system tier, Part 1): the
+    declaring spec must be a `problem` by the catalog
+    (`spec_input_gates.problem_dep_on_non_problem_violation`), and each member must publish
+    exactly `<member>__step` in its own §5.1
+    (`spec_input_gates.problem_dependency_surface_violation`). `declaring_kind` is the catalog's
+    answer. Each member is resolved by `resolve_spec_ref_for`; an unresolvable member, or an
+    unreadable registry, is refused by the surface rule rather than raised."""
+    from tools.orchestration_runtime import SpecCatalogCorruption, resolve_spec_ref_for
+    from tools.spec_input_gates import (
+        problem_dep_on_non_problem_violation, problem_dependency_surface_violation)
+    if not problem_ids:
+        return []
+    kind_violation = problem_dep_on_non_problem_violation(declaring_kind, len(problem_ids))
+    if kind_violation:
+        return [kind_violation]
+    out: list[str] = []
+    for sid in problem_ids:
+        try:
+            member_ref = resolve_spec_ref_for(repo_root, "problem", sid)
+        except SpecCatalogCorruption:
+            member_ref = None
+        violation = problem_dependency_surface_violation(repo_root, member_ref)
+        if violation:
+            out.append(violation if member_ref else f"{violation} (problem/{sid})")
+    return out
+
+
 def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     """Resolve (node_key, spec_path) from spec_ref via spec_catalog.yaml.
 
@@ -17016,6 +17061,7 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
                         f"dependency schema is malformed, so the node's dependency "
                         f"declaration cannot be read (docs/SPEC.md req. 9). Author a deps.yaml "
                         f"whose `dependencies:` block holds the keys `components` / `profiles` "
+                        f"and, optionally, `problems` "
                         f"(a typo such as `component:` makes the whole file malformed; see "
                         f"spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml) "
                         f"(from spec_ref {spec_ref})")
@@ -17024,6 +17070,16 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
                 if _infra_violation:
                     raise ValueError(
                         f"spec-input rejected: {_infra_violation} (from spec_ref {spec_ref})")
+            # (4) The `problems:` entries (the system tier, Part 1): admitted on a `problem`
+            # only, the kind being the CATALOG's (`kind` above), and each member only when its
+            # own §5.1 publishes exactly `<member>__step`. On every route to a leaf launch,
+            # `--resume` included; the closure walk repeats both for an already-ready member.
+            _problem_violations = _problem_dependency_violations(
+                repo_root, kind, _direct_problem_dep_ids(repo_root, spec_path))
+            if _problem_violations:
+                raise ValueError(
+                    f"spec-input rejected: {'; '.join(_problem_violations)} "
+                    f"(from spec_ref {spec_ref})")
             return f"{kind}/{spec_id}@{version}", spec_path
     raise ValueError(
         f"spec_id not found in spec_catalog.yaml: {spec_id} (from spec_ref {spec_ref})")

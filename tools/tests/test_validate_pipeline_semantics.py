@@ -22015,13 +22015,26 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
             self._run([{"node_key": "infrastructure/harness_fortran_cpu@0.2.0",
                         "kind": "infrastructure", "operations": []}]), [])
 
-    def test_problem_dep_ignored(self) -> None:
-        # A `problem` dep is not called through the `<dep>__*` operation surface. The witness
-        # was a `profile/` entry until issue #175, which is why it is not one now: a `profile`
-        # can no longer appear in `direct_deps` at all — `_validate_compile_dependency_consistency`
-        # rejects that IR outright — so it could only guard a real rule with an unreal input.
-        self.assertEqual(
-            self._run([{"node_key": "problem/some_problem@0.1.0", "operations": []}]), [])
+    def test_a_problem_dep_without_operations_is_refused(self) -> None:
+        # The system tier, Part 1 (decision D12): a `problem` dependency is a member a composing
+        # `problem` CALLS, so it lists its operations as a component dependency does. This row
+        # reverses `test_problem_dep_ignored`, which pinned the rule that a `problem` dep
+        # authors `operations: []` and is never called. Every malformed shape the component
+        # rows pin is refused for a `problem` too.
+        for entry, detail in (
+                ({"node_key": "problem/some_problem@0.1.0", "operations": []},
+                 "empty `operations: []`"),
+                ({"node_key": "problem/some_problem@0.1.0"}, "missing its `operations` field"),
+                ("problem/some_problem@0.1.0", "bare string"),
+                ({"node_key": "problem/some_problem@0.1.0", "operations": [""]},
+                 "no valid (non-empty string) entries")):
+            with self.subTest(entry=entry):
+                v = self._run([entry])
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("dependency 'problem/some_problem@0.1.0'", v[0])
+                self.assertIn(detail, v[0])
+        self.assertEqual(self._run([{"node_key": "problem/some_problem@0.1.0",
+                                     "operations": ["some_problem__step"]}]), [])
 
     def test_malformed_direct_deps_no_crash_no_violation(self) -> None:
         self.assertEqual(self._run("not-a-list"), [])
@@ -22077,7 +22090,8 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
             self.assertTrue(
-                any("component dependency" in x and "empty `operations: []`" in x for x in v), v)
+                any("dependency 'component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0'" in x
+                    and "empty `operations: []`" in x for x in v), v)
 
 
 class RealCorpusPublishedSurfaceTests(unittest.TestCase):
@@ -22731,6 +22745,91 @@ class ComponentPublicApiGateTests(unittest.TestCase):
         self.assertIn("unresolvable", v[0])
 
 
+class ProblemDependencyCallGateTests(unittest.TestCase):
+    """The system tier, Part 1 (D12): a `problem` dependency is in the set the dependency-call
+    gate reads (`_component_dep_spec_ids` -> the language's `validate_dependency_operations`),
+    driven through `_validate_dependency_operation_usage`, the handler the generate stage runs.
+    What the gate holds is a call's PRESENCE: the scratch-copy row pins its limit."""
+
+    _MEMBER = "problem/member@0.5.1"
+
+    def _run(self, model_text: str, *, member_kind: str = "problem") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            node_key = "problem/shallow_water2d@0.3.0"
+            member = f"{member_kind}/member@0.5.1"
+            _create_minimal_execution_tree(
+                repo_root, dep_spec_id="member", model_text=model_text,
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["x", "y"],
+                dependency_resolved={
+                    "node_key": node_key,
+                    "direct_deps": [{"node_key": member, "kind": member_kind,
+                                     "operations": ["member__step"]}],
+                    "transitive_deps": [], "topo_level": 1,
+                    "all_nodes": [{"node_key": member, "topo_level": 0},
+                                  {"node_key": node_key, "topo_level": 1}]})
+            pipeline_dir = next((repo_root / "workspace" / "pipelines").glob("*/*/*"))
+            node_dir = next((pipeline_dir / "runs").glob("*/*"))
+            execution = vps.NodeExecution(node_key=node_key, node_dir=node_dir,
+                                          exec_dir=node_dir, pipeline_dir=pipeline_dir)
+            src_dir = pipeline_dir / "source" / "src_20260415_001" / "src"
+            self.assertEqual(vps._component_dep_spec_ids(repo_root, execution),
+                             ["member"] if member_kind in ("problem", "component") else [])
+            violations: list[str] = []
+            vps._validate_dependency_operation_usage(repo_root, execution, src_dir, violations)
+            return violations
+
+    _NO_CALL = (
+        "module shallow_water2d_model\n"
+        "  use member_model, only: member__step\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine shallow_water2d__step(h, dt, ok)\n"
+        "    real(8), intent(inout) :: h(:, :)\n"
+        "    real(8), intent(in) :: dt\n"
+        "    logical, intent(out) :: ok\n"
+        "    h = h + dt\n"
+        "    ok = .true.\n"
+        "  end subroutine shallow_water2d__step\n"
+        "end module shallow_water2d_model\n")
+
+    _SCRATCH = (
+        "module shallow_water2d_model\n"
+        "  use member_model, only: member__step\n"
+        "  implicit none\n"
+        "contains\n"
+        "  subroutine shallow_water2d__step(h, dt, ok)\n"
+        "    real(8), intent(inout) :: h(:, :)\n"
+        "    real(8), intent(in) :: dt\n"
+        "    logical, intent(out) :: ok\n"
+        "    real(8), allocatable :: scratch(:, :)\n"
+        "    logical :: scratch_ok\n"
+        "    scratch = h\n"
+        "    call member__step(scratch, dt, scratch_ok)\n"
+        "    h = h + dt\n"
+        "    ok = .true.\n"
+        "  end subroutine shallow_water2d__step\n"
+        "end module shallow_water2d_model\n")
+
+    def test_a_model_with_no_call_of_its_problem_dependency_is_refused(self) -> None:
+        v = self._run(self._NO_CALL)
+        self.assertTrue(any("missing dependency operation call (member__*)" in x for x in v), v)
+        # The `use` is required too, as for a component dependency.
+        v = self._run(self._NO_CALL.replace("  use member_model, only: member__step\n", ""))
+        self.assertTrue(any("missing dependency module use (member_model)" in x for x in v), v)
+        # An `infrastructure` dependency is not in the called set: the same model passes.
+        self.assertEqual(self._run(self._NO_CALL, member_kind="infrastructure"), [])
+
+    def test_a_model_calling_its_problem_dependency_on_scratch_copies_is_not_refused(
+            self) -> None:
+        """The LIMIT of the gate, recorded rather than assumed (enforcement-change rule 1-b):
+        a model that calls the member on scratch copies and discards the result passes the
+        dependency-call gate. Whether the member's output is the committed state is the suite's
+        question (the system tier's V-a / V-b), not this gate's."""
+        self.assertEqual(self._run(self._SCRATCH), [])
+
+
 class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
     """`_validate_component_dep_operations_membership` (L3, compile stage): a component dep's
     non-empty declared `operations` must be a subset of the `dependency_surface.json` sidecar's
@@ -22776,6 +22875,22 @@ class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
 
     def test_no_sidecar_inert(self) -> None:
         self.assertEqual(self._run([self._DEP]), [])
+
+    def test_a_problem_dependency_operation_outside_its_surface_is_refused(self) -> None:
+        """The system tier, Part 1 (D12): a `problem` member lists only operations of its
+        published surface, by the same gate as a component dependency."""
+        member = "problem/member@0.5.1"
+        sidecar = self._surface(["member__step"], node_key=member)
+        self.assertEqual(self._run(
+            [{"node_key": member, "kind": "problem", "operations": ["member__step"]}],
+            sidecar), [])
+        for ops in (["member__init"], ["member__step", "member__init"], ["Member__step"]):
+            with self.subTest(ops=ops):
+                v = self._run([{"node_key": member, "kind": "problem", "operations": ops}],
+                              sidecar)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(f"dependency {member!r} declares operation(s)", v[0])
+                self.assertIn("member__step", v[0])
 
     def test_public_api_block_in_a_sidecar_entry_is_not_read_by_the_gate(self) -> None:
         # Issue #486 added the dep IR's `public_api` ABI to each resolved entry; the gate stays a

@@ -271,6 +271,43 @@ class DependencyGraphRefusesAHarnessEdgeTests(unittest.TestCase):
             self.assertEqual([n["node_key"] for n in graph["all_nodes"]], [_NK])
 
 
+class DependencyGraphRefusesAProblemsEntryOnANonProblemTests(unittest.TestCase):
+    def test_the_graph_builder_refuses_a_problems_entry_on_a_component(self) -> None:
+        """The system tier, Part 1: the graph builder refuses a `problems:` entry on a spec the
+        catalog does not file as a `problem`, again, rather than carry the edge — for the
+        target (its kind from `target_node_key`) and for a dependency (its kind from the
+        catalog-validated edge). On a `problem` the member becomes an ordinary graph node."""
+        from tools.dependency_graph import build_dependency_graph
+
+        problems = ("  problems:\n    - problem_id: m\n"
+                    "      version_constraint: \">=0.1.0\"\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _harness_nk = _repo_with_harness(tmp)
+            ensure_spec_entry(repo, "problem/m@0.1.0", deps_yaml=EMPTY_DEPS_YAML)
+            ensure_spec_entry(repo, _NK, deps_yaml=EMPTY_DEPS_YAML + problems)
+            graph, error = build_dependency_graph(
+                repo, target_spec_ref="spec/component/spec_x", target_node_key=_NK)
+            self.assertIsNone(graph)
+            self.assertEqual(error["reason"], "problem_dependency_on_non_problem")
+            self.assertIn("a `component`", error["detail"])
+            # The same declaration on a `problem` target is a graph edge.
+            ensure_spec_entry(repo, "problem/p@0.1.0", deps_yaml=EMPTY_DEPS_YAML + problems)
+            graph, error = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/p", target_node_key="problem/p@0.1.0")
+            self.assertIsNone(error)
+            self.assertEqual(sorted(n["node_key"] for n in graph["all_nodes"]),
+                             ["problem/m@0.1.0", "problem/p@0.1.0"])
+            # A dependency reached through a `component` edge is refused by ITS edge kind.
+            ensure_spec_entry(repo, "problem/q@0.1.0", deps_yaml=(
+                "dependencies:\n  components:\n    - component_id: spec_x\n"
+                "      version_constraint: \">=0.1.0\"\n  profiles: []\n"))
+            graph, error = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/q", target_node_key="problem/q@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(error["reason"], "problem_dependency_on_non_problem")
+            self.assertIn("spec/component/spec_x", error["detail"])
+
+
 class ClosureScheduleTests(unittest.TestCase):
     def test_the_harness_is_a_member_every_other_member_waits_on(self) -> None:
         from tools.run_workflow import _resolve_dependency_closure
