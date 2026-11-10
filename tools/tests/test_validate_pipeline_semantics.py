@@ -22831,6 +22831,89 @@ class ProblemDependencyCallGateTests(unittest.TestCase):
         self.assertEqual(self._run(self._SCRATCH), [])
 
 
+class ComposingFixturePostGenerateTests(unittest.TestCase):
+    """The system tier, Part 1: the hand-written composing model
+    (`data/driver_e2e/shallow_water2d_rotating_model.f90`, which calls the `problem` member
+    `shallow_water2d__step` and RK4 over the Coriolis source) passes the whole post_generate
+    sequence, `_validate_generate_outputs_for_generation`, on a staged tree of the production
+    shape: its IR (`test_driver_render.shallow_water2d_rotating_ir`, whose `direct_deps` hold
+    `problem/shallow_water2d@0.5.1`), a catalog row and a `controlled_spec.md` whose §5.1 is the
+    IR's surface, the host-rendered runner, the make control file over the two-level closure, and
+    a lowering plan naming OpenMP."""
+
+    def _stage(self, root: Path, model_text: str) -> NodeExecution:
+        from tools.tests import test_driver_render as drv
+        flat = next(c for c in drv.shallow_water2d_ir()["case"]["test_case_set"]
+                    if c["case_id"] == "swe2d_flat_ref_n032_sx000_sy000_dts100")
+        ir = drv.shallow_water2d_rotating_ir([drv.with_rotation(flat, on=1, every=2, f0=5.0)])
+        pipe = _targeted_pipeline(root, "problem__shallow_water2d_rotating__0.1.0")
+        ir_ref = "workspace/ir/problem__shallow_water2d_rotating__0.1.0/rot_20261111_001"
+        (root / ir_ref).mkdir(parents=True)
+        (root / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+        cs_ref = ir["meta"]["source_refs"]["controlled_spec"]
+        (root / cs_ref).parent.mkdir(parents=True)
+        (root / cs_ref).write_text(
+            "# Controlled Spec: composing fixture (problem spec)\n\n## 5. Integration algorithm\n\n"
+            + drv.rotating_section_5_1(ir) + "\n## 6. Model parameters\n", encoding="utf-8")
+        _seed_catalog(root, "problem", drv.ROTATING, cs_ref)
+        (pipe / "lineage.json").write_text(json.dumps(
+            {"node_key": drv.ROTATING_NODE_KEY, "ir_ref": ir_ref, "dependency_ref": ir_ref}),
+            encoding="utf-8")
+        src = pipe / "source" / "src_1" / "src"
+        src.mkdir(parents=True)
+        (src / f"{drv.ROTATING}_model.f90").write_text(model_text, encoding="utf-8")
+        (src / f"{drv.ROTATING}_runner.f90").write_text(drv.f_runner.render_runner(
+            ir, drv.ROTATING, "harness_fortran_cpu", target=drv.CPU), encoding="utf-8")
+        with tempfile.TemporaryDirectory() as graph_repo:
+            closure = drv.rotating_closure(drv.rotating_closure_graph(Path(graph_repo)))
+        (src / "Makefile").write_text(
+            drv.render_rotating_makefile(["harness_fortran_cpu", *closure]), encoding="utf-8")
+        (src.parent / "codegen_bundle.json").write_text(json.dumps({"target_lowering_plan": {
+            "precision": {}, "state_residency": "host",
+            "parallelization": {"model": "openmp"}}}), encoding="utf-8")
+        return vps._stub_execution(pipe, drv.ROTATING_NODE_KEY)
+
+    def _violations(self, model_text: str) -> tuple[list[str], list[str]]:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            execution = self._stage(root, model_text)
+            dep_spec_ids = vps._component_dep_spec_ids(root, execution)
+            violations: list[str] = []
+            vps._validate_generate_outputs_for_generation(root, execution, "src_1", violations)
+        return dep_spec_ids, violations
+
+    @staticmethod
+    def _model() -> str:
+        from tools.tests import test_driver_render as drv
+        return (drv.DATA / f"{drv.ROTATING}_model.f90").read_text(encoding="utf-8")
+
+    def test_the_composing_fixture_passes_post_generate(self) -> None:
+        dep_spec_ids, violations = self._violations(self._model())
+        # The member is in the set the dependency-call and dataflow gates read.
+        self.assertIn("shallow_water2d", dep_spec_ids)
+        self.assertEqual(violations, [])
+
+    def test_post_generate_reaches_the_gates_the_passing_row_claims(self) -> None:
+        """Each mutation is refused through the same entry point, so the passing row ran the
+        dependency-call gate with the member in its set, the §5.1 signature pin and the
+        parallel presence floor."""
+        from tools.tests import test_driver_render as drv
+        model = self._model()
+        mutations = {
+            "missing dependency operation call (shallow_water2d__*)":
+                model.replace(drv.ComposingModelGateTest.CALL, "    member_ok = .true.\n"),
+            "drifts from controlled_spec §5.1": model.replace(
+                "    integer, intent(in) :: rotation_every\n",
+                "    real(dp), intent(in) :: rotation_every\n"),
+            "counted `do` loop(s) and not one": model.replace("!$omp", "! omp"),
+        }
+        for needle, text in mutations.items():
+            with self.subTest(needle=needle):
+                self.assertNotEqual(text, model)
+                _ids, violations = self._violations(text)
+                self.assertTrue(any(needle in v for v in violations), violations)
+
+
 class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
     """`_validate_component_dep_operations_membership` (L3, compile stage): a `component` or
     `problem` dep's non-empty declared `operations` must be a subset of the `dependency_surface.json` sidecar's

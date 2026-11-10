@@ -874,6 +874,316 @@ class CertifiedModelEndToEndTest(unittest.TestCase):
         self.assertEqual((perf["steps"], perf["cells_updated"]), (9546, 89930752))
 
 
+# --- A `problem` over a `problem` (the system tier, Part 1, PR-S1) ---------------------------
+#
+# The composite `shallow_water2d_rotating` (`data/driver_e2e/shallow_water2d_rotating_model.f90`,
+# hand-written) calls the member `shallow_water2d__step` and then, every `rotation_every` steps,
+# one RK4 step of the Coriolis source. Its drive IR is the member's 0.4.7 IR with the composite's
+# arguments added: `step`, the case inputs `rotation` / `rotation_every`, and `f` a snapshot
+# schema variable bound as `state.f`, as `z_b` is.
+
+SW2D_COMPONENTS = ("dynamics_shallow_water_boundary_2d_periodic_copy",
+                   "dynamics_shallow_water_flux_2d_rusanov_p0",
+                   "dynamics_shallow_water_time_update_2d_ssprk2")
+CORIOLIS = "dynamics_shallow_water_source_2d_coriolis"
+RK4 = "dynamics_shallow_water_time_update_2d_rk4"
+ROTATING = "shallow_water2d_rotating"
+ROTATING_NODE_KEY = f"problem/{ROTATING}@0.1.0"
+#: The composite's direct dependencies, as its IR's `dependency.direct_deps` names them.
+ROTATING_DIRECT_DEPS = (("problem", "shallow_water2d", "0.5.1", "shallow_water2d__step"),
+                        ("component", CORIOLIS, "0.2.0", f"{CORIOLIS}__apply"),
+                        ("component", RK4, "0.1.1", f"{RK4}__advance"))
+#: What `run_fortran` links before the composite (the harness is implicit): the member's
+#: components, the member, then the composite's own components.
+ROTATING_LINK = (*SW2D_COMPONENTS, "shallow_water2d", CORIOLIS, RK4)
+
+
+def shallow_water2d_ir() -> dict[str, Any]:
+    return yaml.safe_load((DRIVE_IR / "shallow_water2d_0.4.7" / "spec.ir.yaml").read_text())
+
+
+def shallow_water2d_rotating_ir(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """The composite's drive IR over `cases`, derived from the member's 0.4.7 IR."""
+    ir = shallow_water2d_ir()
+    op = f"{ROTATING}__step"
+    ir["meta"].update({"node_key": ROTATING_NODE_KEY, "spec_id": ROTATING,
+                       "spec_version": "0.1.0"})
+    spec_dir = f"spec/problem/dynamics/shallow_water/{ROTATING}"
+    ir["meta"]["source_refs"] = {"controlled_spec": f"{spec_dir}/controlled_spec.md",
+                                 "tests": f"{spec_dir}/tests.md",
+                                 "deps": f"{spec_dir}/deps.yaml"}
+    ir["dependency"] = {
+        "node_key": ROTATING_NODE_KEY,
+        "direct_deps": [{"kind": kind, "node_key": f"{kind}/{sid}@{ver}", "operations": [o]}
+                        for kind, sid, ver, o in ROTATING_DIRECT_DEPS]}
+    ir["case"]["test_case_set"] = cases
+    step = ir["drive"]["step"]
+    step["operation"] = op
+    step["arguments"].update({"step": "step", "rotation": "inputs.rotation.on",
+                              "rotation_every": "inputs.rotation.every", "f": "state.f"})
+    entry = ir["public_api"]["signatures"][0]
+    args: list[dict[str, Any]] = []
+    for arg in entry["signature"]["args"]:
+        if arg["name"] == "z_b":
+            args += [{"intent": "in", "name": n, "rank": 0, "spec": {"type": "integer"}}
+                     for n in ("step", "rotation", "rotation_every")]
+            args.append({"dims": ["nx", "ny"], "intent": "in", "name": "f", "rank": 2,
+                         "spec": dict(REAL)})
+        args.append(arg)
+    entry["signature"]["args"] = args
+    entry["signature"]["name"] = entry["symbol"] = op
+    ir["public_api"]["published_operations"][0]["operation_id"] = op
+    variables = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]
+    variables.insert([v["name"] for v in variables].index("z_b") + 1,
+                     {"name": "f", "shape_expr": "[nx, ny]"})
+    return ir
+
+
+def with_rotation(case: dict[str, Any], *, on: int, every: int, f0: float) -> dict[str, Any]:
+    """`case` with the composite's inputs: the selector, the interval and a uniform `f = f0`."""
+    out = copy.deepcopy(case)
+    out["inputs"]["rotation"] = {"on": on, "every": every, "f0": f0}
+    out["initial_state"]["f"] = "inputs.rotation.f0"
+    return out
+
+
+def rotating_section_5_1(ir: dict[str, Any]) -> str:
+    """A §5.1 canonical interface block equal to `ir`'s `public_api` (for a fixture
+    `controlled_spec.md`), so the signature pin reads the surface the IR declares."""
+    block = {"module_parameters": ir["public_api"]["module_parameters"], "types": [],
+             "procedures": [e["signature"] for e in ir["public_api"]["signatures"]]}
+    body = yaml.safe_dump(block, sort_keys=False)
+    return f"### 5.1 Canonical interface block\n\n```yaml\n{body}```\n"
+
+
+def rotating_closure_graph(repo: Path) -> dict[str, Any]:
+    """The two-level dependency graph of the composite, built by `build_dependency_graph` over a
+    fixture repository written into `repo`: composite -> member problem -> its three
+    components, and composite -> Coriolis, RK4."""
+    from tools.dependency_graph import build_dependency_graph
+    from tools.tests.orchestration_fixtures import ensure_spec_entry
+
+    def deps(components: tuple[str, ...], problems: tuple[str, ...] = ()) -> str:
+        text = "dependencies:\n  components:\n" + "".join(
+            f"    - component_id: {c}\n      version_constraint: \">=0.1.0\"\n"
+            for c in components)
+        text += "  profiles: []\n  infrastructure: []\n"
+        if problems:
+            text += "  problems:\n" + "".join(
+                f"    - problem_id: {p}\n      version_constraint: \">=0.1.0\"\n"
+                for p in problems)
+        return text
+
+    for sid, version in zip(SW2D_COMPONENTS, ("0.2.1", "0.2.1", "0.4.1")):
+        ensure_spec_entry(repo, f"component/{sid}@{version}")
+    ensure_spec_entry(repo, f"component/{CORIOLIS}@0.2.0")
+    ensure_spec_entry(repo, f"component/{RK4}@0.1.1")
+    ensure_spec_entry(repo, "problem/shallow_water2d@0.5.1", deps_yaml=deps(SW2D_COMPONENTS))
+    ensure_spec_entry(repo, ROTATING_NODE_KEY,
+                      deps_yaml=deps((CORIOLIS, RK4), ("shallow_water2d",)))
+    graph, error = build_dependency_graph(
+        repo, target_spec_ref=f"spec/problem/{ROTATING}", target_node_key=ROTATING_NODE_KEY)
+    if error is not None:
+        raise AssertionError(error)
+    return graph
+
+
+def rotating_closure(graph: dict[str, Any]) -> list[str]:
+    """The composite's closure spec_ids in compile order, as `_closure_nodes_from_graph` decides
+    it. `all_nodes` is handed over REVERSED: the builder already lists it deepest first (and
+    `component/` sorts before `problem/`), so only a reversed input observes the order the
+    function imposes."""
+    from tools.orchestration_runtime import _closure_nodes_from_graph
+    shuffled = {**graph, "all_nodes": list(reversed(graph["all_nodes"]))}
+    return [nk.split("/", 1)[1].split("@", 1)[0]
+            for nk in _closure_nodes_from_graph(shuffled, ROTATING_NODE_KEY)]
+
+
+def render_rotating_makefile(closure: list[str]) -> str:
+    """The make control file the conductor renders for the composite (`render_node`), over
+    `closure` (spec_ids, deepest first), for the fortran_cpu toolchain."""
+    from tools.backends import registry
+    from tools.backends.build_system.make import control_file
+    rules = registry.capability_module("language", "fortran", "control_file").rules(
+        standard="f2008", parallel_backend="openmp")
+    return control_file.render_node(
+        rules=rules, compiler="gfortran", bin_name=f"{ROTATING}_runner", cases_default="c",
+        model_stem=f"{ROTATING}_model", runner_stem=f"{ROTATING}_runner", closure=closure,
+        initial_capture_dir=True)
+
+
+class ProblemOverProblemEndToEndTest(unittest.TestCase):
+    """The composing fixture built and run by the host-rendered driver over the member fixture,
+    the certified Coriolis source and the certified RK4 source (`data/driver_e2e/`)."""
+
+    def test_a_problem_over_a_problem_dependency_builds_and_runs(self) -> None:
+        member_ir = shallow_water2d_ir()
+        base = next(c for c in member_ir["case"]["test_case_set"]
+                    if c["case_id"] == "swe2d_ref_n032_sx000_sy000_dts100")
+        cid = base["case_id"]
+
+        # (a) Rotation off: the composite's final state is the member's own run of the same
+        # case, bitwise. The member is built here from its 0.4.7 IR cut to the case.
+        member_ir["case"]["test_case_set"] = [base]
+        off = shallow_water2d_rotating_ir([with_rotation(base, on=0, every=1, f0=5.0)])
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            member = run_fortran(Path(a), member_ir, sid="shallow_water2d", deps=SW2D_COMPONENTS)
+            composite = run_fortran(Path(b), off, sid=ROTATING, deps=ROTATING_LINK)
+            for run in (member, composite):
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            m, c = member.snapshot(cid), composite.snapshot(cid)
+        self.assertEqual((c["ok"], c["step"]), (1.0, m["step"]))
+        self.assertGreater(m["step"], 0)
+        for name in ("h", "hu", "hv"):
+            diff = float(np.max(np.abs(np.asarray(c[name]) - np.asarray(m[name]))))
+            self.assertEqual(diff, 0.0, name)
+
+        # (b) Rotation on over a flat state at rest in `h`, uniform velocity, uniform `f`: the
+        # member is the identity there, so each rotation call is one RK4 step of
+        # dz/dt = -i f z on z = hu + i hv (the Coriolis spec's source [0, f hv, -f hu]), and the
+        # final z is z0 * R(-i f k dt)^n, R the RK4 polynomial, n the steps s in 0..n_step-1 with
+        # mod(s + 1, k) == 0 (the driver's `step` is the committed count s during call s + 1).
+        flat = next(c for c in shallow_water2d_ir()["case"]["test_case_set"]
+                    if c["case_id"] == "swe2d_flat_ref_n032_sx000_sy000_dts100")
+        f0, hu0, hv0, n_step = 5.0, 0.3, 0.1, 40
+        ks = (1, 3, 4)
+        cases = []
+        for k in ks:
+            case = with_rotation(flat, on=1, every=k, f0=f0)
+            case["case_id"] = f"rot_flat_k{k}"
+            case["initial_state"].update({"h": "inputs.constants.H_0", "hu": str(hu0),
+                                          "hv": str(hv0)})
+            case["derived"]["n_step"] = str(n_step)
+            case["inputs"]["history"]["every"] = 0
+            cases.append(case)
+        closed: dict[int, complex] = {}
+        with tempfile.TemporaryDirectory() as t:
+            run = run_fortran(Path(t), shallow_water2d_rotating_ir(cases), sid=ROTATING,
+                              deps=ROTATING_LINK)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            for k in ks:
+                cid = f"rot_flat_k{k}"
+                inputs = json.loads((Path(t) / "ir" / "case_inputs" / f"{cid}.json").read_text())
+                np.testing.assert_array_equal(np.asarray(inputs["f"]), f0)
+                np.testing.assert_array_equal(np.asarray(inputs["z_b"]), 0.0)
+                dt = inputs["derived.dt"]
+                w = -1j * f0 * k * dt
+                calls = sum(1 for s in range(n_step) if (s + 1) % k == 0)
+                closed[k] = complex(hu0, hv0) * (1 + w + w**2 / 2 + w**3 / 6 + w**4 / 24) ** calls
+                final = run.snapshot(cid)
+                self.assertEqual((final["ok"], final["step"]), (1.0, n_step))
+                err = max(float(np.max(np.abs(np.asarray(final["hu"]) - closed[k].real))),
+                          float(np.max(np.abs(np.asarray(final["hv"]) - closed[k].imag))))
+                h0 = np.asarray(inputs["h"])
+                drift = float(np.max(np.abs(np.asarray(final["h"]) - h0)))
+                with self.subTest(k=k):
+                    # Rounding over 40 linear RK4 steps is a few 1e-16 on |z| ~ 0.3; 1e-12
+                    # leaves three orders above it and is far below what separates the
+                    # intervals (asserted below).
+                    self.assertLess(err, 1e-12)
+                    self.assertEqual(drift, 0.0)
+        # The tolerance discriminates: each interval's closed form is 1e3 tolerances from the
+        # others' and from no rotation at all, and k = 3 (40 = 13 * 3 + 1) is the interval
+        # whose call count depends on the firing phase `mod(step + 1, k) == 0`.
+        for k1, k2 in ((1, 3), (1, 4), (3, 4)):
+            self.assertGreater(abs(closed[k1] - closed[k2]), 1e3 * 1e-12)
+        for k in ks:
+            self.assertGreater(abs(closed[k] - complex(hu0, hv0)), 1e-2)
+
+    def test_the_control_file_orders_a_two_level_closure_deepest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            closure = rotating_closure(rotating_closure_graph(Path(tmp)))
+        self.assertEqual(sorted(closure), sorted(ROTATING_LINK))
+        member = closure.index("shallow_water2d")
+        self.assertTrue(all(closure.index(c) < member for c in SW2D_COMPONENTS), closure)
+        makefile = render_rotating_makefile(closure)
+        dep_objs = re.search(r"^DEP_OBJS = (.*)$", makefile, re.MULTILINE).group(1).split()
+        self.assertEqual(dep_objs, [f"$(OBJDIR)/{d}_model.o" for d in closure])
+        member_rule = re.search(r"^\$\(OBJDIR\)/shallow_water2d_model\.o: (.*)$", makefile,
+                                re.MULTILINE).group(1).split()
+        for component in SW2D_COMPONENTS:
+            self.assertIn(f"$(OBJDIR)/{component}_model.o", member_rule)
+        self.assertNotIn(f"$(OBJDIR)/{ROTATING}_model.o", member_rule)
+        model_rule = re.search(r"^\$\(MODEL_OBJ\): (.*)$", makefile, re.MULTILINE).group(1)
+        self.assertIn("$(DEP_OBJS)", model_rule)
+
+        if shutil.which("make") is None or shutil.which("gfortran") is None:
+            self.skipTest("make or gfortran is not on PATH: the rendered file is not run")
+        # The rendered file, run over the staged fixtures as the conductor stages them (the
+        # harness first, as `pipeline_closure_nodes` puts it): it builds the composite.
+        flat = next(c for c in shallow_water2d_ir()["case"]["test_case_set"]
+                    if c["case_id"] == "swe2d_flat_ref_n032_sx000_sy000_dts100")
+        ir = shallow_water2d_rotating_ir([with_rotation(flat, on=1, every=2, f0=5.0)])
+        with tempfile.TemporaryDirectory() as t:
+            out = Path(t)
+            ids = _prepare(out, ir, None)
+            staged = ["harness_fortran_cpu", *closure, ROTATING]
+            for stem in staged:
+                shutil.copy(DATA / f"{stem}_model.f90", out)
+            (out / f"{ROTATING}_runner.f90").write_text(
+                f_runner.render_runner(ir, ROTATING, "harness_fortran_cpu", target=CPU))
+            (out / "Makefile").write_text(render_rotating_makefile(staged[:-1]))
+            build = subprocess.run(["make", "all", "BIN=bin"], cwd=out, capture_output=True,
+                                   text=True, timeout=600)
+            self.assertEqual(build.returncode, 0, build.stdout[-2000:] + build.stderr[-2000:])
+            order = [line.split()[-1] for line in build.stdout.splitlines() if " -o " in line]
+            self.assertLess(order.index("./shallow_water2d_model.o"),
+                            order.index(f"./{ROTATING}_model.o"))
+            run = _exec(out, ids)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self.assertEqual(run.snapshot(ids[0])["ok"], 1.0)
+
+
+class ComposingModelGateTest(unittest.TestCase):
+    """The composing fixture passes the `problem` model gates with the member among its
+    dependencies, and each gate refuses a mutation of it in its own reach."""
+
+    DEPS = ["shallow_water2d", CORIOLIS, RK4]
+    CALL = "    call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)\n"
+
+    def _text(self) -> str:
+        return (DATA / f"{ROTATING}_model.f90").read_text()
+
+    def _gates(self, text: str) -> list[str]:
+        from tools.backends.language.fortran import source
+        found: list[str] = []
+        source.model_source_gates(
+            node_key=ROTATING_NODE_KEY, model_file=Path("m.f90"), text=text,
+            dep_spec_ids=self.DEPS, violations=found, multidim_spec_id=ROTATING)
+        return found
+
+    def _calls(self, text: str) -> list[str]:
+        from tools.backends.language.fortran import source
+        found: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / f"{ROTATING}_model.f90"
+            path.write_text(text)
+            source.validate_dependency_operations([path], self.DEPS, found)
+        return found
+
+    def test_the_composing_fixture_passes_the_model_source_gates(self) -> None:
+        self.assertEqual(self._gates(self._text()), [])
+        self.assertEqual(self._calls(self._text()), [])
+
+    def test_the_composing_fixture_without_its_member_call_is_refused(self) -> None:
+        """The dependency-call gate refuses the fixture with the member's call removed. The
+        dataflow gate does not: it reads the calls a model MAKES, and the RK4 call's result
+        still reaches the state."""
+        cut = self._text().replace(self.CALL, "    member_ok = .true.\n")
+        self.assertNotEqual(cut, self._text())
+        self.assertTrue(any("missing dependency operation call (shallow_water2d__*)" in v
+                            for v in self._calls(cut)), self._calls(cut))
+        self.assertEqual(self._gates(cut), [])
+
+    def test_a_tendency_that_discards_the_coriolis_result_is_refused(self) -> None:
+        """The dataflow gate reads the composite's tendency: one that drops the Coriolis
+        operation's output is refused, so the passing row is not vacuous."""
+        cut = self._text().replace("    dUdt = s\n", "    dUdt = 1.0_dp\n")
+        self.assertNotEqual(cut, self._text())
+        self.assertTrue(any("coriolis_tendency does not propagate" in v
+                            for v in self._gates(cut)), self._gates(cut))
+
+
 @skip_probes.skip_unless_installed("cuda_compiler_driver")
 class CppGpuPackageCompilesTest(unittest.TestCase):
     """The package the `cpp_gpu` end to end runs at a site (`data/driver_e2e/package_cpp_gpu.py`)
