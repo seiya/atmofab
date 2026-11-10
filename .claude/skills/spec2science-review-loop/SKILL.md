@@ -423,6 +423,12 @@ when a rule does not obviously apply:
     a later shortening of the fixture is red rather than silent
   - **a hand-built fixture can test a shape that does not exist** — check the construct against
     the real corpus before writing the witness
+  - **a fixture BUILDER can hand back module-level objects, and a probe that edits what it returns
+    edits every later call in the process** — `copy.deepcopy` what a builder returns before
+    renaming or deleting anything in it, and put that sentence in a reviewer's launch prompt
+    whenever you name a builder there. The tell is a sweep whose rows after the first all answer
+    the same, or fail on a key the first row renamed (`references/mutation-testing.md` §"A probe
+    that edited a shared fixture")
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
     version with one level of syntactic nesting
 
