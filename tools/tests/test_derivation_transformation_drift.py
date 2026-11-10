@@ -1210,9 +1210,12 @@ PINNED_RENDER: dict[str, str] = {
     # whole, which the column check refuses from 100 columns. So every render that returned
     # before returns the same bytes. Re-pinned again, behaviour-preserving: the Fortran renderer
     # names a host-rendered procedure `driver_<n>` where the plan's `driver_<dummy>_<n>` is past
-    # the language's 63 characters, a dummy of 55 to 63 characters, which no runner compiled; a
-    # name that fits is unchanged (`ProcedurePlan.number`). Census against `8bd76fb1`: the 105
-    # renders of the 35 drive-carrying IRs under `workspace/ir/` and `releases/` of the
+    # the language's 63 characters, a dummy of 55 characters or more; a name that fits is
+    # unchanged (`ProcedurePlan.number`). From 55 to 72 the old runner rendered and did not
+    # compile (a dummy of 64 or more is not a legal name either, so its own model does not
+    # compile now); from 73 the old render was refused at 100 columns and the new one renders.
+    # No such runner ever compiled, so no certified driver changes. Census against `8bd76fb1`:
+    # the 105 renders of the 35 drive-carrying IRs under `workspace/ir/` and `releases/` of the
     # operator's checkout and the 57 of the 19 under `tools/tests/data/`, each for fortran_cpu,
     # fortran_cpu_mpi and cpp_gpu, are byte-identical; none raises.
     "render-18": "9ec6c8c25d72b3b1e3853cad4aa2b7b2c75fd0a55ccdd592f0cdfbed6b072509",
