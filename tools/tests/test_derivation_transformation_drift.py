@@ -1205,10 +1205,12 @@ PINNED_RENDER: dict[str, str] = {
     # behaviour-preserving: `fortran/runner.py::_wrap` searches a continuation's cut after its
     # two-blank indent. Where the old search found a blank at index 2 or later the new one finds
     # the same blank; where it found only the indent's blank at index 1 the old loop never
-    # returned (a render that hung, `TODO.md` item from issue #613's review round 3), and the new
-    # one leaves the remainder whole for the column check. So every render that returned before
-    # returns the same bytes.
-    "render-18": "9b1d9b69cbd841f8393760408e92dc437cce0b051d4b987618eb8c8f24e7fd3b",
+    # returned (a render that hung, found by issue #613's review round 3; the `TODO.md` item that
+    # recorded it is removed by the commit that re-pins), and the new one leaves the remainder
+    # whole, which the column check refuses from 100 columns. So every render that returned
+    # before returns the same bytes. The digest `render-18` shipped with at d6554bd7:
+    "render-18": "c176e945908c2c95d9ae390324804f0496ebc15bd32227edeebf230ef3ed78d3",
+    "render-18@d6554bd7": "5a2efead32d294df963d93fa69916039346c1b2d448cc83e53fd7122f4f2ebbe",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

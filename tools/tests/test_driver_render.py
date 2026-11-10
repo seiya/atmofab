@@ -763,12 +763,16 @@ json.dump(out, sys.stdout)
 class FortranWrapTest(unittest.TestCase):
     """A continuation whose remainder holds no blank before the width (TODO item, found by issue
     #613's review round 3): `_wrap` found its own indent's blank, cut nothing and never returned,
-    so the render — and `Compile.static`'s dry render in the conductor's process — hung. Run in a
-    child under a timeout, so a regression fails the row rather than the suite."""
+    so the render — and `Compile.static`'s dry render in the conductor's process — hung, its
+    memory growing. Run in a child under a timeout and an address-space cap, so a regression
+    fails the row rather than hanging the suite or exhausting the runner's memory."""
 
     def test_a_blank_free_remainder_longer_than_the_width_returns(self) -> None:
+        def cap() -> None:  # 4 GiB: the probe needs about 42 MB; the old loop grew ~180 MB/s
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
         proc = subprocess.run([sys.executable, "-c", _WRAP_PROBE], cwd=ROOT, text=True,
-                              capture_output=True, timeout=60)
+                              capture_output=True, timeout=60, preexec_fn=cap)
         self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
         out = json.loads(proc.stdout)
         self.assertEqual(out["wrap"], ["y " * 39 + "y &", "  " + "z" * 95])
