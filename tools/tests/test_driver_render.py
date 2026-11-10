@@ -159,6 +159,18 @@ def procedure_ir(expr: str = "inputs.lam * u + sin(t) - 2 ** 2 / max(abs(u), 3.0
                 "n_calls": "scalar", "stage_u1": "[nx]", "stage_u2": "[nx]"}, drive, cases)
 
 
+def with_dummy(ir: dict[str, Any], dummy: str) -> dict[str, Any]:
+    """`ir` with its procedure dummy `rhs` renamed `dummy`, in the signature and the bindings."""
+    ir = copy.deepcopy(ir)
+    for sig in ir["public_api"]["signatures"]:
+        sig["signature"]["args"] = [{**arg, "name": dummy} if arg["name"] == "rhs" else arg
+                                    for arg in sig["signature"]["args"]]
+    steps = ir["drive"]["step"]
+    for entry in steps if isinstance(steps, list) else [steps]:
+        entry["arguments"][dummy] = entry["arguments"].pop("rhs")
+    return ir
+
+
 def init_call_ir(*modes: int) -> dict[str, Any]:
     """A one-call node whose `init` writes the state the operation reads."""
     drive = {
@@ -614,6 +626,19 @@ class _DriverBehaviour:
         self.assertEqual(run.snapshot("initial/c")["n_calls"], 0.0)
         self.assertEqual(run.snapshot("initial/c")["stage_t"], [0.0, 0.0])
 
+    def test_a_procedure_dummy_of_every_legal_length_builds_and_runs(self) -> None:
+        """A procedure dummy of 55 to 63 characters made the Fortran driver's procedure name,
+        `driver_<dummy>_1`, longer than the language's 63, and the runner did not compile. 54 is
+        the longest whose name fits, 55 the shortest that does not, 63 the longest legal dummy."""
+        for width in (54, 55, 63):
+            with self.subTest(width=width), tempfile.TemporaryDirectory() as tmp:
+                run = type(self).build_and_run(
+                    Path(tmp), with_dummy(procedure_ir("inputs.lam * u"), "r" * width))
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+                final = run.snapshot("c")
+                self.assertEqual(final["n_calls"], 2.0)
+                self.assertEqual(final["stage_t"], [0.25, 0.75])
+
     def test_a_refusing_operation_leaves_the_records_at_zero(self) -> None:
         final = self._run(procedure_ir("u", dt=-1.0)).snapshot("c")
         self.assertEqual(final["n_calls"], 0.0)
@@ -730,6 +755,36 @@ class ResultResetOptimisationTest(unittest.TestCase):
         text = f_runner.render_runner(call_ir(0), "drv_toy", "harness_fortran_cpu", target=CPU)
         self.assertIn("logical, volatile :: lg_ok", text)
         self.assertIn("real(dp), volatile :: st_s", text)
+
+
+class FortranProcedureNameTest(unittest.TestCase):
+    def test_a_procedure_name_past_the_identifier_limit_drops_the_dummy(self) -> None:
+        """The plan's `driver_<dummy>_<n>` where it fits, `driver_<n>` where it does not, and no
+        rendered identifier past the limit either way: the second of two procedures checks that
+        the number is the plan's, not a constant."""
+        from tools.backends.language.fortran import bundle as f_bundle
+
+        limit = f_bundle.IDENTIFIER_MAX
+        base = procedure_ir("inputs.lam * u")
+        entry = base["drive"]["step"]
+        base["drive"]["step"] = [{**copy.deepcopy(entry), "cases": ["c"]},
+                                 {**copy.deepcopy(entry), "cases": ["p"]}]
+        base["case"]["test_case_set"].append(copy.deepcopy(base["case"]["test_case_set"][0]))
+        base["case"]["test_case_set"][1]["case_id"] = "p"
+        for width, names in ((limit - 9, ["driver_" + "r" * (limit - 9) + "_1",
+                                          "driver_" + "r" * (limit - 9) + "_2"]),
+                             (limit - 8, ["driver_1", "driver_2"]),
+                             (limit, ["driver_1", "driver_2"])):
+            with self.subTest(width=width):
+                ir = with_dummy(base, "r" * width)
+                self.assertEqual(f_runner.ir_content_violations(
+                    ir, "drv_toy", "harness_fortran_cpu"), [])
+                text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+                code = re.sub(r"'[^']*'|\"[^\"]*\"|!.*", "", text)
+                self.assertLessEqual(
+                    max(len(w) for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code)), limit)
+                for name in names:
+                    self.assertIn(f"  subroutine {name}(", text)
 
 
 class FortranTokenWidthTest(unittest.TestCase):

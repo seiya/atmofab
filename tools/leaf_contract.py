@@ -44,6 +44,12 @@ LEAF_PROMPT_CONTRACT_VERSION = "leaf-95"
 # (`tools/derivation.py`), so a bump re-derives that phase of every node. A producer's text is
 # advisory and moves `LEAF_PROMPT_CONTRACT_VERSION` alone. The drift pin names each one's members.
 COMPILE_VERIFY_CONTRACT_VERSION = "compile-verify-4"
+# Before bumping this for a change to H7b of `workshop_generate_verify_harness.txt`: three seeded
+# defects in a harness's reading operations (a case emitting its own literals, a getter returning
+# a default, a refused read keeping the previous case) pass every host predicate, and a replayed
+# `Generate.verify` stopped each, citing H7b, in one sample each on claude
+# (https://github.com/seiya/spec2science/issues/589#issuecomment-6767847531). Narrowing H7b was
+# not measured; replay the three mutations recorded there against the new text.
 GENERATE_VERIFY_CONTRACT_VERSION = "generate-verify-7"
 VALIDATE_JUDGE_CONTRACT_VERSION = "validate-judge-6"
 
