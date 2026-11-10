@@ -514,11 +514,15 @@ def _names_of(tree: Any) -> set[str]:
 
 
 def _wrap(text: str, width: int = 88) -> list[str]:
-    """One statement over continuation lines of at most `width` columns, cut at a blank."""
+    """One statement over continuation lines of at most `width` columns, cut at a blank.
+
+    A remainder with no blank before `width` is left whole: the column check of `render_runner`
+    then names the line. A continuation's cut is searched after its own two-blank indent, whose
+    blank at index 1 would otherwise be found, cut nothing, and loop forever."""
     out: list[str] = []
     rest = text
     while len(rest) > width:
-        cut = rest.rfind(" ", 0, width)
+        cut = rest.rfind(" ", 2 if out else 0, width)
         if cut <= 0:
             break
         out.append(rest[:cut] + " &")
