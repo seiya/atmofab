@@ -1209,7 +1209,7 @@ PINNED_RENDER: dict[str, str] = {
     # recorded it is removed by the commit that re-pins), and the new one leaves the remainder
     # whole, which the column check refuses from 100 columns. So every render that returned
     # before returns the same bytes. The digest `render-18` shipped with at d6554bd7:
-    "render-18": "c176e945908c2c95d9ae390324804f0496ebc15bd32227edeebf230ef3ed78d3",
+    "render-18": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     "render-18@d6554bd7": "5a2efead32d294df963d93fa69916039346c1b2d448cc83e53fd7122f4f2ebbe",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say

@@ -768,8 +768,11 @@ class FortranWrapTest(unittest.TestCase):
     fails the row rather than hanging the suite or exhausting the runner's memory."""
 
     def test_a_blank_free_remainder_longer_than_the_width_returns(self) -> None:
-        def cap() -> None:  # 4 GiB: the probe needs about 42 MB; the old loop grew ~180 MB/s
-            import resource
+        import resource
+
+        def cap() -> None:
+            # 4 GiB of address space. The probe's VmPeak was 0.1 GB at one BLAS thread and 1.7 GB
+            # at 48 (numpy reserves per thread); the old loop grew about 180 MB/s.
             resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
         proc = subprocess.run([sys.executable, "-c", _WRAP_PROBE], cwd=ROOT, text=True,
                               capture_output=True, timeout=60, preexec_fn=cap)
