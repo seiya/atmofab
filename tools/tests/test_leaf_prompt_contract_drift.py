@@ -1176,11 +1176,7 @@ PINNED_READER: dict[str, str] = {
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
     # generate-verify-4 (issue #589, PR-2): the seeded runner-output contract gains §6, the case file
-    # and what its reading operations refuse; H7b holds a case to them. H7b is the only check of a
-    # harness's reading operations: three seeded defects that pass the host verdict were each
-    # stopped by a replayed `Generate.verify` alone (one sample each, claude), recorded at
-    # https://github.com/seiya/spec2science/issues/589#issuecomment-6767847531 . Narrowing H7b
-    # reopens them.
+    # and what its reading operations refuse; H7b holds a case to them.
     "generate-verify-4": "76058855cc0ac2fcfc8e391152a1e260b29da15c84f7248a783089b8a814b537",
     # generate-verify-5 (issue #589, PR-1b): a reviewer reads a model and a rendered driver, with no
     # checks module. Gone: `checks_contract_abi_sections`, `checks_abi_binding_sections`,
