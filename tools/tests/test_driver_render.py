@@ -1818,6 +1818,36 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         self.assertEqual(set(build.verdict(run).values()), {"pass"})
         self.assertEqual(len(build.verdict(run)), 7)
 
+    def test_the_public_statement_wraps_past_88_characters_and_not_at_88(self) -> None:
+        """Issue #613 review round 2: the renderer continues the procedure module's `public ::`
+        statement once it is longer than 88 characters (the whole statement, not the export
+        list). The two probes straddle that width: `n` procedures whose dummy is `width` long
+        make a statement of `n * (width + 11) + 8` characters, 88 for two procedures of dummy
+        width 29 (one line) and 89 for three of width 16 (continued). A width other than 88
+        moves one of them."""
+        for n, width, expected in ((2, 29, 88), (3, 16, 89)):
+            with self.subTest(statement=expected):
+                ir = many_procedures_ir(n)
+                dummy = "r" * width
+                for sig in ir["public_api"]["signatures"]:
+                    sig["signature"]["args"] = [{**arg, "name": dummy} if arg["name"] == "rhs"
+                                                else arg for arg in sig["signature"]["args"]]
+                for entry in ir["drive"]["step"]:
+                    entry["arguments"][dummy] = entry["arguments"].pop("rhs")
+                self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+                lines = f_runner.render_runner(
+                    ir, "fx_lst", "harness_fortran_cpu", target=CPU).splitlines()
+                first = next(i for i, line in enumerate(lines)
+                             if line.startswith("  public :: driver_"))
+                end = first
+                while lines[end].endswith(" &"):
+                    end += 1
+                statement = " ".join(line.strip().removesuffix(" &")
+                                     for line in lines[first:end + 1])
+                self.assertEqual(len(statement), expected, statement)
+                self.assertEqual(end - first + 1, 1 if expected <= 88 else 2,
+                                 lines[first:end + 1])
+
     def test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed(self) -> None:
         """Every cell is held by the same number of ranks on every shape the driver runs (a
         replicated case: all of them; a node with fewer axes than the grid has dimensions: all
