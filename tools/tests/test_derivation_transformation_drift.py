@@ -1179,8 +1179,18 @@ PINNED_RENDER: dict[str, str] = {
     # entry also zeroed that entry's records, so a state the gate's per-case classes require from
     # the case file was allocated and zeroed instead. Under a predicate that judges `final.*`
     # against `initial.*` the old text could certify a wrong kernel (its `initial/` capture held
-    # the zeros). A bump, because rendered bytes move. Moved: `runner_ir.py`.
-    "render-18": "380ecb26edbfa74ff2c60691552ea9bea52d9be9e709052ff4f2778456d60839",
+    # the zeros). A bump, because rendered bytes move. Re-pinned in place once before it shipped,
+    # in the same PR: a host-rendered procedure's name is numbered over the plan (two entries
+    # binding one each both took `driver_rhs_1`, and neither language's driver compiled), and
+    # the Fortran procedure module's `public` statement is continued through `_wrap` (seven
+    # procedures made a 108-column line the render refused). Moved: `runner_ir.py`,
+    # `fortran/runner.py`. Census against a `git archive 4eb23e7f` tree: of 89 renders (the 17
+    # bench IRs and two drive fixtures for fortran_cpu, cpp_gpu and fortran_cpu_mpi; the seven
+    # toy IRs for fortran_cpu and cpp_gpu; the five MPI fixtures and `lst_ir` with its entries
+    # reversed for the three targets) exactly the three reversed `lst_ir` renders differ; the
+    # 105 renders of the 35 drive-carrying IRs under `workspace/ir/` and `releases/` of the
+    # operator's checkout are byte-identical; none raises.
+    "render-18": "5e56912b276458a4d5b6ac0bee2cda6c241649068ce6156471cf45e81f4c2329",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

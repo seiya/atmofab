@@ -22,6 +22,7 @@ Pure; imports only the seam's error class and the neutral case-id token grammar.
 from __future__ import annotations
 
 import ast
+import itertools
 import math
 import re
 from collections.abc import Callable
@@ -764,7 +765,8 @@ class ProcedurePlan:
     """A host-rendered procedure of a prototype: the local ``name``, the ``prototype`` signature,
     ``out`` the dummy it assigns, ``tree`` the expression, ``calls`` / ``record`` the states the
     driver writes at each call (``record``: prototype dummy -> states, one per call, or one
-    rank-1 state for a rank-0 dummy)."""
+    rank-1 state for a rank-0 dummy). ``name`` is unique in the plan: the renderers emit every
+    entry's procedures into one scope, and an `init` binding is planned once per entry."""
     name: str
     prototype: dict[str, Any]
     out: str
@@ -972,6 +974,7 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
     integer_states: set[str] = set()
     record_states: set[str] = set()
     procedure_hosts: dict[str, HostValue] = {}
+    procedure_number = itertools.count(1)   # a procedure's name is unique in the plan (#613)
     work_vars: set[str] = set()
 
     def call_plan(call: dict[str, Any], role: str, used: list[HostValue],
@@ -989,7 +992,7 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
                 if kind != "procedure":
                     raise RenderError(f"procedure dummy {name!r} takes {{procedure: <expr>}}")
                 proto = _interface(ir, dget(dummy["spec"], "interface"))
-                plan = _procedure_plan(call, name, proto, ref, len(procedures) + 1, host,
+                plan = _procedure_plan(call, name, proto, ref, next(procedure_number), host,
                                        procedure_hosts, used)
                 procedures.append(plan)
                 actuals.append(Actual("procedure", plan))

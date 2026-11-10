@@ -448,7 +448,8 @@ def _render_procedure_module(a: Any, plan: runner_ir.DriverPlan, spec_id: str) -
             a(f"  real(dp), allocatable, public :: {_ST}{var}({_colons(rank)})")
         else:
             a(f"  real(dp), public :: {_ST}{var} = 0.0_dp")
-    a("  public :: " + ", ".join(p.name for p in procedures))
+    for line in _wrap("public :: " + ", ".join(p.name for p in procedures)):
+        a(f"  {line}")
     a("contains")
     for proc in procedures:
         _render_procedure(a, plan, proc)

@@ -653,6 +653,36 @@ class _DriverBehaviour:
                     self.assertEqual(final_c["stage_u1"], [1.0, 2.0, 4.0])
                     self.assertEqual(final_c["stage_t"], [0.25, 0.75])
 
+    def test_two_entries_that_each_bind_a_procedure_render_two_procedures(self) -> None:
+        """Issue #613: a host-rendered procedure is numbered over the node, so two entries that
+        each bind `rhs` render `driver_rhs_1` and `driver_rhs_2`, where both took `driver_rhs_1`
+        and the driver did not compile. Each case's entry zeroes and fills the records itself."""
+        ir = procedure_ir("inputs.lam * u")
+        entry = ir["drive"]["step"]
+        ir["drive"]["step"] = [{**copy.deepcopy(entry), "cases": ["c"]},
+                               {**copy.deepcopy(entry), "cases": ["p"]}]
+        ir["case"]["test_case_set"].append(
+            {"case_id": "p", "inputs": {"grid": {"nx": 3}, "t": 1.0, "dt": 0.25, "lam": 3.0},
+             "initial_state": {"u_n": [2.0, 2.0, 2.0], "u_np1": -9.0}})
+        self.assertEqual(pe.drive_violations(
+            {**ir, "drive": {**ir["drive"], "distribute": {"axes": []}}}, kind="component"), [])
+        run = self._run(ir)
+        final_p, final_c = run.snapshot("p"), run.snapshot("c")
+        self.assertEqual(final_p["n_calls"], 2.0)
+        self.assertEqual(final_p["stage_t"], [1.0, 1.25])
+        self.assertEqual(final_p["stage_u1"], [2.0, 2.0, 2.0])
+        self.assertEqual(final_p["stage_u2"], [3.5, 3.5, 3.5])
+        self.assertEqual(final_c["n_calls"], 2.0)
+        self.assertEqual(final_c["stage_t"], [0.25, 0.75])
+        self.assertEqual(final_c["stage_u1"], [1.0, 2.0, 4.0])
+        self.assertEqual(final_c["stage_u2"], [0.0, 0.0, 0.0])
+        for cid in ("p", "c"):
+            initial = run.snapshot(f"initial/{cid}")
+            self.assertEqual(initial["n_calls"], 0.0, cid)
+            self.assertEqual(initial["stage_t"], [0.0, 0.0], cid)
+            self.assertEqual(initial["stage_u1"], [0.0] * 3, cid)
+            self.assertEqual(initial["stage_u2"], [0.0] * 3, cid)
+
 
 class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_fortran)
@@ -1264,6 +1294,41 @@ def _lst_entry(ir: dict[str, Any], operation: str) -> dict[str, Any]:
     return entry
 
 
+def lst_init_procedure_ir(record_first: bool = False) -> dict[str, Any]:
+    """`lst_ir` whose `drive.init` is the `__proc` call recording `r` (issue #613): `init` is
+    planned once per entry, so each entry renders its own copy of `init`'s procedure, and `r`
+    is driver-written in every case. Gate (k) requires a predicate on each `init` output."""
+    ir = lst_ir(record_first)
+    init = copy.deepcopy(_lst_entry(ir, "fx_lst__proc"))
+    init.pop("cases")
+    init["arguments"] = {"nx": "inputs.nx",
+                         "rhs": {"procedure": "inputs.lam * q", "record": {"q": "state.r"}},
+                         "w": "state.wi", "ok": "state.oki"}
+    ir["drive"]["init"] = init
+    ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"] += [
+        {"name": "r", "shape_expr": "[nx]"}, {"name": "wi", "shape_expr": "[nx]"},
+        {"name": "oki", "shape_expr": "scalar"}]
+    ir["io_contract"]["tests"], ir["io_contract"]["predicates"] = _one_test_per_case(
+        ir["case"]["test_case_set"], [
+            ("ok", "final.ok", "eq", 1), ("w", "maxabs(final.w)", "gt", 0.0),
+            ("oki", "initial.oki", "eq", 1), ("wi", "maxabs(initial.wi)", "ge", 0.0)])
+    return ir
+
+
+def many_procedures_ir(n: int) -> dict[str, Any]:
+    """``n`` list entries, each a copy of `lst_ir`'s `__proc` entry for its own case `b<i>`:
+    ``n`` host-rendered procedures in one module (issue #613)."""
+    ir = lst_ir()
+    proc = _lst_entry(ir, "fx_lst__proc")
+    ir["drive"]["step"] = [{**copy.deepcopy(proc), "cases": [f"b{i}"]} for i in range(n)]
+    cases = [{"case_id": f"b{i}", "inputs": {"nx": 6, "lam": 0.5},
+              "initial_state": {"w": -999.0}} for i in range(n)]
+    ir["case"]["test_case_set"] = cases
+    ir["io_contract"]["tests"], ir["io_contract"]["predicates"] = _one_test_per_case(
+        cases, [("ok", "final.ok", "eq", 1), ("w", "maxabs(final.w)", "gt", 0.0)])
+    return ir
+
+
 MPI_FIXTURES = {"fx_recon": recon_ir, "fx_prob": prob_ir, "fx_wit": wit_ir,
                 "fx_loop": loop_mpi_ir, "fx_lst": lst_ir}
 
@@ -1712,6 +1777,43 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                         self.assertEqual(snaps["b.json"]["nc"], 2.0)
                         self.assertEqual(snaps, reference)
                         self.assertEqual(build.verdict(run), {"t_a": "pass", "t_b": "pass"})
+
+    def test_an_init_procedure_builds_in_either_entry_order(self) -> None:
+        """Issue #613: an `init` binding a procedure is planned in each entry, so each entry
+        renders its own copy under its own name; before the fix the two copies were both
+        `driver_rhs_1` and the runner did not compile. `r` (`init`'s record) is driver-written in
+        every case and `q` stays file-backed in case `a`: the serial driver, the singleton and
+        three grids, `checked` flags."""
+        for record_first in (False, True):
+            ir = lst_init_procedure_ir(record_first)
+            self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+            builds = ((self._build(ir, flags="checked", harness="harness_fortran_cpu"),
+                       (SINGLETON,)),
+                      (self._build(ir, flags="checked"), (SINGLETON, (2, 1), (4, 1), (2, 2))))
+            for build, grids in builds:
+                for grid in grids:
+                    with self.subTest(record_first=record_first, grid=grid):
+                        run = build.run(grid, timeout=60)
+                        self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                        snaps = run.snapshots()
+                        self.assertEqual(snaps["initial/a.json"]["q"], [1.0 + i for i in range(8)])
+                        self.assertEqual(snaps["initial/a.json"]["r"], [3.0] * 8)
+                        self.assertEqual(snaps["b.json"]["q"], [3.0] * 6)
+                        self.assertEqual(set(build.verdict(run).values()), {"pass"})
+
+    def test_seven_procedures_render_a_wrapped_public_statement(self) -> None:
+        """Issue #613: the procedure module's `public` statement is continued over lines, so
+        seven host-rendered procedures render under the linter's column limit (one line of 108
+        columns was refused before), build on the serial driver and pass."""
+        ir = many_procedures_ir(7)
+        self.assertEqual(pe.drive_violations(ir, kind="component"), [])
+        text = f_runner.render_runner(ir, "fx_lst", "harness_fortran_cpu", target=CPU)
+        self.assertLess(max(len(line) for line in text.splitlines()), 100)
+        build = self._build(ir, flags="checked", harness="harness_fortran_cpu")
+        run = build.run(SINGLETON, timeout=60)
+        self.assertEqual(run.rc, 0, run.stderr[-2000:])
+        self.assertEqual(set(build.verdict(run).values()), {"pass"})
+        self.assertEqual(len(build.verdict(run)), 7)
 
     def test_a_whole_field_mean_divides_by_the_reduced_count_of_the_cells_it_summed(self) -> None:
         """Every cell is held by the same number of ranks on every shape the driver runs (a
