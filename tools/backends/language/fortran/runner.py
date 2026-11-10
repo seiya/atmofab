@@ -428,6 +428,16 @@ def _colons(rank: int) -> str:
     return ",".join(":" * rank)
 
 
+def _procedure_name(proc: runner_ir.ProcedurePlan) -> str:
+    """The Fortran name of a host-rendered procedure: the plan's ``driver_<dummy>_<number>``, or
+    ``driver_<number>`` where that name is longer than the language allows. The dummy comes from
+    a §5.1 signature, so a re-authored IR cannot shorten it, and a dummy of a legal length still
+    makes the plan's name too long from 55 characters on."""
+    if len(proc.name) <= bundle.IDENTIFIER_MAX:
+        return proc.name
+    return f"driver_{proc.number}"
+
+
 def _render_procedure_module(a: Any, plan: runner_ir.DriverPlan, spec_id: str) -> None:
     """The module holding each host-rendered procedure of the node (D11), what its expression
     reads and the call records it writes. A module, not a contained procedure: an internal
@@ -448,7 +458,7 @@ def _render_procedure_module(a: Any, plan: runner_ir.DriverPlan, spec_id: str) -
             a(f"  real(dp), allocatable, public :: {_ST}{var}({_colons(rank)})")
         else:
             a(f"  real(dp), public :: {_ST}{var} = 0.0_dp")
-    for line in _wrap("public :: " + ", ".join(p.name for p in procedures)):
+    for line in _wrap("public :: " + ", ".join(_procedure_name(p) for p in procedures)):
         a(f"  {line}")
     a("contains")
     for proc in procedures:
@@ -460,7 +470,8 @@ def _render_procedure_module(a: Any, plan: runner_ir.DriverPlan, spec_id: str) -
 def _render_procedure(a: Any, plan: runner_ir.DriverPlan, proc: runner_ir.ProcedurePlan) -> None:
     from tools.backends.language.fortran.signatures import render_symbol_to_fortran
 
-    stanza = render_symbol_to_fortran({**proc.prototype, "name": proc.name}).strip().splitlines()
+    stanza = render_symbol_to_fortran({**proc.prototype, "name": _procedure_name(proc)}
+                                      ).strip().splitlines()
     args = {x["name"]: x for x in proc.prototype.get("args") or []}
 
     def name(token: str) -> str:
@@ -556,7 +567,7 @@ def _actual(actual: runner_ir.Actual, block_first: dict[str, str] | None = None)
         # The block's first global index: the distributed driver's offset of that axis, `1` on
         # the serial driver, whose block is the whole case (issue #610, B5).
         return block_first[ref] if block_first is not None else "1"
-    return ref.name
+    return _procedure_name(ref)
 
 
 def _render_call(a: Any, call: runner_ir.CallPlan, indent: str, *, timed: bool = False,
@@ -772,7 +783,7 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         a(f"    {op}{', &' if i < len(operations) - 1 else ''}")
     procedures = [p for entry in plan.entries for p in entry.procedures]
     if procedures:
-        names = [*(p.name for p in procedures), *sorted(from_module),
+        names = [*(_procedure_name(p) for p in procedures), *sorted(from_module),
                  *(f"{_ST}{v}" for v in plan.record_states)]
         a(f"  use {spec_id}_drv, only: &")
         for i, sym in enumerate(names):

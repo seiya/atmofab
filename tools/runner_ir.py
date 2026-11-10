@@ -766,8 +766,12 @@ class ProcedurePlan:
     ``out`` the dummy it assigns, ``tree`` the expression, ``calls`` / ``record`` the states the
     driver writes at each call (``record``: prototype dummy -> states, one per call, or one
     rank-1 state for a rank-0 dummy). ``name`` is unique in the plan: the renderers emit every
-    entry's procedures into one scope, and an `init` binding is planned once per entry."""
+    entry's procedures into one scope, and an `init` binding is planned once per entry.
+    ``number`` is the one in ``name``'s ``driver_<dummy>_<number>``, for a renderer whose
+    identifier limit that name can exceed: ``driver_<number>`` is unique in the plan too, and is
+    no ``name`` of another procedure, whose dummy begins with a letter."""
     name: str
+    number: int
     prototype: dict[str, Any]
     out: str
     tree: ast.expr
@@ -1184,7 +1188,8 @@ def _procedure_plan(call: dict[str, Any], dummy: str, proto: dict[str, Any], bin
         used.append(value)
         procedure_hosts[path] = value
         hosts[f"inputs.{path}"] = value.local
-    return ProcedurePlan(name=f"driver_{dummy}_{index}", prototype=proto, out=outs[0]["name"],
+    return ProcedurePlan(name=f"driver_{dummy}_{index}", number=index, prototype=proto,
+                         out=outs[0]["name"],
                          tree=tree, hosts=hosts, calls=calls, record=record)
 
 
