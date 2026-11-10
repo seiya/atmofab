@@ -1201,8 +1201,17 @@ PINNED_RENDER: dict[str, str] = {
     # toy IRs for fortran_cpu and cpp_gpu; the five MPI fixtures and `lst_ir` with its entries
     # reversed for the three targets) exactly the three reversed `lst_ir` renders differ; the
     # 105 renders of the 35 drive-carrying IRs under `workspace/ir/` and `releases/` of the
-    # operator's checkout are byte-identical; none raises.
-    "render-18": "5a2efead32d294df963d93fa69916039346c1b2d448cc83e53fd7122f4f2ebbe",
+    # operator's checkout are byte-identical; none raises. Re-pinned after it shipped,
+    # behaviour-preserving: `fortran/runner.py::_wrap` searches a continuation's cut after its
+    # two-blank indent. Where the old search found a blank at index 2 or later the new one finds
+    # the same blank; where it found only the indent's blank at index 1 the old loop never
+    # returned (a render that hung, found by issue #613's review round 3; the `TODO.md` item that
+    # recorded it is removed by the commit that re-pins), and the new one leaves the remainder
+    # whole, which the column check refuses from 100 columns. So every render that returned
+    # before returns the same bytes.
+    "render-18": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
+    # The digest `render-18` shipped with at d6554bd7:
+    "render-18@d6554bd7": "5a2efead32d294df963d93fa69916039346c1b2d448cc83e53fd7122f4f2ebbe",
     # Re-pinned (issue #574), behaviour-preserving: a generate key binds no source any more, so
     # the docstrings and refusal texts of `_write_dependency_headers` and `_copy_bound_file` say
     # the attempt bound it, and a language's dependency-operations header no longer calls the source

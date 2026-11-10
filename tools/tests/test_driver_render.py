@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -740,6 +741,49 @@ class FortranTokenWidthTest(unittest.TestCase):
             second = _exec(Path(tmp), [long])
             self.assertNotEqual(second.proc.returncode, 0)
             self.assertIn("exceeds the token width", second.proc.stderr)
+
+
+_WRAP_PROBE = """
+import json, sys
+from tools.tests.test_driver_render import CPU, procedure_ir
+from tools.backends.language.fortran import runner as f_runner
+from tools.host_render import RenderError
+out = {"wrap": f_runner._wrap("y " * 40 + "z" * 95), "render": {}}
+for k in (17, 18, 30):
+    ir = procedure_ir("abs(" * k + "u" + ")" * k)
+    try:
+        text = f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU)
+        out["render"][k] = max(len(line) for line in text.splitlines())
+    except RenderError as exc:
+        out["render"][k] = str(exc)
+json.dump(out, sys.stdout)
+"""
+
+
+class FortranWrapTest(unittest.TestCase):
+    """A continuation whose remainder holds no blank before the width (TODO item, found by issue
+    #613's review round 3): `_wrap` found its own indent's blank, cut nothing and never returned,
+    so the render — and `Compile.static`'s dry render in the conductor's process — hung, its
+    memory growing. Run in a child under a timeout and an address-space cap, so a regression
+    fails the row rather than hanging the suite or exhausting the runner's memory."""
+
+    def test_a_blank_free_remainder_longer_than_the_width_returns(self) -> None:
+        import resource
+
+        def cap() -> None:
+            # 4 GiB of address space. The probe's VmPeak was 0.1 GB at one BLAS thread and 1.7 GB
+            # at 48 (numpy reserves per thread); the old loop grew about 180 MB/s.
+            resource.setrlimit(resource.RLIMIT_AS, (4 << 30, 4 << 30))
+        proc = subprocess.run([sys.executable, "-c", _WRAP_PROBE], cwd=ROOT, text=True,
+                              capture_output=True, timeout=60, preexec_fn=cap)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["wrap"], ["y " * 39 + "y &", "  " + "z" * 95])
+        render = out["render"]
+        self.assertLess(render["17"], f_runner.max_rendered_line())
+        self.assertLess(render["18"], f_runner.max_rendered_line())
+        self.assertIsInstance(render["30"], str)
+        self.assertIn("column limit", render["30"])
 
 
 class CertifiedModelEndToEndTest(unittest.TestCase):
