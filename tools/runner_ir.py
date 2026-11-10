@@ -832,8 +832,11 @@ class DriverPlan:
     work_vars: tuple[str, ...]
     logical_states: tuple[str, ...]
     integer_states: tuple[str, ...]
-    #: The union over the entries of the states a procedure's `calls` / `record` writes: what the
-    #: renderers declare storage from. Which of them an entry zeroes is that entry's own set.
+    #: The union over the entries of the states a procedure's `calls` / `record` writes. Two
+    #: readers take it plan-wide: a renderer that keeps these states in the procedures' own
+    #: module declares that storage from it (a renderer declaring every state alike reads it not
+    #: at all), and `written` below includes it. Which of them an entry zeroes is that entry's
+    #: own driver-written set, computed in `driver_plan`.
     record_states: tuple[str, ...]
     hosts: tuple[HostValue, ...]
     procedure_hosts: tuple[HostValue, ...]
