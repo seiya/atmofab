@@ -3600,9 +3600,14 @@ def _resolve_dependency_facts(
 
     The dependency ``@version`` is taken from the IR ``direct_deps[].node_key`` (a well-
     formed IR pins the resolved version, consistent with how readiness resolves it from
-    ``deps.yaml`` + catalog). Because this output only orients the leaf's semantic review
-    and is NEVER consulted by any gate, a rare version drift would merely stale the hint,
-    never mis-authorize a launch.
+    ``deps.yaml`` + catalog). This output decides no gate and no launch, so a rare version
+    drift stales a hint and never mis-authorizes a launch. It has two readers: the leaf's
+    ``DEPENDENCIES.md`` (Generate and Validate), and the conductor's ``post_judge`` aggregate fold
+    (``Conductor._author_derived_validate_artifacts``). The fold reads each fact's
+    ``aggregate_verdict_ref`` to choose a READY dependency's contribution, ``xfail`` or
+    ``pass``, to the node's ``aggregate_verdict``. A dependency with no fact folds as ``pass``.
+    Whether a dependency is ready, which decides ``blocked``, is read from readiness, not from
+    these facts.
 
     Best-effort: NEVER raises. A leaf node (empty ``direct_deps``), a missing/unparseable
     IR, a missing PyYAML, or a malformed dep ``node_key`` yields ``[]`` / a skipped entry.
