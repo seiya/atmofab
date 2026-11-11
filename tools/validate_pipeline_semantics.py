@@ -9,6 +9,7 @@ import json
 import os
 import pickle
 import re
+import threading
 
 import yaml
 from collections import OrderedDict
@@ -3512,28 +3513,35 @@ def _read_yaml(path: Path) -> Any:
     except UnicodeDecodeError as exc:
         raise yaml.YAMLError(f"{path}: not valid UTF-8 ({exc})") from exc
     key = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    cached = _PARSED_YAML.get(key)
+    with _PARSED_YAML_LOCK:
+        cached = _PARSED_YAML.get(key)
+        if cached is not None:
+            _PARSED_YAML.move_to_end(key)
     if cached is not None:
-        _PARSED_YAML.move_to_end(key)
         return pickle.loads(cached)
     try:
         data = yaml.safe_load(text)
     except RecursionError as exc:
         raise yaml.YAMLError(f"{path}: structure too deeply nested to parse") from exc
     try:
-        _PARSED_YAML[key] = pickle.dumps(data, pickle.HIGHEST_PROTOCOL)
+        stored = pickle.dumps(data, pickle.HIGHEST_PROTOCOL)
     except RecursionError:
         return data   # too deep to store: returned as parsed, read afresh next time
-    while len(_PARSED_YAML) > _PARSED_YAML_ENTRIES:
-        _PARSED_YAML.popitem(last=False)
+    with _PARSED_YAML_LOCK:
+        _PARSED_YAML[key] = stored
+        _PARSED_YAML.move_to_end(key)
+        while len(_PARSED_YAML) > _PARSED_YAML_ENTRIES:
+            _PARSED_YAML.popitem(last=False)
     return data
 
 
 #: `_read_yaml`'s parses, by text digest, least recently read first. A handful of entries: one
 #: validation reads one IR and the few documents beside it, and a long-lived conductor process
-#: must not hold every IR it ever validated.
+#: must not hold every IR it ever validated. The lock: the workshop wrapper serves a leaf's
+#: operations on threads of the conductor's process, so two reads can meet here.
 _PARSED_YAML: "OrderedDict[str, bytes]" = OrderedDict()
 _PARSED_YAML_ENTRIES = 8
+_PARSED_YAML_LOCK = threading.Lock()
 
 
 # A section of the IR document (`algorithm:`, `io_contract:`, ...) and the document itself are both
