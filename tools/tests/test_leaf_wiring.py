@@ -2673,7 +2673,7 @@ class PureRenderTests(unittest.TestCase):
         not inlined, so the witness is driven through the REAL seeder
         (`Conductor._workshop_seeds`, under the spec `run_substep` dispatches each pair to)
         rather than through the render, which must carry no facts slot.
-        A producer that authors a `call` into a component dependency without its published
+        A producer that authors a `call` into a dependency without its published
         argument order builds against a rank/type mismatch and is routed back to Generate every
         retry; a reviewer without them cannot check the `call` it is judging.
 

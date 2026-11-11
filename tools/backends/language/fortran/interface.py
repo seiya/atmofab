@@ -115,7 +115,8 @@ def _list_prefixed_subroutines(source_text: str, prefix: str) -> list[str]:
     ``source_text`` whose name begins (case-insensitive) with ``prefix``.
 
     Used as the FALLBACK dependency-interface surface when the IR authors an empty
-    ``operations`` list for a component dependency (an authoring wobble): the certified
+    ``operations`` list for a called dependency, a ``component`` or a ``problem`` (an
+    authoring wobble): the certified
     dependency source is the authority on which ``<dep_spec_id>__`` entry points exist. The
     ``<dep_spec_id>__`` prefix IS the published-surface convention (this selects by prefix,
     not by a Fortran ``private``/``public`` attribute — same as the pre-existing extractor),

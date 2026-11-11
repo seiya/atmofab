@@ -14,11 +14,17 @@ What makes these SPEC-INPUT rather than compile gates: each one is a defect of t
 identity, which a Compile re-author cannot repair. Routing an unrepairable defect into a
 warm-resume retry only spins, so they are captured here — before any phase runs — and the later
 gates keep their own copies only as defense-in-depth backstops.
+
+One gate reads a file rather than an identity: `problem_dependency_surface_violation` reads §5.1
+of a member `problem`'s own `controlled_spec.md`, a file no leaf writes, through the section
+helpers `orchestration_runtime._published_surface` uses. Those helpers are imported inside the
+function, so importing this module imports neither them nor anything they load.
 """
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from tools.backends import registry
@@ -122,3 +128,105 @@ def infra_dep_declared_violation(infra_dep_count: int) -> str | None:
         f"a harness is a target attribute (spec/targets/<target_id>.yaml `harness`), never a "
         f"spec dependency (issue #284). Remove the `infrastructure:` section."
     )
+
+
+def problem_dep_on_non_problem_violation(declaring_kind: Any, problem_dep_count: int) -> str | None:
+    """Spec-input bound: a ``deps.yaml`` ``problems:`` entry is admitted on a ``problem`` only
+    (the system tier, Part 1: a ``problem`` composes ``problem``s).
+
+    ``declaring_kind`` is the declaring spec's ``spec_kind`` AS THE CATALOG FILES IT, never the
+    ``spec_kind:`` line of its own ``deps.yaml``, which carries no schema. A caller that could not
+    obtain the kind from the catalog passes ``None``, and a declaration is then refused rather
+    than admitted on a self-declared value. A ``component`` that reached the composition gates
+    would meet gates that assume its dependencies are components. Like the other spec-input
+    bounds this is a node-IDENTITY defect a Compile re-author cannot repair."""
+    if problem_dep_count == 0:
+        return None
+    if isinstance(declaring_kind, str) and declaring_kind.strip() == "problem":
+        return None
+    kind_text = (f"a `{declaring_kind.strip()}`" if isinstance(declaring_kind, str)
+                 and declaring_kind.strip() else "a spec whose kind the catalog does not confirm")
+    return (
+        f"problem_dependency_on_non_problem: deps.yaml declares {problem_dep_count} "
+        f"`problems:` entr{'y' if problem_dep_count == 1 else 'ies'} on {kind_text}; only a "
+        f"`problem` composes `problem`s, and its kind is read from "
+        f"spec/registry/spec_catalog.yaml. Remove the `problems:` entries, or register the spec "
+        f"as a `problem`."
+    )
+
+
+def problem_dependency_surface_violation(repo_root: Path, member_spec_ref: Any) -> str | None:
+    """Spec-input bound: a ``problem`` named under ``problems:`` is admitted as a member only
+    when the PROCEDURE names of §5.1 of its own ``controlled_spec.md`` are exactly
+    ``{<member>__step}`` (decision D11 of the system tier's Part 1).
+
+    The rule is an ALLOWLIST. The dependency-call gate accepts any one ``<member>__*`` call, and
+    the driver calls only the composite's own operations, so a member that publishes an
+    ``__init`` (or any further procedure) would let a composite establish the member's state
+    once and run every later case on the first case's fields. The rule for a member's private
+    state belongs to the system tier's Part 2, which lifts this refusal.
+
+    It reads the member's spec file, which no leaf writes and which
+    ``orchestration_runtime._published_surface`` hashes for the compile key, with the same
+    section helpers; it does not need a certified compile output, so a member is refused before
+    its closure is certified. ``module_parameters``, ``types`` and ``interfaces`` are not counted:
+    a value-pinned constant, a declaration and a prototype hold no state.
+
+    Returns ``None`` only when the set of names taken from EVERY ``procedures`` entry is exactly
+    ``{<member>__step}``, compared as exact strings; ``<member>`` is the member's spec
+    directory name, which is its ``spec_id``. Each of the following is a violation: an
+    unresolved member (``member_spec_ref`` empty or not a string), a missing or unreadable file,
+    a missing §5 or §5.1, a §5.1 block that does not load, an empty ``procedures`` list, an
+    entry that is not a mapping, a missing or non-string ``name``, any other name, and an
+    exception raised inside the read."""
+    reason = "problem_dependency_surface_not_step_only"
+    if not isinstance(member_spec_ref, str) or not member_spec_ref.strip():
+        return (f"{reason}: a `problems:` member does not resolve to one spec directory, so its "
+                f"§5.1 cannot be read")
+    ref = member_spec_ref.strip().rstrip("/")
+    member_id = Path(ref).name
+    expected = f"{member_id}__step"
+
+    def _violation(detail: str) -> str:
+        return (
+            f"{reason}: the `problems:` member {ref} {detail}; a `problem` is admitted as a "
+            f"member only when the procedure names of §5.1 of its controlled_spec.md are "
+            f"exactly [{expected!r}] (the rule for a member's private state and `__init` is not "
+            f"yet defined)."
+        )
+
+    try:
+        from tools.structured_signatures import load_structured_signatures
+        from tools.validate_pipeline_semantics import (
+            _extract_controlled_spec_section, _extract_subsection_51, _section51_fence_body)
+        path = Path(repo_root) / ref / "controlled_spec.md"
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            return _violation(f"has no readable controlled_spec.md ({exc})")
+        section = _extract_controlled_spec_section(text, "5")
+        if section is None or _extract_subsection_51(section) is None:
+            return _violation("has no §5.1")
+        body, err = _section51_fence_body(path)
+        if err or body is None:
+            return _violation(f"has a §5.1 that cannot be read ({err})")
+        struct, err = load_structured_signatures(body)
+        if err:
+            return _violation(f"has a §5.1 that does not load ({err})")
+        procedures = struct.get("procedures")
+        if not isinstance(procedures, list) or not procedures:
+            return _violation("publishes no procedure in §5.1")
+        names: set[str] = set()
+        for entry in procedures:
+            if not isinstance(entry, dict):
+                return _violation(f"has a §5.1 procedure entry that is not a mapping ({entry!r})")
+            if "name" not in entry or not isinstance(entry["name"], str):
+                return _violation(
+                    f"has a §5.1 procedure entry whose `name` is missing or not a string "
+                    f"({entry.get('name')!r})")
+            names.add(entry["name"])
+    except Exception as exc:  # noqa: BLE001 - an exception inside the read is a violation
+        return _violation(f"could not be read ({type(exc).__name__}: {exc})")
+    if names != {expected}:
+        return _violation(f"publishes the procedures {sorted(names)}")
+    return None

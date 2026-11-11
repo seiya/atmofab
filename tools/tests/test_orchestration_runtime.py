@@ -13091,15 +13091,21 @@ class DependencyFactsRenderTests(unittest.TestCase):
                  "published_operations": ["flux__compute_flux"], "source": "ir_public_api"},
                 {"node_key": "component/bnd@0.1.0",
                  "published_operations": [], "source": "unresolved"},
+                {"node_key": "problem/member@0.5.1",
+                 "published_operations": ["member__step"], "source": "ir_public_api"},
             ])
         block = _build_dependency_facts(payload)
         self.assertIn("AUTHORITATIVE op-name catalog", block)
         self.assertIn("VERBATIM", block)
-        # The "author your own public_api" guidance is scoped to component consumers (a profile
-        # consumer — the common case — must omit public_api).
-        self.assertIn("IF YOUR node is a `component`", block)
-        self.assertIn("`profile`/`problem` node OMITS `public_api`", block)
+        # The catalog names both called kinds (the system tier, Part 1), and the "author your
+        # own public_api" guidance holds for every node: a `problem` publishes `__step` since
+        # issue #589, so the clause that told a `profile`/`problem` node to omit it is gone.
+        self.assertIn("`component` or `problem`", block)
+        self.assertIn("author your OWN `public_api.published_operations`", block)
+        self.assertNotIn("OMITS `public_api`", block)
+        self.assertNotIn("IF YOUR node is a `component`", block)
         self.assertIn("- component/flux@0.1.0: flux__compute_flux (source: ir_public_api)", block)
+        self.assertIn("- problem/member@0.5.1: member__step (source: ir_public_api)", block)
         # An unresolved dep points at its own §5, and its (empty) surface is not listed as real.
         self.assertIn("component/bnd@0.1.0", block)
         self.assertIn("surface unresolved", block)
@@ -14134,10 +14140,11 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertNotIn("published_operations", facts[0])
 
     def test_empty_operations_fallback_suppressed_for_profile_dep(self) -> None:
-        # A profile/problem dep authors `operations: []` legitimately and must NOT be called;
-        # the fallback is component-only, so even a profile source carrying `<spec_id>__`
-        # subroutines surfaces no published_operations (else Generate is tempted into an
-        # undeclared call the validator + docs exempt). Codex round-2 P2.
+        # A profile dep is never called (a `profile` is not even a node since issue #175); the
+        # fallback covers the called kinds only (`component`, and `problem` since the system
+        # tier's Part 1), so even a profile source carrying `<spec_id>__` subroutines surfaces
+        # no published_operations (else Generate is tempted into an undeclared call).
+        # Codex round-2 P2.
         from tools.orchestration_runtime import _resolve_dependency_facts
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -14161,6 +14168,87 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertEqual(len(facts), 1)
             self.assertEqual(facts[0]["node_key"], "profile/some_profile@0.1.0")
             self.assertNotIn("published_operations", facts[0])
+
+    def test_empty_operations_fallback_surfaces_a_problem_members_procedures(self) -> None:
+        # The system tier, Part 1 (review round 1, sec-L1 / cor-L5): a `problem` member is a
+        # called dependency, so its empty-`operations` FALLBACK and its L4 name-drift
+        # replacement surface the member's `<member>__` procedures from its certified source,
+        # exactly as a component's do. Pins `is_component_dep` admitting `problem`: with it
+        # reverted to `== "component"`, neither row surfaces anything.
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        model_text = (
+            "module member_model\ncontains\n"
+            "subroutine member__step(h, dt, ok)\n"
+            "  real(8), intent(inout) :: h(:)\n"
+            "  real(8), intent(in) :: dt\n"
+            "  logical, intent(out) :: ok\n"
+            "end subroutine\nend module\n")
+        for operations, unresolved in (([], None), (["member__gone"], ["member__gone"])):
+            with self.subTest(operations=operations), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._write_dep_pipeline(
+                    repo_root, "problem__member__0.5.1",
+                    "p_20260601_002", "bin_20260601_002", "run_20260601_002",
+                    source_id="src_20260601_001", spec_id="member",
+                    model_text=model_text)
+                self._write_ir(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001",
+                    [{"node_key": "problem/member@0.5.1", "kind": "problem",
+                      "operations": operations}],
+                    impl_defaults={"toolchain": {"language": "fortran"}})
+                facts = _resolve_dependency_facts(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001", target=_TP)
+                self.assertEqual(len(facts), 1)
+                self.assertEqual(
+                    [op["operation"] for op in facts[0].get("published_operations", [])],
+                    ["member__step"])
+                self.assertEqual(facts[0].get("declared_operations_unresolved"), unresolved)
+
+    def test_a_respelled_member_key_yields_the_canonical_facts(self) -> None:
+        # Review round 2, sec-L1: every dependency gate reads a key respelled with whitespace
+        # around its kind, id or version as the member (`_called_dep_key`, agreeing with V4), so
+        # post_generate requires its call; the Generate leaf must then be shown the member's
+        # interface under the same reading. Each spelling yields the canonical spelling's facts.
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        model_text = (
+            "module member_model\ncontains\n"
+            "subroutine member__step(h, dt, ok)\n"
+            "  real(8), intent(inout) :: h(:)\n"
+            "  real(8), intent(in) :: dt\n"
+            "  logical, intent(out) :: ok\n"
+            "end subroutine\nend module\n")
+
+        def facts_for(kind: str, spelled: str) -> list[dict]:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._write_dep_pipeline(
+                    repo_root, f"{kind}__member__0.5.1",
+                    "p_20260601_002", "bin_20260601_002", "run_20260601_002",
+                    source_id="src_20260601_001", spec_id="member",
+                    model_text=model_text)
+                self._write_ir(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001",
+                    [{"node_key": spelled, "kind": kind, "operations": ["member__step"]}],
+                    impl_defaults={"toolchain": {"language": "fortran"}})
+                return _resolve_dependency_facts(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001", target=_TP)
+
+        for kind in ("problem", "component"):
+            canonical = facts_for(kind, f"{kind}/member@0.5.1")
+            self.assertEqual(len(canonical), 1)
+            self.assertEqual([op["operation"] for op in canonical[0]["published_operations"]],
+                             ["member__step"])
+            for spelled in (f"{kind} /member@0.5.1", f"{kind}/ member@0.5.1",
+                            f"{kind}/member @0.5.1", f"{kind}/member@ 0.5.1",
+                            f" {kind} / member @ 0.5.1 "):
+                with self.subTest(spelled=spelled):
+                    self.assertEqual(facts_for(kind, spelled), canonical)
+            # Whitespace INSIDE a part is not the member's spelling: V4 reads `mem ber` (and a
+            # version `0.5 .1`) as another node, so no facts are read for it (review round 3,
+            # sec-L1: removing all whitespace instead of stripping each part survived).
+            for other in (f"{kind}/mem ber@0.5.1", f"{kind}/member@0.5 .1"):
+                with self.subTest(other=other):
+                    self.assertEqual(facts_for(kind, other), [])
 
     def test_non_empty_operations_not_unioned_with_fallback(self) -> None:
         # Drift guard: when the IR DOES enumerate ops, only that surface is published — the
@@ -14295,7 +14383,8 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 
 
 class ResolveComponentDepSurfaceTests(unittest.TestCase):
-    """_resolve_component_dep_surface reads the consumer's direct COMPONENT deps from the
+    """_resolve_component_dep_surface reads the consumer's direct called deps (`component`, and
+    `problem` since the system tier's Part 1) from the
     conductor-authored dependency_graph (all_nodes − self − transitive) and resolves each
     dep's published operation NAMES from the dep IR public_api (the L1 pin), plus that IR's
     `module_parameters` / `interfaces` / `signatures` verbatim (issue #486), for the
@@ -14522,7 +14611,7 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self.assertEqual(surface[0]["published_operations"], [])
 
     def test_transitive_and_non_component_deps_excluded(self) -> None:
-        # Only DIRECT component deps are surfaced: a transitive component and a direct
+        # Only DIRECT called deps are surfaced: a transitive component and a direct
         # infrastructure dep are both excluded.
         from tools.orchestration_runtime import _resolve_component_dep_surface
         with tempfile.TemporaryDirectory() as tmp:
@@ -22129,7 +22218,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `extended` count): bumped 110650->111100; measured 111036 at 98fc4ead. Review
         # round 2 (the whole-count clause scoped to a node with an axis): bumped
         # 111100->111250; measured 111187.
-        "docs/workflow/phases/phase_01_compile.md": 111250,
+        # The system tier's Part 1 (a `problems:` member is a direct dependency a node calls:
+        # V4c-i / V4c-ii and the three spec-input refusals of a `problems:` entry): bumped
+        # 111250->111850; measured 111758 with `wc -c` at the commit that takes this bump, and
+        # 111774 after review round 1 (cor-L4, V4c-ii's "`component` and `problem` IR"), and
+        # 111846 after review round 2 (cor-L3, V8's member sentence; the
+        # `profile_declares_problem` clause of the identity preconditions shortened to fit).
+        # Review round 3 (disc-L3: that clause names where it is refused, and "All are enforced at
+        # spec-input" is scoped to the rules outside a `profile`): bumped 111850->111950;
+        # measured 111934 with `wc -c` at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 111950,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -25172,6 +25270,72 @@ class DerivationInputsTests(unittest.TestCase):
             self.assertEqual(inputs["dependency_graph"], tools_derivation.sha256_hex(
                 tools_derivation.canonical_json_bytes(ort._closure_signature(graph))))
 
+    def test_a_problem_direct_dependency_enters_the_dependency_surface_and_the_compile_key(
+            self) -> None:
+        """The system tier, Part 1: a `problem` named under `problems:` is a direct dependency a
+        consumer calls, so it enters both readers of `_component_direct_deps` — the
+        `dependency_surface.json` the leaves read (from its certified IR's `public_api`) and the
+        compile key's `dependency_surface` (by its §5.1) — beside the component dependency, in
+        `all_nodes` order. A §5.1 edit of the member moves the consumer's compile key."""
+        import yaml as _yaml
+
+        from tools.dependency_graph import build_dependency_graph
+        member = "problem/mem@0.1.0"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            catalog = repo / "spec/registry/spec_catalog.yaml"
+            doc = _yaml.safe_load(catalog.read_text(encoding="utf-8"))
+            doc["specs"].append({
+                "spec_kind": "problem", "spec_id": "mem", "spec_version": "0.1.0",
+                "domain": "dynamics", "family": "fam",
+                "deps_path": f"{self._spec_dir('problem', 'mem')}/deps.yaml"})
+            catalog.write_text(_yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+            mem_dir = repo / self._spec_dir("problem", "mem")
+            self._write(mem_dir / "tests.md", "# tests of mem\n")
+            self._write(mem_dir / "deps.yaml",
+                        "spec_id: mem\nspec_kind: problem\ndependencies:\n  components: []\n"
+                        "  profiles: []\n")
+            step_only = "procedures:\n  - name: mem__step\n    args: []\n"
+            public_api = {"published_operations": [{"operation_id": "mem__step"}],
+                          "signatures": [{"symbol": "mem__step", "signature": {
+                              "kind": "subroutine", "name": "mem__step", "args": []}}]}
+            self._publish(repo, "problem", "mem", member, step_only,
+                          ir_text=_yaml.safe_dump({"public_api": public_api}))
+            self._publish(repo, "component", "dep_a", self._DEP, self._SURFACE_A)
+            spec = self._spec_dir("problem", "spec_x")
+            before = self._inputs(repo, refs, "compile")["dependency_surface"]
+            deps = repo / spec / "deps.yaml"
+            deps.write_text(deps.read_text(encoding="utf-8")
+                            + "  problems:\n    - problem_id: mem\n"
+                            "      version_constraint: \">=0.1.0\"\n", encoding="utf-8")
+            graph, err = build_dependency_graph(repo, target_spec_ref=spec,
+                                                target_node_key=self._NK, include_via=False)
+            self.assertIsNone(err, err)
+            direct = ort._component_direct_deps(graph, self._NK)
+            self.assertEqual(sorted(direct), sorted([self._DEP, member]))
+            inputs = self._inputs(repo, refs, "compile")
+            self.assertNotEqual(before, inputs["dependency_surface"])
+            surface_by_nk = {self._DEP: self._surface_hash(self._SURFACE_A),
+                             member: self._surface_hash(step_only)}
+            self.assertEqual(inputs["dependency_surface"], tools_derivation.sha256_hex(
+                tools_derivation.canonical_json_bytes([
+                    {"node_key": nk, "surface": surface_by_nk[nk]} for nk in direct])))
+            surface = {e["node_key"]: e for e in ort._resolve_component_dep_surface(
+                repo, self._NK, graph)}
+            self.assertEqual(set(surface), {self._DEP, member})
+            self.assertEqual(surface[member]["source"], "ir_public_api")
+            self.assertEqual(surface[member]["published_operations"], ["mem__step"])
+            self.assertEqual(surface[member]["public_api"]["signatures"],
+                             public_api["signatures"])
+            # The member's §5.1 moves the consumer's compile key.
+            self._publish(repo, "problem", "mem", member,
+                          "procedures:\n  - name: mem__step\n    args:\n"
+                          "      - {name: dt, type: real, kind: dp, intent: in}\n",
+                          ir_text=_yaml.safe_dump({"public_api": public_api}))
+            self.assertNotEqual(inputs["dependency_surface"],
+                                self._inputs(repo, refs, "compile")["dependency_surface"])
+
     def test_generate_inputs_bind_the_ir_the_harness_and_the_closure_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -25627,9 +25791,11 @@ class DerivationInputsTests(unittest.TestCase):
                 self._inputs(repo, refs, "compile")
 
     def test_a_member_without_section_51_has_a_null_surface_and_a_position(self) -> None:
-        """A `problem` publishes nothing a consumer calls, and it is still linked. The fixture's
-        members have no §5.1, which is the form the key reads; the gate refuses a certified
-        `component` without one (`test_component_without_section51_is_a_compile_fail`)."""
+        """A member whose spec has no §5.1 is still linked, by its `node_key` and position. The
+        fixture's members have no §5.1, which is the form the key reads; the gate refuses a
+        certified `component` without one (`test_component_without_section51_is_a_compile_fail`),
+        and a `problem` publishes `__step` since issue #589 and is called by a composing
+        `problem` since the system tier's Part 1."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._seed(repo)
@@ -28692,7 +28858,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     _READ: dict[str, str] = {
         # Re-keyed for issue #589 PR-1b: rule 3 is byte-identical; another rule of the one-line
         # paragraph gained the procedure binding. READ.
-        "tools/prompt_templates/workshop_compile_generate.txt:17bf88cb81265028":
+        "tools/prompt_templates/workshop_compile_generate.txt:4bdaaa4eeaf71d71":
             "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
             "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
             "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
@@ -28716,10 +28882,14 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
             "unchanged; re-keyed again 2026-11-04 when rule 5 took the flag predicate's form "
             "(review round 5, R5-2) and the `expected_outcome:` line (R5-1) — rule 3 unchanged; "
             "re-keyed 2026-11-08 when rule 9 took `drive.distribute`, issue #610 PR-B1 — rule 3 "
+            "unchanged; re-keyed 2026-11-11 when rule 3 said a `problem` the declaration names "
+            "under `problems:` is in the set too, the system tier's Part 1 — the set's source "
             "unchanged)",
-        "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
+        "docs/workflow/phases/phase_01_compile.md:eb291deee759d9f1":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
-            "infrastructure node in it (issue #284)",
+            "infrastructure node in it (issue #284); a `problem` declared under `problems:` is "
+            "in it as a `component` is, and its `operations` are non-empty (re-keyed 2026-11-11, "
+            "the system tier's Part 1)",
         "docs/GLOSSARY.md:a03f3d618914d955":
             "infrastructure spec: the harness is a target attribute no deps.yaml declares; "
             "the host adds it as a direct dependency after Compile (issue #284)",
@@ -30486,6 +30656,175 @@ class LeafNetnsPreflightTests(unittest.TestCase):
         self.assertTrue(enforced)
         self.assertIs(rows["sandbox_netns_route"]["pass"], True)
         self.assertIs(rows["sandbox_netns_python"]["pass"], True)
+
+
+class ProblemsDependencyKeyTests(unittest.TestCase):
+    """The `problems:` deps.yaml key (the system tier, Part 1): parsed into `problem` entries,
+    ALLOWED and not required, paired in both key tables, refused inside a profile, and moving
+    no corpus graph."""
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+    def test_a_problems_entry_parses_to_a_problem_dependency(self) -> None:
+        from tools.orchestration_runtime import _parse_dep_entries
+        entries, well_formed = _parse_dep_entries({"dependencies": {
+            "components": [{"component_id": "c", "version_constraint": ">=0.1.0"}],
+            "profiles": [],
+            "problems": [{"problem_id": "m", "version_constraint": ">=0.5.1 <1.0.0"},
+                         {"problem_id": "n"}],
+        }})
+        self.assertTrue(well_formed)
+        self.assertEqual(entries, [("component", "c", ">=0.1.0"),
+                                   ("problem", "m", ">=0.5.1 <1.0.0"),
+                                   ("problem", "n", None)])
+        # The entry grammar is the other keys': the id field is `problem_id`, a bare string or
+        # a traversal token is malformed, and the key's value must be a list.
+        for bad in ([{"component_id": "m"}], ["m"], [{"problem_id": "../m"}],
+                    [{"problem_id": "m", "version_constraint": 3}], "m", None):
+            with self.subTest(bad=bad):
+                _entries, ok = _parse_dep_entries({"dependencies": {
+                    "components": [], "profiles": [], "problems": bad}})
+                self.assertFalse(ok)
+
+    def test_a_deps_yaml_without_problems_is_well_formed(self) -> None:
+        from tools.orchestration_runtime import (
+            _deps_yaml_bytes_are_canonical_empty, _parse_dep_entries)
+        entries, ok = _parse_dep_entries({"dependencies": {"components": [], "profiles": []}})
+        self.assertEqual((entries, ok), ([], True))
+        # `problems` alone does not replace a required key.
+        _e, ok = _parse_dep_entries({"dependencies": {"components": [], "problems": []}})
+        self.assertFalse(ok)
+        # The byte-level empty recognizer tracks the parser: an empty `problems: []` is still
+        # the canonical empty form, and a duplicate or a populated one is not.
+        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  profiles: []\n"))
+        self.assertTrue(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  problems: []\n  profiles: []\n"))
+        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  problems: []\n  problems: []\n"
+            b"  profiles: []\n"))
+        self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
+            b"dependencies:\n  components: []\n  profiles: []\n  problems:\n"
+            b"    - problem_id: m\n"))
+        # Every deps.yaml of the corpus parses well-formed, with no `problem` entry today.
+        for deps in sorted((self._REPO_ROOT / "spec").rglob("deps.yaml")):
+            with self.subTest(deps=str(deps.relative_to(self._REPO_ROOT))):
+                import yaml as _yaml
+                entries, ok = _parse_dep_entries(
+                    _yaml.safe_load(deps.read_text(encoding="utf-8")))
+                self.assertTrue(ok)
+                self.assertNotIn("problem", {k for k, _s, _c in entries})
+
+    def test_the_deps_key_tables_name_the_same_keys(self) -> None:
+        """The parse loop iterates the pair table only, so an allowed key it does not name
+        would parse well-formed with its entries dropped. The module asserts the coupling at
+        import; this row pins that the assertion exists and fires."""
+        import importlib
+
+        import tools.orchestration_runtime as ort
+        self.assertEqual({k for k, _f in ort._DEPS_KEY_KIND_FIELDS},
+                         set(ort._DEPS_YAML_ALLOWED_KEYS))
+        self.assertIn(("problems", "problem_id"), ort._DEPS_KEY_KIND_FIELDS)
+        self.assertNotIn("problems", ort._DEPS_YAML_REQUIRED_KEYS)
+        self.assertLessEqual(ort._DEPS_YAML_REQUIRED_KEYS, ort._DEPS_YAML_ALLOWED_KEYS)
+        # Every pair's kind is the key's singular: the kind the gates test for.
+        self.assertEqual({k.rstrip("s") for k, _f in ort._DEPS_KEY_KIND_FIELDS},
+                         {"component", "problem", "profile", "infrastructure"})
+        source = Path(ort.__file__).read_text(encoding="utf-8")
+        broken = source.replace('    ("problems", "problem_id"),\n', "", 1)
+        self.assertNotEqual(broken, source)
+        spec = importlib.util.spec_from_loader("_ort_broken_tables", loader=None)
+        module = importlib.util.module_from_spec(spec)
+        module.__dict__["__file__"] = ort.__file__
+        with self.assertRaisesRegex(AssertionError, "must name the same deps.yaml keys"):
+            exec(compile(broken, ort.__file__, "exec"), module.__dict__)
+
+    def test_a_profile_declaring_a_problem_is_refused(self) -> None:
+        """D7: once `problems` is an allowed key, a profile's `problems:` entry would parse
+        well-formed and the expansion's component loop would drop it. It is refused by name,
+        through the reason constructor."""
+        import tools.orchestration_runtime as ort
+        from tools.orchestration_runtime import (
+            _PROFILE_EXPANSION_REASONS, _load_spec_catalog, _parse_dep_entries,
+            _read_deps_yaml, expand_profile_dependencies)
+        self.assertIn("profile_declares_problem", _PROFILE_EXPANSION_REASONS)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            lines = ["catalog_version: 0.2.0", "specs:"]
+            for kind, sid in (("problem", "a"), ("profile", "pr"), ("component", "c"),
+                              ("problem", "m")):
+                lines += [f"  - spec_kind: {kind}", f"    spec_id: {sid}",
+                          "    spec_version: \"0.1.0\"",
+                          f"    deps_path: spec/{kind}/{sid}/deps.yaml"]
+            (repo / "spec" / "registry").mkdir(parents=True)
+            (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
+                "\n".join(lines) + "\n", encoding="utf-8")
+            deps = {
+                "spec/problem/a": "  components: []\n  profiles:\n    - profile_id: pr\n"
+                                  "      version_constraint: \">=0.1.0\"\n",
+                "spec/profile/pr": "  components:\n    - component_id: c\n"
+                                   "      version_constraint: \">=0.1.0\"\n  profiles: []\n"
+                                   "  problems:\n    - problem_id: m\n"
+                                   "      version_constraint: \">=0.1.0\"\n",
+                "spec/component/c": "  components: []\n  profiles: []\n",
+                "spec/problem/m": "  components: []\n  profiles: []\n",
+            }
+            for ref, body in deps.items():
+                (repo / ref).mkdir(parents=True)
+                (repo / ref / "deps.yaml").write_text("dependencies:\n" + body, encoding="utf-8")
+            _load_spec_catalog.cache_clear()
+            entries, ok = _parse_dep_entries(_read_deps_yaml(repo, "spec/problem/a"))
+            self.assertTrue(ok)
+            seen: list[str] = []
+            real = ort._profile_expansion_failure
+
+            def _spy(reason, detail):
+                seen.append(reason)
+                return real(reason, detail)
+
+            with mock.patch.object(ort, "_profile_expansion_failure", _spy):
+                expanded, record, err = expand_profile_dependencies(
+                    repo, "spec/problem/a", entries, _load_spec_catalog(str(repo.resolve())))
+            self.assertEqual(seen, ["profile_declares_problem"])
+            self.assertEqual(err["reason"], "profile_declares_problem")
+            self.assertIn("['m']", err["detail"])
+            self.assertEqual((expanded, record), ([], []))
+            # The graph builder carries the refusal rather than the selection.
+            from tools.dependency_graph import build_dependency_graph
+            graph, gerr = build_dependency_graph(
+                repo, target_spec_ref="spec/problem/a", target_node_key="problem/a@0.1.0")
+            self.assertIsNone(graph)
+            self.assertEqual(gerr["reason"], "profile_declares_problem")
+            _load_spec_catalog.cache_clear()
+
+    def test_the_corpus_graphs_do_not_move_with_the_problems_key(self) -> None:
+        """For the three corpus problems, the closure signature and the direct-dependency set
+        the compile key reads are the same with the `problems` key in the tables and with the
+        tables put back to their previous members. Over the real `spec/`, no `workspace/`."""
+        import tools.orchestration_runtime as ort
+        from tools.dependency_graph import build_dependency_graph
+        old_allowed = frozenset({"components", "profiles", "infrastructure"})
+        old_pairs = tuple(p for p in ort._DEPS_KEY_KIND_FIELDS if p[0] != "problems")
+        self.assertNotEqual(old_pairs, ort._DEPS_KEY_KIND_FIELDS)
+        for sid in ("advdiff1d_linear", "shallow_water2d", "shallow_water2d_channel"):
+            with self.subTest(sid=sid):
+                ref = ort.resolve_spec_ref_for(self._REPO_ROOT, "problem", sid)
+                self.assertTrue(ref)
+                version = ort._load_spec_catalog(str(self._REPO_ROOT))[("problem", sid)][0]
+                nk = f"problem/{sid}@{version}"
+                results = []
+                for allowed, pairs in ((ort._DEPS_YAML_ALLOWED_KEYS, ort._DEPS_KEY_KIND_FIELDS),
+                                       (old_allowed, old_pairs)):
+                    with mock.patch.object(ort, "_DEPS_YAML_ALLOWED_KEYS", allowed), \
+                            mock.patch.object(ort, "_DEPS_KEY_KIND_FIELDS", pairs):
+                        graph, err = build_dependency_graph(
+                            self._REPO_ROOT, target_spec_ref=ref, target_node_key=nk,
+                            include_via=False)
+                        self.assertIsNone(err, err)
+                        results.append((ort._closure_signature(graph),
+                                        ort._component_direct_deps(graph, nk)))
+                self.assertEqual(results[0], results[1])
+                self.assertTrue(results[0][1])
 
 
 if __name__ == "__main__":

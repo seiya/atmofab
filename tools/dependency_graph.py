@@ -73,7 +73,9 @@ def build_dependency_graph(
         ``dependency_deps_malformed`` / ``dependency_spec_ref_unresolved`` /
         ``spec_catalog_corrupt``), plus the ``profile_*`` reasons
         ``expand_profile_dependencies`` returns, plus ``infrastructure_dependency_declared_in_deps``
-        (issue #284: a harness is the target's, never an edge of this target-free graph). That
+        (issue #284: a harness is the target's, never an edge of this target-free graph), plus
+        ``problem_dependency_on_non_problem`` (a ``problems:`` entry on a spec the catalog does
+        not file as a ``problem``; the system tier, Part 1). That
         closure additionally applies the spec-input ``spec_id_too_long`` gate, which this builder
         deliberately does not: it derives a graph, it does not gate a run.
 
@@ -93,7 +95,8 @@ def build_dependency_graph(
         expand_profile_dependencies,
         resolve_spec_ref_for,
     )
-    from tools.spec_input_gates import infra_dep_declared_violation
+    from tools.spec_input_gates import (
+        infra_dep_declared_violation, problem_dep_on_non_problem_violation)
 
     # Lazily loaded once a dependency edge is actually encountered — a leaf
     # target (empty deps.yaml) needs no catalog, so a missing/corrupt registry
@@ -157,6 +160,25 @@ def build_dependency_graph(
             error = {"reason": "infrastructure_dependency_declared_in_deps",
                      "detail": f"{spec_ref}: {infra_violation}"}
             return
+        # The system tier, Part 1: a `problems:` entry is admitted on a `problem` only. The
+        # spec-input gates refuse it before any phase runs (`resolve_node`, the closure walk);
+        # this refuses it again rather than carry the edge into a graph built past them. The
+        # declaring kind is the catalog's: the target's from `target_node_key` (which
+        # `resolve_node` reads off the catalog), a dependency's from the catalog-validated edge
+        # that pulled it in. Whether a MEMBER is admitted (its §5.1) is not asked here: this
+        # graph is a function of `deps.yaml` and the catalog alone.
+        problem_count = sum(1 for kind, _sid, _c in entries if kind == "problem")
+        if problem_count:
+            if spec_ref == target_spec_ref:
+                declaring_kind = str(target_node_key or "").split("/", 1)[0].strip() or None
+            else:
+                declaring_kind = (kindid_by_ref.get(spec_ref) or (None,))[0]
+            problem_violation = problem_dep_on_non_problem_violation(
+                declaring_kind, problem_count)
+            if problem_violation:
+                error = {"reason": "problem_dependency_on_non_problem",
+                         "detail": f"{spec_ref}: {problem_violation}"}
+                return
         # Issue #175: a `profile` entry names a compile-time component-selection policy, not a
         # closure node. Expand it into the components it selects HERE, so every layer below —
         # `all_nodes`, the staged sources, the Makefile objects, the closure bindings, the

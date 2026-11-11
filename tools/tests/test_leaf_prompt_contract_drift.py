@@ -1159,6 +1159,15 @@ PINNED: dict[str, str] = {
     # issues at `github.com/seiya/spec2science`. Again in review round 1: two `cuda_cpp` reviewer
     # fragments read "a `spec2science::View`" (the substitution had left "an").
     "leaf-95": "ace7ba72d063b767308ae0fe4223111ab99abdd0efa402555ca16064d9e263bc",
+    # leaf-96 (the system tier's Part 1, a `problem` that composes `problem`s): the compile
+    # producer template's rule (3) names a `problems:` member as a direct dependency, the compile
+    # reviewer template's surface heading names `component` or `problem`, and the
+    # `compile.generate` dependency-surface catalog names both kinds and drops the clause that a
+    # `problem` node omits `public_api`. New member: `dependency_surface_render` (advisory),
+    # which renders that catalog. Re-pinned in place before it shipped (review round 2 of the
+    # same PR, cor-L2): the Fortran producer fragment's dependency-USE gate clause names "a
+    # `component` or `problem` dependency".
+    "leaf-96": "787a2189733beed68bdcd36d9db9c32f8fc71cc3f2e6599add219b19342ee6c7",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1172,6 +1181,9 @@ PINNED_READER: dict[str, str] = {
     "compile-verify-3": "a17e90f9f3a50e55da26f365e3a6d59d33dd928b9d1fc13aca8d7903159c80e3",
     # compile-verify-4 (issue #619): the reviewer template names the Spec2Science workflow.
     "compile-verify-4": "dae8e1d336a363d721549da1489b647ae03f08d78d61667e4cdc35b9757b0364",
+    # compile-verify-5 (the system tier's Part 1): the reviewer template's surface heading names
+    # the dependencies a node calls, `component` or `problem`. Moved: that template alone.
+    "compile-verify-5": "2654c5b6a2cc5023c2bc42d4ac7d2e6322628d9ce3340b0b78e29d313f732d89",
     "generate-verify-1": "48190ff8b540fcc765fad7447a4f546ac653261910c151a0380e2c1740a83280",
     "generate-verify-2": "ac0a5c8a0e62b17c393ccd5ee5021610943de917ea60d1499ecd940f10a9ef8f",
     "generate-verify-3": "7ae4f9a1a905697bab1a7f24b4537f1b7327efb5f5277beef721965c35dfba19",
@@ -1347,7 +1359,28 @@ def _contract_tuple(tpl_dir: Path | None = None) -> dict[str, object]:
                        for detailed in (True, False)]
             for language in _prompt_languages()
         },
+        # The fixed text of the `compile.generate` dependency-surface catalog (the system tier's
+        # Part 1): the producer reads it in its `DEPENDENCIES.md` seed, rendered by
+        # `_build_dependency_surface_facts` over a payload whose every varying field is this
+        # tuple's constant, one entry per form the renderer has (resolved with names and an ABI
+        # block, resolved with no name, unresolved). Until leaf-96 no member rendered it, so its
+        # words could change with no version moving.
+        "dependency_surface_render": ort._build_dependency_facts(_dependency_surface_payload()),
     }
+
+
+def _dependency_surface_payload() -> dict[str, object]:
+    """A `compile.generate` payload driving each entry form `_build_dependency_surface_facts` has."""
+    return {"step": "compile", "substep": "generate", "dependency_surface": [
+        {"node_key": "component/dep@0.1.0", "published_operations": ["dep__op"],
+         "source": "ir_public_api", "public_api": {
+             "module_parameters": [{"name": "dp", "value": "float64"}],
+             "signatures": [{"symbol": "dep__op", "signature": {
+                 "kind": "subroutine", "name": "dep__op", "args": []}}]}},
+        {"node_key": "problem/member@0.1.0", "published_operations": [],
+         "source": "ir_public_api", "public_api": {}},
+        {"node_key": "component/gone@0.1.0", "published_operations": [], "source": "unresolved"},
+    ]}
 
 
 def _dependency_facts_payload(language: str, detailed: bool) -> dict[str, object]:
@@ -1418,6 +1451,7 @@ ADVISORY_MEMBERS: frozenset[str] = frozenset({
     "gate_guards_section",
     "lint_rules_document",
     "exemplar_gate_drift_note",
+    "dependency_surface_render",
 })
 _MEMBERS_READ_BY_KEY = ("templates", "system_prompts", "tool_surface_text")
 

@@ -630,6 +630,14 @@ def _refuse_non_certifiable_target(repo_root: Path, spec_ref: str) -> None:
     and no verdict can be reached for it. Without this the four phases would run on it and
     produce a certified artifact nothing consumes — billed work in the wrong direction.
 
+    It also refuses a ``problem`` target whose ``problems:`` member is not admitted (the system
+    tier, Part 1: ``spec_input_gates.problem_dependency_surface_violation``), so that the
+    refusal precedes the single-node preflight. Only a catalogued ``problem`` with a readable,
+    well-formed ``deps.yaml`` is checked here; every other shape passes through to
+    ``resolve_node`` and the closure walk, which hold the same rule and refuse what this cannot
+    read. A registry that cannot be read while a member is resolved refuses the member rather
+    than raising: the caller turns only a ``ValueError`` into the startup refusal.
+
     Captured HERE and not only in the conductor's ``resolve_node`` for the same reason
     ``REQUIRED_CLI_TOOLS`` is: what can be detected before anything is launched is detected
     before anything is launched. ``resolve_node`` keeps the same refusal as the fail-closed
@@ -668,7 +676,39 @@ def _refuse_non_certifiable_target(repo_root: Path, spec_ref: str) -> None:
                 f"certified code node. It generates no code and no dependency closure "
                 f"schedules it. Run the node that ADOPTS it instead."
             )
+        if str(entry.get("spec_kind") or "").strip() == "problem":
+            _refuse_unadmitted_problem_members(repo_root, ref.parent
+                                               if ref.name in _SPEC_REF_FILE_NAMES else ref)
         return
+
+
+def _refuse_unadmitted_problem_members(repo_root: Path, spec_dir: Path) -> None:
+    """Raise ``ValueError`` naming each ``problems:`` member of the ``problem`` at ``spec_dir``
+    that `spec_input_gates.problem_dependency_surface_violation` refuses. A missing, unparseable
+    or malformed ``deps.yaml`` raises nothing here: ``resolve_node`` refuses it."""
+    from tools.orchestration_runtime import (
+        SpecCatalogCorruption, _parse_dep_entries, _read_deps_yaml, resolve_spec_ref_for)
+    from tools.spec_input_gates import problem_dependency_surface_violation
+
+    deps_doc = _read_deps_yaml(repo_root, spec_dir.as_posix())
+    if not isinstance(deps_doc, dict):
+        return
+    entries, well_formed = _parse_dep_entries(deps_doc)
+    if not well_formed:
+        return
+    violations: list[str] = []
+    for kind, sid, _constraint in entries:
+        if kind != "problem":
+            continue
+        try:
+            member_ref = resolve_spec_ref_for(repo_root, "problem", sid)
+        except (SpecCatalogCorruption, OSError):
+            member_ref = None
+        violation = problem_dependency_surface_violation(repo_root, member_ref)
+        if violation:
+            violations.append(violation if member_ref else f"{violation} (problem/{sid})")
+    if violations:
+        raise ValueError("; ".join(violations))
 
 
 def _infrastructure_node_key_of(repo_root: Path, spec_ref: str) -> str | None:
@@ -4460,7 +4500,11 @@ def _resolve_dependency_closure(
         `infrastructure_dependency_declared_in_deps` (no spec declares an `infrastructure`
         dependency: the harness is the target's, issue #284). A `spec_id` the catalog
         registers under several kinds is reported as `spec_catalog_corrupt` — see
-        `_kind_for_gate`.
+        `_kind_for_gate`. The `problems:` entries (the system tier, Part 1) take two more:
+        `problem_dependency_on_non_problem` (only a `problem`, by the catalog, declares one) and
+        `problem_dependency_surface_not_step_only` (a member is admitted only when its §5.1
+        publishes exactly `<member>__step`), the second raised before the member is visited,
+        so its closure is not certified first.
 
     Edges come from `<spec_ref>/deps.yaml` resolved against `spec_catalog.yaml`
     via the canonical runtime helpers (`_parse_dep_entries`,
@@ -4478,7 +4522,12 @@ def _resolve_dependency_closure(
         expand_profile_dependencies,
         resolve_spec_ref_for,
     )
-    from tools.spec_input_gates import infra_dep_declared_violation, spec_id_length_violation
+    from tools.spec_input_gates import (
+        infra_dep_declared_violation,
+        problem_dep_on_non_problem_violation,
+        problem_dependency_surface_violation,
+        spec_id_length_violation,
+    )
 
     # A missing/corrupt registry must not turn an otherwise-launchable leaf workflow into
     # a failure (matching the runtime readiness path, which treats no-deps specs as
@@ -4511,14 +4560,18 @@ def _resolve_dependency_closure(
     # object() rather than a string so it can never match the `infrastructure` kind.
     _UNRESOLVABLE_KIND = object()
 
-    def _kind_for_gate(spec_ref: str, deps_doc: dict) -> tuple[Any, str | None]:
+    def _kind_for_gate(spec_ref: str, deps_doc: dict) -> tuple[Any, str | None, str]:
         """The `spec_kind` of `spec_ref`, which decides whether the run's target adds its
         harness to the node's edges (`target_harness_entries`: every node that is not itself
         `infrastructure`, issue #284). Until R4-a PR-3 it decided the exemption of the
         exactly-one infra-dep gate; the harness edge is the same question in the other
         direction — a self-declared `infrastructure` would drop its own harness edge.
 
-        Returns `(kind, registry_defect_detail)`. Kind must not be self-declared:
+        Returns `(kind, registry_defect_detail, source)`. `source` is `"catalog"` when the kind
+        came from the registry (directly, or from the catalog-validated edge) and `"declared"`
+        when it is the spec's own `deps.yaml` value (the two fallbacks below); a caller that
+        must not act on a self-declared kind tells the two apart by it. Kind must not be
+        self-declared:
         `deps.yaml`'s top-level `spec_kind` is carried by no schema — `_parse_dep_entries`
         validates only the `dependencies` block. So the catalog is authoritative wherever it
         can answer: for a dependency, `kindid_by_ref` was set from the catalog-validated edge
@@ -4538,16 +4591,16 @@ def _resolve_dependency_closure(
         """
         edge_kind = (kindid_by_ref.get(spec_ref) or (None,))[0]
         if edge_kind:
-            return edge_kind, None
+            return edge_kind, None, "catalog"
         spec_id = Path(spec_ref).name
         try:
             kinds = {k for (k, sid) in _get_catalog() if sid == spec_id}
         except (SpecCatalogCorruption, RuntimeError, OSError) as exc:
             return deps_doc.get("spec_kind"), (
                 f"spec/registry/spec_catalog.yaml could not be read ({exc}), so the "
-                f"spec_kind of {spec_ref} could not be confirmed")
+                f"spec_kind of {spec_ref} could not be confirmed"), "declared"
         if len(kinds) == 1:
-            return next(iter(kinds)), None
+            return next(iter(kinds)), None, "catalog"
         if len(kinds) > 1:
             # Reported by the caller outright: the registry WAS read, it is simply
             # self-contradictory.
@@ -4555,12 +4608,15 @@ def _resolve_dependency_closure(
                 f"spec_id {spec_id!r} is registered under multiple spec_kinds "
                 f"{sorted(kinds)} in spec/registry/spec_catalog.yaml; spec_id must be "
                 f"unique repository-wide (docs/SPEC.md req. 4), and until it is, this "
-                f"spec's kind cannot be resolved")
+                f"spec's kind cannot be resolved"), "catalog"
         # Registered under no kind at all: an unregistered spec. The declared value decides
-        # here. That is not a hole worth closing: an unregistered spec_ref is rejected by
-        # `resolve_node` (target) and by `_matching_dep_versions` (dependency edge) regardless
-        # of what it declares, so it can never reach a phase.
-        return deps_doc.get("spec_kind"), None
+        # the harness edge here, which is not a hole worth closing for THAT question: an
+        # unregistered spec_ref is rejected by `resolve_node` (target) and by
+        # `_matching_dep_versions` (dependency edge) regardless of what it declares, so it can
+        # never reach a phase. For a `problems:` entry the answer is reversed (the system
+        # tier, Part 1): the caller refuses the entry on a `"declared"` kind rather than admit
+        # a composition on the spec's own word.
+        return deps_doc.get("spec_kind"), None, "declared"
 
     def visit(spec_ref: str) -> None:
         nonlocal error
@@ -4604,7 +4660,7 @@ def _resolve_dependency_closure(
         # before it reaches `_run_node` → resolve_node, so gating only there could let a
         # violating ready dep slip past. A missing/malformed deps.yaml keeps its existing
         # reason (both checks above run first).
-        own_kind, _registry_defect = _kind_for_gate(spec_ref, deps_doc)
+        own_kind, _registry_defect, _kind_source = _kind_for_gate(spec_ref, deps_doc)
         if own_kind is _UNRESOLVABLE_KIND:
             error = {"reason": "spec_catalog_corrupt", "detail": _registry_defect}
             return
@@ -4616,6 +4672,23 @@ def _resolve_dependency_closure(
                 "detail": f"{spec_ref}: {_infra_violation}",
             }
             return
+        # The system tier, Part 1: a `problems:` entry is admitted on a `problem` only, by the
+        # CATALOG's kind. On every visited spec, an already-ready member included, for the
+        # reason the infrastructure sibling above gives. A kind that came from the spec's own
+        # `deps.yaml` (`_kind_for_gate`'s fallbacks) is not trusted for this: the entry is
+        # refused. The kind is consulted only when such an entry exists, so a leaf under a
+        # silent registry stays launchable.
+        problem_count = sum(1 for kind, _sid, _c in entries if kind == "problem")
+        if problem_count:
+            _np_violation = problem_dep_on_non_problem_violation(
+                own_kind if _kind_source == "catalog" else None, problem_count)
+            if _np_violation:
+                error = {
+                    "reason": "problem_dependency_on_non_problem",
+                    "detail": f"{spec_ref}: {_np_violation}" + (
+                        f" ({_registry_defect})" if _registry_defect else ""),
+                }
+                return
         # Issue #175: a `profile` entry is a compile-time component-selection policy, not a
         # closure node. Expanding it here — on EVERY visited spec, not only the target — is
         # what keeps `ordered` (the `--with-deps` schedule) free of profile nodes: no profile
@@ -4660,6 +4733,18 @@ def _resolve_dependency_closure(
                     "detail": f"no unique spec directory in catalog for {kind}/{sid}",
                 }
                 return
+            if kind == "problem":
+                # D11 of the system tier's Part 1: a member is admitted only when its own §5.1
+                # publishes exactly `<member>__step`. Checked BEFORE `visit(dep_spec_ref)`, so a
+                # refused member's closure is not certified first.
+                _surface_violation = problem_dependency_surface_violation(
+                    repo_root, dep_spec_ref)
+                if _surface_violation:
+                    error = {
+                        "reason": "problem_dependency_surface_not_step_only",
+                        "detail": f"{spec_ref}: {_surface_violation}",
+                    }
+                    return
             prior_kindid = kindid_by_ref.get(dep_spec_ref)
             if prior_kindid is not None and prior_kindid != (kind, sid):
                 error = {
