@@ -1,0 +1,16 @@
+spec_id: shallow_water2d_rotating
+spec_kind: problem
+dependencies:
+  # An assembled model (system tier, Part 1): the member `problem` advances the dynamics and
+  # the two components below integrate the Coriolis source after it (Controlled Spec §4, §5).
+  # The member's own components come from the member's adopted profile and are not declared
+  # here. A member is admitted only when its own §5.1 publishes exactly `<member>__step`.
+  problems:
+    - problem_id: shallow_water2d
+      version_constraint: ">=0.5.1 <1.0.0"
+  components:
+    - component_id: dynamics_shallow_water_source_2d_coriolis
+      version_constraint: ">=0.2.0 <1.0.0"
+    - component_id: dynamics_shallow_water_time_update_2d_rk4
+      version_constraint: ">=0.1.1 <1.0.0"
+  profiles: []

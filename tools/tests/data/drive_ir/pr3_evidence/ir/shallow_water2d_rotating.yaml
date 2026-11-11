@@ -1,0 +1,4805 @@
+schema_version: '1.0'
+meta:
+  node_key: problem/shallow_water2d_rotating@0.1.0
+  spec_kind: problem
+  spec_id: shallow_water2d_rotating
+  spec_version: 0.1.0
+  source_refs:
+    controlled_spec: spec/problem/dynamics/shallow_water/shallow_water2d_rotating/controlled_spec.md
+    tests: spec/problem/dynamics/shallow_water/shallow_water2d_rotating/tests.md
+    deps: spec/problem/dynamics/shallow_water/shallow_water2d_rotating/deps.yaml
+case:
+  test_case_set:
+  - case_id: swr_rot_n016_k1
+    inputs:
+      grid:
+        nx: 16
+        ny: 16
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 3
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: &id001
+        initial_profile: uniform_flow
+        mom_x0: 0.1
+        mom_y0: 0.05
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 1
+        f0: 50.0
+        f_amp_x: 0.0
+        f_phase_x: 0.0
+        f_amp_y: 0.0
+        f_phase_y: 0.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0
+      hu: inputs.initial.mom_x0
+      hv: inputs.initial.mom_y0
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_rot_n016_k4
+    inputs:
+      grid:
+        nx: 16
+        ny: 16
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 3
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id001
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 4
+        f0: 50.0
+        f_amp_x: 0.0
+        f_phase_x: 0.0
+        f_amp_y: 0.0
+        f_phase_y: 0.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0
+      hu: inputs.initial.mom_x0
+      hv: inputs.initial.mom_y0
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_rot_n016_k4_rem3
+    inputs:
+      grid:
+        nx: 16
+        ny: 16
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.205
+      history:
+        every: 3
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id001
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 4
+        f0: 50.0
+        f_amp_x: 0.0
+        f_phase_x: 0.0
+        f_amp_y: 0.0
+        f_phase_y: 0.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0
+      hu: inputs.initial.mom_x0
+      hv: inputs.initial.mom_y0
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_pw_n128
+    inputs:
+      grid:
+        nx: 128
+        ny: 4
+        L_x: 1.0
+        L_y: 0.03125
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 10
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: poincare_wave_x
+        eta0: 0.001
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 1
+        f0: 20.0
+        f_amp_x: 0.0
+        f_phase_x: 0.0
+        f_amp_y: 0.0
+        f_phase_y: 0.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta0 * cos(2 * pi * x / inputs.grid.L_x)
+      hu: (sqrt(inputs.rotation.f0 * inputs.rotation.f0 + inputs.constants.g * inputs.constants.H_0 *
+        (2 * pi / inputs.grid.L_x) * (2 * pi / inputs.grid.L_x)) / (2 * pi / inputs.grid.L_x)) * inputs.initial.eta0
+        * cos(2 * pi * x / inputs.grid.L_x)
+      hv: (inputs.rotation.f0 / (2 * pi / inputs.grid.L_x)) * inputs.initial.eta0 * sin(2 * pi * x / inputs.grid.L_x)
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: &id002
+        initial_profile: shear_flow
+        eta_x: 0.01
+        eta_phase_x: 0.1
+        eta_y: 0.006
+        eta_phase_y: 0.3
+        mom_x0: 0.05
+        mom_x1: 0.04
+        mom_phase_y: 0.4
+        mom_y0: -0.03
+        mom_y1: 0.05
+        mom_phase_x: 0.15
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation: &id003
+        'on': 1
+        every: 2
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation: *id003
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n128
+    inputs:
+      grid:
+        nx: 128
+        ny: 128
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation: *id003
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n256
+    inputs:
+      grid:
+        nx: 256
+        ny: 256
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation: *id003
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064_axis
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: shear_flow
+        eta_x: 0.006
+        eta_phase_x: 0.3
+        eta_y: 0.01
+        eta_phase_y: 0.1
+        mom_x0: -0.03
+        mom_x1: 0.05
+        mom_phase_y: 0.15
+        mom_y0: 0.05
+        mom_y1: 0.04
+        mom_phase_x: 0.4
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 2
+        f0: -20.0
+        f_amp_x: -8.0
+        f_phase_x: 0.05
+        f_amp_y: -10.0
+        f_phase_y: 0.2
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064_xmir
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: shear_flow
+        eta_x: -0.01
+        eta_phase_x: 0.9
+        eta_y: 0.006
+        eta_phase_y: 0.3
+        mom_x0: -0.05
+        mom_x1: -0.04
+        mom_phase_y: 0.4
+        mom_y0: -0.03
+        mom_y1: -0.05
+        mom_phase_x: 0.85
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 2
+        f0: -20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.8
+        f_amp_y: -8.0
+        f_phase_y: 0.05
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064_ymir
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: shear_flow
+        eta_x: 0.01
+        eta_phase_x: 0.1
+        eta_y: -0.006
+        eta_phase_y: 0.7
+        mom_x0: 0.05
+        mom_x1: -0.04
+        mom_phase_y: 0.6
+        mom_y0: 0.03
+        mom_y1: -0.05
+        mom_phase_x: 0.15
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 2
+        f0: -20.0
+        f_amp_x: -10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.95
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064_shift
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: shear_flow
+        eta_x: 0.01
+        eta_phase_x: 0.35
+        eta_y: 0.006
+        eta_phase_y: 0.425
+        mom_x0: 0.05
+        mom_x1: 0.04
+        mom_phase_y: 0.525
+        mom_y0: -0.03
+        mom_y1: 0.05
+        mom_phase_x: 0.4
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 2
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.45
+        f_amp_y: 8.0
+        f_phase_y: 0.175
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064_rect
+    inputs:
+      grid:
+        nx: 64
+        ny: 48
+        L_x: 1.0
+        L_y: 0.5
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 20
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation: *id003
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_off_cone_n064
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 90
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: linear_wave_x
+        eta0: 0.001
+        wave_sign: 1.0
+        shift_x_fraction: 0.0
+        shift_y_fraction: 0.0
+      topography:
+        topography_profile: williamson_tc5_cone
+        x_c_fraction: 0.75
+        y_c_fraction: 0.6666666666666666
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+      rotation:
+        'on': 0
+        every: 3
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+        - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6)))
+      hu: (inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+        - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6)))) * (inputs.initial.wave_sign * (inputs.initial.eta0 * sqrt(inputs.constants.g * inputs.constants.H_0)
+        / inputs.constants.H_0) * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction)))
+      hv: 0.0
+      z_b: 0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6))
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_off_cone_n064_twin
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 90
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: linear_wave_x
+        eta0: 0.001
+        wave_sign: 1.0
+        shift_x_fraction: 0.0
+        shift_y_fraction: 0.0
+      topography:
+        topography_profile: williamson_tc5_cone
+        x_c_fraction: 0.75
+        y_c_fraction: 0.6666666666666666
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+      rotation:
+        'on': 0
+        every: 1
+        f0: -35.0
+        f_amp_x: 4.0
+        f_phase_x: 0.7
+        f_amp_y: -6.0
+        f_phase_y: 0.6
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+        - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6)))
+      hu: (inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+        - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6)))) * (inputs.initial.wave_sign * (inputs.initial.eta0 * sqrt(inputs.constants.g * inputs.constants.H_0)
+        / inputs.constants.H_0) * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction)))
+      hv: 0.0
+      z_b: 0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6))
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_off_flat_n064
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 90
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: linear_wave_x
+        eta0: 0.001
+        wave_sign: 1.0
+        shift_x_fraction: 0.0
+        shift_y_fraction: 0.0
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+      rotation:
+        'on': 0
+        every: 2
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+      hu: (inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction)))
+        * (inputs.initial.wave_sign * (inputs.initial.eta0 * sqrt(inputs.constants.g * inputs.constants.H_0)
+        / inputs.constants.H_0) * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction)))
+      hv: 0.0
+      z_b: 0.0
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_guard_every0_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 0
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 0
+        f0: 20.0
+        f_amp_x: 0.0
+        f_phase_x: 0.0
+        f_amp_y: 0.0
+        f_phase_y: 0.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_guard_everyneg_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 0
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: -1
+        f0: 20.0
+        f_amp_x: 0.0
+        f_phase_x: 0.0
+        f_amp_y: 0.0
+        f_phase_y: 0.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_guard_sel2_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 0
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 2
+        every: 1
+        f0: 20.0
+        f_amp_x: 0.0
+        f_phase_x: 0.0
+        f_amp_y: 0.0
+        f_phase_y: 0.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_dry_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 9
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 5.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: linear_wave_x
+        eta0: 0.001
+        wave_sign: 1.0
+        shift_x_fraction: 0.0
+        shift_y_fraction: 0.0
+      topography:
+        topography_profile: williamson_tc5_cone
+        x_c_fraction: 0.75
+        y_c_fraction: 0.6666666666666666
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+      rotation:
+        'on': 1
+        every: 1
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+        - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6)))
+      hu: (inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+        - (0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6)))) * (inputs.initial.wave_sign * (inputs.initial.eta0 * sqrt(inputs.constants.g * inputs.constants.H_0)
+        / inputs.constants.H_0) * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction)))
+      hv: 0.0
+      z_b: 0.2 * inputs.constants.H_0 * max(0, 1 - sqrt(min(abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x),
+        inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x)) * min(abs(x - inputs.topography.x_c_fraction
+        * inputs.grid.L_x), inputs.grid.L_x - abs(x - inputs.topography.x_c_fraction * inputs.grid.L_x))
+        + min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y - abs(y - inputs.topography.y_c_fraction
+        * inputs.grid.L_y)) * min(abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y), inputs.grid.L_y
+        - abs(y - inputs.topography.y_c_fraction * inputs.grid.L_y))) / (min(inputs.grid.L_x, inputs.grid.L_y)
+        / 6))
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_dtneg_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: -0.2
+      history:
+        every: 0
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: -1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: linear_wave_x
+        eta0: 0.001
+        wave_sign: 1.0
+        shift_x_fraction: 0.0
+        shift_y_fraction: 0.0
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+      rotation:
+        'on': 1
+        every: 1
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction))
+      hu: (inputs.constants.H_0 + inputs.initial.eta0 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction)))
+        * (inputs.initial.wave_sign * (inputs.initial.eta0 * sqrt(inputs.constants.g * inputs.constants.H_0)
+        / inputs.constants.H_0) * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.shift_x_fraction)))
+      hv: 0.0
+      z_b: 0.0
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  sweeps: {}
+  refinements: {}
+algorithm:
+  algorithm_id: shallow_water2d_hydrostatic_rusanov_p0_ssprk2
+  execution_mode: sequence
+  description: 'Conservative 2D shallow water equations on the doubly periodic domain [0,L_x) x [0,L_y):
+    d(h)/dt + d(hu)/dx + d(hv)/dy = 0; d(hu)/dt + d(hu^2 + g h^2/2)/dx + d(huv)/dy = -g h d(z_b)/dx; d(hv)/dt
+    + d(huv)/dx + d(hv^2 + g h^2/2)/dy = -g h d(z_b)/dy. Uniform cell-centred finite volumes, dx = L_x/nx,
+    dy = L_y/ny, state U = (h, hu, hv), well-balanced first-order (p0) hydrostatic reconstruction of Audusse
+    et al. (2004), Rusanov interface flux (dependency), periodic ghost copy (dependency), and an SSPRK2
+    step composed by this node from two calls of the forward stage update (dependency). The published
+    operation shallow_water2d__step advances the state h, hu, hv (inout) by ONE SSPRK2 step (steps 01
+    and 06-21) with z_b (in), the grid, g, dt and t, and returns the logical ok (false on a runtime error,
+    the state then undefined and not committed by the driver); this section lowers that one call. The
+    host evaluates the topography, the initial condition and the dt rule (rules z_b_cone, initial_condition_profiles,
+    dt_rule) as initial_state / derived; the host-rendered driver runs the loop n = 1 .. derived.n_step,
+    commits each step, and samples history / step_series. Cell indices are 0-based: interior cell (i,
+    j), i = 0..nx-1, j = 0..ny-1, centre x_i = (i + 1/2) dx, y_j = (j + 1/2) dy; halo-extended arrays
+    carry one ghost layer (ng = 1) at index -1 and nx (resp. ny). Each case is computed in its own orientation
+    from its inputs as given.'
+  steps:
+  - step_id: step_01_topography_halo
+    step_kind: pointwise_process
+    operation_ref: extend_topography
+    inputs:
+    - z_b
+    - nx
+    - ny
+    outputs:
+    - z_b_ext
+    description: z_b (in) is host-evaluated (case.test_case_set[].initial_state.z_b, rule z_b_cone) and
+      time-invariant. Inside shallow_water2d__step, z_b_ext is z_b on the halo-extended grid, its ghost
+      layer the periodic image (z_b_ext(-1,j) = z_b(nx-1,j), z_b_ext(nx,j) = z_b(0,j), likewise in j),
+      so that the reconstruction of step 2 is defined at the domain seam. z_b is never passed to the boundary
+      component.
+  - step_id: step_06_step_start
+    step_kind: pointwise_process
+    operation_ref: pack_step_state
+    inputs:
+    - h
+    - hu
+    - hv
+    outputs:
+    - U_n
+    description: 'U_n(0,:,:) = h, U_n(1,:,:) = hu, U_n(2,:,:) = hv: the state U^n at the start of step
+      n (component-first layout [ncomp, nx, ny], ncomp = 3).'
+  - step_id: step_07_s1_halo_fill
+    step_kind: pointwise_process
+    operation_ref: fill_halo_interior
+    inputs:
+    - U_n
+    outputs:
+    - W_ext
+    description: 'Stage 1: copy the stage state U_n into the interior (0..nx-1, 0..ny-1) of the halo-extended
+      stage array W_ext [ncomp, nx_total, ny_total].'
+  - step_id: step_08_s1_boundary
+    step_kind: boundary_apply
+    operation_ref: dynamics_shallow_water_boundary_2d_periodic_copy__apply
+    inputs:
+    - W_ext
+    - nx
+    - ny
+    - ng
+    - nx_total
+    - ny_total
+    outputs:
+    - W_ext
+    - grid_valid
+    description: "Step 1 of controlled_spec \xA75 (realizes the case input boundary.kind = periodic, the\
+      \ only boundary allowed): call dynamics_shallow_water_boundary_2d_periodic_copy__apply(nx, ny, ng=1,\
+      \ nx_total, ny_total, U_in, U_out, grid_valid) once per component k = 0, 1, 2 with U_in = W_ext(k,:,:)\
+      \ and the result written back to W_ext(k,:,:). Only U is mapped; z_b is not passed. grid_valid =\
+      \ false makes the step return ok = false."
+  - step_id: step_09_s1_reconstruct
+    step_kind: reconstruct
+    operation_ref: hydrostatic_reconstruction_p0
+    inputs:
+    - W_ext
+    - z_b_ext
+    outputs:
+    - hs_e_L
+    - hs_e_R
+    - hs_n_B
+    - hs_n_T
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    description: "Step 2 of controlled_spec \xA75, at the stage state W_ext, by rule hydrostatic_reconstruction:\
+      \ for every interior cell (i, j) its east face (i+1/2, j) (neighbour i+1, the ghost nx for i = nx-1)\
+      \ and its north face (i, j+1/2) (neighbour j+1, the ghost ny for j = ny-1). Builds the interface\
+      \ states U_L, U_R (x face) and U_B, U_T (y face) from the reconstructed depths times the CELL velocities.\
+      \ Wet-domain check: any reconstructed depth <= 0 is a runtime error, detected here before the value\
+      \ reaches the flux component; the run stops with an error."
+  - step_id: step_10_s1_flux
+    step_kind: flux_compute
+    operation_ref: dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
+    inputs:
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    - g
+    outputs:
+    - F_e
+    - G_n
+    - a_x
+    - a_y
+    - guard_ok
+    description: "Step 3 of controlled_spec \xA75: for every interior cell (i, j) call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(U_L,\
+      \ U_R, U_B, U_T, g, F_star, G_star, a_x, a_y, guard_ok) with the reconstructed states of step 2\
+      \ of that cell's east face (U_L, U_R) and north face (U_B, U_T); store F_e(:,i,j) = F_star (= F*_{i+1/2,j})\
+      \ and G_n(:,i,j) = G_star (= G*_{i,j+1/2}). The component's contract is unchanged: it consumes the\
+      \ states the caller supplies. guard_ok = false is a runtime error (the step returns ok = false)."
+  - step_id: step_11_s1_source
+    step_kind: source_term
+    operation_ref: hydrostatic_bed_source
+    inputs:
+    - hs_e_L
+    - hs_e_R
+    - hs_n_B
+    - hs_n_T
+    - g
+    - dx
+    - dy
+    outputs:
+    - S_b
+    description: "Step 4 of controlled_spec \xA75, source part, by rule bed_source_S_b, from the SAME\
+      \ reconstructed depths step 2 built at this stage state."
+  - step_id: step_12_s1_flux_difference
+    step_kind: pointwise_process
+    operation_ref: flux_difference
+    inputs:
+    - F_e
+    - G_n
+    - dx
+    - dy
+    outputs:
+    - L_flux
+    description: "Step 4 of controlled_spec \xA75, flux part, by rule flux_difference_L_flux."
+  - step_id: step_13_s1_advance
+    step_kind: time_integrate
+    operation_ref: dynamics_shallow_water_time_update_2d_ssprk2__advance
+    inputs:
+    - U_n
+    - L_flux
+    - S_b
+    - z_b
+    - dt
+    - dx
+    - dy
+    - ncomp
+    - nx
+    - ny
+    outputs:
+    - U_1
+    - guard_pass
+    description: "First call of step 5 of controlled_spec \xA75: dynamics_shallow_water_time_update_2d_ssprk2__advance(ncomp=3,\
+      \ nx, ny, U_n, L_flux(U_n), S_b(U_n), z_b, dt, dx, dy, U_np1 -> U_1, guard_pass); at the component's\
+      \ L0 profile one call is U_1 = U_n + dt*(L_flux + S_b). z_b is passed but inert there. guard_pass\
+      \ = false makes the step return ok = false."
+  - step_id: step_14_s2_halo_fill
+    step_kind: pointwise_process
+    operation_ref: fill_halo_interior
+    inputs:
+    - U_1
+    outputs:
+    - W_ext
+    description: 'Stage 2: copy the stage state U_1 into the interior of W_ext; steps 15-19 re-evaluate
+      the whole right-hand side L(U_1) at this stage state.'
+  - step_id: step_15_s2_boundary
+    step_kind: boundary_apply
+    operation_ref: dynamics_shallow_water_boundary_2d_periodic_copy__apply
+    inputs:
+    - W_ext
+    - nx
+    - ny
+    - ng
+    - nx_total
+    - ny_total
+    outputs:
+    - W_ext
+    - grid_valid
+    description: As step_08, at the stage state U_1 (periodic ghost copy of each component of W_ext).
+  - step_id: step_16_s2_reconstruct
+    step_kind: reconstruct
+    operation_ref: hydrostatic_reconstruction_p0
+    inputs:
+    - W_ext
+    - z_b_ext
+    outputs:
+    - hs_e_L
+    - hs_e_R
+    - hs_n_B
+    - hs_n_T
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    description: As step_09, at the stage state U_1 (rule hydrostatic_reconstruction, wet-domain check
+      included).
+  - step_id: step_17_s2_flux
+    step_kind: flux_compute
+    operation_ref: dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux
+    inputs:
+    - U_L
+    - U_R
+    - U_B
+    - U_T
+    - g
+    outputs:
+    - F_e
+    - G_n
+    - a_x
+    - a_y
+    - guard_ok
+    description: As step_10, at the stage state U_1.
+  - step_id: step_18_s2_source
+    step_kind: source_term
+    operation_ref: hydrostatic_bed_source
+    inputs:
+    - hs_e_L
+    - hs_e_R
+    - hs_n_B
+    - hs_n_T
+    - g
+    - dx
+    - dy
+    outputs:
+    - S_b
+    description: 'As step_11, at the stage state U_1: S_b(U_1), never the S_b(U_n) of stage 1.'
+  - step_id: step_19_s2_flux_difference
+    step_kind: pointwise_process
+    operation_ref: flux_difference
+    inputs:
+    - F_e
+    - G_n
+    - dx
+    - dy
+    outputs:
+    - L_flux
+    description: As step_12, at the stage state U_1.
+  - step_id: step_20_s2_advance
+    step_kind: time_integrate
+    operation_ref: dynamics_shallow_water_time_update_2d_ssprk2__advance
+    inputs:
+    - U_1
+    - L_flux
+    - S_b
+    - z_b
+    - dt
+    - dx
+    - dy
+    - ncomp
+    - nx
+    - ny
+    outputs:
+    - U_2
+    - guard_pass
+    description: 'Second call of step 5: advance(U_1; L_flux(U_1), S_b(U_1)) -> U_2 = U_1 + dt*L(U_1).
+      guard_pass = false makes the step return ok = false.'
+  - step_id: step_21_ssprk2_average
+    step_kind: time_integrate
+    operation_ref: ssprk2_average
+    inputs:
+    - U_n
+    - U_2
+    outputs:
+    - h
+    - hu
+    - hv
+    description: 'Step 5 composition owned by this node, rule ssprk2_composition: U^{n+1} = (1/2) U_n
+      + (1/2) U_2, unpacked into h = U^{n+1}(0), hu = U^{n+1}(1), hv = U^{n+1}(2) (the committed state).
+      A step made of one advance call with the fields of U^n (forward Euler) is NOT this step.'
+  ordering:
+  - step_01_topography_halo
+  - step_06_step_start
+  - step_07_s1_halo_fill
+  - step_08_s1_boundary
+  - step_09_s1_reconstruct
+  - step_10_s1_flux
+  - step_11_s1_source
+  - step_12_s1_flux_difference
+  - step_13_s1_advance
+  - step_14_s2_halo_fill
+  - step_15_s2_boundary
+  - step_16_s2_reconstruct
+  - step_17_s2_flux
+  - step_18_s2_source
+  - step_19_s2_flux_difference
+  - step_20_s2_advance
+  - step_21_ssprk2_average
+  control_condition: One call of shallow_water2d__step runs steps 01 and 06-21 once, advancing h, hu,
+    hv by ONE SSPRK2 step of length dt (two forward stage updates, then the average with U^n); a false
+    ok (grid_valid, guard_ok or guard_pass false, or a reconstructed depth <= 0) is the call's result,
+    and the driver commits no step then. The time loop, n_step, dt and the stop rule are the driver's
+    (drive.loop, derived), and the topography, the initial condition and the dt rule are host data (initial_state,
+    derived; rules z_b_cone, initial_condition_profiles, dt_rule).
+  iteration_contract: {}
+  update_semantics:
+    target_variables:
+    - h
+    - hu
+    - hv
+    - ok
+    update_order: sequential
+    form: 'U_next = F(U_now, params): h, hu, hv replaced by the committed SSPRK2 state after each step;
+      z_b is never updated'
+  temporaries:
+  - name: z_b_ext
+    shape_expr: '[nx_total, ny_total]'
+  - name: U_n
+    shape_expr: '[ncomp, nx, ny]'
+  - name: U_1
+    shape_expr: '[ncomp, nx, ny]'
+  - name: U_2
+    shape_expr: '[ncomp, nx, ny]'
+  - name: W_ext
+    shape_expr: '[ncomp, nx_total, ny_total]'
+  - name: grid_valid
+    shape_expr: scalar
+  - name: hs_e_L
+    shape_expr: '[nx, ny]'
+  - name: hs_e_R
+    shape_expr: '[nx, ny]'
+  - name: hs_n_B
+    shape_expr: '[nx, ny]'
+  - name: hs_n_T
+    shape_expr: '[nx, ny]'
+  - name: U_L
+    shape_expr: '[3]'
+  - name: U_R
+    shape_expr: '[3]'
+  - name: U_B
+    shape_expr: '[3]'
+  - name: U_T
+    shape_expr: '[3]'
+  - name: F_e
+    shape_expr: '[ncomp, nx, ny]'
+  - name: G_n
+    shape_expr: '[ncomp, nx, ny]'
+  - name: a_x
+    shape_expr: scalar
+  - name: a_y
+    shape_expr: scalar
+  - name: guard_ok
+    shape_expr: scalar
+  - name: L_flux
+    shape_expr: '[ncomp, nx, ny]'
+  - name: S_b
+    shape_expr: '[ncomp, nx, ny]'
+  - name: guard_pass
+    shape_expr: scalar
+  derived_field_rules:
+  - name: ncomp
+    rule: ncomp = 3, the components (h, hu, hv) of U
+  - name: ng
+    rule: ng = 1, the ghost-layer width (p0 reconstruction needs one neighbour)
+  - name: nx_total
+    rule: nx_total = nx + 2*ng
+  - name: ny_total
+    rule: ny_total = ny + 2*ng
+  - name: dx
+    rule: dx = L_x / nx (case inputs grid.L_x, grid.nx)
+  - name: dy
+    rule: dy = L_y / ny (case inputs grid.L_y, grid.ny)
+  - name: z_b_cone
+    rule: 'topography_profile = williamson_tc5_cone: x_c = x_c_fraction*L_x, y_c = y_c_fraction*L_y, d_x(x)
+      = min(|x - x_c|, L_x - |x - x_c|), d_y(y) = min(|y - y_c|, L_y - |y - y_c|), r = sqrt(d_x^2 + d_y^2),
+      z_b = h_s * max(0, 1 - r/r_0), r_0 = min(L_x, L_y)/6, h_s = 0.2*H_0, at x = (i+1/2)dx, y = (j+1/2)dy.
+      topography_profile = flat: z_b = 0. Only these two values are allowed; no other bottom function
+      or parameter.'
+  - name: initial_condition_profiles
+    rule: 'c_0 = sqrt(g*H_0); phases phi_x = 2*pi*(x/L_x - shift_x_fraction), phi_y = 2*pi*(y/L_y - shift_y_fraction).
+      linear_wave_x: eta = H_0 + eta0*sin(phi_x), h = eta - z_b, u = wave_sign*(eta0*c_0/H_0)*sin(phi_x),
+      v = 0. linear_wave_y: eta = H_0 + eta0*sin(phi_y), h = eta - z_b, u = 0, v = wave_sign*(eta0*c_0/H_0)*sin(phi_y).
+      oblique_mode: eta = H_0 + eta0*sin(2*pi*(x/L_x + y/L_y - shift_x_fraction - shift_y_fraction)),
+      h = eta - z_b, u = v = 0. lake_at_rest: eta = H_0, h = H_0 - z_b, u = v = 0. Then hu = h*u, hv =
+      h*v, all at the cell centres x = (i+1/2)dx, y = (j+1/2)dy of the case grid.'
+  - name: dt_rule
+    rule: 'Case input dt_rule (kind cfl_ceil_n_step, dt_scale, cfl_target): lam0 = max_ij((|u_ij| + sqrt(g
+      h_ij))/dx + (|v_ij| + sqrt(g h_ij))/dy) at the initial state with u = hu/h, v = hv/h; dt_raw = dt_scale*cfl_target/lam0;
+      n_step = ceil((t_end - t_start)/dt_raw); dt = (t_end - t_start)/n_step (t_start, t_end from case
+      input time).'
+  - name: hydrostatic_reconstruction
+    rule: 'At the x face (i+1/2, j) between cells i and i+1 of the stage state W = (h, hu, hv) on the
+      halo-extended grid: z_face = max(z_b(i,j), z_b(i+1,j)); hs_e_L(i,j) = max(0, h(i,j) + z_b(i,j) -
+      z_face) (h*_{i+1/2,j,L}); hs_e_R(i,j) = max(0, h(i+1,j) + z_b(i+1,j) - z_face) (h*_{i+1/2,j,R});
+      U_L = [hs_e_L, hs_e_L*u(i,j), hs_e_L*v(i,j)], U_R = [hs_e_R, hs_e_R*u(i+1,j), hs_e_R*v(i+1,j)],
+      u = hu/h, v = hv/h of the cell. At the y face (i, j+1/2): z_face = max(z_b(i,j), z_b(i,j+1)); hs_n_B(i,j)
+      = max(0, h(i,j) + z_b(i,j) - z_face) (h*_{i,j+1/2,B}), hs_n_T(i,j) = max(0, h(i,j+1) + z_b(i,j+1)
+      - z_face) (h*_{i,j+1/2,T}); U_B = [hs_n_B, hs_n_B*u(i,j), hs_n_B*v(i,j)], U_T = [hs_n_T, hs_n_T*u(i,j+1),
+      hs_n_T*v(i,j+1)]. The in-cell state stays piecewise constant (p0, never switched). max(0, .) is
+      the definitional positivity guard on the DERIVED interface depth only, never applied to the cell
+      state h; it must not activate: a reconstructed depth <= 0 at any interface is a runtime error (wet-domain
+      invariant), never clipped, floored, replaced or continued with a zero-depth flux.'
+  - name: bed_source_S_b
+    rule: S_b(0,i,j) = 0; S_b(1,i,j) = g/(2 dx) * (hs_e_L(i,j)^2 - hs_e_R(i-1,j)^2); S_b(2,i,j) = g/(2
+      dy) * (hs_n_B(i,j)^2 - hs_n_T(i,j-1)^2), i.e. the two reconstructed depths of cell (i,j) itself
+      at its right/left x faces (h*_{i+1/2,j,L}, h*_{i-1/2,j,R}) and its top/bottom y faces (h*_{i,j+1/2,B},
+      h*_{i,j-1/2,T}); the west face of cell 0 is the east face of cell nx-1 and the south face of row
+      0 the north face of row ny-1 (explicit periodic-index wrap). The analytic gradient of z_b is never
+      used.
+  - name: flux_difference_L_flux
+    rule: L_flux(:,i,j) = -(F_e(:,i,j) - F_e(:,i-1,j))/dx - (G_n(:,i,j) - G_n(:,i,j-1))/dy, F_e(:,i,j)
+      = F*_{i+1/2,j}, G_n(:,i,j) = G*_{i,j+1/2}, with the periodic-index wrap i-1 = -1 -> nx-1 and j-1
+      = -1 -> ny-1 (the face shared with the periodic image). The mass flux of each face is single-valued,
+      so sum h is conserved to round-off. The x difference is divided by dx and the y difference by dy.
+  - name: ssprk2_composition
+    rule: L(U) = L_flux(U) + S_b(U), every term (ghost update, reconstruction, flux, source) evaluated
+      at the state U. U_1 = advance(U_n; L_flux(U_n), S_b(U_n)) = U_n + dt*L(U_n); U_2 = advance(U_1;
+      L_flux(U_1), S_b(U_1)) = U_1 + dt*L(U_1); U^{n+1} = U_n/2 + U_2/2.
+  - name: cfl_index
+    rule: "cfl = dt * max_ij((|u_ij| + c_ij)/dx + (|v_ij| + c_ij)/dy), u = hu/h, v = hv/h, c = sqrt(g\
+      \ h), the stability index of controlled_spec \xA75"
+  - name: t
+    rule: 't = t_start + step*dt, written by the driver: t_start in the initial capture, t_start + n*dt
+      after committed step n'
+  - name: cells_updated
+    rule: 'driver perf counters: steps = committed steps, cells_updated = nx*ny*steps'
+  invariants:
+  - 'Wet domain: every reconstructed interface depth h* > 0 at every stage of every step; drying/wetting
+    is out of scope and a violation is a runtime error (fail closed).'
+  - 'Well-balanced (lake at rest): with eta = h + z_b uniform and u = v = 0 the two reconstructed depths
+    at each face are equal, the flux difference cancels S_b and h, hu, hv stay unchanged to round-off.'
+  - 'Flat reduction: topography_profile = flat gives h* = h, S_b = 0 and the plain p0 Rusanov scheme.'
+  - 'Mass conservation: the mass component of S_b is zero and each face''s mass flux is single-valued,
+    so sum_ij h_ij is conserved to round-off.'
+  - 'Axis-exchange equivariance: the case with nx<->ny, L_x<->L_y, x_c_fraction<->y_c_fraction and the
+    transposed state with momenta exchanged has, at every step, the transposed state of the original,
+    to round-off; x and y are treated by the same rule.'
+  - Mirror equivariance in x (x_c_fraction -> 1 - x_c_fraction, state reflected along x, hu sign-reversed)
+    and in y (the same along y, hv sign-reversed) hold to round-off.
+  - 'Prohibited: computing a case by transposing/reflecting its state, grid, coordinates or topography
+    to another case''s orientation and transforming back; any clip/limiter/filter on h; a non-periodic
+    boundary; automatic switching of topography_profile or of the discretization; a forcing other than
+    the bed source; the analytic z_b gradient.'
+  - 'Allowed: one routine computing both directions (momenta handed in normal/tangential order or arrays
+    transposed per direction) when it is applied the same way in every case.'
+  - 'AD readiness: U_next = F(U_now, params); max, abs, ceil and the periodic-index wrap are explicit
+    non-differentiable operations.'
+  splitting_policy:
+    kind: none
+    description: 'unsplit: both directions enter one right-hand side L(U) per stage'
+  state_variables:
+  - name: h
+    shape_expr: '[nx, ny]'
+  - name: hu
+    shape_expr: '[nx, ny]'
+  - name: hv
+    shape_expr: '[nx, ny]'
+  required_update_paths:
+  - h
+  - hu
+  - hv
+  diagnostics_from_state: true
+  fallback_policy: fail_closed
+dependency:
+  node_key: problem/shallow_water2d_rotating@0.1.0
+  direct_deps:
+  - kind: problem
+    node_key: problem/shallow_water2d@0.5.1
+    operations:
+    - shallow_water2d__step
+  - kind: component
+    node_key: component/dynamics_shallow_water_source_2d_coriolis@0.2.0
+    operations:
+    - dynamics_shallow_water_source_2d_coriolis__apply
+  - kind: component
+    node_key: component/dynamics_shallow_water_time_update_2d_rk4@0.1.1
+    operations:
+    - dynamics_shallow_water_time_update_2d_rk4__advance
+io_contract:
+  inputs:
+  - name: nx
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.grid.nx: cells along x; fixes dx = L_x/nx and the array extent'
+  - name: ny
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.grid.ny: cells along y; fixes dy = L_y/ny and the array extent'
+  - name: L_x
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.grid.L_x: domain length in x (m)'
+  - name: L_y
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.grid.L_y: domain length in y (m)'
+  - name: t_start
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.time.t_start: start time, enters rule dt_rule and the reported time'
+  - name: t_end
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.time.t_end: end time, enters rule dt_rule (n_step_target, dt)'
+  - name: dt_scale
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.dt_rule.dt_scale: multiplies cfl_target/lam0 in rule dt_rule'
+  - name: cfl_target
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.dt_rule.cfl_target (0.45): target CFL of rule dt_rule'
+  - name: initial_profile
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.initial.initial_profile: selects the rule initial_condition_profiles branch
+      (linear_wave_x, linear_wave_y, oblique_mode, lake_at_rest)'
+  - name: eta0
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.initial.eta0: wave amplitude of the initial profile'
+  - name: wave_sign
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.initial.wave_sign (+1/-1, linear waves only): travel direction, sign of
+      the initial velocity'
+  - name: shift_x_fraction
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.initial.shift_x_fraction: phase shift of the initial profile in x'
+  - name: shift_y_fraction
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.initial.shift_y_fraction: phase shift of the initial profile in y'
+  - name: topography_profile
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.topography.topography_profile: flat or williamson_tc5_cone (rule z_b_cone)'
+  - name: x_c_fraction
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.topography.x_c_fraction (cone only): x_c = x_c_fraction*L_x'
+  - name: y_c_fraction
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.topography.y_c_fraction (cone only): y_c = y_c_fraction*L_y'
+  - name: g
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.constants.g = 9.81: gravity in the flux, the source, the wave speed and
+      the initial velocity'
+  - name: H_0
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: 'case inputs.constants.H_0 = 1.0: reference depth of the initial profiles and h_s = 0.2*H_0'
+  - name: every
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: "case inputs.history.every = 38: the driver writes a state_history sample every `every`\
+      \ committed steps (tests.md \xA73 history line)"
+  outputs:
+  - name: h
+    shape_expr: '[nx, ny]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - h
+    description: water depth after setup and after the run
+  - name: hu
+    shape_expr: '[nx, ny]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - hu
+  - name: hv
+    shape_expr: '[nx, ny]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - hv
+  - name: z_b
+    shape_expr: '[nx, ny]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - z_b
+  - name: ok
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - ok
+    description: the result logical of shallow_water2d__step, written by the driver as 1 / 0
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: h
+          shape_expr: '[nx, ny]'
+        - name: hu
+          shape_expr: '[nx, ny]'
+        - name: hv
+          shape_expr: '[nx, ny]'
+        - name: z_b
+          shape_expr: '[nx, ny]'
+        - name: f
+          shape_expr: '[nx, ny]'
+        - name: ok
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: x
+          axis: 0
+          count: inputs.grid.nx
+          length: inputs.grid.L_x
+          placement: cell_center
+        - name: y
+          axis: 1
+          count: inputs.grid.ny
+          length: inputs.grid.L_y
+          placement: cell_center
+    - artifact: state_history
+    - artifact: step_series
+      names:
+      - step
+      - h_min
+      - h_max
+      - hu_min
+      - hu_max
+      - hv_min
+      - hv_max
+      - z_b_min
+      - z_b_max
+      - f_min
+      - f_max
+  semantic_dependency:
+    required_sources:
+    - h
+    - hu
+    - hv
+    - z_b
+  tests:
+  - test_id: l1_rotation_closed_form
+    expected_outcome: pass
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    quantities:
+    - rotation.closed_form.final_rel
+    - rotation.closed_form.history_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l2_inertia_gravity_wave_phase
+    expected_outcome: pass
+    target_cases:
+    - swr_pw_n128
+    quantities:
+    - wave.phase_error_max
+    - wave.phase_error_final
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l2_mass_conservation
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    quantities:
+    - mass_drift_rel.history
+    - mass_drift_rel
+    - extrema.h.min
+    - cfl.max
+    - run.n_step
+  - test_id: l2_process_off_member_cone
+    expected_outcome: pass
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    quantities:
+    - response.transverse_momentum.l2_rel_tend.lower
+    - response.transverse_momentum.l2_rel_tend.upper
+    - off.rotation_inputs_inert
+    - mass_drift_rel
+    - extrema.h.min
+    - cfl.max
+    - run.n_step
+  - test_id: l1_process_off_member_flat
+    expected_outcome: pass
+    target_cases:
+    - swr_off_flat_n064
+    quantities:
+    - errors.analytic_h.l1_rel_tend.lower
+    - errors.analytic_h.l1_rel_tend.upper
+    - errors.analytic_h.l2_rel_tend.lower
+    - errors.analytic_h.l2_rel_tend.upper
+    - errors.analytic_h.linf_rel_tend.lower
+    - errors.analytic_h.linf_rel_tend.upper
+    - errors.analytic_hu.l1_rel_tend.lower
+    - errors.analytic_hu.l1_rel_tend.upper
+    - errors.analytic_hu.l2_rel_tend.lower
+    - errors.analytic_hu.l2_rel_tend.upper
+    - errors.analytic_hu.linf_rel_tend.lower
+    - errors.analytic_hu.linf_rel_tend.upper
+    - errors.analytic_hv.l1_rel_tend
+    - errors.analytic_hv.l2_rel_tend
+    - errors.analytic_hv.linf_rel_tend
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l3_splitting_order_nonuniform_f
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    quantities:
+    - order.hu_rms.lower
+    - order.hu_rms.upper
+    - order.hu_mean.lower
+    - order.hu_mean.upper
+    - order.hv_rms.lower
+    - order.hv_rms.upper
+    - order.hv_mean.lower
+    - order.hv_mean.upper
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l3_axis_exchange_pair
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    quantities:
+    - errors.axis_exchange.h_l2_rel
+    - errors.axis_exchange.hu_l2_rel
+    - errors.axis_exchange.hv_l2_rel
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l3_mirror_x_pair
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    quantities:
+    - errors.mirror_x.h_l2_rel
+    - errors.mirror_x.hu_l2_rel
+    - errors.mirror_x.hv_l2_rel
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l3_mirror_y_pair
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    quantities:
+    - errors.mirror_y.h_l2_rel
+    - errors.mirror_y.hu_l2_rel
+    - errors.mirror_y.hv_l2_rel
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l3_translation_pair
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    quantities:
+    - errors.translation.h_l2_rel
+    - errors.translation.hu_l2_rel
+    - errors.translation.hv_l2_rel
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l1_refinement_restricted
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    quantities:
+    - errors.restricted.n032.h_l1_rel.lower
+    - errors.restricted.n032.h_l1_rel.upper
+    - errors.restricted.n032.h_l2_rel.lower
+    - errors.restricted.n032.h_l2_rel.upper
+    - errors.restricted.n032.h_linf_rel.lower
+    - errors.restricted.n032.h_linf_rel.upper
+    - errors.restricted.n032.hu_l1_rel.lower
+    - errors.restricted.n032.hu_l1_rel.upper
+    - errors.restricted.n032.hu_l2_rel.lower
+    - errors.restricted.n032.hu_l2_rel.upper
+    - errors.restricted.n032.hu_linf_rel.lower
+    - errors.restricted.n032.hu_linf_rel.upper
+    - errors.restricted.n032.hv_l1_rel.lower
+    - errors.restricted.n032.hv_l1_rel.upper
+    - errors.restricted.n032.hv_l2_rel.lower
+    - errors.restricted.n032.hv_l2_rel.upper
+    - errors.restricted.n032.hv_linf_rel.lower
+    - errors.restricted.n032.hv_linf_rel.upper
+    - errors.restricted.n064.h_l1_rel.lower
+    - errors.restricted.n064.h_l1_rel.upper
+    - errors.restricted.n064.h_l2_rel.lower
+    - errors.restricted.n064.h_l2_rel.upper
+    - errors.restricted.n064.h_linf_rel.lower
+    - errors.restricted.n064.h_linf_rel.upper
+    - errors.restricted.n064.hu_l1_rel.lower
+    - errors.restricted.n064.hu_l1_rel.upper
+    - errors.restricted.n064.hu_l2_rel.lower
+    - errors.restricted.n064.hu_l2_rel.upper
+    - errors.restricted.n064.hu_linf_rel.lower
+    - errors.restricted.n064.hu_linf_rel.upper
+    - errors.restricted.n064.hv_l1_rel.lower
+    - errors.restricted.n064.hv_l1_rel.upper
+    - errors.restricted.n064.hv_l2_rel.lower
+    - errors.restricted.n064.hv_l2_rel.upper
+    - errors.restricted.n064.hv_linf_rel.lower
+    - errors.restricted.n064.hv_linf_rel.upper
+    - errors.restricted.n128.h_l1_rel.lower
+    - errors.restricted.n128.h_l1_rel.upper
+    - errors.restricted.n128.h_l2_rel.lower
+    - errors.restricted.n128.h_l2_rel.upper
+    - errors.restricted.n128.h_linf_rel.lower
+    - errors.restricted.n128.h_linf_rel.upper
+    - errors.restricted.n128.hu_l1_rel.lower
+    - errors.restricted.n128.hu_l1_rel.upper
+    - errors.restricted.n128.hu_l2_rel.lower
+    - errors.restricted.n128.hu_l2_rel.upper
+    - errors.restricted.n128.hu_linf_rel.lower
+    - errors.restricted.n128.hu_linf_rel.upper
+    - errors.restricted.n128.hv_l1_rel.lower
+    - errors.restricted.n128.hv_l1_rel.upper
+    - errors.restricted.n128.hv_l2_rel.lower
+    - errors.restricted.n128.hv_l2_rel.upper
+    - errors.restricted.n128.hv_linf_rel.lower
+    - errors.restricted.n128.hv_linf_rel.upper
+    - convergence.restricted.n032_to_n064.h_l1_order
+    - convergence.restricted.n032_to_n064.h_l2_order
+    - convergence.restricted.n032_to_n064.h_linf_order
+    - convergence.restricted.n032_to_n064.hu_l1_order
+    - convergence.restricted.n032_to_n064.hu_l2_order
+    - convergence.restricted.n032_to_n064.hu_linf_order
+    - convergence.restricted.n032_to_n064.hv_l1_order
+    - convergence.restricted.n032_to_n064.hv_l2_order
+    - convergence.restricted.n032_to_n064.hv_linf_order
+    - convergence.restricted.n064_to_n128.h_l1_order
+    - convergence.restricted.n064_to_n128.h_l2_order
+    - convergence.restricted.n064_to_n128.h_linf_order
+    - convergence.restricted.n064_to_n128.hu_l1_order
+    - convergence.restricted.n064_to_n128.hu_l2_order
+    - convergence.restricted.n064_to_n128.hu_linf_order
+    - convergence.restricted.n064_to_n128.hv_l1_order
+    - convergence.restricted.n064_to_n128.hv_l2_order
+    - convergence.restricted.n064_to_n128.hv_linf_order
+    - mass_drift_rel
+    - cfl.max
+    - run.n_step
+  - test_id: l0_rotation_every_refusal_xfail
+    expected_outcome: xfail
+    target_cases:
+    - swr_guard_every0_n032
+    - swr_guard_everyneg_n032
+    quantities:
+    - ok
+  - test_id: l0_selector_refusal_xfail
+    expected_outcome: xfail
+    target_cases:
+    - swr_guard_sel2_n032
+    quantities:
+    - ok
+  - test_id: l0_member_refusal_xfail
+    expected_outcome: xfail
+    target_cases:
+    - swr_dry_n032
+    quantities:
+    - ok
+    - run.state_moved
+  - test_id: l0_member_dt_refusal_xfail
+    expected_outcome: xfail
+    target_cases:
+    - swr_dtneg_n032
+    quantities:
+    - ok
+  predicates:
+  - test_id: l1_rotation_closed_form
+    quantity: rotation.closed_form.final_rel
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    bind:
+      th: inputs.rotation.f0 * inputs.rotation.every * derived.dt
+      a: 1 - th * th / 2 + th ** 4 / 24
+      b: -th + th ** 3 / 6
+      rho: sqrt(a * a + b * b)
+      psi: atan2(b, a)
+      u0: inputs.initial.mom_x0
+      v0: inputs.initial.mom_y0
+      w0: sqrt(u0 * u0 + v0 * v0)
+      m: floor(derived.n_step / inputs.rotation.every)
+      eu: rho ** m * (u0 * cos(m * psi) - v0 * sin(m * psi))
+      ev: rho ** m * (u0 * sin(m * psi) + v0 * cos(m * psi))
+    expr: max(maxabs(final.hu - eu), maxabs(final.hv - ev)) / w0
+    op: le
+    value: 1.0e-12
+  - test_id: l1_rotation_closed_form
+    quantity: rotation.closed_form.history_rel
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    bind:
+      th: inputs.rotation.f0 * inputs.rotation.every * derived.dt
+      a: 1 - th * th / 2 + th ** 4 / 24
+      b: -th + th ** 3 / 6
+      rho: sqrt(a * a + b * b)
+      psi: atan2(b, a)
+      u0: inputs.initial.mom_x0
+      v0: inputs.initial.mom_y0
+      w0: sqrt(u0 * u0 + v0 * v0)
+      m: floor(history.step / inputs.rotation.every)
+      eu: rho ** m * (u0 * cos(m * psi) - v0 * sin(m * psi))
+      ev: rho ** m * (u0 * sin(m * psi) + v0 * cos(m * psi))
+    expr: max(max(abs(smax(history.hu) - eu)), max(abs(smin(history.hu) - eu)), max(abs(smax(history.hv)
+      - ev)), max(abs(smin(history.hv) - ev))) / w0
+    op: le
+    value: 1.0e-12
+  - test_id: l1_rotation_closed_form
+    quantity: cfl.max
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l1_rotation_closed_form
+    quantity: cfl.max
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l1_rotation_closed_form
+    quantity: run.n_step
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l1_rotation_closed_form
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_rotation_closed_form
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_rotation_closed_form
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_rot_n016_k1
+    - swr_rot_n016_k4
+    - swr_rot_n016_k4_rem3
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: wave.phase_error_max
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    bind:
+      om: sqrt(inputs.rotation.f0 * inputs.rotation.f0 + inputs.constants.g * inputs.constants.H_0 * (2
+        * pi / inputs.grid.L_x) ** 2)
+      s1: ssum((history.h - inputs.constants.H_0) * x)
+      s2: ssum((roll(history.h, 0, inputs.grid.nx / 4, 0) - inputs.constants.H_0) * x)
+      d: atan2(-s1, -s2) - om * history.t
+    expr: max(abs(atan2(sin(d), cos(d))))
+    op: le
+    value: 0.05
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: wave.phase_error_final
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    bind:
+      om: sqrt(inputs.rotation.f0 * inputs.rotation.f0 + inputs.constants.g * inputs.constants.H_0 * (2
+        * pi / inputs.grid.L_x) ** 2)
+      s1: sum((final.h - inputs.constants.H_0) * x)
+      s2: sum((roll(final.h, inputs.grid.nx / 4, 0) - inputs.constants.H_0) * x)
+      d: atan2(-s1, -s2) - om * final.t
+    expr: abs(atan2(sin(d), cos(d)))
+    op: le
+    value: 0.05
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: cfl.max
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: cfl.max
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: run.n_step
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_inertia_gravity_wave_phase
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_pw_n128
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_mass_conservation
+    quantity: mass_drift_rel.history
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: max(abs(ssum(history.h) - sum(initial.h))) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l2_mass_conservation
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l2_mass_conservation
+    quantity: extrema.h.min
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: min(min(initial.h), min(final.h), min(smin(history.h)))
+    op: ge
+    value: 0.5
+  - test_id: l2_mass_conservation
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l2_mass_conservation
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l2_mass_conservation
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l2_mass_conservation
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_mass_conservation
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_mass_conservation
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    - swr_shear_n064_rect
+    - swr_shear_n064_shift
+    - swr_shear_n064_xmir
+    - swr_shear_n064_ymir
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_process_off_member_cone
+    quantity: response.transverse_momentum.l2_rel_tend.lower
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: norm2(final.hv) / norm2(initial.hu)
+    op: ge
+    value: 0.016
+  - test_id: l2_process_off_member_cone
+    quantity: response.transverse_momentum.l2_rel_tend.upper
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: norm2(final.hv) / norm2(initial.hu)
+    op: le
+    value: 0.021
+  - test_id: l2_process_off_member_cone
+    quantity: off.rotation_inputs_inert
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    case: swr_off_cone_n064_twin
+    bind:
+      bh: at('swr_off_cone_n064').final.h
+      bu: at('swr_off_cone_n064').final.hu
+      bv: at('swr_off_cone_n064').final.hv
+    expr: max(maxabs(final.h - bh), maxabs(final.hu - bu), maxabs(final.hv - bv)) / max(maxabs(bh), maxabs(bu),
+      maxabs(bv))
+    op: le
+    value: 0.0
+  - test_id: l2_process_off_member_cone
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_process_off_member_cone
+    quantity: extrema.h.min
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: min(min(initial.h), min(final.h))
+    op: ge
+    value: 0.05
+  - test_id: l2_process_off_member_cone
+    quantity: cfl.max
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l2_process_off_member_cone
+    quantity: cfl.max
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l2_process_off_member_cone
+    quantity: run.n_step
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l2_process_off_member_cone
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_process_off_member_cone
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l2_process_off_member_cone
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_off_cone_n064
+    - swr_off_cone_n064_twin
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_h.l1_rel_tend.lower
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: sum(abs(final.h - h_ref)) / sum(abs(h_ref))
+    op: ge
+    value: 0.0001
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_h.l1_rel_tend.upper
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: sum(abs(final.h - h_ref)) / sum(abs(h_ref))
+    op: le
+    value: 0.00013
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_h.l2_rel_tend.lower
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: norm2(final.h - h_ref) / norm2(h_ref)
+    op: ge
+    value: 0.00011
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_h.l2_rel_tend.upper
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: norm2(final.h - h_ref) / norm2(h_ref)
+    op: le
+    value: 0.00014
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_h.linf_rel_tend.lower
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: maxabs(final.h - h_ref) / maxabs(h_ref)
+    op: ge
+    value: 0.00015
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_h.linf_rel_tend.upper
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: maxabs(final.h - h_ref) / maxabs(h_ref)
+    op: le
+    value: 0.0002
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hu.l1_rel_tend.lower
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: sum(abs(final.hu - hu_ref)) / sum(abs(hu_ref))
+    op: ge
+    value: 0.15
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hu.l1_rel_tend.upper
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: sum(abs(final.hu - hu_ref)) / sum(abs(hu_ref))
+    op: le
+    value: 0.2
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hu.l2_rel_tend.lower
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: norm2(final.hu - hu_ref) / norm2(hu_ref)
+    op: ge
+    value: 0.15
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hu.l2_rel_tend.upper
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: norm2(final.hu - hu_ref) / norm2(hu_ref)
+    op: le
+    value: 0.2
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hu.linf_rel_tend.lower
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: maxabs(final.hu - hu_ref) / maxabs(hu_ref)
+    op: ge
+    value: 0.15
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hu.linf_rel_tend.upper
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: maxabs(final.hu - hu_ref) / maxabs(hu_ref)
+    op: le
+    value: 0.2
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hv.l1_rel_tend
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: sum(abs(final.hv - hv_ref)) / max(sum(abs(hu_ref)), sum(abs(hv_ref)))
+    op: le
+    value: 1.0e-10
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hv.l2_rel_tend
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: norm2(final.hv - hv_ref) / max(norm2(hu_ref), norm2(hv_ref))
+    op: le
+    value: 1.0e-10
+  - test_id: l1_process_off_member_flat
+    quantity: errors.analytic_hv.linf_rel_tend
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    bind:
+      c0: sqrt(inputs.constants.g * inputs.constants.H_0)
+      ph: 2 * pi * (x / inputs.grid.L_x - inputs.initial.wave_sign * c0 * inputs.time.t_end / inputs.grid.L_x
+        - inputs.initial.shift_x_fraction)
+      h_ref: inputs.constants.H_0 + inputs.initial.eta0 * sin(ph)
+      hu_ref: h_ref * (inputs.initial.wave_sign * c0 / inputs.constants.H_0 * (h_ref - inputs.constants.H_0))
+      hv_ref: 0 * h_ref
+    expr: maxabs(final.hv - hv_ref) / max(maxabs(hu_ref), maxabs(hv_ref))
+    op: le
+    value: 1.0e-10
+  - test_id: l1_process_off_member_flat
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l1_process_off_member_flat
+    quantity: cfl.max
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l1_process_off_member_flat
+    quantity: cfl.max
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l1_process_off_member_flat
+    quantity: run.n_step
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l1_process_off_member_flat
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_process_off_member_flat
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_process_off_member_flat
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_off_flat_n064
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hu_rms.lower
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: sqrt(mean(final.hu * final.hu))
+    op: ge
+    value:
+      per_case:
+        swr_shear_n064: 0.02591682
+        swr_shear_n064_rect: 0.0358658
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hu_rms.upper
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: sqrt(mean(final.hu * final.hu))
+    op: le
+    value:
+      per_case:
+        swr_shear_n064: 0.02591688
+        swr_shear_n064_rect: 0.03586588
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hu_mean.lower
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: mean(final.hu)
+    op: ge
+    value:
+      per_case:
+        swr_shear_n064: -0.008321736
+        swr_shear_n064_rect: -0.007526936
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hu_mean.upper
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: mean(final.hu)
+    op: le
+    value:
+      per_case:
+        swr_shear_n064: -0.008321718
+        swr_shear_n064_rect: -0.00752692
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hv_rms.lower
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: sqrt(mean(final.hv * final.hv))
+    op: ge
+    value:
+      per_case:
+        swr_shear_n064: 0.04048892
+        swr_shear_n064_rect: 0.04485663
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hv_rms.upper
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: sqrt(mean(final.hv * final.hv))
+    op: le
+    value:
+      per_case:
+        swr_shear_n064: 0.04048901
+        swr_shear_n064_rect: 0.04485673
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hv_mean.lower
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: mean(final.hv)
+    op: ge
+    value:
+      per_case:
+        swr_shear_n064: 0.03040306
+        swr_shear_n064_rect: 0.04095345
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: order.hv_mean.upper
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: mean(final.hv)
+    op: le
+    value:
+      per_case:
+        swr_shear_n064: 0.03040313
+        swr_shear_n064_rect: 0.04095354
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_splitting_order_nonuniform_f
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_rect
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_axis_exchange_pair
+    quantity: errors.axis_exchange.h_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    case: swr_shear_n064_axis
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.h - transpose(bh)) / norm2(bh)
+    op: le
+    value: 2.0e-11
+  - test_id: l3_axis_exchange_pair
+    quantity: errors.axis_exchange.hu_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    case: swr_shear_n064_axis
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hu - transpose(bv)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_axis_exchange_pair
+    quantity: errors.axis_exchange.hv_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    case: swr_shear_n064_axis
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hv - transpose(bu)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_axis_exchange_pair
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_axis_exchange_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l3_axis_exchange_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l3_axis_exchange_pair
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_axis_exchange_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_axis_exchange_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_axis_exchange_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_axis
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_mirror_x_pair
+    quantity: errors.mirror_x.h_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    case: swr_shear_n064_xmir
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.h - flip(bh, 0)) / norm2(bh)
+    op: le
+    value: 2.0e-11
+  - test_id: l3_mirror_x_pair
+    quantity: errors.mirror_x.hu_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    case: swr_shear_n064_xmir
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hu - -flip(bu, 0)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_mirror_x_pair
+    quantity: errors.mirror_x.hv_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    case: swr_shear_n064_xmir
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hv - flip(bv, 0)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_mirror_x_pair
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_mirror_x_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l3_mirror_x_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l3_mirror_x_pair
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_mirror_x_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_mirror_x_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_mirror_x_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_xmir
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_mirror_y_pair
+    quantity: errors.mirror_y.h_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    case: swr_shear_n064_ymir
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.h - flip(bh, 1)) / norm2(bh)
+    op: le
+    value: 2.0e-11
+  - test_id: l3_mirror_y_pair
+    quantity: errors.mirror_y.hu_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    case: swr_shear_n064_ymir
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hu - flip(bu, 1)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_mirror_y_pair
+    quantity: errors.mirror_y.hv_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    case: swr_shear_n064_ymir
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hv - -flip(bv, 1)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_mirror_y_pair
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_mirror_y_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l3_mirror_y_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l3_mirror_y_pair
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_mirror_y_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_mirror_y_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_mirror_y_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_ymir
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_translation_pair
+    quantity: errors.translation.h_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    case: swr_shear_n064_shift
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.h - roll(bh, 16, 8)) / norm2(bh)
+    op: le
+    value: 2.0e-11
+  - test_id: l3_translation_pair
+    quantity: errors.translation.hu_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    case: swr_shear_n064_shift
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hu - roll(bu, 16, 8)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_translation_pair
+    quantity: errors.translation.hv_l2_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    case: swr_shear_n064_shift
+    bind:
+      bh: at('swr_shear_n064').final.h
+      bu: at('swr_shear_n064').final.hu
+      bv: at('swr_shear_n064').final.hv
+    expr: norm2(final.hv - roll(bv, 16, 8)) / max(norm2(bu), norm2(bv))
+    op: le
+    value: 2.0e-11
+  - test_id: l3_translation_pair
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_translation_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l3_translation_pair
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l3_translation_pair
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_translation_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_translation_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_translation_pair
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064
+    - swr_shear_n064_shift
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.h_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.h
+      qr: coarsen(final.h, 8)
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
+    op: ge
+    value: 0.0028
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.h_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.h
+      qr: coarsen(final.h, 8)
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
+    op: le
+    value: 0.0035
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.h_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.h
+      qr: coarsen(final.h, 8)
+    expr: norm2(qc - qr) / norm2(qr)
+    op: ge
+    value: 0.0035
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.h_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.h
+      qr: coarsen(final.h, 8)
+    expr: norm2(qc - qr) / norm2(qr)
+    op: le
+    value: 0.0044
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.h_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.h
+      qr: coarsen(final.h, 8)
+    expr: maxabs(qc - qr) / maxabs(qr)
+    op: ge
+    value: 0.01
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.h_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.h
+      qr: coarsen(final.h, 8)
+    expr: maxabs(qc - qr) / maxabs(qr)
+    op: le
+    value: 0.014
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hu_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hu
+      qr: coarsen(final.hu, 8)
+      qo: coarsen(final.hv, 8)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: ge
+    value: 0.16
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hu_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hu
+      qr: coarsen(final.hu, 8)
+      qo: coarsen(final.hv, 8)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: le
+    value: 0.21
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hu_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hu
+      qr: coarsen(final.hu, 8)
+      qo: coarsen(final.hv, 8)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: ge
+    value: 0.16
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hu_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hu
+      qr: coarsen(final.hu, 8)
+      qo: coarsen(final.hv, 8)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: le
+    value: 0.21
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hu_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hu
+      qr: coarsen(final.hu, 8)
+      qo: coarsen(final.hv, 8)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: ge
+    value: 0.2
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hu_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hu
+      qr: coarsen(final.hu, 8)
+      qo: coarsen(final.hv, 8)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: le
+    value: 0.25
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hv_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hv
+      qr: coarsen(final.hv, 8)
+      qo: coarsen(final.hu, 8)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: ge
+    value: 0.2
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hv_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hv
+      qr: coarsen(final.hv, 8)
+      qo: coarsen(final.hu, 8)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: le
+    value: 0.26
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hv_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hv
+      qr: coarsen(final.hv, 8)
+      qo: coarsen(final.hu, 8)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: ge
+    value: 0.21
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hv_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hv
+      qr: coarsen(final.hv, 8)
+      qo: coarsen(final.hu, 8)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: le
+    value: 0.27
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hv_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hv
+      qr: coarsen(final.hv, 8)
+      qo: coarsen(final.hu, 8)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: ge
+    value: 0.22
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n032.hv_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n032').final.hv
+      qr: coarsen(final.hv, 8)
+      qo: coarsen(final.hu, 8)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: le
+    value: 0.28
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.h_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.h
+      qr: coarsen(final.h, 4)
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
+    op: ge
+    value: 0.0013
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.h_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.h
+      qr: coarsen(final.h, 4)
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
+    op: le
+    value: 0.0017
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.h_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.h
+      qr: coarsen(final.h, 4)
+    expr: norm2(qc - qr) / norm2(qr)
+    op: ge
+    value: 0.0017
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.h_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.h
+      qr: coarsen(final.h, 4)
+    expr: norm2(qc - qr) / norm2(qr)
+    op: le
+    value: 0.0021
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.h_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.h
+      qr: coarsen(final.h, 4)
+    expr: maxabs(qc - qr) / maxabs(qr)
+    op: ge
+    value: 0.0055
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.h_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.h
+      qr: coarsen(final.h, 4)
+    expr: maxabs(qc - qr) / maxabs(qr)
+    op: le
+    value: 0.0068
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hu_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hu
+      qr: coarsen(final.hu, 4)
+      qo: coarsen(final.hv, 4)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: ge
+    value: 0.086
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hu_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hu
+      qr: coarsen(final.hu, 4)
+      qo: coarsen(final.hv, 4)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: le
+    value: 0.11
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hu_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hu
+      qr: coarsen(final.hu, 4)
+      qo: coarsen(final.hv, 4)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: ge
+    value: 0.087
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hu_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hu
+      qr: coarsen(final.hu, 4)
+      qo: coarsen(final.hv, 4)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: le
+    value: 0.11
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hu_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hu
+      qr: coarsen(final.hu, 4)
+      qo: coarsen(final.hv, 4)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: ge
+    value: 0.1
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hu_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hu
+      qr: coarsen(final.hu, 4)
+      qo: coarsen(final.hv, 4)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: le
+    value: 0.14
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hv_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hv
+      qr: coarsen(final.hv, 4)
+      qo: coarsen(final.hu, 4)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: ge
+    value: 0.1
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hv_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hv
+      qr: coarsen(final.hv, 4)
+      qo: coarsen(final.hu, 4)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: le
+    value: 0.13
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hv_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hv
+      qr: coarsen(final.hv, 4)
+      qo: coarsen(final.hu, 4)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: ge
+    value: 0.1
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hv_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hv
+      qr: coarsen(final.hv, 4)
+      qo: coarsen(final.hu, 4)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: le
+    value: 0.13
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hv_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hv
+      qr: coarsen(final.hv, 4)
+      qo: coarsen(final.hu, 4)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: ge
+    value: 0.1
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n064.hv_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n064').final.hv
+      qr: coarsen(final.hv, 4)
+      qo: coarsen(final.hu, 4)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: le
+    value: 0.14
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.h_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.h
+      qr: coarsen(final.h, 2)
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
+    op: ge
+    value: 0.00047
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.h_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.h
+      qr: coarsen(final.h, 2)
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
+    op: le
+    value: 0.00058
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.h_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.h
+      qr: coarsen(final.h, 2)
+    expr: norm2(qc - qr) / norm2(qr)
+    op: ge
+    value: 0.00061
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.h_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.h
+      qr: coarsen(final.h, 2)
+    expr: norm2(qc - qr) / norm2(qr)
+    op: le
+    value: 0.00075
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.h_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.h
+      qr: coarsen(final.h, 2)
+    expr: maxabs(qc - qr) / maxabs(qr)
+    op: ge
+    value: 0.002
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.h_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.h
+      qr: coarsen(final.h, 2)
+    expr: maxabs(qc - qr) / maxabs(qr)
+    op: le
+    value: 0.0026
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hu_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hu
+      qr: coarsen(final.hu, 2)
+      qo: coarsen(final.hv, 2)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: ge
+    value: 0.028
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hu_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hu
+      qr: coarsen(final.hu, 2)
+      qo: coarsen(final.hv, 2)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: le
+    value: 0.035
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hu_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hu
+      qr: coarsen(final.hu, 2)
+      qo: coarsen(final.hv, 2)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: ge
+    value: 0.028
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hu_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hu
+      qr: coarsen(final.hu, 2)
+      qo: coarsen(final.hv, 2)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: le
+    value: 0.035
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hu_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hu
+      qr: coarsen(final.hu, 2)
+      qo: coarsen(final.hv, 2)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: ge
+    value: 0.036
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hu_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hu
+      qr: coarsen(final.hu, 2)
+      qo: coarsen(final.hv, 2)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: le
+    value: 0.045
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hv_l1_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hv
+      qr: coarsen(final.hv, 2)
+      qo: coarsen(final.hu, 2)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: ge
+    value: 0.038
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hv_l1_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hv
+      qr: coarsen(final.hv, 2)
+      qo: coarsen(final.hu, 2)
+    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    op: le
+    value: 0.048
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hv_l2_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hv
+      qr: coarsen(final.hv, 2)
+      qo: coarsen(final.hu, 2)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: ge
+    value: 0.04
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hv_l2_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hv
+      qr: coarsen(final.hv, 2)
+      qo: coarsen(final.hu, 2)
+    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    op: le
+    value: 0.05
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hv_linf_rel.lower
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hv
+      qr: coarsen(final.hv, 2)
+      qo: coarsen(final.hu, 2)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: ge
+    value: 0.043
+  - test_id: l1_refinement_restricted
+    quantity: errors.restricted.n128.hv_linf_rel.upper
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qc: at('swr_shear_n128').final.hv
+      qr: coarsen(final.hv, 2)
+      qo: coarsen(final.hu, 2)
+    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    op: le
+    value: 0.054
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.h_l1_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.h
+      qra: coarsen(final.h, 8)
+      qcb: at('swr_shear_n064').final.h
+      qrb: coarsen(final.h, 4)
+      ea: sum(abs(qca - qra)) / sum(abs(qra))
+      eb: sum(abs(qcb - qrb)) / sum(abs(qrb))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.7
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.h_l2_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.h
+      qra: coarsen(final.h, 8)
+      qcb: at('swr_shear_n064').final.h
+      qrb: coarsen(final.h, 4)
+      ea: norm2(qca - qra) / norm2(qra)
+      eb: norm2(qcb - qrb) / norm2(qrb)
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.7
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.h_linf_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.h
+      qra: coarsen(final.h, 8)
+      qcb: at('swr_shear_n064').final.h
+      qrb: coarsen(final.h, 4)
+      ea: maxabs(qca - qra) / maxabs(qra)
+      eb: maxabs(qcb - qrb) / maxabs(qrb)
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.6
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.hu_l1_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.hu
+      qra: coarsen(final.hu, 8)
+      qoa: coarsen(final.hv, 8)
+      qcb: at('swr_shear_n064').final.hu
+      qrb: coarsen(final.hu, 4)
+      qob: coarsen(final.hv, 4)
+      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
+      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.6
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.hu_l2_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.hu
+      qra: coarsen(final.hu, 8)
+      qoa: coarsen(final.hv, 8)
+      qcb: at('swr_shear_n064').final.hu
+      qrb: coarsen(final.hu, 4)
+      qob: coarsen(final.hv, 4)
+      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
+      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.6
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.hu_linf_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.hu
+      qra: coarsen(final.hu, 8)
+      qoa: coarsen(final.hv, 8)
+      qcb: at('swr_shear_n064').final.hu
+      qrb: coarsen(final.hu, 4)
+      qob: coarsen(final.hv, 4)
+      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
+      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.6
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.hv_l1_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.hv
+      qra: coarsen(final.hv, 8)
+      qoa: coarsen(final.hu, 8)
+      qcb: at('swr_shear_n064').final.hv
+      qrb: coarsen(final.hv, 4)
+      qob: coarsen(final.hu, 4)
+      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
+      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.7
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.hv_l2_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.hv
+      qra: coarsen(final.hv, 8)
+      qoa: coarsen(final.hu, 8)
+      qcb: at('swr_shear_n064').final.hv
+      qrb: coarsen(final.hv, 4)
+      qob: coarsen(final.hu, 4)
+      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
+      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.7
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n032_to_n064.hv_linf_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n032').final.hv
+      qra: coarsen(final.hv, 8)
+      qoa: coarsen(final.hu, 8)
+      qcb: at('swr_shear_n064').final.hv
+      qrb: coarsen(final.hv, 4)
+      qob: coarsen(final.hu, 4)
+      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
+      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.7
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.h_l1_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.h
+      qra: coarsen(final.h, 4)
+      qcb: at('swr_shear_n128').final.h
+      qrb: coarsen(final.h, 2)
+      ea: sum(abs(qca - qra)) / sum(abs(qra))
+      eb: sum(abs(qcb - qrb)) / sum(abs(qrb))
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.2
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.h_l2_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.h
+      qra: coarsen(final.h, 4)
+      qcb: at('swr_shear_n128').final.h
+      qrb: coarsen(final.h, 2)
+      ea: norm2(qca - qra) / norm2(qra)
+      eb: norm2(qcb - qrb) / norm2(qrb)
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.1
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.h_linf_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.h
+      qra: coarsen(final.h, 4)
+      qcb: at('swr_shear_n128').final.h
+      qrb: coarsen(final.h, 2)
+      ea: maxabs(qca - qra) / maxabs(qra)
+      eb: maxabs(qcb - qrb) / maxabs(qrb)
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.1
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.hu_l1_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.hu
+      qra: coarsen(final.hu, 4)
+      qoa: coarsen(final.hv, 4)
+      qcb: at('swr_shear_n128').final.hu
+      qrb: coarsen(final.hu, 2)
+      qob: coarsen(final.hv, 2)
+      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
+      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.3
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.hu_l2_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.hu
+      qra: coarsen(final.hu, 4)
+      qoa: coarsen(final.hv, 4)
+      qcb: at('swr_shear_n128').final.hu
+      qrb: coarsen(final.hu, 2)
+      qob: coarsen(final.hv, 2)
+      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
+      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.3
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.hu_linf_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.hu
+      qra: coarsen(final.hu, 4)
+      qoa: coarsen(final.hv, 4)
+      qcb: at('swr_shear_n128').final.hu
+      qrb: coarsen(final.hu, 2)
+      qob: coarsen(final.hv, 2)
+      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
+      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.2
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.hv_l1_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.hv
+      qra: coarsen(final.hv, 4)
+      qoa: coarsen(final.hu, 4)
+      qcb: at('swr_shear_n128').final.hv
+      qrb: coarsen(final.hv, 2)
+      qob: coarsen(final.hu, 2)
+      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
+      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.0
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.hv_l2_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.hv
+      qra: coarsen(final.hv, 4)
+      qoa: coarsen(final.hu, 4)
+      qcb: at('swr_shear_n128').final.hv
+      qrb: coarsen(final.hv, 2)
+      qob: coarsen(final.hu, 2)
+      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
+      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 1.0
+  - test_id: l1_refinement_restricted
+    quantity: convergence.restricted.n064_to_n128.hv_linf_order
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    case: swr_shear_n256
+    bind:
+      qca: at('swr_shear_n064').final.hv
+      qra: coarsen(final.hv, 4)
+      qoa: coarsen(final.hu, 4)
+      qcb: at('swr_shear_n128').final.hv
+      qrb: coarsen(final.hv, 2)
+      qob: coarsen(final.hu, 2)
+      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
+      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+    expr: log2(ea / eb)
+    op: ge
+    value: 0.9
+  - test_id: l1_refinement_restricted
+    quantity: mass_drift_rel
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: abs(sum(final.h) - sum(initial.h)) / sum(initial.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l1_refinement_restricted
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: derived.dt * max((abs(final.hu / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dx
+      + (abs(final.hv / final.h) + sqrt(inputs.constants.g * final.h)) / derived.dy)
+    op: le
+    value: 1.0
+  - test_id: l1_refinement_restricted
+    quantity: cfl.max
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: derived.dt * max(smax((abs(history.hu / history.h) + sqrt(inputs.constants.g * history.h)) /
+      derived.dx + (abs(history.hv / history.h) + sqrt(inputs.constants.g * history.h)) / derived.dy))
+    op: le
+    value: 1.0
+  - test_id: l1_refinement_restricted
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l1_refinement_restricted
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_refinement_restricted
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l1_refinement_restricted
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n032
+    - swr_shear_n064
+    - swr_shear_n128
+    - swr_shear_n256
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l0_rotation_every_refusal_xfail
+    quantity: ok
+    target_cases:
+    - swr_guard_every0_n032
+    - swr_guard_everyneg_n032
+    per_case: true
+    expr: final.ok
+    op: eq
+    value: 0
+  - test_id: l0_selector_refusal_xfail
+    quantity: ok
+    target_cases:
+    - swr_guard_sel2_n032
+    per_case: true
+    expr: final.ok
+    op: eq
+    value: 0
+  - test_id: l0_member_refusal_xfail
+    quantity: ok
+    target_cases:
+    - swr_dry_n032
+    per_case: true
+    expr: final.ok
+    op: eq
+    value: 0
+  - test_id: l0_member_refusal_xfail
+    quantity: run.state_moved
+    target_cases:
+    - swr_dry_n032
+    per_case: true
+    expr: maxabs(final.h - initial.h)
+    op: gt
+    value: 0.0
+  - test_id: l0_member_dt_refusal_xfail
+    quantity: ok
+    target_cases:
+    - swr_dtneg_n032
+    per_case: true
+    expr: final.ok
+    op: eq
+    value: 0
+public_api:
+  published_operations:
+  - operation_id: shallow_water2d_rotating__step
+    exercised_by:
+    - l1_refinement_mass_and_positivity
+    - l1_refinement_linear_wave
+    - l2_lake_at_rest_invariance
+    - l2_long_run_mass_conservation
+    - l3_topography_forced_response_stability
+    - l3_translation_equivariance
+    - l0_cfl_guard_xfail
+    - l1_linear_wave_rectangular_grid
+    - l1_linear_wave_y_rectangular_grid
+    - l3_topography_time_refinement_pair
+    - l3_axis_exchange_pairs
+    - l3_x_mirror_pairs
+    - l3_y_mirror_pairs
+    - l0_wet_domain_refusal_xfail
+    - l0_boundary_refusal_xfail
+    - l0_dt_refusal_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: shallow_water2d_rotating__step
+    signature:
+      kind: subroutine
+      name: shallow_water2d_rotating__step
+      args:
+      - name: nx
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: ny
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: dx
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: dy
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: g
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: dt
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: t
+        rank: 0
+        intent: in
+        spec:
+          type: real
+          kind: dp
+      - name: step
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: rotation
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: rotation_every
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: f
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: z_b
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: h
+        rank: 2
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: hu
+        rank: 2
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: hv
+        rank: 2
+        intent: inout
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - nx
+        - ny
+      - name: ok
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  distribute:
+    axes:
+    - name: x
+      cells: inputs.grid.nx
+      min_block: 2
+    - name: y
+      cells: inputs.grid.ny
+      min_block: 2
+  step:
+    operation: shallow_water2d_rotating__step
+    result: ok
+    arguments:
+      nx: inputs.grid.nx
+      ny: inputs.grid.ny
+      dx: derived.dx
+      dy: derived.dy
+      g: inputs.constants.g
+      dt: derived.dt
+      t: time
+      step: step
+      rotation: inputs.rotation.on
+      rotation_every: inputs.rotation.every
+      f: state.f
+      z_b: state.z_b
+      h: state.h
+      hu: state.hu
+      hv: state.hv
+      ok: state.ok
+  loop:
+    n_step: derived.n_step
+    dt: derived.dt
+    t_start: inputs.time.t_start
+    t_end: inputs.time.t_end
+  history:
+    every: inputs.history.every

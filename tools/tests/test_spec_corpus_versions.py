@@ -348,9 +348,9 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
     def test_every_suite_is_migrated(self) -> None:
         entries = self._entries()
-        # a tests.md of every kind that has one: the three harnesses and the 17 physics nodes
+        # a tests.md of every kind that has one: the three harnesses and the 18 physics nodes
         self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 3)
-        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 20)
+        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 21)
         self.assertEqual(suites_unmigrated(entries, REPO), [])
 
     def test_each_physics_node_has_a_transcription(self) -> None:
@@ -438,7 +438,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
                         f"no `pass` case of {path.stem} is distributed on {grid}: the line's "
                         "min_block (or the cases' extents) leave the target's certification "
                         "vacuous")
-        self.assertEqual(with_axes, 10)
+        self.assertEqual(with_axes, 11)
 
     def test_the_flag_rule_is_driven_both_ways(self) -> None:
         """Synthetic: a `pass` test missing its operation's result, a time-marching one missing

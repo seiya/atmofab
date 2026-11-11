@@ -3,9 +3,16 @@
 from `tests.md` of that node: the cases (§2-§4), the judged quantities (§5) and the tests (§6),
 transcribed by hand into a generator so that the transcription is reviewable as code. It is NOT
 an output of `Compile`. The member's hand IR (`../pr3_evidence/ir/shallow_water2d.yaml`) supplies
-the `drive` / `public_api` / `io_contract` skeleton, extended with the composite's arguments.
+the `drive` / `public_api` / `io_contract` skeleton, extended with the composite's arguments;
+its descriptive text (`algorithm`, the `io_contract.inputs` descriptions) is the member's and is
+read by no gate and no step of the bench. What the bench depends on is `drive`, `public_api`, the
+cases, the tests and the predicates, all built here, and `bands.yaml` (`calibrate.py --write`).
 
-  PYTHONPATH=. python3 <this file> [--out ir/shallow_water2d_rotating.yaml]
+  PYTHONPATH=. python3 <this file>    (writes ../pr3_evidence/ir/shallow_water2d_rotating.yaml)
+
+The written file is the node's transcription beside every other physics node's: the corpus row
+`test_transcription_compile_static_accepts_shallow_water2d_rotating` validates it against the
+real `tests.md`, and `bench.py` reads it, refusing to run when it differs from `build()`.
 """
 from __future__ import annotations
 
@@ -19,6 +26,7 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 MEMBER_IR = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d.yaml"
+TRANSCRIPTION = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d_rotating.yaml"
 SID = "shallow_water2d_rotating"
 VERSION = "0.1.0"
 NODE_KEY = f"problem/{SID}@{VERSION}"
@@ -310,9 +318,9 @@ class _T:
                      f"maxabs(final.{v} - comparand.final.{v}) / max(maxabs(final.{v}), "
                      f"maxabs(comparand.final.{v}), 1.0)", "le", 1.0e-10)
 
-    def mass(self) -> None:
+    def mass(self, bound: float = 1.0e-12) -> None:
         self.add("mass_drift_rel", "abs(sum(final.h) - sum(initial.h)) / sum(initial.h)", "le",
-                 1.0e-12)
+                 bound)
 
 
 def tests_and_predicates(case_set: list[dict[str, Any]]) -> tuple[list, list]:
@@ -379,7 +387,7 @@ def tests_and_predicates(case_set: list[dict[str, Any]]) -> tuple[list, list]:
           "max(maxabs(bh), maxabs(bu), maxabs(bv))", "le", 0.0, case="swr_off_cone_n064_twin",
           bind={f"b{v[-1] if v != 'h' else 'h'}": f"at('swr_off_cone_n064').final.{v}"
                 for v in VARS})
-    t.mass()
+    t.mass(1.0e-10)  # the member's bound on its cone case, restated (tests.md 5-5)
     t.add("extrema.h.min", "min(min(initial.h), min(final.h))", "ge", 0.05)
     t.common()
 
@@ -531,6 +539,9 @@ def skeleton(member_ir: dict[str, Any]) -> dict[str, Any]:
     variables = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]
     variables.insert([v["name"] for v in variables].index("z_b") + 1,
                      {"name": "f", "shape_expr": "[nx, ny]"})
+    for ev in ir["io_contract"]["raw_requirements"]["required_evidence"]:
+        if ev.get("artifact") == "step_series":
+            ev["names"] = [*ev["names"], "f_min", "f_max"]
     ir["case"]["sweeps"] = {}
     ir["case"]["refinements"] = {}
     ir["io_contract"]["tests"] = []
@@ -550,7 +561,7 @@ def build() -> dict[str, Any]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=str(HERE / "ir" / f"{SID}.yaml"))
+    ap.add_argument("--out", default=str(TRANSCRIPTION))
     a = ap.parse_args()
     ir = build()
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)

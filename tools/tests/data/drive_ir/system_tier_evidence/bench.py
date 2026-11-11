@@ -226,7 +226,9 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--json", help="write the mutant table as JSON here")
     a = ap.parse_args()
-    ir = build_ir.build()
+    ir = yaml.safe_load(build_ir.TRANSCRIPTION.read_text())
+    if ir != build_ir.build():
+        raise SystemExit(f"{build_ir.TRANSCRIPTION} differs from build_ir.build(): run build_ir.py")
     if a.cases:
         keep_ids = set(a.cases.split(","))
         ir["case"]["test_case_set"] = [c for c in ir["case"]["test_case_set"]
