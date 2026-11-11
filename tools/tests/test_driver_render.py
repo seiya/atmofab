@@ -1837,7 +1837,10 @@ class MpiBuild:
             timeout: float = 120) -> MpiRun:
         """Run under ``grid``: the singleton bare, as the quality check runs it, and a grid of
         several ranks under the launcher with `--oversubscribe` and the grid variable. A run past
-        ``timeout`` is killed with its whole process group (the ranks with the launcher)."""
+        ``timeout`` has its process group killed: the launcher, not the ranks, which the launcher
+        puts in groups of their own. A real MPI rank then ends by itself within seconds, on
+        losing its launcher (measured 2026-11-11: the `ny8r` hang's four ranks under init right
+        after the row passed, gone ten seconds later)."""
         import signal
         from tools.backends.parallel.mpi import execution
         d = self.tmp / f"run_{grid[0]}x{grid[1]}"
@@ -1851,17 +1854,16 @@ class MpiBuild:
             argv = [self.launcher, "--oversubscribe", "-n", str(grid[0] * grid[1]), *argv]
         ids = cases if cases is not None else [c["case_id"] for c in
                                                self.ir["case"]["test_case_set"]]
-        # Two kills, because a seeded kernel defect HANGS on purpose (a rank alone in a
-        # collective) and its own session outlives this process. The `finally` covers any way
-        # out of `communicate` other than the timeout (an interrupt, a failure in this frame).
-        # A SIGKILLed worker runs no `finally`, so the run also sits under coreutils `timeout`,
-        # a minute past the deadline here. TERM first, KILL ten seconds later: the launcher
-        # puts each rank in a process group of its own, so no group signal reaches a rank, and
-        # it is the launcher that forwards TERM to them (measured 2026-11-11 with a rank that is
-        # not an MPI program: under a KILL-only backstop the four ranks stayed under init, under
-        # TERM none did). The same day the `ny8r` hang of a killed run had held four cores for
-        # 2.5 h. `timeout` passes an exit status through; a child killed by a signal reads 128+N
-        # instead of -N, still non-zero, which is all a row asks of `rc`.
+        # A seeded kernel defect HANGS on purpose (a rank alone in a collective), in a session
+        # of its own that outlives this process unless something kills it. The `finally` covers
+        # any way out of `communicate` other than the timeout (an interrupt, a failure in this
+        # frame). A SIGKILLed worker runs no `finally`, so the run also sits under coreutils
+        # `timeout`, a minute past the deadline here (measured 2026-11-11: the `ny8r` hang of a
+        # killed run had held four cores for 2.5 h under init). TERM first and KILL ten seconds
+        # later only matters for a rank that is not an MPI program — a `tail -f` rank stayed
+        # under init after a KILL-only backstop and not after TERM, while real MPI ranks ended
+        # under either. `timeout` re-raises a child's fatal signal, so `rc` reads -N as before;
+        # a core-dumping signal adds one localized line of its own to `stderr`.
         argv = ["timeout", "-k", "10", str(int(timeout) + 60), *argv]
         proc = subprocess.Popen([*argv, "--cases", str(self.tmp / "ir" / "spec.ir.yaml"), *ids],
                                 cwd=d, env=env, stdout=subprocess.DEVNULL,
