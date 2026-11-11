@@ -269,9 +269,10 @@ def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
     objs = []
     flags = ["-std=f2008", "-O2", "-fopenmp", "-fcheck=bounds"]
     for stem in ("harness_fortran_cpu", *deps, model or sid):
-        obj = f"{stem}.o"
-        subprocess.run(["gfortran", *flags, "-c", str(DATA / f"{stem}_model.f90"), "-o", obj],
-                       cwd=tmp, check=True, capture_output=True)
+        obj, src = f"{stem}.o", DATA / f"{stem}_model.f90"
+        # each compile reads the `.mod` files the ones before it left
+        _compile_cached(["gfortran", *flags, "-c", str(src), "-o", obj], tmp,
+                        [src, *sorted(tmp.glob("*.mod"))])
         objs.append(obj)
     build = subprocess.run(["gfortran", *flags, "-c", "runner.f90", "-o", "runner.o"], cwd=tmp,
                            capture_output=True, text=True)
@@ -290,6 +291,41 @@ def _harness_public_api() -> dict[str, Any]:
             + [{"symbol": p["name"], "signature": p} for p in block["procedures"]]}
 
 
+_OBJECT_CACHE: list[Path] = []
+
+
+def _compile_cached(argv: list[str], cwd: Path, inputs: list[Path]) -> None:
+    """Run the compile ``argv`` in ``cwd``, or copy in what an identical compile left before.
+
+    The key is the command line and the bytes of every input it reads, so a row that edits a
+    source (a seeded defect, a rendered header) misses and compiles. What the compile leaves is
+    every file new in ``cwd`` afterwards (the object, and a Fortran compile's `.mod` files).
+    For the sources every row of a class repeats: the harness is 3.2 s of a 7 s `nvcc` build and
+    1.35 s of an MPI one (measured 2026-11-11). Per process, so an xdist worker builds each
+    entry once and no two workers share a directory."""
+    import atexit
+    import hashlib
+    if not _OBJECT_CACHE:
+        _OBJECT_CACHE.append(Path(tempfile.mkdtemp(prefix="spec2science-objcache-")))
+        atexit.register(shutil.rmtree, _OBJECT_CACHE[0], True)
+    digest = hashlib.sha256("\0".join(argv).encode())
+    for path in inputs:
+        digest.update(b"\0" + path.name.encode() + b"\0" + path.read_bytes())
+    entry = _OBJECT_CACHE[0] / digest.hexdigest()
+    if not entry.is_dir():
+        before = set(os.listdir(cwd))
+        build = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        if build.returncode != 0:
+            raise AssertionError(" ".join(argv) + build.stdout[:2000] + build.stderr[:3000])
+        staging = Path(tempfile.mkdtemp(dir=_OBJECT_CACHE[0]))
+        for name in set(os.listdir(cwd)) - before:
+            shutil.copy2(cwd / name, staging / name)
+        staging.rename(entry)
+        return
+    for item in entry.iterdir():
+        shutil.copy2(item, cwd / item.name)
+
+
 def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
     ids = _prepare(tmp, ir, None)
     (tmp / "runner.cu").write_text(cpp_runner.render_runner(ir, sid, "harness_cpp_gpu", target=GPU))
@@ -300,12 +336,16 @@ def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
     shutil.copy(DATA / "harness_cpp_gpu_model.cu", tmp)
     shutil.copy(DATA / f"{sid}_model.cu", tmp)
     objs = []
-    for stem in ("harness_cpp_gpu_model", f"{sid}_model", "runner"):
-        build = subprocess.run(["nvcc", "-std=c++17", "-O1", "-c", f"{stem}.cu", "-o", f"{stem}.o"],
-                               cwd=tmp, capture_output=True, text=True)
-        if build.returncode != 0:
-            raise AssertionError(stem + build.stdout[:2000] + build.stderr[:2000])
+    headers = sorted(tmp.glob("*.cuh"))
+    for stem in ("harness_cpp_gpu_model", f"{sid}_model"):
+        _compile_cached(["nvcc", "-std=c++17", "-O1", "-c", f"{stem}.cu", "-o", f"{stem}.o"],
+                        tmp, [tmp / f"{stem}.cu", *headers])
         objs.append(f"{stem}.o")
+    build = subprocess.run(["nvcc", "-std=c++17", "-O1", "-c", "runner.cu", "-o", "runner.o"],
+                           cwd=tmp, capture_output=True, text=True)
+    if build.returncode != 0:
+        raise AssertionError("runner" + build.stdout[:2000] + build.stderr[:2000])
+    objs.append("runner.o")
     subprocess.run(["nvcc", *objs, "-o", "bin"], cwd=tmp, check=True, capture_output=True)
     return _exec(tmp, ids, {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
 
@@ -1781,9 +1821,10 @@ class MpiBuild:
         harness_src = (MPI_DATA / f"{MPI_HARNESS}_model.f90" if harness == MPI_HARNESS
                        else DATA / "harness_fortran_cpu_model.f90")
         compiler = str(pair / wrapper.COMPILER_WRAPPER) if harness == MPI_HARNESS else "gfortran"
-        objs = []
-        for stem, src in (("harness", harness_src), ("model", tmp / "model.f90"),
-                          ("runner", tmp / "runner.f90")):
+        _compile_cached([compiler, *flags, "-c", str(harness_src), "-o", "harness.o"], tmp,
+                        [harness_src])
+        objs = ["harness.o"]
+        for stem, src in (("model", tmp / "model.f90"), ("runner", tmp / "runner.f90")):
             build = subprocess.run([compiler, *flags, "-c", str(src), "-o", f"{stem}.o"],
                                    cwd=tmp, capture_output=True, text=True)
             if build.returncode != 0:
@@ -1810,6 +1851,18 @@ class MpiBuild:
             argv = [self.launcher, "--oversubscribe", "-n", str(grid[0] * grid[1]), *argv]
         ids = cases if cases is not None else [c["case_id"] for c in
                                                self.ir["case"]["test_case_set"]]
+        # Two kills, because a seeded kernel defect HANGS on purpose (a rank alone in a
+        # collective) and its own session outlives this process. The `finally` covers any way
+        # out of `communicate` other than the timeout (an interrupt, a failure in this frame).
+        # A SIGKILLed worker runs no `finally`, so the run also sits under coreutils `timeout`,
+        # a minute past the deadline here. TERM first, KILL ten seconds later: the launcher
+        # puts each rank in a process group of its own, so no group signal reaches a rank, and
+        # it is the launcher that forwards TERM to them (measured 2026-11-11 with a rank that is
+        # not an MPI program: under a KILL-only backstop the four ranks stayed under init, under
+        # TERM none did). The same day the `ny8r` hang of a killed run had held four cores for
+        # 2.5 h. `timeout` passes an exit status through; a child killed by a signal reads 128+N
+        # instead of -N, still non-zero, which is all a row asks of `rc`.
+        argv = ["timeout", "-k", "10", str(int(timeout) + 60), *argv]
         proc = subprocess.Popen([*argv, "--cases", str(self.tmp / "ir" / "spec.ir.yaml"), *ids],
                                 cwd=d, env=env, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.PIPE, text=True, start_new_session=True,
@@ -1821,6 +1874,10 @@ class MpiBuild:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.communicate()
             return MpiRun(d, None, "timeout")
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
 
     def verdict(self, run: MpiRun) -> dict[str, str]:
         records = pe.evaluate_primary_predicates(self.ir, run.dir)

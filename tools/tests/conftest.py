@@ -165,6 +165,29 @@ def pytest_addoption(parser) -> None:
              "against a knob you have set; expect failures that belong to the knob.")
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config) -> None:
+    """Under `-n N` with no `--dist`, schedule by work stealing instead of xdist's `load`.
+
+    `load` hands each worker a contiguous run of the collection up front (about
+    len/workers/4 tests, then refills of up to len/workers/2), and this suite's expensive
+    rows are not spread through it: `test_driver_render.py`'s 145 compile-and-run rows are
+    about 40% of the suite's CPU and sit next to each other, so two or three workers got all
+    of them while the rest went idle. Measured 2026-11-11 at `-n 24`, the same checkout and
+    an idle machine: 469 s wall under `load`, 133 s under `worksteal`, the same 7646 rows.
+
+    In a conftest, not in `pytest.ini`'s `addopts`: xdist is optional here (CI runs the
+    suite serially without it), and `--dist` is an unknown option when the plugin is absent.
+    An explicit `--dist`, `-n 0` and a serial run are left alone. Runs before xdist's own
+    `tryfirst` hook (a conftest registers later, and pluggy calls the later one first),
+    which would otherwise turn the default `no` into `load`. Returns None: the hook is
+    `firstresult`, and a value would end the session.
+    """
+    option = config.option
+    if getattr(option, "numprocesses", None) and getattr(option, "dist", None) == "no":
+        option.dist = "worksteal"
+
+
 def pytest_configure(config) -> None:
     """Remove the operator's per-run knobs before anything is collected.
 
