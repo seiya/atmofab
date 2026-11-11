@@ -25746,7 +25746,10 @@ class ReadYamlParsedOnceTests(unittest.TestCase):
         for before, after, want in (
                 (head + "tail: 1\n", head + "tail: 2\n", 2),
                 (head + "tail:\n  x: 1\ny: 2\n", head + "tail:\n  x: 1\n  y: 2\n",
-                 {"x": 1, "y": 2})):
+                 {"x": 1, "y": 2}),
+                # trailing whitespace and trailing newlines are content in a kept block scalar
+                (head + "tail: |+\n  x\n", head + "tail: |+\n  x  \n", "x  \n"),
+                (head + "tail: |+\n  x", head + "tail: |+\n  x\n\n", "x\n\n")):
             with self.subTest(want=want):
                 self.path.write_text(before, encoding="utf-8")
                 self.vps._read_yaml(self.path)
@@ -25789,6 +25792,17 @@ class ReadYamlParsedOnceTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn(hashlib.sha256(b"b: 1\n").hexdigest(), self.vps._PARSED_YAML)
 
+    def test_a_hit_whose_copy_and_reparse_both_recurse_is_a_yaml_error(self) -> None:
+        self.path.write_text("a: [[1]]\n", encoding="utf-8")
+        self.vps._read_yaml(self.path)                       # stored
+
+        def recurse(*_a, **_k):
+            raise RecursionError("too deep")
+        with unittest.mock.patch.object(self.vps.copy, "deepcopy", recurse), \
+                unittest.mock.patch.object(self.vps.yaml, "safe_load", recurse):
+            with self.assertRaises(yaml.YAMLError):  # not RecursionError
+                self.vps._read_yaml(self.path)
+
     def test_an_error_is_raised_on_every_read_and_not_stored(self) -> None:
         self.path.write_text("a: [1\n", encoding="utf-8")
         for _ in range(2):
@@ -25802,6 +25816,8 @@ class ReadYamlParsedOnceTests(unittest.TestCase):
 
     def test_the_cache_is_bounded(self) -> None:
         bound = self.vps._PARSED_YAML_ENTRIES
+        # a handful: a long-lived conductor must not hold every IR it validated
+        self.assertLessEqual(bound, 16)
         for i in range(bound + 3):
             self.path.write_text(f"a: {i}\n", encoding="utf-8")
             self.vps._read_yaml(self.path)

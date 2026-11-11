@@ -3504,10 +3504,13 @@ def _read_yaml(path: Path) -> Any:
     # file is parsed afresh. Each read gets a `copy.deepcopy` of the parse, never the stored
     # object, so a gate that mutates what it read changes no other gate's copy nor the cache; a
     # deep copy shares what a fresh parse shares (an alias's object, and the immutable scalars
-    # an alias repeats — a pickle round trip does not, measured on an aliased `.nan`). Where the
-    # copy cannot be made (`RecursionError` on a document nested near the interpreter's limit)
-    # the text is parsed afresh instead, so a document that parses is never refused by the
-    # cache. Only a successful parse is stored, so every error above and below is raised on
+    # an alias repeats — a pickle round trip does not, measured on an aliased `.nan`). A
+    # `!!set` is rebuilt by the copy, so its iteration order may differ from a fresh parse's (as
+    # it already differs between processes; the tree holds no `!!set`). Should the copy raise
+    # `RecursionError`, the text is parsed afresh instead, so a document that parses is never
+    # refused by the cache — a guard, not an observed case: on Python 3.10 a review swept call
+    # depth up to the parse limit and found no document that parsed and could not be copied.
+    # Only a successful parse is stored, so every error above and below is raised on
     # every read. The loader is unchanged (not libyaml's): other readers of the same IR
     # (`primary_evidence`, `workflow_conductor`) parse with this loader, and a gate must judge
     # the document those readers see.
