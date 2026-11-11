@@ -72,7 +72,7 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
   result is a rank-0 `real` / `integer` / `logical` (`signatures.is_pointwise`). A string, a
   derived value, a procedure argument, an allocatable array or an extent that is a symbol
   (`nx`) makes an operation not pointwise. Only a `component` takes the pair
-  (`signatures.DEVICE_CALLABLE_SPEC_KINDS`): a `problem` is called by the host-rendered driver, and an
+  (`signatures.DEVICE_CALLABLE_SPEC_KINDS`): a `problem` is called by the host-rendered driver, or by a composing `problem`'s `__step` in host code, and an
   `infrastructure` node's operations are host I/O. The node kind is the host's own identity for
   the node (its `node_key`) when the header is rendered, and the certified IR's `meta.spec_kind` at
   the pin, which Compile holds to the node's own kind. Whether a consumer calls the operation from
