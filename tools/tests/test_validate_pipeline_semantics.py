@@ -22034,6 +22034,11 @@ class ComponentDepOperationsGateTests(unittest.TestCase):
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("dependency 'problem/some_problem@0.1.0'", v[0])
                 self.assertIn(detail, v[0])
+                # The repair text the compile leaf reads names the kind it is about: a `problem`
+                # entry is not called a "component dependency" (review round 1, the mutation
+                # check's unexplained survivor @@ -8775).
+                self.assertNotIn("component dependency", v[0])
+                self.assertIn("a `component` or `problem` dependency must author", v[0])
         self.assertEqual(self._run([{"node_key": "problem/some_problem@0.1.0",
                                      "operations": ["some_problem__step"]}]), [])
 
@@ -23070,6 +23075,8 @@ class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
                 self.assertEqual(len(v), 1, v)
                 self.assertIn(f"dependency {member!r} declares operation(s)", v[0])
                 self.assertIn("member__step", v[0])
+                # Not "component dependency" for a `problem` (review round 1, survivor @@ -8896).
+                self.assertNotIn("component dependency", v[0])
 
     def test_public_api_block_in_a_sidecar_entry_is_not_read_by_the_gate(self) -> None:
         # Issue #486 added the dep IR's `public_api` ABI to each resolved entry; the gate stays a

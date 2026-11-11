@@ -7862,6 +7862,10 @@ class NodeAllocationTest(unittest.TestCase):
             # exactly the fail-open this branch exists to prevent.
             self.assertIn("is missing or its dependency schema is malformed",
                           str(ctx.exception))
+            # The remedy names the whole key vocabulary, the optional `problems` included
+            # (review round 1, the mutation check's unexplained survivor @@ -17016).
+            self.assertIn("holds the keys `components` / `profiles` and, optionally, `problems`",
+                          str(ctx.exception))
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
             (repo / "spec" / "x" / "n1" / "deps.yaml").write_text(
