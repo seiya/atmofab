@@ -264,15 +264,15 @@ def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
                 deps: tuple[str, ...] = (), case_ids: list[str] | None = None,
                 model: str | None = None) -> Run:
     ids = _prepare(tmp, ir, case_ids)
-    text = f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU)
-    (tmp / "runner.f90").write_text(text)
     objs = []
     flags = ["-std=f2008", "-O2", "-fopenmp", "-fcheck=bounds"]
+    # each source enters the directory just before its own compile (`_compile_cached`)
     for stem in ("harness_fortran_cpu", *deps, model or sid):
-        obj = f"{stem}.o"
-        subprocess.run(["gfortran", *flags, "-c", str(DATA / f"{stem}_model.f90"), "-o", obj],
-                       cwd=tmp, check=True, capture_output=True)
-        objs.append(obj)
+        shutil.copy(DATA / f"{stem}_model.f90", tmp)
+        _compile_cached(["gfortran", *flags, "-c", f"{stem}_model.f90", "-o", f"{stem}.o"], tmp)
+        objs.append(f"{stem}.o")
+    text = f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU)
+    (tmp / "runner.f90").write_text(text)
     build = subprocess.run(["gfortran", *flags, "-c", "runner.f90", "-o", "runner.o"], cwd=tmp,
                            capture_output=True, text=True)
     if build.returncode != 0:
@@ -290,21 +290,68 @@ def _harness_public_api() -> dict[str, Any]:
             + [{"symbol": p["name"], "signature": p} for p in block["procedures"]]}
 
 
+_OBJECT_CACHE: list[Path] = []
+
+
+def _compile_cached(argv: list[str], cwd: Path) -> None:
+    """Run the compile ``argv`` in ``cwd``, or copy in what an identical compile left before.
+
+    The key is the command line and every file directly in ``cwd`` (name and bytes), so no
+    caller lists what a compile reads and none can leave an input out: a row that edits a
+    source, a header or a `.mod`-producing dependency misses and compiles. Callers put each
+    source in the directory just before its own compile, which keeps a stage's key to the
+    stages before it (and its hits to the rows that share them). What an entry holds is every
+    file the compile created or rewrote in ``cwd`` (the object, a Fortran compile's `.mod`
+    files). For the sources every row of a class repeats: the harness is 3.2 s of a 7 s `nvcc`
+    build and 1.35 s of an MPI one (measured 2026-11-11). Per process, so an xdist worker builds
+    each entry once and no two workers share a directory."""
+    import atexit
+    import hashlib
+    if not _OBJECT_CACHE:
+        _OBJECT_CACHE.append(Path(tempfile.mkdtemp(prefix="spec2science-objcache-")))
+        atexit.register(shutil.rmtree, _OBJECT_CACHE[0], True)
+    digest = hashlib.sha256("\0".join(argv).encode())
+    for path in sorted(p for p in cwd.iterdir() if p.is_file()):
+        digest.update(b"\0" + path.name.encode() + b"\0" + path.read_bytes())
+    entry = _OBJECT_CACHE[0] / digest.hexdigest()
+    if not entry.is_dir():
+        def stamps() -> dict[str, tuple[int, int, int]]:
+            return {e.name: (e.stat().st_ino, e.stat().st_mtime_ns, e.stat().st_size)
+                    for e in os.scandir(cwd) if e.is_file()}
+        before = stamps()
+        build = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+        if build.returncode != 0:
+            raise AssertionError(" ".join(argv) + build.stdout[:2000] + build.stderr[:3000])
+        staging = Path(tempfile.mkdtemp(dir=_OBJECT_CACHE[0]))
+        # new files, and files the compile rewrote (an output that was already there)
+        for name, stamp in stamps().items():
+            if before.get(name) != stamp:
+                shutil.copy2(cwd / name, staging / name)
+        staging.rename(entry)
+        return
+    for item in entry.iterdir():
+        shutil.copy2(item, cwd / item.name)
+
+
 def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
     ids = _prepare(tmp, ir, None)
-    (tmp / "runner.cu").write_text(cpp_runner.render_runner(ir, sid, "harness_cpp_gpu", target=GPU))
-    (tmp / f"{sid}_model.cuh").write_text(
-        cpp_header.render(sid, ir["public_api"], spec_kind="component"))
-    (tmp / "harness_cpp_gpu_model.cuh").write_text(
-        cpp_header.render("harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure"))
-    shutil.copy(DATA / "harness_cpp_gpu_model.cu", tmp)
-    shutil.copy(DATA / f"{sid}_model.cu", tmp)
+    # each stage's files enter the directory just before its compile (`_compile_cached`)
+    sources = {
+        "harness_cpp_gpu_model": {
+            "harness_cpp_gpu_model.cuh": cpp_header.render(
+                "harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure"),
+            "harness_cpp_gpu_model.cu": (DATA / "harness_cpp_gpu_model.cu").read_text()},
+        f"{sid}_model": {
+            f"{sid}_model.cuh": cpp_header.render(sid, ir["public_api"], spec_kind="component"),
+            f"{sid}_model.cu": (DATA / f"{sid}_model.cu").read_text()},
+        "runner": {"runner.cu": cpp_runner.render_runner(ir, sid, "harness_cpp_gpu",
+                                                          target=GPU)}}
     objs = []
-    for stem in ("harness_cpp_gpu_model", f"{sid}_model", "runner"):
-        build = subprocess.run(["nvcc", "-std=c++17", "-O1", "-c", f"{stem}.cu", "-o", f"{stem}.o"],
-                               cwd=tmp, capture_output=True, text=True)
-        if build.returncode != 0:
-            raise AssertionError(stem + build.stdout[:2000] + build.stderr[:2000])
+    for stem, files in sources.items():
+        for name, text in files.items():
+            (tmp / name).write_text(text)
+        _compile_cached(["nvcc", "-std=c++17", "-O1", "-c", f"{stem}.cu", "-o", f"{stem}.o"],
+                        tmp)
         objs.append(f"{stem}.o")
     subprocess.run(["nvcc", *objs, "-o", "bin"], cwd=tmp, check=True, capture_output=True)
     return _exec(tmp, ids, {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
@@ -328,7 +375,9 @@ class _DriverBehaviour:
         """Issue #610 (B5): `block.<axis>.first` is the block's first global index, `1` on a
         serial or device driver. The toy kernel refuses exactly `mode == 1` (`ok = mode /= 1`),
         so `mode` bound to `block.x.first` captures what the literal-1 case captures, and not
-        what the mode-0 case does."""
+        what the mode-0 case does (`ok == 1` on `call_ir(0)`'s `m0`, which
+        `test_one_call_runs_on_the_state_itself` asserts on the same IR and case: this row ran
+        that build a second time to repeat it)."""
         def run(ir: dict[str, Any], case: str) -> dict[str, Any]:
             with tempfile.TemporaryDirectory() as tmp:
                 got = type(self).build_and_run(Path(tmp), ir)
@@ -344,7 +393,6 @@ class _DriverBehaviour:
         one = run(call_ir(1), "m1")
         self.assertEqual({k: v for k, v in bound.items() if k != "case_id"},
                          {k: v for k, v in one.items() if k != "case_id"})
-        self.assertEqual(run(call_ir(0), "m0")["ok"], 1.0)
 
     def test_a_loop_runs_n_step_committed_steps_with_step_and_t_the_drivers(self) -> None:
         run = self._run(loop_ir(0))
@@ -1775,19 +1823,20 @@ class MpiBuild:
         pe.write_case_inputs(ir, tmp / "ir")
         self.runner = runner if runner is not None else f_runner.render_runner(
             ir, sid, harness, target=_mpi_target())
-        (tmp / "runner.f90").write_text(self.runner)
-        (tmp / "model.f90").write_text(model if model is not None
-                                       else (MPI_DATA / f"{sid}_model.f90").read_text())
         harness_src = (MPI_DATA / f"{MPI_HARNESS}_model.f90" if harness == MPI_HARNESS
                        else DATA / "harness_fortran_cpu_model.f90")
         compiler = str(pair / wrapper.COMPILER_WRAPPER) if harness == MPI_HARNESS else "gfortran"
+        # Every source is named relative to the build directory and enters it just before its
+        # own compile (`_compile_cached`), so a row that builds what an earlier row of the
+        # worker did reuses its objects: the defect rows' references are the unedited fixture.
+        sources = {"harness": harness_src.read_text(),
+                   "model": model if model is not None
+                   else (MPI_DATA / f"{sid}_model.f90").read_text(),
+                   "runner": self.runner}
         objs = []
-        for stem, src in (("harness", harness_src), ("model", tmp / "model.f90"),
-                          ("runner", tmp / "runner.f90")):
-            build = subprocess.run([compiler, *flags, "-c", str(src), "-o", f"{stem}.o"],
-                                   cwd=tmp, capture_output=True, text=True)
-            if build.returncode != 0:
-                raise AssertionError(f"{stem}: {build.stderr[:3000]}")
+        for stem, text in sources.items():
+            (tmp / f"{stem}.f90").write_text(text)
+            _compile_cached([compiler, *flags, "-c", f"{stem}.f90", "-o", f"{stem}.o"], tmp)
             objs.append(f"{stem}.o")
         subprocess.run([compiler, *flags, *objs, "-o", "bin"], cwd=tmp, check=True,
                        capture_output=True)
@@ -1796,7 +1845,10 @@ class MpiBuild:
             timeout: float = 120) -> MpiRun:
         """Run under ``grid``: the singleton bare, as the quality check runs it, and a grid of
         several ranks under the launcher with `--oversubscribe` and the grid variable. A run past
-        ``timeout`` is killed with its whole process group (the ranks with the launcher)."""
+        ``timeout`` has its process group killed: the launcher, not the ranks, which the launcher
+        puts in groups of their own. A real MPI rank then ends by itself within seconds, on
+        losing its launcher (measured 2026-11-11: the `ny8r` hang's four ranks under init right
+        after the row passed, gone ten seconds later)."""
         import signal
         from tools.backends.parallel.mpi import execution
         d = self.tmp / f"run_{grid[0]}x{grid[1]}"
@@ -1810,6 +1862,17 @@ class MpiBuild:
             argv = [self.launcher, "--oversubscribe", "-n", str(grid[0] * grid[1]), *argv]
         ids = cases if cases is not None else [c["case_id"] for c in
                                                self.ir["case"]["test_case_set"]]
+        # A seeded kernel defect HANGS on purpose (a rank alone in a collective), in a session
+        # of its own that outlives this process unless something kills it. The `finally` covers
+        # any way out of `communicate` other than the timeout (an interrupt, a failure in this
+        # frame). A SIGKILLed worker runs no `finally`, so the run also sits under coreutils
+        # `timeout`, a minute past the deadline here (measured 2026-11-11: the `ny8r` hang of a
+        # killed run had held four cores for 2.5 h under init). TERM first and KILL ten seconds
+        # later only matters for a rank that is not an MPI program — a `tail -f` rank stayed
+        # under init after a KILL-only backstop and not after TERM, while real MPI ranks ended
+        # under either. `timeout` re-raises a child's fatal signal, so `rc` reads -N as before;
+        # a core-dumping signal adds one localized line of its own to `stderr`.
+        argv = ["timeout", "-k", "10", str(int(timeout) + 60), *argv]
         proc = subprocess.Popen([*argv, "--cases", str(self.tmp / "ir" / "spec.ir.yaml"), *ids],
                                 cwd=d, env=env, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.PIPE, text=True, start_new_session=True,
@@ -1821,6 +1884,10 @@ class MpiBuild:
             os.killpg(proc.pid, signal.SIGKILL)
             proc.communicate()
             return MpiRun(d, None, "timeout")
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
 
     def verdict(self, run: MpiRun) -> dict[str, str]:
         records = pe.evaluate_primary_predicates(self.ir, run.dir)
@@ -1947,35 +2014,35 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(single.perf()["cells_updated"], serial.perf()["cells_updated"])
                 self.assertEqual(single.perf()["steps"], serial.perf()["steps"])
 
-    def test_the_witness_tells_a_replicated_case_from_a_distributed_one(self) -> None:
-        """With the real `distribute_plan` the `(2, 1)` capture holds the block counts and the
-        singleton the case's; with `distribute_plan` patched to replicate the case, the `(2, 1)`
-        capture holds the case's: the row that fails if the driver distributes a replicated
-        case or replicates a distributed one. A second dummy bound to the same cell-count input
-        takes the block count too; the count a `derived` entry carries does not."""
+    def test_the_driver_replicates_the_witness_case_the_plan_replicates(self) -> None:
+        """`distribute_plan` distributes the witness case under `(2, 1)`, and with it patched to
+        replicate the case, the `(2, 1)` capture holds the case's count: the row that fails if
+        the driver distributes a replicated case. The other direction, the real plan's capture —
+        the block counts in `w` and `wb` (a second dummy bound to the same cell-count input),
+        the case's in `wg` (the count a `derived` entry carries) — is `test_agree_fx_wit_*`'s,
+        on every grid and both flag sets (`_witness_expectation`); this row ran the `(2, 1)` one
+        a second time to repeat it."""
         ir = wit_ir()
         self.assertTrue(runner_ir.distribute_plan(ir, ir["case"]["test_case_set"][0], (2, 1)))
-        real = self._build(ir).run((2, 1))
-        self.assertEqual(real.rc, 0, real.stderr[-1000:])
-        final = real.snapshots()["c6.json"]
-        self.assertEqual(final["w"], [3.0] * 6)
-        self.assertEqual(final["wb"], [3.0] * 6)
-        self.assertEqual(final["wg"], [6.0] * 6)
+        self.assertEqual(_witness_expectation(ir, (2, 1)),
+                         {"w": [3.0] * 6, "wb": [3.0] * 6, "wg": [6.0] * 6})
         with mock.patch.object(runner_ir, "distribute_plan", return_value=False):
             replicated = self._build(ir).run((2, 1))
         self.assertEqual(replicated.rc, 0, replicated.stderr[-1000:])
         self.assertEqual(replicated.snapshots()["c6.json"]["w"], [6.0] * 6)
 
-    def test_a_one_cell_block_under_a_two_cell_ghost_distributes_and_agrees(self) -> None:
+    def test_a_one_cell_block_under_a_two_cell_ghost_is_distributed(self) -> None:
         """B6's threshold has no `ghost` term: model (1)'s 6x4 case with `ng = 2` is distributed
-        under `(1, 4)`, one cell per block along y, and agrees with the singleton (the margin is
-        sliced from the global array)."""
+        under `(1, 4)`, one cell per block along y. That it then agrees with the singleton (the
+        margin is sliced from the global array) is `test_agree_fx_recon_checked`'s: it runs every
+        case of model (1), `c6x4` among them, on every grid, `(1, 4)` among them, under the same
+        flags, against the singleton. This row built and ran that again; it keeps the half no
+        agreement row asserts, that the case IS distributed there, and that the agreement rows
+        do run that grid (the case's presence is the `next` below)."""
         ir = recon_ir()
         case = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == "c6x4")
         self.assertTrue(runner_ir.distribute_plan(ir, case, (1, 4)))
-        build = self._build(ir, flags="checked")
-        reference = build.run(SINGLETON, cases=["c6x4"]).snapshots()
-        self.assertIsNone(self._first_disagreement(build, reference, ((1, 4),), cases=["c6x4"]))
+        self.assertIn((1, 4), MPI_GRIDS)
 
     def test_the_rendered_table_lists_each_grid_once_and_no_wider_than_the_dry_render(self) -> None:
         target = _mpi_target()
@@ -2387,6 +2454,99 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(single.rc, 0, single.stderr[-1000:])
                 found = self._first_disagreement(build, single.snapshots())
                 self.assertEqual(found is None, agrees, found)
+
+
+class CompileCacheTest(unittest.TestCase):
+    """`_compile_cached` hands back an earlier compile's outputs only for the same command line
+    over the same input bytes. The "compiler" concatenates its inputs into its output and counts
+    its runs in the parent directory, so a stale hit shows as the old bytes and a hit as no run."""
+
+    CMD = ["sh", "-c", "cat a.src a.h > a.o; echo x >> ../runs"]
+
+    def _compile(self, root: Path, name: str, text: str, header: str) -> tuple[str, int]:
+        cwd = root / name
+        cwd.mkdir()
+        (cwd / "a.src").write_text(text)
+        (cwd / "a.h").write_text(header)
+        _compile_cached(self.CMD, cwd)
+        return (cwd / "a.o").read_text(), len((root / "runs").read_text().split())
+
+    def test_a_changed_input_compiles_and_the_same_input_reuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(self._compile(root, "a", "one\n", "h\n"), ("one\nh\n", 1))
+            # an edited source and an edited header each miss and compile
+            self.assertEqual(self._compile(root, "b", "two\n", "h\n"), ("two\nh\n", 2))
+            self.assertEqual(self._compile(root, "c", "one\n", "g\n"), ("one\ng\n", 3))
+            # the first one's bytes again, in a fresh directory: copied in, nothing run
+            self.assertEqual(self._compile(root, "d", "one\n", "h\n"), ("one\nh\n", 3))
+
+    def test_a_file_the_command_does_not_name_is_in_the_key(self) -> None:
+        """No caller lists inputs, so a file a compile reads without naming it (an included
+        header, a `.mod`) misses when it changes: here the command names no file. One file
+        of each kind a build here leaves or reads, so no suffix can be dropped from the key."""
+        for suffix in (".h", ".cuh", ".mod", ".o", ".f90", ".cu", ""):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for name, header in (("a", "h\n"), ("b", "g\n")):
+                    cwd = root / name
+                    cwd.mkdir()
+                    (cwd / "a.src").write_text("one\n")
+                    (cwd / f"dep{suffix}").write_text(header)
+                    _compile_cached(["sh", "-c", "cat * > ../out; mv ../out a.out"], cwd)
+                    # `a.src` sorts before `dep*`
+                    self.assertEqual((cwd / "a.out").read_text(), "one\n" + header, name)
+
+    def test_a_file_s_name_is_in_the_key(self) -> None:
+        """The same bytes under another name are another input: a command reading `b.h` must
+        not be handed what it produced where the same bytes were called `c.h`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, expected in (("b", "y\n"), ("c", "none\n")):
+                cwd = root / name
+                cwd.mkdir()
+                (cwd / "a.src").write_text("x\n")
+                (cwd / f"{name}.h").write_text("y\n")
+                _compile_cached(["sh", "-c", "cat b.h > a.o 2>/dev/null || echo none > a.o"],
+                                cwd)
+                self.assertEqual((cwd / "a.o").read_text(), expected, name)
+
+    def test_the_same_inputs_under_another_command_compile(self) -> None:
+        """The MPI harness is one source under the release flags and the `checked` ones: a key
+        without the command line would hand a `checked` row the release object."""
+        with tempfile.TemporaryDirectory() as tmp:
+            # one directory per flag set, holding the same bytes: only the command differs (in
+            # one directory the first run's `a.o` would be in the second run's key)
+            for flag in ("release", "checked"):
+                cwd = Path(tmp) / flag
+                cwd.mkdir()
+                (cwd / "a.src").write_text("one\n")
+                _compile_cached(["sh", "-c", f"cat a.src > a.o; echo {flag} >> a.o"], cwd)
+                self.assertEqual((cwd / "a.o").read_text(), f"one\n{flag}\n")
+
+    def test_an_output_already_in_the_directory_is_still_cached(self) -> None:
+        """An entry holds what the compile wrote, including a file it overwrote: a miss where
+        `a.o` already exists must not leave an empty entry for the next hit to copy nothing
+        from."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / "first", root / "second"
+            for d in (first, second):
+                d.mkdir()
+                (d / "a.src").write_text("one\n")
+            (first / "a.o").write_text("stale\n")
+            (second / "a.o").write_text("stale\n")
+            for d in (first, second):
+                _compile_cached(["sh", "-c", "cp a.src a.o # overwrite"], d)
+                self.assertEqual((d / "a.o").read_text(), "one\n", d.name)
+
+    def test_a_failing_compile_raises_and_is_not_cached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            (cwd / "a.src").write_text("x")
+            for _ in range(2):   # the second call runs (and fails) again rather than hitting
+                with self.assertRaises(AssertionError):
+                    _compile_cached(["sh", "-c", "touch a.o; exit 1"], cwd)
 
 
 def _mpi_runner_text(sid: str) -> str:

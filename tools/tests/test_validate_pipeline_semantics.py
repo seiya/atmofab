@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import hashlib
 import tempfile
 import unittest
 import unittest.mock
@@ -25685,6 +25686,163 @@ _UNSET = object()
 _FIXTURE_IR_REL = (
     "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml"
 )
+
+
+class ReadYamlParsedOnceTests(unittest.TestCase):
+    """`_read_yaml` parses a text once and hands every later read of the same text a copy of its
+    own: no parse on a hit, independent objects, an edited file parsed afresh wherever the edit
+    is, aliases shared as a fresh parse leaves them, errors raised on every read, a document
+    too deep to copy parsed afresh, and a bounded cache that evicts the least recently READ."""
+
+    def setUp(self) -> None:
+        from tools import validate_pipeline_semantics as vps
+        self.vps = vps
+        patcher = unittest.mock.patch.dict(vps._PARSED_YAML, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "spec.ir.yaml"
+
+    def _counting(self):
+        calls: list[str] = []
+        real = yaml.safe_load
+
+        def load(text):
+            calls.append(text)
+            return real(text)
+        return calls, unittest.mock.patch.object(self.vps.yaml, "safe_load", load)
+
+    def test_a_second_read_of_the_same_text_does_not_parse(self) -> None:
+        self.path.write_text("a: [1, {b: 2}]\n", encoding="utf-8")
+        calls, patch = self._counting()
+        with patch:
+            first = self.vps._read_yaml(self.path)
+            second = self.vps._read_yaml(self.path)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first, {"a": [1, {"b": 2}]})
+        self.assertEqual(second, first)
+
+    def test_each_read_gets_an_object_of_its_own(self) -> None:
+        self.path.write_text("a: [1, {b: 2}]\n", encoding="utf-8")
+        first = self.vps._read_yaml(self.path)          # the miss
+        first["a"][1]["b"] = "mutated"
+        second = self.vps._read_yaml(self.path)         # a hit
+        second["a"].append("mutated")
+        self.assertEqual(self.vps._read_yaml(self.path), {"a": [1, {"b": 2}]})
+        self.assertIsNot(second, self.vps._read_yaml(self.path))
+
+    def test_an_edited_file_is_parsed_afresh(self) -> None:
+        self.path.write_text("a: 1\n", encoding="utf-8")
+        self.assertEqual(self.vps._read_yaml(self.path), {"a": 1})
+        self.path.write_text("a: 2\n", encoding="utf-8")
+        self.assertEqual(self.vps._read_yaml(self.path), {"a": 2})
+
+    def test_an_edit_anywhere_in_a_long_document_is_parsed_afresh(self) -> None:
+        """The key covers the whole text: an edit past the first several thousand characters,
+        and an edit of indentation alone (another structure in YAML), each miss."""
+        head = "".join(f"k{i}: {i}\n" for i in range(2000))
+        self.assertGreater(len(head), 10000)
+        for before, after, want in (
+                (head + "tail: 1\n", head + "tail: 2\n", 2),
+                (head + "tail:\n  x: 1\ny: 2\n", head + "tail:\n  x: 1\n  y: 2\n",
+                 {"x": 1, "y": 2}),
+                # trailing whitespace and trailing newlines are content in a kept block scalar
+                (head + "tail: |+\n  x\n", head + "tail: |+\n  x  \n", "x  \n"),
+                (head + "tail: |+\n  x", head + "tail: |+\n  x\n\n", "x\n\n")):
+            with self.subTest(want=want):
+                self.path.write_text(before, encoding="utf-8")
+                self.vps._read_yaml(self.path)
+                self.path.write_text(after, encoding="utf-8")
+                self.assertEqual(self.vps._read_yaml(self.path)["tail"], want)
+
+    def test_an_alias_stays_shared_on_a_hit(self) -> None:
+        """What a fresh parse shares, a hit shares: an aliased list, and an aliased scalar (an
+        aliased `.nan` is one object, so `a in l` holds; a pickle round trip makes two)."""
+        self.path.write_text("a: &x [1]\nb: *x\nn: &n .nan\nl: [*n]\n", encoding="utf-8")
+        fresh = yaml.safe_load(self.path.read_text(encoding="utf-8"))
+        self.assertIn(fresh["n"], fresh["l"])
+        for read in ("miss", "hit"):
+            with self.subTest(read=read):
+                doc = self.vps._read_yaml(self.path)
+                self.assertIs(doc["a"], doc["b"])
+                self.assertIs(doc["n"], doc["l"][0])
+                self.assertIn(doc["n"], doc["l"])
+
+    def test_an_empty_document_hits_like_any_other(self) -> None:
+        self.path.write_text("# nothing\n", encoding="utf-8")
+        calls, patch = self._counting()
+        with patch:
+            self.assertIsNone(self.vps._read_yaml(self.path))
+            self.assertIsNone(self.vps._read_yaml(self.path))
+        self.assertEqual(len(calls), 1)
+
+    def test_a_document_too_deep_to_copy_is_parsed_afresh(self) -> None:
+        self.path.write_text("a: [[1]]\n", encoding="utf-8")
+        self.vps._read_yaml(self.path)                       # stored
+        calls, patch = self._counting()
+
+        def no_copy(_x, _memo=None):
+            raise RecursionError("too deep")
+        with patch, unittest.mock.patch.object(self.vps.copy, "deepcopy", no_copy):
+            self.assertEqual(self.vps._read_yaml(self.path), {"a": [[1]]})   # hit, copy fails
+            other = self.path.with_name("other.yaml")
+            other.write_text("b: 1\n", encoding="utf-8")
+            self.assertEqual(self.vps._read_yaml(other), {"b": 1})          # miss, copy fails
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn(hashlib.sha256(b"b: 1\n").hexdigest(), self.vps._PARSED_YAML)
+
+    def test_a_hit_whose_copy_and_reparse_both_recurse_is_a_yaml_error(self) -> None:
+        self.path.write_text("a: [[1]]\n", encoding="utf-8")
+        self.vps._read_yaml(self.path)                       # stored
+
+        def recurse(*_a, **_k):
+            raise RecursionError("too deep")
+        with unittest.mock.patch.object(self.vps.copy, "deepcopy", recurse), \
+                unittest.mock.patch.object(self.vps.yaml, "safe_load", recurse):
+            with self.assertRaises(yaml.YAMLError):  # not RecursionError
+                self.vps._read_yaml(self.path)
+
+    def test_an_error_is_raised_on_every_read_and_not_stored(self) -> None:
+        self.path.write_text("a: [1\n", encoding="utf-8")
+        for _ in range(2):
+            with self.assertRaises(yaml.YAMLError):
+                self.vps._read_yaml(self.path)
+        self.assertEqual(len(self.vps._PARSED_YAML), 0)
+        self.path.write_bytes(b"a: \xff\n")
+        for _ in range(2):
+            with self.assertRaises(yaml.YAMLError):
+                self.vps._read_yaml(self.path)
+
+    def test_the_cache_is_bounded(self) -> None:
+        bound = self.vps._PARSED_YAML_ENTRIES
+        # a handful: a long-lived conductor must not hold every IR it validated
+        self.assertLessEqual(bound, 16)
+        for i in range(bound + 3):
+            self.path.write_text(f"a: {i}\n", encoding="utf-8")
+            self.vps._read_yaml(self.path)
+        self.assertEqual(len(self.vps._PARSED_YAML), bound)
+        # the least recently read went first: the newest text still hits
+        calls, patch = self._counting()
+        with patch:
+            self.assertEqual(self.vps._read_yaml(self.path), {"a": bound + 2})
+        self.assertEqual(calls, [])
+
+    def test_a_hit_makes_its_entry_the_most_recently_read(self) -> None:
+        bound = self.vps._PARSED_YAML_ENTRIES
+        texts = [f"a: {i}\n" for i in range(bound + 1)]
+        for text in texts[:bound]:
+            self.path.write_text(text, encoding="utf-8")
+            self.vps._read_yaml(self.path)
+        self.path.write_text(texts[0], encoding="utf-8")
+        self.vps._read_yaml(self.path)                       # the oldest, read again
+        self.path.write_text(texts[bound], encoding="utf-8")
+        self.vps._read_yaml(self.path)                       # one more: evicts texts[1]
+        calls, patch = self._counting()
+        with patch:
+            self.path.write_text(texts[0], encoding="utf-8")
+            self.vps._read_yaml(self.path)
+        self.assertEqual(calls, [])
 
 
 class IrFixtureShapeTests(unittest.TestCase):
