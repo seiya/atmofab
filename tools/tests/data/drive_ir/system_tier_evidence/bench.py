@@ -232,6 +232,20 @@ def report(ir: dict[str, Any], verdict: dict[str, Any], records: list[dict[str, 
     return moved
 
 
+def _run_mutant(job: tuple) -> tuple[str, dict[str, Any]]:
+    """One mutant in a worker process: build, run, judge; the tests it moved and the records it
+    failed."""
+    mid, ir, text, flags = job
+    try:
+        verdict, records, note = one(ir, text, flags, None)
+    except SystemExit as exc:
+        return mid, {"build_error": str(exc)[:600]}
+    expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
+    got = {t["test_id"]: t["status"] for t in verdict["per_test"]}
+    moved = sorted(k for k, v in expected.items() if got.get(k) != v)
+    return mid, {"moved": moved, "failed": failed_records(ir, records), "note": note}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gate", action="store_true")
@@ -286,19 +300,10 @@ def main() -> int:
     mutants = yaml.safe_load(MUTANTS.read_text())
     table: dict[str, Any] = {}
 
-    def run_mutant(mid: str) -> tuple[str, dict[str, Any]]:
-        text = apply_patches(base, mutants[mid]["patches"])
-        try:
-            verdict, records, note = one(ir, text, flags, None)
-        except SystemExit as exc:
-            return mid, {"build_error": str(exc)[:600]}
-        expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
-        got = {t["test_id"]: t["status"] for t in verdict["per_test"]}
-        moved = sorted(k for k, v in expected.items() if got.get(k) != v)
-        return mid, {"moved": moved, "failed": failed_records(ir, records), "note": note}
-
-    with cf.ThreadPoolExecutor(a.jobs) as ex:
-        for mid, res in ex.map(run_mutant, list(mutants)):
+    # processes, not threads: the judging is Python under the GIL and dominates a run
+    with cf.ProcessPoolExecutor(a.jobs) as ex:
+        jobs = [(mid, ir, apply_patches(base, mutants[mid]["patches"]), flags) for mid in mutants]
+        for mid, res in ex.map(_run_mutant, jobs):
             table[mid] = res
             caught = bool(res.get("moved"))
             print(f"== mutant {mid}: {mutants[mid]['title']}  ->  "
@@ -309,6 +314,7 @@ def main() -> int:
                 print("     rec", json.dumps(r, default=str)[:300])
             if "build_error" in res:
                 print("     BUILD", res["build_error"][:300])
+            sys.stdout.flush()
     if a.json:
         Path(a.json).write_text(json.dumps(table, indent=1, default=str))
     return 0
