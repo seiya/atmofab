@@ -2,8 +2,8 @@
 
 Driven on a stand-in `config.option`, so the rows need neither xdist nor a worker: under `-n N`
 with `--dist` left at its default `no`, the hook picks `worksteal`; every other combination is
-left as given. A live run prints `scheduling tests via WorkStealingScheduling` under `-n` (the
-measurement is in the hook's docstring)."""
+left as given. A live run under `-n 2 -v` prints `scheduling tests via WorkStealingScheduling`
+(nothing under `-q`; the measurement is in the hook's docstring)."""
 from __future__ import annotations
 
 import unittest

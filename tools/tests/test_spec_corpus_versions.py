@@ -378,8 +378,8 @@ class SpecCorpusVersionTest(unittest.TestCase):
         finds out instead. This says the document can be transcribed, not that a leaf will.
 
         One row per node rather than one loop over all of them: the validator takes about 1-30 s
-        per IR, and a single row of all 17 was the suite's longest (96 s at `-n 24`), which no
-        number of workers shortens."""
+        per IR, and a single row of all 17 was the suite's longest (96 s at `-n 24`, measured
+        2026-11-11), which no number of workers shortens."""
         import json
         import tempfile
 

@@ -171,10 +171,11 @@ def pytest_cmdline_main(config) -> None:
 
     `load` hands each worker a contiguous run of the collection up front (about
     len/workers/4 tests, then refills of up to pending/workers/2), and this suite's expensive
-    rows are not spread through it: `test_driver_render.py`'s 145 compile-and-run rows are
-    about 40% of the suite's CPU and sit next to each other, so two or three workers got all
-    of them while the rest went idle. Measured 2026-11-11 at `-n 24`, the same checkout and
-    an idle machine: 469 s wall under `load`, 133 s under `worksteal`, the same 7646 rows.
+    rows are not spread through it: `test_driver_render.py`'s compile-and-run rows sit next
+    to each other, so two or three workers got all of them while the rest went idle.
+    Measured 2026-11-11 at `-n 24`, the same checkout (main 66569ed8) and an idle machine:
+    the file's 145 rows were about 40% of the suite's CPU, and the suite took 469 s wall under
+    `load` and 133 s under `worksteal`, the same 7646 rows.
 
     In a conftest, not in `pytest.ini`'s `addopts`: xdist is optional here (CI runs the
     suite serially without it), and `--dist` is an unknown option when the plugin is absent.
