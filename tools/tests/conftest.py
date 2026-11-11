@@ -170,7 +170,7 @@ def pytest_cmdline_main(config) -> None:
     """Under `-n N` with no `--dist`, schedule by work stealing instead of xdist's `load`.
 
     `load` hands each worker a contiguous run of the collection up front (about
-    len/workers/4 tests, then refills of up to len/workers/2), and this suite's expensive
+    len/workers/4 tests, then refills of up to pending/workers/2), and this suite's expensive
     rows are not spread through it: `test_driver_render.py`'s 145 compile-and-run rows are
     about 40% of the suite's CPU and sit next to each other, so two or three workers got all
     of them while the rest went idle. Measured 2026-11-11 at `-n 24`, the same checkout and
