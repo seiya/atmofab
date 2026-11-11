@@ -6090,12 +6090,31 @@ def _validate_algorithm_contract_schema(
 _CALLED_DEP_KIND_PREFIXES: tuple[str, ...] = ("component/", "problem/")
 
 
-def _called_dep_kind_prefix(node_key: str) -> str | None:
-    """The `_CALLED_DEP_KIND_PREFIXES` member `node_key` starts with, else None."""
-    for prefix in _CALLED_DEP_KIND_PREFIXES:
-        if node_key.startswith(prefix):
-            return prefix
-    return None
+def _called_dep_key(node_key: Any) -> tuple[str, str, str] | None:
+    """`(kind, spec_id, canonical node_key)` of a direct-dependency token whose kind a model
+    CALLS (`_CALLED_DEP_KIND_PREFIXES`), else None.
+
+    The token is read exactly as `_normalize_node_key_token` reads it — the token stripped, the
+    kind and the spec_id each stripped — because that is the reader that decides whether the
+    entry IS the host's direct dependency (`_validate_compile_dependency_consistency`). Until the
+    system tier's review round 1 the operations gates and `_component_dep_spec_ids` tested the
+    prefix on the raw or stripped token instead, so `"problem /m@0.1.0"` (or `"component /…"`)
+    passed the consistency gate as the member and was read by none of the gates that ask what
+    the member's `operations` are and whether the model calls it. The canonical node_key is
+    `<kind>/<spec_id>@<version>` with each part stripped (no `@` when the token has none), the
+    form the dependency-surface sidecar is keyed by."""
+    if not isinstance(node_key, str) or "/" not in node_key:
+        return None
+    kind, body = node_key.strip().split("/", 1)
+    kind = kind.strip()
+    if f"{kind}/" not in _CALLED_DEP_KIND_PREFIXES:
+        return None
+    spec_id, sep, version = body.partition("@")
+    spec_id = spec_id.strip()
+    if not spec_id:
+        return None
+    canonical = f"{kind}/{spec_id}" + (f"@{version.strip()}" if sep else "")
+    return kind, spec_id, canonical
 
 
 def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[str]:
@@ -6123,14 +6142,11 @@ def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[s
 
         if not isinstance(dep_token, str):
             continue
-        # Expected format: component/<spec_id>@<spec_version> (or problem/...)
-        prefix = _called_dep_kind_prefix(dep_token)
-        if prefix is None:
-            continue
-        body = dep_token[len(prefix) :]
-        spec_id = body.split("@", 1)[0].strip()
-        if spec_id:
-            result.append(spec_id)
+        # Expected format: component/<spec_id>@<spec_version> (or problem/...), read as the
+        # consistency gate reads it (`_called_dep_key`).
+        called = _called_dep_key(dep_token)
+        if called is not None:
+            result.append(called[1])
     return sorted(set(result))
 
 
@@ -8769,7 +8785,7 @@ def _validate_component_dep_operations(
             ops_present = "operations" in entry
         else:
             continue
-        if _called_dep_kind_prefix(node_key) is None:
+        if _called_dep_key(node_key) is None:
             continue
         # EVERY entry must be a non-empty string — a single malformed entry (a non-string or
         # blank) is enough to fail, not merely "no valid entry exists". A mixed list like
@@ -8872,7 +8888,8 @@ def _validate_component_dep_operations_membership(
             continue
         nk = entry.get("node_key")
         node_key = nk.strip() if isinstance(nk, str) else ""
-        if _called_dep_kind_prefix(node_key) is None:
+        called = _called_dep_key(node_key)
+        if called is None:
             continue
         ops = entry.get("operations")
         # Only a non-empty, all-valid operations list is membership-checked here; the empty /
@@ -8889,7 +8906,10 @@ def _validate_component_dep_operations_membership(
         # `_validate_compile_dependency_consistency` would still pass — finds no entry and this
         # gate goes inert (fail-open, consistent with the tracked rollout affordance); the leaf is
         # shown the full versioned node_key in the injected catalog, so a drift is unlikely.
-        surface = surface_by_key.get(node_key)
+        # The lookup key is the CANONICAL spelling (`_called_dep_key`): a key respelled with
+        # inner whitespace names the same member to the consistency gate, so it names the same
+        # sidecar entry here.
+        surface = surface_by_key.get(called[2])
         if not isinstance(surface, dict):
             continue  # inert: no sidecar entry (unresolved graph edge / legacy)
         source_tag = str(surface.get("source") or "").strip()
