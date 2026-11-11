@@ -1164,8 +1164,10 @@ PINNED: dict[str, str] = {
     # reviewer template's surface heading names `component` or `problem`, and the
     # `compile.generate` dependency-surface catalog names both kinds and drops the clause that a
     # `problem` node omits `public_api`. New member: `dependency_surface_render` (advisory),
-    # which renders that catalog.
-    "leaf-96": "c393c754dfe779a60cee7add576e9213a14ea943da79e841a0c8772e097079e2",
+    # which renders that catalog. Re-pinned in place before it shipped (review round 2 of the
+    # same PR, cor-L2): the Fortran producer fragment's dependency-USE gate clause names "a
+    # `component` or `problem` dependency".
+    "leaf-96": "787a2189733beed68bdcd36d9db9c32f8fc71cc3f2e6599add219b19342ee6c7",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
