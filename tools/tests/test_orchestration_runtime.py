@@ -22215,7 +22215,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # The system tier's Part 1 (a `problems:` member is a direct dependency a node calls:
         # V4c-i / V4c-ii and the three spec-input refusals of a `problems:` entry): bumped
         # 111250->111850; measured 111758 with `wc -c` at the commit that takes this bump, and
-        # 111774 after review round 1 (cor-L4, V4c-ii's "`component` and `problem` IR").
+        # 111774 after review round 1 (cor-L4, V4c-ii's "`component` and `problem` IR"), and
+        # 111846 after review round 2 (cor-L3, V8's member sentence; the
+        # `profile_declares_problem` clause of the identity preconditions shortened to fit).
         "docs/workflow/phases/phase_01_compile.md": 111850,
     }
 

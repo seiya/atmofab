@@ -845,8 +845,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # declared under `problems:` as a direct dependency a node calls (its `operations` gated as a
     # component's, V4c-i and V4c-ii) and the three spec-input refusals of a `problems:` entry.
     # Re-pinned in place before it shipped (review round 1, cor-L4): V4c-ii's "Once each
-    # `component` and `problem` IR pins its published op NAMES".
-    "compile-docs-31": "798016a2083837f6932a7a4d0e27f9aa69209408df23735b4bb3891dc6d6b53e",
+    # `component` and `problem` IR pins its published op NAMES". Again in review round 2
+    # (cor-L3): V8's `problem` bullet says a member `problem`'s NAME half is what its consumer's
+    # V4c-ii and sidecar read.
+    "compile-docs-31": "b0d5e7ebb837625f3ca71eb55f6cd3de2384850445fc3cb35d13812e07b03adc",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
