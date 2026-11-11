@@ -844,7 +844,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-31 (the system tier's Part 1): `phase_01_compile.md` states a `problem`
     # declared under `problems:` as a direct dependency a node calls (its `operations` gated as a
     # component's, V4c-i and V4c-ii) and the three spec-input refusals of a `problems:` entry.
-    "compile-docs-31": "1bda06e459f7e6c5540c2a2dfd4ad20f2c5f03dcc50aac96bc1eae434ea5e0d2",
+    # Re-pinned in place before it shipped (review round 1, cor-L4): V4c-ii's "Once each
+    # `component` and `problem` IR pins its published op NAMES".
+    "compile-docs-31": "798016a2083837f6932a7a4d0e27f9aa69209408df23735b4bb3891dc6d6b53e",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

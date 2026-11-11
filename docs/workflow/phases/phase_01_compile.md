@@ -577,7 +577,7 @@ cross-checks the IR's `direct_deps` against it (see below). The remaining `opera
   `problem/` dep is a member its consumer calls, so it is gated as a `component/` dep is.
 - **V4c-ii (operations ⊆ published) — deterministic Compile gate.** Each `component/` or `problem/` dep's
   non-empty `operations` must be a SUBSET of that dependency's published operation names. Once each
-  component IR pins its published op NAMES in `public_api.published_operations` (V8), that surface
+  `component` and `problem` IR pins its published op NAMES in `public_api.published_operations` (V8), that surface
   is a deterministic input: the conductor resolves it host-side into the
   `<ir_ref>/dependency_surface.json` sidecar (per `component` or `problem` direct dep: `published_operations` + a
   `source` tag of `ir_public_api` / `unresolved`; an `ir_public_api` entry also carries `public_api`,
