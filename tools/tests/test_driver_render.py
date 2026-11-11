@@ -2037,13 +2037,12 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         margin is sliced from the global array) is `test_agree_fx_recon_checked`'s: it runs every
         case of model (1), `c6x4` among them, on every grid, `(1, 4)` among them, under the same
         flags, against the singleton. This row built and ran that again; it keeps the half no
-        agreement row asserts, that the case IS distributed there (and the grid and case it
-        relies on)."""
+        agreement row asserts, that the case IS distributed there, and that the agreement rows
+        do run that grid (the case's presence is the `next` below)."""
         ir = recon_ir()
         case = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == "c6x4")
         self.assertTrue(runner_ir.distribute_plan(ir, case, (1, 4)))
         self.assertIn((1, 4), MPI_GRIDS)
-        self.assertIn("c6x4", [c["case_id"] for c in recon_ir()["case"]["test_case_set"]])
 
     def test_the_rendered_table_lists_each_grid_once_and_no_wider_than_the_dry_render(self) -> None:
         target = _mpi_target()

@@ -502,11 +502,12 @@ class NvccSmokeTest(unittest.TestCase):
     def test_each_shape_of_driver_passes_the_declared_lint_rules(self) -> None:
         """Not a repeat of `test_workflow_conductor.CudaCppLintAttributionTest
         .test_the_driver_of_every_shape_is_clean_under_the_declared_lint_set`, though both lint
-        the four shapes' runners with the same argv: that row renders for the `cpp_gpu` fixture
-        target (`threads_per_rank: 1`, as `spec/targets/cpp_gpu.yaml`), this one for
-        `GPU_TARGET` (3), and a runner lint finding that only a rank count other than 1
-        renders is caught here alone (measured 2026-11-11 by a review of a branch that dropped
-        this row as a repeat)."""
+        the four shapes' runners with the same argv: that row renders for
+        `test_driver_render.GPU` (`threads_per_rank: 1`), this one for `GPU_TARGET` (3). Measured
+        2026-11-11, on a branch that had dropped this row as a repeat: a runner lint finding
+        rendered only for a loop node under `threads_per_rank != 1` turned this row red and
+        every other lint row green (a finding under `threads_per_rank != 1` on any node is also
+        caught by `test_the_rendered_files_pass_the_declared_lint_rules`)."""
         toy = (DRIVER_E2E / "drv_toy_model.cu").read_text()
         for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
                           ("procedure", procedure_ir())):
