@@ -277,6 +277,36 @@ VARS = ("h", "hu", "hv")
 NORMS = {"l1": "sum(abs({d})) / {n1}", "l2": "norm2({d}) / {n2}", "linf": "maxabs({d}) / {ni}"}
 
 
+def band_tables(bands: dict[str, Any]) -> list[str]:
+    """The two band tables of tests.md 5-5 (the restricted-reference errors and orders of 6-11,
+    and the order quantities of 6-6), rendered from `bands` line by line. tests.md carries them
+    verbatim and `test_spec_corpus_versions` holds every line to it, so a `calibrate.py --write`
+    that moves a band reddens the suite until the table is regenerated."""
+    def tex(x: float, digits: int) -> str:
+        m, e = f"{x:.{digits}e}".split("e")
+        return f"{m}e{{{int(e)}}}"
+    out = ["| case | variable | `l1` | `l2` | `linf` |", "| --- | --- | --- | --- | --- |"]
+    for n in ("n032", "n064", "n128"):
+        for i, v in enumerate(VARS):
+            cells = []
+            for k in NORMS:
+                b = bands[f"errors.restricted.{n}.{v}_{k}_rel"]
+                cells.append(f"$[{tex(b['lower'], 1)},\\ {tex(b['upper'], 1)}]$")
+            out.append(f"| {'`' + n + '`' if i == 0 else ''} | `{v}` | " + " | ".join(cells) + " |")
+    for pair in ("n032_to_n064", "n064_to_n128"):
+        for i, v in enumerate(VARS):
+            cells = [f"$\\ge {bands[f'convergence.restricted.{pair}.{v}_{k}_order']['lower']}$"
+                     for k in NORMS]
+            out.append(f"| {'`' + pair + '` order' if i == 0 else ''} | `{v}` | "
+                       + " | ".join(cells) + " |")
+    out += ["", "| quantity | `swr_shear_n064` | `swr_shear_n064_rect` |", "| --- | --- | --- |"]
+    for q in ("order.hu_rms", "order.hu_mean", "order.hv_rms", "order.hv_mean"):
+        cells = [f"$[{tex(bands[q]['lower'][c], 6)},\\ {tex(bands[q]['upper'][c], 6)}]$"
+                 for c in ORDER_CASES]
+        out.append(f"| `{q}` | " + " | ".join(cells) + " |")
+    return out
+
+
 def load_bands() -> dict[str, Any]:
     return yaml.safe_load(BANDS_FILE.read_text()) if BANDS_FILE.exists() else {}
 

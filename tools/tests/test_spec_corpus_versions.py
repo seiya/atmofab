@@ -371,6 +371,23 @@ class SpecCorpusVersionTest(unittest.TestCase):
         self.assertEqual({n.removeprefix(_TRANSCRIPTION_ROW): v for n, v in read.items()},
                          {spec_id: spec_id for spec_id in physics})
 
+    def test_the_rotating_band_tables_are_the_calibrated_bands(self) -> None:
+        """System tier PR-S2: tests.md 5-5 of `shallow_water2d_rotating` carries its two band
+        tables as `build_ir.band_tables` renders them from `bands.yaml`, which `calibrate.py
+        --write` writes and the bench reads. A recalibration that moves a band without the table
+        regenerated (or a hand edit of either) is red here: the Compile leaf reads tests.md, the
+        bench reads bands.yaml, and nothing else compares the two."""
+        import importlib.util
+        evidence = Path(__file__).parent / "data/drive_ir/system_tier_evidence"
+        spec = importlib.util.spec_from_file_location("swr_build_ir", evidence / "build_ir.py")
+        build_ir = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build_ir)
+        tests_md = (REPO / "spec/problem/dynamics/shallow_water/shallow_water2d_rotating/tests.md"
+                    ).read_text(encoding="utf-8").splitlines()
+        lines = [ln for ln in build_ir.band_tables(build_ir.load_bands()) if ln]
+        self.assertGreater(len(lines), 20)
+        self.assertEqual([ln for ln in lines if ln not in tests_md], [])
+
     def _transcription_compile_static_accepts(self, spec_id: str) -> None:
         """`Compile.static` reads the node's hand-written IR against the real `tests.md` (the
         quantities and outcome lines, the history line, the host's case evaluation). A `tests.md`
