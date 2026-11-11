@@ -3018,13 +3018,18 @@ def _validate_component_generated_surface(
     # `"  component  "` skip this pin). A node_key naming a component the registry cannot
     # answer for is refused rather than skipped. Component-only, which is a decision rather than
     # a fact about callers: a `problem` member is called by a composing `problem` too (the system
-    # tier, Part 1). A member's generated surface is bounded instead by
-    # `_validate_generated_signatures` (every §5.1 signature present; "no more" is not checked
-    # for a `problem`), by the spec-input rule that admits only a member whose §5.1 publishes
-    # exactly `<member>__step` (`spec_input_gates.problem_dependency_surface_violation`), and by
-    # the composite's membership gate (`_validate_component_dep_operations_membership`): an
-    # extra generated procedure is callable only by a composite naming it in `operations`, which
-    # that gate refuses.
+    # tier, Part 1). What bounds a member's generated surface instead: (a)
+    # `_validate_generated_signatures` requires every §5.1 signature to be present ("no more" is
+    # not checked for a `problem`); (b) the spec-input rule admits only a member whose §5.1
+    # publishes exactly `<member>__step` (`spec_input_gates.problem_dependency_surface_violation`);
+    # (c) the composite's membership gate (`_validate_component_dep_operations_membership`)
+    # refuses an IR `operations` entry outside that published surface. No gate ties the
+    # composite's CALLS to its `operations` list: the call gate accepts any `<member>__*` call.
+    # An extra procedure the member's generated source defines beyond §5.1 is therefore callable
+    # by a composite. What refuses a call of a procedure the member does NOT define is the
+    # Generate syntax check, which compiles the composite against the member's certified source.
+    # Not closed in Part 1 (review round 3, disc-L2; the system tier's TODO item for the D11
+    # allowlist carries it).
     key_spec_id = _spec_id_from_node_key(str(execution.node_key))
     kind_by_key = str(execution.node_key).split("/", 1)[0].strip()
     catalog_kind, catalog_reason = (_catalog_spec_kind(repo_root, key_spec_id) if key_spec_id
