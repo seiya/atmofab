@@ -248,6 +248,11 @@ def main() -> int:
     ir = yaml.safe_load(build_ir.TRANSCRIPTION.read_text())
     if ir != build_ir.build():
         raise SystemExit(f"{build_ir.TRANSCRIPTION} differs from build_ir.build(): run build_ir.py")
+    # build_ir's placeholder for a band bands.yaml lacks is +-1e300, which judges nothing
+    vacuous = [(p["test_id"], p["quantity"]) for p in ir["io_contract"]["predicates"]
+               if "1e+300" in repr(p["value"])]
+    if vacuous:
+        raise SystemExit(f"bands.yaml lacks the band of {vacuous}: run calibrate.py --write")
     if a.cases:
         keep_ids = set(a.cases.split(","))
         ir["case"]["test_case_set"] = [c for c in ir["case"]["test_case_set"]
