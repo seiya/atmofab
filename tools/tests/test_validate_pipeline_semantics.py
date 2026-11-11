@@ -22893,6 +22893,10 @@ class RespelledDependencyKeyTests(unittest.TestCase):
         for raw, expected in (("problem /m@0.1.0", ("problem", "m", "problem/m@0.1.0")),
                               (" component/ m @ 0.2.0 ", ("component", "m", "component/m@0.2.0")),
                               ("problem/m", ("problem", "m", "problem/m")),
+                              # Two `@`: the id ends at the FIRST, as V4's `split("@", 1)` reads
+                              # it (review round 2, sec-L2: `rpartition` would hand the call
+                              # gate `m@a` for the member V4 accepts as `m`).
+                              ("problem/m@a@b", ("problem", "m", "problem/m@a@b")),
                               ("infrastructure/h@0.1.0", None), ("profile/p@0.1.0", None),
                               ("problem/@0.1.0", None), ("problem", None), (3, None)):
             with self.subTest(raw=raw):
