@@ -1,7 +1,8 @@
-# The seeded composition defects of the system tier plan (PR-S2, D13), as patches to
-# models/shallow_water2d_rotating_model.f90. Each `old` must occur exactly once. `class` is
-# `must_catch` or `declared_unobservable` (13, 18: the plan's argument from the input domain,
-# §4.4; run anyway, a catch is a surprise to record).
+# The seeded composition defects (system tier PR-S2), as patches to
+# models/shallow_water2d_rotating_model.f90. Each `old` must occur exactly once (re-indented by
+# bench.apply_patches). `class` is `must_catch` or `declared_unobservable` (13, 18: the argument
+# from the input domain stated in the spec's tests.md §1; run anyway, a catch is a surprise to
+# record). 1-18 were fixed before the suite was written; r1-* were added by its review.
 "1":
   title: the two calls swapped (rotation before the member)
   class: must_catch

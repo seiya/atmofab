@@ -3,7 +3,8 @@
 mutant, its class, caught or not, the tests it moved, its STRONGEST catch and its WEAKEST (the
 failed predicates lying furthest and nearest outside their thresholds, `bench.failed_records`'
 `outside`: in half-widths for one bound of a two-sided band, else relative to the threshold),
-each with its value and threshold, and the number of (predicate, case) records it failed.
+each with its value and threshold, and the number of (predicate, case) records it failed — a
+lower bound, and the weakest catch is the weakest among the cases evaluated (`bench.failed_records`).
 
   python3 <this file> <table.json>
 """

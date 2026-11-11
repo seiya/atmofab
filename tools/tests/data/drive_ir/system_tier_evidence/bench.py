@@ -5,8 +5,9 @@
 operator's `workspace/pipelines/` (the harness, the member `shallow_water2d` and its three
 components, Coriolis, RK4), each at the version the catalog holds. Run from the repository root:
 
-  PYTHONPATH=. python3 <this file> [--gate] [--mutant <id>]... [--all-mutants] [--keep <dir>]
-      [--flags certified|bounds] [--cases <id>,...] [--dump <dir>]
+  PYTHONPATH=. python3 <this file> [--gate | --gate-only] [--mutant <id>]... [--keep <dir>]
+      [--flags certified|bounds] [--cases <id>,...] [--show-values]
+  PYTHONPATH=. python3 <this file> --all-mutants [--jobs N] [--json <file>]
 
 1. (`--gate`) `validate_compile_ir_dir` with the repository as root: Compile.static's gates,
    including the `quantities` / `expected_outcome` / `history` / `distribute` lines against the
@@ -17,8 +18,13 @@ components, Coriolis, RK4), each at the version the catalog holds. Run from the 
 
 `--mutant <id>` applies the patches of `mutants.yaml` entry `<id>` to the model first; the
 `--all-mutants` table prints, per mutant, which tests moved, the predicate records that failed
-with their value and threshold, or "not caught". The default flags are the certified build's
-(`-std=f2008 -O2 -fopenmp`): a bounds-check abort is not a catch.
+with their value and threshold, or "not caught"; it exits 1 when a `must_catch` mutant is not
+caught or a `declared_unobservable` one is (a surprise to record), else 0. The default flags
+are the certified build's (`-std=f2008 -O2 -fopenmp`): a bounds-check abort is not a catch.
+
+The closure's sources are each node's LATEST `fortran_cpu` attempt at the catalog version under
+`workspace/pipelines/` (the lexicographically last attempt directory); the run prints the paths
+it used. That they are the certified ones is the operator's workspace state, not checked here.
 """
 from __future__ import annotations
 
@@ -70,6 +76,7 @@ def certified_source(kind: str, sid: str) -> Path:
                                 f"*/source/src_*/src/{sid}_model.f90")))
     if not hits:
         raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version}")
+    print(f"source {kind}/{sid}@{version}: {Path(hits[-1]).relative_to(REPO)}", flush=True)
     return Path(hits[-1])
 
 
@@ -176,10 +183,12 @@ def one(ir: dict[str, Any], model_text: str, flags: list[str], keep: Path | None
 
 
 def failed_records(ir: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every (predicate, case) that did not hold: its value, operator and threshold, and how far
+    """The (predicate, case) pairs found not to hold: its value, operator and threshold, and how far
     outside it lies (`outside`, with `outside_unit`): for one bound of a two-sided band, in
     half-widths of that band; otherwise relative to the threshold (or absolute when the
-    threshold is 0). A catch by a small margin is visible either way."""
+    threshold is 0). A catch by a small margin is visible either way. A LOWER BOUND on the failed
+    pairs: the evaluator stops a per-case record at its first failing case, so a later case of
+    the same predicate that would also fail is not listed (and not ranked by `table.py`)."""
     # The thresholds come from the IR's predicates, not from the records: a per-case record
     # need not list every case, so the partner bound of a band is looked up where it is stated.
     rhs: dict[tuple, Any] = {}
@@ -317,7 +326,13 @@ def main() -> int:
             sys.stdout.flush()
     if a.json:
         Path(a.json).write_text(json.dumps(table, indent=1, default=str))
-    return 0
+    missed = [m for m in mutants if mutants[m]["class"] == "must_catch"
+              and not table[m].get("moved")]
+    surprised = [m for m in mutants if mutants[m]["class"] != "must_catch"
+                 and table[m].get("moved")]
+    print(f"must_catch not caught: {missed or 'none'}; declared unobservable caught: "
+          f"{surprised or 'none'}")
+    return 1 if missed or surprised else 0
 
 
 if __name__ == "__main__":

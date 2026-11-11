@@ -1,6 +1,7 @@
 ! A `problem` over a `problem` (system tier PR-S1): a HAND-WRITTEN composing model, not a certified
-! source. `shallow_water2d_rotating__step` calls the member `shallow_water2d__step` (the
-! `shallow_water2d_model.f90` fixture beside it) and then, when `rotation == 1` and
+! source; a copy of the PR-S1 fixture `tools/tests/data/driver_e2e/shallow_water2d_rotating_model.f90`.
+! `shallow_water2d_rotating__step` calls the member `shallow_water2d__step` (the bench links the
+! member's certified source) and then, when `rotation == 1` and
 ! `mod(step + 1, rotation_every) == 0`, takes one step of the certified RK4
 ! (`dynamics_shallow_water_time_update_2d_rk4@0.1.1`) of length `rotation_every * dt` of the
 ! certified Coriolis source (`dynamics_shallow_water_source_2d_coriolis@0.2.0`) over [h, hu, hv].
