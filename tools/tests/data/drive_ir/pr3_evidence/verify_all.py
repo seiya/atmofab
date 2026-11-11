@@ -30,7 +30,9 @@ def one(f):
     r=subprocess.run(cmd,capture_output=True,text=True,env={**os.environ,'PYTHONPATH':'.'})
     lines=[l for l in r.stdout.splitlines() if l.startswith(('GATE','TESTS','  MOVED'))]
     return sid,r.returncode,lines,r.stderr[-400:] if r.returncode else ''
-fs=[f for f in sorted(glob.glob(f'{S}/ir/*.yaml')) if os.path.basename(f)!='coriolis.yaml']
+# shallow_water2d_rotating composes a problem: its bench is ../system_tier_evidence/bench.py
+fs=[f for f in sorted(glob.glob(f'{S}/ir/*.yaml'))
+    if os.path.basename(f) not in ('coriolis.yaml','shallow_water2d_rotating.yaml')]
 with cf.ThreadPoolExecutor(6) as ex:
     for sid,rc,lines,err in ex.map(one,fs):
         print(sid,'rc',rc,' | '.join(lines),err,flush=True)

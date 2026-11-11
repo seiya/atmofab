@@ -30706,14 +30706,19 @@ class ProblemsDependencyKeyTests(unittest.TestCase):
         self.assertFalse(_deps_yaml_bytes_are_canonical_empty(
             b"dependencies:\n  components: []\n  profiles: []\n  problems:\n"
             b"    - problem_id: m\n"))
-        # Every deps.yaml of the corpus parses well-formed, with no `problem` entry today.
+        # Every deps.yaml of the corpus parses well-formed; the one assembled model of the
+        # corpus (system tier PR-S2) is the only one with a `problem` entry, its member.
+        problems = {}
         for deps in sorted((self._REPO_ROOT / "spec").rglob("deps.yaml")):
             with self.subTest(deps=str(deps.relative_to(self._REPO_ROOT))):
                 import yaml as _yaml
                 entries, ok = _parse_dep_entries(
                     _yaml.safe_load(deps.read_text(encoding="utf-8")))
                 self.assertTrue(ok)
-                self.assertNotIn("problem", {k for k, _s, _c in entries})
+                members = [s for k, s, _c in entries if k == "problem"]
+                if members:
+                    problems[deps.parent.name] = members
+        self.assertEqual(problems, {"shallow_water2d_rotating": ["shallow_water2d"]})
 
     def test_the_deps_key_tables_name_the_same_keys(self) -> None:
         """The parse loop iterates the pair table only, so an allowed key it does not name

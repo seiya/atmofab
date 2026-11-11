@@ -1,0 +1,303 @@
+# The seeded composition defects (system tier PR-S2), as patches to
+# models/shallow_water2d_rotating_model.f90. Each `old` must occur exactly once (re-indented by
+# bench.apply_patches). `class` is `must_catch` or `declared_unobservable` (13, 18: the argument
+# from the input domain stated in the spec's tests.md §1; run anyway, a catch is a surprise to
+# record). 1-18 were fixed before the suite was written; r1-* were added by its review.
+"1":
+  title: the two calls swapped (rotation before the member)
+  class: must_catch
+  patches:
+  - old: |
+      ok = member_ok
+      if (.not. ok) return
+      if (rotation /= 1) return
+      if (mod(step + 1, rotation_every) /= 0) return
+    new: |
+      if (rotation /= 1 .or. mod(step + 1, rotation_every) /= 0) then
+        ok = member_ok
+        return
+      end if
+  - old: |
+      call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+    new: |
+      if (rotation /= 1 .or. mod(step + 1, rotation_every) /= 0) then
+        call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+      end if
+  - old: |2
+        !$omp end parallel do
+      end subroutine shallow_water2d_rotating__step
+    new: |2
+        !$omp end parallel do
+        call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+        ok = member_ok
+      end subroutine shallow_water2d_rotating__step
+"2":
+  title: rotation_every * dt replaced by dt
+  class: must_catch
+  patches:
+  - old: "t, real(rotation_every, dp) * dt, u_np1, rk4_ok)"
+    new: "t, dt, u_np1, rk4_ok)"
+"3":
+  title: k RK4 sub-steps of dt in place of one of k*dt
+  class: must_catch
+  patches:
+  - old: |2
+        call dynamics_shallow_water_time_update_2d_rk4__advance(ncomp_sw, nx, ny, u_n, coriolis_tendency, &
+          t, real(rotation_every, dp) * dt, u_np1, rk4_ok)
+    new: |2
+        do i = 1, rotation_every
+          call dynamics_shallow_water_time_update_2d_rk4__advance(ncomp_sw, nx, ny, u_n, coriolis_tendency, &
+            t, dt, u_np1, rk4_ok)
+          u_n = u_np1
+        end do
+"4":
+  title: the interval test dropped (rotation every step)
+  class: must_catch
+  patches:
+  - old: |2
+        if (mod(step + 1, rotation_every) /= 0) return
+    new: ""
+"5":
+  title: the interval phase mod(step, k) in place of mod(step + 1, k)
+  class: must_catch
+  patches:
+  - old: "if (mod(step + 1, rotation_every) /= 0) return"
+    new: "if (mod(step, rotation_every) /= 0) return"
+"6":
+  title: the selector ignored (rotation applied when rotation == 0)
+  class: must_catch
+  patches:
+  - old: |2
+        if (rotation /= 1) return
+    new: ""
+"7":
+  title: the member call removed
+  class: must_catch
+  patches:
+  - old: |2
+        call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+    new: |2
+        member_ok = .true.
+"8":
+  title: the member skipped when rotation == 1
+  class: must_catch
+  patches:
+  - old: |2
+        call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+    new: |2
+        if (rotation == 1) then
+          member_ok = .true.
+        else
+          call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+        end if
+"9":
+  title: the member called on scratch copies, its result discarded
+  class: must_catch
+  patches:
+  - old: |2
+        logical :: member_ok
+    new: |2
+        logical :: member_ok
+        real(dp), allocatable :: hs(:, :), hus(:, :), hvs(:, :)
+  - old: |2
+        call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+    new: |2
+        hs = h
+        hus = hu
+        hvs = hv
+        call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, hs, hus, hvs, member_ok)
+"10":
+  title: the member's logical result ignored
+  class: must_catch
+  patches:
+  - old: |2
+        ok = member_ok
+        if (.not. ok) return
+    new: |2
+        ok = .true.
+"11":
+  title: f collapsed to one cell
+  class: must_catch
+  patches:
+  - old: |2
+        cor_f = f
+    new: |2
+        cor_f = f(1, 1)
+"12":
+  title: f cached at the first call and reused on later cases of the same shape
+  class: must_catch
+  patches:
+  - old: |2
+        if (allocated(cor_f)) deallocate(cor_f)
+        allocate(cor_f(nx, ny))
+        cor_f = f
+    new: |2
+        if (allocated(cor_f)) then
+          if (size(cor_f, 1) /= nx .or. size(cor_f, 2) /= ny) deallocate(cor_f)
+        end if
+        if (.not. allocated(cor_f)) then
+          allocate(cor_f(nx, ny))
+          cor_f = f
+        end if
+"13":
+  title: the Coriolis guard discarded
+  class: declared_unobservable
+  patches:
+  - old: |2
+        if (.not. stage_ok) then
+          cor_ok = .false.
+          dUdt = 0.0_dp
+          return
+        end if
+    new: ""
+"14":
+  title: the member stepped with k*dt
+  class: must_catch
+  patches:
+  - old: "call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)"
+    new: "call shallow_water2d__step(nx, ny, dx, dy, g, real(rotation_every, dp) * dt, t, z_b, h, hu, hv, member_ok)"
+"15":
+  title: the member call inside the interval branch (called on rotation steps only)
+  class: must_catch
+  patches:
+  - old: |2
+        call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+    new: |2
+        if (rotation == 1 .and. mod(step + 1, rotation_every) /= 0) then
+          member_ok = .true.
+        else
+          call shallow_water2d__step(nx, ny, dx, dy, g, dt, t, z_b, h, hu, hv, member_ok)
+        end if
+"16":
+  title: one logical actual shared by the member call and RK4 (RK4 overwrites the member's false)
+  class: must_catch
+  patches:
+  - old: |2
+        ok = member_ok
+        if (.not. ok) return
+    new: |2
+        ok = member_ok
+  - old: |2
+          t, real(rotation_every, dp) * dt, u_np1, rk4_ok)
+        ok = rk4_ok .and. cor_ok
+    new: |2
+          t, real(rotation_every, dp) * dt, u_np1, member_ok)
+        ok = member_ok .and. cor_ok
+"17a":
+  title: f indexed under exchanged extents (a copy through a dummy declared f(ny, nx))
+  class: must_catch
+  patches:
+  - old: |2
+        cor_f = f
+    new: |2
+        call copy_f(nx, ny, f, cor_f)
+  - old: |
+      end module shallow_water2d_rotating_model
+    new: |2
+        subroutine copy_f(nx, ny, src, dst)
+          integer, intent(in) :: nx, ny
+          real(dp), intent(in) :: src(ny, nx)
+          real(dp), intent(out) :: dst(nx, ny)
+          integer :: i, j
+          do j = 1, ny
+            do i = 1, nx
+              dst(i, j) = src(i, j)
+            end do
+          end do
+        end subroutine copy_f
+
+      end module shallow_water2d_rotating_model
+"17b":
+  title: the packed state filled by loops under exchanged extents (dummies declared (ny, nx))
+  class: must_catch
+  patches:
+  - old: |2
+        !$omp parallel do private(i) schedule(static)
+        do j = 1, ny
+          do i = 1, nx
+            u_n(1, i, j) = h(i, j)
+            u_n(2, i, j) = hu(i, j)
+            u_n(3, i, j) = hv(i, j)
+          end do
+        end do
+        !$omp end parallel do
+    new: |2
+        call pack_state(nx, ny, h, hu, hv, u_n)
+  - old: |
+      end module shallow_water2d_rotating_model
+    new: |2
+        subroutine pack_state(nx, ny, a, b, c, u)
+          integer, intent(in) :: nx, ny
+          real(dp), intent(in) :: a(ny, nx), b(ny, nx), c(ny, nx)
+          real(dp), intent(out) :: u(3, nx, ny)
+          integer :: i, j
+          do j = 1, ny
+            do i = 1, nx
+              u(1, i, j) = a(i, j)
+              u(2, i, j) = b(i, j)
+              u(3, i, j) = c(i, j)
+            end do
+          end do
+        end subroutine pack_state
+
+      end module shallow_water2d_rotating_model
+"18":
+  title: the RK4 guard ignored
+  class: declared_unobservable
+  patches:
+  - old: |2
+        ok = rk4_ok .and. cor_ok
+    new: |2
+        ok = cor_ok
+# Review round 1 (verdict-integrity reviewer): defects the suite did not catch at 9593fc39,
+# each closed by a case or a predicate added in the commit that added it here.
+"r1-F1":
+  title: the member's false result read only on a firing step (ok true when off or not firing)
+  class: must_catch
+  patches:
+  - old: |
+      ok = member_ok
+      if (.not. ok) return
+      if (rotation /= 1) return
+      if (mod(step + 1, rotation_every) /= 0) return
+    new: |
+      if (rotation /= 1 .or. mod(step + 1, rotation_every) /= 0) then
+        ok = .true.
+        return
+      end if
+      ok = member_ok
+      if (.not. ok) return
+"r1-F2":
+  title: the interval guard applied only when the process is on
+  class: must_catch
+  patches:
+  - old: "if (rotation_every < 1) return"
+    new: "if (rotation == 1 .and. rotation_every < 1) return"
+"r1-F3":
+  title: the selector refused above 1 only (a negative selector reads as off)
+  class: must_catch
+  patches:
+  - old: "if (rotation /= 0 .and. rotation /= 1) return"
+    new: "if (rotation > 1) return"
+  - old: "if (rotation /= 1) return"
+    new: "if (rotation <= 0) return"
+"r1-F4":
+  title: the interval guard refusing 0 only (a negative interval runs, or reaches RK4's guard later)
+  class: must_catch
+  patches:
+  - old: "if (rotation_every < 1) return"
+    new: "if (rotation_every == 0) return"
+# Review round 2 corrected the record of r1-F4: it was first committed as the compound with
+# mutant 18 below, on the claim that the guard change alone is observationally the stated
+# program. That holds at rotation.every = -1 only (RK4 refuses at the first call); at -2 a
+# step is committed first, and with the process off a negative interval is never refused.
+"r1-F4-18":
+  title: the interval guard refusing 0 only, with the RK4 guard ignored (mutant 18)
+  class: must_catch
+  patches:
+  - old: "if (rotation_every < 1) return"
+    new: "if (rotation_every == 0) return"
+  - old: |2
+        ok = rk4_ok .and. cor_ok
+    new: |2
+        ok = cor_ok

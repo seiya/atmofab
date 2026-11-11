@@ -11370,7 +11370,7 @@ end program shallow_water2d_runner
 
     def test_cross_target_judged_ids_of_the_real_corpus(self) -> None:
         """`docs/TESTS.md` §Cross-target judgment states the rule: a pass test applies it and an
-        xfail or fail test does not. This pins the reader against the 17 physics tests.md under
+        xfail or fail test does not. This pins the reader against the 18 physics tests.md under
         that rule, both prose forms; a harness applies none."""
         import glob
         repo = Path(__file__).resolve().parents[2]
@@ -11403,7 +11403,7 @@ end program shallow_water2d_runner
             self.assertGreater(len(passes), 0, f)
             self.assertEqual(judged, passes, f)
             judged_total += len(judged)
-        self.assertEqual(len(files), 20)
+        self.assertEqual(len(files), 21)
         self.assertGreater(judged_total, 40)
 
     def test_compile_gate_primary_predicates_need_a_snapshot_entry(self) -> None:
@@ -30483,7 +30483,7 @@ class DistributeLineGateTests(unittest.TestCase):
         with unittest.mock.patch.object(vps, "_distribute_line_violations", spy):
             self.assertEqual(_drive_stage("coriolis") + _drive_stage("swe"), [])
         self.assertEqual(seen, ["component", "problem"])
-        # the corpus: one line on each of the 17 physics nodes, none on the 3 harnesses
+        # the corpus: one line on each of the 18 physics nodes, none on the 3 harnesses
         repo = Path(__file__).resolve().parents[2]
         catalog = yaml.safe_load((repo / "spec/registry/spec_catalog.yaml").read_text())["specs"]
         catalog = [e for e in catalog if e.get("tests_path")]   # a profile has no tests.md
@@ -30493,7 +30493,7 @@ class DistributeLineGateTests(unittest.TestCase):
             counts[entry["spec_kind"]].append(sum(
                 1 for ln in text.splitlines() if vps.TEST_DISTRIBUTE_LINE.match(ln.strip())))
         self.assertEqual(counts.pop("infrastructure"), [0, 0, 0])
-        self.assertEqual(sorted(sum(counts.values(), [])), [1] * 17)
+        self.assertEqual(sorted(sum(counts.values(), [])), [1] * 18)
 
     def test_none_pins_an_empty_axis_list(self) -> None:
         line = "distribute: none"
@@ -30617,7 +30617,7 @@ class DistributeLineGateTests(unittest.TestCase):
                   for e in catalog if e.get("spec_kind") in ("component", "problem")
                   for ln in (repo / e["tests_path"]).read_text(encoding="utf-8").splitlines()
                   if (m := vps.TEST_DISTRIBUTE_LINE.match(ln.strip()))]
-        self.assertEqual(len(bodies), 17)
+        self.assertEqual(len(bodies), 18)
         for body in bodies:
             with self.subTest(corpus=body):
                 self.assertIsNone(vps._parse_distribute_line(body)[1])
