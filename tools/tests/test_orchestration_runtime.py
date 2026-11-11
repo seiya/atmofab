@@ -14169,6 +14169,41 @@ class ResolveDependencyFactsTests(unittest.TestCase):
             self.assertEqual(facts[0]["node_key"], "profile/some_profile@0.1.0")
             self.assertNotIn("published_operations", facts[0])
 
+    def test_empty_operations_fallback_surfaces_a_problem_members_procedures(self) -> None:
+        # The system tier, Part 1 (review round 1, sec-L1 / cor-L5): a `problem` member is a
+        # called dependency, so its empty-`operations` FALLBACK and its L4 name-drift
+        # replacement surface the member's `<member>__` procedures from its certified source,
+        # exactly as a component's do. Pins `is_component_dep` admitting `problem`: with it
+        # reverted to `== "component"`, neither row surfaces anything.
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        model_text = (
+            "module member_model\ncontains\n"
+            "subroutine member__step(h, dt, ok)\n"
+            "  real(8), intent(inout) :: h(:)\n"
+            "  real(8), intent(in) :: dt\n"
+            "  logical, intent(out) :: ok\n"
+            "end subroutine\nend module\n")
+        for operations, unresolved in (([], None), (["member__gone"], ["member__gone"])):
+            with self.subTest(operations=operations), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._write_dep_pipeline(
+                    repo_root, "problem__member__0.5.1",
+                    "p_20260601_002", "bin_20260601_002", "run_20260601_002",
+                    source_id="src_20260601_001", spec_id="member",
+                    model_text=model_text)
+                self._write_ir(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001",
+                    [{"node_key": "problem/member@0.5.1", "kind": "problem",
+                      "operations": operations}],
+                    impl_defaults={"toolchain": {"language": "fortran"}})
+                facts = _resolve_dependency_facts(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001", target=_TP)
+                self.assertEqual(len(facts), 1)
+                self.assertEqual(
+                    [op["operation"] for op in facts[0].get("published_operations", [])],
+                    ["member__step"])
+                self.assertEqual(facts[0].get("declared_operations_unresolved"), unresolved)
+
     def test_non_empty_operations_not_unioned_with_fallback(self) -> None:
         # Drift guard: when the IR DOES enumerate ops, only that surface is published — the
         # fallback is empty-list-only, never unioned (IR is the sole carrier).
