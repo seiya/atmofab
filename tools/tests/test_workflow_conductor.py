@@ -7776,6 +7776,36 @@ class NodeAllocationTest(unittest.TestCase):
                 wc.resolve_node(repo, "spec/x/n1")
             self.assertIn("problem_dependency_surface_not_step_only", str(ctx.exception))
             self.assertIn("(problem/m)", str(ctx.exception))
+        # Two members, the refused one SECOND (review round 1, sec-L2): every entry is checked,
+        # not the first alone, and only the refused member is named.
+        with self.subTest(members="m (step-only), m2 (publishes __init)"), \
+                tempfile.TemporaryDirectory() as tmp:
+            repo = self._composite_repo(tmp, declaring_kind="problem")
+            catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
+            catalog.write_text(catalog.read_text(encoding="utf-8")
+                               + "  - spec_kind: problem\n    spec_id: m2\n"
+                               "    spec_version: \"0.1.0\"\n"
+                               "    controlled_spec_path: spec/problem/m2/controlled_spec.md\n"
+                               "    deps_path: spec/problem/m2/deps.yaml\n", encoding="utf-8")
+            m2 = repo / "spec" / "problem" / "m2"
+            m2.mkdir(parents=True)
+            (m2 / "controlled_spec.md").write_text(
+                (repo / "spec" / "problem" / "m" / "controlled_spec.md").read_text(
+                    encoding="utf-8").replace("m__step", "m2__step")
+                .replace("```\n", "  - name: m2__init\n    args: []\n```\n", 1),
+                encoding="utf-8")
+            deps = repo / "spec" / "x" / "n1" / "deps.yaml"
+            deps.write_text(deps.read_text(encoding="utf-8")
+                            + "    - problem_id: m2\n      version_constraint: \">=0.1.0\"\n",
+                            encoding="utf-8")
+            from tools.spec_input_gates import problem_dependency_surface_violation
+            self.assertIsNone(problem_dependency_surface_violation(repo, "spec/problem/m"))
+            self.assertIsNotNone(problem_dependency_surface_violation(repo, "spec/problem/m2"))
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("problem_dependency_surface_not_step_only", str(ctx.exception))
+            self.assertIn("spec/problem/m2", str(ctx.exception))
+            self.assertNotIn("spec/problem/m ", str(ctx.exception))
 
     def test_the_unreadable_deps_exemption_uses_the_same_spelling_rule(self) -> None:
         # The unreadable-deps branch exempts an `infrastructure` node, and must spell the kind
