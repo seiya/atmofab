@@ -19,11 +19,12 @@ The conditions the composition judgments are built under (the system tier plan, 
 - **The interval at `2` with a step count it does not divide.** 6-6 runs with `rotation.every = 2` and `n_step` odd (`183` and `229`). At an interval of `1`, or on a flat state, a member stepped with `k dt`, a member called on rotation steps only and a member called `k` times are each indistinguishable from the stated composition.
 - **Cases of one shape with different `f`.** The four transformed cases of 2-11 have the shape of their base and a different `f`; a kernel that retains `f` from an earlier case of the same shape is seen by the pairs. The condition is that these cases share a shape, not that they are adjacent in any order.
 - **A rectangular case** (`nx != ny`, `L_x != L_y`) under 6-6: an `f`, or a packed state, indexed under exchanged extents reads the right cells on a square grid.
-- **The member refusing on a step where the rotation fires.** 6-14 runs with `rotation = 1` and `rotation.every = 1`; the member refuses at its tenth step of eighteen (measured on the PR-S2 bench, the certified member composed with a hand-written composing model; the refusing step is recorded, not judged), so the rotation has fired on every committed step before it.
+- **The member refusing on every path of step 3.** 6-14 runs the member's refusal three ways: with `rotation.on = 1` and `rotation.every = 1`, so the rotation has fired on every committed step before it; with the process off; and with `rotation.on = 1` and `rotation.every = 100`, more than the run's eighteen steps, so the rotation process is on and never fires. A kernel that reads the member's result on one of the three paths only passes the other two cases with `ok = 1`. On the PR-S2 bench (the certified member composed with a hand-written composing model) the member refuses at its tenth step when the rotation fires every step and at its ninth on the other two cases; the refusing step is recorded, not judged.
 - **Margins stated before the judgments were run**, each beside its band in 5-5: the interval pair's closed forms, the two phase shifts of 6-2, and the one-off difference of the two splitting orders of 6-6.
 
 What this suite accepts as beyond a kernel judgment:
-- **The guards of the Coriolis operation and of RK4.** Neither is reachable from this `problem`'s inputs for a conforming member: the Coriolis operation refuses `ncomp /= 3`, `nx < 1`, `ny < 1`, and RK4 refuses `dt <= 0` and extents below `1`; `ncomp` is fixed to `3` by the Controlled Spec §5, `rotation.every < 1` is refused by step 1, and the member, called first with the same `nx`, `ny` and `dt`, refuses `nx < 2`, `ny < 2` and `dt <= 0` (its §5 and its 6-15, 6-16). So a kernel that discards the Coriolis guard, or ignores the RK4 guard, passes every test here. The Controlled Spec §5 still requires both; that requirement rests on `Generate.verify`, and 6-15 runs the premise of this argument: the member's `dt < 0` refusal with the rotation on, judged by the flag.
+- **The guards of the Coriolis operation and of RK4.** Neither is reachable from this `problem`'s inputs for a conforming member: the Coriolis operation refuses `ncomp /= 3`, `nx < 1`, `ny < 1`, and RK4 refuses `dt <= 0` and extents below `1`; `ncomp` is fixed to `3` by the Controlled Spec §5, `rotation.every < 1` is refused by step 1 at the first call (6-12), and the member, called first with the same `nx`, `ny` and `dt`, refuses `nx < 2`, `ny < 2` and `dt <= 0` (its §5 and its 6-15, 6-16). So a kernel that discards the Coriolis guard, or ignores the RK4 guard, passes every test here. The Controlled Spec §5 still requires both; that requirement rests on `Generate.verify`, and 6-15 runs the premise of this argument: the member's `dt < 0` refusal with the rotation on, judged by the flag.
+- **Which guard refuses a negative interval.** With `rotation.on=1` and `rotation.every<0`, a kernel whose step 1 refuses `0` alone reaches RK4's own `dt <= 0` guard at the first call, after one member call, and refuses there; no step is committed and the state is the one the host gave, as when step 1 refuses. No capture separates the two, so the requirement that step 1 refuse before the member rests on `Generate.verify`. A kernel that ALSO ignores RK4's guard commits a step and is refused by 6-12 (`run.first_call_refused`).
 - **The member's discretization.** It is the member's suite's to judge. This suite restates the member's bands only on the member's own cases with the process off (6-4, 6-5), and calibrates every band of the rotating cases on a reference that reproduces the member.
 - **The member's private state.** The member publishes `__step` only and keeps no state between calls that its §5 states; how often the member is called per step is judged through the state (6-6, 6-11), not by counting calls.
 
@@ -79,8 +80,8 @@ The three cases: `rotation.every=1` and `4` with `t_end=0.2` ($\mathrm{n\_step}=
 The member's case `swe2d_ref_n064_sx000_sy000_dts100`, input for input (`nx=ny=64`, `williamson_tc5_cone`, `linear_wave_x`, `eta0=1.0e-3`, `wave_sign=+1`, the shifts `0`, `dt_scale=1.0`, `t_end=0.2`, `history.every=90`), with `rotation.on=0`, `rotation.every=3` and the `f` of the shear-flow base (`f0=20`, `f_amp_x=10`, `f_phase_x=0.2`, `f_amp_y=8`, `f_phase_y=0.05`). Its twin carries `rotation.on=0`, `rotation.every=1` and another `f` (`f0=-35`, `f_amp_x=4`, `f_phase_x=0.7`, `f_amp_y=-6`, `f_phase_y=0.6`); off, neither enters the result. The case has no analytic solution (the member's `tests.md` 2-7), so 6-4 restates the judgments the member holds on it.
 
 ### 2-8. The refusal cases
-- The interval and the selector: the shear-flow base on `nx=ny=32` with `rotation.every=0`, with `rotation.every=-1`, and with `rotation.on=2` (`rotation.every=1`), each `history.every=0`.
-- The member's wet-domain refusal: the member's case `swe2d_dry_n032_sx000_sy000_dts500` input for input (`dt_scale=5.0`, the cone, `history.every=9`), with `rotation.on=1`, `rotation.every=1` and the `f` of the shear-flow base. The bench composition refuses at the member's tenth step of $\mathrm{n\_step}=18$ (nine steps committed).
+- The interval and the selector: the shear-flow base on `nx=ny=32`, each `history.every=0`, with `rotation.on=1` and `rotation.every=0`; with `rotation.on=1` and `rotation.every=-1`; with `rotation.on=0` and `rotation.every=0` (the interval is read whatever the selector, Controlled Spec §6); with `rotation.on=2` and `rotation.every=1`; and with `rotation.on=-1` and `rotation.every=1`. Each is refused at the FIRST call by step 1 of the Controlled Spec §5, before the member: no step is committed and the state is the one the host gave. A refusal reached later — by RK4's own `dt <= 0` guard on a negative interval, or by the member — is not step 1's.
+- The member's wet-domain refusal: the member's case `swe2d_dry_n032_sx000_sy000_dts500` input for input (`dt_scale=5.0`, the cone, `history.every=9`), the `f` of the shear-flow base, and three rotation settings: `rotation.on=1`, `rotation.every=1` (`swr_dry_n032`); `rotation.on=1`, `rotation.every=100` (`swr_dry_n032_k100`, the process on and never firing in $\mathrm{n\_step}=18$ steps); and `rotation.on=0`, `rotation.every=1` (`swr_dry_n032_off`). The bench composition refuses at the member's tenth step on the first (nine steps committed) and at its ninth on the other two (eight committed).
 - The member's `dt` refusal: the member's case `swe2d_flat_ref_n032_sx000_sy000_dts100_dtneg` input for input (`dt_scale=-1.0`, `t_end=-0.2`, `history.every=0`), with `rotation.on=1`, `rotation.every=1` and the `f` of the shear-flow base.
 
 ### 2-9. The rectangular case
@@ -109,7 +110,7 @@ The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-2 to 2-4 (
 
   `f` does not enter the rule. `dt_scale=1.0` on every case but the two member refusal cases of 2-8.
 - The stop condition is $n=\mathrm{n\_step}$. The host's driver calls `shallow_water2d_rotating__step` once per step for $n=1,\dots,\mathrm{n\_step}$, with `step` $=n-1$ (the committed count before the call), `rotation` and `rotation_every` the case inputs `rotation.on` and `rotation.every`, and commits each step whose result `ok` is true. The state the host captures before the first step, after the last and every `every` committed steps consists of `h`, `hu`, `hv`, `z_b`, `f` (`nx` × `ny` each) and the logical result `ok` (`0` before the first step), with the driver's time `t` and committed step count `step`. `every` is the case input `history.every` of the following line: `3` on the cases of 2-6, which with `rotation.every=4` samples between rotation calls and on them; `10` on the wave case (about `0.16` rad of the wave per sample, so no phase error aliases between two samples); `20` on the shear-flow cases; the member's own value on the cases of 2-7, 2-8 and 2-10; `0` (no sample) on the other refusal cases.
-- history: every = (history.every) swr_dry_n032 = 9, swr_dtneg_n032 = 0, swr_guard_every0_n032 = 0, swr_guard_everyneg_n032 = 0, swr_guard_sel2_n032 = 0, swr_off_cone_n064 = 90, swr_off_cone_n064_twin = 90, swr_off_flat_n064 = 90, swr_pw_n128 = 10, swr_rot_n016_k1 = 3, swr_rot_n016_k4 = 3, swr_rot_n016_k4_rem3 = 3, swr_shear_n032 = 20, swr_shear_n064 = 20, swr_shear_n064_axis = 20, swr_shear_n064_rect = 20, swr_shear_n064_shift = 20, swr_shear_n064_xmir = 20, swr_shear_n064_ymir = 20, swr_shear_n128 = 20, swr_shear_n256 = 20
+- history: every = (history.every) swr_dry_n032 = 9, swr_dry_n032_k100 = 9, swr_dry_n032_off = 9, swr_dtneg_n032 = 0, swr_guard_every0_n032 = 0, swr_guard_every0_off_n032 = 0, swr_guard_everyneg_n032 = 0, swr_guard_sel2_n032 = 0, swr_guard_selneg_n032 = 0, swr_off_cone_n064 = 90, swr_off_cone_n064_twin = 90, swr_off_flat_n064 = 90, swr_pw_n128 = 10, swr_rot_n016_k1 = 3, swr_rot_n016_k4 = 3, swr_rot_n016_k4_rem3 = 3, swr_shear_n032 = 20, swr_shear_n064 = 20, swr_shear_n064_axis = 20, swr_shear_n064_rect = 20, swr_shear_n064_shift = 20, swr_shear_n064_xmir = 20, swr_shear_n064_ymir = 20, swr_shear_n128 = 20, swr_shear_n256 = 20
 - distribute: x = grid.nx (min_block 2), y = grid.ny (min_block 2)
 
 ## 4. Case-expansion rules
@@ -130,8 +131,8 @@ The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-2 to 2-4 (
 - `swr_off_cone_n064_twin`: base `swr_off_cone_n064`; overrides only the rotation inputs (2-7).
 - `swr_shear_n064_axis`, `swr_shear_n064_xmir`, `swr_shear_n064_ymir`, `swr_shear_n064_shift`: base `swr_shear_n064`; override only the inputs of 2-11.
 - `swr_shear_n064_rect`: base `swr_shear_n064`; overrides only `ny` to `48` and `L_y` to `0.5` (2-9).
-- `swr_guard_every0_n032`, `swr_guard_everyneg_n032`, `swr_guard_sel2_n032`: the shear-flow base at `nx=ny=32` with the inputs of 2-8.
-- `swr_dry_n032`, `swr_dtneg_n032`: the member's cases of 2-8 with the rotation inputs of 2-8.
+- `swr_guard_every0_n032`, `swr_guard_everyneg_n032`, `swr_guard_every0_off_n032`, `swr_guard_sel2_n032`, `swr_guard_selneg_n032`: the shear-flow base at `nx=ny=32` with the inputs of 2-8.
+- `swr_dry_n032`, `swr_dry_n032_k100`, `swr_dry_n032_off`, `swr_dtneg_n032`: the member's cases of 2-8 with the rotation inputs of 2-8.
 
 ## 5. Judged quantities
 ### 5-1. How a quantity is judged
@@ -148,7 +149,7 @@ A test is judged by the host's predicates over the captures alone (`docs/TESTS.m
 - `order.hu_rms`, `order.hu_mean`, `order.hv_rms`, `order.hv_mean`
 - `errors.<t>.<v>_l2_rel` (twelve)
 - `errors.restricted.<n>.<v>_<k>_rel` (twenty-seven), `convergence.restricted.<pair>.<v>_<k>_order` (eighteen)
-- `run.n_step`, `run.state_moved`, `ok`
+- `run.n_step`, `run.state_moved`, `run.first_call_refused`, `ok`
 
 ### 5-3. Cases of each quantity
 - A quantity is evaluated on the target cases of the tests that list it; it is not defined elsewhere.
@@ -176,6 +177,7 @@ Sums, means and extrema run over every cell of the case's grid; a `history` quan
 - `convergence.restricted.<pair>.<v>_<k>_order`: $\log_2(e_{coarse}/e_{fine})$ of the two levels of the pair.
 - `run.n_step`: the captured committed step count minus $\mathrm{n\_step}$ of §3.
 - `run.state_moved`: $\max_{i,j}|h^{final}-h^{initial}|$; positive when at least one step was committed.
+- `run.first_call_refused`: the captured committed step count plus $\max\left(\max_{i,j}|h^{final}-h^{initial}|,\ \max_{i,j}|hu^{final}-hu^{initial}|,\ \max_{i,j}|hv^{final}-hv^{initial}|\right)$; `0` exactly when the first call refused (no step committed, the state as the host gave it).
 - `ok`: the captured logical result after the run.
 
 ### 5-5. Default thresholds
@@ -219,7 +221,7 @@ Every band of a rotating case is calibrated against an independent reference imp
 |  | `hu` | $\ge 1.3$ | $\ge 1.3$ | $\ge 1.2$ |
 |  | `hv` | $\ge 1.0$ | $\ge 1.0$ | $\ge 0.9$ |
 
-- `ok` $=0$ on the refusal cases (6-12 to 6-15), and `run.state_moved` $>0$ on `swr_dry_n032` (6-14).
+- `ok` $=0$ on the refusal cases (6-12 to 6-15); `run.first_call_refused` $=0$ on the cases of 6-12, 6-13 and 6-15; and `run.state_moved` $>0$ on the three cases of 6-14.
 - $\mathrm{cross\_target\_state\_agreement}\le 1.0e{-10}$ for each of `h`, `hu` and `hv`.
 
 ## 6. Test definitions
@@ -301,26 +303,26 @@ Every band of a rotating case is calibrated against an independent reference imp
 - `quantities`: `errors.restricted.n032.h_l1_rel.lower`, `errors.restricted.n032.h_l1_rel.upper`, `errors.restricted.n032.h_l2_rel.lower`, `errors.restricted.n032.h_l2_rel.upper`, `errors.restricted.n032.h_linf_rel.lower`, `errors.restricted.n032.h_linf_rel.upper`, `errors.restricted.n032.hu_l1_rel.lower`, `errors.restricted.n032.hu_l1_rel.upper`, `errors.restricted.n032.hu_l2_rel.lower`, `errors.restricted.n032.hu_l2_rel.upper`, `errors.restricted.n032.hu_linf_rel.lower`, `errors.restricted.n032.hu_linf_rel.upper`, `errors.restricted.n032.hv_l1_rel.lower`, `errors.restricted.n032.hv_l1_rel.upper`, `errors.restricted.n032.hv_l2_rel.lower`, `errors.restricted.n032.hv_l2_rel.upper`, `errors.restricted.n032.hv_linf_rel.lower`, `errors.restricted.n032.hv_linf_rel.upper`, `errors.restricted.n064.h_l1_rel.lower`, `errors.restricted.n064.h_l1_rel.upper`, `errors.restricted.n064.h_l2_rel.lower`, `errors.restricted.n064.h_l2_rel.upper`, `errors.restricted.n064.h_linf_rel.lower`, `errors.restricted.n064.h_linf_rel.upper`, `errors.restricted.n064.hu_l1_rel.lower`, `errors.restricted.n064.hu_l1_rel.upper`, `errors.restricted.n064.hu_l2_rel.lower`, `errors.restricted.n064.hu_l2_rel.upper`, `errors.restricted.n064.hu_linf_rel.lower`, `errors.restricted.n064.hu_linf_rel.upper`, `errors.restricted.n064.hv_l1_rel.lower`, `errors.restricted.n064.hv_l1_rel.upper`, `errors.restricted.n064.hv_l2_rel.lower`, `errors.restricted.n064.hv_l2_rel.upper`, `errors.restricted.n064.hv_linf_rel.lower`, `errors.restricted.n064.hv_linf_rel.upper`, `errors.restricted.n128.h_l1_rel.lower`, `errors.restricted.n128.h_l1_rel.upper`, `errors.restricted.n128.h_l2_rel.lower`, `errors.restricted.n128.h_l2_rel.upper`, `errors.restricted.n128.h_linf_rel.lower`, `errors.restricted.n128.h_linf_rel.upper`, `errors.restricted.n128.hu_l1_rel.lower`, `errors.restricted.n128.hu_l1_rel.upper`, `errors.restricted.n128.hu_l2_rel.lower`, `errors.restricted.n128.hu_l2_rel.upper`, `errors.restricted.n128.hu_linf_rel.lower`, `errors.restricted.n128.hu_linf_rel.upper`, `errors.restricted.n128.hv_l1_rel.lower`, `errors.restricted.n128.hv_l1_rel.upper`, `errors.restricted.n128.hv_l2_rel.lower`, `errors.restricted.n128.hv_l2_rel.upper`, `errors.restricted.n128.hv_linf_rel.lower`, `errors.restricted.n128.hv_linf_rel.upper`, `convergence.restricted.n032_to_n064.h_l1_order`, `convergence.restricted.n032_to_n064.h_l2_order`, `convergence.restricted.n032_to_n064.h_linf_order`, `convergence.restricted.n032_to_n064.hu_l1_order`, `convergence.restricted.n032_to_n064.hu_l2_order`, `convergence.restricted.n032_to_n064.hu_linf_order`, `convergence.restricted.n032_to_n064.hv_l1_order`, `convergence.restricted.n032_to_n064.hv_l2_order`, `convergence.restricted.n032_to_n064.hv_linf_order`, `convergence.restricted.n064_to_n128.h_l1_order`, `convergence.restricted.n064_to_n128.h_l2_order`, `convergence.restricted.n064_to_n128.h_linf_order`, `convergence.restricted.n064_to_n128.hu_l1_order`, `convergence.restricted.n064_to_n128.hu_l2_order`, `convergence.restricted.n064_to_n128.hu_linf_order`, `convergence.restricted.n064_to_n128.hv_l1_order`, `convergence.restricted.n064_to_n128.hv_l2_order`, `convergence.restricted.n064_to_n128.hv_linf_order`, `mass_drift_rel`, `cfl.max`, `run.n_step`
 
 ### 6-12. `l0_rotation_every_refusal_xfail`
-- `target_cases`: `swr_guard_every0_n032`, `swr_guard_everyneg_n032`
+- `target_cases`: `swr_guard_every0_n032`, `swr_guard_everyneg_n032`, `swr_guard_every0_off_n032`
 - `level`: `L0`
-- `xfail_condition`: `rotation.every < 1` (at the boundary `0`, and at `-1`)
-- `judgment`: the step refuses: `ok` $=0$. The cross-target judgment is not applied.
+- `xfail_condition`: `rotation.every < 1` (at the boundary `0` with the process on and off, and at `-1`)
+- `judgment`: the first call refuses: `ok` $=0$ and `run.first_call_refused` $=0$. The cross-target judgment is not applied.
 - `expected_outcome`: `xfail`
-- `quantities`: `ok`
+- `quantities`: `ok`, `run.first_call_refused`
 
 ### 6-13. `l0_selector_refusal_xfail`
-- `target_cases`: `swr_guard_sel2_n032`
+- `target_cases`: `swr_guard_sel2_n032`, `swr_guard_selneg_n032`
 - `level`: `L0`
-- `xfail_condition`: `rotation.on` not in `{0, 1}`
-- `judgment`: the step refuses: `ok` $=0$. The cross-target judgment is not applied.
+- `xfail_condition`: `rotation.on` not in `{0, 1}` (at `2` and at `-1`)
+- `judgment`: the first call refuses: `ok` $=0$ and `run.first_call_refused` $=0$. The cross-target judgment is not applied.
 - `expected_outcome`: `xfail`
-- `quantities`: `ok`
+- `quantities`: `ok`, `run.first_call_refused`
 
 ### 6-14. `l0_member_refusal_xfail`
-- `target_cases`: `swr_dry_n032`
+- `target_cases`: `swr_dry_n032`, `swr_dry_n032_k100`, `swr_dry_n032_off`
 - `level`: `L0`
-- `xfail_condition`: the member's wet-domain invariant fails mid-run, with the rotation firing on every step (2-8)
-- `judgment`: the run ends on the member's refusal: `ok` $=0$, and `run.state_moved` $>0$ (steps were committed before it). A kernel that ignores the member's result, or lets the RK4 result overwrite it, continues to `n_step` with `ok` $=1$. The cross-target judgment is not applied.
+- `xfail_condition`: the member's wet-domain invariant fails mid-run, with the rotation firing on every step, on and never firing, and off (2-8)
+- `judgment`: the run ends on the member's refusal: `ok` $=0$, and `run.state_moved` $>0$ (steps were committed before it). A kernel that ignores the member's result on any of the three paths, or lets the RK4 result overwrite it, continues to `n_step` with `ok` $=1$ on that path's case. The cross-target judgment is not applied.
 - `expected_outcome`: `xfail`
 - `quantities`: `ok`, `run.state_moved`
 
@@ -328,9 +330,9 @@ Every band of a rotating case is calibrated against an independent reference imp
 - `target_cases`: `swr_dtneg_n032`
 - `level`: `L0`
 - `xfail_condition`: `dt < 0` with `rotation.on=1`, `rotation.every=1` (2-8): the member refuses before the rotation process is reached
-- `judgment`: `ok` $=0$, the flag alone. The cross-target judgment is not applied.
+- `judgment`: the first call refuses: `ok` $=0$ and `run.first_call_refused` $=0$. The cross-target judgment is not applied.
 - `expected_outcome`: `xfail`
-- `quantities`: `ok`
+- `quantities`: `ok`, `run.first_call_refused`
 
 ## 7. Pass/fail aggregation rules
 `self_verdict` is `pass` when every `pass` test passes and every `xfail` test fails as expected; any other outcome is `fail`. A `pass` test passes when every predicate of every quantity it lists holds on every target case it is evaluated on.

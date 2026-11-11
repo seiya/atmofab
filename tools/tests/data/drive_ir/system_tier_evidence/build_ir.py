@@ -222,22 +222,27 @@ def cases(member_ir: dict[str, Any]) -> list[dict[str, Any]]:
         m["initial_state"]["f"] = F_EXPR
         out.append(m)
     # judgment 9: guards
-    for cid, r in (("swr_guard_every0_n032", rot(1, 0, 20.0)),
-                   ("swr_guard_everyneg_n032", rot(1, -1, 20.0)),
-                   ("swr_guard_sel2_n032", rot(2, 1, 20.0))):
+    # the interval below 1 with the process on and off, the selector above and below {0, 1}
+    for cid, on, k in (("swr_guard_every0_n032", 1, 0), ("swr_guard_everyneg_n032", 1, -1),
+                       ("swr_guard_every0_off_n032", 0, 0), ("swr_guard_sel2_n032", 2, 1),
+                       ("swr_guard_selneg_n032", -1, 1)):
         out.append(case(cid, nx=32, ny=32, every=0, initial=SHEAR_BASE, state=SHEAR,
-                        rotation=r))
-    m = member_case(member_ir, "swe2d_dry_n032_sx000_sy000_dts500")
-    m["case_id"] = "swr_dry_n032"
-    m["inputs"].pop("profile_selection", None)
-    m["inputs"]["rotation"] = rot(1, 1, 20.0, 10.0, 0.2, 8.0, 0.05)
-    m["inputs"]["test_profile_id"], m["inputs"]["test_profile_version"] = TEST_PROFILE
-    m["initial_state"]["f"] = F_EXPR
-    out.append(m)
+                        rotation={**SHEAR_ROT, "on": on, "every": k}))
+    # the member refusing mid-run: the process firing on every step, off, and on but never
+    # firing (n_step = 18 < 100)
+    for cid, on, k in (("swr_dry_n032", 1, 1), ("swr_dry_n032_k100", 1, 100),
+                       ("swr_dry_n032_off", 0, 1)):
+        m = member_case(member_ir, "swe2d_dry_n032_sx000_sy000_dts500")
+        m["case_id"] = cid
+        m["inputs"].pop("profile_selection", None)
+        m["inputs"]["rotation"] = {**SHEAR_ROT, "on": on, "every": k}
+        m["inputs"]["test_profile_id"], m["inputs"]["test_profile_version"] = TEST_PROFILE
+        m["initial_state"]["f"] = F_EXPR
+        out.append(m)
     m = member_case(member_ir, "swe2d_flat_ref_n032_sx000_sy000_dts100_dtneg")
     m["case_id"] = "swr_dtneg_n032"
     m["inputs"].pop("profile_selection", None)
-    m["inputs"]["rotation"] = rot(1, 1, 20.0, 10.0, 0.2, 8.0, 0.05)
+    m["inputs"]["rotation"] = {**SHEAR_ROT, "on": 1, "every": 1}
     m["inputs"]["test_profile_id"], m["inputs"]["test_profile_version"] = TEST_PROFILE
     m["initial_state"]["f"] = F_EXPR
     out.append(m)
@@ -258,9 +263,10 @@ SHEAR_ALL = (*REFINE, "swr_shear_n064_axis", "swr_shear_n064_rect", "swr_shear_n
              "swr_shear_n064_xmir", "swr_shear_n064_ymir")
 OFF_CONE = ("swr_off_cone_n064", "swr_off_cone_n064_twin")
 OFF_FLAT = ("swr_off_flat_n064",)
-GUARDS = {"l0_rotation_every_refusal_xfail": ("swr_guard_every0_n032", "swr_guard_everyneg_n032"),
-          "l0_selector_refusal_xfail": ("swr_guard_sel2_n032",),
-          "l0_member_refusal_xfail": ("swr_dry_n032",),
+GUARDS = {"l0_rotation_every_refusal_xfail": ("swr_guard_every0_n032", "swr_guard_everyneg_n032",
+                                             "swr_guard_every0_off_n032"),
+          "l0_selector_refusal_xfail": ("swr_guard_sel2_n032", "swr_guard_selneg_n032"),
+          "l0_member_refusal_xfail": ("swr_dry_n032", "swr_dry_n032_k100", "swr_dry_n032_off"),
           "l0_member_dt_refusal_xfail": ("swr_dtneg_n032",)}
 VARS = ("h", "hu", "hv")
 NORMS = {"l1": "sum(abs({d})) / {n1}", "l2": "norm2({d}) / {n2}", "linf": "maxabs({d}) / {ni}"}
@@ -488,6 +494,12 @@ def tests_and_predicates(case_set: list[dict[str, Any]]) -> tuple[list, list]:
         t.add("ok", "final.ok", "eq", 0)
         if tid == "l0_member_refusal_xfail":
             t.add("run.state_moved", "maxabs(final.h - initial.h)", "gt", 0.0)
+        else:
+            # refused at the FIRST call: no step committed and the state as the host gave it
+            # (a later refusal, by RK4's guard or the member's, is not this refusal)
+            t.add("run.first_call_refused",
+                  "final.step + max(maxabs(final.h - initial.h), maxabs(final.hu - initial.hu), "
+                  "maxabs(final.hv - initial.hv))", "eq", 0)
     return tests, preds
 
 

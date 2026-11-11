@@ -248,3 +248,50 @@
         ok = rk4_ok .and. cor_ok
     new: |2
         ok = cor_ok
+# Review round 1 (verdict-integrity reviewer): defects the suite did not catch at 9593fc39,
+# each closed by a case or a predicate added in the commit that added it here.
+"r1-F1":
+  title: the member's false result read only on a firing step (ok true when off or not firing)
+  class: must_catch
+  patches:
+  - old: |
+      ok = member_ok
+      if (.not. ok) return
+      if (rotation /= 1) return
+      if (mod(step + 1, rotation_every) /= 0) return
+    new: |
+      if (rotation /= 1 .or. mod(step + 1, rotation_every) /= 0) then
+        ok = .true.
+        return
+      end if
+      ok = member_ok
+      if (.not. ok) return
+"r1-F2":
+  title: the interval guard applied only when the process is on
+  class: must_catch
+  patches:
+  - old: "if (rotation_every < 1) return"
+    new: "if (rotation == 1 .and. rotation_every < 1) return"
+"r1-F3":
+  title: the selector refused above 1 only (a negative selector reads as off)
+  class: must_catch
+  patches:
+  - old: "if (rotation /= 0 .and. rotation /= 1) return"
+    new: "if (rotation > 1) return"
+  - old: "if (rotation /= 1) return"
+    new: "if (rotation <= 0) return"
+# r1-F4 alone (the interval guard refusing 0 only) is observationally the stated program: a
+# negative interval then reaches RK4's own `dt <= 0` guard at the first call, which refuses
+# with no step committed, as step 1 does; only the member's call (state undefined, not
+# committed) differs. The reviewer's demonstration composed it with mutant 18; that compound
+# is the must-catch defect, closed by `run.first_call_refused`.
+"r1-F4":
+  title: the interval guard refusing 0 only, with the RK4 guard ignored (mutant 18)
+  class: must_catch
+  patches:
+  - old: "if (rotation_every < 1) return"
+    new: "if (rotation_every == 0) return"
+  - old: |2
+        ok = rk4_ok .and. cor_ok
+    new: |2
+        ok = cor_ok
