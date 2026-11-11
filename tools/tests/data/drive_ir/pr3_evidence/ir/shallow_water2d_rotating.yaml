@@ -1000,6 +1000,56 @@ case:
       dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
       n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
       dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_guard_everyneg2_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 0
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: -2
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
   - case_id: swr_guard_every0_off_n032
     inputs:
       grid:
@@ -1027,6 +1077,56 @@ case:
       rotation:
         'on': 0
         every: 0
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.1.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_guard_everyneg_off_n032
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 0
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 0
+        every: -1
         f0: 20.0
         f_amp_x: 10.0
         f_phase_x: 0.2
@@ -2299,7 +2399,9 @@ io_contract:
     target_cases:
     - swr_guard_every0_n032
     - swr_guard_every0_off_n032
+    - swr_guard_everyneg2_n032
     - swr_guard_everyneg_n032
+    - swr_guard_everyneg_off_n032
     quantities:
     - ok
     - run.first_call_refused
@@ -4797,7 +4899,9 @@ io_contract:
     target_cases:
     - swr_guard_every0_n032
     - swr_guard_every0_off_n032
+    - swr_guard_everyneg2_n032
     - swr_guard_everyneg_n032
+    - swr_guard_everyneg_off_n032
     per_case: true
     expr: final.ok
     op: eq
@@ -4807,7 +4911,9 @@ io_contract:
     target_cases:
     - swr_guard_every0_n032
     - swr_guard_every0_off_n032
+    - swr_guard_everyneg2_n032
     - swr_guard_everyneg_n032
+    - swr_guard_everyneg_off_n032
     per_case: true
     expr: final.step + max(maxabs(final.h - initial.h), maxabs(final.hu - initial.hu), maxabs(final.hv
       - initial.hv))

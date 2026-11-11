@@ -223,8 +223,11 @@ def cases(member_ir: dict[str, Any]) -> list[dict[str, Any]]:
         out.append(m)
     # judgment 9: guards
     # the interval below 1 with the process on and off, the selector above and below {0, 1}
+    # (on, -2) first fires on the second call, so a kernel whose step 1 refuses 0 alone
+    # commits a step before RK4's dt <= 0 guard refuses; (off, -1) never reaches RK4 at all
     for cid, on, k in (("swr_guard_every0_n032", 1, 0), ("swr_guard_everyneg_n032", 1, -1),
-                       ("swr_guard_every0_off_n032", 0, 0), ("swr_guard_sel2_n032", 2, 1),
+                       ("swr_guard_everyneg2_n032", 1, -2), ("swr_guard_every0_off_n032", 0, 0),
+                       ("swr_guard_everyneg_off_n032", 0, -1), ("swr_guard_sel2_n032", 2, 1),
                        ("swr_guard_selneg_n032", -1, 1)):
         out.append(case(cid, nx=32, ny=32, every=0, initial=SHEAR_BASE, state=SHEAR,
                         rotation={**SHEAR_ROT, "on": on, "every": k}))
@@ -264,7 +267,9 @@ SHEAR_ALL = (*REFINE, "swr_shear_n064_axis", "swr_shear_n064_rect", "swr_shear_n
 OFF_CONE = ("swr_off_cone_n064", "swr_off_cone_n064_twin")
 OFF_FLAT = ("swr_off_flat_n064",)
 GUARDS = {"l0_rotation_every_refusal_xfail": ("swr_guard_every0_n032", "swr_guard_everyneg_n032",
-                                             "swr_guard_every0_off_n032"),
+                                             "swr_guard_everyneg2_n032",
+                                             "swr_guard_every0_off_n032",
+                                             "swr_guard_everyneg_off_n032"),
           "l0_selector_refusal_xfail": ("swr_guard_sel2_n032", "swr_guard_selneg_n032"),
           "l0_member_refusal_xfail": ("swr_dry_n032", "swr_dry_n032_k100", "swr_dry_n032_off"),
           "l0_member_dt_refusal_xfail": ("swr_dtneg_n032",)}

@@ -280,12 +280,17 @@
     new: "if (rotation > 1) return"
   - old: "if (rotation /= 1) return"
     new: "if (rotation <= 0) return"
-# r1-F4 alone (the interval guard refusing 0 only) is observationally the stated program: a
-# negative interval then reaches RK4's own `dt <= 0` guard at the first call, which refuses
-# with no step committed, as step 1 does; only the member's call (state undefined, not
-# committed) differs. The reviewer's demonstration composed it with mutant 18; that compound
-# is the must-catch defect, closed by `run.first_call_refused`.
 "r1-F4":
+  title: the interval guard refusing 0 only (a negative interval runs, or reaches RK4's guard later)
+  class: must_catch
+  patches:
+  - old: "if (rotation_every < 1) return"
+    new: "if (rotation_every == 0) return"
+# Review round 2 corrected the record of r1-F4: it was first committed as the compound with
+# mutant 18 below, on the claim that the guard change alone is observationally the stated
+# program. That holds at rotation.every = -1 only (RK4 refuses at the first call); at -2 a
+# step is committed first, and with the process off a negative interval is never refused.
+"r1-F4-18":
   title: the interval guard refusing 0 only, with the RK4 guard ignored (mutant 18)
   class: must_catch
   patches:
