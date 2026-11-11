@@ -34,6 +34,13 @@ class DefaultSchedulerTests(unittest.TestCase):
             with self.subTest(numprocesses=n):
                 self.assertEqual(_decide(numprocesses=n, dist="no").dist, "no")
 
+    def test_the_hook_runs_before_xdist_s_own(self) -> None:
+        """xdist's `pytest_cmdline_main` is `tryfirst` too and turns `dist == "no"` into `load`
+        under `-n`, after which this hook sees nothing to do. Measured 2026-11-11: without the
+        marker, `-n 2 -v` prints `scheduling tests via LoadScheduling` again while every row
+        above stays green, so the marker is pinned here as declared."""
+        self.assertIs(conftest.pytest_cmdline_main.pytest_impl.get("tryfirst"), True)
+
     def test_without_xdist_the_options_are_absent_and_nothing_is_set(self) -> None:
         option = _decide()
         self.assertFalse(hasattr(option, "dist"))
