@@ -347,10 +347,9 @@ def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
         _compile_cached(["nvcc", "-std=c++17", "-O1", "-c", f"{stem}.cu", "-o", f"{stem}.o"],
                         tmp, [tmp / f"{stem}.cu", *headers])
         objs.append(f"{stem}.o")
-    build = subprocess.run(["nvcc", "-std=c++17", "-O1", "-c", "runner.cu", "-o", "runner.o"],
-                           cwd=tmp, capture_output=True, text=True)
-    if build.returncode != 0:
-        raise AssertionError("runner" + build.stdout[:2000] + build.stderr[:2000])
+    # the runner too: 48 builds of CppDriverTest render 18 distinct runners
+    _compile_cached(["nvcc", "-std=c++17", "-O1", "-c", "runner.cu", "-o", "runner.o"], tmp,
+                    [tmp / "runner.cu", *headers])
     objs.append("runner.o")
     subprocess.run(["nvcc", *objs, "-o", "bin"], cwd=tmp, check=True, capture_output=True)
     return _exec(tmp, ids, {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
@@ -1830,11 +1829,13 @@ class MpiBuild:
         _compile_cached([compiler, *flags, "-c", str(harness_src), "-o", "harness.o"], tmp,
                         [harness_src])
         objs = ["harness.o"]
-        for stem, src in (("model", tmp / "model.f90"), ("runner", tmp / "runner.f90")):
-            build = subprocess.run([compiler, *flags, "-c", str(src), "-o", f"{stem}.o"],
-                                   cwd=tmp, capture_output=True, text=True)
-            if build.returncode != 0:
-                raise AssertionError(f"{stem}: {build.stderr[:3000]}")
+        # Named relative to the build directory, so the command line is the same in every
+        # row's directory and a row that builds what an earlier one did reuses its objects:
+        # the defect rows' references are the unedited fixture, 23 builds of 5 kinds. Each
+        # compile reads the `.mod` files the ones before it left.
+        for stem in ("model", "runner"):
+            _compile_cached([compiler, *flags, "-c", f"{stem}.f90", "-o", f"{stem}.o"], tmp,
+                            [tmp / f"{stem}.f90", *sorted(tmp.glob("*.mod"))])
             objs.append(f"{stem}.o")
         subprocess.run([compiler, *flags, *objs, "-o", "bin"], cwd=tmp, check=True,
                        capture_output=True)
