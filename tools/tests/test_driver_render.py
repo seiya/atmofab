@@ -2482,24 +2482,44 @@ class CompileCacheTest(unittest.TestCase):
 
     def test_a_file_the_command_does_not_name_is_in_the_key(self) -> None:
         """No caller lists inputs, so a file a compile reads without naming it (an included
-        header, a `.mod`) misses when it changes: here the command names neither file."""
+        header, a `.mod`) misses when it changes: here the command names no file. One file
+        of each kind a build here leaves or reads, so no suffix can be dropped from the key."""
+        for suffix in (".h", ".cuh", ".mod", ".o", ".f90", ".cu", ""):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                for name, header in (("a", "h\n"), ("b", "g\n")):
+                    cwd = root / name
+                    cwd.mkdir()
+                    (cwd / "a.src").write_text("one\n")
+                    (cwd / f"dep{suffix}").write_text(header)
+                    _compile_cached(["sh", "-c", "cat * > ../out; mv ../out a.out"], cwd)
+                    # `a.src` sorts before `dep*`
+                    self.assertEqual((cwd / "a.out").read_text(), "one\n" + header, name)
+
+    def test_a_file_s_name_is_in_the_key(self) -> None:
+        """The same bytes under another name are another input: a command reading `b.h` must
+        not be handed what it produced where the same bytes were called `c.h`."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for name, header in (("a", "h\n"), ("b", "g\n")):
+            for name, expected in (("b", "y\n"), ("c", "none\n")):
                 cwd = root / name
                 cwd.mkdir()
-                (cwd / "a.src").write_text("one\n")
-                (cwd / "a.h").write_text(header)
-                _compile_cached(["sh", "-c", "cat * > ../out; mv ../out a.o"], cwd)
-                self.assertEqual((cwd / "a.o").read_text(), header + "one\n", name)  # a.h, a.src
+                (cwd / "a.src").write_text("x\n")
+                (cwd / f"{name}.h").write_text("y\n")
+                _compile_cached(["sh", "-c", "cat b.h > a.o 2>/dev/null || echo none > a.o"],
+                                cwd)
+                self.assertEqual((cwd / "a.o").read_text(), expected, name)
 
     def test_the_same_inputs_under_another_command_compile(self) -> None:
         """The MPI harness is one source under the release flags and the `checked` ones: a key
         without the command line would hand a `checked` row the release object."""
         with tempfile.TemporaryDirectory() as tmp:
-            cwd = Path(tmp)
-            (cwd / "a.src").write_text("one\n")
+            # one directory per flag set, holding the same bytes: only the command differs (in
+            # one directory the first run's `a.o` would be in the second run's key)
             for flag in ("release", "checked"):
+                cwd = Path(tmp) / flag
+                cwd.mkdir()
+                (cwd / "a.src").write_text("one\n")
                 _compile_cached(["sh", "-c", f"cat a.src > a.o; echo {flag} >> a.o"], cwd)
                 self.assertEqual((cwd / "a.o").read_text(), f"one\n{flag}\n")
 
