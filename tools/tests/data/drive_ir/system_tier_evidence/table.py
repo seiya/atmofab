@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Render `bench.py --all-mutants --json <file>` as the mutant table of the PR record: one row per
-mutant, its class, caught or not, the tests it moved, and its STRONGEST catch (the failed
-predicate with the largest value / threshold ratio) with that predicate's metric and threshold,
-plus the number of (predicate, case) records it failed. A catch by a small factor is visible.
+mutant, its class, caught or not, the tests it moved, its STRONGEST catch and its WEAKEST (the
+failed predicates lying furthest and nearest outside their thresholds, `bench.failed_records`'
+`outside`: in half-widths for one bound of a two-sided band, else relative to the threshold),
+each with its value and threshold, and the number of (predicate, case) records it failed.
 
   python3 <this file> <table.json>
 """
@@ -20,26 +21,33 @@ HERE = Path(__file__).resolve().parent
 def main() -> int:
     table = json.loads(Path(sys.argv[1]).read_text())
     mutants = yaml.safe_load((HERE / "mutants.yaml").read_text())
-    print("| mutant | class | caught | tests moved | strongest catch: quantity (case) | value | op threshold | ratio | records failed |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| mutant | class | caught | tests moved | strongest catch | weakest catch | records failed |")
+    print("|---|---|---|---|---|---|---|")
+
+    def cell(r):
+        if r is None:
+            return "-"
+        v, t = r.get("value"), r.get("threshold")
+        val = f"{v:.4g}" if isinstance(v, (int, float)) else str(r.get("error", ""))[:60]
+        thr = f"{r['op']} {t:.4g}" if isinstance(t, (int, float)) else r["op"]
+        out = (f", outside by {r['outside']:.3g} {r['outside_unit']}" if "outside" in r else "")
+        return f"`{r['quantity']}` ({r['case']}): {val}, {thr}{out}"
+
     for mid, m in mutants.items():
         res = table.get(mid, {})
         moved = res.get("moved", [])
         failed = res.get("failed", [])
-        best = max((r for r in failed if r.get("ratio")), key=lambda r: r["ratio"], default=None)
-        if best is None and failed:
-            best = failed[0]
+        # strongest / weakest within one unit: a band's half-widths before a relative excess
+        # before an absolute one (the units do not compare with each other)
+        order = {"half-widths": 0, "relative": 1, "absolute": 2}
+        ranked = sorted((r for r in failed if "outside" in r),
+                        key=lambda r: (order[r["outside_unit"]], r["outside"]))
+        best = max((r for r in ranked if r["outside_unit"] == ranked[0]["outside_unit"]),
+                   key=lambda r: r["outside"]) if ranked else (failed[0] if failed else None)
+        worst = ranked[0] if ranked else None
         cls = "must catch" if m["class"] == "must_catch" else "declared unobservable"
-        if best:
-            v = best.get("value")
-            val = f"{v:.4g}" if isinstance(v, (int, float)) else str(best.get("error", ""))[:60]
-            thr = f"{best['op']} {best['threshold']:.4g}" if isinstance(best.get("threshold"), (int, float)) else best["op"]
-            ratio = f"{best['ratio']:.3g}" if best.get("ratio") else "-"
-            q = f"`{best['quantity']}` ({best['case']})"
-        else:
-            val = thr = ratio = q = "-"
         print(f"| {mid}: {m['title']} | {cls} | {'yes' if moved else 'no'} | "
-              f"{', '.join(f'`{t}`' for t in moved) or '-'} | {q} | {val} | {thr} | {ratio} | "
+              f"{', '.join(f'`{t}`' for t in moved) or '-'} | {cell(best)} | {cell(worst)} | "
               f"{len(failed)} |")
     return 0
 

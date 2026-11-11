@@ -183,7 +183,7 @@ class DriveAgreementTest(unittest.TestCase):
                 self.assertEqual(refusals, [])
                 self.assertEqual(layouts, pe.distribute_layouts(ir))
                 with_axes += bool(layouts)
-        self.assertEqual(with_axes, 10 + 2 + 2)   # 10 bench nodes, 2 variants, coriolis, swe2d
+        self.assertEqual(with_axes, 11 + 2 + 2)   # 11 bench nodes, 2 variants, coriolis, swe2d
         for new in ("V", "stage_t"):
             variables = {v["name"]: v["shape_expr"]
                          for v in pe.snapshot_schema(irs[f"rk4_{new}"])["variables"]}
@@ -282,6 +282,8 @@ _CENSUS = {
     "advdiff1d_linear": (7, 7, 0, 7, 0, 7, 0),
     "shallow_water2d": (24,) * 7,
     "shallow_water2d_channel": (34,) * 7,
+    # the wave case (`ny = 4`, min_block 2) is replicated where the grid splits `y` in three or more
+    "shallow_water2d_rotating": (16, 16, 15, 16, 15, 16, 16),
 }
 _C = lambda k: (k, "cell")   # noqa: E731
 _F = lambda k: (k, "face")   # noqa: E731
@@ -309,6 +311,7 @@ _LAYOUTS = {
     "advdiff1d_linear": {"u": (_C(0),)},
     "shallow_water2d": {n: (_C(0), _C(1)) for n in ("h", "hu", "hv", "z_b")},
     "shallow_water2d_channel": {n: (_C(0), _C(1)) for n in ("h", "hu", "hv")},
+    "shallow_water2d_rotating": {n: (_C(0), _C(1)) for n in ("h", "hu", "hv", "z_b", "f")},
 }
 
 

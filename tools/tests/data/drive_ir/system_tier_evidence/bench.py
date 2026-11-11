@@ -176,9 +176,18 @@ def one(ir: dict[str, Any], model_text: str, flags: list[str], keep: Path | None
 
 
 def failed_records(ir: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Every (predicate, case) that did not hold: its value, operator and threshold, and how
-    far outside the threshold it lies (`ratio`: value / threshold for `le`, threshold / value
-    for `ge`, so a catch by a factor of 1.01 is visible)."""
+    """Every (predicate, case) that did not hold: its value, operator and threshold, and how far
+    outside it lies (`outside`, with `outside_unit`): for one bound of a two-sided band, in
+    half-widths of that band; otherwise relative to the threshold (or absolute when the
+    threshold is 0). A catch by a small margin is visible either way."""
+    # The thresholds come from the IR's predicates, not from the records: a per-case record
+    # need not list every case, so the partner bound of a band is looked up where it is stated.
+    rhs: dict[tuple, Any] = {}
+    for p in ir["io_contract"]["predicates"]:
+        value = p["value"]
+        for cid in ([p["case"]] if p.get("case") else p["target_cases"]):
+            v = value["per_case"].get(cid) if isinstance(value, dict) else value
+            rhs[(p["test_id"], p["quantity"], cid)] = v
     out = []
     for r in records:
         if r.get("satisfied", False):
@@ -191,8 +200,18 @@ def failed_records(ir: dict[str, Any], records: list[dict[str, Any]]) -> list[di
             if ev.get("error") or ev.get("reason"):
                 row["error"] = ev.get("error") or ev.get("reason")
             v, t = row["value"], row["threshold"]
-            if isinstance(v, (int, float)) and isinstance(t, (int, float)) and v and t:
-                row["ratio"] = abs(v / t) if r["op"] in ("le", "lt") else abs(t / v)
+            if isinstance(v, (int, float)) and isinstance(t, (int, float)):
+                q = r["quantity"]
+                other = None
+                for a, b in ((".lower", ".upper"), (".upper", ".lower")):
+                    if q.endswith(a):
+                        other = rhs.get((r["test_id"], q[:-len(a)] + b, ev.get("case")))
+                if isinstance(other, (int, float)) and other != t:
+                    row["outside"], row["outside_unit"] = abs(v - t) / (abs(other - t) / 2), "half-widths"
+                elif t:
+                    row["outside"], row["outside_unit"] = abs(v - t) / abs(t), "relative"
+                else:
+                    row["outside"], row["outside_unit"] = abs(v - t), "absolute"
             out.append(row)
     return out
 
