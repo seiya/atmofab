@@ -6,8 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import copy
 import os
-import pickle
 import re
 import threading
 
@@ -3499,34 +3499,40 @@ def _read_yaml(path: Path) -> Any:
     #
     # PARSED ONCE PER TEXT. One `validate_compile_ir_dir` reads the same `spec.ir.yaml` about 16
     # times, one gate after another, and the pure-Python loader is the cost: measured 2026-11-11 on
-    # the 20263-line `shallow_water2d_channel` evidence IR, 1.77 s a parse, so ~28 s of a ~30 s
-    # validation. The cache is keyed on the TEXT's digest, never the path, so an edited file is
-    # parsed afresh. It holds the parse PICKLED: each call gets an object of its own (a gate that
-    # mutates what it read changes no other gate's copy, nor the cache), aliases stay shared as a
-    # fresh parse leaves them, and unpickling does not recurse in Python, so a document that
-    # parses is never refused by the copy. Only a successful parse is stored, so every error
-    # above and below is raised on every read. The loader is unchanged (not libyaml's): other
-    # readers of the same IR (`primary_evidence`, `workflow_conductor`) parse with this loader,
-    # and a gate must judge the document those readers see.
+    # the 20263-line `shallow_water2d_channel` evidence IR, 1.4-1.8 s a parse, most of a ~27 s
+    # validation. The cache is keyed on the digest of the WHOLE text, never the path, so an edited
+    # file is parsed afresh. Each read gets a `copy.deepcopy` of the parse, never the stored
+    # object, so a gate that mutates what it read changes no other gate's copy nor the cache; a
+    # deep copy shares what a fresh parse shares (an alias's object, and the immutable scalars
+    # an alias repeats — a pickle round trip does not, measured on an aliased `.nan`). Where the
+    # copy cannot be made (`RecursionError` on a document nested near the interpreter's limit)
+    # the text is parsed afresh instead, so a document that parses is never refused by the
+    # cache. Only a successful parse is stored, so every error above and below is raised on
+    # every read. The loader is unchanged (not libyaml's): other readers of the same IR
+    # (`primary_evidence`, `workflow_conductor`) parse with this loader, and a gate must judge
+    # the document those readers see.
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise yaml.YAMLError(f"{path}: not valid UTF-8 ({exc})") from exc
     key = hashlib.sha256(text.encode("utf-8")).hexdigest()
     with _PARSED_YAML_LOCK:
-        cached = _PARSED_YAML.get(key)
-        if cached is not None:
+        cached = _PARSED_YAML.get(key, _PARSED_YAML_MISS)
+        if cached is not _PARSED_YAML_MISS:
             _PARSED_YAML.move_to_end(key)
-    if cached is not None:
-        return pickle.loads(cached)
+    if cached is not _PARSED_YAML_MISS:
+        try:
+            return copy.deepcopy(cached)
+        except RecursionError:
+            pass   # too deep to copy here: parse afresh, as an uncached read would
     try:
         data = yaml.safe_load(text)
     except RecursionError as exc:
         raise yaml.YAMLError(f"{path}: structure too deeply nested to parse") from exc
     try:
-        stored = pickle.dumps(data, pickle.HIGHEST_PROTOCOL)
+        stored = copy.deepcopy(data)
     except RecursionError:
-        return data   # too deep to store: returned as parsed, read afresh next time
+        return data   # too deep to copy: returned as parsed, not stored
     with _PARSED_YAML_LOCK:
         _PARSED_YAML[key] = stored
         _PARSED_YAML.move_to_end(key)
@@ -3539,9 +3545,10 @@ def _read_yaml(path: Path) -> Any:
 #: validation reads one IR and the few documents beside it, and a long-lived conductor process
 #: must not hold every IR it ever validated. The lock: the workshop wrapper serves a leaf's
 #: operations on threads of the conductor's process, so two reads can meet here.
-_PARSED_YAML: "OrderedDict[str, bytes]" = OrderedDict()
+_PARSED_YAML: "OrderedDict[str, Any]" = OrderedDict()
 _PARSED_YAML_ENTRIES = 8
 _PARSED_YAML_LOCK = threading.Lock()
+_PARSED_YAML_MISS = object()   # a document may parse to None, which is a hit like any other
 
 
 # A section of the IR document (`algorithm:`, `io_contract:`, ...) and the document itself are both
