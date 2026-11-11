@@ -484,13 +484,6 @@ class NvccSmokeTest(unittest.TestCase):
                               capture_output=True, text=True, check=False,
                               env={**os.environ, "SPEC2SCIENCE_CUDA_BLOCK": "", **(env or {})})
 
-    def _assert_lints_clean(self, ir: dict, sid: str, model: str) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            d = Path(td)
-            self._tree(d, ir, sid, model)
-            r = _nvcc_lint(d, [f"{sid}_runner.cu"])
-            self.assertEqual(0, r.returncode, r.stdout + r.stderr)
-
     def test_the_rendered_files_pass_the_declared_lint_rules(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -499,12 +492,11 @@ class NvccSmokeTest(unittest.TestCase):
                                "harness_cpp_gpu_model.cu"])
             self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
-    def test_each_shape_of_driver_passes_the_declared_lint_rules(self) -> None:
-        toy = (DRIVER_E2E / "drv_toy_model.cu").read_text()
-        for label, ir in (("loop", loop_ir(0)), ("init", init_ir(0)), ("call", call_ir(0)),
-                          ("procedure", procedure_ir())):
-            with self.subTest(label):
-                self._assert_lints_clean(ir, "drv_toy", toy)
+    # Each shape of the host-rendered driver being lint-clean is
+    # `test_workflow_conductor.CudaCppLintAttributionTest
+    # .test_the_driver_of_every_shape_is_clean_under_the_declared_lint_set`: the same four shapes'
+    # runners, the same linter argv, through the conductor's attribution, where a finding in the
+    # runner would read `host_rendered_lint_findings`. A row here linted the same four again.
 
     def test_the_runner_writes_every_output_through_the_harness(self) -> None:
         with tempfile.TemporaryDirectory() as td:

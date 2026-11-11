@@ -375,7 +375,9 @@ class _DriverBehaviour:
         """Issue #610 (B5): `block.<axis>.first` is the block's first global index, `1` on a
         serial or device driver. The toy kernel refuses exactly `mode == 1` (`ok = mode /= 1`),
         so `mode` bound to `block.x.first` captures what the literal-1 case captures, and not
-        what the mode-0 case does."""
+        what the mode-0 case does (`ok == 1` on `call_ir(0)`'s `m0`, which
+        `test_one_call_runs_on_the_state_itself` asserts on the same IR and case: this row ran
+        that build a second time to repeat it)."""
         def run(ir: dict[str, Any], case: str) -> dict[str, Any]:
             with tempfile.TemporaryDirectory() as tmp:
                 got = type(self).build_and_run(Path(tmp), ir)
@@ -391,7 +393,6 @@ class _DriverBehaviour:
         one = run(call_ir(1), "m1")
         self.assertEqual({k: v for k, v in bound.items() if k != "case_id"},
                          {k: v for k, v in one.items() if k != "case_id"})
-        self.assertEqual(run(call_ir(0), "m0")["ok"], 1.0)
 
     def test_a_loop_runs_n_step_committed_steps_with_step_and_t_the_drivers(self) -> None:
         run = self._run(loop_ir(0))
@@ -2014,19 +2015,17 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(single.perf()["steps"], serial.perf()["steps"])
 
     def test_the_witness_tells_a_replicated_case_from_a_distributed_one(self) -> None:
-        """With the real `distribute_plan` the `(2, 1)` capture holds the block counts and the
-        singleton the case's; with `distribute_plan` patched to replicate the case, the `(2, 1)`
-        capture holds the case's: the row that fails if the driver distributes a replicated
-        case or replicates a distributed one. A second dummy bound to the same cell-count input
-        takes the block count too; the count a `derived` entry carries does not."""
+        """`distribute_plan` distributes the witness case under `(2, 1)`, and with it patched to
+        replicate the case, the `(2, 1)` capture holds the case's count: the row that fails if
+        the driver distributes a replicated case. The other direction, the real plan's capture —
+        the block counts in `w` and `wb` (a second dummy bound to the same cell-count input),
+        the case's in `wg` (the count a `derived` entry carries) — is `test_agree_fx_wit_*`'s,
+        on every grid and both flag sets (`_witness_expectation`); this row ran the `(2, 1)` one
+        a second time to repeat it."""
         ir = wit_ir()
         self.assertTrue(runner_ir.distribute_plan(ir, ir["case"]["test_case_set"][0], (2, 1)))
-        real = self._build(ir).run((2, 1))
-        self.assertEqual(real.rc, 0, real.stderr[-1000:])
-        final = real.snapshots()["c6.json"]
-        self.assertEqual(final["w"], [3.0] * 6)
-        self.assertEqual(final["wb"], [3.0] * 6)
-        self.assertEqual(final["wg"], [6.0] * 6)
+        self.assertEqual(_witness_expectation(ir, (2, 1)),
+                         {"w": [3.0] * 6, "wb": [3.0] * 6, "wg": [6.0] * 6})
         with mock.patch.object(runner_ir, "distribute_plan", return_value=False):
             replicated = self._build(ir).run((2, 1))
         self.assertEqual(replicated.rc, 0, replicated.stderr[-1000:])
@@ -2034,14 +2033,17 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
 
     def test_a_one_cell_block_under_a_two_cell_ghost_distributes_and_agrees(self) -> None:
         """B6's threshold has no `ghost` term: model (1)'s 6x4 case with `ng = 2` is distributed
-        under `(1, 4)`, one cell per block along y, and agrees with the singleton (the margin is
-        sliced from the global array)."""
+        under `(1, 4)`, one cell per block along y. That it then agrees with the singleton (the
+        margin is sliced from the global array) is `test_agree_fx_recon_checked`'s: it runs every
+        case of model (1), `c6x4` among them, on every grid, `(1, 4)` among them, under the same
+        flags, against the singleton. This row built and ran that again; it keeps the half no
+        agreement row asserts, that the case IS distributed there (and the grid and case it
+        relies on)."""
         ir = recon_ir()
         case = next(c for c in ir["case"]["test_case_set"] if c["case_id"] == "c6x4")
         self.assertTrue(runner_ir.distribute_plan(ir, case, (1, 4)))
-        build = self._build(ir, flags="checked")
-        reference = build.run(SINGLETON, cases=["c6x4"]).snapshots()
-        self.assertIsNone(self._first_disagreement(build, reference, ((1, 4),), cases=["c6x4"]))
+        self.assertIn((1, 4), MPI_GRIDS)
+        self.assertIn("c6x4", [c["case_id"] for c in recon_ir()["case"]["test_case_set"]])
 
     def test_the_rendered_table_lists_each_grid_once_and_no_wider_than_the_dry_render(self) -> None:
         target = _mpi_target()
