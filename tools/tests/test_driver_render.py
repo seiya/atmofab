@@ -2014,7 +2014,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(single.perf()["cells_updated"], serial.perf()["cells_updated"])
                 self.assertEqual(single.perf()["steps"], serial.perf()["steps"])
 
-    def test_the_witness_tells_a_replicated_case_from_a_distributed_one(self) -> None:
+    def test_the_driver_replicates_the_witness_case_the_plan_replicates(self) -> None:
         """`distribute_plan` distributes the witness case under `(2, 1)`, and with it patched to
         replicate the case, the `(2, 1)` capture holds the case's count: the row that fails if
         the driver distributes a replicated case. The other direction, the real plan's capture —
@@ -2031,7 +2031,7 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
         self.assertEqual(replicated.rc, 0, replicated.stderr[-1000:])
         self.assertEqual(replicated.snapshots()["c6.json"]["w"], [6.0] * 6)
 
-    def test_a_one_cell_block_under_a_two_cell_ghost_distributes_and_agrees(self) -> None:
+    def test_a_one_cell_block_under_a_two_cell_ghost_is_distributed(self) -> None:
         """B6's threshold has no `ghost` term: model (1)'s 6x4 case with `ng = 2` is distributed
         under `(1, 4)`, one cell per block along y. That it then agrees with the singleton (the
         margin is sliced from the global array) is `test_agree_fx_recon_checked`'s: it runs every
