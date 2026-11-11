@@ -354,11 +354,14 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
     def test_each_physics_node_has_a_transcription(self) -> None:
         """Issue #589 PR-3: `data/drive_ir/pr3_evidence/ir/` holds one hand-written IR per physics
-        node — exactly those, so the `test_transcription_compile_static_accepts_<spec_id>` rows
-        generated from that directory below cover every physics node and nothing else."""
+        node — exactly those — and a `test_transcription_compile_static_accepts_<spec_id>` row
+        is generated for each, so the rows cover every physics node and nothing else."""
         physics = {e["spec_id"] for e in self._entries()
                    if e.get("spec_kind") in ("problem", "component")}
         self.assertEqual({p.stem for p in _PR3_EVIDENCE.glob("*.yaml")}, physics)
+        rows = {n.removeprefix(_TRANSCRIPTION_ROW) for n in dir(type(self))
+                if n.startswith(_TRANSCRIPTION_ROW)}
+        self.assertEqual(rows, physics)
 
     def _transcription_compile_static_accepts(self, spec_id: str) -> None:
         """`Compile.static` reads the node's hand-written IR against the real `tests.md` (the
@@ -520,8 +523,10 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
 _PR3_EVIDENCE = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
 
+_TRANSCRIPTION_ROW = "test_transcription_compile_static_accepts_"
+
 for _spec_id in sorted(p.stem for p in _PR3_EVIDENCE.glob("*.yaml")):
-    setattr(SpecCorpusVersionTest, f"test_transcription_compile_static_accepts_{_spec_id}",
+    setattr(SpecCorpusVersionTest, f"{_TRANSCRIPTION_ROW}{_spec_id}",
             lambda self, s=_spec_id: self._transcription_compile_static_accepts(s))
 
 

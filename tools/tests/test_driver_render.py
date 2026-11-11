@@ -2446,6 +2446,51 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(found is None, agrees, found)
 
 
+class CompileCacheTest(unittest.TestCase):
+    """`_compile_cached` hands back an earlier compile's outputs only for the same command line
+    over the same input bytes. The "compiler" concatenates its inputs into its output and counts
+    its runs in the parent directory, so a stale hit shows as the old bytes and a hit as no run."""
+
+    CMD = ["sh", "-c", "cat a.src a.h > a.o; echo x >> ../runs"]
+
+    def _compile(self, root: Path, name: str, text: str, header: str) -> tuple[str, int]:
+        cwd = root / name
+        cwd.mkdir()
+        (cwd / "a.src").write_text(text)
+        (cwd / "a.h").write_text(header)
+        _compile_cached(self.CMD, cwd, [cwd / "a.src", cwd / "a.h"])
+        return (cwd / "a.o").read_text(), len((root / "runs").read_text().split())
+
+    def test_a_changed_input_compiles_and_the_same_input_reuses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(self._compile(root, "a", "one\n", "h\n"), ("one\nh\n", 1))
+            # an edited source and an edited header each miss and compile
+            self.assertEqual(self._compile(root, "b", "two\n", "h\n"), ("two\nh\n", 2))
+            self.assertEqual(self._compile(root, "c", "one\n", "g\n"), ("one\ng\n", 3))
+            # the first one's bytes again, in a fresh directory: copied in, nothing run
+            self.assertEqual(self._compile(root, "d", "one\n", "h\n"), ("one\nh\n", 3))
+
+    def test_the_same_inputs_under_another_command_compile(self) -> None:
+        """The MPI harness is one source under the release flags and the `checked` ones: a key
+        without the command line would hand a `checked` row the release object."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            (cwd / "a.src").write_text("one\n")
+            for flag in ("release", "checked"):
+                _compile_cached(["sh", "-c", f"cat a.src > a.o; echo {flag} >> a.o"], cwd,
+                                [cwd / "a.src"])
+                self.assertEqual((cwd / "a.o").read_text(), f"one\n{flag}\n")
+
+    def test_a_failing_compile_raises_and_is_not_cached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            (cwd / "a.src").write_text("x")
+            for _ in range(2):   # the second call runs (and fails) again rather than hitting
+                with self.assertRaises(AssertionError):
+                    _compile_cached(["sh", "-c", "touch a.o; exit 1"], cwd, [cwd / "a.src"])
+
+
 def _mpi_runner_text(sid: str) -> str:
     return f_runner.render_runner(MPI_FIXTURES[sid](), sid, MPI_HARNESS, target=_mpi_target())
 
