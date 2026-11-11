@@ -299,7 +299,8 @@ def _compile_cached(argv: list[str], cwd: Path, inputs: list[Path]) -> None:
 
     The key is the command line and the bytes of every input it reads, so a row that edits a
     source (a seeded defect, a rendered header) misses and compiles. What the compile leaves is
-    every file new in ``cwd`` afterwards (the object, and a Fortran compile's `.mod` files).
+    every file new or rewritten in ``cwd`` afterwards (the object, and a Fortran compile's
+    `.mod` files).
     For the sources every row of a class repeats: the harness is 3.2 s of a 7 s `nvcc` build and
     1.35 s of an MPI one (measured 2026-11-11). Per process, so an xdist worker builds each
     entry once and no two workers share a directory."""
@@ -313,13 +314,18 @@ def _compile_cached(argv: list[str], cwd: Path, inputs: list[Path]) -> None:
         digest.update(b"\0" + path.name.encode() + b"\0" + path.read_bytes())
     entry = _OBJECT_CACHE[0] / digest.hexdigest()
     if not entry.is_dir():
-        before = set(os.listdir(cwd))
+        def stamps() -> dict[str, tuple[int, int, int]]:
+            return {e.name: (e.stat().st_ino, e.stat().st_mtime_ns, e.stat().st_size)
+                    for e in os.scandir(cwd) if e.is_file()}
+        before = stamps()
         build = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
         if build.returncode != 0:
             raise AssertionError(" ".join(argv) + build.stdout[:2000] + build.stderr[:3000])
         staging = Path(tempfile.mkdtemp(dir=_OBJECT_CACHE[0]))
-        for name in set(os.listdir(cwd)) - before:
-            shutil.copy2(cwd / name, staging / name)
+        # new files, and files the compile rewrote (an output that was already there)
+        for name, stamp in stamps().items():
+            if before.get(name) != stamp:
+                shutil.copy2(cwd / name, staging / name)
         staging.rename(entry)
         return
     for item in entry.iterdir():
@@ -2483,6 +2489,22 @@ class CompileCacheTest(unittest.TestCase):
                 _compile_cached(["sh", "-c", f"cat a.src > a.o; echo {flag} >> a.o"], cwd,
                                 [cwd / "a.src"])
                 self.assertEqual((cwd / "a.o").read_text(), f"one\n{flag}\n")
+
+    def test_an_output_already_in_the_directory_is_still_cached(self) -> None:
+        """An entry holds what the compile wrote, including a file it overwrote: a miss where
+        `a.o` already exists must not leave an empty entry for the next hit to copy nothing
+        from."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / "first", root / "second"
+            for d in (first, second):
+                d.mkdir()
+                (d / "a.src").write_text("one\n")
+            (first / "a.o").write_text("stale\n")
+            (second / "a.o").write_text("stale\n")
+            for d in (first, second):
+                _compile_cached(["sh", "-c", "cp a.src a.o # overwrite"], d, [d / "a.src"])
+                self.assertEqual((d / "a.o").read_text(), "one\n", d.name)
 
     def test_a_failing_compile_raises_and_is_not_cached(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
