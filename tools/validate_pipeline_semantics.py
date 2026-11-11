@@ -7,9 +7,11 @@ import argparse
 import hashlib
 import json
 import os
+import pickle
 import re
 
 import yaml
+from collections import OrderedDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -3493,14 +3495,45 @@ def _read_yaml(path: Path) -> Any:
     #     a clean document and CERTIFIES. An artifact that is not valid UTF-8 must fail, not be
     #     silently rewritten.
     #   - RecursionError (a pathologically nested document) is not a YAMLError either.
+    #
+    # PARSED ONCE PER TEXT. One `validate_compile_ir_dir` reads the same `spec.ir.yaml` about 16
+    # times, one gate after another, and the pure-Python loader is the cost: measured 2026-11-11 on
+    # the 20263-line `shallow_water2d_channel` evidence IR, 1.77 s a parse, so ~28 s of a ~30 s
+    # validation. The cache is keyed on the TEXT's digest, never the path, so an edited file is
+    # parsed afresh. It holds the parse PICKLED: each call gets an object of its own (a gate that
+    # mutates what it read changes no other gate's copy, nor the cache), aliases stay shared as a
+    # fresh parse leaves them, and unpickling does not recurse in Python, so a document that
+    # parses is never refused by the copy. Only a successful parse is stored, so every error
+    # above and below is raised on every read. The loader is unchanged (not libyaml's): other
+    # readers of the same IR (`primary_evidence`, `workflow_conductor`) parse with this loader,
+    # and a gate must judge the document those readers see.
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
         raise yaml.YAMLError(f"{path}: not valid UTF-8 ({exc})") from exc
+    key = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    cached = _PARSED_YAML.get(key)
+    if cached is not None:
+        _PARSED_YAML.move_to_end(key)
+        return pickle.loads(cached)
     try:
-        return yaml.safe_load(text)
+        data = yaml.safe_load(text)
     except RecursionError as exc:
         raise yaml.YAMLError(f"{path}: structure too deeply nested to parse") from exc
+    try:
+        _PARSED_YAML[key] = pickle.dumps(data, pickle.HIGHEST_PROTOCOL)
+    except RecursionError:
+        return data   # too deep to store: returned as parsed, read afresh next time
+    while len(_PARSED_YAML) > _PARSED_YAML_ENTRIES:
+        _PARSED_YAML.popitem(last=False)
+    return data
+
+
+#: `_read_yaml`'s parses, by text digest, least recently read first. A handful of entries: one
+#: validation reads one IR and the few documents beside it, and a long-lived conductor process
+#: must not hold every IR it ever validated.
+_PARSED_YAML: "OrderedDict[str, bytes]" = OrderedDict()
+_PARSED_YAML_ENTRIES = 8
 
 
 # A section of the IR document (`algorithm:`, `io_contract:`, ...) and the document itself are both

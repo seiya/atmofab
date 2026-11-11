@@ -25687,6 +25687,86 @@ _FIXTURE_IR_REL = (
 )
 
 
+class ReadYamlParsedOnceTests(unittest.TestCase):
+    """`_read_yaml` parses a text once and hands every later read of the same text a copy of its
+    own: no parse on a hit, independent objects, an edited file parsed afresh, aliases shared as
+    a fresh parse leaves them, errors raised on every read, and a bounded cache."""
+
+    def setUp(self) -> None:
+        from tools import validate_pipeline_semantics as vps
+        self.vps = vps
+        patcher = unittest.mock.patch.dict(vps._PARSED_YAML, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / "spec.ir.yaml"
+
+    def _counting(self):
+        calls: list[str] = []
+        real = yaml.safe_load
+
+        def load(text):
+            calls.append(text)
+            return real(text)
+        return calls, unittest.mock.patch.object(self.vps.yaml, "safe_load", load)
+
+    def test_a_second_read_of_the_same_text_does_not_parse(self) -> None:
+        self.path.write_text("a: [1, {b: 2}]\n", encoding="utf-8")
+        calls, patch = self._counting()
+        with patch:
+            first = self.vps._read_yaml(self.path)
+            second = self.vps._read_yaml(self.path)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(first, {"a": [1, {"b": 2}]})
+        self.assertEqual(second, first)
+
+    def test_each_read_gets_an_object_of_its_own(self) -> None:
+        self.path.write_text("a: [1, {b: 2}]\n", encoding="utf-8")
+        first = self.vps._read_yaml(self.path)          # the miss
+        first["a"][1]["b"] = "mutated"
+        second = self.vps._read_yaml(self.path)         # a hit
+        second["a"].append("mutated")
+        self.assertEqual(self.vps._read_yaml(self.path), {"a": [1, {"b": 2}]})
+        self.assertIsNot(second, self.vps._read_yaml(self.path))
+
+    def test_an_edited_file_is_parsed_afresh(self) -> None:
+        self.path.write_text("a: 1\n", encoding="utf-8")
+        self.assertEqual(self.vps._read_yaml(self.path), {"a": 1})
+        self.path.write_text("a: 2\n", encoding="utf-8")
+        self.assertEqual(self.vps._read_yaml(self.path), {"a": 2})
+
+    def test_an_alias_stays_shared_on_a_hit(self) -> None:
+        self.path.write_text("a: &x [1]\nb: *x\n", encoding="utf-8")
+        for read in ("miss", "hit"):
+            with self.subTest(read=read):
+                doc = self.vps._read_yaml(self.path)
+                self.assertIs(doc["a"], doc["b"])
+
+    def test_an_error_is_raised_on_every_read_and_not_stored(self) -> None:
+        self.path.write_text("a: [1\n", encoding="utf-8")
+        for _ in range(2):
+            with self.assertRaises(yaml.YAMLError):
+                self.vps._read_yaml(self.path)
+        self.assertEqual(len(self.vps._PARSED_YAML), 0)
+        self.path.write_bytes(b"a: \xff\n")
+        for _ in range(2):
+            with self.assertRaises(yaml.YAMLError):
+                self.vps._read_yaml(self.path)
+
+    def test_the_cache_is_bounded(self) -> None:
+        bound = self.vps._PARSED_YAML_ENTRIES
+        for i in range(bound + 3):
+            self.path.write_text(f"a: {i}\n", encoding="utf-8")
+            self.vps._read_yaml(self.path)
+        self.assertEqual(len(self.vps._PARSED_YAML), bound)
+        # the least recently read went first: the newest text still hits
+        calls, patch = self._counting()
+        with patch:
+            self.assertEqual(self.vps._read_yaml(self.path), {"a": bound + 2})
+        self.assertEqual(calls, [])
+
+
 class IrFixtureShapeTests(unittest.TestCase):
     """The testing rule: a gate must be exercised against a fixture with the REAL IR shape.
 
