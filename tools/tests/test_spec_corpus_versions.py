@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -359,9 +360,16 @@ class SpecCorpusVersionTest(unittest.TestCase):
         physics = {e["spec_id"] for e in self._entries()
                    if e.get("spec_kind") in ("problem", "component")}
         self.assertEqual({p.stem for p in _PR3_EVIDENCE.glob("*.yaml")}, physics)
-        rows = {n.removeprefix(_TRANSCRIPTION_ROW) for n in dir(type(self))
-                if n.startswith(_TRANSCRIPTION_ROW)}
-        self.assertEqual(rows, physics)
+        # each row validates its own node's IR, not the last one a loop variable held: run
+        # every row with the validation recorded instead of performed
+        read: dict[str, str] = {}
+        for name in dir(type(self)):
+            if name.startswith(_TRANSCRIPTION_ROW):
+                with mock.patch.object(type(self), "_transcription_compile_static_accepts",
+                                       lambda _self, spec_id, n=name: read.setdefault(n, spec_id)):
+                    getattr(self, name)()
+        self.assertEqual({n.removeprefix(_TRANSCRIPTION_ROW): v for n, v in read.items()},
+                         {spec_id: spec_id for spec_id in physics})
 
     def _transcription_compile_static_accepts(self, spec_id: str) -> None:
         """`Compile.static` reads the node's hand-written IR against the real `tests.md` (the
@@ -525,9 +533,17 @@ _PR3_EVIDENCE = Path(__file__).parent / "data/drive_ir/pr3_evidence/ir"
 
 _TRANSCRIPTION_ROW = "test_transcription_compile_static_accepts_"
 
+def _transcription_row(spec_id: str):
+    """The row for one node: a function of `spec_id` rather than a lambda in the loop, so the
+    row does not close over the loop variable."""
+    def row(self) -> None:
+        self._transcription_compile_static_accepts(spec_id)
+    return row
+
+
 for _spec_id in sorted(p.stem for p in _PR3_EVIDENCE.glob("*.yaml")):
     setattr(SpecCorpusVersionTest, f"{_TRANSCRIPTION_ROW}{_spec_id}",
-            lambda self, s=_spec_id: self._transcription_compile_static_accepts(s))
+            _transcription_row(_spec_id))
 
 
 if __name__ == "__main__":
