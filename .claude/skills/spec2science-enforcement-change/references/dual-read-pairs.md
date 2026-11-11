@@ -119,6 +119,31 @@ second, and no exclusion list makes both right.
   disagree by design — record the pair in the table above so the next maintainer does not
   "unify" them.
 
+## A neighbouring shape: a cache in front of a reader (PR #627, 2026-11-11)
+
+Every row above is two readers of one FILE. A cache makes a second reader of one READER: the
+object a hit returns is produced by the copy, not by the parse, and nothing compares the two.
+
+- **The episode.** `validate_compile_ir_dir` read the same `spec.ir.yaml` about 15 times, once
+  per gate, with the pure-Python loader; `_read_yaml` was given a parse-once cache keyed on the
+  text's SHA-256 (ed53e81c). Its first copy was a pickle round trip, chosen because unpickling
+  does not recurse. Add-on review round 1 measured that pickle does not memoise floats, so an
+  aliased `.nan` (`n: &n .nan`, `l: [*n]`) came back as two objects on a hit — `n in l` True on
+  the miss, False on the hit — so the same validation had gates judging two documents. The
+  same round killed survivors that keyed on the first 4096 characters or on whitespace-collapsed
+  text (an indentation edit is another structure in YAML); round 2 added stripped trailing
+  whitespace (content in a `|+` block scalar). What closed it: `copy.deepcopy` (immutables
+  shared as a fresh parse shares them), a fresh parse when the copy raises `RecursionError`, and
+  a row per key narrowing. libyaml's `CSafeLoader` (about 10x faster) was rejected because
+  `primary_evidence` and `workflow_conductor` read the same IR with the pure loader.
+- **What still differs, disclosed rather than fixed**: a `!!set` is rebuilt by deepcopy, so its
+  iteration order can differ from a fresh parse (it already differs across processes; the tree
+  holds none); and a document cached at a shallow call depth is no longer refused at a deep one —
+  that refusal came from the stack, not the content, and the callers that saw it skipped their
+  gate, so the cache judges more there, not less.
+- **The tell**: a docstring that says the copy "shares what a fresh parse shares" with no row
+  that compares a hit to `yaml.safe_load` of the same text.
+
 ## How to look
 
 Run from the spec2science checkout root.

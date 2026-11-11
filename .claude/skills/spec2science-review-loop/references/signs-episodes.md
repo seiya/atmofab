@@ -529,3 +529,21 @@ copies and `channel_mirror` at `nx` and `ny` at most 4. Twelve nodes gained a ca
 class recurring on new nodes is why that review did not converge. A gate requiring two values per
 scalar input was offered to the operator and not decided; it would also refuse a constant the spec
 fixes.
+
+## "A repeat that was not" (PR #627, 2026-11-11)
+
+The operator asked for duplicate assertions to be merged after an opus audit classified the
+expensive rows as (a) same property on the same artifact, (b) overlap with each row pinning
+something else, or (c) only similar. 228e41a3 dropped four (a) items, each with the kept row
+named and one property checked (the runner text identical for `*_ir(0)` and `*_ir(1)`).
+
+The add-on round-1 reviewer seeded a production defect for each and ran it at the parent and
+at HEAD. Three held: the kept row was red where the dropped one had been. The fourth,
+`NvccSmokeTest.test_each_shape_of_driver_passes_the_declared_lint_rules`, rendered for
+`GPU_TARGET` (`threads_per_rank` 3), while the conductor row it was said to repeat rendered for
+`test_driver_render.GPU` (1). A lint finding emitted only for a loop node under
+`threads_per_rank != 1` was red at the parent in the dropped row and green in every
+cuda-rendering file at 228e41a3. The row was restored byte for byte (ccc8872e). The audit and
+the commit had compared the IRs and the argv; neither listed the target. The same review found
+two kept rows whose names (`…_and_agrees`, `…tells_a_replicated_case_from_a_distributed_one`)
+still promised the half moved to the agree rows; they were renamed.

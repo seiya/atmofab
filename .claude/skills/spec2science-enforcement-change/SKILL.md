@@ -744,6 +744,19 @@ auto-discovery side went straight through).
   for a rename reading the dependency-use gate (unresolved = refused) and the dataflow gate
   (unresolved = unchecked) both used, and four rounds found one fail-open each in the dataflow
   gate before the split (`references/dual-read-pairs.md` §"opposite polarity")
+- **A cache in front of a reader a gate uses is a SECOND READER: what it hands out must be
+  the document a fresh read gives, and the other readers of the same file must still see what
+  the gate judged.** Three ways it is not, all from one change (PR #627's `_read_yaml`
+  parse-once): (a) the COPY it returns — a pickle round trip splits an aliased immutable
+  (an aliased `.nan` became two objects, so `a in l` was True on the miss and False on the
+  hit), and a deepcopy rebuilds a set's iteration order; (b) the KEY — anything narrower than
+  the whole input (a prefix, whitespace-collapsed text, stripped lines) hands back a stale
+  parse for an edit outside it; (c) the PARSER — a faster one (libyaml) is a second parser
+  judging what the pure-Python readers elsewhere read. **Rule: key on the full input bytes,
+  keep the parser, and drive a hit against a fresh read over every type the reader produces
+  — alias identity included — before calling it equivalent.** A copy that can raise where
+  the read did not (a deep copy near the recursion limit) falls back to a fresh read, never
+  to a refusal (`references/dual-read-pairs.md` §"a cache in front of a reader")
 - **If what you are adding is a conductor in-process (deterministic) substep, work
   `references/deterministic-substep-wiring.md` before writing anything** — it lists the sites that
   special-case one, across `tools/workflow_conductor.py` and `tools/orchestration_runtime.py`, and

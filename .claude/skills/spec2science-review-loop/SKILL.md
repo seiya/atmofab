@@ -1574,6 +1574,16 @@ that tells you how it closed.
   excepted. Once a reviewer finds this on one node, sweep every node in the same round**: issue #589
   PR-3 fixed the nodes round 2 named, and round 3 found nine more. No gate holds this; a reviewer
   has to read for it. Episode: `references/signs-episodes.md` §"One value per input" (issue #589 PR-3)
+- **You are dropping a test as a REPEAT of another row** → that is deleting a check, and the
+  verdict "same property, same artifact" is a claim about every PARAMETER the two rows feed the
+  subject, not about their names or IRs. PR #627 dropped `NvccSmokeTest`'s per-shape lint row as
+  a repeat of the conductor's; the IRs and argv matched, the TARGET did not
+  (`threads_per_rank` 3 vs 1), and a finding rendered only under the other rank count was caught
+  by the dropped row alone. **Before dropping, list what each row passes the subject (target,
+  flags, fixture, environment), and for each merge seed a production defect the dropped
+  assertion catches: red on it at the parent, red on the kept row at HEAD.** A merge also leaves
+  a row NAME that promises the half it no longer checks — rename it in the same commit.
+  Episode: `references/signs-episodes.md` §"A repeat that was not" (PR #627)
 
 ## Finally
 
