@@ -3467,10 +3467,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hu
       qr: coarsen(final.hu, 8)
-      qo: coarsen(final.hv, 8)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: ge
-    value: 0.16
+    value: 0.28
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n032.hu_l1_rel.upper
     target_cases:
@@ -3482,10 +3481,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hu
       qr: coarsen(final.hu, 8)
-      qo: coarsen(final.hv, 8)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: le
-    value: 0.21
+    value: 0.35
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n032.hu_l2_rel.lower
     target_cases:
@@ -3497,10 +3495,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hu
       qr: coarsen(final.hu, 8)
-      qo: coarsen(final.hv, 8)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: ge
-    value: 0.16
+    value: 0.26
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n032.hu_l2_rel.upper
     target_cases:
@@ -3512,10 +3509,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hu
       qr: coarsen(final.hu, 8)
-      qo: coarsen(final.hv, 8)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: le
-    value: 0.21
+    value: 0.32
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n032.hu_linf_rel.lower
     target_cases:
@@ -3527,10 +3523,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hu
       qr: coarsen(final.hu, 8)
-      qo: coarsen(final.hv, 8)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: ge
-    value: 0.2
+    value: 0.24
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n032.hu_linf_rel.upper
     target_cases:
@@ -3542,10 +3537,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hu
       qr: coarsen(final.hu, 8)
-      qo: coarsen(final.hv, 8)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: le
-    value: 0.25
+    value: 0.31
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n032.hv_l1_rel.lower
     target_cases:
@@ -3557,8 +3551,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hv
       qr: coarsen(final.hv, 8)
-      qo: coarsen(final.hu, 8)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: ge
     value: 0.2
   - test_id: l1_refinement_restricted
@@ -3572,8 +3565,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hv
       qr: coarsen(final.hv, 8)
-      qo: coarsen(final.hu, 8)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: le
     value: 0.26
   - test_id: l1_refinement_restricted
@@ -3587,8 +3579,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hv
       qr: coarsen(final.hv, 8)
-      qo: coarsen(final.hu, 8)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: ge
     value: 0.21
   - test_id: l1_refinement_restricted
@@ -3602,8 +3593,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hv
       qr: coarsen(final.hv, 8)
-      qo: coarsen(final.hu, 8)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: le
     value: 0.27
   - test_id: l1_refinement_restricted
@@ -3617,8 +3607,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hv
       qr: coarsen(final.hv, 8)
-      qo: coarsen(final.hu, 8)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: ge
     value: 0.22
   - test_id: l1_refinement_restricted
@@ -3632,8 +3621,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n032').final.hv
       qr: coarsen(final.hv, 8)
-      qo: coarsen(final.hu, 8)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: le
     value: 0.28
   - test_id: l1_refinement_restricted
@@ -3731,10 +3719,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hu
       qr: coarsen(final.hu, 4)
-      qo: coarsen(final.hv, 4)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: ge
-    value: 0.086
+    value: 0.14
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n064.hu_l1_rel.upper
     target_cases:
@@ -3746,10 +3733,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hu
       qr: coarsen(final.hu, 4)
-      qo: coarsen(final.hv, 4)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: le
-    value: 0.11
+    value: 0.19
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n064.hu_l2_rel.lower
     target_cases:
@@ -3761,10 +3747,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hu
       qr: coarsen(final.hu, 4)
-      qo: coarsen(final.hv, 4)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: ge
-    value: 0.087
+    value: 0.13
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n064.hu_l2_rel.upper
     target_cases:
@@ -3776,10 +3761,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hu
       qr: coarsen(final.hu, 4)
-      qo: coarsen(final.hv, 4)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: le
-    value: 0.11
+    value: 0.17
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n064.hu_linf_rel.lower
     target_cases:
@@ -3791,10 +3775,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hu
       qr: coarsen(final.hu, 4)
-      qo: coarsen(final.hv, 4)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: ge
-    value: 0.1
+    value: 0.13
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n064.hu_linf_rel.upper
     target_cases:
@@ -3806,10 +3789,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hu
       qr: coarsen(final.hu, 4)
-      qo: coarsen(final.hv, 4)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: le
-    value: 0.14
+    value: 0.16
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n064.hv_l1_rel.lower
     target_cases:
@@ -3821,8 +3803,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hv
       qr: coarsen(final.hv, 4)
-      qo: coarsen(final.hu, 4)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: ge
     value: 0.1
   - test_id: l1_refinement_restricted
@@ -3836,8 +3817,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hv
       qr: coarsen(final.hv, 4)
-      qo: coarsen(final.hu, 4)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: le
     value: 0.13
   - test_id: l1_refinement_restricted
@@ -3851,8 +3831,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hv
       qr: coarsen(final.hv, 4)
-      qo: coarsen(final.hu, 4)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: ge
     value: 0.1
   - test_id: l1_refinement_restricted
@@ -3866,8 +3845,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hv
       qr: coarsen(final.hv, 4)
-      qo: coarsen(final.hu, 4)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: le
     value: 0.13
   - test_id: l1_refinement_restricted
@@ -3881,8 +3859,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hv
       qr: coarsen(final.hv, 4)
-      qo: coarsen(final.hu, 4)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: ge
     value: 0.1
   - test_id: l1_refinement_restricted
@@ -3896,8 +3873,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n064').final.hv
       qr: coarsen(final.hv, 4)
-      qo: coarsen(final.hu, 4)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: le
     value: 0.14
   - test_id: l1_refinement_restricted
@@ -3995,10 +3971,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hu
       qr: coarsen(final.hu, 2)
-      qo: coarsen(final.hv, 2)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: ge
-    value: 0.028
+    value: 0.048
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n128.hu_l1_rel.upper
     target_cases:
@@ -4010,10 +3985,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hu
       qr: coarsen(final.hu, 2)
-      qo: coarsen(final.hv, 2)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: le
-    value: 0.035
+    value: 0.059
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n128.hu_l2_rel.lower
     target_cases:
@@ -4025,10 +3999,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hu
       qr: coarsen(final.hu, 2)
-      qo: coarsen(final.hv, 2)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: ge
-    value: 0.028
+    value: 0.044
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n128.hu_l2_rel.upper
     target_cases:
@@ -4040,10 +4013,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hu
       qr: coarsen(final.hu, 2)
-      qo: coarsen(final.hv, 2)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: le
-    value: 0.035
+    value: 0.055
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n128.hu_linf_rel.lower
     target_cases:
@@ -4055,10 +4027,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hu
       qr: coarsen(final.hu, 2)
-      qo: coarsen(final.hv, 2)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: ge
-    value: 0.036
+    value: 0.044
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n128.hu_linf_rel.upper
     target_cases:
@@ -4070,10 +4041,9 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hu
       qr: coarsen(final.hu, 2)
-      qo: coarsen(final.hv, 2)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: le
-    value: 0.045
+    value: 0.055
   - test_id: l1_refinement_restricted
     quantity: errors.restricted.n128.hv_l1_rel.lower
     target_cases:
@@ -4085,8 +4055,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hv
       qr: coarsen(final.hv, 2)
-      qo: coarsen(final.hu, 2)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: ge
     value: 0.038
   - test_id: l1_refinement_restricted
@@ -4100,8 +4069,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hv
       qr: coarsen(final.hv, 2)
-      qo: coarsen(final.hu, 2)
-    expr: sum(abs(qc - qr)) / max(sum(abs(qr)), sum(abs(qo)))
+    expr: sum(abs(qc - qr)) / sum(abs(qr))
     op: le
     value: 0.048
   - test_id: l1_refinement_restricted
@@ -4115,8 +4083,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hv
       qr: coarsen(final.hv, 2)
-      qo: coarsen(final.hu, 2)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: ge
     value: 0.04
   - test_id: l1_refinement_restricted
@@ -4130,8 +4097,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hv
       qr: coarsen(final.hv, 2)
-      qo: coarsen(final.hu, 2)
-    expr: norm2(qc - qr) / max(norm2(qr), norm2(qo))
+    expr: norm2(qc - qr) / norm2(qr)
     op: le
     value: 0.05
   - test_id: l1_refinement_restricted
@@ -4145,8 +4111,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hv
       qr: coarsen(final.hv, 2)
-      qo: coarsen(final.hu, 2)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: ge
     value: 0.043
   - test_id: l1_refinement_restricted
@@ -4160,8 +4125,7 @@ io_contract:
     bind:
       qc: at('swr_shear_n128').final.hv
       qr: coarsen(final.hv, 2)
-      qo: coarsen(final.hu, 2)
-    expr: maxabs(qc - qr) / max(maxabs(qr), maxabs(qo))
+    expr: maxabs(qc - qr) / maxabs(qr)
     op: le
     value: 0.054
   - test_id: l1_refinement_restricted
@@ -4229,12 +4193,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n032').final.hu
       qra: coarsen(final.hu, 8)
-      qoa: coarsen(final.hv, 8)
       qcb: at('swr_shear_n064').final.hu
       qrb: coarsen(final.hu, 4)
-      qob: coarsen(final.hv, 4)
-      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
-      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+      ea: sum(abs(qca - qra)) / sum(abs(qra))
+      eb: sum(abs(qcb - qrb)) / sum(abs(qrb))
     expr: log2(ea / eb)
     op: ge
     value: 0.6
@@ -4249,12 +4211,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n032').final.hu
       qra: coarsen(final.hu, 8)
-      qoa: coarsen(final.hv, 8)
       qcb: at('swr_shear_n064').final.hu
       qrb: coarsen(final.hu, 4)
-      qob: coarsen(final.hv, 4)
-      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
-      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+      ea: norm2(qca - qra) / norm2(qra)
+      eb: norm2(qcb - qrb) / norm2(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 0.6
@@ -4269,12 +4229,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n032').final.hu
       qra: coarsen(final.hu, 8)
-      qoa: coarsen(final.hv, 8)
       qcb: at('swr_shear_n064').final.hu
       qrb: coarsen(final.hu, 4)
-      qob: coarsen(final.hv, 4)
-      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
-      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+      ea: maxabs(qca - qra) / maxabs(qra)
+      eb: maxabs(qcb - qrb) / maxabs(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 0.6
@@ -4289,12 +4247,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n032').final.hv
       qra: coarsen(final.hv, 8)
-      qoa: coarsen(final.hu, 8)
       qcb: at('swr_shear_n064').final.hv
       qrb: coarsen(final.hv, 4)
-      qob: coarsen(final.hu, 4)
-      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
-      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+      ea: sum(abs(qca - qra)) / sum(abs(qra))
+      eb: sum(abs(qcb - qrb)) / sum(abs(qrb))
     expr: log2(ea / eb)
     op: ge
     value: 0.7
@@ -4309,12 +4265,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n032').final.hv
       qra: coarsen(final.hv, 8)
-      qoa: coarsen(final.hu, 8)
       qcb: at('swr_shear_n064').final.hv
       qrb: coarsen(final.hv, 4)
-      qob: coarsen(final.hu, 4)
-      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
-      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+      ea: norm2(qca - qra) / norm2(qra)
+      eb: norm2(qcb - qrb) / norm2(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 0.7
@@ -4329,12 +4283,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n032').final.hv
       qra: coarsen(final.hv, 8)
-      qoa: coarsen(final.hu, 8)
       qcb: at('swr_shear_n064').final.hv
       qrb: coarsen(final.hv, 4)
-      qob: coarsen(final.hu, 4)
-      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
-      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+      ea: maxabs(qca - qra) / maxabs(qra)
+      eb: maxabs(qcb - qrb) / maxabs(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 0.7
@@ -4403,12 +4355,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n064').final.hu
       qra: coarsen(final.hu, 4)
-      qoa: coarsen(final.hv, 4)
       qcb: at('swr_shear_n128').final.hu
       qrb: coarsen(final.hu, 2)
-      qob: coarsen(final.hv, 2)
-      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
-      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+      ea: sum(abs(qca - qra)) / sum(abs(qra))
+      eb: sum(abs(qcb - qrb)) / sum(abs(qrb))
     expr: log2(ea / eb)
     op: ge
     value: 1.3
@@ -4423,12 +4373,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n064').final.hu
       qra: coarsen(final.hu, 4)
-      qoa: coarsen(final.hv, 4)
       qcb: at('swr_shear_n128').final.hu
       qrb: coarsen(final.hu, 2)
-      qob: coarsen(final.hv, 2)
-      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
-      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+      ea: norm2(qca - qra) / norm2(qra)
+      eb: norm2(qcb - qrb) / norm2(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 1.3
@@ -4443,12 +4391,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n064').final.hu
       qra: coarsen(final.hu, 4)
-      qoa: coarsen(final.hv, 4)
       qcb: at('swr_shear_n128').final.hu
       qrb: coarsen(final.hu, 2)
-      qob: coarsen(final.hv, 2)
-      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
-      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+      ea: maxabs(qca - qra) / maxabs(qra)
+      eb: maxabs(qcb - qrb) / maxabs(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 1.2
@@ -4463,12 +4409,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n064').final.hv
       qra: coarsen(final.hv, 4)
-      qoa: coarsen(final.hu, 4)
       qcb: at('swr_shear_n128').final.hv
       qrb: coarsen(final.hv, 2)
-      qob: coarsen(final.hu, 2)
-      ea: sum(abs(qca - qra)) / max(sum(abs(qra)), sum(abs(qoa)))
-      eb: sum(abs(qcb - qrb)) / max(sum(abs(qrb)), sum(abs(qob)))
+      ea: sum(abs(qca - qra)) / sum(abs(qra))
+      eb: sum(abs(qcb - qrb)) / sum(abs(qrb))
     expr: log2(ea / eb)
     op: ge
     value: 1.0
@@ -4483,12 +4427,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n064').final.hv
       qra: coarsen(final.hv, 4)
-      qoa: coarsen(final.hu, 4)
       qcb: at('swr_shear_n128').final.hv
       qrb: coarsen(final.hv, 2)
-      qob: coarsen(final.hu, 2)
-      ea: norm2(qca - qra) / max(norm2(qra), norm2(qoa))
-      eb: norm2(qcb - qrb) / max(norm2(qrb), norm2(qob))
+      ea: norm2(qca - qra) / norm2(qra)
+      eb: norm2(qcb - qrb) / norm2(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 1.0
@@ -4503,12 +4445,10 @@ io_contract:
     bind:
       qca: at('swr_shear_n064').final.hv
       qra: coarsen(final.hv, 4)
-      qoa: coarsen(final.hu, 4)
       qcb: at('swr_shear_n128').final.hv
       qrb: coarsen(final.hv, 2)
-      qob: coarsen(final.hu, 2)
-      ea: maxabs(qca - qra) / max(maxabs(qra), maxabs(qoa))
-      eb: maxabs(qcb - qrb) / max(maxabs(qrb), maxabs(qob))
+      ea: maxabs(qca - qra) / maxabs(qra)
+      eb: maxabs(qcb - qrb) / maxabs(qrb)
     expr: log2(ea / eb)
     op: ge
     value: 0.9

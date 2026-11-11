@@ -452,13 +452,9 @@ def tests_and_predicates(case_set: list[dict[str, Any]]) -> tuple[list, list]:
     def err(level: str, v: str, nrm: str) -> tuple[str, dict[str, str]]:
         cid, fac = levels[level]
         bind = {"qc": f"at('{cid}').final.{v}", "qr": f"coarsen(final.{v}, {fac})"}
-        if v == "h":
-            n = {"l1": "sum(abs(qr))", "l2": "norm2(qr)", "linf": "maxabs(qr)"}[nrm]
-        else:
-            o = "hv" if v == "hu" else "hu"
-            bind["qo"] = f"coarsen(final.{o}, {fac})"
-            n = {"l1": "max(sum(abs(qr)), sum(abs(qo)))", "l2": "max(norm2(qr), norm2(qo))",
-                 "linf": "max(maxabs(qr), maxabs(qo))"}[nrm]
+        # each variable by the same norm of its own restricted reference: neither momentum
+        # component is zero or a residue of the flow here (docs/TESTS.md §Refinement judgment)
+        n = {"l1": "sum(abs(qr))", "l2": "norm2(qr)", "linf": "maxabs(qr)"}[nrm]
         d = {"l1": "sum(abs(qc - qr))", "l2": "norm2(qc - qr)", "linf": "maxabs(qc - qr)"}[nrm]
         return f"{d} / {n}", bind
 

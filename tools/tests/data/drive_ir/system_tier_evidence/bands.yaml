@@ -45,14 +45,14 @@ errors.restricted.n032.h_linf_rel:
   lower: 0.01
   upper: 0.014
 errors.restricted.n032.hu_l1_rel:
-  lower: 0.16
-  upper: 0.21
+  lower: 0.28
+  upper: 0.35
 errors.restricted.n032.hu_l2_rel:
-  lower: 0.16
-  upper: 0.21
+  lower: 0.26
+  upper: 0.32
 errors.restricted.n032.hu_linf_rel:
-  lower: 0.2
-  upper: 0.25
+  lower: 0.24
+  upper: 0.31
 errors.restricted.n032.hv_l1_rel:
   lower: 0.2
   upper: 0.26
@@ -72,14 +72,14 @@ errors.restricted.n064.h_linf_rel:
   lower: 0.0055
   upper: 0.0068
 errors.restricted.n064.hu_l1_rel:
-  lower: 0.086
-  upper: 0.11
+  lower: 0.14
+  upper: 0.19
 errors.restricted.n064.hu_l2_rel:
-  lower: 0.087
-  upper: 0.11
+  lower: 0.13
+  upper: 0.17
 errors.restricted.n064.hu_linf_rel:
-  lower: 0.1
-  upper: 0.14
+  lower: 0.13
+  upper: 0.16
 errors.restricted.n064.hv_l1_rel:
   lower: 0.1
   upper: 0.13
@@ -99,14 +99,14 @@ errors.restricted.n128.h_linf_rel:
   lower: 0.002
   upper: 0.0026
 errors.restricted.n128.hu_l1_rel:
-  lower: 0.028
-  upper: 0.035
+  lower: 0.048
+  upper: 0.059
 errors.restricted.n128.hu_l2_rel:
-  lower: 0.028
-  upper: 0.035
+  lower: 0.044
+  upper: 0.055
 errors.restricted.n128.hu_linf_rel:
-  lower: 0.036
-  upper: 0.045
+  lower: 0.044
+  upper: 0.055
 errors.restricted.n128.hv_l1_rel:
   lower: 0.038
   upper: 0.048

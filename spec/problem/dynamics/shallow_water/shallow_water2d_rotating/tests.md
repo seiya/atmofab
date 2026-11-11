@@ -172,7 +172,7 @@ Sums, means and extrema run over every cell of the case's grid; a `history` quan
 - `errors.analytic_<v>.<k>_rel_tend`: the member's quantities of these names on its linear wave (the member's `tests.md` 2-4 and 5-4): the `l1`, `l2` and `linf` norm of the final `h`, `hu` against the reference $h_{ref}=H_0+\eta_0\sin(2\pi(x/L_x-\mathrm{wave\_sign}\,c_0t_{end}/L_x-\mathrm{shift\_x\_fraction}))$, $hu_{ref}=h_{ref}\cdot\mathrm{wave\_sign}\,c_0(h_{ref}-H_0)/H_0$, $c_0=\sqrt{gH_0}$, each normalised by the same norm of its reference; and of `hv` against $0$, normalised by the larger of that norm of $hu_{ref}$ and of $hv_{ref}=0$.
 - `order.hu_rms`, `order.hv_rms`: $\sqrt{\mathrm{mean}_{i,j}(hu^2)}$, $\sqrt{\mathrm{mean}_{i,j}(hv^2)}$ at the final state. `order.hu_mean`, `order.hv_mean`: $\mathrm{mean}_{i,j}(hu)$, $\mathrm{mean}_{i,j}(hv)$ at the final state. Each reads one momentum component, not a rotation invariant of the two.
 - `errors.<t>.<v>_l2_rel`: the `l2` norm of the transformed case's final `<v>` minus the base's final `<v>` transformed, normalised by the base's `l2` norm of `h` for `h` and by the larger of the base's `l2` norms of `hu` and `hv` for a momentum component. The transformations (cell indices from `1`): axis exchange $h'_{i,j}=h_{j,i}$, $hu'_{i,j}=hv_{j,i}$, $hv'_{i,j}=hu_{j,i}$; mirror in `x` $(h,hu,hv)'_{i,j}=(h,-hu,hv)_{nx+1-i,j}$; mirror in `y` $(h,hu,hv)'_{i,j}=(h,hu,-hv)_{i,ny+1-j}$; translation $(h,hu,hv)'_{i,j}=(h,hu,hv)_{i-16,j-8}$, indices modulo the extents.
-- `errors.restricted.<n>.<v>_<k>_rel`: the `<k>` norm of the final `<v>` of the level `<n>` minus the final `<v>` of `swr_shear_n256` restricted to that grid by the conservative block mean over the $(256/n)^2$ cells each coarse cell covers, normalised by the same norm of the restricted `h` for `h`, and by the larger of that norm of the restricted `hu` and `hv` for a momentum component (`docs/TESTS.md` §Refinement judgment).
+- `errors.restricted.<n>.<v>_<k>_rel`: the `<k>` norm of the final `<v>` of the level `<n>` minus the final `<v>` of `swr_shear_n256` restricted to that grid by the conservative block mean over the $(256/n)^2$ cells each coarse cell covers, normalised by the same norm of the restricted reference of the same variable: `h`, `hu` and `hv` are each non-zero and none is a residue of the flow on the shear-flow state, so no momentum component takes the vector's normaliser (`docs/TESTS.md` §Refinement judgment).
 - `convergence.restricted.<pair>.<v>_<k>_order`: $\log_2(e_{coarse}/e_{fine})$ of the two levels of the pair.
 - `run.n_step`: the captured committed step count minus $\mathrm{n\_step}$ of §3.
 - `run.state_moved`: $\max_{i,j}|h^{final}-h^{initial}|$; positive when at least one step was committed.
@@ -204,13 +204,13 @@ Every band of a rotating case is calibrated against an independent reference imp
 | case | variable | `l1` | `l2` | `linf` |
 | --- | --- | --- | --- | --- |
 | `n032` | `h` | $[2.8e{-3},\ 3.5e{-3}]$ | $[3.5e{-3},\ 4.4e{-3}]$ | $[1.0e{-2},\ 1.4e{-2}]$ |
-|  | `hu` | $[1.6e{-1},\ 2.1e{-1}]$ | $[1.6e{-1},\ 2.1e{-1}]$ | $[2.0e{-1},\ 2.5e{-1}]$ |
+|  | `hu` | $[2.8e{-1},\ 3.5e{-1}]$ | $[2.6e{-1},\ 3.2e{-1}]$ | $[2.4e{-1},\ 3.1e{-1}]$ |
 |  | `hv` | $[2.0e{-1},\ 2.6e{-1}]$ | $[2.1e{-1},\ 2.7e{-1}]$ | $[2.2e{-1},\ 2.8e{-1}]$ |
 | `n064` | `h` | $[1.3e{-3},\ 1.7e{-3}]$ | $[1.7e{-3},\ 2.1e{-3}]$ | $[5.5e{-3},\ 6.8e{-3}]$ |
-|  | `hu` | $[8.6e{-2},\ 1.1e{-1}]$ | $[8.7e{-2},\ 1.1e{-1}]$ | $[1.0e{-1},\ 1.4e{-1}]$ |
+|  | `hu` | $[1.4e{-1},\ 1.9e{-1}]$ | $[1.3e{-1},\ 1.7e{-1}]$ | $[1.3e{-1},\ 1.6e{-1}]$ |
 |  | `hv` | $[1.0e{-1},\ 1.3e{-1}]$ | $[1.0e{-1},\ 1.3e{-1}]$ | $[1.0e{-1},\ 1.4e{-1}]$ |
 | `n128` | `h` | $[4.7e{-4},\ 5.8e{-4}]$ | $[6.1e{-4},\ 7.5e{-4}]$ | $[2.0e{-3},\ 2.6e{-3}]$ |
-|  | `hu` | $[2.8e{-2},\ 3.5e{-2}]$ | $[2.8e{-2},\ 3.5e{-2}]$ | $[3.6e{-2},\ 4.5e{-2}]$ |
+|  | `hu` | $[4.8e{-2},\ 5.9e{-2}]$ | $[4.4e{-2},\ 5.5e{-2}]$ | $[4.4e{-2},\ 5.5e{-2}]$ |
 |  | `hv` | $[3.8e{-2},\ 4.8e{-2}]$ | $[4.0e{-2},\ 5.0e{-2}]$ | $[4.3e{-2},\ 5.4e{-2}]$ |
 | `n032_to_n064` order | `h` | $\ge 0.7$ | $\ge 0.7$ | $\ge 0.6$ |
 |  | `hu` | $\ge 0.6$ | $\ge 0.6$ | $\ge 0.6$ |
