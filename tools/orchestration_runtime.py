@@ -3613,6 +3613,10 @@ def _resolve_dependency_facts(
     """
     facts: list[dict[str, Any]] = []
     try:
+        # Imported here, as `_published_surface` imports its validator helpers: the module also
+        # runs as a script, where a top-level `tools.*` import aborts the CLI at load. Inside the
+        # `try`, so the function keeps its never-raises contract.
+        from tools.validate_pipeline_semantics import _called_dep_key
         ir_ref_token = str(ir_ref or "").strip().rstrip("/")
         if not ir_ref_token:
             return []
@@ -3654,6 +3658,14 @@ def _resolve_dependency_facts(
             if not isinstance(node_key, str) or not node_key.strip():
                 continue
             node_key = node_key.strip()
+            # A called dependency (`component` / `problem`) is read by its CANONICAL key, the
+            # spelling the dependency gates read (`_called_dep_key`, which agrees with V4's
+            # `_normalize_node_key_token`): a key respelled with whitespace around its kind, id or
+            # version is the member to those gates, so its call is required at Generate, and the
+            # leaf is shown its interface here under the same reading (review round 2, sec-L1).
+            called = _called_dep_key(node_key)
+            if called is not None:
+                node_key = called[2]
             try:
                 _node_key_to_safe(node_key)
             except Exception:

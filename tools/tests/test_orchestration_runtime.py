@@ -14204,6 +14204,46 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                     ["member__step"])
                 self.assertEqual(facts[0].get("declared_operations_unresolved"), unresolved)
 
+    def test_a_respelled_member_key_yields_the_canonical_facts(self) -> None:
+        # Review round 2, sec-L1: every dependency gate reads a key respelled with whitespace
+        # around its kind, id or version as the member (`_called_dep_key`, agreeing with V4), so
+        # post_generate requires its call; the Generate leaf must then be shown the member's
+        # interface under the same reading. Each spelling yields the canonical spelling's facts.
+        from tools.orchestration_runtime import _resolve_dependency_facts
+        model_text = (
+            "module member_model\ncontains\n"
+            "subroutine member__step(h, dt, ok)\n"
+            "  real(8), intent(inout) :: h(:)\n"
+            "  real(8), intent(in) :: dt\n"
+            "  logical, intent(out) :: ok\n"
+            "end subroutine\nend module\n")
+
+        def facts_for(kind: str, spelled: str) -> list[dict]:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._write_dep_pipeline(
+                    repo_root, f"{kind}__member__0.5.1",
+                    "p_20260601_002", "bin_20260601_002", "run_20260601_002",
+                    source_id="src_20260601_001", spec_id="member",
+                    model_text=model_text)
+                self._write_ir(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001",
+                    [{"node_key": spelled, "kind": kind, "operations": ["member__step"]}],
+                    impl_defaults={"toolchain": {"language": "fortran"}})
+                return _resolve_dependency_facts(
+                    repo_root, "workspace/ir/problem__top__0.1.0/top_001", target=_TP)
+
+        for kind in ("problem", "component"):
+            canonical = facts_for(kind, f"{kind}/member@0.5.1")
+            self.assertEqual(len(canonical), 1)
+            self.assertEqual([op["operation"] for op in canonical[0]["published_operations"]],
+                             ["member__step"])
+            for spelled in (f"{kind} /member@0.5.1", f"{kind}/ member@0.5.1",
+                            f"{kind}/member @0.5.1", f"{kind}/member@ 0.5.1",
+                            f" {kind} / member @ 0.5.1 "):
+                with self.subTest(spelled=spelled):
+                    self.assertEqual(facts_for(kind, spelled), canonical)
+
     def test_non_empty_operations_not_unioned_with_fallback(self) -> None:
         # Drift guard: when the IR DOES enumerate ops, only that surface is published — the
         # fallback is empty-list-only, never unioned (IR is the sole carrier).
