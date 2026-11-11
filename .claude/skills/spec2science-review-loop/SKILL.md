@@ -550,7 +550,7 @@ when a rule does not obviously apply:
    docstring in a prose-only fix commit, ran the drift file and the per-file suites, and four
    commits went by with the full suite red on `TokenRatchetTests` until the next full run.
    Run the WHOLE suite after every commit — measured 2026-11-11 at `-n 24` on an idle machine:
-   about 100 s (7670 rows), the default scheduler being `worksteal` since then (`tools/tests/conftest.py`);
+   about 100 s, the default scheduler being `worksteal` since then (`tools/tests/conftest.py`);
    serially, as CI runs it, 21 min. **And read its SKIP
    count, not only its failures**: every skip in `tools/tests/` is a missing host tool, and a
    skipped row is code the branch was never run against (issue #424 PR-2: `16 skipped` hid a red

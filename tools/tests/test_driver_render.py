@@ -264,16 +264,15 @@ def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
                 deps: tuple[str, ...] = (), case_ids: list[str] | None = None,
                 model: str | None = None) -> Run:
     ids = _prepare(tmp, ir, case_ids)
-    text = f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU)
-    (tmp / "runner.f90").write_text(text)
     objs = []
     flags = ["-std=f2008", "-O2", "-fopenmp", "-fcheck=bounds"]
+    # each source enters the directory just before its own compile (`_compile_cached`)
     for stem in ("harness_fortran_cpu", *deps, model or sid):
-        obj, src = f"{stem}.o", DATA / f"{stem}_model.f90"
-        # each compile reads the `.mod` files the ones before it left
-        _compile_cached(["gfortran", *flags, "-c", str(src), "-o", obj], tmp,
-                        [src, *sorted(tmp.glob("*.mod"))])
-        objs.append(obj)
+        shutil.copy(DATA / f"{stem}_model.f90", tmp)
+        _compile_cached(["gfortran", *flags, "-c", f"{stem}_model.f90", "-o", f"{stem}.o"], tmp)
+        objs.append(f"{stem}.o")
+    text = f_runner.render_runner(ir, sid, "harness_fortran_cpu", target=CPU)
+    (tmp / "runner.f90").write_text(text)
     build = subprocess.run(["gfortran", *flags, "-c", "runner.f90", "-o", "runner.o"], cwd=tmp,
                            capture_output=True, text=True)
     if build.returncode != 0:
@@ -294,23 +293,25 @@ def _harness_public_api() -> dict[str, Any]:
 _OBJECT_CACHE: list[Path] = []
 
 
-def _compile_cached(argv: list[str], cwd: Path, inputs: list[Path]) -> None:
+def _compile_cached(argv: list[str], cwd: Path) -> None:
     """Run the compile ``argv`` in ``cwd``, or copy in what an identical compile left before.
 
-    The key is the command line and the bytes of every input it reads, so a row that edits a
-    source (a seeded defect, a rendered header) misses and compiles. What the compile leaves is
-    every file new or rewritten in ``cwd`` afterwards (the object, and a Fortran compile's
-    `.mod` files).
-    For the sources every row of a class repeats: the harness is 3.2 s of a 7 s `nvcc` build and
-    1.35 s of an MPI one (measured 2026-11-11). Per process, so an xdist worker builds each
-    entry once and no two workers share a directory."""
+    The key is the command line and every file directly in ``cwd`` (name and bytes), so no
+    caller lists what a compile reads and none can leave an input out: a row that edits a
+    source, a header or a `.mod`-producing dependency misses and compiles. Callers put each
+    source in the directory just before its own compile, which keeps a stage's key to the
+    stages before it (and its hits to the rows that share them). What an entry holds is every
+    file the compile created or rewrote in ``cwd`` (the object, a Fortran compile's `.mod`
+    files). For the sources every row of a class repeats: the harness is 3.2 s of a 7 s `nvcc`
+    build and 1.35 s of an MPI one (measured 2026-11-11). Per process, so an xdist worker builds
+    each entry once and no two workers share a directory."""
     import atexit
     import hashlib
     if not _OBJECT_CACHE:
         _OBJECT_CACHE.append(Path(tempfile.mkdtemp(prefix="spec2science-objcache-")))
         atexit.register(shutil.rmtree, _OBJECT_CACHE[0], True)
     digest = hashlib.sha256("\0".join(argv).encode())
-    for path in inputs:
+    for path in sorted(p for p in cwd.iterdir() if p.is_file()):
         digest.update(b"\0" + path.name.encode() + b"\0" + path.read_bytes())
     entry = _OBJECT_CACHE[0] / digest.hexdigest()
     if not entry.is_dir():
@@ -334,23 +335,24 @@ def _compile_cached(argv: list[str], cwd: Path, inputs: list[Path]) -> None:
 
 def run_cpp(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy") -> Run:
     ids = _prepare(tmp, ir, None)
-    (tmp / "runner.cu").write_text(cpp_runner.render_runner(ir, sid, "harness_cpp_gpu", target=GPU))
-    (tmp / f"{sid}_model.cuh").write_text(
-        cpp_header.render(sid, ir["public_api"], spec_kind="component"))
-    (tmp / "harness_cpp_gpu_model.cuh").write_text(
-        cpp_header.render("harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure"))
-    shutil.copy(DATA / "harness_cpp_gpu_model.cu", tmp)
-    shutil.copy(DATA / f"{sid}_model.cu", tmp)
+    # each stage's files enter the directory just before its compile (`_compile_cached`)
+    sources = {
+        "harness_cpp_gpu_model": {
+            "harness_cpp_gpu_model.cuh": cpp_header.render(
+                "harness_cpp_gpu", _harness_public_api(), spec_kind="infrastructure"),
+            "harness_cpp_gpu_model.cu": (DATA / "harness_cpp_gpu_model.cu").read_text()},
+        f"{sid}_model": {
+            f"{sid}_model.cuh": cpp_header.render(sid, ir["public_api"], spec_kind="component"),
+            f"{sid}_model.cu": (DATA / f"{sid}_model.cu").read_text()},
+        "runner": {"runner.cu": cpp_runner.render_runner(ir, sid, "harness_cpp_gpu",
+                                                          target=GPU)}}
     objs = []
-    headers = sorted(tmp.glob("*.cuh"))
-    for stem in ("harness_cpp_gpu_model", f"{sid}_model"):
+    for stem, files in sources.items():
+        for name, text in files.items():
+            (tmp / name).write_text(text)
         _compile_cached(["nvcc", "-std=c++17", "-O1", "-c", f"{stem}.cu", "-o", f"{stem}.o"],
-                        tmp, [tmp / f"{stem}.cu", *headers])
+                        tmp)
         objs.append(f"{stem}.o")
-    # the runner too: 48 builds of CppDriverTest render 18 distinct runners
-    _compile_cached(["nvcc", "-std=c++17", "-O1", "-c", "runner.cu", "-o", "runner.o"], tmp,
-                    [tmp / "runner.cu", *headers])
-    objs.append("runner.o")
     subprocess.run(["nvcc", *objs, "-o", "bin"], cwd=tmp, check=True, capture_output=True)
     return _exec(tmp, ids, {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
 
@@ -1820,22 +1822,20 @@ class MpiBuild:
         pe.write_case_inputs(ir, tmp / "ir")
         self.runner = runner if runner is not None else f_runner.render_runner(
             ir, sid, harness, target=_mpi_target())
-        (tmp / "runner.f90").write_text(self.runner)
-        (tmp / "model.f90").write_text(model if model is not None
-                                       else (MPI_DATA / f"{sid}_model.f90").read_text())
         harness_src = (MPI_DATA / f"{MPI_HARNESS}_model.f90" if harness == MPI_HARNESS
                        else DATA / "harness_fortran_cpu_model.f90")
         compiler = str(pair / wrapper.COMPILER_WRAPPER) if harness == MPI_HARNESS else "gfortran"
-        _compile_cached([compiler, *flags, "-c", str(harness_src), "-o", "harness.o"], tmp,
-                        [harness_src])
-        objs = ["harness.o"]
-        # Named relative to the build directory, so the command line is the same in every
-        # row's directory and a row that builds what an earlier one did reuses its objects:
-        # the defect rows' references are the unedited fixture, 23 builds of 5 kinds. Each
-        # compile reads the `.mod` files the ones before it left.
-        for stem in ("model", "runner"):
-            _compile_cached([compiler, *flags, "-c", f"{stem}.f90", "-o", f"{stem}.o"], tmp,
-                            [tmp / f"{stem}.f90", *sorted(tmp.glob("*.mod"))])
+        # Every source is named relative to the build directory and enters it just before its
+        # own compile (`_compile_cached`), so a row that builds what an earlier row of the
+        # worker did reuses its objects: the defect rows' references are the unedited fixture.
+        sources = {"harness": harness_src.read_text(),
+                   "model": model if model is not None
+                   else (MPI_DATA / f"{sid}_model.f90").read_text(),
+                   "runner": self.runner}
+        objs = []
+        for stem, text in sources.items():
+            (tmp / f"{stem}.f90").write_text(text)
+            _compile_cached([compiler, *flags, "-c", f"{stem}.f90", "-o", f"{stem}.o"], tmp)
             objs.append(f"{stem}.o")
         subprocess.run([compiler, *flags, *objs, "-o", "bin"], cwd=tmp, check=True,
                        capture_output=True)
@@ -2467,7 +2467,7 @@ class CompileCacheTest(unittest.TestCase):
         cwd.mkdir()
         (cwd / "a.src").write_text(text)
         (cwd / "a.h").write_text(header)
-        _compile_cached(self.CMD, cwd, [cwd / "a.src", cwd / "a.h"])
+        _compile_cached(self.CMD, cwd)
         return (cwd / "a.o").read_text(), len((root / "runs").read_text().split())
 
     def test_a_changed_input_compiles_and_the_same_input_reuses(self) -> None:
@@ -2480,6 +2480,19 @@ class CompileCacheTest(unittest.TestCase):
             # the first one's bytes again, in a fresh directory: copied in, nothing run
             self.assertEqual(self._compile(root, "d", "one\n", "h\n"), ("one\nh\n", 3))
 
+    def test_a_file_the_command_does_not_name_is_in_the_key(self) -> None:
+        """No caller lists inputs, so a file a compile reads without naming it (an included
+        header, a `.mod`) misses when it changes: here the command names neither file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, header in (("a", "h\n"), ("b", "g\n")):
+                cwd = root / name
+                cwd.mkdir()
+                (cwd / "a.src").write_text("one\n")
+                (cwd / "a.h").write_text(header)
+                _compile_cached(["sh", "-c", "cat * > ../out; mv ../out a.o"], cwd)
+                self.assertEqual((cwd / "a.o").read_text(), header + "one\n", name)  # a.h, a.src
+
     def test_the_same_inputs_under_another_command_compile(self) -> None:
         """The MPI harness is one source under the release flags and the `checked` ones: a key
         without the command line would hand a `checked` row the release object."""
@@ -2487,8 +2500,7 @@ class CompileCacheTest(unittest.TestCase):
             cwd = Path(tmp)
             (cwd / "a.src").write_text("one\n")
             for flag in ("release", "checked"):
-                _compile_cached(["sh", "-c", f"cat a.src > a.o; echo {flag} >> a.o"], cwd,
-                                [cwd / "a.src"])
+                _compile_cached(["sh", "-c", f"cat a.src > a.o; echo {flag} >> a.o"], cwd)
                 self.assertEqual((cwd / "a.o").read_text(), f"one\n{flag}\n")
 
     def test_an_output_already_in_the_directory_is_still_cached(self) -> None:
@@ -2504,7 +2516,7 @@ class CompileCacheTest(unittest.TestCase):
             (first / "a.o").write_text("stale\n")
             (second / "a.o").write_text("stale\n")
             for d in (first, second):
-                _compile_cached(["sh", "-c", "cp a.src a.o # overwrite"], d, [d / "a.src"])
+                _compile_cached(["sh", "-c", "cp a.src a.o # overwrite"], d)
                 self.assertEqual((d / "a.o").read_text(), "one\n", d.name)
 
     def test_a_failing_compile_raises_and_is_not_cached(self) -> None:
@@ -2513,7 +2525,7 @@ class CompileCacheTest(unittest.TestCase):
             (cwd / "a.src").write_text("x")
             for _ in range(2):   # the second call runs (and fails) again rather than hitting
                 with self.assertRaises(AssertionError):
-                    _compile_cached(["sh", "-c", "touch a.o; exit 1"], cwd, [cwd / "a.src"])
+                    _compile_cached(["sh", "-c", "touch a.o; exit 1"], cwd)
 
 
 def _mpi_runner_text(sid: str) -> str:
