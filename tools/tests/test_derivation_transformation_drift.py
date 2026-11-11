@@ -847,8 +847,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in place before it shipped (review round 1, cor-L4): V4c-ii's "Once each
     # `component` and `problem` IR pins its published op NAMES". Again in review round 2
     # (cor-L3): V8's `problem` bullet says a member `problem`'s NAME half is what its consumer's
-    # V4c-ii and sidecar read.
-    "compile-docs-31": "b0d5e7ebb837625f3ca71eb55f6cd3de2384850445fc3cb35d13812e07b03adc",
+    # V4c-ii and sidecar read. Again in review round 3 (disc-L3): the identity preconditions say
+    # where `profile_declares_problem` is refused and scope "enforced at spec-input" to the rules
+    # outside a `profile`.
+    "compile-docs-31": "3f4a2c7a6c8b3045a4b0b2edb718e99d654c2cd59b67584af187653c142c8c5d",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

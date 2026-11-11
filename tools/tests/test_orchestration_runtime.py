@@ -22218,7 +22218,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # 111774 after review round 1 (cor-L4, V4c-ii's "`component` and `problem` IR"), and
         # 111846 after review round 2 (cor-L3, V8's member sentence; the
         # `profile_declares_problem` clause of the identity preconditions shortened to fit).
-        "docs/workflow/phases/phase_01_compile.md": 111850,
+        # Review round 3 (disc-L3: that clause names where it is refused, and "All are enforced at
+        # spec-input" is scoped to the rules outside a `profile`): bumped 111850->111950;
+        # measured 111934 with `wc -c` at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 111950,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
