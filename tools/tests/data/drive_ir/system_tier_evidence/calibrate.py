@@ -90,9 +90,24 @@ def values(ir: dict[str, Any], run: Path, cases: set[str]) -> dict[tuple[str, st
     """(quantity, case) -> value, over the predicates whose cases the reference solved."""
     keep = dict(ir)
     keep["io_contract"] = dict(ir["io_contract"])
-    keep["io_contract"]["predicates"] = [
-        p for p in ir["io_contract"]["predicates"]
-        if set(p["target_cases"]) <= cases and "comparand" not in p["expr"]]
+    # A per-case predicate is split into one predicate per case: the evaluator stops a per-case
+    # record at its first failing case, so a variant that fails one case (the `swapped` run)
+    # would otherwise leave the later cases unevaluated.
+    split: list[dict[str, Any]] = []
+    for p in ir["io_contract"]["predicates"]:
+        if not set(p["target_cases"]) <= cases or "comparand" in p["expr"] \
+                or p["quantity"] in ("run.n_step", "ok"):
+            continue   # the closure and the flag are admitted over every target case only
+        if not p.get("per_case"):
+            split.append(p)
+            continue
+        for cid in p["target_cases"]:
+            q = dict(p)
+            q["target_cases"] = [cid]
+            if isinstance(p["value"], dict):
+                q["value"] = {"per_case": {cid: p["value"]["per_case"][cid]}}
+            split.append(q)
+    keep["io_contract"]["predicates"] = split
     out: dict[tuple[str, str], float] = {}
     for rec in pe.evaluate_primary_predicates(keep, run):
         rec = dict(rec)
