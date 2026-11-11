@@ -10,7 +10,14 @@ three variants of the reference measure the margins `tests.md` states beside the
   two phase shifts;
 - the closed forms of the interval pair, `k = 1` against `k = 4`.
 
-  PYTHONPATH=. python3 <this file> [--write] [--work <dir>]
+  PYTHONPATH=. python3 <this file> [--write] [--work <dir>] [--against <bench --keep dir>]
+
+`--against` compares the reference's captures with a bench run's (`bench.py --keep <dir>`): per
+case and variable, the largest absolute difference over the largest absolute reference value,
+at the final state and at every history sample — the agreement tests.md 5-5 states.
+
+The J numbers below are the plan's judgments; in tests.md §6, J1/J2 are 6-1, J3 6-2, J4 6-3,
+J5 6-4 / 6-5, J6 6-6, J7 6-7..6-10, J8 6-11, J9 6-12..6-15.
 
 The case files (initial arrays, `dt`, `n_step`) are the host's own, written by
 `primary_evidence.write_case_inputs` from the IR; the reference reads them and nothing else of
@@ -151,6 +158,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--write", action="store_true")
     ap.add_argument("--work")
+    ap.add_argument("--against")
     a = ap.parse_args()
     work = Path(a.work) if a.work else Path(tempfile.mkdtemp(prefix="swr_cal_"))
     if work.exists():
@@ -215,6 +223,32 @@ def main() -> int:
         report.append(f"J2 {cid:22s} n_step {n} k {k}: vs k=1 {d(e, e1):.3e}; k steps of dt "
                       f"{d(e, sub):.3e}; dt for k*dt {d(e, dtk):.3e}; reference value "
                       f"{ref[('rotation.closed_form.final_rel', cid)]:.2e}")
+    # the round-off quantities the reference reads (tests.md 5-5)
+    for q in ("mass_drift_rel", "mass_drift_rel.history", "rotation.closed_form.final_rel",
+              "rotation.closed_form.history_rel"):
+        report.append(f"round-off {q:34s} reference max {max(v for (k, _c), v in ref.items() if k == q):.2e}")
+    pairs = [v for (k, _c), v in ref.items() if k.startswith(("errors.axis_exchange.",
+             "errors.mirror_x.", "errors.mirror_y.", "errors.translation."))]
+    report.append(f"round-off {'symmetry residuals':34s} reference max {max(pairs):.2e}")
+    if a.against:
+        bench = Path(a.against) / "run" / "raw" / "state_snapshots"
+        mine = runs["stated"] / "raw" / "state_snapshots"
+        worst: dict[str, float] = {}
+        for path in sorted(mine.rglob("*.json")):
+            rel = path.relative_to(mine)
+            if rel.parts[0] == "initial":
+                continue
+            r_doc, b_doc = json.loads(path.read_text()), json.loads((bench / rel).read_text())
+            cid = rel.name.split("__")[0].removesuffix(".json")
+            for v in ("h", "hu", "hv"):
+                r_arr, b_arr = np.array(r_doc[v]), np.array(b_doc[v])
+                d = float(np.max(np.abs(b_arr - r_arr)) / max(np.max(np.abs(r_arr)), 1e-300))
+                worst[cid] = max(worst.get(cid, 0.0), d)
+        rotating = {c["case_id"] for c in ir["case"]["test_case_set"]
+                    if c["inputs"]["rotation"]["on"] == 1}
+        for cid, d in sorted(worst.items()):
+            report.append(f"agreement {cid:28s} {'rotating' if cid in rotating else 'off':8s} {d:.2e}")
+        report.append(f"agreement max over rotating cases {max(d for c, d in worst.items() if c in rotating):.2e}")
     print("\n".join(report))
     if a.write:
         (HERE / "bands.yaml").write_text(
