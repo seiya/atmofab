@@ -14,7 +14,7 @@ This suite verifies the COMPOSITION of the Controlled Spec §5: that the member 
 
 It judges: the rotation alone against the closed form of the RK4 polynomial, at the final state and at every sample, for an interval of `1` and of `4` and a step count whose remainder by `4` is `3` (6-1); a coupled judgment whose value depends on both the member and the rotation and is not a band on the splitting error, the frequency of an inertia-gravity wave on an `f`-plane (6-2); mass over every sample (6-3); the process off, on the member's cone case and its flat linear-wave case, restating the member's bands, and the independence of the result from `f` and `rotation.every` when off (6-4, 6-5); the splitting order and the per-cell `f`, by two-sided bands calibrated against an independent reference, on a square and a rectangular grid (6-6); the four symmetry pairs of `docs/TESTS.md` with `f` transformed (6-7 to 6-10); the refinement judgment against the restricted reference (6-11); and the guards: the interval at `0` and below with the process on and off, the selector outside `{0, 1}`, the member refusing mid-run with the rotation firing on every step, on and never firing, and off, and the member's `dt` refusal with the rotation on (6-12 to 6-15).
 
-The conditions the composition judgments are built under (the system tier plan, Part 1, §4.1):
+The conditions the composition judgments are built under:
 - **Rotation on, non-flat, non-uniform `f`.** 6-3, 6-6 to 6-11 run with the rotation on, over the shear-flow state of 2-3, whose momentum is non-zero and varies along both axes, under the `f` of 2-4, which varies along both axes and is periodic on the doubly periodic domain. A flat state at rest makes the member the identity, and a kernel that skips the member whenever the rotation is on then passes; an `f` that varies along one axis only leaves a mutant reading one cell of `f` visible to one symmetry pair only.
 - **The interval at `2` with a step count it does not divide.** 6-6 runs with `rotation.every = 2` and `n_step` odd (`183` and `229`). At an interval of `1`, or on a flat state, a member stepped with `k dt`, a member called on rotation steps only and a member called `k` times are each indistinguishable from the stated composition.
 - **Cases of one shape with different `f`.** The four transformed cases of 2-11 have the shape of their base and a different `f`; a kernel that retains `f` from an earlier case of the same shape is seen by the pairs. The condition is that these cases share a shape, not that they are adjacent in any order.
@@ -23,7 +23,7 @@ The conditions the composition judgments are built under (the system tier plan, 
 - **Margins stated before the judgments were run**, each beside its band in 5-5: the interval pair's closed forms, the two phase shifts of 6-2, and the one-off difference of the two splitting orders of 6-6.
 
 What this suite accepts as beyond a kernel judgment:
-- **The guards of the Coriolis operation and of RK4.** Neither is reachable from this `problem`'s inputs for a conforming member: the Coriolis operation refuses `ncomp /= 3`, `nx < 1`, `ny < 1`, and RK4 refuses `dt <= 0` and extents below `1`; `ncomp` is fixed to `3` by the Controlled Spec §5, `rotation.every < 1` is refused by step 1 at the first call (6-12), and the member, called first with the same `nx`, `ny` and `dt`, refuses `nx < 2`, `ny < 2` and `dt <= 0` (its §5 and its 6-15, 6-16). So a kernel that discards the Coriolis guard, or ignores the RK4 guard, passes every test here. The Controlled Spec §5 still requires both; that requirement rests on `Generate.verify`, and 6-15 runs the premise of this argument: the member's `dt < 0` refusal with the rotation on, judged by the flag.
+- **The guards of the Coriolis operation and of RK4.** Neither is reachable from this `problem`'s inputs for a conforming member: the Coriolis operation refuses `ncomp /= 3`, `nx < 1`, `ny < 1`, and RK4 refuses `dt <= 0` and extents below `1`; `ncomp` is fixed to `3` by the Controlled Spec §5, `rotation.every < 1` is refused by step 1 at the first call (6-12), and the member, called first with the same `nx`, `ny` and `dt`, refuses `nx < 2`, `ny < 2` and `dt <= 0` (its §5 and its 6-15, 6-16). So a kernel that discards the Coriolis guard, or ignores the RK4 guard, passes every test here. The Controlled Spec §5 still requires both; that requirement rests on `Generate.verify`, and 6-15 runs the premise of this argument: the member's `dt < 0` refusal with the rotation on, judged by the flag and `run.first_call_refused`.
 - **Whether step 1 refuses before the member.** A kernel that calls the member first and then applies the guards of step 1 refuses at the same first call, and the driver commits nothing of a refused call, so no capture separates it from §5's order. That requirement rests on `Generate.verify`. Which values step 1 refuses is judged (6-12, 6-13): an interval of `0`, `-1` and `-2` with the process on (at `-1` the firing rule fires on the first call, so a kernel that refuses `0` alone is still refused there by RK4's own `dt <= 0` guard; at `-2` it first fires on the second call, and such a kernel commits a step before RK4 refuses), `0` and `-1` with the process off (where no component is reached), and a selector of `2` and `-1`.
 - **The member's discretization.** It is the member's suite's to judge. This suite restates the member's bands only on the member's own cases with the process off (6-4, 6-5), and calibrates every band of the rotating cases on a reference that reproduces the member.
 - **The member's private state.** The member publishes `__step` only and keeps no state between calls that its §5 states; how often the member is called per step is judged through the state (6-6, 6-11), not by counting calls.
@@ -32,14 +32,30 @@ What this suite accepts as beyond a kernel judgment:
 ### 2-1. Basic constants
 - The domain lengths are `L_x=L_y=1.0`, except the rectangular case of 2-9 (`L_y=0.5`) and the wave case of 2-5 (`L_y=1/32`).
 - The representative water level is `H_0=1.0` and the gravitational acceleration is `g=9.81`, the member's.
-- The bottom topography is `topography_profile=flat` (`z_b=0`) on every case, except the two cases of 2-7 and the wet-domain refusal case of 2-8, which take the member's `williamson_tc5_cone` with `x_c_fraction=3/4`, `y_c_fraction=2/3`.
+- The bottom topography is `topography_profile=flat` (`z_b=0`) on every case, except the two cases of 2-7 and the three wet-domain refusal cases of 2-8, which take `topography_profile=williamson_tc5_cone` with `x_c_fraction=3/4`, `y_c_fraction=2/3`: the member's cone (its Controlled Spec §6 and `tests.md` 2-2), stated here whole,
+  $$
+  d_x(x)=\min\left(|x-x_c|,L_x-|x-x_c|\right),\quad
+  d_y(y)=\min\left(|y-y_c|,L_y-|y-y_c|\right),\quad
+  r(x,y)=\sqrt{d_x(x)^2+d_y(y)^2}
+  $$
+  $$
+  z_b(x,y)=h_s\max\left(0,1-\frac{r(x,y)}{r_0}\right)
+  $$
+  with $x_c=\mathrm{x\_c\_fraction}\cdot L_x$, $y_c=\mathrm{y\_c\_fraction}\cdot L_y$, $r_0=\min(L_x,L_y)/6$ and $h_s=0.2H_0$.
 
 ### 2-2. Initial-condition profiles
 `initial_profile` takes one of the values below (each a closed form over the inputs, evaluated by the host at the cell centres $x_i=(i+1/2)\,dx$, $y_j=(j+1/2)\,dy$):
 - `uniform_flow` (2-6): $h=H_0$, $hu=\mathrm{mom\_x0}$, $hv=\mathrm{mom\_y0}$.
 - `shear_flow` (2-3).
 - `poincare_wave_x` (2-5).
-- `linear_wave_x`: the member's profile of the same name (the member's `tests.md` 2-3), with its inputs `eta0`, `wave_sign`, `shift_x_fraction`, `shift_y_fraction`; used by the member's cases of 2-7, 2-8 and 2-10 only.
+- `linear_wave_x`: the member's profile of the same name (the member's `tests.md` 2-3), stated here whole, with the inputs `eta0`, `wave_sign`, `shift_x_fraction`, `shift_y_fraction` (`shift_y_fraction` enters no expression), $c_0=\sqrt{gH_0}$ and $z_b$ of 2-1:
+  $$
+  \eta=H_0+\eta_0\sin\left(2\pi\left(\frac{x}{L_x}-\mathrm{shift\_x\_fraction}\right)\right),\quad h=\eta-z_b
+  $$
+  $$
+  hu=h\cdot\mathrm{wave\_sign}\,\frac{\eta_0c_0}{H_0}\sin\left(2\pi\left(\frac{x}{L_x}-\mathrm{shift\_x\_fraction}\right)\right),\quad hv=0
+  $$
+  It is used by the member's cases of 2-7, 2-8 and 2-10 only.
 
 ### 2-3. The shear-flow state
 $$
@@ -81,14 +97,14 @@ The member's case `swe2d_ref_n064_sx000_sy000_dts100`, input for input (`nx=ny=6
 
 ### 2-8. The refusal cases
 - The interval and the selector: the shear-flow base on `nx=ny=32`, each `history.every=0`, with `rotation.on=1` and `rotation.every` `0`, `-1` and `-2`; with `rotation.on=0` and `rotation.every` `0` and `-1` (the interval is read whatever the selector, Controlled Spec §6); with `rotation.on=2` and `rotation.every=1`; and with `rotation.on=-1` and `rotation.every=1`. Each is refused at the FIRST call by step 1 of the Controlled Spec §5, before the member: no step is committed and the state is the one the host gave. A refusal reached later — by RK4's own `dt <= 0` guard on a negative interval, or by the member — is not step 1's.
-- The member's wet-domain refusal: the member's case `swe2d_dry_n032_sx000_sy000_dts500` input for input (`dt_scale=5.0`, the cone, `history.every=9`), the `f` of the shear-flow base, and three rotation settings: `rotation.on=1`, `rotation.every=1` (`swr_dry_n032`); `rotation.on=1`, `rotation.every=100` (`swr_dry_n032_k100`, the process on and never firing in $\mathrm{n\_step}=18$ steps); and `rotation.on=0`, `rotation.every=1` (`swr_dry_n032_off`). The bench composition refuses at the member's tenth step on the first (nine steps committed) and at its ninth on the other two (eight committed).
-- The member's `dt` refusal: the member's case `swe2d_flat_ref_n032_sx000_sy000_dts100_dtneg` input for input (`dt_scale=-1.0`, `t_end=-0.2`, `history.every=0`), with `rotation.on=1`, `rotation.every=1` and the `f` of the shear-flow base.
+- The member's wet-domain refusal: the member's case `swe2d_dry_n032_sx000_sy000_dts500` input for input (`nx=ny=32`, `L_x=L_y=1`, the cone of 2-1, `linear_wave_x` with `eta0=1.0e-3`, `wave_sign=+1`, the shifts `0`, `t_end=0.2`, `dt_scale=5.0`, `history.every=9`), the `f` of the shear-flow base, and three rotation settings: `rotation.on=1`, `rotation.every=1` (`swr_dry_n032`); `rotation.on=1`, `rotation.every=100` (`swr_dry_n032_k100`, the process on and never firing in $\mathrm{n\_step}=18$ steps); and `rotation.on=0`, `rotation.every=1` (`swr_dry_n032_off`). The bench composition refuses at the member's tenth step on the first (nine steps committed) and at its ninth on the other two (eight committed).
+- The member's `dt` refusal: the member's case `swe2d_flat_ref_n032_sx000_sy000_dts100_dtneg` input for input (`nx=ny=32`, `L_x=L_y=1`, `flat`, `linear_wave_x` with `eta0=1.0e-3`, `wave_sign=+1`, the shifts `0`, `dt_scale=-1.0`, `t_end=-0.2`, `history.every=0`), with `rotation.on=1`, `rotation.every=1` and the `f` of the shear-flow base.
 
 ### 2-9. The rectangular case
 The shear-flow base with `ny=48` and `L_y=0.5` ($dy=1/96$, $dx=1/64$), `rotation.every=2` ($\mathrm{n\_step}=229$).
 
 ### 2-10. The process off on the member's flat linear-wave case
-The member's case `swe2d_flat_ref_n064_sx000_sy000_dts100`, input for input, with `rotation.on=0`, `rotation.every=2` and the `f` of the shear-flow base. The member's analytic solution of its 2-4 holds on it, so 6-5 restates the member's analytic bands at `nx=64`.
+The member's case `swe2d_flat_ref_n064_sx000_sy000_dts100`, input for input (`nx=ny=64`, `L_x=L_y=1`, `flat`, `linear_wave_x` with `eta0=1.0e-3`, `wave_sign=+1`, the shifts `0`, `dt_scale=1.0`, `t_end=0.2`, `history.every=90`), with `rotation.on=0`, `rotation.every=2` and the `f` of the shear-flow base. The member's analytic solution of its 2-4 holds on it, so 6-5 restates the member's analytic bands at `nx=64`.
 
 ### 2-11. Symmetry pairs
 Each transformed case is the shear-flow base on `nx=ny=64` with the inputs below changed; every other input is the base's. A reflection and the axis exchange reverse the sense of rotation, so `f` becomes the negated, transformed field (Controlled Spec §2); a phase $p$ reflected becomes $-p$ modulo `1`, written in $[0,1)$.
@@ -98,7 +114,7 @@ Each transformed case is the shear-flow base on `nx=ny=64` with the inputs below
 - **Translation** (`swr_shear_n064_shift`): every field moved by $L_x/4$ along `x` and $L_y/8$ along `y` (`16` and `8` cells): each `x` phase plus `0.25` and each `y` phase plus `0.125`, modulo `1`: `eta_phase_x=0.35`, `mom_phase_x=0.4`, `f_phase_x=0.45`, `eta_phase_y=0.425`, `mom_phase_y=0.525`, `f_phase_y=0.175`; `f` keeps its sign.
 
 ### 2-12. The state before the first call
-The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-2 to 2-4 (or the member's closed forms for the cases of 2-7, 2-8 and 2-10) at the cell centres, and hands them to the driver as the state before the first step.
+The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-1 to 2-4 at the cell centres, and hands them to the driver as the state before the first step.
 
 ## 3. Execution-control rules
 - $t_{start}=0.0$, and $t_{end}=0.2$ on every case but `swr_rot_n016_k4_rem3` (`0.205`) and the `dt` refusal case of 2-8 (`-0.2`).
@@ -108,7 +124,7 @@ The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-2 to 2-4 (
   3. $\mathrm{n\_step}=\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$;
   4. $dt=(t_{end}-t_{start})/\mathrm{n\_step}$.
 
-  `f` does not enter the rule. `dt_scale=1.0` on every case but the two member refusal cases of 2-8.
+  `f` does not enter the rule. `dt_scale=1.0` on every case but the member refusal cases of 2-8 (`5.0` on the three wet-domain cases, `-1.0` on the `dt` case).
 - The stop condition is $n=\mathrm{n\_step}$. The host's driver calls `shallow_water2d_rotating__step` once per step for $n=1,\dots,\mathrm{n\_step}$, with `step` $=n-1$ (the committed count before the call), `rotation` and `rotation_every` the case inputs `rotation.on` and `rotation.every`, and commits each step whose result `ok` is true. The state the host captures before the first step, after the last and every `every` committed steps consists of `h`, `hu`, `hv`, `z_b`, `f` (`nx` × `ny` each) and the logical result `ok` (`0` before the first step), with the driver's time `t` and committed step count `step`. `every` is the case input `history.every` of the following line: `3` on the cases of 2-6, which with `rotation.every=4` samples between rotation calls and on them; `10` on the wave case (about `0.16` rad of the wave per sample, so no phase error aliases between two samples); `20` on the shear-flow cases; the member's own value on the cases of 2-7, 2-8 and 2-10; `0` (no sample) on the other refusal cases.
 - history: every = (history.every) swr_dry_n032 = 9, swr_dry_n032_k100 = 9, swr_dry_n032_off = 9, swr_dtneg_n032 = 0, swr_guard_every0_n032 = 0, swr_guard_every0_off_n032 = 0, swr_guard_everyneg2_n032 = 0, swr_guard_everyneg_n032 = 0, swr_guard_everyneg_off_n032 = 0, swr_guard_sel2_n032 = 0, swr_guard_selneg_n032 = 0, swr_off_cone_n064 = 90, swr_off_cone_n064_twin = 90, swr_off_flat_n064 = 90, swr_pw_n128 = 10, swr_rot_n016_k1 = 3, swr_rot_n016_k4 = 3, swr_rot_n016_k4_rem3 = 3, swr_shear_n032 = 20, swr_shear_n064 = 20, swr_shear_n064_axis = 20, swr_shear_n064_rect = 20, swr_shear_n064_shift = 20, swr_shear_n064_xmir = 20, swr_shear_n064_ymir = 20, swr_shear_n128 = 20, swr_shear_n256 = 20
 - distribute: x = grid.nx (min_block 2), y = grid.ny (min_block 2)
@@ -181,7 +197,7 @@ Sums, means and extrema run over every cell of the case's grid; a `history` quan
 - `ok`: the captured logical result after the run.
 
 ### 5-5. Default thresholds
-Every band of a rotating case is calibrated against an independent reference implementation of the Controlled Spec §5 composition (`issue #265`'s procedure): the member's §5 scheme on a flat bottom and the RK4 rotation of §5, written from the Controlled Specs alone, which reproduces the captured state of the certified member composed with a hand-written composing model on every rotating case of this suite to `4e-13` relative (system tier PR-S2, `tools/tests/data/drive_ir/system_tier_evidence/`). Each value moves by round-off alone under a conforming kernel: the member's discretization, the RK4 step and the firing rule are each fixed by the Controlled Specs, and `dt` by §3.
+Every band of a rotating case is calibrated against an independent reference implementation of the Controlled Spec §5 composition (`issue #265`'s procedure): the member's §5 scheme on a flat bottom and the RK4 rotation of §5, written from the Controlled Specs alone, which reproduces the captured state of the certified member composed with a hand-written composing model on every rotating case of this suite to `4.5e-13` relative, per variable the largest absolute difference over the largest absolute reference value, at the final state and at every history sample (system tier PR-S2, `tools/tests/data/drive_ir/system_tier_evidence/`). Each value moves by round-off alone under a conforming kernel: the member's discretization, the RK4 step and the firing rule are each fixed by the Controlled Specs, and `dt` by §3.
 
 - $\mathrm{cfl.max}\le 1.0$, and `run.n_step` $=0$ on every target case of every `pass` test.
 - $\mathrm{mass\_drift\_rel}\le 1.0e{-12}$ and $\mathrm{mass\_drift\_rel.history}\le 1.0e{-12}$ on the flat cases (the reference reads at most `2.2e-16`); on the cone cases of 6-4, $\mathrm{mass\_drift\_rel}\le 1.0e{-10}$, the member's bound, restated.
@@ -201,7 +217,7 @@ Every band of a rotating case is calibrated against an independent reference imp
 | `order.hv_mean` | $[3.040306e{-2},\ 3.040313e{-2}]$ | $[4.095345e{-2},\ 4.095354e{-2}]$ |
 
 - Every symmetry-pair residual `errors.<t>.<v>_l2_rel` is $\le 2.0e{-11}$ (the member's bound; the reference reads at most `4.2e-15`).
-- The restricted-reference errors of 6-11 are judged as two-sided bands, `0.9` and `1.1` times the reference value rounded outward to two digits, two distinct judged quantities each, and their orders by lower bounds, the reference order minus `0.3` rounded down to one decimal (an order against a restricted reference includes the reference's own error, `docs/TESTS.md`):
+- The restricted-reference errors of 6-11 are judged as two-sided bands, `0.9` and `1.1` times the reference value rounded outward to two digits, two distinct judged quantities each, and their orders by lower bounds, the reference order minus `0.3` rounded down to one decimal, and `0.4` where the reference order is below `0.7` (none is: the smallest is `0.92`) (an order against a restricted reference includes the reference's own error, `docs/TESTS.md`):
 
 | case | variable | `l1` | `l2` | `linf` |
 | --- | --- | --- | --- | --- |
@@ -240,7 +256,7 @@ Every band of a rotating case is calibrated against an independent reference imp
 - `quantities`: `wave.phase_error_max`, `wave.phase_error_final`, `mass_drift_rel`, `cfl.max`, `run.n_step`
 
 ### 6-3. `l2_mass_conservation`
-- `target_cases`: every `swr_shear` case, the override cases of 4-3 included
+- `target_cases`: `swr_shear_n032`, `swr_shear_n064`, `swr_shear_n064_axis`, `swr_shear_n064_rect`, `swr_shear_n064_shift`, `swr_shear_n064_xmir`, `swr_shear_n064_ymir`, `swr_shear_n128`, `swr_shear_n256`
 - `level`: `L2`
 - `judgment`: mass over every sample and at the final state; the smallest depth; `cfl.max`, `run.n_step`. The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, `hv`, and the threshold is $\le 1.0e{-10}$.
 - `expected_outcome`: `pass`
@@ -343,3 +359,5 @@ The host records the captures of §3 per case, `test_profile_id` and `test_profi
 
 ### 8-2. Traceability records
 The calibration of 5-5 is reproduced by `tools/tests/data/drive_ir/system_tier_evidence/calibrate.py` from the reference `reference.py` beside it, and the seeded composition defects the suite was required to catch before any billed run, with the predicate that caught each, by `bench.py` beside it (system tier PR-S2). The member's bands restated in 6-4 and 6-5 are the member's `tests.md` 5-5 at `test_profile_version` `0.9.0`.
+
+The bands of the rotating cases hold for the member's §5 scheme and the two components' operations as their Controlled Specs state them at `shallow_water2d` `0.5.1`, `dynamics_shallow_water_source_2d_coriolis` `0.2.0` and `dynamics_shallow_water_time_update_2d_rk4` `0.1.1`, and the restated member bands for the member's `tests.md` `0.9.0`. When a dependency's new version changes its scheme or its suite: update `reference.py` to the new scheme, re-run `calibrate.py --write`, regenerate the tables of 5-5 from `bands.yaml` (a test compares the two), re-take the restated member bands from the member's new `tests.md`, and release this `spec` under a new `spec_version`. A dependency version that keeps its scheme moves no band. A band left stale fails closed: the two-sided bands of 6-6 hold a kernel to `1e-6` of the reference, so a changed member scheme fails 6-6 rather than certifying.
