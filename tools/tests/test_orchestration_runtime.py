@@ -14243,6 +14243,12 @@ class ResolveDependencyFactsTests(unittest.TestCase):
                             f" {kind} / member @ 0.5.1 "):
                 with self.subTest(spelled=spelled):
                     self.assertEqual(facts_for(kind, spelled), canonical)
+            # Whitespace INSIDE a part is not the member's spelling: V4 reads `mem ber` (and a
+            # version `0.5 .1`) as another node, so no facts are read for it (review round 3,
+            # sec-L1: removing all whitespace instead of stripping each part survived).
+            for other in (f"{kind}/mem ber@0.5.1", f"{kind}/member@0.5 .1"):
+                with self.subTest(other=other):
+                    self.assertEqual(facts_for(kind, other), [])
 
     def test_non_empty_operations_not_unioned_with_fallback(self) -> None:
         # Drift guard: when the IR DOES enumerate ops, only that surface is published — the
