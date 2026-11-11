@@ -61,7 +61,8 @@ distributes each case; the kernel decides none of it.
 
 The shape comparison (`_shape_verdict`) holds each grid's verdict and captures to the singleton's
 over the cases a cross-target predicate targets; `_shape_state_agreement` answers
-`not_applicable` for any other case. Every `pass` case of the 17 bench IRs is such a target today.
+`not_applicable` for any other case. Every `pass` case of the bench IRs
+(`tools/tests/data/drive_ir/pr3_evidence/ir/`) is such a target today.
 
 ## 2. What the gates refuse
 
