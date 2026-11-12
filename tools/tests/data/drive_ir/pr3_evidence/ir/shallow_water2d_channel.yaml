@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/shallow_water2d_channel@0.4.0
+  node_key: problem/shallow_water2d_channel@0.4.1
   spec_kind: problem
   spec_id: shallow_water2d_channel
-  spec_version: 0.4.0
+  spec_version: 0.4.1
   source_refs:
     controlled_spec: spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md
     tests: spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md
@@ -48,7 +48,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 221
     derived:
@@ -92,7 +92,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 442
     derived:
@@ -136,7 +136,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 883
     derived:
@@ -180,7 +180,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 142
     derived:
@@ -224,7 +224,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 284
     derived:
@@ -268,7 +268,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 567
     derived:
@@ -312,7 +312,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 272
     derived:
@@ -356,7 +356,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 544
     derived:
@@ -400,7 +400,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 1087
     derived:
@@ -444,7 +444,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 222
     derived:
@@ -488,7 +488,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 443
     derived:
@@ -532,7 +532,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 886
     derived:
@@ -576,7 +576,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 1772
     derived:
@@ -620,7 +620,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 92
     derived:
@@ -664,7 +664,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 4413
     derived:
@@ -708,7 +708,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 5433
     derived:
@@ -752,7 +752,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 543
     derived:
@@ -796,7 +796,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 443
     derived:
@@ -840,7 +840,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 576
     derived:
@@ -884,7 +884,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 303
     derived:
@@ -928,7 +928,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 442
     derived:
@@ -972,7 +972,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 284
     derived:
@@ -1016,7 +1016,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 443
     derived:
@@ -1060,7 +1060,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 303
     derived:
@@ -1104,7 +1104,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 576
     derived:
@@ -1148,7 +1148,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 442
     derived:
@@ -1192,7 +1192,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 284
     derived:
@@ -1236,7 +1236,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 544
     derived:
@@ -1280,7 +1280,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 443
     derived:
@@ -1324,7 +1324,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 576
     derived:
@@ -1368,7 +1368,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 442
     derived:
@@ -1412,7 +1412,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 284
     derived:
@@ -1456,7 +1456,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 544
     derived:
@@ -1500,7 +1500,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 443
     derived:
@@ -1544,7 +1544,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1588,7 +1588,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1632,7 +1632,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1676,7 +1676,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1720,7 +1720,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1764,7 +1764,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1808,7 +1808,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1852,7 +1852,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1896,7 +1896,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -1940,7 +1940,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 221
     derived:
@@ -1984,7 +1984,7 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
@@ -2028,12 +2028,59 @@ case:
         profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
         profile_version: 0.2.0
       test_profile_id: shallow_water2d_channel_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
       history:
         every: 0
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
+  - case_id: chan_tc4_ref_n032_dts100_cont
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 8000000.0
+        L_y: 8000000.0
+        ng: 2
+      time:
+        t_start: 0.0
+        t_end: 86400.0
+      dt_rule:
+        kind: cfl_ceil
+        cfl_target: 0.45
+        dt_scale: 1.0
+      constants:
+        g: 9.80616
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+      boundary:
+        kind: channel_periodic_along_mirror_wall_across
+        channel_axis: x
+        along_axis: 1
+      coriolis:
+        coriolis_profile: beta_plane
+      initial:
+        flow_profile: tc4_translating_low
+        zonal_sign: 1
+        gh0: 100000.0
+        u_jet: 40.0
+        flow_profile_id: 4
+        eta0: 0.0
+        shift_x_fraction: 0.0
+      profile_selection:
+        profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
+        profile_version: 0.2.0
+      test_profile_id: shallow_water2d_channel_baseline
+      test_profile_version: 0.9.0
+      history:
+        every: 272
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
+    restart:
+      from: chan_tc4_ref_n032_dts100
+      step: 272
   sweeps:
     chan_tc2_ref:
       parameter: grid.nx = grid.ny
@@ -2644,7 +2691,7 @@ algorithm:
   diagnostics_from_state: true
   fallback_policy: fail_closed
 dependency:
-  node_key: problem/shallow_water2d_channel@0.4.0
+  node_key: problem/shallow_water2d_channel@0.4.1
   direct_deps:
   - node_key: component/dynamics_shallow_water_boundary_2d_channel_mirror@0.2.0
     kind: component
@@ -3396,6 +3443,17 @@ io_contract:
     quantities:
     - init_ok
     - ok
+  - test_id: l3_restart_equivalence
+    expected_outcome: pass
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    quantities:
+    - restart.h
+    - restart.hu
+    - restart.hv
+    - run.n_step
+    - init_ok
   predicates:
   - test_id: l0_tc2_initial_state_matches_analytic
     quantity: cfl.max
@@ -19910,6 +19968,80 @@ io_contract:
     target_cases:
     - chan_tc2_ref_n032_dts100_badnx
     - chan_tc2_ref_n032_dts100_badny
+  - test_id: l3_restart_equivalence
+    quantity: restart.h
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    case: chan_tc4_ref_n032_dts100_cont
+    expr: maxabs(final.h - at('chan_tc4_ref_n032_dts100').final.h)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: restart.hu
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    case: chan_tc4_ref_n032_dts100_cont
+    expr: maxabs(final.hu - at('chan_tc4_ref_n032_dts100').final.hu)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: restart.hv
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    case: chan_tc4_ref_n032_dts100_cont
+    expr: maxabs(final.hv - at('chan_tc4_ref_n032_dts100').final.hv)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: run.n_step
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    per_case: true
+    expr: final.step - initial.n_step_plan
+    op: eq
+    value: 0
+  - test_id: l3_restart_equivalence
+    quantity: init_ok
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    per_case: true
+    expr: initial.init_ok
+    op: eq
+    value: 1
+  - test_id: l3_restart_equivalence
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_restart_equivalence
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(final.hv), maxabs(comparand.final.hu),
+      maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_restart_equivalence
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chan_tc4_ref_n032_dts100
+    - chan_tc4_ref_n032_dts100_cont
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hu), maxabs(final.hv), maxabs(comparand.final.hu),
+      maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
 public_api:
   module_parameters:
   - name: dp

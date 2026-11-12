@@ -284,6 +284,39 @@ def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
     return _exec(tmp, ids)
 
 
+def run_second_pass(run: Run, ir: dict[str, Any]) -> list[str]:
+    """`Validate.execute`'s second pass over ``run`` (issue #632), for a row that judges a whole
+    IR: the real continuation writer reads the first pass's samples, each continuation runs the
+    same binary in a process of its own under `run/restart/`, the host's start check holds, and
+    its captures are merged into the run's capture directory by the conductor's own helper.
+    Returns the continuation ids it merged (none on an IR without one)."""
+    from tools.workflow_conductor import Conductor
+    files, refused = pe.write_continuation_inputs(ir, run.dir / "run")
+    if refused:
+        raise AssertionError(f"continuations refused: {refused}")
+    if not files:
+        return []
+    rdir = run.dir / "run" / pe.RESTART_DIRNAME
+    for sub in ("initial", "history", "series"):
+        (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+    merged = []
+    for cf in files:
+        proc = subprocess.run([str(run.dir / "bin"), "--cases", str(rdir / "spec.ir.yaml"),
+                               cf.case_id], cwd=rdir, capture_output=True, text=True,
+                              timeout=600, check=False)
+        if proc.returncode != 0:
+            raise AssertionError(proc.stderr[-2000:])
+        why = pe.continuation_start_violation(ir, rdir, cf)
+        if why is not None:
+            raise AssertionError(why)
+        why = Conductor._merge_continuation_captures(rdir, run.dir / "run", cf.case_id)
+        if why is not None:
+            raise AssertionError(why)
+        merged.append(cf.case_id)
+    return merged
+
+
 def _harness_public_api() -> dict[str, Any]:
     spec = (ROOT / "spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md").read_text()
     block = yaml.safe_load(spec.split("### 5.1", 1)[1].split("```yaml", 1)[1].split("```", 1)[0])
@@ -1097,13 +1130,18 @@ class FortranWrapTest(unittest.TestCase):
 class CertifiedModelEndToEndTest(unittest.TestCase):
     """The driver over a certified kernel: every test's status is the certified run's, which
     is every test's `expected_outcome` on these two nodes (issue #589 PR-1b's end to end; the
-    swe2d model is the certified one cut to `__step`, `data/driver_e2e/`)."""
+    swe2d model is the certified one cut to `__step`, `data/driver_e2e/`). The swe2d fixture
+    carries a continuation case (issue #632 P2), which `run_second_pass` runs in a process of
+    its own as `Validate.execute` does, so its restart test is judged on the certified model."""
 
     def _verdict(self, ir_path: Path, sid: str, deps: tuple[str, ...]) -> dict[str, Any]:
         ir = yaml.safe_load(ir_path.read_text())
         with tempfile.TemporaryDirectory() as tmp:
             run = run_fortran(Path(tmp), ir, sid=sid, deps=deps)
             self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self.assertEqual(sorted(run_second_pass(run, ir)),
+                             sorted(c["case_id"] for c in ir["case"]["test_case_set"]
+                                    if pe.RESTART_CASE_KEY in c))
             records = pe.evaluate_primary_predicates(ir, Path(tmp) / "run")
             verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
             expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}

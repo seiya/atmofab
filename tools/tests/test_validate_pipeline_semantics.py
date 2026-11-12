@@ -30334,8 +30334,10 @@ class DriveGateStageTests(unittest.TestCase):
 
     # --- (m), the tests.md `history:` line --------------------------------------------------------
     # The fixture states a per-case stride (`ceil(n_step / 2)`, CONVERSION.md); the one-number
-    # forms run with every case's `inputs.history.every` set to one value.
-    _ONE = "- history: every = 38 (history.every)\n"
+    # forms run with every case's `inputs.history.every` set to one value, 30: a divisor of the
+    # continuation's step 90 (gate (p) asks the base's stride to divide it, issue #632 P2) and
+    # at most the guard's 38 steps, so every case still takes a sample.
+    _ONE = "- history: every = 30 (history.every)\n"
 
     @staticmethod
     def _swe_line() -> str:
@@ -30366,12 +30368,12 @@ class DriveGateStageTests(unittest.TestCase):
         self.assertEqual(_drive_stage("swe"), [])
         for label, line in (
                 ("bullet", self._ONE),
-                ("plain", "history: every = 38 (history.every)\n"),
-                ("star, backticks", "* `history`: every = `38` (`history.every`)\n"),
+                ("plain", "history: every = 30 (history.every)\n"),
+                ("star, backticks", "* `history`: every = `30` (`history.every`)\n"),
                 ("per case, one value", "- history: every = (history.every) "
-                 + ", ".join(f"{c} = 38" for c in strides) + "\n")):
+                 + ", ".join(f"{c} = 30" for c in strides) + "\n")):
             with self.subTest(admitted=label):
-                self.assertEqual(_drive_stage("swe", self._every(38),
+                self.assertEqual(_drive_stage("swe", self._every(30),
                                               tests_md=self._swe_tests(line)), [])
 
     def test_a_history_line_that_does_not_state_the_stride_is_refused(self) -> None:   # (m)
@@ -30386,11 +30388,11 @@ class DriveGateStageTests(unittest.TestCase):
                 ("not a number", None, "- history: every = N (history.every)\n",
                  "is not `every = <number> (<input name>)`", 1),
                 ("one number against per-case inputs", None, self._ONE,
-                 "and the tests.md `history:` line (line 145) states 38",
-                 sum(1 for m in strides.values() if m != 38)),
-                ("another number", self._every(38), self._ONE.replace("38", "37"),
-                 "inputs.history.every is 38, and the tests.md `history:` line (line 145) "
-                 "states 37", len(ids)),
+                 "and the tests.md `history:` line (line 145) states 30",
+                 sum(1 for m in strides.values() if m != 30)),
+                ("another number", self._every(30), self._ONE.replace("30", "29"),
+                 "inputs.history.every is 30, and the tests.md `history:` line (line 145) "
+                 "states 29", len(ids)),
                 ("another number for one case", None,
                  self._swe_line().replace(f"{first} = {strides[first]}",
                                           f"{first} = {strides[first] + 1}"),
@@ -30781,7 +30783,114 @@ class RestartLineGateTests(unittest.TestCase):
         """Through `validate_compile_ir_dir` over the converted swe fixture: its `tests.md` with a
         `restart:` line its IR does not transcribe draws the gate's own finding."""
         tests_md = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
-        found = _drive_stage("swe", tests_md=tests_md + "\nrestart: a = b @ 2\n")
+        line = "- restart: swe2d_ref_n064_sx000_sy000_dts100_cont = swe2d_ref_n064_sx000_sy000_dts100 @ 90\n"
+        self.assertEqual(tests_md.count(line), 1)
+        found = _drive_stage("swe", tests_md=tests_md.replace(line, "restart: a = b @ 2\n"))
         self.assertTrue(any("(r) tests.md line" in v and "a = b @ 2" in v for v in found),
                         found)
         self.assertFalse(any("(r)" in v for v in _drive_stage("swe")))
+
+
+class RestartRequiredGateTests(unittest.TestCase):
+    """Gate (q) (issue #632 P2, `_restart_required_violations`): a `problem` whose `drive`
+    declares `loop` carries at least one continuation case, the node's kind read from the
+    catalog. Both polarities per branch, and the route PR #633 disclosed for gate (r): a
+    `restart:` line spelled another way is no line, and an IR whose "continuation" is an
+    ordinary case without the `restart` key then declares none — this gate refuses it."""
+
+    _CONT = "swe2d_ref_n064_sx000_sy000_dts100_cont"
+    _LINE = ("- restart: swe2d_ref_n064_sx000_sy000_dts100_cont = "
+             "swe2d_ref_n064_sx000_sy000_dts100 @ 90\n")
+
+    def _q(self, text: str | None, ir: dict, kind: str | None) -> list[str]:
+        if text is None:
+            return vps._restart_required_violations(None, ir, kind=kind)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text(text, encoding="utf-8")
+            return vps._restart_required_violations(path, ir, kind=kind)
+
+    @staticmethod
+    def _loop_ir(*, cont: bool) -> dict:
+        from tools.tests.test_driver_render import loop_ir
+        ir = loop_ir(0, 1)
+        if cont:
+            ir["case"]["test_case_set"].append(
+                {"case_id": "m0_cont", "inputs": {}, "restart": {"from": "m0", "step": 2}})
+        return ir
+
+    def test_a_loop_problem_with_a_continuation_is_clean(self) -> None:
+        self.assertEqual(self._q("restart: m0_cont = m0 @ 2\n", self._loop_ir(cont=True),
+                                 "problem"), [])
+        # the gate counts the key, whatever gate (p) says of its value
+        ir = self._loop_ir(cont=True)
+        ir["case"]["test_case_set"][-1]["restart"] = None
+        self.assertEqual(self._q("# x\n", ir, "problem"), [])
+
+    def test_a_loop_problem_without_one_is_refused_naming_whose_repair(self) -> None:
+        ir = self._loop_ir(cont=False)
+        for label, text, want in (
+                ("no line", "# no line\n", "its tests.md carries no `restart:` line"),
+                ("no tests.md", None, "its tests.md carries no `restart:` line"),
+                ("a line the IR does not transcribe", "- `restart`: c = m0 @ 2\n",
+                 "the IR declares none of the continuation cases its tests.md `restart:`")):
+            with self.subTest(label):
+                found = self._q(text, ir, "problem")
+                self.assertEqual(len(found), 1, found)
+                self.assertTrue(found[0].startswith("(q) a problem whose drive declares loop "
+                                                    "carries at least one continuation case"),
+                                found)
+                self.assertIn(want, found[0])
+
+    def test_other_kinds_and_nodes_without_loop_are_not_bound(self) -> None:
+        from tools.tests.test_driver_render import call_ir
+        ir = self._loop_ir(cont=False)
+        for kind in ("component", "infrastructure", None):
+            with self.subTest(kind=kind):
+                self.assertEqual(self._q("# x\n", ir, kind), [])
+        self.assertEqual(self._q("# x\n", call_ir(0, 1), "problem"), [])
+        # a malformed drive is drive_violations' to report
+        bad = self._loop_ir(cont=False)
+        bad["drive"] = "loop"
+        self.assertEqual(self._q("# x\n", bad, "problem"), [])
+
+    def test_the_gate_runs_in_the_compile_stage_under_the_catalog_kind(self) -> None:
+        tests_md = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
+        self.assertEqual(tests_md.count(self._LINE), 1)
+        self.assertFalse(any("(q)" in v for v in _drive_stage("swe")))
+
+        def drop(ir: dict) -> None:
+            ir["case"]["test_case_set"] = [c for c in ir["case"]["test_case_set"]
+                                           if c["case_id"] != self._CONT]
+            ir["io_contract"]["tests"] = [t for t in ir["io_contract"]["tests"]
+                                          if t["test_id"] != "l3_restart_equivalence"]
+            ir["io_contract"]["predicates"] = [
+                p for p in ir["io_contract"]["predicates"]
+                if p["test_id"] != "l3_restart_equivalence"]
+
+        # PR #633's disclosed route: the line misspelled, the continuation kept as an ordinary
+        # case (no `restart` key, no initial_state): gate (r) sees no line and no continuation
+        def ordinary(ir: dict) -> None:
+            for c in ir["case"]["test_case_set"]:
+                if c["case_id"] == self._CONT:
+                    del c["restart"]
+        misspelled = tests_md.replace(self._LINE, self._LINE.replace("- restart:", "- Restart:"))
+        for label, mutate, text in (("dropped", drop, tests_md.replace(self._LINE, "")),
+                                    ("misspelled line, ordinary case", ordinary, misspelled)):
+            with self.subTest(label):
+                found = [v for v in _drive_stage("swe", mutate, tests_md=text) if "(q)" in v]
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("carries no `restart:` line", found[0])
+        # the IR's own label is not what binds it: a component-labelled IR the catalog calls a
+        # problem is still asked
+        def relabel(ir: dict) -> None:
+            drop(ir)
+            ir["meta"]["spec_kind"] = "component"
+        cs = _drive_fixture("swe")["meta"]["source_refs"]["controlled_spec"]
+        found = _drive_stage("swe", relabel, catalog=[{"spec_kind": "problem", "spec_id": "shallow_water2d",
+                                 "controlled_spec_path": cs}])
+        self.assertEqual(len([v for v in found if "(q)" in v]), 1, found)
+        # and a catalog `component` is not asked, whatever the IR says
+        found = _drive_stage("swe", drop, catalog=[{"spec_kind": "component", "spec_id": "shallow_water2d",
+                                 "controlled_spec_path": cs}])
+        self.assertFalse([v for v in found if "(q)" in v], found)

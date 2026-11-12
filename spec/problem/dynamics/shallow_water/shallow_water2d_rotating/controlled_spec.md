@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d_rotating`
-- `spec_version`: `0.1.0`
+- `spec_version`: `0.1.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -225,6 +225,7 @@ Everything the member's §7 forbids is forbidden here; in particular the scheme 
 - Forbid integrating the rotation process with anything but ONE call of `dynamics_shallow_water_time_update_2d_rk4__advance` of length $k\,\Delta t$ per firing step (no sub-steps, no other integrator, no closed-form rotation), and forbid any other firing rule than §5's.
 - Forbid reading `f` other than per cell, from this call's argument: a constant, a mean, a value retained from an earlier call or an earlier case.
 - Forbid computing a case by transposing or reflecting its state, its grid, its `f` or its topography to the orientation of another case, computing there and transforming the result back; the kernel computes each case in its own orientation, from the inputs as given (`docs/TESTS.md` §Symmetry pairs).
+- Forbid carrying anything from one call of `shallow_water2d_rotating__step` to the next outside the state of §5: no step counter, clock, tendency, stage value or reference state the model keeps and a later call reads, and no value cached at the first call of a process or of a case. A value the model keeps privately is set by `shallow_water2d_rotating__step` from its own arguments at every call before it is read. `tests.md` continues a case from a state sample in a process of its own and judges its final state equal to the uninterrupted run's (`docs/TESTS.md`, the `restart` line), so a kernel that carries state between calls fails there.
 
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it: this `spec`, the member `problem`, the member's `component`s and this `spec`'s two `component`s. No `profile` is adopted by this `spec`; the member's adopted `profile` resolves within the member.
@@ -232,7 +233,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is that of the member (Williamson et al. 1992, Audusse et al. 2004, LeVeque 2002, Toro 2009), with the inertia-gravity (Poincaré) wave of the linearised rotating shallow water equations for the frequency judgment of `tests.md` (Gill 1982, *Atmosphere-Ocean Dynamics*, §7.3). The assembled-model mechanism (a `problem` that composes `problem`s) is that of the system tier, Part 1, of `docs/design/scale_migration.md` §Order item 3.
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_rotating/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_rotating/tests.md`, with `test_profile_version` of `0.2.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `false`. The member's step is differentiable under the member's §10, and the rotation process is linear in the state; the selector and the firing rule are integer branches on inputs, not on the state. AD of an assembled model is not prepared in this version.

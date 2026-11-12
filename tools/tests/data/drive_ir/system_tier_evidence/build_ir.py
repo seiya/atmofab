@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Builds the hand-authored IR of `problem/shallow_water2d_rotating@0.1.0` (system tier PR-S2)
-from `tests.md` of that node: the cases (§2-§4), the judged quantities (§5) and the tests (§6),
-transcribed by hand into a generator so that the transcription is reviewable as code. It is NOT
-an output of `Compile`. The member's hand IR (`../pr3_evidence/ir/shallow_water2d.yaml`) supplies
-the `drive` / `public_api` / `io_contract` skeleton, extended with the composite's arguments;
-its descriptive text (`algorithm`, the `io_contract.inputs` descriptions) is the member's and is
-read by no gate and no step of the bench. What the bench depends on is `drive`, `public_api`, the
-cases, the tests and the predicates, all built here, and `bands.yaml` (`calibrate.py --write`).
+"""Builds the hand-authored IR of `problem/shallow_water2d_rotating@0.1.1` (system tier PR-S2;
+the restart case of issue #632 P2) from `tests.md` of that node: the cases (§2-§4), the judged
+quantities (§5) and the tests (§6), transcribed by hand into a generator so that the
+transcription is reviewable as code. It is NOT an output of `Compile`. The member's hand IR
+(`../pr3_evidence/ir/shallow_water2d.yaml`) supplies the `drive` / `public_api` / `io_contract`
+skeleton, extended with the composite's arguments; its descriptive text (`algorithm`, the
+`io_contract.inputs` descriptions) is the member's and is read by no gate and no step of the
+bench. What the bench depends on is `drive`, `public_api`, the cases, the tests and the
+predicates, all built here, and `bands.yaml` (`calibrate.py --write`).
 
   PYTHONPATH=. python3 <this file>    (writes ../pr3_evidence/ir/shallow_water2d_rotating.yaml)
 
@@ -28,12 +29,12 @@ HERE = Path(__file__).resolve().parent
 MEMBER_IR = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d.yaml"
 TRANSCRIPTION = HERE.parent / "pr3_evidence" / "ir" / "shallow_water2d_rotating.yaml"
 SID = "shallow_water2d_rotating"
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 NODE_KEY = f"problem/{SID}@{VERSION}"
 SPEC_DIR = f"spec/problem/dynamics/shallow_water/{SID}"
 CORIOLIS = "dynamics_shallow_water_source_2d_coriolis"
 RK4 = "dynamics_shallow_water_time_update_2d_rk4"
-TEST_PROFILE = ("shallow_water2d_rotating_baseline", "0.1.0")
+TEST_PROFILE = ("shallow_water2d_rotating_baseline", "0.2.0")
 
 # ---------------------------------------------------------------------------------------------
 # closed forms (tests.md §2)
@@ -205,6 +206,14 @@ def cases(member_ir: dict[str, Any]) -> list[dict[str, Any]]:
                     rotation=q))
     out.append(case("swr_shear_n064_rect", nx=64, ny=48, L_y=0.5, every=20, initial=SHEAR_BASE,
                     state=SHEAR, rotation=SHEAR_ROT))
+    # judgment 10 (issue #632 P2): the restart case and its continuation from the sample at
+    # step 61 of 183, odd, so no multiple of rotation.every = 2 (tests.md 2-13)
+    base = case(RESTART_BASE, nx=64, ny=64, every=61, initial=SHEAR_BASE, state=SHEAR,
+                rotation=SHEAR_ROT)
+    out.append(base)
+    cont = {k: copy.deepcopy(v) for k, v in base.items() if k not in ("case_id", "initial_state")}
+    out.append({"case_id": RESTART_CONT, **cont, "restart": {"from": RESTART_BASE,
+                                                             "step": RESTART_STEP}})
     # judgment 5: the process off, equal to the member's cases input for input
     for cid, mid, r in (
             ("swr_off_cone_n064", "swe2d_ref_n064_sx000_sy000_dts100",
@@ -274,6 +283,8 @@ GUARDS = {"l0_rotation_every_refusal_xfail": ("swr_guard_every0_n032", "swr_guar
           "l0_member_refusal_xfail": ("swr_dry_n032", "swr_dry_n032_k100", "swr_dry_n032_off"),
           "l0_member_dt_refusal_xfail": ("swr_dtneg_n032",)}
 VARS = ("h", "hu", "hv")
+RESTART_BASE, RESTART_CONT = "swr_shear_n064_restart", "swr_shear_n064_restart_cont"
+RESTART_STEP = 61
 NORMS = {"l1": "sum(abs({d})) / {n1}", "l2": "norm2({d}) / {n2}", "linf": "maxabs({d}) / {ni}"}
 
 
@@ -523,6 +534,18 @@ def tests_and_predicates(case_set: list[dict[str, Any]]) -> tuple[list, list]:
     t.mass()
     t.common()
 
+    # 6-16 the restart equivalence (judgment 10): exact equality of the continuation's final
+    # state with its base's, per restart variable, the form gate (p) asks
+    t = _T(tests, preds, "l3_restart_equivalence", "pass", (RESTART_BASE, RESTART_CONT))
+    for v in VARS:
+        t.add(f"restart.{v}", f"maxabs(final.{v} - at('{RESTART_BASE}').final.{v})", "le", 0.0,
+              case=RESTART_CONT)
+    t.add("run.n_step", "final.step - derived.n_step", "eq", 0)
+    for v in VARS:
+        t.add("cross_target_state_agreement",
+              f"maxabs(final.{v} - comparand.final.{v}) / max(maxabs(final.{v}), "
+              f"maxabs(comparand.final.{v}), 1.0)", "le", 1.0e-10)
+
     # 6-12 .. 6-15 the guards (judgment 9)
     for tid, cids in GUARDS.items():
         t = _T(tests, preds, tid, "xfail", cids)
@@ -552,7 +575,7 @@ def skeleton(member_ir: dict[str, Any]) -> dict[str, Any]:
     ir["dependency"] = {
         "node_key": NODE_KEY,
         "direct_deps": [
-            {"kind": "problem", "node_key": "problem/shallow_water2d@0.5.1",
+            {"kind": "problem", "node_key": "problem/shallow_water2d@0.5.2",
              "operations": ["shallow_water2d__step"]},
             {"kind": "component", "node_key": f"component/{CORIOLIS}@0.2.0",
              "operations": [f"{CORIOLIS}__apply"]},

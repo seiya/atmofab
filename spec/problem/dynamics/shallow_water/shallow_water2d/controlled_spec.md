@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d`
-- `spec_version`: `0.5.1`
+- `spec_version`: `0.5.2`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -259,13 +259,15 @@ Forbid non-periodic boundary, automatic switching of `topography_profile`, the i
 
 Forbid computing a case by transposing or reflecting its state, its grid, its coordinates or its topography to the orientation of another case, computing there and transforming the result back: the kernel computes each case in its own orientation, from the inputs as given. `tests.md` compares the transformed cases of §5 with their originals as symmetry pairs (`docs/TESTS.md` §Symmetry pairs), and a kernel that maps one onto the other compares a code path with itself. Computing the `x` and the `y` direction of every case with one routine — the momentum components handed to it in the order normal, tangential, or the arrays transposed for the other direction — is not that mapping: it is applied the same way in every case, whatever the case's orientation.
 
+Forbid carrying anything from one call of `shallow_water2d__step` to the next outside the state of §5: no step counter, clock, tendency, stage value or reference state the model keeps and a later call reads, and no value cached at the first call of a process or of a case. A value the model keeps privately is set by `shallow_water2d__step` from its own arguments at every call before it is read. `tests.md` continues a case from a state sample in a process of its own and judges its final state equal to the uninterrupted run's (`docs/TESTS.md`, the `restart` line), so a kernel that carries state between calls fails there.
+
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself and the `component`; the runner harness is the target's, not a node of this closure), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
 The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009). The centre of the cone as an input and the equivariances of §5 are those of [issue #513](https://github.com/seiya/spec2science/issues/513).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.9.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.10.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, and the periodic-index wrap are made explicit as non-differentiable operations.

@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/shallow_water2d_rotating@0.1.0
+  node_key: problem/shallow_water2d_rotating@0.1.1
   spec_kind: problem
   spec_id: shallow_water2d_rotating
-  spec_version: 0.1.0
+  spec_version: 0.1.1
   source_refs:
     controlled_spec: spec/problem/dynamics/shallow_water/shallow_water2d_rotating/controlled_spec.md
     tests: spec/problem/dynamics/shallow_water/shallow_water2d_rotating/tests.md
@@ -46,7 +46,7 @@ case:
         f_amp_y: 0.0
         f_phase_y: 0.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0
       hu: inputs.initial.mom_x0
@@ -95,7 +95,7 @@ case:
         f_amp_y: 0.0
         f_phase_y: 0.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0
       hu: inputs.initial.mom_x0
@@ -144,7 +144,7 @@ case:
         f_amp_y: 0.0
         f_phase_y: 0.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0
       hu: inputs.initial.mom_x0
@@ -195,7 +195,7 @@ case:
         f_amp_y: 0.0
         f_phase_y: 0.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta0 * cos(2 * pi * x / inputs.grid.L_x)
       hu: (sqrt(inputs.rotation.f0 * inputs.rotation.f0 + inputs.constants.g * inputs.constants.H_0 *
@@ -257,7 +257,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -300,7 +300,7 @@ case:
         H_0: 1.0
       rotation: *id003
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -343,7 +343,7 @@ case:
         H_0: 1.0
       rotation: *id003
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -386,7 +386,7 @@ case:
         H_0: 1.0
       rotation: *id003
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -447,7 +447,7 @@ case:
         f_amp_y: -10.0
         f_phase_y: 0.2
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -508,7 +508,7 @@ case:
         f_amp_y: -8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -569,7 +569,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.95
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -630,7 +630,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.175
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -673,7 +673,7 @@ case:
         H_0: 1.0
       rotation: *id003
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -690,6 +690,105 @@ case:
       dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
       n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
       dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064_restart
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 61
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial: *id002
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation: *id003
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.2.0
+    initial_state:
+      h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
+        + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
+      hu: inputs.initial.mom_x0 + inputs.initial.mom_x1 * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.mom_phase_y))
+      hv: inputs.initial.mom_y0 + inputs.initial.mom_y1 * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.mom_phase_x))
+      z_b: '0.0'
+      f: inputs.rotation.f0 + inputs.rotation.f_amp_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.rotation.f_phase_x))
+        + inputs.rotation.f_amp_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.rotation.f_phase_y))
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swr_shear_n064_restart_cont
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 61
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: shear_flow
+        eta_x: 0.01
+        eta_phase_x: 0.1
+        eta_y: 0.006
+        eta_phase_y: 0.3
+        mom_x0: 0.05
+        mom_x1: 0.04
+        mom_phase_y: 0.4
+        mom_y0: -0.03
+        mom_y1: 0.05
+        mom_phase_x: 0.15
+      topography:
+        topography_profile: flat
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      rotation:
+        'on': 1
+        every: 2
+        f0: 20.0
+        f_amp_x: 10.0
+        f_phase_x: 0.2
+        f_amp_y: 8.0
+        f_phase_y: 0.05
+      test_profile_id: shallow_water2d_rotating_baseline
+      test_profile_version: 0.2.0
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+    restart:
+      from: swr_shear_n064_restart
+      step: 61
   - case_id: swr_off_cone_n064
     inputs:
       grid:
@@ -722,7 +821,7 @@ case:
         g: 9.81
         H_0: 1.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       rotation:
         'on': 0
         every: 3
@@ -799,7 +898,7 @@ case:
         g: 9.81
         H_0: 1.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       rotation:
         'on': 0
         every: 1
@@ -874,7 +973,7 @@ case:
         g: 9.81
         H_0: 1.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       rotation:
         'on': 0
         every: 2
@@ -933,7 +1032,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -983,7 +1082,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -1033,7 +1132,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -1083,7 +1182,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -1133,7 +1232,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -1183,7 +1282,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -1233,7 +1332,7 @@ case:
         f_amp_y: 8.0
         f_phase_y: 0.05
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
     initial_state:
       h: inputs.constants.H_0 + inputs.initial.eta_x * sin(2 * pi * (x / inputs.grid.L_x - inputs.initial.eta_phase_x))
         + inputs.initial.eta_y * sin(2 * pi * (y / inputs.grid.L_y - inputs.initial.eta_phase_y))
@@ -1282,7 +1381,7 @@ case:
         g: 9.81
         H_0: 1.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       rotation:
         'on': 1
         every: 1
@@ -1359,7 +1458,7 @@ case:
         g: 9.81
         H_0: 1.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       rotation:
         'on': 1
         every: 100
@@ -1436,7 +1535,7 @@ case:
         g: 9.81
         H_0: 1.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       rotation:
         'on': 0
         every: 1
@@ -1511,7 +1610,7 @@ case:
         g: 9.81
         H_0: 1.0
       test_profile_id: shallow_water2d_rotating_baseline
-      test_profile_version: 0.1.0
+      test_profile_version: 0.2.0
       rotation:
         'on': 1
         every: 1
@@ -1995,10 +2094,10 @@ algorithm:
   diagnostics_from_state: true
   fallback_policy: fail_closed
 dependency:
-  node_key: problem/shallow_water2d_rotating@0.1.0
+  node_key: problem/shallow_water2d_rotating@0.1.1
   direct_deps:
   - kind: problem
-    node_key: problem/shallow_water2d@0.5.1
+    node_key: problem/shallow_water2d@0.5.2
     operations:
     - shallow_water2d__step
   - kind: component
@@ -2393,6 +2492,16 @@ io_contract:
     - convergence.restricted.n064_to_n128.hv_linf_order
     - mass_drift_rel
     - cfl.max
+    - run.n_step
+  - test_id: l3_restart_equivalence
+    expected_outcome: pass
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
+    quantities:
+    - restart.h
+    - restart.hu
+    - restart.hv
     - run.n_step
   - test_id: l0_rotation_every_refusal_xfail
     expected_outcome: xfail
@@ -4890,6 +4999,69 @@ io_contract:
     - swr_shear_n064
     - swr_shear_n128
     - swr_shear_n256
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_restart_equivalence
+    quantity: restart.h
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
+    case: swr_shear_n064_restart_cont
+    expr: maxabs(final.h - at('swr_shear_n064_restart').final.h)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: restart.hu
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
+    case: swr_shear_n064_restart_cont
+    expr: maxabs(final.hu - at('swr_shear_n064_restart').final.hu)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: restart.hv
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
+    case: swr_shear_n064_restart_cont
+    expr: maxabs(final.hv - at('swr_shear_n064_restart').final.hv)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: run.n_step
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_restart_equivalence
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_restart_equivalence
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(comparand.final.hu), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_restart_equivalence
+    quantity: cross_target_state_agreement
+    target_cases:
+    - swr_shear_n064_restart
+    - swr_shear_n064_restart_cont
     per_case: true
     expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hv), maxabs(comparand.final.hv), 1.0)
     op: le

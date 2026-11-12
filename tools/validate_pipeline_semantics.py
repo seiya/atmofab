@@ -4045,6 +4045,54 @@ def _restart_line_violations(tests_path: Path | None, ir: dict) -> list[str]:
             + ": the IR transcribes the line, member for member"]
 
 
+def _restart_required_violations(tests_path: Path | None, ir: dict, *,
+                                 kind: str | None) -> list[str]:
+    """Gate (q) (issue #632 P2): a `problem` whose `drive` declares `loop` carries at least one
+    continuation case (`docs/TESTS.md`, the `restart` line: the restart-equivalence test is
+    required of every time-marching `problem`). ``kind`` is the node's kind as the CATALOG
+    answers it, never read from the IR (as gate (o) takes it); a `component` or `infrastructure`
+    node, and no answer (``None``), are not bound. A malformed `drive` is `drive_violations`' to
+    report, and an IR with no `loop` is not bound here: on a time-marching node the `tests.md`
+    `history:` line (gate (m)) and `restart:` line (gate (r)) each refuse an IR without one.
+    Which cases the IR carries is gate (r)'s and gate (p)'s; this gate counts them. The finding
+    names whether the `tests.md` states a `restart:` line, because without one the IR has
+    nothing to transcribe and the repair is the spec's."""
+    from tools.primary_evidence import (
+        RESTART_CASE_KEY,
+        PrimaryEvidenceError,
+        drive_block,
+    )
+
+    if kind != "problem":
+        return []
+    try:
+        block = drive_block(ir)
+    except PrimaryEvidenceError:
+        return []
+    if block is None or block.loop is None:
+        return []
+    case_block = ir.get("case") if isinstance(ir, dict) else None
+    tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
+    if any(isinstance(c, dict) and RESTART_CASE_KEY in c
+           for c in (tcs if isinstance(tcs, list) else [])):
+        return []
+    stated = False
+    if tests_path is not None:
+        try:
+            text = tests_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            text = ""
+        stated = any(TEST_RESTART_LINE.match(raw.strip()) for raw in text.splitlines())
+    where = ("the IR declares none of the continuation cases its tests.md `restart:` line "
+             "states: transcribe each as a case carrying `restart: {from: <base case_id>, "
+             "step: <K>}` (docs/workflow/phases/phase_01_compile.md gate (p))") if stated else (
+             "its tests.md carries no `restart:` line, so the spec states none: the spec's "
+             "tests.md must add the line and the test that judges it before Compile can "
+             "transcribe them")
+    return [("(q) a problem whose drive declares loop carries at least one continuation case "
+             f"(the restart-equivalence test docs/TESTS.md requires); {where}")]
+
+
 #: The `distribute` line of a physics node's `tests.md` (issue #610, `docs/TESTS.md`
 #: §Description format): `distribute: <axis> = <cells path> [(ghost <path>, extended <path>,
 #: min_block <N>)], <axis> = ...`, or `distribute: none`. Each path is the case input's path
@@ -10745,6 +10793,9 @@ def _validate_tests_and_predicates(
         violations.append(f"{derived_path}:{msg}")
     # Gate (r): the `restart:` line against the continuation cases (issue #632).
     for msg in _restart_line_violations(tests_path, ir):
+        violations.append(f"{derived_path}:{msg}")
+    # Gate (q): a time-marching problem carries a continuation case (issue #632 P2).
+    for msg in _restart_required_violations(tests_path, ir, kind=kind):
         violations.append(f"{derived_path}:{msg}")
 
     # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is
