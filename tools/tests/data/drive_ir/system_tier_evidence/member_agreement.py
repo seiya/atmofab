@@ -3,7 +3,7 @@
 model with its process off and its member, read from the two certified runs of R-S.
 
   PYTHONPATH=. python3 <this file> [--composite-case swr_off_cone_n064]
-      [--member-case swe2d_ref_n064_sx000_sy000_dts100]
+      [--member-case swe2d_ref_n064_sx000_sy000_dts100] [--at <spec_id>@<version>]...
 
 The composite's off case is stated in its `tests.md` as the member's case input for input
 (`shallow_water2d_rotating/tests.md` §6-4). The composite's run is its LATEST `fortran_cpu`
@@ -43,9 +43,16 @@ REQUIRED_CAPTURES = ("initial", "final", "series")
 STATE_FIELDS = ("h", "hu", "hv", "z_b")
 
 
+#: `--at <spec_id>@<version>`: read that node at that version in place of the catalog's (issue
+#: #632 P2 moved both nodes before either was certified there; `bench.py`'s `AT` says the same).
+AT: dict[str, str] = {}
+
+
 def node_dir(kind: str, sid: str) -> str:
-    cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
-    version = next(e["spec_version"] for e in cat if e["spec_id"] == sid)
+    version = AT.get(sid)
+    if version is None:
+        cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+        version = next(e["spec_version"] for e in cat if e["spec_id"] == sid)
     return f"{kind}__{sid}__{version}"
 
 
@@ -104,7 +111,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--composite-case", default="swr_off_cone_n064")
     ap.add_argument("--member-case", default="swe2d_ref_n064_sx000_sy000_dts100")
+    ap.add_argument("--at", action="append", default=[],
+                    help="<spec_id>@<version>: read that node at that version (see AT)")
     a = ap.parse_args()
+    for item in a.at:
+        sid, _, ver = item.partition("@")
+        if not sid or not ver:
+            raise SystemExit(f"--at {item!r}: expected <spec_id>@<version>")
+        AT[sid] = ver
     c_node = node_dir("problem", "shallow_water2d_rotating")
     m_node = node_dir("problem", "shallow_water2d")
     c_pipe = latest_pipeline(c_node)
