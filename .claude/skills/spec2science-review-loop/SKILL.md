@@ -493,6 +493,13 @@ when a rule does not obviously apply:
      sentence saying the numbers were no longer typed (an f-string ate the doubled braces). Assert
      that no placeholder survives before you commit — one `re.search` — because a message cannot be
      fixed after it is pushed, and this failure looks exactly like success
+   - **When a document is GENERATED (a template plus substituted tables), a correction goes into
+     the GENERATOR, never into the output alone.** PR #629 rendered a spec's `tests.md` from a
+     scratch template; round 0 patched two wrong numbers in the render step's output, the next
+     render re-read the template, and both errors came back — a round-1 reviewer found them as
+     new findings. Criterion: after any edit to a generated file, regenerate and diff; an empty
+     diff is the check that the edit lives where the next render will read it. Once the work is
+     done, make the committed file the one you edit, and say so where the next editor will look
    - **When the measurement is a FAILURE read out of a sectioned log, map each line to its own
      section before you quote it.** A CI log, a `pytest` FAILURES block and a mutation sweep's
      output all print `header` then `detail`, repeatedly, and the eye slides from one section's
@@ -1574,6 +1581,16 @@ that tells you how it closed.
   excepted. Once a reviewer finds this on one node, sweep every node in the same round**: issue #589
   PR-3 fixed the nodes round 2 named, and round 3 found nine more. No gate holds this; a reviewer
   has to read for it. Episode: `references/signs-episodes.md` §"One value per input" (issue #589 PR-3)
+- **You are declaring a seeded mutant UNOBSERVABLE (or "observationally the stated program")** →
+  that is a claim over the whole INPUT DOMAIN the spec admits, and the suite's cases are a sample
+  of it. Criterion: name the input class the argument quantifies over, then construct the member
+  of it where the mutant and the stated program would differ — a different sign, a larger
+  magnitude, the other branch of the selector — and run that one case before writing the
+  declaration. PR #629 round 1 declared "the interval guard refusing `0` alone" equivalent to the
+  stated one because, at the suite's `-1`, RK4's own guard refused at the same first call; round 2
+  found two reviewers independently constructing `-2` (a step committed first) and `-1` with the
+  process off (never refused). Episode: `references/signs-episodes.md` §"An unobservability argument
+  checked at one point" (PR #629)
 - **You are dropping a test as a REPEAT of another row** → that is deleting a check, and the
   verdict "same property, same artifact" is a claim about every PARAMETER the two rows feed the
   subject, not about their names or IRs. PR #627 dropped `NvccSmokeTest`'s per-shape lint row as

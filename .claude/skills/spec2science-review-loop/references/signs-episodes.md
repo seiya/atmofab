@@ -547,3 +547,28 @@ cuda-rendering file at 228e41a3. The row was restored byte for byte (ccc8872e). 
 the commit had compared the IRs and the argv; neither listed the target. The same review found
 two kept rows whose names (`…_and_agrees`, `…tells_a_replicated_case_from_a_distributed_one`)
 still promised the half moved to the agree rows; they were renamed.
+
+## An unobservability argument checked at one point (PR #629)
+
+The system tier sample `shallow_water2d_rotating` refuses `rotation_every < 1` in its own step 1.
+Round 1's reviewer showed that a kernel whose guard was `rotation_every == 0` passed every test,
+and that the suite's only negative case (`-1`) was refused anyway, by the RK4 component's
+`dt <= 0` guard, at the first call with nothing committed. The fix commit (32ae0f69) added a
+predicate for "refused at the first call", found the guard-only mutant still uncaught, and
+declared it "observationally the stated program" in tests.md §1, in `mutants.yaml` and in its
+own message, keeping only the reviewer's compound (the guard change plus an ignored RK4 guard) as
+must-catch.
+
+The declaration was true at exactly one value. With the firing rule `mod(step + 1, k) == 0`,
+`k = -1` fires on the first call, `k = -2` first on the second (so a step is committed before RK4
+refuses), and with the process off a negative `k` reaches no component at all and runs to
+`n_step`. Both round-2 reviewers built those two cases independently and reported the same
+defect (one Low, one Medium). ac171eb9 added them, moved the guard-only mutant back to
+must-catch, narrowed the accepted limit to the one difference no capture can show (whether step 1
+runs before or after the member call), and recorded the correction beside the mutant.
+
+What failed was not the mutant run, which was correct for the cases it had, but the step from
+"uncaught on these cases" to "unobservable": the second is a statement about every input the spec
+admits, and the reasoning that supported it named the input (`-1`) rather than the class
+(`rotation_every < 1`, on or off).
+
