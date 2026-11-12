@@ -6,9 +6,10 @@ model with its process off and its member, read from the two certified runs of R
       [--member-case swe2d_ref_n064_sx000_sy000_dts100]
 
 The composite's off case is stated in its `tests.md` as the member's case input for input
-(`shallow_water2d_rotating/tests.md` §6-4). Each node's run is its LATEST `fortran_cpu`
-pipeline under `workspace/pipelines/` at the catalog version, and the case inputs are the ones
-that pipeline's `lineage.json` names (`ir_ref`).
+(`shallow_water2d_rotating/tests.md` §6-4). The composite's run is its LATEST `fortran_cpu`
+pipeline under `workspace/pipelines/` at the catalog version; the member's is the pipeline and
+run that pipeline's `lineage.json` RESOLVED (`resolved_dependencies[]`), not the member's
+latest. Each side's case inputs are the ones its own lineage names (`ir_ref`).
 
 1. The two host-written case files (`<ir_ref>/case_inputs/<case>.json`) are compared on the
    keys they share; the run stops if any shared key differs. The two IRs were authored
@@ -17,10 +18,13 @@ that pipeline's `lineage.json` names (`ir_ref`).
 2. Every capture of the two cases is compared field by field, as the TEXT the binary wrote
    (`json` with `parse_float=str`), not as a parsed float: the initial state, every history
    capture, the series, and the final state. A field the composite has and the member does not
-   (`f`, the process inputs) is listed and not compared. Any difference in a shared field is a
-   finding; there is no tolerance.
+   (`f`, the process inputs) is listed and not compared. Each of the following is a finding;
+   there is no tolerance: a shared field that differs; a field the member has and the composite
+   lacks; a state capture (all but the series) in which `h`, `hu`, `hv` or `z_b` is not shared;
+   a side lacking `initial`, `final`, `series` or every `history/<step>`; the two sides holding
+   different sets of captures.
 
-Exit 0 when every shared field agrees, 1 otherwise.
+Exit 0 when nothing is found, 1 otherwise.
 """
 from __future__ import annotations
 
@@ -35,18 +39,29 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
+REQUIRED_CAPTURES = ("initial", "final", "series")
+STATE_FIELDS = ("h", "hu", "hv", "z_b")
 
 
-def latest_run(kind: str, sid: str) -> tuple[Path, Path]:
-    """(the run's state_snapshots directory, the IR directory its lineage names)."""
+def node_dir(kind: str, sid: str) -> str:
     cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
     version = next(e["spec_version"] for e in cat if e["spec_id"] == sid)
-    node = f"{kind}__{sid}__{version}"
+    return f"{kind}__{sid}__{version}"
+
+
+def latest_pipeline(node: str) -> Path:
     pipes = sorted(glob.glob(str(REPO / f"workspace/pipelines/{node}/fortran_cpu/*/")))
     if not pipes:
         raise SystemExit(f"no fortran_cpu pipeline of {node}")
-    pipe = Path(pipes[-1])
+    return Path(pipes[-1])
+
+
+def run_of(pipe: Path, node: str, run_id: str | None = None) -> tuple[Path, Path]:
+    """(the run's state_snapshots directory, the IR directory the pipeline's lineage names)."""
     lineage = json.loads((pipe / "lineage.json").read_text())
+    if run_id is not None and run_id != lineage["run_id"]:
+        raise SystemExit(f"{node}: the resolved run {run_id} is not its pipeline's run "
+                         f"{lineage['run_id']}")
     snaps = pipe / "runs" / lineage["run_id"] / node / "raw" / "state_snapshots"
     print(f"{node}: pipeline {pipe.relative_to(REPO)}, run {lineage['run_id']}, "
           f"ir {lineage['ir_ref']}")
@@ -80,8 +95,15 @@ def main() -> int:
     ap.add_argument("--composite-case", default="swr_off_cone_n064")
     ap.add_argument("--member-case", default="swe2d_ref_n064_sx000_sy000_dts100")
     a = ap.parse_args()
-    c_snaps, c_ir = latest_run("problem", "shallow_water2d_rotating")
-    m_snaps, m_ir = latest_run("problem", "shallow_water2d")
+    c_node = node_dir("problem", "shallow_water2d_rotating")
+    m_node = node_dir("problem", "shallow_water2d")
+    c_pipe = latest_pipeline(c_node)
+    c_snaps, c_ir = run_of(c_pipe, c_node)
+    resolved = [d for d in json.loads((c_pipe / "lineage.json").read_text())["resolved_dependencies"]
+                if d["node_key"].replace("/", "__").replace("@", "__") == m_node]
+    if len(resolved) != 1:
+        raise SystemExit(f"the composite's lineage resolves {len(resolved)} pipelines of {m_node}")
+    m_snaps, m_ir = run_of(REPO / resolved[0]["pipeline_ref"], m_node, resolved[0]["run_id"])
     findings = compare_inputs(c_ir, a.composite_case, m_ir, a.member_case)
     if findings:
         for f in findings:
@@ -89,6 +111,12 @@ def main() -> int:
         print("case inputs differ: not compared further")
         return 1
     c_cap, m_cap = captures(c_snaps, a.composite_case), captures(m_snaps, a.member_case)
+    for side, cap in (("composite", c_cap), ("member", m_cap)):
+        missing = [k for k in REQUIRED_CAPTURES if k not in cap]
+        if not any(k.startswith("history/") for k in cap):
+            missing.append("history/<step>")
+        if missing:
+            findings.append(f"{side} lacks captures {missing}")
     if set(c_cap) != set(m_cap):
         findings.append(f"capture sets differ: composite {sorted(c_cap)} member {sorted(m_cap)}")
     for name in sorted(set(c_cap) & set(m_cap)):
@@ -99,6 +127,9 @@ def main() -> int:
         print(f"{name}: equal {same}; differ {diff}; composite only {sorted(set(x) - set(y))}; "
               f"member only {sorted(set(y) - set(x))}")
         findings += [f"{name}.{k}" for k in diff]
+        findings += [f"{name}.{k} (member only)" for k in sorted(set(y) - set(x))]
+        if name != "series":
+            findings += [f"{name}.{k} (not shared)" for k in STATE_FIELDS if k not in shared]
     print("V-b:", "AGREE (bitwise, every shared field of every capture)" if not findings
           else f"DIFFER {findings}")
     return 1 if findings else 0
