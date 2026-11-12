@@ -264,3 +264,15 @@ place this fires that you will not expect is a CORRECTION: a reviewer's finding 
 carrying evidence, so it feels verified before you write it" — and this file states the same rule
 above, under issue #153. **Correct attribution is not what rule 3 is about**; the commit is. Read
 this paragraph as a second instance of that rule rather than as anything new.
+
+## A re-pin through a shell variable (issue #632 P1)
+
+Round 3's fix moved three derivation digests. The helper computed them with one `python3 -c`
+printing three hex strings, stored the output in `$d`, and passed `set -- $d; python3 - "$1" "$2"
+"$3"` to a substitution script. The session shell is zsh, which does not word-split `$d`: `$1`
+held all three digests and `$2`, `$3` were empty, so `compile-docs-32` was written as three
+digests joined by spaces and `execute-18` / `verdict-17` as empty strings. The whole suite was
+red on the three drift subtests, which is how it was caught before any commit; the fix computed
+each digest and wrote each pin inside one Python process, then re-read the file and printed each
+pin line to check it. The same session wrote a size into a ceiling comment by hand (113767 where
+`wc -c` said 113753) and corrected it from the measurement in the next command.

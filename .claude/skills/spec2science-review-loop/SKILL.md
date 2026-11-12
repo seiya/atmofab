@@ -195,7 +195,12 @@ when a rule does not obviously apply:
   12 mutants killed that way before re-running — and issue #84 closed it on 2026-09-02: those
   cases now build their own `$HOME` and checkout, so they pass at any depth and in a worktree.
   The class is not closed with them: **check the baseline is green for the `--test-cmd` you pass,
-  and if it is not, deselect the failures or drop `-x`**
+  and if it is not, deselect the failures or drop `-x`**.
+  **The same zsh rule bites your own helper scripts, not only a sweep**: issue #632 P1 handed three
+  digests to a re-pin script as `set -- $d`, zsh kept them as ONE word, and one pin got all three
+  glued together while the other two were written empty. The suite was red, which caught it.
+  **Compute and write a derived value (a digest, a count, a size) inside one Python process**
+  rather than passing it through a shell variable (`references/measurement-records.md`)
 - **If the change is a move, hunk mutation answers almost nothing** — `--range` cannot reach code
   that moved without changing. For move / rename / extract PRs build **mechanism-level mutants
   over every mechanism in the files you touched** (PR #68: my 39 mutants, 0 unexpected survivors;
@@ -349,6 +354,14 @@ when a rule does not obviously apply:
   - **when you rewrite a test, diff what the old version observed**
   - **a test that reproduces the wiring does not observe the wiring** — and that shape lies in its
     docstring easily; grep the body for the function names the docstring claims to drive
+  - **a row NAMED for a path must ASSERT it took that path.** Issue #632 P1's "a continuation at
+    a site runs in a second job" row ran at the local site for two commits: its fixture helper
+    took `site=None` and fell back with `site or Site(LOCAL_SITE, ...)`, and every assertion the
+    row made held on the local path too. It surfaced only when a sibling row's spy on
+    `execute_job` was never called. **Trigger: a helper parameter whose default stands in for
+    the thing the row is about. Assert the discriminating fact in the row** (the site is not
+    local; the second job's directory name is in the transport log), so a fallback is red
+    (`references/mutation-testing.md` §"A row that ran the other path")
   - **a CLASS docstring goes stale by ADDITION** — re-read it when you append a row
   - **a test can pass because of the SUITE'S OWN ENVIRONMENT** (a `conftest.py` redirect). The
     tell: the test reasons about a RELATIONSHIP whose two halves are not both built by the
