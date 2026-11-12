@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """System tier PR-S3 V-a (unbilled, no LLM): the difference between the HAND-AUTHORED IR of
 `problem/shallow_water2d_rotating` (`build_ir.py`, the one PR-S2's bench judged with) and its
-CERTIFIED IR (the `ir_ref` of the latest `fortran_cpu` pipeline, the one V-a judges with).
+CERTIFIED IR (the `ir_ref` of the latest `fortran_cpu` pipeline whose run passed, the one V-a
+judges with).
 
   PYTHONPATH=. python3 <this file>
 
@@ -13,7 +14,10 @@ Printed, each as a count with its members:
 - of the matched keys: those whose number of predicates differs, whose `op` multiset differs,
   whose `(op, value)` multiset differs as NUMBERS (a threshold that moved), whose values differ
   only in spelling (`0.0` against `0`), whose `target_cases` lists differ (in order or
-  content), and the counts of keys whose `expr` / `bind` multisets differ in text
+  content), and the counts of keys whose `expr` / `bind` multisets differ in text. Each field
+  is a multiset of its own, so within a key that carries several predicates the pairing of a
+  threshold with its expression is not compared: two sides that give the same set of
+  tolerances to different components read as unchanged
   (the two IRs were authored independently, so the expressions are spelled differently; whether
   they compute the same quantity is what the V-a tables measure, not this script);
 - of the matched cases: the keys present on one side only.
@@ -38,17 +42,6 @@ import build_ir  # noqa: E402
 def key(p: dict[str, Any]) -> tuple:
     cases = (p["case"],) if p.get("case") else tuple(sorted(p.get("target_cases") or ()))
     return (p["test_id"], p["quantity"], cases)
-
-
-def numeric_equal(a: Any, b: Any) -> bool:
-    if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(numeric_equal(a[k], b[k]) for k in a)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(numeric_equal(x, y) for x, y in zip(a, b))
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)) \
-            and not isinstance(a, bool) and not isinstance(b, bool):
-        return float(a) == float(b)
-    return a == b
 
 
 def flat_keys(d: Any, prefix: str = "") -> set[str]:
