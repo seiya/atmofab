@@ -10,6 +10,7 @@ the C++ rows need `nvcc` and no device (the toy model is host code).
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
 import re
@@ -1574,6 +1575,51 @@ class CppGpuPackageCompilesTest(unittest.TestCase):
                          f"{stem}.o"], cwd=out, capture_output=True, text=True)
                     self.assertEqual(built.returncode, 0, stem + built.stderr[-1500:])
 
+
+class CppGpuPackageSecondPassTest(unittest.TestCase):
+    """The package's second pass (issue #632; Codex review round 2): `go.sh` runs the base cases
+    only, `continue` writes the continuation's case file and `go2.sh`, and `judge` start-checks
+    and merges before judging. The site's binary is stood in for by the certified Fortran model
+    of the same IR, run by `run_fortran` (pass 1) and on `go2.sh`'s command line (pass 2)."""
+
+    def test_the_continuation_runs_in_a_second_invocation_and_is_judged(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("package_cpp_gpu",
+                                                      DATA / "package_cpp_gpu.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        ir = yaml.safe_load(module.NODES["swe"][0].read_text())
+        conts = sorted(pe.continuation_cases(ir))
+        self.assertEqual(conts, ["swe2d_ref_n064_sx000_sy000_dts100_cont"])
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = Path(tmp) / "pkg"
+            module.package(pkg, "swe")
+            go = (pkg / "go.sh").read_text()
+            self.assertNotIn(conts[0], go)
+            self.assertIn("swe2d_ref_n064_sx000_sy000_dts100 ", go)
+            # pass 1 at the "site": the Fortran stand-in over the same IR
+            (Path(tmp) / "f").mkdir()
+            run = run_fortran(Path(tmp) / "f", ir, sid="shallow_water2d",
+                              deps=SW2D_COMPONENTS)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            shutil.copytree(run.dir / "run", pkg / "run")
+            self.assertEqual(module.continue_(pkg, "swe"), conts)
+            go2 = (pkg / "go2.sh").read_text()
+            self.assertIn(f'--cases "$PWD/spec.ir.yaml" {conts[0]}', go2)
+            rdir = pkg / "run" / pe.RESTART_DIRNAME
+            self.assertTrue((rdir / "case_inputs" / f"{conts[0]}.json").is_file())
+            # pass 2 as go2.sh runs it, with the stand-in binary
+            proc = subprocess.run([str(run.dir / "bin"), "--cases", str(rdir / "spec.ir.yaml"),
+                                   conts[0]], cwd=rdir, capture_output=True, text=True,
+                                  timeout=600, check=False)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+                rc = module.judge(pkg, "swe")
+            report = json.loads(printed.getvalue())
+            self.assertEqual((rc, report["wrong"], report["continuations_not_merged"]),
+                             (0, {}, []), report)
+            self.assertTrue((pkg / "run" / "raw" / "state_snapshots" / f"{conts[0]}.json")
+                            .is_file())
 
 class ProblemModelGateTest(unittest.TestCase):
     """The canonical `__step` shape passes the `problem` dataflow gates: `intent(inout)` state and
