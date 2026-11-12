@@ -1614,6 +1614,24 @@ that tells you how it closed.
   assertion catches: red on it at the parent, red on the kept row at HEAD.** A merge also leaves
   a row NAME that promises the half it no longer checks — rename it in the same commit.
   Episode: `references/signs-episodes.md` §"A repeat that was not" (PR #627)
+- **A subagent built a seeded-defect bench for you** → its table measures the defects the
+  PATCHES contain, which are not always the ones the declaration names. Issue #632 P2's delegated
+  restart bench realised five of its declared mutants differently: `rot-f-first-call`, declared as
+  `f` cached once per process, became a cache keyed by grid shape, because the declared form read
+  a 32 x 32 array as 64 x 64 and measured an out-of-bounds read. The row then answered a
+  different question, and the declared class had no row until the lead added `rot-dtrot-once`.
+  **Before you trust the table, read each mutant patch against its declaration. For each departure,
+  either add a row of the declared class or disclose the departure in the mutant's title and in
+  the PR.** Episode: `references/signs-episodes.md` §"A bench that measured other defects"
+  (issue #632 P2)
+- **The change bumps a catalog version, or adds a case kind, that evidence scripts outside the
+  suite read** → those scripts break and the suite stays green, because no row runs them. Issue
+  #632 P2 broke `member_agreement.py` and `predicate_diff.py` (each refused the bumped version)
+  and the GPU package (it handed the new continuation case to its first pass). Reviewers found
+  the first two in round 1 and Codex found the third in round 2. **Before round 1, grep
+  `tools/tests/data/` and the operator scripts for every reader of the version or case field you
+  changed, and run each one or state in the PR that it was not run.** Episode:
+  `references/signs-episodes.md` §"Scripts the suite does not run" (issue #632 P2)
 
 ## Finally
 
