@@ -30,7 +30,9 @@ mutant that does not build, is NOT MEASURED, and the run exits 1 when any mutant
 with their value and threshold, or "not caught"; it exits 1 when a `must_catch` mutant is not
 caught, a `declared_unobservable` one is (a surprise to record), or any mutant was not measured,
 else 0. "Caught" means some test's status differs from its `expected_outcome`; a run that ends
-with a non-zero code is caught the same way and its code is printed beside it. The default flags
+with a non-zero code is caught the same way and its code is printed beside it. The unmutated
+model runs in the same table first; if it moves any test, the run exits 1 and no row is a
+measurement. A single `--mutant <id>` run prints the moved tests and exits 0 whatever they are. The default flags
 are the certified build's (`-std=f2008 -O2 -fopenmp`): a bounds-check abort is not a catch.
 
 The closure's sources are each node's LATEST `fortran_cpu` attempt at the catalog version under
@@ -38,7 +40,9 @@ The closure's sources are each node's LATEST `fortran_cpu` attempt at the catalo
 it used. That they are the certified ones is the operator's workspace state, not checked here,
 and they are not read from the composite's lineage (`member_agreement.py` reads the member's run
 that way): after a member or component is re-derived on its own, compare the printed paths with
-the composite pipeline's `lineage.json` `resolved_dependencies` before reading a V-a table.
+the `lineage.json` `resolved_dependencies` of the composite pipeline (its direct dependencies and
+the harness) and of the member pipeline it resolves (the member's components) before reading a
+V-a table.
 """
 from __future__ import annotations
 
@@ -378,9 +382,21 @@ def main() -> int:
             return None
 
     # processes, not threads: the judging is Python under the GIL and dominates a run
+    # The unmutated model is run in the same table: a catch means a test moved AGAINST a baseline
+    # that moved none, so a closure source that is not the certified one (a later failed attempt
+    # read as the latest) shows here instead of turning every mutant into a catch.
+    baseline_id = "__baseline__"
+    baseline_moved: list[str] | None = None
     with cf.ProcessPoolExecutor(a.jobs) as ex:
-        jobs = [(mid, ir, patched(mid), flags) for mid in mutants]
+        jobs = [(baseline_id, ir, base, flags)] + [(mid, ir, patched(mid), flags) for mid in mutants]
         for mid, res in ex.map(_run_mutant, jobs):
+            if mid == baseline_id:
+                baseline_moved = res.get("moved") if "build_error" not in res else ["(build error)"]
+                print(f"== baseline (unmutated model): moved {baseline_moved or 'none'} "
+                      f"{res.get('note', '')[:200]}")
+                if "build_error" in res:
+                    print("     BUILD", res["build_error"][:300])
+                continue
             table[mid] = res
             caught = bool(res.get("moved"))
             status = ("NOT APPLICABLE" if res.get("not_applicable")
@@ -409,7 +425,9 @@ def main() -> int:
     print(f"not measured (not applicable or build error): {unmeasured or 'none'}")
     print(f"must_catch not caught: {missed or 'none'}; declared unobservable caught: "
           f"{surprised or 'none'}")
-    return 1 if missed or surprised or unmeasured else 0
+    if baseline_moved:
+        print(f"BASELINE MOVED {baseline_moved}: no mutant row above is a measurement")
+    return 1 if missed or surprised or unmeasured or baseline_moved else 0
 
 
 if __name__ == "__main__":
