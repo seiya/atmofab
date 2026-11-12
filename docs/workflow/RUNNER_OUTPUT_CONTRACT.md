@@ -126,8 +126,8 @@ and no step. It then writes the initial capture. On a node whose `drive` declare
 array a NaN-filled work array. A true result commits the call: the state is copied back, `step`
 advances, `t = t_start + step * dt`, a series entry is appended and a sample is written every `every`
 steps. A false result ends the loop on the last committed state. After `init` a loop node's driver
-reads `restart.step`; at `K` > 0 (a continuation case, whose file and invocation are its own:
-`phase_04_validate.md` §4-1) it restores each `restart.<v>` and starts `step` at `K`. Without `loop` it makes ONE call on the
+reads `restart.step`; at `K` > 0 (a continuation case, `phase_04_validate.md` §4-1) it
+restores each `restart.<v>` and starts `step` at `K`. Without `loop` it makes ONE call on the
 state itself, each `out` starting at its `initial_state` content, and `step` becomes 1 only on a true
 result. After every call each logical `out` is written into its state as 1 or 0. It then writes the
 final capture and, on a `loop` node, the series file; after the last case, `__write_perf`.
@@ -183,7 +183,7 @@ to this document wherever this document is seeded whole.
   `spec.ir.yaml` itself.
 - The file is one flat JSON object on one line of any length, with sorted keys. A key is
   a name: `inputs.<path>` for an input, `derived.<name>` for a host-evaluated derived value,
-  a state variable's name for its initial content, and on a `loop` node `restart.step` (§3). On an
+  a state variable's name for its initial content, and on a `loop` node `restart.step`, with a continuation's `restart.<v>` (§3). On an
   `infrastructure` node it holds every numeric `inputs.*` leaf of the case, a boolean written as
   `1` or `0`.
 - Each value is an RFC 8259 number or a rectangular nested array of numbers of depth 1 to 4
