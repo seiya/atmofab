@@ -30842,6 +30842,24 @@ class RestartRequiredGateTests(unittest.TestCase):
                                 found)
                 self.assertIn(want, found[0])
 
+    def test_an_entry_no_other_reader_sees_does_not_count(self) -> None:
+        """Review round 1 (sec-F1): gates (p) and (r) and the second pass read a case only
+        through a non-blank string `case_id`, so a `restart` key on any other entry runs no
+        continuation and must not satisfy this gate; a keyed case beside it still does."""
+        for label, entry in (("no case_id", {"restart": {"from": "m0", "step": 2}}),
+                             ("integer case_id", {"case_id": 7,
+                                                  "restart": {"from": "m0", "step": 2}}),
+                             ("blank case_id", {"case_id": "  ", "restart": None}),
+                             ("not a mapping", ["restart"])):
+            with self.subTest(label):
+                ir = self._loop_ir(cont=False)
+                ir["case"]["test_case_set"].append(entry)
+                found = self._q("# x\n", ir, "problem")
+                self.assertEqual(len(found), 1, found)
+                ir["case"]["test_case_set"].append(
+                    {"case_id": "m0_cont", "inputs": {}, "restart": {"from": "m0", "step": 2}})
+                self.assertEqual(self._q("# x\n", ir, "problem"), [])
+
     def test_other_kinds_and_nodes_without_loop_are_not_bound(self) -> None:
         from tools.tests.test_driver_render import call_ir
         ir = self._loop_ir(cont=False)
@@ -30875,8 +30893,14 @@ class RestartRequiredGateTests(unittest.TestCase):
                 if c["case_id"] == self._CONT:
                     del c["restart"]
         misspelled = tests_md.replace(self._LINE, self._LINE.replace("- restart:", "- Restart:"))
+        def keyless(ir: dict) -> None:
+            ordinary(ir)
+            ir["case"]["test_case_set"].append(
+                {"restart": {"from": "swe2d_ref_n064_sx000_sy000_dts100", "step": 90}})
         for label, mutate, text in (("dropped", drop, tests_md.replace(self._LINE, "")),
-                                    ("misspelled line, ordinary case", ordinary, misspelled)):
+                                    ("misspelled line, ordinary case", ordinary, misspelled),
+                                    ("and a keyed entry without a case_id (round 1, sec-F1)",
+                                     keyless, misspelled)):
             with self.subTest(label):
                 found = [v for v in _drive_stage("swe", mutate, tests_md=text) if "(q)" in v]
                 self.assertEqual(len(found), 1, found)

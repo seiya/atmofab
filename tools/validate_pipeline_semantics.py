@@ -4073,7 +4073,11 @@ def _restart_required_violations(tests_path: Path | None, ir: dict, *,
         return []
     case_block = ir.get("case") if isinstance(ir, dict) else None
     tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
+    # Count what gates (p) and (r) and the second pass see: a case with a non-blank string
+    # `case_id`. An entry without one is read by none of them, so a `restart` key on it would
+    # satisfy this gate while no continuation runs (review round 1, sec-F1).
     if any(isinstance(c, dict) and RESTART_CASE_KEY in c
+           and isinstance(c.get("case_id"), str) and c["case_id"].strip()
            for c in (tcs if isinstance(tcs, list) else [])):
         return []
     stated = False
