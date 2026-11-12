@@ -10,6 +10,7 @@ the C++ rows need `nvcc` and no device (the toy model is host code).
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
 import re
@@ -282,6 +283,47 @@ def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
     subprocess.run(["gfortran", *flags, *objs, "runner.o", "-o", "bin"], cwd=tmp, check=True,
                    capture_output=True)
     return _exec(tmp, ids)
+
+
+def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
+                env: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
+    """`Validate.execute`'s second pass over one execution shape (issue #632), for a test row or
+    an evidence bench that judges a whole IR: the real continuation writer reads the shape's
+    pass-1 samples under ``shape_dir``, each continuation runs ``binary`` in a process of its
+    own under `<shape_dir>/restart/`, the host's start check is applied, and its captures are
+    merged into ``shape_dir`` by the conductor's own helper. Returns the continuation ids merged
+    and one line per continuation that was not (no restart point, a non-zero exit, a failed
+    start check, a refused merge); both are empty on an IR without a continuation."""
+    from tools.workflow_conductor import Conductor
+    files, refused = pe.write_continuation_inputs(ir, shape_dir)
+    problems = [f"{cid}: no restart point: {why}" for cid, why in sorted(refused.items())]
+    if not files:
+        return [], problems
+    rdir = shape_dir / pe.RESTART_DIRNAME
+    for sub in ("initial", "history", "series"):
+        (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+    merged = []
+    for cf in files:
+        proc = subprocess.run([str(binary), "--cases", str(rdir / "spec.ir.yaml"), cf.case_id],
+                              cwd=rdir, capture_output=True, text=True, timeout=3000,
+                              check=False, env=env)
+        why = (f"second-pass rc={proc.returncode}: {proc.stderr[-400:]}" if proc.returncode
+               else pe.continuation_start_violation(ir, rdir, cf)
+               or Conductor._merge_continuation_captures(rdir, shape_dir, cf.case_id))
+        if why:
+            problems.append(f"{cf.case_id}: {why}")
+        else:
+            merged.append(cf.case_id)
+    return merged, problems
+
+
+def run_second_pass(run: Run, ir: dict[str, Any]) -> list[str]:
+    """`second_pass` over ``run``'s directory, raising on any continuation it did not merge."""
+    merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return merged
 
 
 def _harness_public_api() -> dict[str, Any]:
@@ -942,6 +984,83 @@ class _DriverBehaviour:
         self.assertIn("did not start at step 2", why)
 
 
+    def test_second_pass_reports_each_continuation_it_does_not_merge(self) -> None:
+        """`second_pass`, the helper the evidence scripts and the certified end-to-end row
+        trust (review round 1, cor-F5: dropping its start check, ignoring the exit code and
+        dropping the refused-restart-point lines each survived the suite): the unmutated run
+        merges the continuation; a driver without the restart read, a second-pass process
+        that exits non-zero after writing its captures, a missing restart point and a refused
+        merge are each a problem line naming the continuation, and nothing is merged."""
+        cpp = type(self).build_and_run is run_cpp
+        module = cpp_runner if cpp else f_runner
+        env = {**os.environ, "SPEC2SCIENCE_CUDA_BLOCK": "64"}
+        ir = self._with_continuation(loop_ir(0, every=1), "m0", 2)
+
+        def no_read(a: Any, _plan: Any, _entry: Any, _h: Any, ind: str, *_rest: Any) -> None:
+            a(f"{ind}step0 = 0{';' if cpp else ''}")
+
+        def fresh(sub: str, patch: bool = False) -> Run:
+            root = Path(self._tmp.name) / sub
+            root.mkdir()
+            if patch:
+                with mock.patch.object(module, "_render_restart", no_read):
+                    run = type(self).build_and_run(root, ir)
+            else:
+                run = type(self).build_and_run(root, ir)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            return run
+
+        def merged_capture(run: Run) -> bool:
+            return (run.snapshots / "m0_cont.json").exists()
+
+        run = fresh("ok")
+        self.assertEqual(second_pass(ir, run.dir / "run", run.dir / "bin", env), (["m0_cont"], []))
+        self.assertTrue(merged_capture(run))
+
+        run = fresh("no_read", patch=True)
+        merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin", env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont", problems[0])
+        self.assertIn("did not start at step 2", problems[0])
+        self.assertFalse(merged_capture(run))
+
+        run = fresh("rc3")
+        wrapper = run.dir / "exits3.sh"
+        wrapper.write_text(f'#!/bin/sh\n"{run.dir / "bin"}" "$@"\nexit 3\n')
+        wrapper.chmod(0o755)
+        merged, problems = second_pass(ir, run.dir / "run", wrapper, env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont", problems[0])
+        self.assertIn("second-pass rc=3", problems[0])
+        # the process wrote its captures; they stay under restart/ and are not merged
+        self.assertTrue((run.dir / "run" / pe.RESTART_DIRNAME / "raw" / "state_snapshots"
+                         / "m0_cont.json").exists())
+        self.assertFalse(merged_capture(run))
+
+        run = fresh("no_point")
+        (run.snapshots / "history" / "m0__2.json").unlink()
+        merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin", env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont: no restart point", problems[0])
+        self.assertFalse(merged_capture(run))
+
+        # a refused merge (round 2, cor-F4): a file of the continuation's name already in the
+        # shape's capture directory; the merge moves nothing and the line names it
+        run = fresh("merge_refused")
+        planted = run.snapshots / "initial" / "m0_cont.json"
+        planted.write_text("{}")
+        merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin", env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont", problems[0])
+        self.assertIn("names a file the first pass wrote", problems[0])
+        self.assertEqual(planted.read_text(), "{}")
+        self.assertFalse(merged_capture(run))
+
+
 class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_fortran)
 
@@ -1097,13 +1216,18 @@ class FortranWrapTest(unittest.TestCase):
 class CertifiedModelEndToEndTest(unittest.TestCase):
     """The driver over a certified kernel: every test's status is the certified run's, which
     is every test's `expected_outcome` on these two nodes (issue #589 PR-1b's end to end; the
-    swe2d model is the certified one cut to `__step`, `data/driver_e2e/`)."""
+    swe2d model is the certified one cut to `__step`, `data/driver_e2e/`). The swe2d fixture
+    carries a continuation case (issue #632 P2), which `run_second_pass` runs in a process of
+    its own as `Validate.execute` does, so its restart test is judged on the certified model."""
 
     def _verdict(self, ir_path: Path, sid: str, deps: tuple[str, ...]) -> dict[str, Any]:
         ir = yaml.safe_load(ir_path.read_text())
         with tempfile.TemporaryDirectory() as tmp:
             run = run_fortran(Path(tmp), ir, sid=sid, deps=deps)
             self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self.assertEqual(sorted(run_second_pass(run, ir)),
+                             sorted(c["case_id"] for c in ir["case"]["test_case_set"]
+                                    if pe.RESTART_CASE_KEY in c))
             records = pe.evaluate_primary_predicates(ir, Path(tmp) / "run")
             verdict = verdict_evaluator.evaluate_verdict(ir["io_contract"]["tests"], records)
             expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
@@ -1464,6 +1588,57 @@ class CppGpuPackageCompilesTest(unittest.TestCase):
                          f"{stem}.o"], cwd=out, capture_output=True, text=True)
                     self.assertEqual(built.returncode, 0, stem + built.stderr[-1500:])
 
+
+class CppGpuPackageSecondPassTest(unittest.TestCase):
+    """The package's second pass (issue #632; Codex review round 2): `go.sh` runs the base cases
+    only, `continue` writes the continuation's case file and `go2.sh`, and `judge` start-checks
+    and merges before judging. The site's binary is stood in for by the certified Fortran model
+    of the same IR, run by `run_fortran` (pass 1) and on `go2.sh`'s command line (pass 2)."""
+
+    def test_the_continuation_runs_in_a_second_invocation_and_is_judged(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("package_cpp_gpu",
+                                                      DATA / "package_cpp_gpu.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        ir = yaml.safe_load(module.NODES["swe"][0].read_text())
+        conts = sorted(pe.continuation_cases(ir))
+        self.assertEqual(conts, ["swe2d_ref_n064_sx000_sy000_dts100_cont"])
+        with tempfile.TemporaryDirectory() as tmp:
+            pkg = Path(tmp) / "pkg"
+            module.package(pkg, "swe")
+            go = (pkg / "go.sh").read_text()
+            self.assertNotIn(conts[0], go)
+            self.assertIn("swe2d_ref_n064_sx000_sy000_dts100 ", go)
+            # pass 1 at the "site": the Fortran stand-in over the same IR
+            (Path(tmp) / "f").mkdir()
+            run = run_fortran(Path(tmp) / "f", ir, sid="shallow_water2d",
+                              deps=SW2D_COMPONENTS)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            shutil.copytree(run.dir / "run", pkg / "run")
+            self.assertEqual(module.continue_(pkg, "swe"), conts)
+            go2 = (pkg / "go2.sh").read_text()
+            self.assertIn(f'--cases "$PWD/spec.ir.yaml" {conts[0]}', go2)
+            rdir = pkg / "run" / pe.RESTART_DIRNAME
+            self.assertTrue((rdir / "case_inputs" / f"{conts[0]}.json").is_file())
+            # pass 2 as go2.sh runs it, with the stand-in binary
+            proc = subprocess.run([str(run.dir / "bin"), "--cases", str(rdir / "spec.ir.yaml"),
+                                   conts[0]], cwd=rdir, capture_output=True, text=True,
+                                  timeout=600, check=False)
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+                rc = module.judge(pkg, "swe")
+            report = json.loads(printed.getvalue())
+            self.assertEqual((rc, report["wrong"], report["continuations_not_merged"]),
+                             (0, {}, []), report)
+            # a second `judge` reads the merged captures again (review round 3)
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+                rc = module.judge(pkg, "swe")
+            report = json.loads(printed.getvalue())
+            self.assertEqual((rc, report["wrong"], report["continuations_not_merged"]),
+                             (0, {}, []), report)
+            self.assertTrue((pkg / "run" / "raw" / "state_snapshots" / f"{conts[0]}.json")
+                            .is_file())
 
 class ProblemModelGateTest(unittest.TestCase):
     """The canonical `__step` shape passes the `problem` dataflow gates: `intent(inout)` state and

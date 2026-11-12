@@ -1,9 +1,9 @@
 schema_version: '1.0'
 meta:
-  node_key: problem/advdiff1d_linear@0.5.1
+  node_key: problem/advdiff1d_linear@0.5.2
   spec_kind: problem
   spec_id: advdiff1d_linear
-  spec_version: 0.5.1
+  spec_version: 0.5.2
   source_refs:
     controlled_spec: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md
     tests: spec/problem/dynamics/advection_diffusion/advdiff1d_linear/tests.md
@@ -37,7 +37,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -73,7 +73,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -109,7 +109,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -145,7 +145,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -181,7 +181,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -217,7 +217,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -253,7 +253,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -289,7 +289,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -325,7 +325,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -360,7 +360,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -396,7 +396,7 @@ case:
         profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
         profile_version: 0.2.0
       test_profile_id: advdiff1d_linear_baseline
-      test_profile_version: 0.8.0
+      test_profile_version: 0.9.0
     initial_state:
       u: sin(2 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction)) + 0.5 * sin(4 * pi * (x / inputs.grid.L - inputs.initial.shift_fraction))
     derived:
@@ -405,6 +405,43 @@ case:
         * derived.dx * derived.dx / inputs.constants.nu)
       n_step: ceil(inputs.time.t_end / derived.dt_raw)
       dt: inputs.time.t_end / derived.n_step
+  - case_id: advdiff1d_ref_nx064_shift000_dts100_cont
+    inputs:
+      grid:
+        L: 1.0
+        nx: 64
+      time:
+        t_start: 0.0
+        t_end: 0.5
+      history:
+        every: 41
+      dt_rule:
+        dt_scale: 1.0
+        cfl_adv: 0.6
+        cfl_dif: 0.25
+      physics:
+        a: 1.0
+      constants:
+        nu: 0.01
+      initial:
+        kind: two_mode_sine
+        shift_fraction: 0.0
+      boundary:
+        kind: periodic
+      profile_selection:
+        profile_id: dynamics_advdiff_profile_1d_upwind_center2_euler1
+        profile_version: 0.2.0
+      test_profile_id: advdiff1d_linear_baseline
+      test_profile_version: 0.9.0
+    derived:
+      dx: inputs.grid.L / inputs.grid.nx
+      dt_raw: inputs.dt_rule.dt_scale * min(inputs.dt_rule.cfl_adv * derived.dx / abs(inputs.physics.a),
+        inputs.dt_rule.cfl_dif * derived.dx * derived.dx / inputs.constants.nu)
+      n_step: ceil(inputs.time.t_end / derived.dt_raw)
+      dt: inputs.time.t_end / derived.n_step
+    restart:
+      from: advdiff1d_ref_nx064_shift000_dts100
+      step: 41
   sweeps:
     advdiff1d_ref:
       purpose: refinement_for_accuracy
@@ -855,6 +892,14 @@ io_contract:
     - advdiff1d_ref_nx064_shift000_dts100_a000
     quantities:
     - ok
+  - test_id: l3_restart_equivalence
+    expected_outcome: pass
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx064_shift000_dts100_cont
+    quantities:
+    - restart.u
+    - run.n_step
   predicates:
   - test_id: l1_refinement_against_analytic
     quantity: cfl.combined_max
@@ -1706,8 +1751,35 @@ io_contract:
     expr: final.ok
     op: eq
     value: 0
+  - test_id: l3_restart_equivalence
+    quantity: restart.u
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx064_shift000_dts100_cont
+    case: advdiff1d_ref_nx064_shift000_dts100_cont
+    expr: maxabs(final.u - at('advdiff1d_ref_nx064_shift000_dts100').final.u)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: run.n_step
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx064_shift000_dts100_cont
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
+  - test_id: l3_restart_equivalence
+    quantity: cross_target_state_agreement
+    target_cases:
+    - advdiff1d_ref_nx064_shift000_dts100
+    - advdiff1d_ref_nx064_shift000_dts100_cont
+    per_case: true
+    expr: maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)
+    op: le
+    value: 1.0e-12
 dependency:
-  node_key: problem/advdiff1d_linear@0.5.1
+  node_key: problem/advdiff1d_linear@0.5.2
   direct_deps:
   - node_key: component/dynamics_advdiff_flux_1d_upwind_center2@0.5.0
     kind: component

@@ -1,0 +1,114 @@
+# Issue #632 P2 restart bench — model mutants of subject `chan_gen`: the GENERATED
+# problem/shallow_water2d_channel@0.3.1 model (pipeline shallow-water2d-channel_20261106_001,
+# source src_20261106_002). Patches are written against that model's text (`old` must occur
+# exactly once; `bench.py` uses Part 1's `apply_patches`).
+#
+# Declared before the bench ran (ids and classes verbatim from the plan; the patches are this
+# bench's expression of each on this model's text):
+#   Model mutants, class `must_catch`:
+#   - `chan-stale-stage` (each channel subject): a tendency or stage array kept (module `save`)
+#     from the previous call and reused in the current one where the scheme recomputes it.
+#   - `chan-ref-first-call`: a reference state cached from the state at the FIRST call of a
+#     process (`h_ref = h` once) and read later.
+#   - `chan-private-clock` (each channel subject): a private clock advanced by `dt` in place of
+#     the `t` argument (TC4 forcing reads t).
+#   Must NOT be caught (control): the unmutated model; `ctl-dead-counter`: a private counter
+#   incremented and never read.
+
+chan-stale-stage:
+  title: >-
+    RK4's first-stage tendency (the rhs's stage 1) is kept (module save) and the current step
+    uses the PREVIOUS step's stage-1 tendency in its place (the fresh one is computed and kept
+    for the next step); `__init` drops the kept array, so a case's first step, and a
+    continuation's first step at K, use the fresh one. The continuation's step K+1 is fresh
+    where the base's used step K's stage-1 tendency.
+  class: must_catch
+  patches:
+    - old: "logical, save :: rhs_ok = .true."
+      new: "logical, save :: rhs_ok = .true.\n  real(dp), allocatable, save :: k1_prev(:, :, :)\n  integer, save :: stage_no = 0"
+    - old: |-
+        forcing_on = .false.
+        rhs_ok = .true.
+        init_ok = .false.
+      new: |-
+        forcing_on = .false.
+        rhs_ok = .true.
+        init_ok = .false.
+        if (allocated(k1_prev)) deallocate(k1_prev)
+    - old: |-
+        u_n(3, :, :) = hv
+        rhs_ok = .true.
+      new: |-
+        u_n(3, :, :) = hv
+        rhs_ok = .true.
+        stage_no = 0
+    - old: "    ! step_15: status."
+      new: |-
+            stage_no = stage_no + 1
+            if (stage_no == 1) then
+              if (allocated(k1_prev)) then
+                if (all(shape(k1_prev) == shape(dUdt))) then
+                  l_flux = k1_prev
+                  k1_prev = dUdt
+                  dUdt = l_flux
+                else
+                  deallocate(k1_prev)
+                  allocate(k1_prev, source=dUdt)
+                end if
+              else
+                allocate(k1_prev, source=dUdt)
+              end if
+            end if
+
+            ! step_15: status.
+
+chan-ref-first-call:
+  title: >-
+    a reference depth h_ref cached from the state the first step call of a process commits,
+    re-cached whenever the grid shape differs from the cached array's, and read every call in a
+    weak relaxation h += 1e-6 (h_ref - h). The case before the base in pass 1 is
+    `chan_tc3_ref_n128_dts100` (128 x 128), so the base re-caches from its own first committed
+    state (after step 1); the continuation's own process caches the base's state after step
+    K+1. Small (1e-6 per step): a banded test may not see it.
+  class: must_catch
+  patches:
+    - old: "logical, save :: rhs_ok = .true."
+      new: "logical, save :: rhs_ok = .true.\n  real(dp), allocatable, save :: h_ref(:, :)"
+    - old: "  hv = u_np1(3, :, :)\nend if\n"
+      new: "  hv = u_np1(3, :, :)\n  if (.not. allocated(h_ref)) then\n    allocate(h_ref, source=h)\n  else if (size(h_ref, 1) /= nx .or. size(h_ref, 2) /= ny) then\n    deallocate(h_ref)\n    allocate(h_ref, source=h)\n  end if\n  h = h + 1.0e-6_dp * (h_ref - h)\nend if\n"
+
+chan-private-clock:
+  title: >-
+    the time RK4 (and so the TC4 forcing) receives is a private clock (module save) that
+    `__init` sets to t_start and each step advances by dt, in place of the `t` argument. In an
+    uncut run it differs from t only by rounding (the driver forms t_start + n dt); in a
+    continuation `__init` sets it to t_start = 0 while the first step is at t_K.
+  class: must_catch
+  patches:
+    - old: "logical, save :: rhs_ok = .true."
+      new: "logical, save :: rhs_ok = .true.\n  real(dp), save :: m_clock = 0.0_dp"
+    - old: |-
+        forcing_on = .false.
+        rhs_ok = .true.
+        init_ok = .false.
+      new: |-
+        forcing_on = .false.
+        rhs_ok = .true.
+        init_ok = .false.
+        m_clock = t_start
+    - old: "      t, dt, u_np1, guard_pass)"
+      new: "      m_clock, dt, u_np1, guard_pass)\n    m_clock = m_clock + dt"
+
+ctl-dead-counter:
+  title: a private counter incremented every step call and never read
+  class: control
+  patches:
+    - old: "logical, save :: rhs_ok = .true."
+      new: "logical, save :: rhs_ok = .true.\n  integer, save :: dead_count = 0"
+    - old: |-
+        u_n(3, :, :) = hv
+        rhs_ok = .true.
+      new: |-
+        u_n(3, :, :) = hv
+        rhs_ok = .true.
+        dead_count = dead_count + 1

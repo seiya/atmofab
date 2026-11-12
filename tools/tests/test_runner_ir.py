@@ -269,7 +269,8 @@ class DriveAgreementTest(unittest.TestCase):
         self.assertIn("F", r.drive_state_classes(mutated)["read"])
 
 
-#: Plan §8 (p): the `pass` cases `distribute_plan` distributes per grid, over the bench.
+#: Plan §8 (p): the `pass` cases `distribute_plan` distributes per grid, over the bench. Each loop
+#: `problem` counts its continuation case (issue #632 P2), and the rotating one its restart base too.
 _GRIDS = ((2, 2), (4, 1), (1, 4), (3, 1), (1, 3), (2, 1), (1, 2))
 _CENSUS = {
     "dynamics_advdiff_flux_1d_upwind_center2": (8, 1, 0, 1, 0, 8, 0),
@@ -279,11 +280,11 @@ _CENSUS = {
     "dynamics_shallow_water_source_2d_tc4_forcing": (18, 14, 14, 18, 18, 18, 18),
     "dynamics_shallow_water_time_update_2d_rk4": (7, 6, 1, 7, 7, 7, 7),
     "dynamics_shallow_water_time_update_2d_ssprk2": (8, 7, 1, 8, 8, 8, 8),
-    "advdiff1d_linear": (7, 7, 0, 7, 0, 7, 0),
-    "shallow_water2d": (24,) * 7,
-    "shallow_water2d_channel": (34,) * 7,
+    "advdiff1d_linear": (8, 8, 0, 8, 0, 8, 0),
+    "shallow_water2d": (25,) * 7,
+    "shallow_water2d_channel": (35,) * 7,
     # the wave case (`ny = 4`, min_block 2) is replicated where the grid splits `y` in three or more
-    "shallow_water2d_rotating": (16, 16, 15, 16, 15, 16, 16),
+    "shallow_water2d_rotating": (18, 18, 17, 18, 17, 18, 18),
 }
 _C = lambda k: (k, "cell")   # noqa: E731
 _F = lambda k: (k, "face")   # noqa: E731

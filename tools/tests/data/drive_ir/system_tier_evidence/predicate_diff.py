@@ -4,7 +4,7 @@
 CERTIFIED IR (the `ir_ref` of the latest `fortran_cpu` pipeline whose run passed, the one V-a
 judges with).
 
-  PYTHONPATH=. python3 <this file>
+  PYTHONPATH=. python3 <this file> [--at <spec_id>@<version>]...
 
 Printed, each as a count with its members:
 - tests and cases present on one side only (by `test_id` / `case_id`);
@@ -54,6 +54,15 @@ def flat_keys(d: Any, prefix: str = "") -> set[str]:
 
 
 def main() -> int:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--at", action="append", default=[],
+                    help="<spec_id>@<version>: read that node at that version (bench.AT)")
+    for item in ap.parse_args().at:
+        sid, _, ver = item.partition("@")
+        if not sid or not ver:
+            raise SystemExit(f"--at {item!r}: expected <spec_id>@<version>")
+        bench.AT[sid] = ver
     hand, cert = build_ir.build(), bench.certified_ir()
     ht = {t["test_id"] for t in hand["io_contract"]["tests"]}
     ct = {t["test_id"] for t in cert["io_contract"]["tests"]}

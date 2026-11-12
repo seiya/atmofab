@@ -9,6 +9,7 @@ components, Coriolis, RK4), each at the version the catalog holds. Run from the 
       [--flags certified|bounds] [--cases <id>,...] [--show-values]
   PYTHONPATH=. python3 <this file> --all-mutants [--jobs N] [--json <file>]
   (PR-S3 V-a) add [--ir certified] [--model generated] [--mutants <file>]
+  (issue #632 P2) add [--at <spec_id>@<version>]... to read a node at another version (see AT)
 
 `--ir certified` judges with the CERTIFIED IR of the node (the `ir_ref` of its latest
 `fortran_cpu` pipeline whose run's aggregate verdict is `pass`) in place of the hand-authored one; `--model generated` builds the
@@ -69,7 +70,7 @@ from tools import primary_evidence as pe  # noqa: E402
 from tools import validate_pipeline_semantics as vps  # noqa: E402
 from tools import verdict_evaluator  # noqa: E402
 from tools.backends.language.fortran import runner as f_runner  # noqa: E402
-from tools.tests.test_driver_render import CPU  # noqa: E402
+from tools.tests.test_driver_render import CPU, second_pass  # noqa: E402
 
 import build_ir  # noqa: E402
 
@@ -87,13 +88,26 @@ CLOSURE = (("infrastructure", "harness_fortran_cpu"),
            ("component", build_ir.RK4))
 
 
-def certified_source(kind: str, sid: str) -> Path:
+#: `--at <spec_id>@<version>`: read that node at that version in place of the catalog's. Issue
+#: #632 P2 moved the member to `0.5.2` and this node to `0.1.1` (a restart case each, no scheme
+#: change) before any pipeline exists at either, so until they are certified this bench runs with
+#: `--at shallow_water2d@0.5.1 --at shallow_water2d_rotating@0.1.0`, and prints what it read.
+AT: dict[str, str] = {}
+
+
+def catalog_version(sid: str) -> str:
+    if sid in AT:
+        return AT[sid]
     cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
-    version = next(e["spec_version"] for e in cat if e["spec_id"] == sid)
+    return next(e["spec_version"] for e in cat if e["spec_id"] == sid)
+
+
+def certified_source(kind: str, sid: str) -> Path:
+    version = catalog_version(sid)
     hits = sorted(glob.glob(str(REPO / f"workspace/pipelines/{kind}__{sid}__{version}/fortran_cpu/"
                                 f"*/source/src_*/src/{sid}_model.f90")))
     if not hits:
-        raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version}")
+        raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version} (a node the catalog moved before it was certified there: pass --at <spec_id>@<version> with a certified version)")
     print(f"source {kind}/{sid}@{version}: {Path(hits[-1]).relative_to(REPO)}", flush=True)
     return Path(hits[-1])
 
@@ -109,12 +123,11 @@ def passed_pipeline(node: str) -> Path:
         agg = pipe / "runs" / str(run_id) / node / "aggregate_verdict.json"
         if agg.is_file() and json.loads(agg.read_text()).get("aggregate_verdict") == "pass":
             return pipe
-    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run")
+    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run (a node the catalog moved before it was certified there: pass --at <spec_id>@<version> with a certified version)")
 
 
 def certified_pipeline() -> Path:
-    cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
-    version = next(e["spec_version"] for e in cat if e["spec_id"] == build_ir.SID)
+    version = catalog_version(build_ir.SID)
     return passed_pipeline(f"problem__{build_ir.SID}__{version}")
 
 
@@ -207,10 +220,22 @@ def build(work: Path, ir: dict[str, Any], model_text: str, flags: list[str]) -> 
 
 
 def execute(work: Path, ir: dict[str, Any], threads: int = 4) -> subprocess.CompletedProcess:
-    ids = sorted(c["case_id"] for c in ir["case"]["test_case_set"])
-    return subprocess.run([str(work / "bin"), "--cases", str(work / "ir" / "spec.ir.yaml"), *ids],
-                          cwd=work / "run", capture_output=True, text=True, timeout=3000,
-                          env={**os.environ, "OMP_NUM_THREADS": str(threads)})
+    """Pass 1 over the base cases in ONE process, then `Validate.execute`'s second pass (issue
+    #632, `test_driver_render.second_pass`): each continuation case in a process of its own. A
+    continuation not merged returns a non-zero code naming it; its captures are then absent and
+    its tests fail."""
+    env = {**os.environ, "OMP_NUM_THREADS": str(threads)}
+    ids = sorted(c["case_id"] for c in ir["case"]["test_case_set"]
+                 if pe.RESTART_CASE_KEY not in c)
+    first = subprocess.run([str(work / "bin"), "--cases", str(work / "ir" / "spec.ir.yaml"), *ids],
+                           cwd=work / "run", capture_output=True, text=True, timeout=3000, env=env)
+    if first.returncode != 0:
+        return first
+    _merged, problems = second_pass(ir, work / "run", work / "bin", env)
+    if problems:
+        return subprocess.CompletedProcess(first.args, 3, first.stdout,
+                                           first.stderr + "\n".join(problems))
+    return first
 
 
 def judge(ir: dict[str, Any], work: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -325,7 +350,14 @@ def main() -> int:
     ap.add_argument("--ir", choices=("hand", "certified"), default="hand")
     ap.add_argument("--model", choices=("hand", "generated"), default="hand")
     ap.add_argument("--mutants", default=str(MUTANTS))
+    ap.add_argument("--at", action="append", default=[],
+                    help="<spec_id>@<version>: read that node at that version (see AT)")
     a = ap.parse_args()
+    for item in a.at:
+        sid, _, ver = item.partition("@")
+        if not sid or not ver:
+            raise SystemExit(f"--at {item!r}: expected <spec_id>@<version>")
+        AT[sid] = ver
     if a.ir == "certified":
         ir = certified_ir()
     else:

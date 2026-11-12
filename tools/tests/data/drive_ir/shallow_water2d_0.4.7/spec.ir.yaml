@@ -1376,6 +1376,53 @@ case:
       dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
       n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
       dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+  - case_id: swe2d_ref_n064_sx000_sy000_dts100_cont
+    inputs:
+      grid:
+        nx: 64
+        ny: 64
+        L_x: 1.0
+        L_y: 1.0
+      time:
+        t_start: 0.0
+        t_end: 0.2
+      history:
+        every: 90
+      dt_rule:
+        kind: cfl_ceil_n_step
+        dt_scale: 1.0
+        cfl_target: 0.45
+      initial:
+        initial_profile: linear_wave_x
+        eta0: 0.001
+        wave_sign: 1.0
+        shift_x_fraction: 0.0
+        shift_y_fraction: 0.0
+      topography:
+        topography_profile: williamson_tc5_cone
+        x_c_fraction: 0.75
+        y_c_fraction: 0.6666666666666666
+      boundary:
+        kind: periodic
+      constants:
+        g: 9.81
+        H_0: 1.0
+      profile_selection:
+        profile_id: dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2
+        profile_version: 0.1.1
+      test_profile_id: shallow_water2d_baseline
+      test_profile_version: 0.7.0
+    derived:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dx + (abs(initial.hv
+        / initial.h) + sqrt(inputs.constants.g * initial.h)) / derived.dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / derived.lam0
+      n_step: ceil((inputs.time.t_end - inputs.time.t_start) / derived.dt_raw)
+      dt: (inputs.time.t_end - inputs.time.t_start) / derived.n_step
+    restart:
+      from: swe2d_ref_n064_sx000_sy000_dts100
+      step: 90
   sweeps:
     description: tests.md 4-1 families expanded with the 4-2 case_id template (family, nx, shift_x_fraction, shift_y_fraction,
       dt_scale) and the 4-3 override cases.
@@ -2376,6 +2423,16 @@ io_contract:
     - mass_drift_rel
     - momx_drift_rel
     - momy_drift_rel
+    - run.n_step
+  - test_id: l3_restart_equivalence
+    expected_outcome: pass
+    target_cases:
+    - swe2d_ref_n064_sx000_sy000_dts100
+    - swe2d_ref_n064_sx000_sy000_dts100_cont
+    quantities:
+    - restart.h
+    - restart.hu
+    - restart.hv
     - run.n_step
   predicates:
   - test_id: l1_refinement_mass_and_positivity
@@ -6454,6 +6511,42 @@ io_contract:
       1.0)
     op: le
     value: 1.0e-10
+  - test_id: l3_restart_equivalence
+    quantity: restart.h
+    target_cases:
+    - swe2d_ref_n064_sx000_sy000_dts100
+    - swe2d_ref_n064_sx000_sy000_dts100_cont
+    case: swe2d_ref_n064_sx000_sy000_dts100_cont
+    expr: maxabs(final.h - at('swe2d_ref_n064_sx000_sy000_dts100').final.h)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: restart.hu
+    target_cases:
+    - swe2d_ref_n064_sx000_sy000_dts100
+    - swe2d_ref_n064_sx000_sy000_dts100_cont
+    case: swe2d_ref_n064_sx000_sy000_dts100_cont
+    expr: maxabs(final.hu - at('swe2d_ref_n064_sx000_sy000_dts100').final.hu)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: restart.hv
+    target_cases:
+    - swe2d_ref_n064_sx000_sy000_dts100
+    - swe2d_ref_n064_sx000_sy000_dts100_cont
+    case: swe2d_ref_n064_sx000_sy000_dts100_cont
+    expr: maxabs(final.hv - at('swe2d_ref_n064_sx000_sy000_dts100').final.hv)
+    op: le
+    value: 0.0
+  - test_id: l3_restart_equivalence
+    quantity: run.n_step
+    target_cases:
+    - swe2d_ref_n064_sx000_sy000_dts100
+    - swe2d_ref_n064_sx000_sy000_dts100_cont
+    per_case: true
+    expr: final.step - derived.n_step
+    op: eq
+    value: 0
 public_api:
   published_operations:
   - operation_id: shallow_water2d__step

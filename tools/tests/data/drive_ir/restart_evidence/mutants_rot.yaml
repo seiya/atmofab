@@ -1,0 +1,194 @@
+# Issue #632 P2 restart bench — model mutants of subject `rot`: the GENERATED
+# problem/shallow_water2d_rotating@0.1.0 model (run R-S, pipeline
+# shallow-water2d-rotating_20261112_001). Patches are written against that model's text
+# (`old` must occur exactly once; `bench.py` uses Part 1's `apply_patches`).
+#
+# Declared before the bench ran (ids and classes verbatim from the plan; the patches are this
+# bench's expression of each on this model's text):
+#   Model mutants, class `must_catch`:
+#   - `rot-step-counter` (rotating): a private step counter (module variable incremented per
+#     call) used in place of the `step` argument for the firing rule.
+#   - `rot-phase-counter` (rotating): the rotation phase taken from a private counter that
+#     nothing resets (counts calls since program start).
+#   - `rot-stale-stage` (rotating): a tendency or stage array kept (module `save`) from the
+#     previous call and reused in the current one where the scheme recomputes it.
+#   - `rot-ref-first-call`: a reference state cached from the state at the FIRST call of a
+#     process (`h_ref = h` once) and read later.
+#   - `rot-f-first-call` (rotating): `f` cached at the first call of a process. Visible only
+#     because the base is not the first case and an earlier case has another `f`. Run it under
+#     the suite's order AND under a second order where the base is the first case of pass 1;
+#     record that it is missed there.
+#   Must NOT be caught (control): the unmutated model; `ctl-dead-counter`: a private counter
+#   incremented and never read.
+#   Placement control: the rotating model mutants again with the cut at K a MULTIPLE of the
+#   call interval (base `history.every` 62, K = 62), caught/missed recorded per mutant.
+
+rot-step-counter:
+  title: >-
+    the firing rule reads a private step counter (module variable, +1 per call, set to 0 when
+    the call's t is 0, i.e. at a case's first call since every case starts at t = 0) in place
+    of the `step` argument. In an uncut run it equals `step` at every call; a continuation's
+    first call is at t_K > 0, so its counter keeps the value 0 a fresh process gives it and
+    the phase is off by K: with K = 61 and rotation.every = 2 the parity flips.
+  class: must_catch
+  patches:
+    - old: "logical :: ok_source_state = .true."
+      new: "logical :: ok_source_state = .true.\n  integer, save :: my_step = 0"
+    - old: "fire = (rotation == 1) .and. (mod(step + 1, rotation_every) == 0)"
+      new: "if (t == 0.0_dp) my_step = 0\n    fire = (rotation == 1) .and. (mod(my_step + 1, rotation_every) == 0)\n    my_step = my_step + 1"
+
+rot-phase-counter:
+  title: >-
+    the rotation phase is a private call counter nothing resets (counts the calls that reach
+    the firing rule since program start). In pass 1 the base's phase is offset by every call of
+    the cases before it (1745 committed steps in the default subset, measured from the
+    baseline's captures), in the continuation's own process by -K; the two offsets differ by
+    1745 + 61 = 1806, even, so with rotation.every 2 the base and the continuation fire on the
+    same steps at K = 61 and the restart test cannot see it there (at K = 62 they differ by
+    1807, odd). Caught at K = 61 by tests on other cases, whose phase the offset moves.
+  class: must_catch
+  patches:
+    - old: "logical :: ok_source_state = .true."
+      new: "logical :: ok_source_state = .true.\n  integer, save :: n_calls = 0"
+    - old: "fire = (rotation == 1) .and. (mod(step + 1, rotation_every) == 0)"
+      new: "fire = (rotation == 1) .and. (mod(n_calls + 1, rotation_every) == 0)\n    n_calls = n_calls + 1"
+
+rot-stale-stage:
+  title: >-
+    RK4's first-stage tendency (stage 1 of the Coriolis rhs) is kept (module save) and the
+    current firing uses the PREVIOUS firing's stage-1 tendency in its place (the fresh one is
+    computed and kept for the next firing); a process's first firing at a grid shape uses
+    its fresh one. The continuation's first firing (driver step n = 62, the call with `step` 61) is fresh where the base's used
+    the stage-1 tendency of step 60.
+  class: must_catch
+  patches:
+    - old: "logical :: ok_source_state = .true."
+      new: "logical :: ok_source_state = .true.\n  real(dp), allocatable, save :: k1_prev(:, :, :)\n  integer, save :: stage_no = 0"
+    - old: "dt_rot = real(rotation_every, dp) * dt"
+      new: "dt_rot = real(rotation_every, dp) * dt\n    stage_no = 0"
+    - old: "    dUdt = S"
+      new: |-
+            stage_no = stage_no + 1
+            if (stage_no == 1) then
+              if (allocated(k1_prev)) then
+                if (all(shape(k1_prev) == shape(S))) then
+                  dUdt = k1_prev
+                else
+                  dUdt = S
+                end if
+                deallocate(k1_prev)
+              else
+                dUdt = S
+              end if
+              allocate(k1_prev, source=S)
+            else
+              dUdt = S
+            end if
+
+rot-ref-first-call:
+  title: >-
+    a reference depth h_ref cached from the state (after the member step) the first call of a
+    process sees, re-cached whenever the grid shape differs from the cached array's (so a
+    smaller grid never reads a larger one's array), and read every call in a weak relaxation
+    h += 1e-6 (h_ref - h). The case before the base in pass 1 is `swr_shear_n064_rect`
+    (64 x 48), so the base re-caches from its own first call (its state after step 1); the
+    continuation's own process caches the base's state after step K+1. The cases before it
+    relax towards the first case of each run of one shape (`swr_off_cone_n064_twin` and
+    `swr_off_flat_n064` towards `swr_off_cone_n064`'s state, `swr_shear_n064_axis` towards
+    `swr_shear_n064`'s), which tests on those cases may see.
+  class: must_catch
+  patches:
+    - old: "logical :: ok_source_state = .true."
+      new: "logical :: ok_source_state = .true.\n  real(dp), allocatable, save :: h_ref(:, :)"
+    - old: "    ! step 03: firing rule"
+      new: |-
+            if (.not. allocated(h_ref)) then
+              allocate(h_ref, source=h)
+            else if (size(h_ref, 1) /= nx .or. size(h_ref, 2) /= ny) then
+              deallocate(h_ref)
+              allocate(h_ref, source=h)
+            end if
+            h = h + 1.0e-6_dp * (h_ref - h)
+
+            ! step 03: firing rule
+
+rot-f-first-call:
+  title: >-
+    f is cached at the first FIRING call of a process at a grid shape (`rot_f = f` once,
+    re-cached only when nx or ny differs from the cached array's, never refreshed otherwise)
+    and the Coriolis tendency reads the cache; the continuation's own process caches the base's
+    true f. A first expression that cached once per process with no shape key read the first
+    firing n032 case's 32 x 32 array as 64 x 64 (out of bounds, non-finite state), so it measured
+    an out-of-bounds read, not the declared defect; it was replaced by this one before the
+    recorded run. In the subset's pass 1 the first firing 64 x 64 case is `swr_shear_n064`,
+    whose f equals the base's (same rotation inputs), so the base runs with its own f; the
+    case after it with another f is `swr_shear_n064_axis`. When the base is the FIRST case of
+    its process its cache is its own f, and so is the continuation's: missed.
+  class: must_catch
+  expect_base_first: missed
+  expect_axis_first: caught
+  patches:
+    - old: |-
+        if (allocated(rot_f)) deallocate(rot_f)
+        allocate(rot_f(nx, ny))
+        !$omp parallel do private(i)
+        do j = 1, ny
+          do i = 1, nx
+            rot_f(i, j) = f(i, j)
+          end do
+        end do
+        !$omp end parallel do
+      new: |-
+        if (allocated(rot_f)) then
+          if (size(rot_f, 1) /= nx .or. size(rot_f, 2) /= ny) deallocate(rot_f)
+        end if
+        if (.not. allocated(rot_f)) then
+          allocate(rot_f(nx, ny))
+          rot_f = f
+        end if
+
+ctl-dead-counter:
+  title: a private counter incremented every call and never read
+  class: control
+  patches:
+    - old: "logical :: ok_source_state = .true."
+      new: "logical :: ok_source_state = .true.\n  integer, save :: dead_count = 0"
+    - old: "    ! step 03: firing rule"
+      new: "    dead_count = dead_count + 1\n\n    ! step 03: firing rule"
+
+# Added after the first recorded table (the lead's review of it, as Part 1's r1-* rows were):
+# `rot-f-first-call` above was realised per grid shape, so the declared class — a value cached
+# ONCE per process — had no row of its own. This row is that class, as a scalar, so no shape
+# key is needed.
+rot-dtrot-once:
+  title: >-
+    the rotation's step k*dt is cached at the first firing call of a process (`dt_rot` kept in
+    a module variable, set once, never refreshed). In the suite's pass 1 the first firing case
+    precedes the base and has another dt, so the base rotates with that case's step; the
+    continuation's own process caches the base's. When the base is the first case of its
+    process both cache the base's own step: missed.
+  class: must_catch
+  expect_base_first: missed
+  patches:
+    - old: "real(dp) :: dt_rot"
+      new: "real(dp) :: dt_rot\n    real(dp), save :: dt_rot_once = -1.0_dp"
+    - old: "dt_rot = real(rotation_every, dp) * dt"
+      new: "if (dt_rot_once < 0.0_dp) dt_rot_once = real(rotation_every, dp) * dt\n    dt_rot = dt_rot_once"
+
+# Added after review round 2 (a reviewer's counterexample to 2-13's first wording): the same
+# never-reset phase counter as `rot-phase-counter`, counted at the top of every call, so the
+# refused calls of the cases before the base count too.
+rot-phase-counter-all-calls:
+  title: >-
+    the rotation phase is a private counter of EVERY call since program start (incremented
+    before the guards, so a refused call counts). In pass 1 it adds the 11 refused calls of the
+    cases before the base to the 1745 committed steps; 1756 + 61 is odd, so with
+    rotation.every 2 the base and the continuation fire on different steps at K = 61.
+  class: must_catch
+  patches:
+    - old: "logical :: ok_source_state = .true."
+      new: "logical :: ok_source_state = .true.\n  integer, save :: n_all = 0"
+    - old: "    ! step 01: guards of this spec, before anything else"
+      new: "    n_all = n_all + 1\n    ! step 01: guards of this spec, before anything else"
+    - old: "fire = (rotation == 1) .and. (mod(step + 1, rotation_every) == 0)"
+      new: "fire = (rotation == 1) .and. (mod(n_all, rotation_every) == 0)"

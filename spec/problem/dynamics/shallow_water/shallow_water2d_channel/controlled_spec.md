@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d_channel`
-- `spec_version`: `0.4.0`
+- `spec_version`: `0.4.1`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -460,13 +460,15 @@ Forbid a boundary treatment other than the channel of §3 in the orientation `ch
 
 Forbid realising the `channel_axis=y` channel by transposing the state, the grid or the coordinates to the `x` orientation, computing there and transposing back: the kernel computes each orientation in that orientation, and the `component`s are called with the orientation inputs of §5 steps 1, 5 and 6. Likewise forbid mapping a case onto another sign of `Omega`, `theta0` or `zonal_sign` inside the kernel — computing the reflected case as the original one and reflecting the result: the inputs are evaluated as given. `tests.md` compares the transformed cases with their originals as symmetry pairs (`docs/TESTS.md` §Symmetry pairs), and a kernel that maps one onto the other compares a code path with itself.
 
+Forbid carrying anything from one call of `shallow_water2d_channel__step` to the next outside the state of §5: no step counter, clock, tendency, stage value or reference state the model keeps and a later call reads, and no value cached at the first call of a process or of a case. A value the model keeps privately is established by `shallow_water2d_channel__init` from the current case's inputs, in every process that runs the case, or set by `shallow_water2d_channel__step` from its own arguments at every call before it is read. `tests.md` continues a case from a state sample in a process of its own and judges its final state equal to the uninterrupted run's (`docs/TESTS.md`, the `restart` line), so a kernel that carries state between calls fails there.
+
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself and the `component`; the runner harness is the target's, not a node of this closure), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
 The reference basis is Williamson et al. (1992, JCP 102, 211–224, DOI:10.1016/S0021-9991(05)80016-6) — Test Cases 2 and 3, equations (95) and (101)–(103), and the balance condition (114) reduced to the channel; Test Case 4, equations (116)–(130), mapped to the channel by replacing $\tan^2(d/2a)$ with $\rho^2/R_{low}^2$, the jet $\sin^{14}(2\theta)$ with $\sin^2(\pi r/L_r)$, and the translation rate $u_0/a$ of the centre's longitude with the speed $c_{tr}=U_j\cos\theta_0$ of its position — LeVeque (2002), Toro (2009), and van Leer (1977) for the `MC` limiter. The orientation and sign inputs, the reference of the `tc4_translating_low` depth to the channel centre and the equivariances of §5 are those of [issue #514](https://github.com/seiya/spec2science/issues/514).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md`, with `test_profile_version` of `0.8.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d_channel/tests.md`, with `test_profile_version` of `0.9.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, `ceil`, `exp` (in $b(\zeta)$, with its branch at $\zeta=0$), the periodic-index wrap, the sign reversal at the wall, and the limiter of the reconstruction `component` (the branch on the sign of the product of the two one-sided differences, the `min` over the three slope candidates, and `sign`; that `component`'s §9) are made explicit as non-differentiable operations. `sin`, `cos` and `exp` in the prescribed flow of `tc4_translating_low` and its forcing are differentiable. `channel_axis` and the signs of `Omega`, `theta0` and `zonal_sign` are selections fixed at setup; they introduce no non-differentiable operation into the state update.

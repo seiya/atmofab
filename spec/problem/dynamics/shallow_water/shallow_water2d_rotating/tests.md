@@ -3,16 +3,16 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_rotating_baseline`
-- `test_profile_version`: `0.1.0`
+- `test_profile_version`: `0.2.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d_rotating`
-- `spec_ref.spec_version`: `0.1.0`
+- `spec_ref.spec_version`: `0.1.1`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d_rotating/controlled_spec.md`
 
 ## 1. Test purpose
 This suite verifies the COMPOSITION of the Controlled Spec §5: that the member `problem` `shallow_water2d` is called once per step with `dt` and its output is the state, that the rotation process fires on the steps and with the time step §5 states, that it rotates with this call's `f` cell by cell, that the order is the member first, that the selector switches the process off entirely, and that a refusal of the member is this step's refusal. The member's own discretization is the member's to certify; this suite judges it only where the composition could alter it (6-4, 6-5), restating the member's own bands on cases equal to the member's input for input.
 
-It judges: the rotation alone against the closed form of the RK4 polynomial, at the final state and at every sample, for an interval of `1` and of `4` and a step count whose remainder by `4` is `3` (6-1); a coupled judgment whose value depends on both the member and the rotation and is not a band on the splitting error, the frequency of an inertia-gravity wave on an `f`-plane (6-2); mass over every sample (6-3); the process off, on the member's cone case and its flat linear-wave case, restating the member's bands, and the independence of the result from `f` and `rotation.every` when off (6-4, 6-5); the splitting order and the per-cell `f`, by two-sided bands calibrated against an independent reference, on a square and a rectangular grid (6-6); the four symmetry pairs of `docs/TESTS.md` with `f` transformed (6-7 to 6-10); the refinement judgment against the restricted reference (6-11); and the guards: the interval at `0` and below with the process on and off, the selector outside `{0, 1}`, the member refusing mid-run with the rotation firing on every step, on and never firing, and off, and the member's `dt` refusal with the rotation on (6-12 to 6-15).
+It judges: the rotation alone against the closed form of the RK4 polynomial, at the final state and at every sample, for an interval of `1` and of `4` and a step count whose remainder by `4` is `3` (6-1); a coupled judgment whose value depends on both the member and the rotation and is not a band on the splitting error, the frequency of an inertia-gravity wave on an `f`-plane (6-2); mass over every sample (6-3); the process off, on the member's cone case and its flat linear-wave case, restating the member's bands, and the independence of the result from `f` and `rotation.every` when off (6-4, 6-5); the splitting order and the per-cell `f`, by two-sided bands calibrated against an independent reference, on a square and a rectangular grid (6-6); the four symmetry pairs of `docs/TESTS.md` with `f` transformed (6-7 to 6-10); the refinement judgment against the restricted reference (6-11); and the guards: the interval at `0` and below with the process on and off, the selector outside `{0, 1}`, the member refusing mid-run with the rotation firing on every step, on and never firing, and off, and the member's `dt` refusal with the rotation on (6-12 to 6-15); and the run continued from a state sample in a process of its own against the uninterrupted run, cut between two firings of the rotation (6-16).
 
 The conditions the composition judgments are built under:
 - **Rotation on, non-flat, non-uniform `f`.** 6-3, 6-6 to 6-11 run with the rotation on, over the shear-flow state of 2-3, whose momentum is non-zero and varies along both axes, under the `f` of 2-4, which varies along both axes and is periodic on the doubly periodic domain. A flat state at rest makes the member the identity, and a kernel that skips the member whenever the rotation is on then passes; an `f` that varies along one axis only leaves a mutant reading one cell of `f` visible to one symmetry pair only.
@@ -116,6 +116,9 @@ Each transformed case is the shear-flow base on `nx=ny=64` with the inputs below
 ### 2-12. The state before the first call
 The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-1 to 2-4 at the cell centres, and hands them to the driver as the state before the first step.
 
+### 2-13. The restart case
+`swr_shear_n064_restart` is the shear-flow base on `nx=ny=64` with `history.every=61` ($\mathrm{n\_step}=183$); every other input is `swr_shear_n064`'s. `swr_shear_n064_restart_cont` is a `continuation case` (`docs/GLOSSARY.md`) of it: its inputs are its base's, and the host runs it in a process of its own from the base's state sample at committed step `61` (§3, the `restart` line), the driver's step count and time continuing from that step. A kernel that keeps anything between two calls of `shallow_water2d_rotating__step` outside the state of the Controlled Spec §5 — a step count a case's first call restarts, used in place of the `step` argument, a tendency or a stage value of an earlier call, a value cached once per process (the rotation's step $k\,\Delta t$, a reference state) — ends the continuation in another state than the uninterrupted run, and 6-16 judges the two final states equal exactly. A rotation phase counted from the first call of a process and never reset is offset in the base's process by the calls it counted in the cases before it and in the continuation's by `-61`: 6-16 sees it only when the two offsets differ modulo `rotation.every`. A count of the calls that reach the firing rule (the `1745` committed steps before the base in this suite's order) gives offsets that do not differ, a count of every call (the refused calls included) gives offsets that do (the restart bench of [issue #632](https://github.com/seiya/spec2science/issues/632)), and 6-1 and 6-7 see it on their own cases. The placement (`docs/TESTS.md`, the `restart` line): the base runs the member and the rotation process, on, over a non-uniform `f`; `61` is odd, so no multiple of the call interval `rotation.every=2`, and the first call of the continuation (`step` `61`) is one on which the rotation fires, while a step count restarted at the continuation would not fire it there; `61` and `183 - 61` are both at least `2`; and the base sorts after `swr_pw_n128` and `swr_rot_n016_*`, whose `f` differs, so a value a kernel caches once per process is another case's in the base's process and the base's own in the continuation's. An `f` cached per grid shape is not one of them: the case before the base, `swr_shear_n064_rect`, has another shape, so such a cache is refilled from the base's own `f`, and 6-7 sees it (`docs/TESTS.md`). The stride `61` is this case's alone: the shear-flow cases of 6-3 keep `20`.
+
 ## 3. Execution-control rules
 - $t_{start}=0.0$, and $t_{end}=0.2$ on every case but `swr_rot_n016_k4_rem3` (`0.205`) and the `dt` refusal case of 2-8 (`-0.2`).
 - `dt` and the step count are `derived` values of the case, which the host evaluates by the member's procedure (the member's `tests.md` §3): `dx` $=L_x/nx$, `dy` $=L_y/ny$, then
@@ -125,8 +128,9 @@ The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-1 to 2-4 a
   4. $dt=(t_{end}-t_{start})/\mathrm{n\_step}$.
 
   `f` does not enter the rule. `dt_scale=1.0` on every case but the member refusal cases of 2-8 (`5.0` on the three wet-domain cases, `-1.0` on the `dt` case).
-- The stop condition is $n=\mathrm{n\_step}$. The host's driver calls `shallow_water2d_rotating__step` once per step for $n=1,\dots,\mathrm{n\_step}$, with `step` $=n-1$ (the committed count before the call), `rotation` and `rotation_every` the case inputs `rotation.on` and `rotation.every`, and commits each step whose result `ok` is true. The state the host captures before the first step, after the last and every `every` committed steps consists of `h`, `hu`, `hv`, `z_b`, `f` (`nx` × `ny` each) and the logical result `ok` (`0` before the first step), with the driver's time `t` and committed step count `step`. `every` is the case input `history.every` of the following line: `3` on the cases of 2-6, which with `rotation.every=4` samples between rotation calls and on them; `10` on the wave case (about `0.16` rad of the wave per sample, so no phase error aliases between two samples); `20` on the shear-flow cases; the member's own value on the cases of 2-7, 2-8 and 2-10; `0` (no sample) on the other refusal cases.
-- history: every = (history.every) swr_dry_n032 = 9, swr_dry_n032_k100 = 9, swr_dry_n032_off = 9, swr_dtneg_n032 = 0, swr_guard_every0_n032 = 0, swr_guard_every0_off_n032 = 0, swr_guard_everyneg2_n032 = 0, swr_guard_everyneg_n032 = 0, swr_guard_everyneg_off_n032 = 0, swr_guard_sel2_n032 = 0, swr_guard_selneg_n032 = 0, swr_off_cone_n064 = 90, swr_off_cone_n064_twin = 90, swr_off_flat_n064 = 90, swr_pw_n128 = 10, swr_rot_n016_k1 = 3, swr_rot_n016_k4 = 3, swr_rot_n016_k4_rem3 = 3, swr_shear_n032 = 20, swr_shear_n064 = 20, swr_shear_n064_axis = 20, swr_shear_n064_rect = 20, swr_shear_n064_shift = 20, swr_shear_n064_xmir = 20, swr_shear_n064_ymir = 20, swr_shear_n128 = 20, swr_shear_n256 = 20
+- The stop condition is $n=\mathrm{n\_step}$. The host's driver calls `shallow_water2d_rotating__step` once per step for $n=1,\dots,\mathrm{n\_step}$, with `step` $=n-1$ (the committed count before the call), `rotation` and `rotation_every` the case inputs `rotation.on` and `rotation.every`, and commits each step whose result `ok` is true. The state the host captures before the first step, after the last and every `every` committed steps consists of `h`, `hu`, `hv`, `z_b`, `f` (`nx` × `ny` each) and the logical result `ok` (`0` before the first step), with the driver's time `t` and committed step count `step`. `every` is the case input `history.every` of the following line: `3` on the cases of 2-6, which with `rotation.every=4` samples between rotation calls and on them; `10` on the wave case (about `0.16` rad of the wave per sample, so no phase error aliases between two samples); `20` on the shear-flow cases; `61` on the restart case of 2-13 and its continuation; the member's own value on the cases of 2-7, 2-8 and 2-10; `0` (no sample) on the other refusal cases.
+- history: every = (history.every) swr_dry_n032 = 9, swr_dry_n032_k100 = 9, swr_dry_n032_off = 9, swr_dtneg_n032 = 0, swr_guard_every0_n032 = 0, swr_guard_every0_off_n032 = 0, swr_guard_everyneg2_n032 = 0, swr_guard_everyneg_n032 = 0, swr_guard_everyneg_off_n032 = 0, swr_guard_sel2_n032 = 0, swr_guard_selneg_n032 = 0, swr_off_cone_n064 = 90, swr_off_cone_n064_twin = 90, swr_off_flat_n064 = 90, swr_pw_n128 = 10, swr_rot_n016_k1 = 3, swr_rot_n016_k4 = 3, swr_rot_n016_k4_rem3 = 3, swr_shear_n032 = 20, swr_shear_n064 = 20, swr_shear_n064_axis = 20, swr_shear_n064_rect = 20, swr_shear_n064_restart = 61, swr_shear_n064_restart_cont = 61, swr_shear_n064_shift = 20, swr_shear_n064_xmir = 20, swr_shear_n064_ymir = 20, swr_shear_n128 = 20, swr_shear_n256 = 20
+- restart: swr_shear_n064_restart_cont = swr_shear_n064_restart @ 61
 - distribute: x = grid.nx (min_block 2), y = grid.ny (min_block 2)
 
 ## 4. Case-expansion rules
@@ -149,6 +153,8 @@ The host evaluates `h`, `hu`, `hv`, `z_b` and `f` of each case from 2-1 to 2-4 a
 - `swr_shear_n064_rect`: base `swr_shear_n064`; overrides only `ny` to `48` and `L_y` to `0.5` (2-9).
 - `swr_guard_every0_n032`, `swr_guard_everyneg_n032`, `swr_guard_everyneg2_n032`, `swr_guard_every0_off_n032`, `swr_guard_everyneg_off_n032`, `swr_guard_sel2_n032`, `swr_guard_selneg_n032`: the shear-flow base at `nx=ny=32` with the inputs of 2-8.
 - `swr_dry_n032`, `swr_dry_n032_k100`, `swr_dry_n032_off`, `swr_dtneg_n032`: the member's cases of 2-8 with the rotation inputs of 2-8.
+- `swr_shear_n064_restart`: base `swr_shear_n064`; overrides only `history.every` to `61` (2-13).
+- `swr_shear_n064_restart_cont`: the continuation of 2-13; base `swr_shear_n064_restart`, nothing overridden; it starts from the base's state sample at committed step `61` (§3, the `restart` line) and sorts after its base.
 
 ## 5. Judged quantities
 ### 5-1. How a quantity is judged
@@ -166,12 +172,14 @@ A test is judged by the host's predicates over the captures alone (`docs/TESTS.m
 - `errors.<t>.<v>_l2_rel` (twelve)
 - `errors.restricted.<n>.<v>_<k>_rel` (twenty-seven), `convergence.restricted.<pair>.<v>_<k>_order` (eighteen)
 - `run.n_step`, `run.state_moved`, `run.first_call_refused`, `ok`
+- `restart.<v>`
 
 ### 5-3. Cases of each quantity
 - A quantity is evaluated on the target cases of the tests that list it; it is not defined elsewhere.
 - `off.rotation_inputs_inert` is carried by `swr_off_cone_n064_twin`, which sorts after `swr_off_cone_n064` and reads its final state.
 - `errors.<t>.*` is carried by the transformed case of 2-11, which reads the final state of `swr_shear_n064`.
 - `errors.restricted.*` and `convergence.restricted.*` are carried by `swr_shear_n256`, which sorts after the three coarser levels and reads their final states.
+- `restart.<v>` is carried by `swr_shear_n064_restart_cont`, which sorts after its base and reads the base's final state.
 - Every other quantity is evaluated per case.
 
 ### 5-4. Definition of the quantities
@@ -195,6 +203,7 @@ Sums, means and extrema run over every cell of the case's grid; a `history` quan
 - `run.state_moved`: $\max_{i,j}|h^{final}-h^{initial}|$; positive when at least one step was committed.
 - `run.first_call_refused`: the captured committed step count plus $\max\left(\max_{i,j}|h^{final}-h^{initial}|,\ \max_{i,j}|hu^{final}-hu^{initial}|,\ \max_{i,j}|hv^{final}-hv^{initial}|\right)$; `0` exactly when the first call refused (no step committed, the state as the host gave it).
 - `ok`: the captured logical result after the run.
+- `restart.<v>`: $\max_{i,j}|v^{cont}_{i,j}-v^{base}_{i,j}|$ over the final states of `swr_shear_n064_restart_cont` and `swr_shear_n064_restart`, `maxabs(final.<v> - at('swr_shear_n064_restart').final.<v>)` (2-13); exactly `0` under a kernel that keeps nothing between two steps outside the state.
 
 ### 5-5. Default thresholds
 Every band of a rotating case is calibrated against an independent reference implementation of the Controlled Spec §5 composition (`issue #265`'s procedure): the member's §5 scheme on a flat bottom and the RK4 rotation of §5, written from the Controlled Specs alone, which reproduces the captured state of the certified member composed with a hand-written composing model on every rotating case of this suite to `4.5e-13` relative, per variable the largest absolute difference over the largest absolute reference value, at the final state and at every history sample (system tier PR-S2, `tools/tests/data/drive_ir/system_tier_evidence/`). Each value moves by round-off alone under a conforming kernel: the member's discretization, the RK4 step and the firing rule are each fixed by the Controlled Specs, and `dt` by §3.
@@ -349,6 +358,13 @@ Every band of a rotating case is calibrated against an independent reference imp
 - `judgment`: the first call refuses: `ok` $=0$ and `run.first_call_refused` $=0$. The cross-target judgment is not applied.
 - `expected_outcome`: `xfail`
 - `quantities`: `ok`, `run.first_call_refused`
+
+### 6-16. `l3_restart_equivalence`
+- `target_cases`: `swr_shear_n064_restart`, `swr_shear_n064_restart_cont`
+- `level`: `L3`
+- `judgment`: the run continued from the state sample at committed step `61`, in a process of its own, ends in the state of the uninterrupted run (2-13): `restart.h`, `restart.hu`, `restart.hv` $\le 0$ (equal exactly); `run.n_step`. The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, `hv`, and the threshold is $\le 1.0e{-10}$.
+- `expected_outcome`: `pass`
+- `quantities`: `restart.h`, `restart.hu`, `restart.hv`, `run.n_step`
 
 ## 7. Pass/fail aggregation rules
 `self_verdict` is `pass` when every `pass` test passes and every `xfail` test fails as expected; any other outcome is `fail`. A `pass` test passes when every predicate of every quantity it lists holds on every target case it is evaluated on.

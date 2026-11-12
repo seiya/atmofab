@@ -4,9 +4,20 @@ and a certified cuda model, with no LLM. It writes a directory to copy to a GPU 
 
     PYTHONPATH=. python3 tools/tests/data/driver_e2e/package_cpp_gpu.py package <out> swe|cor
     (at the site, with nvcc on PATH) bash <out>/go.sh
+    PYTHONPATH=. python3 tools/tests/data/driver_e2e/package_cpp_gpu.py continue <out> swe|cor
+    (at the site, when `continue` wrote it) bash <out>/go2.sh
     PYTHONPATH=. python3 tools/tests/data/driver_e2e/package_cpp_gpu.py judge <out> swe|cor
 
-`judge` reads `<out>/run` back and prints every test whose status is not its `expected_outcome`.
+`go.sh` runs the base cases (`Validate.execute`'s first pass). A node whose IR carries continuation
+cases (issue #632; the swe fixture does) needs the second pass, in four steps:
+1. bring `<out>/run` back from the site, and run `continue` here: it writes each continuation's
+   case file from the first pass's samples under `<out>/run/restart/`, and `<out>/go2.sh`;
+2. ship `<out>/go2.sh` and `<out>/run/restart/` to the site (beside the `bin` and `run/` there);
+3. at the site, `bash <out>/go2.sh` runs each continuation in a process of its own;
+4. bring `<out>/run/restart/` back and run `judge`.
+`judge` applies the host's start check to each continuation, merges the captures of those that
+hold into `run/`, prints the ones that do not, and then every test whose status is not its
+`expected_outcome`. Re-running `judge` reads the merged captures again.
 """
 from __future__ import annotations
 
@@ -51,7 +62,8 @@ def package(out: Path, node: str, *, arch: str = "sm_60") -> list[str]:
         shutil.copy(CUDA / f"{dep}_model.cu", out)
         shutil.copy(CUDA / f"{dep}_model.cuh", out)
     stems = sorted(p.stem for p in out.glob("*.cu"))
-    ids = " ".join(sorted(c["case_id"] for c in ir["case"]["test_case_set"]))
+    ids = " ".join(sorted(c["case_id"] for c in ir["case"]["test_case_set"]
+                          if pe.RESTART_CASE_KEY not in c))
     (out / "go.sh").write_text(
         'set -e\ncd "$(dirname "$0")"\n'
         + "".join(f"nvcc -std=c++17 -O2 -rdc=true -arch={arch} -I. -c {s}.cu -o {s}.o\n"
@@ -63,21 +75,62 @@ def package(out: Path, node: str, *, arch: str = "sm_60") -> list[str]:
     return stems
 
 
-def judge(out: Path, node: str) -> int:
+def continue_(out: Path, node: str) -> list[str]:
+    """The second pass's inputs: each continuation's case file from `<out>/run`'s samples, the
+    IR copy and capture directories under `run/restart/`, and `go2.sh`. Returns the ids `go2.sh`
+    runs (none, and no `go2.sh`, on an IR without a continuation); a refused restart point is
+    printed and not run."""
     ir = yaml.safe_load(NODES[node][0].read_text())
+    files, refused = pe.write_continuation_inputs(ir, out / "run")
+    for cid, why in sorted(refused.items()):
+        print(f"{cid}: no restart point: {why}")
+    if not files:
+        return []
+    rdir = out / "run" / pe.RESTART_DIRNAME
+    for sub in ("initial", "history", "series"):
+        (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+    (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+    ids = [f.case_id for f in files]
+    (out / "go2.sh").write_text(
+        'set -e\ncd "$(dirname "$0")/run/restart"\n'
+        + "".join(f'SPEC2SCIENCE_CUDA_BLOCK=128 ../../bin --cases "$PWD/spec.ir.yaml" {c}\n'
+                  for c in ids))
+    return ids
+
+
+def judge(out: Path, node: str) -> int:
+    from tools.workflow_conductor import Conductor
+    ir = yaml.safe_load(NODES[node][0].read_text())
+    problems = []
+    if pe.continuation_cases(ir):
+        files, refused = pe.write_continuation_inputs(ir, out / "run")
+        problems += [f"{cid}: no restart point: {why}" for cid, why in sorted(refused.items())]
+        rdir = out / "run" / pe.RESTART_DIRNAME
+        for cf in files:
+            merged = out / "run" / "raw" / "state_snapshots" / "initial" / f"{cf.case_id}.json"
+            if merged.exists() and not (rdir / "raw" / "state_snapshots" / "initial"
+                                        / f"{cf.case_id}.json").exists():
+                continue   # an earlier `judge` checked and merged it (a re-run reads it again)
+            why = (pe.continuation_start_violation(ir, rdir, cf)
+                   or Conductor._merge_continuation_captures(rdir, out / "run", cf.case_id))
+            if why:
+                problems.append(f"{cf.case_id}: {why}")
     verdict = verdict_evaluator.evaluate_verdict(
         ir["io_contract"]["tests"], pe.evaluate_primary_predicates(ir, out / "run"))
     expected = {t["test_id"]: t["expected_outcome"] for t in ir["io_contract"]["tests"]}
     wrong = {t["test_id"]: t["status"] for t in verdict["per_test"]
              if t["status"] != expected[t["test_id"]]}
     print(json.dumps({"self_verdict": verdict["self_verdict"], "wrong": wrong,
+                      "continuations_not_merged": problems,
                       "perf": json.loads((out / "run" / "perf.json").read_text())}, indent=1))
-    return 1 if wrong else 0
+    return 1 if wrong or problems else 0
 
 
 if __name__ == "__main__":
     action, where, name = sys.argv[1:4]
     if action == "package":
         package(Path(where), name)
+    elif action == "continue":
+        print(continue_(Path(where), name))
     else:
         raise SystemExit(judge(Path(where), name))
