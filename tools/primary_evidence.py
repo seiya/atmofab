@@ -5008,10 +5008,9 @@ def _restart_violations(ir: dict[str, Any], block: DriveBlock,
             v.append(f"{loc}: a continuation carries no initial_state (it starts from its "
                      "restart point, after its base's init)")
         for key in ("inputs", "derived"):
-            mine, theirs = case.get(key), raw_cases[base].get(key)
-            same = (list(mine.items()) == list(theirs.items())
-                    if isinstance(mine, dict) and isinstance(theirs, dict) else mine == theirs)
-            if not same:
+            # equal as values: a continuation is evaluated AS its base (`_evaluation_cases`), so
+            # neither mapping's key order reaches anything
+            if case.get(key) != raw_cases[base].get(key):
                 v.append(f"{loc}: its {key} must equal its base {base!r}'s (a continuation is its "
                          "base's configuration; only its starting state differs)")
         every_path = block.history_every

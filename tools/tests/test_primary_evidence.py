@@ -5983,6 +5983,16 @@ class ContinuationGateTest(unittest.TestCase):
                 edit(ir["case"]["test_case_set"][2])
                 self.assertTrue(any(want in v for v in self._p(ir)), self._p(ir))
 
+    def test_the_same_configuration_in_another_key_order_is_admitted(self) -> None:
+        """Round 1 (both axes): the host writes a leaf's IR keeping its key order, and a
+        continuation is evaluated as its base, so an order alone is no difference."""
+        ir = _continuation_ir()
+        cont = ir["case"]["test_case_set"][2]
+        cont["inputs"] = dict(reversed(list(cont["inputs"].items())))
+        cont["derived"] = dict(reversed(list(cont["derived"].items())))
+        self.assertNotEqual(list(cont["inputs"]), list(ir["case"]["test_case_set"][0]["inputs"]))
+        self.assertEqual(self._p(ir), [])
+
     def test_the_restart_point_is_a_sample_before_the_end(self) -> None:
         for step, every, want in ((3, 2, "no multiple of its base's history.every"),
                                   (4, 1, "not below the base's n_step"),
