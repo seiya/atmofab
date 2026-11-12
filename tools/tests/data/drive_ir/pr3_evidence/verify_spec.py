@@ -98,12 +98,20 @@ def run(ir: dict, model: Path, deps: list[Path], work: Path, mutate: list[str]) 
         raise SystemExit("compile runner: " + r.stderr[-3000:])
     subprocess.run(["gfortran", *FLAGS, *objs, "runner.o", "-o", "bin"], cwd=work, check=True,
                    capture_output=True)
-    ids = sorted(c["case_id"] for c in ir["case"]["test_case_set"])
+    # pass 1 over the base cases, then each continuation case in a process of its own
+    # (issue #632, `test_driver_render.second_pass`)
+    env = {**os.environ, "OMP_NUM_THREADS": "4"}
+    ids = sorted(c["case_id"] for c in ir["case"]["test_case_set"]
+                 if pe.RESTART_CASE_KEY not in c)
     proc = subprocess.run([str(work / "bin"), "--cases", str(work / "ir" / "spec.ir.yaml"), *ids],
                           cwd=work / "run", capture_output=True, text=True, timeout=3000,
-                          env={**os.environ, "OMP_NUM_THREADS": "4"})
+                          env=env)
     if proc.returncode:
         raise SystemExit(f"run rc={proc.returncode}: {proc.stderr[-3000:]}\n{proc.stdout[-1000:]}")
+    from tools.tests.test_driver_render import second_pass
+    _merged, problems = second_pass(ir, work / "run", work / "bin", env)
+    if problems:
+        raise SystemExit("second pass: " + "; ".join(problems))
 
 
 def main() -> int:

@@ -284,36 +284,44 @@ def run_fortran(tmp: Path, ir: dict[str, Any], sid: str = "drv_toy",
     return _exec(tmp, ids)
 
 
-def run_second_pass(run: Run, ir: dict[str, Any]) -> list[str]:
-    """`Validate.execute`'s second pass over ``run`` (issue #632), for a row that judges a whole
-    IR: the real continuation writer reads the first pass's samples, each continuation runs the
-    same binary in a process of its own under `run/restart/`, the host's start check holds, and
-    its captures are merged into the run's capture directory by the conductor's own helper.
-    Returns the continuation ids it merged (none on an IR without one)."""
+def second_pass(ir: dict[str, Any], shape_dir: Path, binary: Path,
+                env: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
+    """`Validate.execute`'s second pass over one execution shape (issue #632), for a test row or
+    an evidence bench that judges a whole IR: the real continuation writer reads the shape's
+    pass-1 samples under ``shape_dir``, each continuation runs ``binary`` in a process of its
+    own under `<shape_dir>/restart/`, the host's start check is applied, and its captures are
+    merged into ``shape_dir`` by the conductor's own helper. Returns the continuation ids merged
+    and one line per continuation that was not (no restart point, a non-zero exit, a failed
+    start check, a refused merge); both are empty on an IR without a continuation."""
     from tools.workflow_conductor import Conductor
-    files, refused = pe.write_continuation_inputs(ir, run.dir / "run")
-    if refused:
-        raise AssertionError(f"continuations refused: {refused}")
+    files, refused = pe.write_continuation_inputs(ir, shape_dir)
+    problems = [f"{cid}: no restart point: {why}" for cid, why in sorted(refused.items())]
     if not files:
-        return []
-    rdir = run.dir / "run" / pe.RESTART_DIRNAME
+        return [], problems
+    rdir = shape_dir / pe.RESTART_DIRNAME
     for sub in ("initial", "history", "series"):
         (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
     (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
     merged = []
     for cf in files:
-        proc = subprocess.run([str(run.dir / "bin"), "--cases", str(rdir / "spec.ir.yaml"),
-                               cf.case_id], cwd=rdir, capture_output=True, text=True,
-                              timeout=600, check=False)
-        if proc.returncode != 0:
-            raise AssertionError(proc.stderr[-2000:])
-        why = pe.continuation_start_violation(ir, rdir, cf)
-        if why is not None:
-            raise AssertionError(why)
-        why = Conductor._merge_continuation_captures(rdir, run.dir / "run", cf.case_id)
-        if why is not None:
-            raise AssertionError(why)
-        merged.append(cf.case_id)
+        proc = subprocess.run([str(binary), "--cases", str(rdir / "spec.ir.yaml"), cf.case_id],
+                              cwd=rdir, capture_output=True, text=True, timeout=3000,
+                              check=False, env=env)
+        why = (f"second-pass rc={proc.returncode}: {proc.stderr[-400:]}" if proc.returncode
+               else pe.continuation_start_violation(ir, rdir, cf)
+               or Conductor._merge_continuation_captures(rdir, shape_dir, cf.case_id))
+        if why:
+            problems.append(f"{cf.case_id}: {why}")
+        else:
+            merged.append(cf.case_id)
+    return merged, problems
+
+
+def run_second_pass(run: Run, ir: dict[str, Any]) -> list[str]:
+    """`second_pass` over ``run``'s directory, raising on any continuation it did not merge."""
+    merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin")
+    if problems:
+        raise AssertionError("; ".join(problems))
     return merged
 
 

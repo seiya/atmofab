@@ -58,6 +58,8 @@ def solve(work: Path, ir: dict[str, Any], variant: str = "stated") -> Path:
         (run / sub).mkdir(parents=True, exist_ok=True)
     cdir = work / "ir" / "case_inputs"
     for case in ir["case"]["test_case_set"]:
+        if pe.RESTART_CASE_KEY in case:
+            continue  # a continuation (issue #632) has no pass-1 case file; no band reads it
         cid = case["case_id"]
         ci = json.loads((cdir / f"{cid}.json").read_text())
         A = lambda k: np.array(ci[k], dtype=float)  # noqa: E731
