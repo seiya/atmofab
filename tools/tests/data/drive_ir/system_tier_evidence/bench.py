@@ -8,6 +8,14 @@ components, Coriolis, RK4), each at the version the catalog holds. Run from the 
   PYTHONPATH=. python3 <this file> [--gate | --gate-only] [--mutant <id>]... [--keep <dir>]
       [--flags certified|bounds] [--cases <id>,...] [--show-values]
   PYTHONPATH=. python3 <this file> --all-mutants [--jobs N] [--json <file>]
+  (PR-S3 V-a) add [--ir certified] [--model generated] [--mutants <file>]
+
+`--ir certified` judges with the CERTIFIED IR of the node (the `ir_ref` of its latest
+`fortran_cpu` pipeline) in place of the hand-authored one; `--model generated` builds the
+certified generated model of that pipeline in place of the hand-written one; `--mutants` names
+the patch file (default `mutants.yaml`, written against the hand-written model;
+`mutants_generated.yaml` re-expresses the same defects on the generated text). A mutant whose
+patch does not apply is reported `NOT APPLICABLE` rather than stopping the table.
 
 1. (`--gate`) `validate_compile_ir_dir` with the repository as root: Compile.static's gates,
    including the `quantities` / `expected_outcome` / `history` / `distribute` lines against the
@@ -78,6 +86,31 @@ def certified_source(kind: str, sid: str) -> Path:
         raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version}")
     print(f"source {kind}/{sid}@{version}: {Path(hits[-1]).relative_to(REPO)}", flush=True)
     return Path(hits[-1])
+
+
+def certified_pipeline() -> Path:
+    cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+    version = next(e["spec_version"] for e in cat if e["spec_id"] == build_ir.SID)
+    hits = sorted(glob.glob(str(REPO / f"workspace/pipelines/problem__{build_ir.SID}__{version}/"
+                                f"fortran_cpu/*/lineage.json")))
+    if not hits:
+        raise SystemExit(f"no fortran_cpu pipeline of problem/{build_ir.SID}@{version}")
+    return Path(hits[-1]).parent
+
+
+def certified_ir() -> dict[str, Any]:
+    lineage = json.loads((certified_pipeline() / "lineage.json").read_text())
+    path = REPO / lineage["ir_ref"] / "spec.ir.yaml"
+    print(f"certified IR: {path.relative_to(REPO)}", flush=True)
+    return yaml.safe_load(path.read_text())
+
+
+def generated_model() -> Path:
+    pipe = certified_pipeline()
+    lineage = json.loads((pipe / "lineage.json").read_text())
+    path = pipe / "source" / lineage["source_id"] / "src" / f"{build_ir.SID}_model.f90"
+    print(f"generated model: {path.relative_to(REPO)}", flush=True)
+    return path
 
 
 def gate(ir: dict[str, Any]) -> list[str]:
@@ -245,6 +278,8 @@ def _run_mutant(job: tuple) -> tuple[str, dict[str, Any]]:
     """One mutant in a worker process: build, run, judge; the tests it moved and the records it
     failed."""
     mid, ir, text, flags = job
+    if text is None:
+        return mid, {"not_applicable": True}
     try:
         verdict, records, note = one(ir, text, flags, None)
     except SystemExit as exc:
@@ -267,10 +302,17 @@ def main() -> int:
     ap.add_argument("--show-values", action="store_true")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--json", help="write the mutant table as JSON here")
+    ap.add_argument("--ir", choices=("hand", "certified"), default="hand")
+    ap.add_argument("--model", choices=("hand", "generated"), default="hand")
+    ap.add_argument("--mutants", default=str(MUTANTS))
     a = ap.parse_args()
-    ir = yaml.safe_load(build_ir.TRANSCRIPTION.read_text())
-    if ir != build_ir.build():
-        raise SystemExit(f"{build_ir.TRANSCRIPTION} differs from build_ir.build(): run build_ir.py")
+    if a.ir == "certified":
+        ir = certified_ir()
+    else:
+        ir = yaml.safe_load(build_ir.TRANSCRIPTION.read_text())
+        if ir != build_ir.build():
+            raise SystemExit(f"{build_ir.TRANSCRIPTION} differs from build_ir.build(): "
+                             "run build_ir.py")
     # build_ir's placeholder for a band bands.yaml lacks is +-1e300, which judges nothing
     vacuous = [(p["test_id"], p["quantity"]) for p in ir["io_contract"]["predicates"]
                if "1e+300" in repr(p["value"])]
@@ -294,10 +336,11 @@ def main() -> int:
         rc = 1 if findings else 0
         if a.gate_only:
             return rc
-    base = MODEL.read_text()
+    base = (generated_model() if a.model == "generated" else MODEL).read_text()
+    mutants_path = Path(a.mutants)
     flags = FLAGS[a.flags]
     if not a.all_mutants:
-        mutants = yaml.safe_load(MUTANTS.read_text()) if a.mutant else {}
+        mutants = yaml.safe_load(mutants_path.read_text()) if a.mutant else {}
         text = base
         for m in a.mutant:
             text = apply_patches(text, mutants[m]["patches"])
@@ -306,17 +349,28 @@ def main() -> int:
             print(note)
         moved = report(ir, verdict, records, a.show_values)
         return 0 if a.mutant else (1 if moved or rc else 0)
-    mutants = yaml.safe_load(MUTANTS.read_text())
+    mutants = yaml.safe_load(mutants_path.read_text())
     table: dict[str, Any] = {}
+
+    def patched(mid: str) -> str | None:
+        if mutants[mid].get("not_applicable"):
+            return None
+        try:
+            return apply_patches(base, mutants[mid]["patches"])
+        except SystemExit as exc:
+            print(f"   patch of {mid} does not apply: {exc}")
+            return None
 
     # processes, not threads: the judging is Python under the GIL and dominates a run
     with cf.ProcessPoolExecutor(a.jobs) as ex:
-        jobs = [(mid, ir, apply_patches(base, mutants[mid]["patches"]), flags) for mid in mutants]
+        jobs = [(mid, ir, patched(mid), flags) for mid in mutants]
         for mid, res in ex.map(_run_mutant, jobs):
             table[mid] = res
             caught = bool(res.get("moved"))
+            status = ("NOT APPLICABLE" if res.get("not_applicable")
+                      else "CAUGHT" if caught else "NOT CAUGHT")
             print(f"== mutant {mid}: {mutants[mid]['title']}  ->  "
-                  f"{'CAUGHT' if caught else 'NOT CAUGHT'} {res.get('note', '')[:200]}")
+                  f"{status} {res.get('note', '')[:200]}")
             for t in res.get("moved", []):
                 print("     moved", t)
             for r in res.get("failed", [])[:12]:
@@ -327,7 +381,9 @@ def main() -> int:
     if a.json:
         Path(a.json).write_text(json.dumps(table, indent=1, default=str))
     missed = [m for m in mutants if mutants[m]["class"] == "must_catch"
-              and not table[m].get("moved")]
+              and not table[m].get("moved") and not table[m].get("not_applicable")]
+    inapplicable = [m for m in mutants if table[m].get("not_applicable")]
+    print(f"not applicable: {inapplicable or 'none'}")
     surprised = [m for m in mutants if mutants[m]["class"] != "must_catch"
                  and table[m].get("moved")]
     print(f"must_catch not caught: {missed or 'none'}; declared unobservable caught: "
