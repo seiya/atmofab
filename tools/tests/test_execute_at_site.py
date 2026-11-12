@@ -993,6 +993,8 @@ _LOOP_RUNNER = textwrap.dedent('''\
         steps += n - k0
         if os.environ.get("FAIL_CASE") == c:
             sys.exit(3)
+        if k0 > 0 and os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS"):
+            sys.exit(4)
     threads = os.environ.get("OMP_NUM_THREADS")
     json.dump({"steps": steps, **({} if threads is None else
                                   {"parallelism": {"threads_per_rank": int(threads)}})},
@@ -1142,10 +1144,49 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertFalse((n.node_dir / "trial_meta.json").exists())
 
     def test_the_build_control_file_s_default_lists_the_base_cases(self) -> None:
+        """Both writers of the control file (`_write_makefile`, and the inputs the bundle-derived
+        render takes) default `CASES` to the base cases: a hand-run quality check then runs."""
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp)
             self.assertEqual(n.conductor.read_base_case_ids(n.refs), ("m0",))
             self.assertEqual(n.conductor.read_case_ids(n.refs), ("m0", "m0_cont"))
+            _render, inputs = n.conductor._control_file_render_inputs(n.refs)
+            self.assertEqual(inputs["cases_default"], "m0")
+            with mock.patch.object(wc.Conductor, "_dependency_closure", return_value=[]):
+                n.conductor._write_makefile(n.refs)
+            lines = [line for line in (n.src / "Makefile").read_text().splitlines()
+                     if line.startswith("CASES")]
+            self.assertEqual(lines, ["CASES ?= m0"])
+
+    def test_a_sweep_shape_s_failing_continuation_fails_that_shape(self) -> None:
+        """The second pass of a sweep shape exits non-zero: that shape's row is not `ok`,
+        records the second pass's failure, and the quality check fails; the run's own shape,
+        whose continuation passed, is unaffected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            out = self._execute(n, FAIL_CONT_THREADS="2")
+            self.assertEqual(out["returncode"], 0, out)
+            quality = json.loads((n.node_dir / "quality_check.json").read_text())
+            rows = {s["label"]: s for s in quality["shapes"]}
+            self.assertFalse(rows["threads_2"]["run_ok"])
+            failure = rows["threads_2"]["run_failure"]["second_pass"]
+            self.assertEqual((failure["case_id"], failure["return_code"]), ("m0_cont", 4))
+            self.assertTrue(rows["threads_3"]["run_ok"])
+            self.assertEqual(quality["status"], "fail")
+
+    def test_the_checked_binary_s_failing_continuation_fails_its_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            n.checked_binary.write_text(_LOOP_RUNNER.replace(
+                'os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS")',
+                "True"), encoding="utf-8")
+            out = self._execute(n)
+            self.assertEqual(out["returncode"], 0, out)
+            quality = json.loads((n.node_dir / "quality_check.json").read_text())
+            row = {s["label"]: s for s in quality["shapes"]}["checked"]
+            self.assertFalse(row["run_ok"])
+            self.assertEqual(row["run_failure"]["second_pass"]["case_id"], "m0_cont")
+            self.assertEqual(quality["status"], "fail")
 
 
 if __name__ == "__main__":
