@@ -539,7 +539,8 @@ def report(results: list[tuple[dict[str, Any], dict[str, Any]]], json_path: str 
                       "restart_test": RESTART_TEST in res.get("moved", []), **{k: v for k, v in res.items()}})
     for subj, order, variant in sorted(moved_baseline):
         print(f"BASELINE CAUGHT on {subj}/{order}/{variant}: no row there is a measurement")
-    print("must_catch rows (suite order) the restart test itself did not catch:"
+    print("must_catch rows the restart test itself did not catch (suite order; `cut` is the "
+          "suite's K, `multiple` the placement control's):"
           + ("" if restart_missed else " none"))
     for line in restart_missed:
         print("  ", line)
