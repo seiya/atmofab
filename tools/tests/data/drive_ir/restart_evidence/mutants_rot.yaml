@@ -58,7 +58,7 @@ rot-stale-stage:
     RK4's first-stage tendency (stage 1 of the Coriolis rhs) is kept (module save) and the
     current firing uses the PREVIOUS firing's stage-1 tendency in its place (the fresh one is
     computed and kept for the next firing); a process's first firing at a grid shape uses
-    its fresh one. The continuation's first firing (step 62) is fresh where the base's used
+    its fresh one. The continuation's first firing (driver step n = 62, the call with `step` 61) is fresh where the base's used
     the stage-1 tendency of step 60.
   class: must_catch
   patches:
@@ -174,3 +174,21 @@ rot-dtrot-once:
       new: "real(dp) :: dt_rot\n    real(dp), save :: dt_rot_once = -1.0_dp"
     - old: "dt_rot = real(rotation_every, dp) * dt"
       new: "if (dt_rot_once < 0.0_dp) dt_rot_once = real(rotation_every, dp) * dt\n    dt_rot = dt_rot_once"
+
+# Added after review round 2 (a reviewer's counterexample to 2-13's first wording): the same
+# never-reset phase counter as `rot-phase-counter`, counted at the top of every call, so the
+# refused calls of the cases before the base count too.
+rot-phase-counter-all-calls:
+  title: >-
+    the rotation phase is a private counter of EVERY call since program start (incremented
+    before the guards, so a refused call counts). In pass 1 it adds the 11 refused calls of the
+    cases before the base to the 1745 committed steps; 1756 + 61 is odd, so with
+    rotation.every 2 the base and the continuation fire on different steps at K = 61.
+  class: must_catch
+  patches:
+    - old: "logical :: ok_source_state = .true."
+      new: "logical :: ok_source_state = .true.\n  integer, save :: n_all = 0"
+    - old: "    ! step 01: guards of this spec, before anything else"
+      new: "    n_all = n_all + 1\n    ! step 01: guards of this spec, before anything else"
+    - old: "fire = (rotation == 1) .and. (mod(step + 1, rotation_every) == 0)"
+      new: "fire = (rotation == 1) .and. (mod(n_all, rotation_every) == 0)"

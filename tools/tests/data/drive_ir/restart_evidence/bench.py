@@ -61,7 +61,8 @@ Rows (declared before the bench ran; ids and classes are in the mutant files' he
   real writer wrote it (`ctl-step-zero-file`, `ctl-initial-state-file`; done by wrapping
   `primary_evidence.write_continuation_inputs` in the worker), or the second-pass binary wrapped
   in a script that exits 3 after the binary wrote its captures (`ctl-pass2-nonzero`);
-* order controls (`rot` only): `rot-f-first-call` and the baseline again with pass 1 running
+* order controls (`rot` only): the baseline and each row that declares `expect_base_first` /
+  `expect_axis_first` (`rot-f-first-call`; `rot-dtrot-once`, base-first only) again with pass 1 running
   ONLY the restart base (`base_first`: the base is the first case of its process, only the
   restart test is judged), where the mutant is declared missed (`expect_base_first: missed`),
   and with pass 1 running `swr_shear_n064_axis` (the same 64 x 64 shape, another f) and then the
@@ -83,7 +84,9 @@ Exit 1 when: a `must_catch` row (suite order, K = 61) is not caught; a `control`
 baseline is caught (a moved baseline also makes every row of its subject not a measurement); an
 `instrument` row is not caught; an order-control row differs from its `expect_*`; or any row is
 not measured (a patch that does not apply, a build error, an exception) or did not judge the
-restart test. The placement rows never fail the run except by not being measured. Else 0. The
+restart test. A placement row (K = 62) fails the run only when it is not measured, when its
+baseline is caught, or when it did not judge the restart test; whether its mutants are caught is
+recorded, not required. Else 0. The
 summary also lists every `must_catch` row the RESTART TEST itself did not catch (caught by
 another test or not at all): a finding to report, not an exit condition.
 
