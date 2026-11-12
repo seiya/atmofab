@@ -71,7 +71,7 @@ source; do not uniformly require a fixed minimal composition.
 - **`raw/state_snapshots/<case_id>.json`** — when `state_snapshots` is required,
   the runner writes **exactly one snapshot per case**, named from the `case_id`
   it receives on argv (`--cases <spec.ir.yaml> <case_id>...`, one positional per
-  `case.test_case_set[]`). Build the path from that `case_id`
+  case the invocation runs: a continuation case runs alone, below). Build the path from that `case_id`
   (`trim(case_id)//'.json'`), never a hardcoded/sequential literal
   (`snapshot_0001.json`) or a single combined file: a string-literal name is
   flagged by `post_generate`; a wrong runtime-built name fails
@@ -112,7 +112,7 @@ source; do not uniformly require a fixed minimal composition.
   above.
 - **`raw/state_snapshots/series/<case_id>.json`** (the same node, when the IR requires
   `step_series`) — exactly the names the IR's `step_series` entry declares, `step`, `<v>_min` and
-  `<v>_max` of every array state, each a list with one entry per committed step, all of one length,
+  `<v>_max` of every array state, each a list with one entry per committed step it ran, all of one length,
   and the writer's scalar `t`, the time of the last committed state. `t` is not a series name. The
   driver folds the extrema over the committed state and carries a non-finite committed cell into
   the entry as `NaN`, and the host's series reader refuses such an entry.

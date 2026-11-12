@@ -21797,7 +21797,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # writing a strict fan-out check must read. Measured 12487.
         # Raised 12700->15500 (issue #589 PR-1b): §3 gains what the driver writes (`initial/`,
         # `history/`, `series/`), and §2 and §6 what it computes. Measured 15150.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 15500,
+        # Raised 15500->15600 (issue #632, P1 round 2): §3 says a continuation case runs in an
+        # invocation of its own and its series covers the steps it ran, which the judge, handed
+        # §3, otherwise reads as a defect of the run. Measured 15523 with `wc -c`.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 15600,
         # New (issue #589 PR-1b): the gate guards moved here with the checks ABI bindings' deletion.
         # Measured 39235 and 30421 at this commit.
         "docs/backends/language/fortran/GENERATE_RULES.md": 40000,
