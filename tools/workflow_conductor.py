@@ -13171,6 +13171,10 @@ class Conductor:
             if not row.get("run_ok"):
                 failure = row.get("run_failure") if isinstance(row.get("run_failure"), dict) \
                     else {}
+                cont = failure.get("continuation")
+                if cont is not None:
+                    where += (f", in the second pass: continuation {cont!r}, run in a process of "
+                              "its own from its base's history sample (issue #632)")
                 if "not_run" in failure:
                     lines.append(f"[execute fail: quality_check] {where}: did not run: "
                                  f"{failure['not_run']}")
@@ -13921,6 +13925,13 @@ class Conductor:
             return any(p.name != "snapshot_schema.json"
                        for p in (run_dir / "raw" / "state_snapshots").glob("*.json"))
 
+        def second_pass_failure(failed: dict[str, Any]) -> dict[str, Any]:
+            """A shape row's `run_failure` for a second-pass process that did not exit 0: the
+            same top-level fields a first-pass failure carries (`_quality_check_failure_lines`
+            reads those), and the continuation it ran under `continuation`."""
+            return {**{k: v for k, v in failed.items() if k != "case_id"},
+                    "continuation": failed["case_id"]}
+
         shape_runs = [{"shape": target.certified_shape, "dir": run_tmp, "ok": True,
                        "command_id": res_run.get("command_id")}]
         # A sweep shape that did not run names the command that stopped it — the first earlier
@@ -13944,7 +13955,7 @@ class Conductor:
                                     "error": res.get("error"),
                                     **_stderr_head_and_tail(res.get("stderr") or "")}
             elif shape.label in restart_failed:
-                entry["failure"] = {"second_pass": restart_failed[shape.label]}
+                entry["failure"] = second_pass_failure(restart_failed[shape.label])
             earlier.append((f"shape {shape.label}", res))
             shape_runs.append(entry)
         if checked is not None:
@@ -13965,7 +13976,7 @@ class Conductor:
                                     "error": res_checked.get("error"),
                                     **_stderr_head_and_tail(res_checked.get("stderr") or "")}
             elif checked.label in restart_failed:
-                entry["failure"] = {"second_pass": restart_failed[checked.label]}
+                entry["failure"] = second_pass_failure(restart_failed[checked.label])
             shape_runs.append(entry)
         qc_status = self._author_quality_check(
             node_dir, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
@@ -14087,6 +14098,17 @@ class Conductor:
             block = "\n[execute fail]\n" + gate.stdout + gate.stderr
             if snapshot_gap:
                 block += "\n" + snapshot_gap
+            # A continuation refused in another shape than the run's (issue #632): its captures
+            # are absent there, and that shape's comparison with the reference fails; this says
+            # why, which the comparison alone does not.
+            for label, causes in sorted(restart_causes.items()):
+                if label == "run":
+                    continue
+                where = ("the quality check's re-run (the serial reference)"
+                         if label == "qc_run" else f"shape {label}")
+                for cid, why in sorted(causes.items()):
+                    block += (f"\n[execute fail: continuation] in {where}: continuation {cid!r} "
+                              f"has no captures: {why}")
             # Actionable cause when the quality-check candidate captured nothing:
             # the control file's quality-check target must invoke the runner with `--cases`
             # (the runner requires it and aborts without it). run_program's captures being

@@ -1193,6 +1193,26 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertFalse(rows["threads_2"]["verdict_match"])
             self.assertEqual(quality["status"], "fail")
 
+    def test_a_start_check_refusal_in_any_shape_reaches_the_repair_excerpt(self) -> None:
+        """Round 2 (axis A F1): a continuation that re-ran its base in the quality check's
+        re-run, or under the checked binary, fails the quality check; the excerpt says which
+        continuation, where, and why — the comparison alone names only a verdict mismatch."""
+        for where, text in (("qc_run", "in the quality check's re-run (the serial reference)"),
+                            ("checked", "in shape checked")):
+            with self.subTest(where), tempfile.TemporaryDirectory() as tmp:
+                n = self._node(tmp)
+                for b in (n.binary, n.checked_binary):
+                    b.write_text(_LOOP_RUNNER.replace(
+                        'or os.environ.get("IGNORE_RESTART_CASE") == c',
+                        f'or "{where}" in os.getcwd()'), encoding="utf-8")
+                out = self._execute(n)
+                record = json.loads((n.node_dir / "trial_meta.json").read_text())
+                self.assertIn("did not start at step 2",
+                              record["restart_pass"][where]["continuations"][0]["start_check"])
+                self.assertIn(f"[execute fail: continuation] {text}: continuation 'm0_cont' "
+                              "has no captures: continuation 'm0_cont' did not start at step 2",
+                              out["stderr"])
+
     def test_the_merge_moves_exactly_the_continuation_s_names(self) -> None:
         """Round 1 (axis A): `<C>.json` and `history/<C>__<k>.json`, and not the captures of a
         case whose id starts with `<C>__`; and a name the first pass wrote is refused, moving
@@ -1285,10 +1305,15 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             quality = json.loads((n.node_dir / "quality_check.json").read_text())
             rows = {s["label"]: s for s in quality["shapes"]}
             self.assertFalse(rows["threads_2"]["run_ok"])
-            failure = rows["threads_2"]["run_failure"]["second_pass"]
-            self.assertEqual((failure["case_id"], failure["return_code"]), ("m0_cont", 4))
+            failure = rows["threads_2"]["run_failure"]
+            self.assertEqual((failure["continuation"], failure["return_code"]), ("m0_cont", 4))
             self.assertTrue(rows["threads_3"]["run_ok"])
             self.assertEqual(quality["status"], "fail")
+            # round 2 (Codex P2): the repair excerpt names the continuation and the exit status
+            line = next(ln for ln in out["stderr"].splitlines()
+                        if "shape threads_2" in ln and "[execute fail: quality_check]" in ln)
+            self.assertIn("continuation 'm0_cont'", line)
+            self.assertIn("rc=4", line)
 
     def test_the_checked_binary_s_failing_continuation_fails_its_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1301,8 +1326,12 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             quality = json.loads((n.node_dir / "quality_check.json").read_text())
             row = {s["label"]: s for s in quality["shapes"]}["checked"]
             self.assertFalse(row["run_ok"])
-            self.assertEqual(row["run_failure"]["second_pass"]["case_id"], "m0_cont")
+            self.assertEqual(row["run_failure"]["continuation"], "m0_cont")
             self.assertEqual(quality["status"], "fail")
+            line = next(ln for ln in out["stderr"].splitlines()
+                        if "the checked row" in ln and "[execute fail: quality_check]" in ln)
+            self.assertIn("continuation 'm0_cont'", line)
+            self.assertIn("rc=4", line)
 
 
 if __name__ == "__main__":
