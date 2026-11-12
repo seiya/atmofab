@@ -22235,10 +22235,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # continuation case (`restart: {from, step}`), the predicate grammar the `series.*` range
         # on one, and the gate list (p) and (r), which the compile producer transcribes from the
         # tests.md `restart:` line. Measured 113688 with `wc -c` (113753 after review round 3).
-        # Raised 113800->114550 (issue #632 P2): gate (q), the continuation case a time-marching
+        # Raised 113800->114650 (issue #632 P2): gate (q), the continuation case a time-marching
         # `problem` carries, in the gate list and the `case` block, and V3 (vii), where the cut
-        # is placed. Measured 114444 with `wc -c` (114488 after review round 1).
-        "docs/workflow/phases/phase_01_compile.md": 114550,
+        # is placed. Measured 114444 with `wc -c` (114488 after review round 1, 114569 after
+        # review round 3).
+        "docs/workflow/phases/phase_01_compile.md": 114650,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
