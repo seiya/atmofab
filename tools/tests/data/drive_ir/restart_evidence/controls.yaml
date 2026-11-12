@@ -1,0 +1,43 @@
+# Issue #632 P2 restart bench — instrument controls, run on every subject (class `instrument`:
+# each must FAIL the run — by the host start check, a non-zero exit, a missing capture, or the
+# restart test). Declared before the bench ran (ids verbatim from the plan):
+#   - `ctl-no-restart-read`: the driver rendered without the `restart.step` read (patch the
+#     rendered runner text so the continuation re-runs its base from step 0).
+#   - `ctl-t-not-restored`: the driver restores state and step but leaves `t` at `t_start`.
+#   - `ctl-step-zero-file`: the continuation file written with `restart.step: 0`.
+#   - `ctl-initial-state-file`: the continuation file's `restart.<v>` replaced by the base's
+#     INITIAL state.
+#   - `ctl-pass2-nonzero`: the second-pass process exits non-zero after writing its captures
+#     (wrap the binary in a script).
+# `runner_patches` apply to the text `render_runner` returns (Part 1's `apply_patches`);
+# `file_edit` edits each file the real `write_continuation_inputs` wrote, before the second
+# pass runs it; `wrapper` runs the second pass through `sh -c '<bin> "$@"; exit 3'`.
+
+ctl-no-restart-read:
+  title: the rendered driver's restart.step read replaced by step0 = 0
+  class: instrument
+  runner_patches:
+    - old: "step0 = harness_fortran_cpu__get_int('restart.step')"
+      new: "step0 = 0"
+
+ctl-t-not-restored:
+  title: the rendered driver restores the state and the step count but not t (t stays t_start)
+  class: instrument
+  runner_patches:
+    - old: "t_c = t_start_c + real(step0, dp) * dt_c"
+      new: "continue"
+
+ctl-step-zero-file:
+  title: the continuation file's restart.step rewritten to 0 after the writer wrote it
+  class: instrument
+  file_edit: step_zero
+
+ctl-initial-state-file:
+  title: the continuation file's restart.<v> rewritten to the base's initial capture
+  class: instrument
+  file_edit: initial_state
+
+ctl-pass2-nonzero:
+  title: the second-pass process exits 3 after the binary wrote its captures
+  class: instrument
+  wrapper: true
