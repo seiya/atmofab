@@ -30729,6 +30729,10 @@ class RestartLineGateTests(unittest.TestCase):
         # a line naming a continuation the IR does not declare
         found = self._r("restart: c = m0 @ 2\n", self._ir())
         self.assertIn("the IR's continuation cases are []", found[0])
+        # and the other direction: the IR declares one the line does not state (round 1, M28)
+        found = self._r("restart: c = m0 @ 2\n", self._ir(("c", "m0", 2), ("d", "m1", 2)))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("'d = m1 @ 2'", found[0])
 
     def test_a_malformed_restart_in_the_ir_is_named(self) -> None:
         ir = self._ir(("c", "m0", 2))

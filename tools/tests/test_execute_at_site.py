@@ -1011,12 +1011,13 @@ class ContinuationAtExecuteTests(unittest.TestCase):
     each continuation in a process of its own from that shape's own sample, the host checks
     where it started, and only then are its captures merged."""
 
-    def _node(self, tmp: str, site: Site | None = None) -> _Node:
+    def _node(self, tmp: str, *, remote: bool = False) -> _Node:
         import yaml
 
         from tools import primary_evidence as pe
         from tools.tests.test_driver_render import loop_ir
-        n = _Node(tmp, site=site or Site(LOCAL_SITE, ("cpu",)))
+        # `_Node`'s own default is the shim-reached remote site `box`
+        n = _Node(tmp) if remote else _Node(tmp, site=Site(LOCAL_SITE, ("cpu",)))
         ir = loop_ir(0, every=1, n_step=4)
         cont = {**{k: v for k, v in ir["case"]["test_case_set"][0].items()
                    if k != "initial_state"}, "case_id": "m0_cont",
@@ -1101,12 +1102,40 @@ class ContinuationAtExecuteTests(unittest.TestCase):
 
     def test_a_continuation_at_a_site_runs_in_a_second_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            n = self._node(tmp, site=None)
-            n.site = n.conductor.site
+            n = self._node(tmp, remote=True)
+            self.assertFalse(n.conductor.site.is_local)
             self._assert_continued(n, self._execute(n))
+            jobs = [json.loads(line) for line in n.log.read_text().splitlines()]
+            self.assertTrue(any("arid-1.restart" in " ".join(map(str, call)) for call in jobs))
             jobs = sorted(p.name for p in n.workdir.joinpath("orch_1").iterdir()) \
                 if n.workdir.joinpath("orch_1").exists() else []
             self.assertEqual(jobs, [])   # both jobs removed their directories
+
+    def test_a_second_job_on_another_machine_fails_the_run(self) -> None:
+        """Round 1 (axis A, M5): a continuation is compared with a base run on the first job's
+        machine, so a second job that reports another platform is refused."""
+        from tools import remote_execution
+        real = remote_execution.execute_job
+        calls: list[int] = []
+
+        def elsewhere(request, *, local_tmp):
+            result = real(request, local_tmp=local_tmp)
+            calls.append(1)
+            if len(calls) == 2:
+                return result._replace(platform={**result.platform, "machine": "other"}) \
+                    if hasattr(result, "_replace") else type(result)(
+                        results=result.results,
+                        platform={**result.platform, "machine": "other"},
+                        site_record=result.site_record, collected=result.collected,
+                        toolchain_version=result.toolchain_version)
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, remote=True)
+            with mock.patch.object(remote_execution, "execute_job", elsewhere), \
+                    self.assertRaisesRegex(RuntimeError, "ran on another machine"):
+                self._execute(n)
+            self.assertEqual(len(calls), 2)
 
     def test_a_continuation_that_re_ran_its_base_has_no_captures_and_says_why(self) -> None:
         """The instrument control: a driver that reads `restart.step` as 0 passes every equality
