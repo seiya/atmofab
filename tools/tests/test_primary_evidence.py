@@ -6004,6 +6004,21 @@ class ContinuationGateTest(unittest.TestCase):
                 ir["case"]["test_case_set"][2]["restart"]["step"] = step
                 self.assertTrue(any(want in v for v in self._p(ir)), self._p(ir))
 
+    def test_the_step_is_bounded_by_a_derived_n_step_too(self) -> None:
+        """Round 2 (axis A, P17b): four of the five real loop IRs bind `loop.n_step` to a
+        `derived` value; the bound reads the base's evaluated one."""
+        for step, refused in ((4, True), (2, False)):
+            with self.subTest(step=step):
+                ir = _continuation_ir()
+                ir["drive"]["loop"]["n_step"] = "derived.n_step"
+                for case in ir["case"]["test_case_set"]:
+                    case["derived"] = {"n_step": "inputs.n_step", **case["derived"]}
+                ir["case"]["test_case_set"][2]["restart"]["step"] = step
+                found = [v for v in self._p(ir) if "not below the base's n_step" in v]
+                self.assertEqual(bool(found), refused, self._p(ir))
+                if refused:
+                    self.assertIn("n_step 4", found[0])
+
     def test_the_judgment_is_its_one_form(self) -> None:
         def one(mutate: Any) -> list[str]:
             ir = _continuation_ir()

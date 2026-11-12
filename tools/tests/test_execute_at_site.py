@@ -983,8 +983,10 @@ _LOOP_RUNNER = textwrap.dedent('''\
         cap = lambda k: {"u": u, "w": w, "ok": ok, "step": float(k), "t": t0 + k * dt}
         dump("initial/" + c, cap(k0))
         series = {"step": [], "u_min": [], "u_max": [], "w_min": [], "w_max": []}
+        scale = (int(os.environ.get("OMP_NUM_THREADS") or 1)
+                 if os.environ.get("STEP_BY_THREADS") else 1)
         for k in range(k0 + 1, n + 1):
-            u = [x + dt for x in u]
+            u = [x + dt * scale for x in u]
             w, ok = list(u), 1.0
             for name, col in (("step", [float(k)]), ("u_min", [min(u)]), ("u_max", [max(u)]),
                               ("w_min", [min(w)]), ("w_max", [max(w)])):
@@ -994,6 +996,8 @@ _LOOP_RUNNER = textwrap.dedent('''\
         dump(c, cap(n))
         dump("series/" + c, {**series, "t": t0 + n * dt})
         steps += n - k0
+        if k0 == 0 and os.environ.get("FAIL_BASE_THREADS") == os.environ.get("OMP_NUM_THREADS"):
+            sys.exit(5)
         if os.environ.get("FAIL_CASE") == c:
             sys.exit(3)
         if k0 > 0 and os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS"):
@@ -1078,6 +1082,15 @@ class ContinuationAtExecuteTests(unittest.TestCase):
                 self.assertEqual(e["command"][-1], "m0")
         qc = n.log_entries(n.src / "command_log.jsonl")
         self.assertEqual(len(qc), 2)
+        # each shape's second pass ran under that shape's own environment (round 2, X4-X7)
+        tmp_root = n.repo / "workspace" / "tmp" / "arid-1"
+        threads = {"run": n.target.threads_per_rank, "qc_run": 1, "threads_2": 2,
+                   "threads_3": 3, "checked": 1}
+        dirs = {"run": tmp_root / "run", "qc_run": tmp_root / "qc_run",
+                **{k: tmp_root / "sweep" / k for k in ("threads_2", "threads_3", "checked")}}
+        for label, want in threads.items():
+            perf = json.loads((dirs[label] / "restart" / "perf.json").read_text())
+            self.assertEqual(perf["parallelism"]["threads_per_rank"], want, label)
         # the host verdict over the promoted captures judges the continuation against its base
         import yaml
 
@@ -1118,9 +1131,12 @@ class ContinuationAtExecuteTests(unittest.TestCase):
         real = remote_execution.execute_job
         calls: list[int] = []
 
+        machines: list[object] = []
+
         def elsewhere(request, *, local_tmp):
             result = real(request, local_tmp=local_tmp)
             calls.append(1)
+            machines.append(request.machine)
             if len(calls) == 2:
                 return result._replace(platform={**result.platform, "machine": "other"}) \
                     if hasattr(result, "_replace") else type(result)(
@@ -1136,6 +1152,30 @@ class ContinuationAtExecuteTests(unittest.TestCase):
                     self.assertRaisesRegex(RuntimeError, "ran on another machine"):
                 self._execute(n)
             self.assertEqual(len(calls), 2)
+            # both jobs ask the site for the machine the binary was built on (round 2, C18)
+            self.assertEqual(machines, [platform.machine()] * 2)
+
+    def test_each_shape_continues_from_its_own_sample(self) -> None:
+        """Round 2 (axis A, X1 / C17): the state a step commits depends on the shape (here on
+        its thread count), so a shape continuing from another shape's sample would end apart
+        from its own base; each continuing from its own, every shape agrees with itself and the
+        quality check passes. Locally and at a site, whose second job brings each shape's
+        `restart/` home to that shape."""
+        for remote in (False, True):
+            with self.subTest(remote=remote), tempfile.TemporaryDirectory() as tmp:
+                n = self._node(tmp, remote=remote)
+                self._assert_continued(n, self._execute(n, STEP_BY_THREADS="1"))
+
+    def test_a_shape_whose_first_pass_failed_runs_no_second_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self._execute(n, FAIL_BASE_THREADS="2")
+            record = json.loads((n.node_dir / "trial_meta.json").read_text())["restart_pass"]
+            # the run and the reference passed their first pass; threads_2 failed it, and the
+            # shapes after it did not run at all
+            self.assertEqual(sorted(record), ["qc_run", "run"])
+            self.assertFalse((n.repo / "workspace" / "tmp" / "arid-1" / "sweep" / "threads_2"
+                              / "restart").exists())
 
     def test_a_continuation_that_re_ran_its_base_has_no_captures_and_says_why(self) -> None:
         """The instrument control: a driver that reads `restart.step` as 0 passes every equality

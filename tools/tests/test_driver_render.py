@@ -860,6 +860,23 @@ class _DriverBehaviour:
                 self.assertIn("restart.step", again.proc.stderr)
                 self.assertFalse((run.snapshots / "initial" / "m0.json").exists())
 
+    def test_a_case_init_refuses_starts_at_zero_whatever_restart_step_says(self) -> None:
+        """Round 2 (axis A, D5 / D11): on a case `init` refuses, the driver restores nothing and
+        starts at 0 — it reads no `restart.<v>` (the file has none here, so a read would stop
+        the program) and its captures carry step 0."""
+        ir = init_ir(10)                       # mode 10: init refuses
+        run = self._run(ir)
+        case_file = run.dir / "ir" / "case_inputs" / "m10.json"
+        case_file.write_text(json.dumps({**json.loads(case_file.read_text()),
+                                         "restart.step": 2}))
+        for sub in ("initial", "history", "series"):
+            shutil.rmtree(run.snapshots / sub)
+            (run.snapshots / sub).mkdir()
+        again = _exec(run.dir, ["m10"], {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
+        self.assertEqual(again.proc.returncode, 0, again.proc.stderr[-2000:])
+        self.assertEqual(again.snapshot("initial/m10")["step"], 0.0)
+        self.assertEqual(again.snapshot("m10")["step"], 0.0)
+
     def test_a_case_file_without_restart_step_stops_the_program(self) -> None:
         """The key is read on every loop case: a getter's refusal stops the program."""
         ir = loop_ir(0)
