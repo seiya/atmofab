@@ -15,7 +15,8 @@ components, Coriolis, RK4), each at the version the catalog holds. Run from the 
 certified generated model of that pipeline in place of the hand-written one; `--mutants` names
 the patch file (default `mutants.yaml`, written against the hand-written model;
 `mutants_generated.yaml` re-expresses the same defects on the generated text). A mutant whose
-patch does not apply is reported `NOT APPLICABLE` rather than stopping the table.
+patch does not apply is reported `NOT APPLICABLE` rather than stopping the table; it, and a
+mutant that does not build, is NOT MEASURED, and the run exits 1 when any mutant is.
 
 1. (`--gate`) `validate_compile_ir_dir` with the repository as root: Compile.static's gates,
    including the `quantities` / `expected_outcome` / `history` / `distribute` lines against the
@@ -27,7 +28,9 @@ patch does not apply is reported `NOT APPLICABLE` rather than stopping the table
 `--mutant <id>` applies the patches of `mutants.yaml` entry `<id>` to the model first; the
 `--all-mutants` table prints, per mutant, which tests moved, the predicate records that failed
 with their value and threshold, or "not caught"; it exits 1 when a `must_catch` mutant is not
-caught or a `declared_unobservable` one is (a surprise to record), else 0. The default flags
+caught, a `declared_unobservable` one is (a surprise to record), or any mutant was not measured,
+else 0. "Caught" means some test's status differs from its `expected_outcome`; a run that ends
+with a non-zero code is caught the same way and its code is printed beside it. The default flags
 are the certified build's (`-std=f2008 -O2 -fopenmp`): a bounds-check abort is not a catch.
 
 The closure's sources are each node's LATEST `fortran_cpu` attempt at the catalog version under
@@ -368,6 +371,7 @@ def main() -> int:
             table[mid] = res
             caught = bool(res.get("moved"))
             status = ("NOT APPLICABLE" if res.get("not_applicable")
+                      else "NOT MEASURED (build error)" if "build_error" in res
                       else "CAUGHT" if caught else "NOT CAUGHT")
             print(f"== mutant {mid}: {mutants[mid]['title']}  ->  "
                   f"{status} {res.get('note', '')[:200]}")
@@ -380,15 +384,19 @@ def main() -> int:
             sys.stdout.flush()
     if a.json:
         Path(a.json).write_text(json.dumps(table, indent=1, default=str))
+    # A mutant that was not measured (its patch does not apply, or it does not build) is neither
+    # caught nor uncaught: it fails the run whatever its class, since D13 gives no must-catch
+    # mutant a "not applicable" exit and a declared-unobservable one is shown only by running.
+    unmeasured = [m for m in mutants if table[m].get("not_applicable")
+                  or "build_error" in table[m]]
     missed = [m for m in mutants if mutants[m]["class"] == "must_catch"
-              and not table[m].get("moved") and not table[m].get("not_applicable")]
-    inapplicable = [m for m in mutants if table[m].get("not_applicable")]
-    print(f"not applicable: {inapplicable or 'none'}")
+              and m not in unmeasured and not table[m].get("moved")]
     surprised = [m for m in mutants if mutants[m]["class"] != "must_catch"
                  and table[m].get("moved")]
+    print(f"not measured (not applicable or build error): {unmeasured or 'none'}")
     print(f"must_catch not caught: {missed or 'none'}; declared unobservable caught: "
           f"{surprised or 'none'}")
-    return 1 if missed or surprised else 0
+    return 1 if missed or surprised or unmeasured else 0
 
 
 if __name__ == "__main__":
