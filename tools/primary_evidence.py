@@ -3805,7 +3805,8 @@ def evaluate_case_inputs(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for var, value in values.initial.items():
             payload[var] = _json_number(value, model.types.get(var) == "integer")
         if model.block.loop is not None:
-            from tools.runner_ir import RESTART_STEP_KEY   # the driver's spelling, one place
+            # the driver's spelling, in one place
+            from tools.runner_ir import RESTART_STEP_KEY
             payload[RESTART_STEP_KEY] = 0
         out[cid] = payload
     return out

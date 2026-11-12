@@ -1909,7 +1909,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # and each continuation case in a process of its own from its shape's sample, checks where it
     # started and merges its captures (`Conductor._merge_continuation_captures`, a member); the case
     # file of a loop node carries `restart.step`.
-    "execute-18": "b8692fbd98233c001bf1aadbf2023aa372a159ebc423f7c52115378f8f0a77a2",
+    "execute-18": "455401740956c07c7757572260025941d80ab30f009777f32e08a54ac14bea97",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2117,7 +2117,7 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-17 (issue #632, system tier Part 2 P1): `primary_evidence.py` evaluates a
     # continuation case as its base, and gains gate (p), the continuation writer and the start
     # check.
-    "verdict-17": "f60f7cf2a2b27707fadf9fafd5e3131bca6aa63ddcc3a6b2d1b50f859f01ff02",
+    "verdict-17": "1c567db76c7df37709810a3807c9e8d529d8298b48b66c198103622a0949b4a2",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 
