@@ -782,3 +782,15 @@ With `copy.deepcopy` the same probe gave `[]` at 36 and the 100-column refusal a
 is what the item now records. Nothing failed loudly: each row printed a plausible answer. The round-2 and round-3 launch prompts on that branch said "deep-copy before
 renaming anything", and both reviewers' measurements of the same builder came out consistent.
 
+## A row that ran the other path (issue #632 P1)
+
+`ContinuationAtExecuteTests._node(tmp, site=None)` built its node with
+`_Node(tmp, site=site or Site(LOCAL_SITE, ("cpu",)))`, so `None` — meant as "keep `_Node`'s own
+default, the shim-reached remote site" — became the local site. The row
+`test_a_continuation_at_a_site_runs_in_a_second_job` then drove the local second pass, and every
+assertion it made (captures merged, records written, commands logged) holds on both paths. It
+stayed green through round 0 and round 1's sweep. What exposed it was writing the next row, a spy
+on `remote_execution.execute_job` that substitutes a second job's platform: the spy was never
+called. Fix (ffaee979): `_node(remote=True)` keeps `_Node`'s default, and the row asserts
+`not n.conductor.site.is_local` and that a job directory named `arid-1.restart` appears in the
+shim log; deleting the second job (`labels = []`) is then red.

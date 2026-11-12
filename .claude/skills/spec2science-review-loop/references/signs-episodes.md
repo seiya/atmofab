@@ -572,3 +572,34 @@ What failed was not the mutant run, which was correct for the cases it had, but 
 admits, and the reasoning that supported it named the input (`-1`) rather than the class
 (`rotation_every < 1`, on or off).
 
+## A bench that measured other defects (issue #632 P2)
+
+The restart seeded-defect bench (`tools/tests/data/drive_ir/restart_evidence/`) was built by an
+opus subagent from a declared list of mutant ids and classes. Its first table looked complete,
+but five patches realised a different defect from the one declared:
+- the `f` cache and the reference-state cache were keyed by grid shape;
+- `rot-step-counter` reset at `t == 0`;
+- the channel's stale stage was dropped by `__init`, and its private clock was set there;
+- two control edits wrapped the real writer rather than editing it.
+
+The `f` case had a reason: the declared once-per-process cache read the first firing 32 x 32
+case's array as 64 x 64, so the bench measured an out-of-bounds read. The replacement, though,
+is a cache that every grid shape change refills. Whatever case precedes the base then refills
+it, so the restart test cannot see it, and the row no longer measured the declared class. The
+lead's review of the table added `rot-dtrot-once` (a scalar cached once per process, so no shape
+key is needed) as the declared class's own row. Each departure was written into its mutant's
+title, and the PR body carried all five.
+
+## Scripts the suite does not run (issue #632 P2)
+
+P2 bumped four catalog versions and added a continuation case to each time-marching suite. The
+full suite was green. Three scripts outside it were broken:
+- `system_tier_evidence/member_agreement.py` and `predicate_diff.py` refused the bumped versions.
+  The round-1 correctness reviewer found them, and the fix added `--at <spec_id>@<version>`.
+- `driver_e2e/package_cpp_gpu.py`'s `go.sh` ran every case id, the continuation included, in the
+  first pass. Codex's review found it in round 2, and the fix added a `continue` step and
+  `go2.sh`.
+
+No row runs any of them. The grep that finds them is a grep for the field the change moved
+(`catalog_version`, `restart`, the case list).
+
