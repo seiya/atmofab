@@ -11,7 +11,7 @@ components, Coriolis, RK4), each at the version the catalog holds. Run from the 
   (PR-S3 V-a) add [--ir certified] [--model generated] [--mutants <file>]
 
 `--ir certified` judges with the CERTIFIED IR of the node (the `ir_ref` of its latest
-`fortran_cpu` pipeline) in place of the hand-authored one; `--model generated` builds the
+`fortran_cpu` pipeline whose run's aggregate verdict is `pass`) in place of the hand-authored one; `--model generated` builds the
 certified generated model of that pipeline in place of the hand-written one; `--mutants` names
 the patch file (default `mutants.yaml`, written against the hand-written model;
 `mutants_generated.yaml` re-expresses the same defects on the generated text). A mutant whose
@@ -35,7 +35,10 @@ are the certified build's (`-std=f2008 -O2 -fopenmp`): a bounds-check abort is n
 
 The closure's sources are each node's LATEST `fortran_cpu` attempt at the catalog version under
 `workspace/pipelines/` (the lexicographically last attempt directory); the run prints the paths
-it used. That they are the certified ones is the operator's workspace state, not checked here.
+it used. That they are the certified ones is the operator's workspace state, not checked here,
+and they are not read from the composite's lineage (`member_agreement.py` reads the member's run
+that way): after a member or component is re-derived on its own, compare the printed paths with
+the composite pipeline's `lineage.json` `resolved_dependencies` before reading a V-a table.
 """
 from __future__ import annotations
 
@@ -91,14 +94,24 @@ def certified_source(kind: str, sid: str) -> Path:
     return Path(hits[-1])
 
 
+def passed_pipeline(node: str) -> Path:
+    """The latest `fortran_cpu` pipeline of `node` whose recorded run's aggregate verdict is
+    `pass`: a pipeline's `lineage.json` is written before its run, so the latest directory alone
+    can be an attempt that failed later."""
+    for lineage in reversed(sorted(glob.glob(str(REPO / f"workspace/pipelines/{node}/"
+                                                 f"fortran_cpu/*/lineage.json")))):
+        pipe = Path(lineage).parent
+        run_id = json.loads(Path(lineage).read_text()).get("run_id")
+        agg = pipe / "runs" / str(run_id) / node / "aggregate_verdict.json"
+        if agg.is_file() and json.loads(agg.read_text()).get("aggregate_verdict") == "pass":
+            return pipe
+    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run")
+
+
 def certified_pipeline() -> Path:
     cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
     version = next(e["spec_version"] for e in cat if e["spec_id"] == build_ir.SID)
-    hits = sorted(glob.glob(str(REPO / f"workspace/pipelines/problem__{build_ir.SID}__{version}/"
-                                f"fortran_cpu/*/lineage.json")))
-    if not hits:
-        raise SystemExit(f"no fortran_cpu pipeline of problem/{build_ir.SID}@{version}")
-    return Path(hits[-1]).parent
+    return passed_pipeline(f"problem__{build_ir.SID}__{version}")
 
 
 def certified_ir() -> dict[str, Any]:
@@ -385,8 +398,8 @@ def main() -> int:
     if a.json:
         Path(a.json).write_text(json.dumps(table, indent=1, default=str))
     # A mutant that was not measured (its patch does not apply, or it does not build) is neither
-    # caught nor uncaught: it fails the run whatever its class, since D13 gives no must-catch
-    # mutant a "not applicable" exit and a declared-unobservable one is shown only by running.
+    # caught nor uncaught: it fails the run whatever its class. A must-catch mutant passes only
+    # by being run and caught, and a declared-unobservable one is shown only by being run.
     unmeasured = [m for m in mutants if table[m].get("not_applicable")
                   or "build_error" in table[m]]
     missed = [m for m in mutants if mutants[m]["class"] == "must_catch"

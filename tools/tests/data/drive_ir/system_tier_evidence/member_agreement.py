@@ -7,7 +7,7 @@ model with its process off and its member, read from the two certified runs of R
 
 The composite's off case is stated in its `tests.md` as the member's case input for input
 (`shallow_water2d_rotating/tests.md` §6-4). The composite's run is its LATEST `fortran_cpu`
-pipeline under `workspace/pipelines/` at the catalog version; the member's is the pipeline and
+pipeline under `workspace/pipelines/` at the catalog version whose run passed; the member's is the pipeline and
 run that pipeline's `lineage.json` RESOLVED (`resolved_dependencies[]`), not the member's
 latest. Each side's case inputs are the ones its own lineage names (`ir_ref`).
 
@@ -50,10 +50,18 @@ def node_dir(kind: str, sid: str) -> str:
 
 
 def latest_pipeline(node: str) -> Path:
-    pipes = sorted(glob.glob(str(REPO / f"workspace/pipelines/{node}/fortran_cpu/*/")))
-    if not pipes:
-        raise SystemExit(f"no fortran_cpu pipeline of {node}")
-    return Path(pipes[-1])
+    """The latest `fortran_cpu` pipeline of `node` whose recorded run's aggregate verdict is
+    `pass` (a pipeline's `lineage.json` is written before its run)."""
+    for pipe in reversed(sorted(glob.glob(str(REPO / f"workspace/pipelines/{node}/fortran_cpu/*/")))):
+        pipe = Path(pipe)
+        lineage = pipe / "lineage.json"
+        if not lineage.is_file():
+            continue
+        run_id = json.loads(lineage.read_text()).get("run_id")
+        agg = pipe / "runs" / str(run_id) / node / "aggregate_verdict.json"
+        if agg.is_file() and json.loads(agg.read_text()).get("aggregate_verdict") == "pass":
+            return pipe
+    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run")
 
 
 def run_of(pipe: Path, node: str, run_id: str | None = None) -> tuple[Path, Path]:
