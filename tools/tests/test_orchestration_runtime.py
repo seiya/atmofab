@@ -22237,7 +22237,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # tests.md `restart:` line. Measured 113688 with `wc -c` (113753 after review round 3).
         # Raised 113800->114550 (issue #632 P2): gate (q), the continuation case a time-marching
         # `problem` carries, in the gate list and the `case` block, and V3 (vii), where the cut
-        # is placed. Measured 114444 with `wc -c`.
+        # is placed. Measured 114444 with `wc -c` (114488 after review round 1).
         "docs/workflow/phases/phase_01_compile.md": 114550,
     }
 

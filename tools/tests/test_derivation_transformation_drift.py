@@ -864,8 +864,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # the `series.*` range on a continuation and gates (p) and (r).
     "compile-docs-32": "842a8bd6c4dee12b07f4f9ed804f7b1f702945efbceb73287e2a0349c22a8d66",
     # compile-docs-33 (issue #632 P2): gate (q) (a time-marching `problem` carries a continuation
-    # case) in the gate list and the `case` block, and V3 (vii), where the cut is placed.
-    "compile-docs-33": "594d4cf51b307cfd6fd5507ac3b3a640900acc95d7409dba7c3ba6388e45d06f",
+    # case) in the gate lists and the `case` block, and V3 (vii), where the cut is placed.
+    # Re-pinned in place before it shipped (review round 1, F4: the io_contract gate list).
+    "compile-docs-33": "633d037018ba8e7757469221776b6f5e7401e4af88865b433fa5802438dbf20c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
