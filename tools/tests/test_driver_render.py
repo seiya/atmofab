@@ -989,8 +989,8 @@ class _DriverBehaviour:
         trust (review round 1, cor-F5: dropping its start check, ignoring the exit code and
         dropping the refused-restart-point lines each survived the suite): the unmutated run
         merges the continuation; a driver without the restart read, a second-pass process
-        that exits non-zero after writing its captures, and a missing restart point are each a
-        problem line naming the continuation, and nothing is merged."""
+        that exits non-zero after writing its captures, a missing restart point and a refused
+        merge are each a problem line naming the continuation, and nothing is merged."""
         cpp = type(self).build_and_run is run_cpp
         module = cpp_runner if cpp else f_runner
         env = {**os.environ, "SPEC2SCIENCE_CUDA_BLOCK": "64"}
@@ -1045,6 +1045,19 @@ class _DriverBehaviour:
         self.assertEqual(merged, [])
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("m0_cont: no restart point", problems[0])
+        self.assertFalse(merged_capture(run))
+
+        # a refused merge (round 2, cor-F4): a file of the continuation's name already in the
+        # shape's capture directory; the merge moves nothing and the line names it
+        run = fresh("merge_refused")
+        planted = run.snapshots / "initial" / "m0_cont.json"
+        planted.write_text("{}")
+        merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin", env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont", problems[0])
+        self.assertIn("names a file the first pass wrote", problems[0])
+        self.assertEqual(planted.read_text(), "{}")
         self.assertFalse(merged_capture(run))
 
 
