@@ -374,6 +374,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("    bool case_refused = false;")
     if plan.loop:
         a("    int n_c = 0;")
+        a("    int step0 = 0;")
         a("    int every_c = 0;")
         a("    double dt_c = 0.0;")
         a("    double t_start_c = 0.0;")
@@ -388,12 +389,14 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("    }")
     else:
         _render_entry(a, plan, plan.entries[0], H, "    ")
-    a("    steps_total += step_c;")
+    # The steps THIS process ran (issue #632): a continuation case starts at `step0`.
+    ran = "(step_c - step0)" if plan.loop else "step_c"
+    a(f"    steps_total += {ran};")
     sizes = [f"flat_size(st_{v})" for v in plan.arrays]
     largest = "std::size_t{1}"
     for size in sizes:
         largest = f"std::max({largest}, {size})"
-    a(f"    cells_total += static_cast<std::int64_t>(step_c) * "
+    a(f"    cells_total += static_cast<std::int64_t>{ran if plan.loop else '(step_c)'} * "
       f"static_cast<std::int64_t>({largest});")
     a("  }")
     a("")
@@ -588,6 +591,38 @@ def _render_call(a: Any, plan: runner_ir.DriverPlan, call: runner_ir.CallPlan, i
         a(f"{indent}st_{var} = static_cast<double>(iv_{var});")
 
 
+def _render_restart(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
+                    ind: str) -> None:
+    """The restart point of a loop node (issue #632), after the loop values and `init` and
+    before the initial capture: the host-owned `restart.step` (0 on an ordinary case), refused
+    below 0 and, on a case `init` did not refuse, at or past `n_step`; when positive, every
+    restart variable is read from its `restart.<var>` key into the state and the step count and
+    `t` start at the global step. A refused case restores nothing and starts at 0. The series
+    is a vector filled from the first committed step, so it needs no offset."""
+    refused = entry.init is not None
+    a(f"{ind}// --- the restart point: the global step this case starts at (0 unless a")
+    a(f"{ind}// continuation case) ---")
+    a(f'{ind}step0 = {H(runner_ir.GETTERS["integer"])}("{runner_ir.RESTART_STEP_KEY}");')
+    a(f"{ind}if (step0 < 0 || ({'!case_refused && ' if refused else ''}step0 >= n_c)) {{")
+    a(f'{ind}  refuse("restart.step is not in 0 .. n_step - 1", cid);')
+    a(f"{ind}}}")
+    if refused:
+        a(f"{ind}if (case_refused) {{")
+        a(f"{ind}  step0 = 0;")
+        a(f"{ind}}}")
+    a(f"{ind}if (step0 > 0) {{")
+    for var in plan.restart_vars:
+        rank = plan.variables[var]
+        key = _clit(f"{runner_ir.RESTART_KEY_PREFIX}{var}")
+        if rank:
+            a(f'{ind}  {H(f"get_array_r{rank}")}("{key}", st_{var});')
+        else:
+            a(f'{ind}  st_{var} = {H("get_real")}("{key}");')
+    a(f"{ind}  step_c = step0;")
+    a(f"{ind}  t_c = t_start_c + static_cast<double>(step0) * dt_c;")
+    a(f"{ind}}}")
+
+
 def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
                   ind: str) -> None:
     a(f"{ind}// --- the case file, read whole before any capture ---")
@@ -652,9 +687,11 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
             a(f"{ind}  n_c = 0;")
             a(f"{ind}}}")
     a(f"{ind}// --- the initial capture (raw/state_snapshots/initial/<case_id>.json) ---")
+    if plan.loop:
+        _render_restart(a, plan, entry, H, ind)
     a(f'{ind}write_capture("initial/" + cid);')
     if plan.loop:
-        a(f"{ind}for (int n = 1; n <= n_c; ++n) {{")
+        a(f"{ind}for (int n = step0 + 1; n <= n_c; ++n) {{")
         in1 = ind + "  "
         for var in entry.work_copy:
             a(f"{in1}wk_{var} = st_{var};")

@@ -48,9 +48,9 @@ gate, which mandatorily verifies `walltime_sec` / `throughput_cells_per_sec` /
     last, the work `steps` / `cells_updated` count. The run-wide writers and a self-test's re-parse
     of its own `perf.json` are outside it.
 - `steps`: number of execution steps. On a host-rendered driver, the sum over the cases of the
-  committed steps.
+  committed steps this process ran.
 - `cells_updated`: total updated cells (`nx*ny*nz*steps` etc.). On a host-rendered driver, the sum
-  over the cases of the committed steps times the cell count of the case's largest state array,
+  over the cases of those steps times the cell count of the case's largest state array,
   saturating at the default integer's largest value. No gate reads `steps` or `cells_updated`.
 - `throughput_cells_per_sec`: `cells_updated / walltime_sec`
 - `parallelism` (required object): `mpi_ranks` / `threads_per_rank` /
@@ -125,7 +125,9 @@ and no step. It then writes the initial capture. On a node whose `drive` declare
 `step` up to `n_step` times through work copies: an `inout` dummy receives a copy of the state and every `out`
 array a NaN-filled work array. A true result commits the call: the state is copied back, `step`
 advances, `t = t_start + step * dt`, a series entry is appended and a sample is written every `every`
-steps. A false result ends the loop on the last committed state. Without `loop` it makes ONE call on the
+steps. A false result ends the loop on the last committed state. After `init` a loop node's driver
+reads `restart.step`; at `K` > 0 (a continuation case, whose file and invocation are its own:
+`phase_04_validate.md` §4-1) it restores each `restart.<v>` and starts `step` at `K`. Without `loop` it makes ONE call on the
 state itself, each `out` starting at its `initial_state` content, and `step` becomes 1 only on a true
 result. After every call each logical `out` is written into its state as 1 or 0. It then writes the
 final capture and, on a `loop` node, the series file; after the last case, `__write_perf`.
@@ -175,14 +177,15 @@ to this document wherever this document is seeded whole.
 
 - The host evaluates each case's inputs and writes the result to
   `case_inputs/<case_id>.json` beside `spec.ir.yaml`, before the program runs, for every
-  case of the IR: at every `Validate.execute`, and in a `workshop leaf`'s `run` operation beside
-  the IR the host seeded in its tree. The `runner` opens this file through the certified harness's `__read_case`
+  case of the IR that is no continuation: at every `Validate.execute`, and in a `workshop leaf`'s
+  `run` operation beside the IR the host seeded in its tree (a continuation's: §3). The `runner` opens this file through the certified harness's `__read_case`
   and reads each value through the typed getters; it parses neither the file nor
   `spec.ir.yaml` itself.
 - The file is one flat JSON object on one line of any length, with sorted keys. A key is
   a name: `inputs.<path>` for an input, `derived.<name>` for a host-evaluated derived value,
-  a state variable's name for its initial content. On an `infrastructure` node it holds every
-  numeric `inputs.*` leaf of the case, a boolean written as `1` or `0`.
+  a state variable's name for its initial content, and on a `loop` node `restart.step` (§3). On an
+  `infrastructure` node it holds every numeric `inputs.*` leaf of the case, a boolean written as
+  `1` or `0`.
 - Each value is an RFC 8259 number or a rectangular nested array of numbers of depth 1 to 4
   (the leading array index outermost, as the emitters write it), an empty array admitted. This
   grammar is not §4's: a number is spelled as the host's serializer spells it (`3`, `0.1`,

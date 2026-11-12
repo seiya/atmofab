@@ -1707,6 +1707,74 @@ def _cases_by_id(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+#: The `case.test_case_set[]` key that makes an entry a continuation case (issue #632):
+#: `restart: {from: <base case_id>, step: <K>}`.
+RESTART_CASE_KEY = "restart"
+
+
+def continuation_ref(case: Any) -> tuple[str, int] | None:
+    """``(base case_id, K)`` of a case whose `restart` is well formed — a mapping of exactly
+    `from` (a non-empty string) and `step` (an integer, not a boolean, at least 1) — else None.
+    Gate (p) refuses every other spelling, and a case carrying any `restart` key is no base
+    case (`is_continuation`)."""
+    raw = case.get(RESTART_CASE_KEY) if isinstance(case, dict) else None
+    if not isinstance(raw, dict) or set(raw) != {"from", "step"}:
+        return None
+    base, step = raw.get("from"), raw.get("step")
+    if not isinstance(base, str) or not base.strip() or isinstance(step, bool) \
+            or not isinstance(step, int) or step < 1:
+        return None
+    return base.strip(), step
+
+
+def is_continuation(case: Any) -> bool:
+    """Whether a case carries a `restart` key at all (well formed or not): such a case is never
+    run in the first pass, and the case-file writer writes no file for it."""
+    return isinstance(case, dict) and RESTART_CASE_KEY in case
+
+
+def continuation_cases(ir: dict[str, Any]) -> dict[str, tuple[str, int]]:
+    """case_id -> ``(base, K)`` of every continuation case whose `restart` is well formed and
+    whose base is another case of the IR that is no continuation itself (gate (p) refuses the
+    rest)."""
+    cases = _cases_by_id(ir)
+    out: dict[str, tuple[str, int]] = {}
+    for cid, case in cases.items():
+        ref = continuation_ref(case)
+        if ref is not None and ref[0] != cid and ref[0] in cases \
+                and not is_continuation(cases[ref[0]]):
+            out[cid] = ref
+    return out
+
+
+def base_case_ids(ir: dict[str, Any]) -> list[str]:
+    """The sorted ids of the cases that are no continuation: what the first execution pass
+    runs and what the case-file writer writes."""
+    return sorted(cid for cid, case in _cases_by_id(ir).items() if not is_continuation(case))
+
+
+def _evaluation_cases(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """`_cases_by_id`, with every continuation (`continuation_cases`) replaced by its BASE's
+    entry under its own id: a continuation is its base's configuration, evaluated as the base
+    (its `initial_state` gives the shapes and what `derived` reads over `initial.*`). Gate (p)
+    holds its own `inputs` and `derived` equal to the base's and refuses an `initial_state`."""
+    cases = _cases_by_id(ir)
+    for cid, (base, _k) in continuation_cases(ir).items():
+        cases[cid] = {**cases[base], "case_id": cid}
+    return cases
+
+
+def restart_variables(ir: dict[str, Any]) -> frozenset[str]:
+    """`runner_ir.restart_variables`, the one answer (issue #632), with a malformed `drive`
+    raised as `PrimaryEvidenceError`."""
+    from tools.host_render import RenderError
+    from tools.runner_ir import restart_variables as answer
+    try:
+        return answer(ir)
+    except RenderError as exc:
+        raise PrimaryEvidenceError(f"drive: {exc}") from None
+
+
 def primary_predicates(ir: dict[str, Any]) -> list[Any]:
     io = ir.get("io_contract") if isinstance(ir, dict) else None
     preds = io.get("predicates") if isinstance(io, dict) else None
@@ -3622,7 +3690,7 @@ def _integral_array(value: Any, what: str) -> None:
 def _evaluate_cases(ir: dict[str, Any]) -> dict[str, CaseValues]:
     """`_evaluate_case` over every case of an IR that carries `drive` (each error prefixed
     with the case); an IR with none has no derived value and evaluates nothing here."""
-    cases = _cases_by_id(ir)
+    cases = _evaluation_cases(ir)
     if not _has_drive(ir):
         return {cid: CaseValues({}, {}, {}, {}, frozenset()) for cid in cases}
     model = drive_model(ir)
@@ -3715,7 +3783,12 @@ def evaluate_case_inputs(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
     object holds `inputs.<path>` for every input the block references, `derived.<name>` for
     every derived entry and `<var>` for every `initial_state` entry. For an IR with none:
     every numeric `inputs.*` leaf. Raises `PrimaryEvidenceError` naming the case and the entry.
-    `Compile.static` calls it as a gate (and writes nothing)."""
+    `Compile.static` calls it as a gate (and writes nothing).
+
+    On a node whose `drive` declares `loop` every object also holds the host-owned
+    `restart.step` = 0 (issue #632), which the driver reads; a continuation case keeps an entry
+    (its base's values, `_evaluation_cases`: a reader asks its `derived` per case id), while its
+    FILE is written at execute time from a restart point (`write_continuation_inputs`)."""
     cases = _cases_by_id(ir)
     if not _has_drive(ir):
         return {cid: _infrastructure_payload(case.get("inputs")) for cid, case in cases.items()}
@@ -3731,6 +3804,9 @@ def evaluate_case_inputs(ir: dict[str, Any]) -> dict[str, dict[str, Any]]:
             payload[f"{_DERIVED}.{name}"] = _json_number(value, name in values.derived_ints)
         for var, value in values.initial.items():
             payload[var] = _json_number(value, model.types.get(var) == "integer")
+        if model.block.loop is not None:
+            from tools.runner_ir import RESTART_STEP_KEY   # the driver's spelling, one place
+            payload[RESTART_STEP_KEY] = 0
         out[cid] = payload
     return out
 
@@ -3740,18 +3816,25 @@ CASE_INPUTS_DIRNAME = "case_inputs"
 
 
 def write_case_inputs(ir: dict[str, Any], ir_dir: Path) -> list[Path]:
-    """Write `<ir_dir>/case_inputs/<case_id>.json` for every case (`evaluate_case_inputs`),
+    """Write `<ir_dir>/case_inputs/<case_id>.json` for every case that is no continuation
+    (`evaluate_case_inputs`; a continuation's file is `write_continuation_inputs`'),
     each through a temporary name of its own beside it (`tempfile.mkstemp`) and `os.replace`,
     so a reader never sees a truncated file and two writers never share a temporary name. The
     directory is created when absent and never removed, and no other file in it is touched.
     Bytes are deterministic: sorted keys, finite numbers only (`allow_nan=False`). Returns the
     paths written, in case order."""
+    bases = set(base_case_ids(ir))
+    payloads = {cid: p for cid, p in evaluate_case_inputs(ir).items() if cid in bases}
+    return _write_case_files(payloads, Path(ir_dir) / CASE_INPUTS_DIRNAME)
+
+
+def _write_case_files(payloads: dict[str, dict[str, Any]], out_dir: Path) -> list[Path]:
+    """`write_case_inputs`' writer: one file per case id, each through a temporary name of its
+    own and `os.replace`, in case order."""
     from tools.spec_input_gates import CASE_ID_TOKEN_RE   # function-level: render-free import
-    payloads = evaluate_case_inputs(ir)
     for cid in payloads:
         if not CASE_ID_TOKEN_RE.match(cid) or ".." in cid:
             raise PrimaryEvidenceError(f"case_id {cid!r} is not a safe file name token")
-    out_dir = Path(ir_dir) / CASE_INPUTS_DIRNAME
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for cid in sorted(payloads):
@@ -3770,6 +3853,165 @@ def write_case_inputs(ir: dict[str, Any], ir_dir: Path) -> list[Path]:
             raise
         written.append(out_dir / f"{cid}.json")
     return written
+
+
+#: The subdirectory of an execution shape's directory the second pass runs in (issue #632):
+#: `<shape>/restart/case_inputs/<C>.json`, `<shape>/restart/spec.ir.yaml` and the
+#: continuations' captures under `<shape>/restart/raw/state_snapshots/`.
+RESTART_DIRNAME = "restart"
+
+
+class ContinuationFile(NamedTuple):
+    """One continuation case file `write_continuation_inputs` wrote: the case, its base and
+    restart step, the restart point it was written from and the file."""
+    case_id: str
+    base: str
+    step: int
+    sample: Path
+    path: Path
+
+
+def _restart_sample_path(shape_dir: Path, base: str, step: int) -> Path:
+    return Path(shape_dir) / "raw" / "state_snapshots" / _HISTORY / f"{base}__{step}.json"
+
+
+def _restart_point(path: Path, ir: dict[str, Any], base: str, step: int,
+                   shapes: dict[str, tuple[int, ...]], names: frozenset[str]) -> dict[str, Any]:
+    """The restart point of a continuation: its base's history sample at `step`, read as the
+    JSON object the driver wrote. Refused (`PrimaryEvidenceError`) when it is absent or
+    unreadable, carries another `step`, lacks a restart variable (`_load_capture` skips an
+    absent one silently, so presence is checked here), holds a variable whose extents differ
+    from the base's evaluated ones, or holds a non-numeric or non-finite value."""
+    if not path.is_file():
+        raise PrimaryEvidenceError(f"no restart point: {path.name} (the history sample of "
+                                   f"{base!r} at step {step}) was not written")
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PrimaryEvidenceError(f"the restart point {path.name} is unreadable: {exc}") \
+            from None
+    if not isinstance(doc, dict):
+        raise PrimaryEvidenceError(f"the restart point {path.name} is not a JSON object")
+    got = doc.get(STEP_CAPTURE)
+    if isinstance(got, bool) or not isinstance(got, (int, float)) or got != step:
+        raise PrimaryEvidenceError(
+            f"the restart point {path.name} carries step {got!r}, not {step}")
+    missing = sorted(names - set(doc))
+    if missing:
+        raise PrimaryEvidenceError(
+            f"the restart point {path.name} lacks the restart variable(s) {missing}")
+    out: dict[str, Any] = {}
+    for var in sorted(names):
+        raw = doc[var]
+        if isinstance(raw, bool) or _contains_non_number(raw) or isinstance(raw, dict) \
+                or (not isinstance(raw, list) and not isinstance(raw, (int, float))):
+            raise PrimaryEvidenceError(
+                f"the restart point {path.name}: {var!r} is not a number or a numeric array")
+        try:
+            arr = np.asarray(raw, dtype=np.float64)
+        except (TypeError, ValueError):
+            raise PrimaryEvidenceError(
+                f"the restart point {path.name}: {var!r} is not a rectangular numeric "
+                "array") from None
+        if tuple(arr.shape) != tuple(shapes.get(var, ())):
+            raise PrimaryEvidenceError(
+                f"the restart point {path.name}: {var!r} has extents {list(arr.shape)}, the "
+                f"base case's are {list(shapes.get(var, ()))}")
+        if not np.all(np.isfinite(arr)):
+            raise PrimaryEvidenceError(
+                f"the restart point {path.name}: {var!r} holds a non-finite value")
+        out[var] = raw
+    tv = (snapshot_schema(ir) or {}).get("time_variable")
+    if isinstance(tv, str) and tv.strip():
+        t_raw = doc.get(tv.strip())
+        if isinstance(t_raw, bool) or not isinstance(t_raw, (int, float)) \
+                or not math.isfinite(float(t_raw)):
+            raise PrimaryEvidenceError(
+                f"the restart point {path.name} carries no finite {tv.strip()!r}")
+    return out
+
+
+def write_continuation_inputs(ir: dict[str, Any], shape_dir: Path
+                              ) -> tuple[list[ContinuationFile], dict[str, str]]:
+    """The second pass's case files of one execution shape (issue #632): for every
+    continuation case `C` (`continuation_cases`, base `B`, step `K`), from the shape's OWN
+    history sample of `B` at `K` (`<shape_dir>/raw/state_snapshots/history/<B>__<K>.json`),
+    `<shape_dir>/restart/case_inputs/<C>.json`: `B`'s evaluated payload whole
+    (`evaluate_case_inputs`), with `restart.step` = `K` and, per restart variable `v`
+    (`restart_variables`), the sample's value under `restart.<v>` (an integer for an
+    integer-typed state). A refused restart point (`_restart_point`) writes no file for `C`.
+    Returns the files written, in case order, and case_id -> the refusal of each other one."""
+    from tools.runner_ir import RESTART_KEY_PREFIX, RESTART_STEP_KEY
+    conts = continuation_cases(ir)
+    if not conts:
+        return [], {}
+    names = restart_variables(ir)
+    model = drive_model(ir)
+    evaluated = _evaluate_cases(ir)
+    payloads = evaluate_case_inputs(ir)
+    files: dict[str, dict[str, Any]] = {}
+    samples: dict[str, Path] = {}
+    refused: dict[str, str] = {}
+    for cid, (base, step) in sorted(conts.items()):
+        sample = _restart_sample_path(shape_dir, base, step)
+        try:
+            point = _restart_point(sample, ir, base, step, evaluated[base].shapes, names)
+        except PrimaryEvidenceError as exc:
+            refused[cid] = str(exc)
+            continue
+        payload = dict(payloads[base])
+        payload[RESTART_STEP_KEY] = step
+        for var, raw in point.items():
+            as_int = model.types.get(var) == "integer"
+            payload[f"{RESTART_KEY_PREFIX}{var}"] = _json_number(
+                np.asarray(raw, dtype=np.float64) if isinstance(raw, list) else float(raw),
+                as_int)
+        files[cid] = payload
+        samples[cid] = sample
+    out_dir = Path(shape_dir) / RESTART_DIRNAME / CASE_INPUTS_DIRNAME
+    written = _write_case_files(files, out_dir) if files else []
+    by_name = {path.stem: path for path in written}
+    return ([ContinuationFile(cid, conts[cid][0], conts[cid][1], samples[cid], by_name[cid])
+             for cid in sorted(files)], refused)
+
+
+def continuation_start_violation(ir: dict[str, Any], restart_dir: Path,
+                                 cont: ContinuationFile) -> str | None:
+    """The host's check that a continuation started where it was told to (issue #632), before
+    its captures count: its initial capture (`<restart_dir>/raw/state_snapshots/initial/<C>.json`)
+    carries `step` = `K`, the restart point's time variable, and every restart variable equal
+    to the restart point's value. A driver that read `restart.step` as 0, a file written with
+    0, or a second pass handed the base's file re-runs the base, and every equality predicate
+    would then hold; this check is what refuses that. None when it holds, else the reason."""
+    capture = Path(restart_dir) / "raw" / "state_snapshots" / "initial" / f"{cont.case_id}.json"
+    where = f"continuation {cont.case_id!r}"
+    try:
+        doc = json.loads(capture.read_text(encoding="utf-8"))
+        point = json.loads(cont.sample.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return f"{where}: its initial capture or its restart point is unreadable ({exc})"
+    if not isinstance(doc, dict) or not isinstance(point, dict):
+        return f"{where}: its initial capture or its restart point is not a JSON object"
+    got = doc.get(STEP_CAPTURE)
+    if isinstance(got, bool) or not isinstance(got, (int, float)) or got != cont.step:
+        return (f"{where} did not start at step {cont.step} of {cont.base!r}: its initial "
+                f"capture carries step {got!r}")
+    tv = (snapshot_schema(ir) or {}).get("time_variable")
+    names = sorted(restart_variables(ir))
+    if isinstance(tv, str) and tv.strip():
+        names.append(tv.strip())
+    for name in names:
+        if name not in doc:
+            return f"{where}: its initial capture carries no {name!r}"
+        try:
+            same = np.array_equal(np.asarray(doc[name], dtype=np.float64),
+                                  np.asarray(point.get(name), dtype=np.float64))
+        except (TypeError, ValueError):
+            same = False
+        if not same:
+            return (f"{where} did not start at step {cont.step} of {cont.base!r}: its initial "
+                    f"{name!r} is not the restart point's")
+    return None
 
 
 # ----------------------------------------------------------------------------- drive gates
@@ -4477,7 +4719,9 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
             v.append(f"(d) {entry.loc}.result {entry.result!r} is not a logical rank-0 out "
                      f"dummy of {entry.operation}")
 
-    cases = _cases_by_id(ir)
+    # A continuation case is checked AS its base (`_evaluation_cases`) by every per-case gate
+    # below; gate (p) holds its own entry to the base's and refuses an `initial_state` on it.
+    cases = _evaluation_cases(ir)
     # (e) the loop references; history with loop
     if block.loop is not None:
         for key, binding in block.loop.items():
@@ -4599,6 +4843,9 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
             except PrimaryEvidenceError as exc:
                 v.append(f"(c) case {cid!r}: {exc}")
 
+    # (p) the continuation cases (issue #632)
+    v.extend(_restart_violations(ir, block, schema_vars, evaluated))
+
     # (h) the history artifacts
     arrays = sorted(n for n, d in schema_vars.items() if d)
     expected = {STEP_CAPTURE} | {f"{a}_{m}" for a in arrays for m in ("min", "max")}
@@ -4691,6 +4938,141 @@ def _drive_kind_violations(ir: dict[str, Any], *, kind: str) -> list[str]:
     # that masks another gate's subject
     v.extend(_distribute_violations(ir, model, schema_vars, cases, evaluated))
     return v
+
+def restart_judgment_expr(var: str, base: str) -> str:
+    """The expression of the one judgment gate (p) asks per restart variable ``var`` of a
+    continuation whose base is ``base`` (issue #632): the largest difference of the
+    continuation's final value from its base's, which `op: le` against `value: 0` holds to
+    exact equality."""
+    return f"maxabs(final.{var} - at('{base}').final.{var})"
+
+
+def restart_quantity(var: str) -> str:
+    """The `quantity` gate (p)'s judgment of restart variable ``var`` carries (issue #632)."""
+    return f"restart.{var}"
+
+
+def _restart_violations(ir: dict[str, Any], block: DriveBlock,
+                        schema_vars: dict[str, list[str]],
+                        evaluated: dict[str, CaseValues]) -> list[str]:
+    """Gate (p) (issue #632), per case carrying a `restart` key: the node declares `loop`; the
+    key is exactly `{from: <case_id>, step: <integer >= 1>}`; the base is another case that is
+    no continuation, targeted by a `pass` test and by no `xfail` test; the continuation carries
+    no `initial_state` and its `inputs` and `derived` equal the base's; the base's
+    `history.every` is at least 1 and divides `K`, and `K` is below a host-evaluated `n_step`;
+    and for every restart variable `v` (`restart_variables`) a `pass` test whose target cases
+    are exactly `{base, continuation}` carries, among its OWN predicates (`_own_predicates`),
+    one on the continuation under `quantity: restart.<v>` whose parsed expression is
+    `restart_judgment_expr`, `op: le`, `value: 0`, no `bind`. A predicate under such a quantity
+    that has a `bind` or reads a comparand is refused: it would be cross-target, absent from
+    the own predicates, and never evaluated on this target."""
+    raw_cases = _cases_by_id(ir)
+    conts = {cid: c for cid, c in raw_cases.items() if is_continuation(c)}
+    if not conts:
+        return []
+    v: list[str] = []
+    if block.loop is None:
+        return [f"(p) case {cid!r}: a continuation case needs a node whose drive declares loop"
+                for cid in sorted(conts)]
+    try:
+        names = sorted(restart_variables(ir))
+    except PrimaryEvidenceError as exc:
+        return [f"(p) {exc}"]
+    tests = _test_entries(ir)
+    outcomes: dict[str, set[str]] = {}
+    for test in tests:
+        for c in (test.get("target_cases") or []):
+            if isinstance(c, str):
+                outcomes.setdefault(c.strip(), set()).add(_expected_outcome(test))
+    own = _own_predicates(ir)
+    for cid, case in sorted(conts.items()):
+        loc = f"(p) case {cid!r}"
+        ref = continuation_ref(case)
+        if ref is None:
+            v.append(f"{loc}: restart must be {{from: <case_id>, step: <integer >= 1>}} with no "
+                     f"other key; got {case.get(RESTART_CASE_KEY)!r}")
+            continue
+        base, step = ref
+        if base == cid or base not in raw_cases:
+            v.append(f"{loc}: restart.from {base!r} names no other case of the IR")
+            continue
+        if is_continuation(raw_cases[base]):
+            v.append(f"{loc}: its base {base!r} is a continuation itself (a continuation of a "
+                     "continuation is refused)")
+            continue
+        seen = outcomes.get(base, set())
+        if "pass" not in seen or "xfail" in seen:
+            v.append(f"{loc}: its base {base!r} must be targeted by a `pass` test and by no "
+                     f"`xfail` test (it is targeted by {sorted(seen) or 'no test'})")
+        if "initial_state" in case:
+            v.append(f"{loc}: a continuation carries no initial_state (it starts from its "
+                     "restart point, after its base's init)")
+        for key in ("inputs", "derived"):
+            mine, theirs = case.get(key), raw_cases[base].get(key)
+            same = (list(mine.items()) == list(theirs.items())
+                    if isinstance(mine, dict) and isinstance(theirs, dict) else mine == theirs)
+            if not same:
+                v.append(f"{loc}: its {key} must equal its base {base!r}'s (a continuation is its "
+                         "base's configuration; only its starting state differs)")
+        every_path = block.history_every
+        try:
+            every = resolve_input_value(raw_cases[base].get("inputs"), every_path) \
+                if every_path is not None else None
+        except PrimaryEvidenceError:
+            every = None
+        if every is None or np.ndim(every) != 0 or not float(every).is_integer() or every < 1:
+            v.append(f"{loc}: its base {base!r} takes history samples (history.every "
+                     f"{every!r} must be an integer >= 1): the restart point is one")
+        elif step % int(every) != 0:
+            v.append(f"{loc}: restart.step {step} is no multiple of its base's history.every "
+                     f"{int(every)}, so no history sample is its restart point")
+        n_step = block.loop.get("n_step")
+        n_value: Any = None
+        if n_step is not None and n_step.kind == "inputs":
+            try:
+                n_value = resolve_input_value(raw_cases[base].get("inputs"), n_step.ref)
+            except PrimaryEvidenceError:
+                n_value = None
+        elif n_step is not None and n_step.kind == _DERIVED and base in evaluated:
+            n_value = evaluated[base].derived.get(n_step.ref)
+        if n_value is not None and np.ndim(n_value) == 0 and not step < float(n_value):
+            v.append(f"{loc}: restart.step {step} is not below the base's n_step "
+                     f"{float(n_value):g}")
+        for var in names:
+            quantity = restart_quantity(var)
+            want = ast.dump(parse_expr(restart_judgment_expr(var, base)))
+            for p in primary_predicates(ir):
+                if isinstance(p, dict) and p.get("quantity") == quantity \
+                        and str(p.get("case") or "").strip() == cid \
+                        and (p.get("bind") or is_cross_target_predicate(p)):
+                    v.append(f"{loc}: a predicate under quantity {quantity} has a bind or "
+                             "reads a comparand: it is then cross-target and never evaluated "
+                             "on this target; the judgment takes no bind")
+            found = False
+            for _i, p in own:
+                if p.get("quantity") != quantity or str(p.get("case") or "").strip() != cid \
+                        or p.get("bind") or p.get("op") != "le" \
+                        or not _is_number(p.get("value")) or p.get("value") != 0:
+                    continue
+                test = next((t for t in tests if str(t.get("test_id") or "").strip()
+                             == p["test_id"].strip()), None)
+                if test is None or _expected_outcome(test) != "pass" or {
+                        str(c).strip() for c in (test.get("target_cases") or [])} != {base, cid}:
+                    continue
+                try:
+                    found = ast.dump(parse_expr(p.get("expr"))) == want
+                except PrimaryEvidenceError:
+                    found = False
+                if found:
+                    break
+            if not found:
+                v.append(f"{loc}: no predicate holds its final {var} to its base's: a `pass` "
+                         f"test whose target_cases are exactly [{base!r}, {cid!r}] carries "
+                         f"`quantity: {quantity}`, `case: {cid}`, `expr: "
+                         f"\"{restart_judgment_expr(var, base)}\"`, `op: le`, `value: 0` and no "
+                         "bind")
+    return v
+
 
 def _read_ir(path: Path) -> dict[str, Any]:
     import yaml  # the host reader; PyYAML is a runtime dependency of the conductor

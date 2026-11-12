@@ -141,6 +141,9 @@ def render_tuple() -> dict[str, str]:
         # into a helper the workshop wrapper binds too).
         "Conductor._control_file_render_inputs":
             _source_digest(wc.Conductor._control_file_render_inputs),
+        # The control file's `CASES ?=` default lists the base cases alone (issue #632): a
+        # continuation case runs only in `Validate.execute`'s second pass.
+        "Conductor.read_base_case_ids": _source_digest(wc.Conductor.read_base_case_ids),
         "Conductor._write_leaf_bundle_artifacts":
             _source_digest(wc.Conductor._write_leaf_bundle_artifacts),
         # The second language's host renders (issue #289, R4-b PR-4): its control-file rules,
@@ -427,6 +430,11 @@ def execute_tuple() -> dict[str, str]:
         "Conductor._require_build_execute":
             _source_digest(wc.Conductor._require_build_execute),
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
+        # The second pass (issue #632): a continuation's captures are moved into its shape's own
+        # capture directory only after the start check, by this method.
+        "Conductor._merge_continuation_captures":
+            _source_digest(wc.Conductor._merge_continuation_captures),
+        "Conductor.read_base_case_ids": _source_digest(wc.Conductor.read_base_case_ids),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
         # Issue #512: what the quality check compares each execution shape by (the state
@@ -851,6 +859,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # where `profile_declares_problem` is refused and scope "enforced at spec-input" to the rules
     # outside a `profile`.
     "compile-docs-31": "3f4a2c7a6c8b3045a4b0b2edb718e99d654c2cd59b67584af187653c142c8c5d",
+    # compile-docs-32 (issue #632, system tier Part 2 P1): `phase_01_compile.md` states the
+    # continuation case (`restart: {from, step}` in the `case` block), the driver's restart point,
+    # the `series.*` range on a continuation and gates (p) and (r).
+    "compile-docs-32": "29cc9a7b637b8b00251fe22256b213363812aa001d508f4eb06e54da394a0e42",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1230,6 +1242,11 @@ PINNED_RENDER: dict[str, str] = {
     # operator's checkout and the 57 of the 19 under `tools/tests/data/`, each for fortran_cpu,
     # fortran_cpu_mpi and cpp_gpu, are byte-identical; none raises.
     "render-18": "dabba79c328665766932a222e9be736080d97ab9abc2ccd06a2373ca641405cf",
+    # render-19 (issue #632, system tier Part 2 P1): a loop node's driver reads the host-owned
+    # `restart.step` after `init`, and on a continuation case its restart variables, and starts its
+    # step count, time and series there; perf counts the steps this process ran. The control
+    # file's `CASES ?=` default lists the base cases (`Conductor.read_base_case_ids`, a member).
+    "render-19": "25d4f625ec8f39ab1d3df26ce44666785e6c801846c18134be12b7d1c0b9b7cb",
     # The digest `render-18` had at 8bd76fb1:
     "render-18@8bd76fb1": "b83f9db74f47769e30434c52f5fa4a7e56e36845b9fafd0fab51e4f6c6ea3a49",
     # The digest `render-18` shipped with at d6554bd7:
@@ -1888,6 +1905,11 @@ PINNED_EXECUTE: dict[str, str] = {
     # `parallel/mpi/launcher.py`'s launch canary (`spec2science_mpi_launch_canary`, its size
     # line `spec2science-mpi-size`) — a probe the host writes and reads itself.
     "execute-17": "582ad49a3417a2a0b3585a8f0cd75c0c0745540ea17f310b4de085e9d400486f",
+    # execute-18 (issue #632, system tier Part 2 P1): `Validate.execute` runs the base cases first
+    # and each continuation case in a process of its own from its shape's sample, checks where it
+    # started and merges its captures (`Conductor._merge_continuation_captures`, a member); the case
+    # file of a loop node carries `restart.step`.
+    "execute-18": "b1f9b481bfd279a9d4a877e0222c5a16b516cc028fbc421d46a2755d5cf5d4f7",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2092,6 +2114,10 @@ PINNED_VERDICT: dict[str, str] = {
     # `drive_violations` and `distribute_layouts` alone call). The digest `verdict-16` shipped
     # with at 33eaeec8:
     "verdict-16": "06a855ebb07aa7568f0beddee7192811d6b7a9f0294e8e74dfe486b66e18e633",
+    # verdict-17 (issue #632, system tier Part 2 P1): `primary_evidence.py` evaluates a
+    # continuation case as its base, and gains gate (p), the continuation writer and the start
+    # check.
+    "verdict-17": "a4a02b5eafc53415c4ce5c47196a519e08fbef160b9f8d62caa1be00ba76a1a9",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 

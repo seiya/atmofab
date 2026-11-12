@@ -22227,7 +22227,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Review round 3 (disc-L3: that clause names where it is refused, and "All are enforced at
         # spec-input" is scoped to the rules outside a `profile`): bumped 111850->111950;
         # measured 111934 with `wc -c` at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 111950,
+        # Raised 111950->113800 (issue #632, system tier Part 2 P1): the `case` block states the
+        # continuation case (`restart: {from, step}`), the predicate grammar the `series.*` range
+        # on one, and the gate list (p) and (r), which the compile producer transcribes from the
+        # tests.md `restart:` line. Measured 113688 with `wc -c`.
+        "docs/workflow/phases/phase_01_compile.md": 113800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

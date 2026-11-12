@@ -117,7 +117,9 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                                                "empty (default spec.ir.yaml); a case runs on "
                                                "the case file the host wrote for it"},
                  "case_ids": {"type": "array", "items": {"type": "string"},
-                              "description": "case ids to run (default: every case)"},
+                              "description": "case ids to run (default: every case that "
+                                             "is not a continuation; a continuation case "
+                                             "runs only in Validate.execute)"},
              },
              "required": ["binary"],
              "additionalProperties": False,

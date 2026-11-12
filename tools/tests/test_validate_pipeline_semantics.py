@@ -30684,3 +30684,69 @@ class DistributeLineGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestartLineGateTests(unittest.TestCase):
+    """Gate (r) (issue #632, `_restart_line_violations`): the tests.md `restart:` line against
+    the IR's continuation cases, as a set, in both polarities."""
+
+    def _ir(self, *conts: tuple[str, str, int], loop: bool = True) -> dict:
+        from tools.tests.test_driver_render import call_ir, loop_ir
+        ir = loop_ir(0, 1) if loop else call_ir(0, 1)
+        for cid, base, step in conts:
+            ir["case"]["test_case_set"].append(
+                {"case_id": cid, "inputs": {}, "restart": {"from": base, "step": step}})
+        return ir
+
+    def _r(self, text: str, ir: dict) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text(text, encoding="utf-8")
+            return vps._restart_line_violations(path, ir)
+
+    def test_the_line_equal_to_the_ir_is_clean(self) -> None:
+        for line in ("restart: c = m0 @ 2", "- `restart`: c = m0 @ 2.",
+                     "restart: c = m0 @ 2, d = m1 @ 4"):
+            ir = self._ir(("c", "m0", 2)) if line.count("=") == 1 else self._ir(
+                ("c", "m0", 2), ("d", "m1", 4))
+            with self.subTest(line=line):
+                self.assertEqual(self._r(f"# x\n\n{line}\n", ir), [])
+        self.assertEqual(self._r("# no line\n", self._ir()), [])
+
+    def test_each_disagreement_is_refused(self) -> None:
+        ir = self._ir(("c", "m0", 2))
+        for label, text, want in (
+                ("another step", "restart: c = m0 @ 4", "states ['c = m0 @ 4']"),
+                ("another base", "restart: c = m1 @ 2", "states ['c = m1 @ 2']"),
+                ("one more", "restart: c = m0 @ 2, d = m1 @ 2", "states ['c = m0 @ 2', 'd ="),
+                ("malformed", "restart: c = m0", "is not `<case_id> = <base case_id> @ <K>`"),
+                ("two lines", "restart: c = m0 @ 2\nrestart: c = m0 @ 2", "2 `restart:` lines"),
+                ("no line", "# none\n", "carries no `restart:` line")):
+            with self.subTest(label):
+                found = self._r(text + "\n", ir)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(want, found[0])
+        # a line naming a continuation the IR does not declare
+        found = self._r("restart: c = m0 @ 2\n", self._ir())
+        self.assertIn("the IR's continuation cases are []", found[0])
+
+    def test_a_malformed_restart_in_the_ir_is_named(self) -> None:
+        ir = self._ir(("c", "m0", 2))
+        ir["case"]["test_case_set"][-1]["restart"]["step"] = 0
+        found = self._r("restart: c = m0 @ 2\n", ir)
+        self.assertIn("with a malformed restart on ['c']", found[0])
+
+    def test_a_node_without_loop_carries_no_line(self) -> None:
+        found = self._r("restart: c = m0 @ 2\n", self._ir(loop=False))
+        self.assertEqual(len(found), 1)
+        self.assertIn("declares no loop", found[0])
+        self.assertEqual(self._r("# none\n", self._ir(loop=False)), [])
+
+    def test_the_gate_runs_in_the_compile_stage(self) -> None:
+        """Through `validate_compile_ir_dir` over the converted swe fixture: its `tests.md` with a
+        `restart:` line its IR does not transcribe draws the gate's own finding."""
+        tests_md = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
+        found = _drive_stage("swe", tests_md=tests_md + "\nrestart: a = b @ 2\n")
+        self.assertTrue(any("(r) tests.md line" in v and "a = b @ 2" in v for v in found),
+                        found)
+        self.assertFalse(any("(r)" in v for v in _drive_stage("swe")))

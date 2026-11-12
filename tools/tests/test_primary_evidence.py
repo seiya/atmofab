@@ -40,7 +40,7 @@ import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -4099,7 +4099,9 @@ class CaseInputsTest(unittest.TestCase):
         self.assertEqual(out["a"], {
             "inputs.grid.nx": 4, "inputs.time.t_start": 0.0, "inputs.time.t_end": 1.0,
             "inputs.history.every": 2, "derived.n_step": 10, "derived.dt": 0.1,
-            "h": [1.125, 1.375, 1.625, 1.875]})
+            "h": [1.125, 1.375, 1.625, 1.875],
+            # host-owned, on a loop node: 0 on an ordinary case (issue #632)
+            "restart.step": 0})
         self.assertEqual(len(out["b"]["h"]), 8)
         self.assertIsInstance(out["a"]["inputs.grid.nx"], int)
         self.assertIsInstance(out["a"]["derived.n_step"], int)
@@ -5857,3 +5859,258 @@ class DistributeGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- the continuation case (system tier Part 2, issue #632) ----------------------------------------
+
+
+def _continuation_ir(**over: Any) -> dict[str, Any]:
+    """The toy loop node of `test_driver_render.loop_ir` (cases m0, m1; `u` an inout state, `w` a
+    lone out, `ok` the result) with the evidence entries and `distribute` the gates ask, a
+    continuation `m0_cont` of `m0` at step 2, and one `pass` test over both carrying the zero-step
+    closure and the judgment gate (p) asks per restart variable. `drive_violations` is clean on
+    it (`ContinuationGateTest.test_the_fixture_is_clean`)."""
+    from tools.tests.test_driver_render import loop_ir
+    ir = loop_ir(0, 1, every=1, n_step=4)
+    ir["drive"]["distribute"] = {"axes": []}
+    ir["io_contract"]["raw_requirements"]["required_evidence"] += [
+        {"artifact": "state_history", "required": True},
+        {"artifact": "step_series", "required": True,
+         "names": ["step", "u_min", "u_max", "w_min", "w_max"]}]
+    base = copy.deepcopy(ir["case"]["test_case_set"][0])
+    cont = {k: v for k, v in base.items() if k != "initial_state"}
+    cont.update(case_id="m0_cont", restart={"from": "m0", "step": 2})
+    ir["case"]["test_case_set"].append(cont)
+    targets = ["m0", "m0_cont"]
+    ir["io_contract"]["tests"] = [{"test_id": "t_restart", "expected_outcome": "pass",
+                                   "target_cases": targets,
+                                   "quantities": ["restart.u", "restart.w", "run.n_step"]}]
+    ir["io_contract"]["predicates"] = [
+        {"test_id": "t_restart", "quantity": f"restart.{v}", "target_cases": targets,
+         "case": "m0_cont", "expr": pe.restart_judgment_expr(v, "m0"), "op": "le", "value": 0.0}
+        for v in ("u", "w")] + [
+        {"test_id": "t_restart", "quantity": "run.n_step", "target_cases": targets,
+         "expr": "final.step - inputs.n_step", "op": "eq", "value": 0, "per_case": True}]
+    for key, value in over.items():
+        ir[key] = value
+    return ir
+
+
+class ContinuationGateTest(unittest.TestCase):
+    """Gate (p) (`drive_violations`), one row per refusal in both polarities, and what the
+    evaluator, the case-file writers and the start check do with a continuation."""
+
+    def _p(self, ir: dict[str, Any]) -> list[str]:
+        return [v for v in pe.drive_violations(ir, kind="component") if v.startswith("(p)")]
+
+    def test_the_fixture_is_clean(self) -> None:
+        self.assertEqual(pe.drive_violations(_continuation_ir(), kind="component"), [])
+
+    def test_the_restart_variables_are_one_answer(self) -> None:
+        """The renderers' plan, gate (p), the continuation writer and the start check all read
+        `runner_ir.restart_variables`; this pins the set and that the plan carries it."""
+        from tools import runner_ir
+        ir = _continuation_ir()
+        self.assertEqual(pe.restart_variables(ir), frozenset({"u", "w"}))
+        self.assertEqual(runner_ir.restart_variables(ir), pe.restart_variables(ir))
+        plan = runner_ir.driver_plan(ir, {"u": "[nx]", "w": "[nx]", "ok": "scalar"})
+        self.assertEqual(set(plan.restart_vars), pe.restart_variables(ir))
+        # gate (p) asks one judgment per member: dropping either is refused, naming it
+        for var in ("u", "w"):
+            ir2 = _continuation_ir()
+            ir2["io_contract"]["predicates"] = [p for p in ir2["io_contract"]["predicates"]
+                                                if p["quantity"] != f"restart.{var}"]
+            (finding,) = self._p(ir2)
+            self.assertIn(f"its final {var} to its base's", finding)
+
+    def test_a_logical_result_a_call_record_and_an_init_only_state_are_not_restored(self) -> None:
+        """`init_ir`: `n_plan`, `dt_plan` and `init_ok` only `init` writes, `ok` is the step's
+        logical result; `loop_mpi_ir`: four call-record states beside `u`; `prob_ir`: `init`
+        writes `h` too, which `step` also writes, and two logical results."""
+        from tools import runner_ir
+        from tools.tests.test_driver_render import init_ir, loop_mpi_ir, prob_ir
+        self.assertEqual(runner_ir.restart_variables(init_ir(0)), frozenset({"u", "w"}))
+        loop = loop_mpi_ir()
+        self.assertEqual(set(pe.drive_model(loop).records),
+                         {"n_calls", "stage_q1", "stage_q2", "stage_t"})
+        self.assertEqual(runner_ir.restart_variables(loop), frozenset({"u"}))
+        self.assertEqual(runner_ir.restart_variables(prob_ir()), frozenset({"h"}))
+
+    def test_a_node_without_loop_has_none_and_refuses_a_continuation(self) -> None:
+        from tools import runner_ir
+        from tools.tests.test_driver_render import call_ir
+        ir = call_ir(0)
+        self.assertEqual(runner_ir.restart_variables(ir), frozenset())
+        ir["case"]["test_case_set"].append({**ir["case"]["test_case_set"][0], "case_id": "c",
+                                            "restart": {"from": "m0", "step": 1}})
+        ir["drive"]["distribute"] = {"axes": []}
+        self.assertTrue(any("drive declares loop" in v for v in self._p(ir)))
+
+    def test_each_malformed_restart_is_refused(self) -> None:
+        for raw in ({"from": "m0"}, {"from": "m0", "step": 0}, {"from": "m0", "step": True},
+                    {"from": "m0", "step": 2.0}, {"from": "m0", "step": 2, "x": 1},
+                    {"from": "", "step": 2}, "m0@2", None):
+            with self.subTest(raw=raw):
+                ir = _continuation_ir()
+                ir["case"]["test_case_set"][2]["restart"] = raw
+                self.assertTrue(any("restart must be" in v for v in self._p(ir)), self._p(ir))
+
+    def test_the_base_must_be_another_ordinary_case_a_pass_test_targets(self) -> None:
+        ir = _continuation_ir()
+        ir["case"]["test_case_set"][2]["restart"]["from"] = "zz"
+        self.assertTrue(any("names no other case" in v for v in self._p(ir)))
+        ir = _continuation_ir()
+        ir["case"]["test_case_set"][2]["restart"]["from"] = "m0_cont"
+        self.assertTrue(any("names no other case" in v for v in self._p(ir)))
+        ir = _continuation_ir()
+        second = {**copy.deepcopy(ir["case"]["test_case_set"][2]), "case_id": "m0_cont2",
+                  "restart": {"from": "m0_cont", "step": 2}}
+        ir["case"]["test_case_set"].append(second)
+        self.assertTrue(any("is a continuation itself" in v for v in self._p(ir)))
+        ir = _continuation_ir()
+        ir["io_contract"]["tests"].append({"test_id": "t_x", "expected_outcome": "xfail",
+                                           "target_cases": ["m0"], "quantities": []})
+        self.assertTrue(any("by no `xfail` test" in v for v in self._p(ir)))
+
+    def test_its_configuration_is_its_base_s(self) -> None:
+        for edit, want in ((lambda c: c.__setitem__("initial_state", {"u": 1.0, "w": 0.0}),
+                            "carries no initial_state"),
+                           (lambda c: c["inputs"].__setitem__("mode", 1), "its inputs must equal"),
+                           (lambda c: c["derived"].__setitem__("dt", 0.5),
+                            "its derived must equal")):
+            with self.subTest(want):
+                ir = _continuation_ir()
+                edit(ir["case"]["test_case_set"][2])
+                self.assertTrue(any(want in v for v in self._p(ir)), self._p(ir))
+
+    def test_the_restart_point_is_a_sample_before_the_end(self) -> None:
+        for step, every, want in ((3, 2, "no multiple of its base's history.every"),
+                                  (4, 1, "not below the base's n_step"),
+                                  (2, 0, "takes history samples")):
+            with self.subTest(step=step, every=every):
+                ir = _continuation_ir()
+                for c in ir["case"]["test_case_set"]:
+                    c["inputs"]["every"] = every
+                ir["case"]["test_case_set"][2]["restart"]["step"] = step
+                self.assertTrue(any(want in v for v in self._p(ir)), self._p(ir))
+
+    def test_the_judgment_is_its_one_form(self) -> None:
+        def one(mutate: Any) -> list[str]:
+            ir = _continuation_ir()
+            mutate(ir["io_contract"]["predicates"][0])
+            return self._p(ir)
+        for label, mutate in (
+                ("op", lambda p: p.__setitem__("op", "lt")),
+                ("value", lambda p: p.__setitem__("value", 1e-12)),
+                ("case", lambda p: p.__setitem__("case", "m0")),
+                ("expr", lambda p: p.__setitem__("expr", "maxabs(final.u - final.u)")),
+                ("expr reversed", lambda p: p.__setitem__(
+                    "expr", "maxabs(at('m0').final.u - final.u)")),
+                ("quantity", lambda p: p.__setitem__("quantity", "restart.uu"))):
+            with self.subTest(label):
+                self.assertTrue(any("its final u to its base's" in v for v in one(mutate)))
+        # whitespace is not the form: the parsed tree is
+        self.assertEqual(one(lambda p: p.__setitem__(
+            "expr", "maxabs( final.u-at( 'm0' ).final.u )")), [])
+
+    def test_a_bind_or_a_comparand_under_the_quantity_is_refused(self) -> None:
+        """A predicate with a `bind` reading `comparand.*` is cross-target and absent from the
+        own predicates, so it would never be evaluated on this target: refused by name, and the
+        judgment it replaced is missing too."""
+        for label, mutate in (
+                ("bind", lambda p: p.__setitem__("bind", {"b": "at('m0').final.u"})),
+                ("comparand", lambda p: p.update(
+                    bind={"c": "comparand.final.u"}))):
+            with self.subTest(label):
+                ir = _continuation_ir()
+                mutate(ir["io_contract"]["predicates"][0])
+                found = self._p(ir)
+                self.assertTrue(any("has a bind or reads a comparand" in v for v in found), found)
+                self.assertTrue(any("its final u to its base's" in v for v in found), found)
+
+    def test_the_test_must_target_exactly_the_two_and_pass(self) -> None:
+        for edit in (lambda t: t.__setitem__("target_cases", ["m0", "m0_cont", "m1"]),
+                     lambda t: t.__setitem__("expected_outcome", "xfail")):
+            ir = _continuation_ir()
+            edit(ir["io_contract"]["tests"][0])
+            self.assertTrue(any("its final u to its base's" in v for v in self._p(ir)))
+
+    def test_a_continuation_is_evaluated_as_its_base(self) -> None:
+        ir = _continuation_ir()
+        payloads = pe.evaluate_case_inputs(ir)
+        self.assertEqual(payloads["m0_cont"], payloads["m0"])
+        self.assertEqual(payloads["m0"]["restart.step"], 0)
+        self.assertEqual(pe.base_case_ids(ir), ["m0", "m1"])
+        self.assertEqual(pe.continuation_cases(ir), {"m0_cont": ("m0", 2)})
+        with tempfile.TemporaryDirectory() as tmp:
+            written = pe.write_case_inputs(ir, Path(tmp))
+            self.assertEqual(sorted(p.name for p in written), ["m0.json", "m1.json"])
+
+    def _sample(self, root: Path, **edit: Any) -> Path:
+        path = root / "raw" / "state_snapshots" / "history" / "m0__2.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        doc = {"u": [1.5, 2.5, 3.5], "w": [1.5, 2.5, 3.5], "ok": 1.0, "step": 2.0, "t": 1.5}
+        doc.update(edit)
+        path.write_text(json.dumps({k: v for k, v in doc.items() if v is not None}))
+        return path
+
+    def test_the_writer_writes_the_base_s_payload_and_the_sample(self) -> None:
+        ir = _continuation_ir()
+        with tempfile.TemporaryDirectory() as tmp:
+            self._sample(Path(tmp))
+            files, refused = pe.write_continuation_inputs(ir, Path(tmp))
+            self.assertEqual(refused, {})
+            (cf,) = files
+            self.assertEqual((cf.case_id, cf.base, cf.step), ("m0_cont", "m0", 2))
+            self.assertEqual(cf.path, Path(tmp) / "restart" / "case_inputs" / "m0_cont.json")
+            doc = json.loads(cf.path.read_text())
+            base = pe.evaluate_case_inputs(ir)["m0"]
+            self.assertEqual({k: v for k, v in doc.items() if not k.startswith("restart.")},
+                             {k: v for k, v in base.items() if not k.startswith("restart.")})
+            self.assertEqual(doc["restart.step"], 2)
+            self.assertEqual(doc["restart.u"], [1.5, 2.5, 3.5])
+            self.assertEqual(doc["restart.w"], [1.5, 2.5, 3.5])
+            self.assertNotIn("restart.ok", doc)
+
+    def test_the_writer_refuses_each_bad_restart_point(self) -> None:
+        for label, edit, want in (
+                ("absent", None, "no restart point"),
+                ("another step", {"step": 3.0}, "carries step 3.0"),
+                ("a variable lacking", {"w": None}, "lacks the restart variable(s) ['w']"),
+                ("other extents", {"u": [1.0, 2.0]}, "has extents [2]"),
+                ("non-finite", {"u": [1.0, float("nan"), 2.0]}, "non-finite"),
+                ("non-numeric", {"u": [1.0, "x", 2.0]}, "not a number"),
+                ("no time", {"t": None}, "no finite 't'")):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                if edit is not None:
+                    self._sample(Path(tmp), **edit)
+                files, refused = pe.write_continuation_inputs(_continuation_ir(), Path(tmp))
+                self.assertEqual(files, [])
+                self.assertIn(want, refused["m0_cont"])
+                self.assertFalse((Path(tmp) / "restart" / "case_inputs" / "m0_cont.json").exists())
+
+    def test_the_start_check(self) -> None:
+        ir = _continuation_ir()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample = self._sample(root)
+            (cf,), _ = pe.write_continuation_inputs(ir, root)
+            initial = root / "restart" / "raw" / "state_snapshots" / "initial" / "m0_cont.json"
+            initial.parent.mkdir(parents=True)
+            good = {**json.loads(sample.read_text()), "ok": 0.0}
+            for label, edit, want in (
+                    ("holds", {}, None),
+                    ("step", {"step": 0.0}, "did not start at step 2"),
+                    ("t", {"t": 1.0}, "initial 't'"),
+                    ("state", {"u": [1.0, 2.0, 3.0]}, "initial 'u'"),
+                    ("lacking", {"w": None}, "carries no 'w'")):
+                with self.subTest(label):
+                    doc = {k: v for k, v in {**good, **edit}.items() if v is not None}
+                    initial.write_text(json.dumps(doc))
+                    got = pe.continuation_start_violation(ir, root / "restart", cf)
+                    if want is None:
+                        self.assertIsNone(got)
+                    else:
+                        self.assertIn(want, got)
+            initial.unlink()
+            self.assertIn("unreadable", pe.continuation_start_violation(ir, root / "restart", cf))

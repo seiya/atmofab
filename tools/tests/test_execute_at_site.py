@@ -956,5 +956,197 @@ class DriverEvidencePromotionTests(unittest.TestCase):
             self.assertIn("missing=['series/c_beta.json']", out["stderr"])
 
 
+#: A loop driver in miniature (issue #632): the toy loop of `test_driver_render.loop_ir` (`u += dt`,
+#: `w = u`), reading each case's file as the host-rendered driver does — `restart.step` and, when
+#: it is positive, `restart.u` / `restart.w` — and writing the initial, history, series and final
+#: captures. `IGNORE_RESTART` makes it read `restart.step` as 0 (the instrument control: a
+#: continuation that re-runs its base); `FAIL_CASE` exits 3 after that case.
+_LOOP_RUNNER = textwrap.dedent('''\
+    #!/usr/bin/env python3
+    import json, os, sys
+    spec = sys.argv[sys.argv.index("--cases") + 1]
+    cases = sys.argv[sys.argv.index("--cases") + 2:]
+    steps = 0
+    def dump(name, doc):
+        os.makedirs(os.path.dirname("raw/state_snapshots/" + name) or ".", exist_ok=True)
+        json.dump(doc, open("raw/state_snapshots/" + name + ".json", "w"))
+    for c in cases:
+        d = json.load(open(os.path.join(os.path.dirname(spec), "case_inputs", c + ".json")))
+        u, w, ok = list(d["u"]), list(d["w"]), 0.0
+        n, dt, t0, every = d["inputs.n_step"], d["derived.dt"], d["inputs.t_start"], d["inputs.every"]
+        k0 = 0 if os.environ.get("IGNORE_RESTART") else d["restart.step"]
+        if k0 > 0:
+            u, w = list(d["restart.u"]), list(d["restart.w"])
+        cap = lambda k: {"u": u, "w": w, "ok": ok, "step": float(k), "t": t0 + k * dt}
+        dump("initial/" + c, cap(k0))
+        series = {"step": [], "u_min": [], "u_max": [], "w_min": [], "w_max": []}
+        for k in range(k0 + 1, n + 1):
+            u = [x + dt for x in u]
+            w, ok = list(u), 1.0
+            for name, col in (("step", [float(k)]), ("u_min", [min(u)]), ("u_max", [max(u)]),
+                              ("w_min", [min(w)]), ("w_max", [max(w)])):
+                series[name] += col
+            if every and k % every == 0:
+                dump("history/" + c + "__" + str(k), cap(k))
+        dump(c, cap(n))
+        dump("series/" + c, {**series, "t": t0 + n * dt})
+        steps += n - k0
+        if os.environ.get("FAIL_CASE") == c:
+            sys.exit(3)
+    threads = os.environ.get("OMP_NUM_THREADS")
+    json.dump({"steps": steps, **({} if threads is None else
+                                  {"parallelism": {"threads_per_rank": int(threads)}})},
+              open("perf.json", "w"))
+''')
+
+
+class ContinuationAtExecuteTests(unittest.TestCase):
+    """The second pass of `Validate.execute` (issue #632), driven through `_execute_inproc` with
+    the post-execute gate answered 0: the first pass runs the base cases, then each shape runs
+    each continuation in a process of its own from that shape's own sample, the host checks
+    where it started, and only then are its captures merged."""
+
+    def _node(self, tmp: str, site: Site | None = None) -> _Node:
+        import yaml
+
+        from tools import primary_evidence as pe
+        from tools.tests.test_driver_render import loop_ir
+        n = _Node(tmp, site=site or Site(LOCAL_SITE, ("cpu",)))
+        ir = loop_ir(0, every=1, n_step=4)
+        cont = {**{k: v for k, v in ir["case"]["test_case_set"][0].items()
+                   if k != "initial_state"}, "case_id": "m0_cont",
+                "restart": {"from": "m0", "step": 2}}
+        ir["case"]["test_case_set"].append(cont)
+        ir["io_contract"]["tests"] = [{"test_id": "t_restart", "expected_outcome": "pass",
+                                       "target_cases": ["m0", "m0_cont"],
+                                       "quantities": ["restart.u", "restart.w"]}]
+        ir["io_contract"]["predicates"] = [
+            {"test_id": "t_restart", "quantity": f"restart.{v}", "target_cases": ["m0", "m0_cont"],
+             "case": "m0_cont", "expr": pe.restart_judgment_expr(v, "m0"), "op": "le",
+             "value": 0.0} for v in ("u", "w")]
+        ir["io_contract"]["raw_requirements"]["required_evidence"] += [
+            {"artifact": "state_history", "required": True},
+            {"artifact": "step_series", "required": True,
+             "names": ["step", "u_min", "u_max", "w_min", "w_max"]}]
+        (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+        for b in (n.binary, n.checked_binary):
+            b.write_text(_LOOP_RUNNER, encoding="utf-8")
+        return n
+
+    def _execute(self, n: _Node, **knobs: str) -> dict:
+        with mock.patch.object(wc.Conductor, "_conductor_authors_runner", return_value=True):
+            return n.execute(**knobs)
+
+    def _assert_continued(self, n: _Node, out: dict) -> None:
+        self.assertEqual(out["returncode"], 0, out)
+        self.assertNotIn("snapshot deliverable mismatch", out["stderr"])
+        snaps = n.node_dir / "raw" / "state_snapshots"
+        final, base = (json.loads((snaps / f"{c}.json").read_text()) for c in ("m0_cont", "m0"))
+        self.assertEqual(final, base)
+        initial = json.loads((snaps / "initial" / "m0_cont.json").read_text())
+        self.assertEqual((initial["step"], initial["t"]), (2.0, 1.5))
+        self.assertEqual(sorted(p.name for p in (snaps / "history").glob("m0_cont__*")),
+                         ["m0_cont__3.json", "m0_cont__4.json"])
+        meta = json.loads((n.node_dir / "trial_meta.json").read_text())
+        self.assertTrue(meta["runner_command"].endswith(" m0"), meta["runner_command"])
+        record = meta["restart_pass"]
+        self.assertEqual(sorted(record),
+                         sorted(["run", "qc_run", "checked", "threads_2", "threads_3"]))
+        for label, entry in record.items():
+            self.assertEqual(entry["refused"], {}, label)
+            (row,) = entry["continuations"]
+            self.assertEqual((row["case_id"], row["base"], row["step"], row["ok"]),
+                             ("m0_cont", "m0", 2, True), label)
+            self.assertNotIn("start_check", row, label)
+            self.assertIsNotNone(row["command_id"], label)
+        # each continuation is a command of its own: one case, the shape's restart IR
+        runs = [e for e in n.log_entries(n.node_dir / "command_log.jsonl")
+                if e.get("tool_name") == "run_program"]
+        conts = [e["command"] for e in runs if "m0_cont" in e["command"]]
+        self.assertEqual(len(conts), 4)   # the run's, each sweep shape's, the checked one's
+        for argv in conts:
+            self.assertEqual(argv[-1], "m0_cont")
+            self.assertTrue(argv[-2].endswith("/restart/spec.ir.yaml"), argv)
+        for e in runs:
+            if "m0_cont" not in e["command"]:
+                self.assertEqual(e["command"][-1], "m0")
+        qc = n.log_entries(n.src / "command_log.jsonl")
+        self.assertEqual(len(qc), 2)
+        # the host verdict over the promoted captures judges the continuation against its base
+        import yaml
+
+        from tools import primary_evidence as pe
+        from tools.verdict_evaluator import evaluate_verdict
+        ir = yaml.safe_load((n.repo / n.refs.ir_ref / "spec.ir.yaml").read_text())
+        verdict = evaluate_verdict(ir["io_contract"]["tests"],
+                                   pe.evaluate_primary_predicates(ir, n.node_dir))
+        self.assertEqual([(r["test_id"], r["status"]) for r in verdict["per_test"]],
+                         [("t_restart", "pass")])
+        quality = json.loads((n.node_dir / "quality_check.json").read_text())
+        self.assertEqual(quality["status"], "pass",
+                         [(s["label"], s["status"], s.get("verdict_match"),
+                           s.get("state_agreement")) for s in quality["shapes"]])
+
+    def test_a_continuation_runs_in_its_own_process_and_its_captures_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self._assert_continued(n, self._execute(n))
+            perf = json.loads((n.node_dir / "perf.json").read_text())
+            self.assertEqual(perf["steps"], 4)   # the first pass's: the base alone
+
+    def test_a_continuation_at_a_site_runs_in_a_second_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, site=None)
+            n.site = n.conductor.site
+            self._assert_continued(n, self._execute(n))
+            jobs = sorted(p.name for p in n.workdir.joinpath("orch_1").iterdir()) \
+                if n.workdir.joinpath("orch_1").exists() else []
+            self.assertEqual(jobs, [])   # both jobs removed their directories
+
+    def test_a_continuation_that_re_ran_its_base_has_no_captures_and_says_why(self) -> None:
+        """The instrument control: a driver that reads `restart.step` as 0 passes every equality
+        the judgment asks; the start check refuses its captures, and the run fails closed on the
+        continuation's own cause, not on a misnamed file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            out = self._execute(n, IGNORE_RESTART="1")
+            snaps = n.node_dir / "raw" / "state_snapshots"
+            self.assertFalse((snaps / "m0_cont.json").exists())
+            self.assertIn("[execute fail: continuation] continuation 'm0_cont' has no captures",
+                          out["stderr"])
+            self.assertIn("did not start at step 2", out["stderr"])
+            row = json.loads((n.node_dir / "trial_meta.json").read_text())[
+                "restart_pass"]["run"]["continuations"][0]
+            self.assertIn("did not start at step 2", row["start_check"])
+
+    def test_a_refused_restart_point_writes_no_file_and_says_why(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            ir_path = n.repo / n.refs.ir_ref / "spec.ir.yaml"
+            import yaml
+            ir = yaml.safe_load(ir_path.read_text())
+            ir["case"]["test_case_set"][1]["restart"]["step"] = 3
+            ir["case"]["test_case_set"][0]["inputs"]["every"] = 2
+            ir["case"]["test_case_set"][1]["inputs"]["every"] = 2
+            ir_path.write_text(yaml.safe_dump(ir))
+            out = self._execute(n)
+            self.assertIn("continuation 'm0_cont' has no captures: no restart point",
+                          out["stderr"])
+
+    def test_a_second_pass_process_that_fails_fails_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            out = self._execute(n, FAIL_CASE="m0_cont")
+            self.assertIn("[run_program failed: runtime_error]", out["stderr"])
+            self.assertIn("second pass: continuation 'm0_cont' failed", out["stderr"])
+            self.assertFalse((n.node_dir / "trial_meta.json").exists())
+
+    def test_the_build_control_file_s_default_lists_the_base_cases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self.assertEqual(n.conductor.read_base_case_ids(n.refs), ("m0",))
+            self.assertEqual(n.conductor.read_case_ids(n.refs), ("m0", "m0_cont"))
+
+
 if __name__ == "__main__":
     unittest.main()
