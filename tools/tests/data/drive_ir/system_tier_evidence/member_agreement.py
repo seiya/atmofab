@@ -65,14 +65,16 @@ def latest_pipeline(node: str) -> Path:
 
 
 def run_of(pipe: Path, node: str, run_id: str | None = None) -> tuple[Path, Path]:
-    """(the run's state_snapshots directory, the IR directory the pipeline's lineage names)."""
+    """(the run's state_snapshots directory, the IR directory the pipeline's lineage names). The
+    run is `run_id` when given (the run a consumer resolved, which a later run of the same
+    pipeline may have followed), else the lineage's own run; it must exist."""
     lineage = json.loads((pipe / "lineage.json").read_text())
-    if run_id is not None and run_id != lineage["run_id"]:
-        raise SystemExit(f"{node}: the resolved run {run_id} is not its pipeline's run "
-                         f"{lineage['run_id']}")
-    snaps = pipe / "runs" / lineage["run_id"] / node / "raw" / "state_snapshots"
-    print(f"{node}: pipeline {pipe.relative_to(REPO)}, run {lineage['run_id']}, "
-          f"ir {lineage['ir_ref']}")
+    run = run_id if run_id is not None else lineage["run_id"]
+    run_dir = pipe / "runs" / str(run)
+    if not run_dir.is_dir():
+        raise SystemExit(f"{node}: run {run} is absent under {pipe.relative_to(REPO)}")
+    snaps = run_dir / node / "raw" / "state_snapshots"
+    print(f"{node}: pipeline {pipe.relative_to(REPO)}, run {run}, ir {lineage['ir_ref']}")
     return snaps, REPO / lineage["ir_ref"]
 
 
