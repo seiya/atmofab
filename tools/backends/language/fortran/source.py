@@ -1320,10 +1320,19 @@ def _validate_problem_metric_only_scalar_kernel(
     model_file: Path,
     envelopes: list[ProcedureEnvelope],
     violations: list[str],
+    delegating_init: str | None = None,
 ) -> None:
     # `multidim_spec_id` is the node's spec_id when it is a multi-dimensional `problem` node and
     # None otherwise: which nodes are multi-dimensional is a fact about the node, not the
     # language, so the validator decides it and hands the answer in.
+    #
+    # `delegating_init` is `<node>__init` on a composite whose member publishes `__init` (the
+    # system tier, Part 2), else None. That procedure's outputs are the member's `__init`'s, by
+    # the rule that it calls the member's `__init` (`validate_member_init_placement`), so it has
+    # neither array inputs nor a loop of its own: it is exempt here when its body holds a
+    # `call`, and the placement gate refuses the model unless one of its calls is the member's
+    # `__init`. A literal output written after that call is the member's judgments'
+    # to see (restated on the composite over `initial.*`), as it is on any `__init`.
     if multidim_spec_id is None:
         return
     spec_id = multidim_spec_id
@@ -1343,6 +1352,9 @@ def _validate_problem_metric_only_scalar_kernel(
         has_array_inputs = bool(intent_in_or_inout_array_pattern.search(body))
         has_loop = bool(do_loop_pattern.search(body) or forall_pattern.search(body))
         if has_array_inputs or has_loop:
+            continue
+        if (delegating_init is not None and sub_name.strip().lower() == delegating_init
+                and re.search(r"\bcall\s+[a-z_][a-z0-9_]*\s*\(", body)):
             continue
 
         violations.append(
@@ -2452,6 +2464,137 @@ def validate_dependency_operations(
                 )
 
 
+def _identifier_count(text: str, name: str) -> int:
+    """How many times the identifier ``name`` occurs in ``text`` as a whole token."""
+    return len(re.findall(rf"(?<![a-z0-9_]){re.escape(name)}(?![a-z0-9_])", text))
+
+
+def _callee_count(text: str, name: str) -> int:
+    """How many of ``name``'s token occurrences in ``text`` are the callee of a `call`."""
+    return len(re.findall(rf"\bcall\s+{re.escape(name)}(?![a-z0-9_])", text))
+
+
+def validate_member_init_placement(
+    *,
+    node_spec_id: str,
+    model_file: Path,
+    lowered: str,
+    init_member_ids: Iterable[str],
+    violations: list[str],
+) -> None:
+    """The placement of a member's `__init` in a composing `problem`'s model (the system tier,
+    Part 2; `docs/CONTROLLED_SPEC.md`): for each member in ``init_member_ids`` (the validator
+    passes the `problem` members whose own §5.1 publishes `<member>__init`),
+
+    - PRESENCE: the body of `<node>__init` (the procedures it contains included, dead ones
+      blanked) calls `<member>__init`, by that name or by the local name of a
+      `use <member>_model, only: <local> => <member>__init` rename of the module's
+      specification part (`dependency_renames`, the use gate's reader);
+    - ABSENCE: outside `<node>__init`, and outside a `use` statement, the source holds NO token
+      `<member>__init` nor any local name a `use` of the file renames it to
+      (`dependency_call_locals`, every rename of the file, renames of renames followed); inside
+      `<node>__init` each such token is the callee of a `call`;
+    - the composite's own `<node>__init` is named only by its own header and `end` statement and
+      by an access statement: a call of it from `__step` reaches the member's `__init` too.
+
+    The two halves have OPPOSITE polarities, so they do not share a reader: a call reader that
+    misses a spelling fails presence closed and absence open (`dependency_call_locals`' trap).
+    Absence therefore counts identifier TOKENS over the masked joined view, dead code included,
+    and compares them with the callee tokens inside `<node>__init`: a renamed import, a
+    procedure pointer (`p => <member>__init`), an actual argument, an interface body, a generic
+    binding and a call from another procedure each leave a token the count refuses. What a token
+    cannot show, and the continuation case judges instead: a procedure pointer or actual argument
+    naming a procedure CONTAINED in `<node>__init` that stores it beyond the call, and a
+    `bind(c, name=...)` interface whose label is the member's linker symbol (a literal, masked
+    here). Neither brings a leaf closer to a verdict: the compliant call is the cheaper edit.
+
+    A source whose structure does not resolve never reaches here: `run_problem_model_gates`
+    refuses it first."""
+    try:
+        view, tree, to_view = structure_reading(lowered)
+    except SourceStructureError:
+        return  # refused by the caller's own parse, which ran first
+    live = _without_dead_contained_procedures(lowered) or view
+    node_init = f"{node_spec_id.lower()}__init"
+    spans = []
+    for procedure in tree.procedures:
+        if procedure.name.strip().lower() != node_init:
+            continue
+        end_line = view.find("\n", to_view(procedure.body_end))
+        spans.append((to_view(procedure.header_start),
+                      len(view) if end_line < 0 else end_line + 1))
+    # Statement lines of the view, each with its offset; a `use` statement is left out of the
+    # absence count (it names the member's `__init` to import it, which is no use of it).
+    statements: list[tuple[int, str]] = []
+    offset = 0
+    for line in view.split("\n"):
+        if _use_only_items(line.strip()) is None:
+            statements.append((offset, line))
+        offset += len(line) + 1
+
+    def in_init(at: int) -> bool:
+        return any(start <= at < end for start, end in spans)
+
+    # The composite's own `__init`: only its header / `end` statement and an access statement.
+    for at, line in statements:
+        total = _identifier_count(line, node_init)
+        if not total:
+            continue
+        if re.match(r"\s*(?:public|private)\b", line):
+            continue
+        headers = len(re.findall(rf"\b(?:subroutine|function)\s+{re.escape(node_init)}"
+                                 r"(?![a-z0-9_])", line))
+        if total != headers:
+            violations.append(
+                f"{model_file}: `{node_init}` is named outside its own definition "
+                f"(statement {line.strip()!r}): the model never calls or references its own "
+                f"`__init` — the driver calls it once per case, and a call from `__step` or any "
+                f"other procedure reaches the member's `__init` from there.")
+    members = sorted({m.lower() for m in init_member_ids})
+    renames = dependency_renames(lowered, model_file.stem, members)
+    locals_by_target: dict[str, set[str]] = {}
+    for local, target in dependency_call_locals(lowered, members).items():
+        locals_by_target.setdefault(target, set()).add(local)
+    for member in members:
+        member_init = f"{member}__init"
+        names = sorted({member_init} | locals_by_target.get(member_init, set()))
+        if not spans:
+            violations.append(
+                f"{model_file}: the member `{member}` publishes `{member_init}`, and this model "
+                f"defines no `{node_init}`: a composite whose member publishes `__init` defines "
+                f"`{node_init}` (its §5.1 publishes it) and calls `{member_init}` there.")
+            continue
+        called = any(
+            in_init(match.start()) and (
+                match.group(1) == member_init
+                or renames.target_at(match.group(1), match.start()) == member_init)
+            for match in _DEPENDENCY_CALL_RE.finditer(live))
+        if not called:
+            violations.append(
+                f"{model_file}: `{node_init}` does not call `{member_init}`: the composite's "
+                f"`__init` calls the member's `__init` (by its name, or by the local name of a "
+                f"`use {member}_model, only: <local> => {member_init}` rename in the module's "
+                f"specification part) in its own body, live, once per case.")
+        for at, line in statements:
+            for name in names:
+                total = _identifier_count(line, name)
+                if not total:
+                    continue
+                if in_init(at) and _callee_count(line, name) == total:
+                    continue
+                where = (f"inside `{node_init}` other than as the callee of a `call`"
+                         if in_init(at) else f"outside `{node_init}`")
+                violations.append(
+                    f"{model_file}: `{name}` "
+                    f"{'' if name == member_init else f'(a local name for `{member_init}`) '}"
+                    f"is named {where} (statement {line.strip()!r}). The member's `__init` is "
+                    f"called from `{node_init}` and named nowhere else: not from `__step` or "
+                    f"another procedure, not through a procedure pointer or an actual argument, "
+                    f"not in an interface. Both halves hold together — the call inside "
+                    f"`{node_init}`, and no other occurrence of the name or of a local name a "
+                    f"`use` renames it to.")
+
+
 def run_problem_model_gates(
     node_key: str,
     model_file: Path,
@@ -2460,8 +2603,11 @@ def run_problem_model_gates(
     violations: list[str],
     *,
     multidim_spec_id: str | None,
+    init_member_ids: Iterable[str],
 ) -> None:
-    """Read one model source once and run the three `problem` model gates over it.
+    """Read one model source once and run the three `problem` model gates over it, and the
+    member `__init` placement gate (`validate_member_init_placement`) when ``init_member_ids``
+    names a member.
 
     ONE parse per file, for all three. They each used to call `procedure_envelopes`
     themselves, which parsed the same text three times and gave a refusal three chances to be
@@ -2558,12 +2704,23 @@ def run_problem_model_gates(
         dep_spec_ids=dep_spec_ids,
         violations=violations,
     )
+    init_member_ids = tuple(init_member_ids)
+    node_spec_id = node_key.split("/", 1)[1].split("@", 1)[0].strip()
     _validate_problem_metric_only_scalar_kernel(
         multidim_spec_id=multidim_spec_id,
         model_file=model_file,
         envelopes=envelopes,
         violations=violations,
+        delegating_init=(f"{node_spec_id.lower()}__init" if init_member_ids else None),
     )
+    if init_member_ids:
+        validate_member_init_placement(
+            node_spec_id=node_spec_id,
+            model_file=model_file,
+            lowered=lowered,
+            init_member_ids=init_member_ids,
+            violations=violations,
+        )
 
 
 def model_source_gates(
@@ -2574,10 +2731,12 @@ def model_source_gates(
     dep_spec_ids: list[str],
     violations: list[str],
     multidim_spec_id: str | None,
+    init_member_ids: Iterable[str],
 ) -> None:
     """Every structural gate over one model source, in the order the validator ran them: the
-    `index(case_id)` / literal-metric floors, then the three `problem` model gates
-    (`run_problem_model_gates`). `text` is the file's raw content."""
+    `index(case_id)` / literal-metric floors, then the three `problem` model gates and the member
+    `__init` placement gate (`run_problem_model_gates`). `text` is the file's raw content;
+    `init_member_ids` the `problem` members whose own §5.1 publishes `__init`."""
     lowered = text.lower()
     # The metric scans below are the same shape as the `problem` model gates — a regex over
     # multi-line source — and need the same view. Their `([^\n!]+)` right-hand side stopped at
@@ -2615,6 +2774,7 @@ def model_source_gates(
         dep_spec_ids=dep_spec_ids,
         violations=violations,
         multidim_spec_id=multidim_spec_id,
+        init_member_ids=init_member_ids,
     )
 
 

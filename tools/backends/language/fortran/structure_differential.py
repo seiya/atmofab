@@ -129,6 +129,7 @@ def gate_violations(path: Path, lowered: str) -> list[str]:
         dep_spec_ids=dep_spec_ids_of(lowered),
         violations=violations,
         multidim_spec_id=multidim_spec_id,
+        init_member_ids=(),
     )
     return violations
 

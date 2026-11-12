@@ -2643,6 +2643,7 @@ def _validate_generate_outputs(
     multidim_spec_id = (
         (_spec_id_from_node_key(execution.node_key) or execution.node_key)
         if _is_multidim_problem_node(execution) else None)
+    init_member_ids = _init_publishing_member_ids(repo_root, execution, violations)
     for model_file in model_files:
         source_reading.model_source_gates(
             node_key=execution.node_key,
@@ -2651,6 +2652,7 @@ def _validate_generate_outputs(
             dep_spec_ids=dep_spec_ids,
             violations=violations,
             multidim_spec_id=multidim_spec_id,
+            init_member_ids=init_member_ids,
         )
 
     _validate_control_file(src_dir, violations, build_system=_build_system, language=_language)
@@ -3024,15 +3026,17 @@ def _validate_component_generated_surface(
     # tier, Part 1). What bounds a member's generated surface instead: (a)
     # `_validate_generated_signatures` requires every §5.1 signature to be present ("no more" is
     # not checked for a `problem`); (b) the spec-input rule admits only a member whose §5.1
-    # publishes exactly `<member>__step` (`spec_input_gates.problem_dependency_surface_violation`);
-    # (c) the composite's membership gate (`_validate_component_dep_operations_membership`)
-    # refuses an IR `operations` entry outside that published surface. No gate ties the
-    # composite's CALLS to its `operations` list: the call gate accepts any `<member>__*` call.
-    # An extra procedure the member's generated source defines beyond §5.1 is therefore callable
-    # by a composite. What refuses a call of a procedure the member does NOT define is the
-    # Generate syntax check, which compiles the composite against the member's certified source.
-    # Not closed in Part 1 (review round 3, disc-L2; the system tier's TODO item for the D11
-    # allowlist carries it).
+    # publishes exactly `<member>__step`, or `<member>__step` and `<member>__init`
+    # (`spec_input_gates.problem_dependency_surface_violation`); (c) the composite's IR
+    # `operations` for the member equals that §5.1 set
+    # (`_validate_problem_dep_operations_equal_member_surface`); (d) the language's placement
+    # gate (`validate_member_init_placement`) confines the member's `__init` to the composite's
+    # `__init`. No gate ties the composite's other CALLS to its `operations` list: the call gate
+    # accepts any `<member>__*` call. An extra procedure the member's generated source defines
+    # beyond §5.1 is therefore callable by a composite. What refuses a call of a procedure the
+    # member does NOT define is the Generate syntax check, which compiles the composite against
+    # the member's certified source. Not closed in Part 1 (review round 3, disc-L2) nor in Part 2
+    # (the system tier's TODO item for the member `__init` rule carries it).
     key_spec_id = _spec_id_from_node_key(str(execution.node_key))
     kind_by_key = str(execution.node_key).split("/", 1)[0].strip()
     catalog_kind, catalog_reason = (_catalog_spec_kind(repo_root, key_spec_id) if key_spec_id
@@ -6343,6 +6347,45 @@ def _component_dep_spec_ids(repo_root: Path, execution: NodeExecution) -> list[s
     return sorted(set(result))
 
 
+def _init_publishing_member_ids(
+    repo_root: Path, execution: NodeExecution, violations: list[str],
+) -> tuple[str, ...]:
+    """The spec_ids of the node's `problem/` direct dependencies whose OWN §5.1 publishes
+    `<member>__init` (the system tier, Part 2), read by `_member_procedure_names` from the
+    member's spec file — the members whose `__init` the language's placement gate
+    (`validate_member_init_placement`) places in the composite's `__init`.
+
+    The members are the ones `_component_dep_spec_ids` reads (the certified IR's
+    `direct_deps`, which the consistency gate ties to the host's dependency graph). A member
+    whose §5.1 cannot be read is a violation here and is passed on as an `__init` publisher, so
+    the placement gate runs for it too: fail-closed both ways."""
+    if not execution.node_key.startswith("problem/"):
+        return ()
+    dep_data = _dependency_resolved_for_execution(repo_root, execution)
+    direct_deps = dep_data.get("direct_deps") if isinstance(dep_data, dict) else None
+    if not isinstance(direct_deps, list):
+        return ()
+    members: set[str] = set()
+    for item in direct_deps:
+        token = item if isinstance(item, str) else (
+            item.get("node_key") if isinstance(item, dict) else None)
+        called = _called_dep_key(token)
+        if called is not None and called[0] == "problem":
+            members.add(called[1])
+    out: list[str] = []
+    for member in sorted(members):
+        names, detail = _member_procedure_names(repo_root, member)
+        if names is None:
+            violations.append(
+                f"problem member {member!r}: its §5.1 procedure set cannot be read ({detail}), "
+                f"so where its `__init` may be called cannot be decided; the placement gate is "
+                f"applied as if it published one (fail-closed)")
+            out.append(member)
+        elif f"{member}__init" in names:
+            out.append(member)
+    return tuple(out)
+
+
 def _dep_node_key_tokens(node: Any) -> list[str]:
     tokens: list[str] = []
     if isinstance(node, str):
@@ -8865,6 +8908,7 @@ def _validate_compile_ir_dir_impl(repo_root: Path, ir_dir: Path) -> list[str]:
     _validate_profile_selection(repo_root, ir_dir, violations)
     _validate_component_dep_operations(repo_root, ir_dir, violations)
     _validate_component_dep_operations_membership(repo_root, ir_dir, violations)
+    _validate_problem_dep_operations_equal_member_surface(repo_root, ir_dir, violations)
     _validate_local_operation_lowering(repo_root, ir_dir, violations)
     _validate_tests_and_predicates(repo_root, ir_dir, violations)
     _validate_case_ids(ir_dir, violations)
@@ -9144,6 +9188,84 @@ def _validate_component_dep_operations_membership(
                 "injected <dependency_facts> and the pure leaf cannot converge (its retry "
                 "budget exhausts)"
             )
+
+
+def _member_procedure_names(repo_root: Path, member_id: str) -> tuple[set[str] | None, str]:
+    """The §5.1 procedure names of the catalogued `problem` `member_id`, read from its OWN spec
+    file by `spec_input_gates.problem_procedure_names` (the one reader the member rules share),
+    or `(None, detail)` when the member does not resolve or its §5.1 cannot be read. Every
+    caller refuses the `None` answer."""
+    from tools.orchestration_runtime import SpecCatalogCorruption, resolve_spec_ref_for
+    from tools.spec_input_gates import problem_procedure_names
+    try:
+        member_ref = resolve_spec_ref_for(repo_root, "problem", member_id)
+    except (SpecCatalogCorruption, OSError) as exc:
+        return None, f"cannot be resolved in spec/registry/spec_catalog.yaml ({exc})"
+    if not member_ref:
+        return None, "has no unique spec directory in spec/registry/spec_catalog.yaml"
+    names, detail = problem_procedure_names(repo_root, member_ref)
+    return names, (f"{member_ref} {detail}" if names is None else "")
+
+
+def _validate_problem_dep_operations_equal_member_surface(
+    repo_root: Path, ir_dir: Path, violations: list[str]
+) -> None:
+    """Compile gate (the system tier, Part 2): a ``problem/`` direct dependency's
+    ``operations`` list EQUALS the member's §5.1 procedure set, read from the member's own spec
+    file (`_member_procedure_names`), compared as sets of exact strings.
+
+    Why equality and not the subset the membership gate checks for a `component`: a member
+    `problem` publishes `__step`, or `__step` and `__init` (the spec-input rule), and the
+    composite calls each (`docs/CONTROLLED_SPEC.md`: the member's `__init` from the composite's
+    `__init`, its `__step` from the composite's `__step`). The host injects a dependency's
+    call-site interfaces from `operations`, so a list that leaves `__init` out would hand the
+    Generate leaf no interface for a call it must make.
+
+    NOT the dependency-surface sidecar, whose membership gate is inert when the sidecar is
+    absent, has no entry, is `unresolved`, or publishes nothing: a member whose §5.1 cannot be
+    read, or that the catalog does not resolve, is a violation here. An entry whose
+    `operations` is missing, empty or malformed is `_validate_component_dep_operations`'
+    finding and is not reported twice. No-op on a missing / unparseable IR."""
+    derived_path = ir_dir / "spec.ir.yaml"
+    if not derived_path.exists():
+        return
+    try:
+        ir = _read_yaml(derived_path)
+    except (json.JSONDecodeError, yaml.YAMLError):
+        return
+    if not isinstance(ir, dict):
+        return
+    dep = ir.get("dependency")
+    direct_deps = dep.get("direct_deps") if isinstance(dep, dict) else None
+    if not isinstance(direct_deps, list):
+        return
+    for entry in direct_deps:
+        node_key = entry if isinstance(entry, str) else (
+            entry.get("node_key") if isinstance(entry, dict) else None)
+        called = _called_dep_key(node_key)
+        if called is None or called[0] != "problem":
+            continue
+        ops = entry.get("operations") if isinstance(entry, dict) else None
+        if not isinstance(ops, list) or not ops or not all(
+                isinstance(o, str) and o.strip() for o in ops):
+            continue  # `_validate_component_dep_operations` reports this shape
+        declared = {o.strip() for o in ops}
+        published, detail = _member_procedure_names(repo_root, called[1])
+        if published is None:
+            violations.append(
+                f"{derived_path}: dependency {called[2]!r} is a `problem` member whose §5.1 "
+                f"procedure set cannot be read: the member {detail}. A member's `operations` "
+                f"must equal that set, so it cannot be checked (fail-closed)")
+            continue
+        if declared != published:
+            violations.append(
+                f"{derived_path}: dependency {called[2]!r} declares `operations` "
+                f"{sorted(declared)}, and a `problem` member's `operations` must equal the "
+                f"procedure set of its §5.1, which is exactly {sorted(published)}. Author "
+                f"dependency.direct_deps[].operations as that set (copy each name verbatim): "
+                f"the composite calls the member's `__init` from its own `__init` and the "
+                f"member's `__step` from its own `__step`, and the host injects the call-site "
+                f"interface of each name listed here")
 
 
 _LOWERING_STEP_STRUCTURAL_KEYS = frozenset(

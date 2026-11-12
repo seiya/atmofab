@@ -4,7 +4,8 @@ dependencies:
   # An assembled model (system tier, Part 1): the member `problem` advances the dynamics and
   # the two components below integrate the Coriolis source after it (Controlled Spec §4, §5).
   # The member's own components come from the member's adopted profile and are not declared
-  # here. A member is admitted only when its own §5.1 publishes exactly `<member>__step`.
+  # here. A member is admitted only when its own §5.1 publishes exactly `<member>__step`, or
+  # `<member>__step` and `<member>__init`.
   problems:
     - problem_id: shallow_water2d
       version_constraint: ">=0.5.1 <1.0.0"

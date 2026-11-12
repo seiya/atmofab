@@ -5296,9 +5296,10 @@ class DependencyClosureTests(unittest.TestCase):
             "# member\n\n## 5. Interface\n\n### 5.1 Canonical interface\n\n```yaml\n"
             f"procedures:\n{procs}```\n\n## 6. Tests\n", encoding="utf-8")
 
-    def _seed_composite(self, repo_root: Path, *, member_procedures: tuple[str, ...]) -> None:
+    def _seed_composite(self, repo_root: Path, *, member_procedures: tuple[str, ...],
+                        composite_procedures: tuple[str, ...] = ("a__step",)) -> None:
         """problem/a composes problem/m (whose own closure is component/c); m's §5.1 publishes
-        `member_procedures`."""
+        `member_procedures`, a's `composite_procedures`."""
         _write_catalog(repo_root, [
             {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.1.0",
              "deps_path": "spec/problem/a/deps.yaml"},
@@ -5312,6 +5313,7 @@ class DependencyClosureTests(unittest.TestCase):
         _write_deps(repo_root, "spec/problem/m", "problem", "m",
                     components=[("c", ">=0.1.0")])
         self._write_member_spec(repo_root, "spec/problem/m", member_procedures)
+        self._write_member_spec(repo_root, "spec/problem/a", composite_procedures)
         _write_deps(repo_root, "spec/component/c", "component", "c")
 
     def test_a_problem_composing_a_step_only_member_resolves_its_closure(self) -> None:
@@ -5346,15 +5348,35 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertIn("spec/component/c", err["detail"])
             self.assertIn("a `component`", err["detail"])
 
-    def test_the_closure_walk_refuses_a_member_that_is_not_step_only_before_visiting_it(
-            self) -> None:
-        """D11: the member is refused after it resolves and BEFORE `visit(member)`, so its own
-        closure is never walked (and so never certified first)."""
+    def test_a_problem_composing_an_init_member_resolves_when_it_publishes_init(self) -> None:
+        """Part 2: a member publishing `__step` and `__init` is admitted under a composite that
+        publishes `__init` itself."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_composite(repo_root, member_procedures=("m__step", "m__init"),
+                                 composite_procedures=("a__step", "a__init"))
+            ordered, err = run_workflow._resolve_dependency_closure(repo_root, "spec/problem/a")
+            self.assertIsNone(err)
+            self.assertIn("spec/problem/m", [n["spec_ref"] for n in ordered])
+            run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/a")
+
+    def test_the_closure_walk_refuses_a_member_before_visiting_it(self) -> None:
+        """The member is refused after it resolves and BEFORE `visit(member)`, so its own
+        closure is never walked (and so never certified first): a member outside the admitted
+        sets (`problem_dependency_surface_not_step_or_init`), and an `__init` member under a
+        composite that does not publish `__init` (`problem_dependency_init_not_published`). The
+        recorded reason is each violation's own token."""
         import tools.orchestration_runtime as ort
-        for procedures in (("m__step", "m__init"), ("m__init",)):
+        for procedures, composite, reason in (
+                (("m__init",), ("a__step", "a__init"),
+                 "problem_dependency_surface_not_step_or_init"),
+                (("m__step", "m__reset"), ("a__step",),
+                 "problem_dependency_surface_not_step_or_init"),
+                (("m__step", "m__init"), ("a__step",), "problem_dependency_init_not_published")):
             with self.subTest(procedures=procedures), tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
-                self._seed_composite(repo_root, member_procedures=procedures)
+                self._seed_composite(repo_root, member_procedures=procedures,
+                                     composite_procedures=composite)
                 read: list[str] = []
                 real = ort._read_deps_yaml
 
@@ -5366,26 +5388,34 @@ class DependencyClosureTests(unittest.TestCase):
                     ordered, err = run_workflow._resolve_dependency_closure(
                         repo_root, "spec/problem/a")
                 self.assertEqual(ordered, [])
-                self.assertEqual(err["reason"], "problem_dependency_surface_not_step_only")
+                self.assertEqual(err["reason"], reason)
                 self.assertIn("spec/problem/m", err["detail"])
                 self.assertIn("spec/problem/a", read)
                 self.assertNotIn("spec/problem/m", read)
                 self.assertNotIn("spec/component/c", read)
 
-    def test_the_launch_refusal_names_a_member_that_is_not_step_only(self) -> None:
+    def test_the_launch_refusal_names_an_unadmitted_member(self) -> None:
         """`_refuse_non_certifiable_target` refuses the member before the single-node preflight;
-        a step-only member, a component target and an unregistered ref pass through."""
+        a step-only member, a component target and an unregistered ref pass through. Both member
+        rules, each under every spelling of the target."""
+        for member, composite, reason in (
+                (("m__step", "m__reset"), ("a__step",),
+                 "problem_dependency_surface_not_step_or_init"),
+                (("m__step", "m__init"), ("a__step",), "problem_dependency_init_not_published")):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_composite(repo_root, member_procedures=member,
+                                     composite_procedures=composite)
+                for spelling in ("spec/problem/a", "spec/problem/a/deps.yaml",
+                                 "spec/problem/a/"):
+                    with self.subTest(member=member, spelling=spelling):
+                        with self.assertRaises(ValueError) as caught:
+                            run_workflow._refuse_non_certifiable_target(repo_root, spelling)
+                        self.assertIn(reason, str(caught.exception))
+                        self.assertIn("spec/problem/m", str(caught.exception))
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            self._seed_composite(repo_root, member_procedures=("m__step", "m__init"))
-            for spelling in ("spec/problem/a", "spec/problem/a/deps.yaml",
-                             "spec/problem/a/"):
-                with self.subTest(spelling=spelling):
-                    with self.assertRaises(ValueError) as caught:
-                        run_workflow._refuse_non_certifiable_target(repo_root, spelling)
-                    self.assertIn("problem_dependency_surface_not_step_only",
-                                  str(caught.exception))
-                    self.assertIn("spec/problem/m", str(caught.exception))
+            self._seed_composite(repo_root, member_procedures=("m__step", "m__reset"))
             run_workflow._refuse_non_certifiable_target(repo_root, "spec/component/c")
             run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/nope")
             self._write_member_spec(repo_root, "spec/problem/m", ("m__step",))
@@ -5403,7 +5433,7 @@ class DependencyClosureTests(unittest.TestCase):
             with mock.patch.object(ort, "resolve_spec_ref_for", _boom):
                 with self.assertRaises(ValueError) as caught:
                     run_workflow._refuse_non_certifiable_target(repo_root, "spec/problem/a")
-            self.assertIn("problem_dependency_surface_not_step_only", str(caught.exception))
+            self.assertIn("problem_dependency_surface_not_step_or_init", str(caught.exception))
             self.assertIn("(problem/m)", str(caught.exception))
 
     def test_the_declaring_kind_is_the_catalogs_not_the_deps_files(self) -> None:

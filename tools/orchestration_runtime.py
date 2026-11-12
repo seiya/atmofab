@@ -650,8 +650,9 @@ def _resolve_dep_version(
 # `problems` is ALLOWED and not required (the system tier, Part 1): a `problem` may compose
 # other `problem`s, and a deps.yaml without the key stays well-formed with its bytes unmoved. An
 # entry under it is admitted on a `problem` only, and only for a member whose §5.1 publishes
-# exactly `<member>__step` (`spec_input_gates.problem_dep_on_non_problem_violation`,
-# `problem_dependency_surface_violation`).
+# exactly `<member>__step`, or `<member>__step` and `<member>__init` with a composite that
+# publishes `__init` (`spec_input_gates.problem_dep_on_non_problem_violation`,
+# `problem_member_violation`).
 _DEPS_YAML_REQUIRED_KEYS: frozenset[str] = frozenset({"components", "profiles"})
 _DEPS_YAML_ALLOWED_KEYS: frozenset[str] = frozenset(
     {"components", "problems", "profiles", "infrastructure"})

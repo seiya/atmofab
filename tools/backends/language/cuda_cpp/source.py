@@ -211,6 +211,7 @@ def model_source_gates(
     dep_spec_ids: list[str],
     violations: list[str],
     multidim_spec_id: str | None,
+    init_member_ids: Iterable[str],
 ) -> None:
     """The structural gates over one model source.
 
@@ -220,7 +221,8 @@ def model_source_gates(
     `.cu` under the model's source directory at any depth (`leaf_sources`), because a directive in
     a file the model or runner includes reaches the gates through it — and the rule that every
     `.cu` sits at the top level of that directory. On a `problem` node, the three model gates
-    (`run_problem_model_gates`)."""
+    and the member `__init` placement gate (`run_problem_model_gates`; `init_member_ids` the
+    `problem` members whose own §5.1 publishes `__init`)."""
     code = cpp_lines.mask(text)
     if _CASE_BRANCH_RE.search(code) and _METRIC_INDEX_RE.search(code):
         violations.append(
@@ -257,7 +259,7 @@ def model_source_gates(
                 "translation unit of its own and sits beside the host-rendered header at the top "
                 "of the source directory (move it there, and do not `#include` a `.cu`)")
     run_problem_model_gates(node_key, model_file, text, dep_spec_ids, violations,
-                            multidim_spec_id=multidim_spec_id)
+                            multidim_spec_id=multidim_spec_id, init_member_ids=init_member_ids)
 
 
 def model_source_not_found_violation(
@@ -1462,6 +1464,71 @@ def _validate_problem_metric_only_scalar_kernel(
             "array inputs or update loops")
 
 
+def validate_member_init_placement(
+    *,
+    node_spec_id: str,
+    model_file: Path,
+    text: str,
+    functions: list[cpp_decls.Function],
+    init_member_ids: Iterable[str],
+    violations: list[str],
+) -> None:
+    """The C++ reading of the Fortran binding's `validate_member_init_placement` (the system
+    tier, Part 2; `docs/CONTROLLED_SPEC.md`), over ``functions`` (the source's DEFINED functions,
+    dead named lambdas blanked) and the masked source with its preprocessor lines kept:
+
+    - PRESENCE: the body of `<node>__init` calls `<member>__init(...)` (qualified or not);
+    - ABSENCE: every token `<member>__init` of the masked source is such a call inside
+      `<node>__init`'s body, so a pointer or reference alias (`auto f = &<member>__init;`), an
+      actual argument, a declaration and a call from another function are each refused. The C++
+      binding has no import rename, and a macro that respells the name is refused by the
+      preprocessor allowlist (`preprocessor_violations`) before this reads anything;
+    - the composite's own `<node>__init` token occurs only as the name of a function declaration
+      or definition: a call of it from `__step` reaches the member's `__init` from there.
+
+    Absence counts TOKENS, presence reads calls, for the polarity reason the Fortran binding
+    states. What a token cannot show, and the continuation case judges: a lambda written inside
+    `<node>__init` whose body calls the member's `__init` and that is stored beyond the call
+    (`g = [&]{ <member>__init(...); };`). A leaf gains no verdict from it: the plain call is the
+    cheaper edit."""
+    code = cpp_lines.mask(text)
+    node_init = f"{node_spec_id}__init"
+    inits = [fn for fn in functions if fn.name == node_init]
+    declared = sum(1 for fn in cpp_decls.read(text).functions if fn.name == node_init)
+    own = len(re.findall(rf"(?<![\w]){re.escape(node_init)}(?!\w)", code))
+    if own != declared:
+        violations.append(
+            f"{model_file}: `{node_init}` is named outside its own declaration ({own} "
+            f"occurrence(s), {declared} declaration(s)): the model never calls or references its "
+            f"own `__init` — the driver calls it once per case, and a call from `__step` or any "
+            f"other function reaches the member's `__init` from there.")
+    for member in sorted(set(init_member_ids)):
+        member_init = f"{member}__init"
+        token = re.compile(rf"(?<![\w]){re.escape(member_init)}(?!\w)")
+        callee = re.compile(rf"(?<![\w]){re.escape(member_init)}\s*\(")
+        if not inits:
+            violations.append(
+                f"{model_file}: the member `{member}` publishes `{member_init}`, and this model "
+                f"defines no `{node_init}`: a composite whose member publishes `__init` defines "
+                f"`{node_init}` (its §5.1 publishes it) and calls `{member_init}(...)` there.")
+            continue
+        calls_in_init = sum(len(callee.findall(fn.body)) for fn in inits)
+        if not calls_in_init:
+            violations.append(
+                f"{model_file}: `{node_init}` does not call `{member_init}(...)`: the "
+                f"composite's `__init` calls the member's `__init` by that name in its own body, "
+                f"live, once per case.")
+        total = len(token.findall(code))
+        if total != calls_in_init:
+            violations.append(
+                f"{model_file}: `{member_init}` is named {total - calls_in_init} time(s) other "
+                f"than as a call inside `{node_init}`. The member's `__init` is called from "
+                f"`{node_init}` and named nowhere else: not from `__step` or another function, "
+                f"not through a pointer, a reference or a lambda, not as an argument, not in a "
+                f"declaration. Both halves hold together — the call inside `{node_init}`, and no "
+                f"other occurrence of the name.")
+
+
 def run_problem_model_gates(
     node_key: str,
     model_file: Path,
@@ -1470,9 +1537,11 @@ def run_problem_model_gates(
     violations: list[str],
     *,
     multidim_spec_id: str | None,
+    init_member_ids: Iterable[str],
 ) -> None:
-    """The three `problem` model gates over one model source, read once. Scoped to `problem/`,
-    as the Fortran binding's are. A source whose declarations do not read is REFUSED here — every
+    """The three `problem` model gates over one model source, read once, and the member
+    `__init` placement gate (`validate_member_init_placement`) when ``init_member_ids`` names a
+    member. Scoped to `problem/`, as the Fortran binding's are. A source whose declarations do not read is REFUSED here — every
     gate would otherwise pass what it could not see. Each function body is read with its dead
     named lambdas blanked (`_blank_dead_lambdas`, issue #506)."""
     if not node_key.startswith("problem/"):
@@ -1492,3 +1561,9 @@ def run_problem_model_gates(
     _validate_problem_dependency_dataflow(model_file, functions, code, dep_spec_ids, violations)
     _validate_problem_metric_only_scalar_kernel(multidim_spec_id, model_file, functions,
                                                 violations)
+    init_member_ids = tuple(init_member_ids)
+    if init_member_ids:
+        validate_member_init_placement(
+            node_spec_id=node_key.split("/", 1)[1].split("@", 1)[0].strip(),
+            model_file=model_file, text=text, functions=functions,
+            init_member_ids=init_member_ids, violations=violations)

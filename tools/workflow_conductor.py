@@ -17287,18 +17287,19 @@ def _direct_problem_dep_ids(repo_root: Path, spec_path: str) -> list[str]:
 
 
 def _problem_dependency_violations(
-    repo_root: Path, declaring_kind: Any, problem_ids: list[str],
+    repo_root: Path, declaring_kind: Any, problem_ids: list[str], composite_spec_ref: str,
 ) -> list[str]:
-    """The spec-input refusals of a node's `problems:` entries (the system tier, Part 1): the
+    """The spec-input refusals of a node's `problems:` entries (the system tier): the
     declaring spec must be a `problem` by the catalog
-    (`spec_input_gates.problem_dep_on_non_problem_violation`), and each member must publish
-    exactly `<member>__step` in its own §5.1
-    (`spec_input_gates.problem_dependency_surface_violation`). `declaring_kind` is the catalog's
-    answer. Each member is resolved by `resolve_spec_ref_for`; an unresolvable member, or an
-    unreadable registry, is refused by the surface rule rather than raised."""
+    (`spec_input_gates.problem_dep_on_non_problem_violation`), and each member must pass
+    `spec_input_gates.problem_member_violation` — its own §5.1 publishes `<member>__step`, or
+    `<member>__step` and `<member>__init`, and in the second case the composite at
+    `composite_spec_ref` publishes `__init` too. `declaring_kind` is the catalog's answer. Each
+    member is resolved by `resolve_spec_ref_for`; an unresolvable member, or an unreadable
+    registry, is refused by the surface rule rather than raised."""
     from tools.orchestration_runtime import SpecCatalogCorruption, resolve_spec_ref_for
     from tools.spec_input_gates import (
-        problem_dep_on_non_problem_violation, problem_dependency_surface_violation)
+        problem_dep_on_non_problem_violation, problem_member_violation)
     if not problem_ids:
         return []
     kind_violation = problem_dep_on_non_problem_violation(declaring_kind, len(problem_ids))
@@ -17310,7 +17311,7 @@ def _problem_dependency_violations(
             member_ref = resolve_spec_ref_for(repo_root, "problem", sid)
         except SpecCatalogCorruption:
             member_ref = None
-        violation = problem_dependency_surface_violation(repo_root, member_ref)
+        violation = problem_member_violation(repo_root, composite_spec_ref, member_ref)
         if violation:
             out.append(violation if member_ref else f"{violation} (problem/{sid})")
     return out
@@ -17389,10 +17390,11 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
                         f"spec-input rejected: {_infra_violation} (from spec_ref {spec_ref})")
             # (4) The `problems:` entries (the system tier, Part 1): admitted on a `problem`
             # only, the kind being the CATALOG's (`kind` above), and each member only when its
-            # own §5.1 publishes exactly `<member>__step`. On every route to a leaf launch,
-            # `--resume` included; the closure walk repeats both for an already-ready member.
+            # own §5.1 publishes `<member>__step`, or `<member>__step` and `<member>__init` with
+            # a composite that publishes `__init`. On every route to a leaf launch, `--resume`
+            # included; the closure walk repeats both for an already-ready member.
             _problem_violations = _problem_dependency_violations(
-                repo_root, kind, _direct_problem_dep_ids(repo_root, spec_path))
+                repo_root, kind, _direct_problem_dep_ids(repo_root, spec_path), spec_path)
             if _problem_violations:
                 raise ValueError(
                     f"spec-input rejected: {'; '.join(_problem_violations)} "
