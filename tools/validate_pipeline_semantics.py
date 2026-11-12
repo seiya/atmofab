@@ -3960,6 +3960,91 @@ def _history_line_violations(tests_path: Path, ir: dict) -> list[str]:
     return v
 
 
+#: The `restart` line of a loop node's `tests.md` (issue #632, `docs/TESTS.md` §Description
+#: format): `restart: <case_id> = <base case_id> @ <K>`, further continuations separated by
+#: `, ` in the same form — the spec's statement of its continuation cases, which the IR
+#: transcribes. A leading `- ` / `* ` bullet and backticks are admitted like the other
+#: definition lines.
+TEST_RESTART_LINE = re.compile(r"^[-*]?\s*`?restart`?\s*:\s*(.*)$")
+_RESTART_TRIPLE = re.compile(
+    r"^([A-Za-z0-9._][A-Za-z0-9._-]*)\s*=\s*([A-Za-z0-9._][A-Za-z0-9._-]*)\s*@\s*([0-9]+)$")
+
+
+def _restart_line_violations(tests_path: Path | None, ir: dict) -> list[str]:
+    """Gate (r) (issue #632): the `tests.md` `restart:` line against the IR's continuation
+    cases, as the declared SET. A node whose `drive` declares no `loop` carries no such line;
+    two lines are refused; a loop node with continuation cases carries exactly one, and the
+    IR's `(case, from, step)` triples equal the line's, compared as strings and integers — a
+    continuation the line does not state, or a stated one the IR lacks, is refused. A malformed
+    `drive` is `drive_violations`' to report, and a malformed `restart` key gate (p)'s; this
+    gate then compares what it can read."""
+    from tools.primary_evidence import (
+        RESTART_CASE_KEY,
+        PrimaryEvidenceError,
+        continuation_ref,
+        drive_block,
+    )
+
+    if tests_path is None:
+        return []
+    try:
+        text = tests_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    try:
+        block = drive_block(ir)
+    except PrimaryEvidenceError:
+        return []
+    lines = [(n, m.group(1).replace("`", "").strip())
+             for n, raw in enumerate(text.splitlines(), start=1)
+             if (m := TEST_RESTART_LINE.match(raw.strip()))]
+    case_block = ir.get("case") if isinstance(ir, dict) else None
+    tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
+    ir_set: set[tuple[str, str, int]] = set()
+    malformed: list[str] = []
+    for c in (tcs if isinstance(tcs, list) else []):
+        if isinstance(c, dict) and RESTART_CASE_KEY in c and isinstance(c.get("case_id"), str):
+            ref = continuation_ref(c)
+            if ref is None:
+                malformed.append(c["case_id"].strip())
+            else:
+                ir_set.add((c["case_id"].strip(), ref[0], ref[1]))
+    loop = block is not None and block.loop is not None
+    if not loop:
+        return [(f"(r) tests.md line {n}: a `restart:` line is refused on a node whose drive "
+                 "declares no loop (a continuation case continues a time loop)")
+                for n, _ in lines]
+    if len(lines) > 1:
+        return [(f"(r) tests.md carries {len(lines)} `restart:` lines (lines "
+                 f"{[n for n, _ in lines]}); a node states its continuation cases on one line "
+                 "(`restart: <case_id> = <base case_id> @ <K>, ...`), docs/TESTS.md")]
+    if not lines:
+        if ir_set or malformed:
+            return [("(r) tests.md carries no `restart:` line, and the IR declares continuation "
+                     f"case(s) {sorted({c for c, _b, _k in ir_set} | set(malformed))}: the line "
+                     "is the spec's statement of them (`restart: <case_id> = <base case_id> @ "
+                     "<K>, ...`, docs/TESTS.md)")]
+        return []
+    lineno, body = lines[0]
+    stated: set[tuple[str, str, int]] = set()
+    for item in body.rstrip(".").split(","):
+        triple = _RESTART_TRIPLE.match(item.strip())
+        if triple is None:
+            return [(f"(r) tests.md line {lineno}: `restart:` {body!r}: {item.strip()!r} is not "
+                     "`<case_id> = <base case_id> @ <K>` (docs/TESTS.md)")]
+        stated.add((triple.group(1), triple.group(2), int(triple.group(3))))
+    if stated == ir_set and not malformed:
+        return []
+
+    def spell(items: set[tuple[str, str, int]]) -> list[str]:
+        return [f"{c} = {b} @ {k}" for c, b, k in sorted(items)]
+
+    return [f"(r) tests.md line {lineno}: the `restart:` line states {spell(stated)}, and the "
+            f"IR's continuation cases are {spell(ir_set)}"
+            + (f" (with a malformed restart on {sorted(malformed)})" if malformed else "")
+            + ": the IR transcribes the line, member for member"]
+
+
 #: The `distribute` line of a physics node's `tests.md` (issue #610, `docs/TESTS.md`
 #: §Description format): `distribute: <axis> = <cells path> [(ghost <path>, extended <path>,
 #: min_block <N>)], <axis> = ...`, or `distribute: none`. Each path is the case input's path
@@ -10657,6 +10742,9 @@ def _validate_tests_and_predicates(
         violations.append(f"{derived_path}:{msg}")
     # Gate (o): the `distribute:` line against `drive.distribute` (issue #610).
     for msg in _distribute_line_violations(tests_path, ir, kind=kind):
+        violations.append(f"{derived_path}:{msg}")
+    # Gate (r): the `restart:` line against the continuation cases (issue #632).
+    for msg in _restart_line_violations(tests_path, ir):
         violations.append(f"{derived_path}:{msg}")
 
     # Cross-target transcription (issue #324): a node whose IR has no cross-target predicate is

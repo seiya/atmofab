@@ -722,6 +722,45 @@ def drive_state_classes(ir: dict[str, Any]) -> dict[str, frozenset[str]]:
     return {k: frozenset(v) for k, v in classes.items()}
 
 
+#: The host-owned case-file key a loop node's driver reads the global step it starts at from
+#: (system tier Part 2, issue #632): 0 on an ordinary case, `K` on a continuation case. No
+#: `drive` key names it, so no leaf authors it.
+RESTART_STEP_KEY = "restart.step"
+#: The prefix of the host-owned key a continuation's file carries each restart variable under
+#: (`restart.<var>`), read after `init` into the state.
+RESTART_KEY_PREFIX = "restart."
+
+
+def restart_variables(ir: dict[str, Any]) -> frozenset[str]:
+    """The restart variables of an IR (issue #632): on a node whose `drive` declares `loop`,
+    every schema variable a `step` dummy writes (`out` / `inout`) that is neither a logical
+    result nor a call record — the state a continuation case restores from its restart point.
+    Empty on a node without `loop`. The ONE answer: the renderers' plan (`driver_plan`), the
+    Compile gate (p), the continuation writer and the host's start check all call it
+    (`primary_evidence.restart_variables`), and a test holds the four equal. A variable only
+    `init` writes is no restart variable: `init` recomputes it from the case's inputs in the
+    continuation's own process. Raises RenderError on a malformed `drive`."""
+    if drive_loop(ir) is None:
+        return frozenset()
+    classes = drive_state_classes(ir)
+    records: set[str] = set()
+    step_written: set[str] = set()
+    init = drive_init(ir)
+    for call in ([init] if init is not None else []) + drive_steps(ir):
+        for kind, ref in call["bindings"].values():
+            if kind == "procedure":
+                _text, calls, record = ref
+                records.update([calls] if calls else [])
+                records.update(r for _dummy, refs in record for r in refs)
+        if call is init:
+            continue
+        for dummy in call["dummies"]:
+            kind, var = call["bindings"][dummy["name"]]
+            if kind == "state" and dummy.get("intent") in ("out", "inout"):
+                step_written.add(var)
+    return frozenset(step_written - classes["logical"] - records)
+
+
 # ------------------------------------------------------------------------------- driver plan
 #
 # What both language renderers spell: the host-rendered driver of one IR, as data (issue #589
@@ -849,6 +888,9 @@ class DriverPlan:
     #: The states an `out` / `inout` dummy of any entry or a host-rendered procedure's `record`
     #: writes, in schema order: what a distributed driver gathers and folds with a reduction.
     written: tuple[str, ...] = ()
+    #: The restart variables (`restart_variables`), in schema order: on a loop node, what the
+    #: driver reads from `restart.<var>` after `init` when `restart.step` is positive.
+    restart_vars: tuple[str, ...] = ()
 
 
 def _dummy_rank(dummy: dict[str, Any]) -> int:
@@ -1152,6 +1194,11 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
     for entry in entries:
         for var in entry.from_file:
             getters.add(f"get_array_r{ranks[var]}" if ranks[var] else "get_real")
+    restart = restart_variables(ir)
+    if loop is not None:
+        getters.add(GETTERS["integer"])   # `restart.step` (issue #632)
+        for var in restart:
+            getters.add(f"get_array_r{ranks[var]}" if ranks[var] else "get_real")
     for var in record_states:
         if var not in variables:
             raise RenderError(f"record state {var!r} is not a snapshot variable")
@@ -1169,7 +1216,8 @@ def driver_plan(ir: dict[str, Any], variables: dict[str, str]) -> DriverPlan:
         hosts=tuple(hosts.values()), procedure_hosts=tuple(procedure_hosts.values()),
         axes=axes,
         written=tuple(v for v in variables
-                      if v in drive_state_classes(ir)["written"] or v in record_states))
+                      if v in drive_state_classes(ir)["written"] or v in record_states),
+        restart_vars=tuple(v for v in variables if v in restart))
 
 
 def _procedure_plan(call: dict[str, Any], dummy: str, proto: dict[str, Any], binding: Any,

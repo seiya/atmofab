@@ -21797,7 +21797,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # writing a strict fan-out check must read. Measured 12487.
         # Raised 12700->15500 (issue #589 PR-1b): §3 gains what the driver writes (`initial/`,
         # `history/`, `series/`), and §2 and §6 what it computes. Measured 15150.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 15500,
+        # Raised 15500->15600 (issue #632, P1 round 2): §3 says a continuation case runs in an
+        # invocation of its own and its series covers the steps it ran, which the judge, handed
+        # §3, otherwise reads as a defect of the run. Measured 15523 with `wc -c` (15590 after
+        # review round 3).
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 15600,
         # New (issue #589 PR-1b): the gate guards moved here with the checks ABI bindings' deletion.
         # Measured 39235 and 30421 at this commit.
         "docs/backends/language/fortran/GENERATE_RULES.md": 40000,
@@ -22227,7 +22231,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Review round 3 (disc-L3: that clause names where it is refused, and "All are enforced at
         # spec-input" is scoped to the rules outside a `profile`): bumped 111850->111950;
         # measured 111934 with `wc -c` at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 111950,
+        # Raised 111950->113800 (issue #632, system tier Part 2 P1): the `case` block states the
+        # continuation case (`restart: {from, step}`), the predicate grammar the `series.*` range
+        # on one, and the gate list (p) and (r), which the compile producer transcribes from the
+        # tests.md `restart:` line. Measured 113688 with `wc -c` (113753 after review round 3).
+        "docs/workflow/phases/phase_01_compile.md": 113800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

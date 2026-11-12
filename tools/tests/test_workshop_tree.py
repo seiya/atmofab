@@ -727,8 +727,9 @@ class WrapperCallCompositionTests(_LineageCase):
         from tools.runner_ir import case_ids
         from tools.workshop_mcp import TOOL_DEFINITIONS
 
-        self.assertIn("(default: every case)", TOOL_DEFINITIONS["run"]["inputSchema"][
-            "properties"]["case_ids"]["description"])
+        self.assertIn("(default: every case that is not a continuation",
+                      TOOL_DEFINITIONS["run"]["inputSchema"]["properties"]["case_ids"][
+                          "description"])
         binary = self.make_binary()
         real = (Path(__file__).parent / "data" / "real_ir"
                 / "shallow_water2d_20260718_003.spec.ir.yaml").read_text(encoding="utf-8")
@@ -777,6 +778,37 @@ class WrapperCallCompositionTests(_LineageCase):
                     self.assertEqual(out["category"], ww.CATEGORY_BAD_ARGUMENTS)
                     self.assertIn(f"the case file {cases_file}", out["findings"])
                     self.assertEqual(self.calls, [])
+
+    def test_a_continuation_case_is_not_run_here(self) -> None:
+        """Issue #632: a continuation case runs only in `Validate.execute`'s second pass, from a
+        history sample of its base, in a process of its own. The default set leaves it out
+        (read from the case file, filtered by the SEEDED IR's continuations), a named one is
+        refused with that reason before anything starts, and no case file is written for it."""
+        from unittest import mock
+
+        import yaml
+
+        binary = self.make_binary()
+        seeded = yaml.safe_load(_SEEDS[ww.SEEDED_IR_NAME])
+        ids = [c["case_id"] for c in seeded["case"]["test_case_set"]]
+        seeded["case"]["test_case_set"].append(
+            {**seeded["case"]["test_case_set"][0], "case_id": "c_cont",
+             "restart": {"from": ids[0], "step": 2}})
+        text = yaml.safe_dump(seeded)
+        (self.paths.tree / ww.SEEDED_IR_NAME).write_text(text)
+        ctx = self.run_context(seed_ir=text, max_wrapper_calls=10)
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
+            command = self.calls[0]["command"]
+            self.assertEqual(command[command.index(str(binary)) + 3:], ids)
+            self.assertFalse((self.paths.tree / "case_inputs" / "c_cont.json").exists())
+            self.calls.clear()
+            out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner",
+                                                 "case_ids": [ids[0], "c_cont"]})
+            self.assertEqual(out["category"], ww.CATEGORY_BAD_ARGUMENTS)
+            self.assertIn("['c_cont'] are continuation cases", out["findings"])
+            self.assertIn("Validate.execute's second pass", out["findings"])
+            self.assertEqual(self.calls, [])
 
     _CAPTURE_DIRS = (("raw", "state_snapshots", "initial"),
                      ("raw", "state_snapshots", "history"),

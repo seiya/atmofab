@@ -583,6 +583,25 @@ def _every_case_id(ctx: WrapperContext, name: str) -> tuple[list[str], str | Non
         return [], f"the case file {name}: {exc}"
 
 
+def _seeded_continuations(ctx: WrapperContext) -> frozenset[str]:
+    """The continuation cases of the IR the host SEEDED (issue #632): a case carrying a
+    `restart` key. Each runs only in `Validate.execute`'s second pass, from a history sample of
+    its base in a process of its own, so this operation runs none of them and the host writes no
+    case file for one. Empty when the seed is absent or unreadable (`_write_case_files` reports
+    that)."""
+    from tools.primary_evidence import _cases_by_id, is_continuation
+
+    seeded = dict(ctx.seed_texts).get(SEEDED_IR_NAME)
+    try:
+        document = yaml.safe_load(seeded) if seeded is not None else None
+    except yaml.YAMLError:
+        return frozenset()
+    if not isinstance(document, dict):
+        return frozenset()
+    return frozenset(cid for cid, case in _cases_by_id(document).items()
+                     if is_continuation(case))
+
+
 def _write_case_files(ctx: WrapperContext) -> str | None:
     """Write `case_inputs/` beside the tree's IR, as `Validate.execute` writes it beside the
     certified one (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §6), from the IR the host SEEDED: a
@@ -633,13 +652,23 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
             and all(isinstance(c, str) and CASE_ID_TOKEN_RE.fullmatch(c) for c in case_ids)):
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                        findings="case_ids must be a list of case ids")
+    continuations = _seeded_continuations(ctx)
+    named = sorted(set(case_ids) & continuations)
+    if named:
+        return _result(False, category=CATEGORY_BAD_ARGUMENTS,
+                       findings=f"{named} are continuation cases: a continuation runs only in "
+                                "Validate.execute's second pass, from a history sample of its "
+                                "base case in a process of its own; run its base case here")
     if not case_ids:
-        # No ids is every case of the case file, as the schema says (issue #534 PR-J3-a: the
-        # runner refuses a run naming no case, and a leaf-chosen subset is refused too when it
-        # leaves out a case a metrics basis targets — so "every case" is the useful default).
+        # No ids is every case of the case file that is no continuation, as the schema says
+        # (issue #534 PR-J3-a: the runner refuses a run naming no case, and a leaf-chosen subset
+        # is refused too when it leaves out a case a metrics basis targets — so "every case" is
+        # the useful default; issue #632: a continuation is the second pass's).
         case_ids, why = _every_case_id(ctx, cases_name)
+        case_ids = [c for c in case_ids if c not in continuations]
         if not case_ids:
-            return _result(False, category=CATEGORY_BAD_ARGUMENTS, findings=why)
+            return _result(False, category=CATEGORY_BAD_ARGUMENTS,
+                           findings=why or "the case file holds no case that is no continuation")
     for raw_dir in ctx.run_raw_dirs:
         current = ctx.paths.tree
         for part in raw_dir:

@@ -6238,7 +6238,7 @@ class Conductor:
             rules=self._control_file_rules(tc, self._target_architecture()),
             compiler=compiler,
             bin_name=self._resolve_exe_name(refs),  # canonical <spec_id>_runner
-            cases_default=" ".join(self.read_case_ids(refs)),
+            cases_default=" ".join(self.read_base_case_ids(refs)),
             model_stem=f"{refs.spec_id}_model",
             runner_stem=f"{refs.spec_id}_runner",
             # Dependency closure (Model B). Empty for leaf nodes -> the leaf template.
@@ -6583,7 +6583,7 @@ class Conductor:
             "rules": self._control_file_rules(tc, self._target_architecture()),
             "compiler": build_compiler(tc),
             "bin_name": self._resolve_exe_name(refs),
-            "cases_default": " ".join(self.read_case_ids(refs)),
+            "cases_default": " ".join(self.read_base_case_ids(refs)),
             "initial_capture_dir": self._conductor_authors_runner(refs),
         }
 
@@ -10388,6 +10388,16 @@ class Conductor:
             and CASE_ID_TOKEN_RE.match(tok) and ".." not in tok
         ))
 
+    def read_base_case_ids(self, refs: NodeRefs) -> tuple[str, ...]:
+        """`read_case_ids` without the continuation cases (issue #632): the cases one process
+        runs in order, which the build control file's `CASES ?=` default lists, so a hand-run
+        quality check still runs. A continuation runs only in `Validate.execute`'s second
+        pass, from a restart point."""
+        from tools.primary_evidence import base_case_ids
+        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml")
+        bases = set(base_case_ids(ir)) if isinstance(ir, dict) else set()
+        return tuple(c for c in self.read_case_ids(refs) if c in bases)
+
     def _read_evidence_artifacts(self, refs: NodeRefs) -> tuple[str, ...]:
         """IR-declared required raw-evidence artifact types for validate.execute
         allowed_output_paths. Returns the IR's actual artifacts with NO fallback so the
@@ -12780,6 +12790,38 @@ class Conductor:
 
         return bool(checked_flags_for(self.target))
 
+    @staticmethod
+    def _merge_continuation_captures(restart_dir: Path, shape_dir: Path,
+                                     case_id: str) -> str | None:
+        """Move continuation ``case_id``'s captures from its shape's `restart/` directory into
+        the shape's own capture directory (issue #632): exactly the names the driver writes for
+        it — `<C>.json` there and below `initial/` and `series/`, and `<C>__<k>.json` (`<k>`
+        digits) below `history/` — and no other file, so the captures of another continuation
+        that failed its start check stay behind whatever its id (`<C>__x` included). A name that
+        exists there is refused (None when every file moved, else the reason, and nothing is
+        moved)."""
+        src_root = restart_dir / "raw" / "state_snapshots"
+        dst_root = shape_dir / "raw" / "state_snapshots"
+        sample = re.compile(re.escape(case_id) + r"__[0-9]+\.json")
+        moves: list[tuple[Path, Path]] = []
+        for sub in ("", "initial", "history", "series"):
+            source = src_root / sub if sub else src_root
+            if not source.is_dir():
+                continue
+            for f in sorted(source.glob("*.json")):
+                if not (sample.fullmatch(f.name) if sub == "history"
+                        else f.name == f"{case_id}.json"):
+                    continue
+                dest = (dst_root / sub if sub else dst_root) / f.name
+                if dest.exists():
+                    return (f"its capture {f.name} names a file the first pass wrote "
+                            f"({'/'.join(p for p in (sub, f.name) if p)})")
+                moves.append((f, dest))
+        for f, dest in moves:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(f), str(dest))
+        return None
+
     def _promote_run_evidence(self, run_tmp: Path, node_dir: Path,
                               artifacts: list[str]) -> list[str]:
         """Promote the runner's `run/` output to the canonical run node dir.
@@ -13129,6 +13171,10 @@ class Conductor:
             if not row.get("run_ok"):
                 failure = row.get("run_failure") if isinstance(row.get("run_failure"), dict) \
                     else {}
+                cont = failure.get("continuation")
+                if cont is not None:
+                    where += (f", in the second pass: continuation {cont!r}, run in a process of "
+                              "its own from its base's history sample")
                 if "not_run" in failure:
                     lines.append(f"[execute fail: quality_check] {where}: did not run: "
                                  f"{failure['not_run']}")
@@ -13282,6 +13328,14 @@ class Conductor:
         cmd_log = node_dir / "command_log.jsonl"
         qc_cmd_log = src_dir / "command_log.jsonl"
         case_ids = list(self.read_case_ids(refs))
+        # The continuation cases (issue #632) run in a second pass, each in a process of its
+        # own, from a history sample the first pass wrote; the first pass runs the base cases.
+        # Every case id still owes its captures (`_snapshot_deliverable_gap` asks for all).
+        from tools.primary_evidence import base_case_ids, continuation_cases
+        bases = set(base_case_ids(ir))
+        conts = continuation_cases(ir)
+        base_ids = [c for c in case_ids if c in bases]
+        cont_ids = [c for c in case_ids if c in conts]
 
 
         # R2 invariant guard: clear any pre-existing verdict.json / trial_meta.json in this run
@@ -13407,13 +13461,84 @@ class Conductor:
             re-run inherits neither from the conductor's own environment. No
             dependency-source staging here (unlike _build_inproc): the quality check only runs
             the already-built binary."""
-            argv = [binary_path, "--cases", spec_path, *case_ids]
+            argv = [binary_path, "--cases", spec_path, *base_ids]
             run_argv = launch.command(argv)
             qc_env = {**serial_execution_env(target.parallel_backend, target.block_size),
                       **execute.quality_check_env(obj_path, bin_path, qc_path, str(exe),
-                                                  spec_path, case_ids)}
+                                                  spec_path, base_ids)}
             return (run_argv, qc_env, [shape_launch.command(argv) for _s, shape_launch in sweep],
-                    [checked_path, "--cases", spec_path, *case_ids])
+                    [checked_path, "--cases", spec_path, *base_ids])
+
+        def restart_commands(binary_path: str, bin_path: str, obj_path: str, checked_path: str,
+                             shape_path: Callable[[str], str], cid: str
+                             ) -> dict[str, tuple[list[str], dict[str, str]]]:
+            """The second pass's command of continuation ``cid`` in each shape (issue #632):
+            label -> (argv, env), under the shape's `restart/` directory (``shape_path(label)``,
+            local or the site's): the same binary, launch shape and environment as the shape's
+            first pass, one case, `--cases <shape>/restart/spec.ir.yaml <cid>`; the quality
+            check's build-system re-run with that one case and its run directory there."""
+            out: dict[str, tuple[list[str], dict[str, str]]] = {}
+            spec = f"{shape_path('run')}/spec.ir.yaml"
+            out["run"] = (launch.command([binary_path, "--cases", spec, cid]), dict(launch.env))
+            qc_dir = shape_path("qc_run")
+            out["qc_run"] = ([], {
+                **serial_execution_env(target.parallel_backend, target.block_size),
+                **execute.quality_check_env(obj_path, bin_path, qc_dir, str(exe),
+                                            f"{qc_dir}/spec.ir.yaml", [cid])})
+            for shape, shape_launch in sweep:
+                spec = f"{shape_path(shape.label)}/spec.ir.yaml"
+                out[shape.label] = (shape_launch.command([binary_path, "--cases", spec, cid]),
+                                    dict(shape_launch.env))
+            if checked is not None:
+                spec = f"{shape_path(checked.label)}/spec.ir.yaml"
+                out[checked.label] = ([checked_path, "--cases", spec, cid], dict(checked_env))
+            return out
+
+        # The second pass's state (issue #632): per shape label, the continuation files written
+        # from that shape's own samples, the refusals of the others, and each continuation's
+        # result. A shape runs it only when its first pass succeeded.
+        from tools.primary_evidence import (
+            RESTART_DIRNAME,
+            continuation_start_violation,
+            write_continuation_inputs,
+        )
+
+        shape_dirs: dict[str, Path] = {"run": run_tmp, "qc_run": qc_tmp,
+                                       **{s.label: sweep_tmp / s.label for s, _l in sweep}}
+        if checked is not None:
+            shape_dirs[checked.label] = sweep_tmp / checked.label
+        restart_files: dict[str, list[Any]] = {}
+        restart_refused: dict[str, dict[str, str]] = {}
+        restart_results: dict[str, list[dict[str, Any] | None]] = {}
+
+        def prepare_restart(label: str) -> list[Any]:
+            """Write the shape's continuation files and lay out its `restart/` directory: the
+            case files (`write_continuation_inputs`), a copy of the IR beside them and the
+            pre-created capture directories."""
+            shape_dir = shape_dirs[label]
+            try:
+                files, refused = write_continuation_inputs(ir, shape_dir)
+            except PrimaryEvidenceError as exc:
+                raise RuntimeError(
+                    f"the continuation case files of {refs.ir_ref} could not be written at "
+                    f"Validate.execute: {exc}") from exc
+            rdir = shape_dir / RESTART_DIRNAME
+            for raw_dir in run_raw_dirs:
+                rdir.joinpath(*raw_dir).mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ir_spec, rdir / "spec.ir.yaml")
+            restart_files[label] = files
+            restart_refused[label] = refused
+            return files
+
+        def restart_labels(res_sweep_: list[dict[str, Any] | None],
+                           res_checked_: dict[str, Any] | None) -> list[str]:
+            """The shapes whose first pass succeeded, in the order they ran."""
+            if not cont_ids:
+                return []
+            ok = [("run", res_run), ("qc_run", res_qc),
+                  *((s.label, r) for (s, _l), r in zip(sweep, res_sweep_)),
+                  *([(checked.label, res_checked_)] if checked is not None else [])]
+            return [label for label, res in ok if res is not None and res.get("ok")]
 
         res_qc: dict[str, Any] | None
         if site is None or site.is_local:
@@ -13489,6 +13614,33 @@ class Conductor:
                     "capture_limit": _FULL_CAPTURE_LIMIT,
                     **attribution,
                 })
+            # 5. The second pass (issue #632): per shape whose first pass succeeded, one process
+            #    per continuation, in sorted order, from that shape's own samples.
+            for label in restart_labels(res_sweep, res_checked):
+                runs: list[dict[str, Any] | None] = []
+                for cf in prepare_restart(label):
+                    argv, env = restart_commands(
+                        str(binary), str(bin_dir), str(obj_tmp), str(checked_binary),
+                        lambda lab: str(shape_dirs[lab] / RESTART_DIRNAME), cf.case_id)[label]
+                    if label == "qc_run":
+                        runs.append(tool_run_quality_checks({
+                            "project_dir": str(src_dir),
+                            "preset": execute.QUALITY_CHECK_PRESET,
+                            "env": env,
+                            "command_log_path": str(qc_cmd_log),
+                            "capture_limit": _FULL_CAPTURE_LIMIT,
+                            **attribution,
+                        }))
+                    else:
+                        runs.append(tool_run_program({
+                            "project_dir": str(shape_dirs[label] / RESTART_DIRNAME),
+                            "command": argv,
+                            "env": env,
+                            "command_log_path": str(cmd_log),
+                            "capture_limit": _FULL_CAPTURE_LIMIT,
+                            **attribution,
+                        }))
+                restart_results[label] = runs
             platform_record = local_platform_record(launch.platform_probe,
                                                     runtime_probe=launch.runtime_probe)
             site_record: dict[str, Any] = _local_site_record()
@@ -13587,6 +13739,130 @@ class Conductor:
                            else None)
             platform_record = result.platform
             site_record = result.site_record
+            # The second pass at the site (issue #632): a second job, after the first job's
+            # directories came home and the continuation files were written here from them. Its
+            # own job directory and local directory, so neither job's refusal of an existing one
+            # depends on the other's cleanup. It re-ships the binaries and the control file, and
+            # each shape's `restart/` case files and IR under the shape's own relative path; it
+            # runs on the machine the first job ran on, or the run fails.
+            labels = restart_labels(res_sweep, res_checked)
+            if labels:
+                jdir2 = job_dir(site, self.orchestration_id, f"{child_arid}.restart")
+
+                def remote_rel(label: str) -> str:
+                    return label if label in ("run", "qc_run") else f"sweep/{label}"
+
+                ship2: dict[str, Path] = {
+                    f"bin/{exe}": binary, f"src/{control_file}": src_dir / control_file,
+                    **({f"bin_checked/{exe}": checked_binary} if checked is not None else {})}
+                specs2: list[CommandSpec] = []
+                order2: list[tuple[str, Any]] = []
+                for label in labels:
+                    files = prepare_restart(label)
+                    rel = f"{remote_rel(label)}/{RESTART_DIRNAME}"
+                    ship2[f"{rel}/spec.ir.yaml"] = shape_dirs[label] / RESTART_DIRNAME / \
+                        "spec.ir.yaml"
+                    for cf in files:
+                        ship2[f"{rel}/{CASE_INPUTS_DIRNAME}/{cf.path.name}"] = cf.path
+                        argv, env = restart_commands(
+                            f"{jdir2}/bin/{exe}", f"{jdir2}/bin", f"{jdir2}/build",
+                            f"{jdir2}/bin_checked/{exe}",
+                            lambda lab: f"{jdir2}/{remote_rel(lab)}/{RESTART_DIRNAME}",
+                            cf.case_id)[label]
+                        tag = f"restart_{len(specs2)}"
+                        if label == "qc_run":
+                            specs2.append(CommandSpec(
+                                tag=tag, tool_name="run_quality_checks",
+                                argv=tuple(quality_check_command(execute.QUALITY_CHECK_PRESET)),
+                                cwd=f"{jdir2}/src", record_cwd=str(src_dir), env=env,
+                                timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
+                                command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT))
+                        else:
+                            specs2.append(CommandSpec(
+                                tag=tag, tool_name="run_program", argv=tuple(argv),
+                                cwd=f"{jdir2}/{rel}",
+                                record_cwd=str(shape_dirs[label] / RESTART_DIRNAME), env=env,
+                                timeout_sec=RUN_PROGRAM_TIMEOUT_SEC, command_log_path=cmd_log,
+                                capture_limit=_FULL_CAPTURE_LIMIT))
+                        order2.append((label, cf))
+                if specs2:
+                    result2 = execute_job(JobRequest(
+                        site=site, job_dir=jdir2, ship=ship2, commands=tuple(specs2),
+                        dirs=("build", *(f"{remote_rel(label)}/{RESTART_DIRNAME}/"
+                                         + "/".join(raw_dir)
+                                         for label in labels for raw_dir in run_raw_dirs)),
+                        platform_probe=launch.platform_probe,
+                        attribution=attribution,
+                        machine=built_machine,
+                    ), local_tmp=run_tmp.parent / "site_restart")
+                    # The machine's architecture, CPU model and device — what the binary's
+                    # arithmetic can depend on. The host name is left out: a batch site puts
+                    # two jobs on two nodes of one kind as a matter of course.
+                    kind = ("machine", "cpu_model", "gpu")
+                    first = {k: result.platform.get(k) for k in kind}
+                    second = {k: result2.platform.get(k) for k in kind}
+                    if second != first:
+                        raise RuntimeError(
+                            f"the second pass's job at site {site.site_id} ran on another kind "
+                            f"of machine than the first ({second} against {first}): a "
+                            "continuation is compared with a base run on the first one — "
+                            "--resume, or map the target to a site whose nodes are of one kind")
+                    for label in labels:
+                        dest = shape_dirs[label] / RESTART_DIRNAME
+                        if dest.exists():
+                            shutil.rmtree(dest)
+                        shutil.move(str(result2.collected / remote_rel(label) / RESTART_DIRNAME),
+                                    str(dest))
+                    for (label, _cf), res in zip(order2, result2.results):
+                        restart_results.setdefault(label, []).append(res)
+
+        # The second pass's outcome per shape (issue #632). Each continuation that exited 0 is
+        # checked to have started where it was told to (`continuation_start_violation`) before
+        # its captures are merged into the shape's own capture directory; one that fails the
+        # check, or whose restart point was refused, is not merged, so its captures are absent
+        # and the run fails closed with its OWN cause. A pass-2 process that did not exit 0
+        # fails its shape as a first-pass failure would.
+        restart_record: dict[str, Any] = {}
+        restart_causes: dict[str, dict[str, str]] = {}
+        restart_failed: dict[str, dict[str, Any]] = {}
+        for label, files in restart_files.items():
+            shape_dir = shape_dirs[label]
+            rdir = shape_dir / RESTART_DIRNAME
+            results = restart_results.get(label, [])
+            causes = dict(restart_refused.get(label, {}))
+            rows: list[dict[str, Any]] = []
+            for index, cf in enumerate(files):
+                res = results[index] if index < len(results) else None
+                row: dict[str, Any] = {"case_id": cf.case_id, "base": cf.base,
+                                       "step": cf.step,
+                                       "command_id": res.get("command_id") if res else None,
+                                       "ok": bool(res and res.get("ok"))}
+                if not row["ok"]:
+                    restart_failed.setdefault(label, {
+                        "case_id": cf.case_id,
+                        **({"not_run": "an earlier command of the second job failed first"}
+                           if res is None else
+                           {"return_code": res.get("return_code"), "error": res.get("error"),
+                            **_stderr_head_and_tail(res.get("stderr") or "")})})
+                    causes[cf.case_id] = "its process did not exit 0"
+                else:
+                    why = continuation_start_violation(ir, rdir, cf)
+                    if why is None:
+                        why = self._merge_continuation_captures(rdir, shape_dir, cf.case_id)
+                    if why is not None:
+                        causes[cf.case_id] = why
+                        row["start_check"] = why
+                rows.append(row)
+            restart_record[label] = {"continuations": rows,
+                                     "refused": dict(restart_refused.get(label, {}))}
+            restart_causes[label] = causes
+        if "run" in restart_failed or "qc_run" in restart_failed:
+            failed = restart_failed.get("run") or restart_failed["qc_run"]
+            res_run = {**res_run, "ok": False,
+                       "stderr": (res_run.get("stderr") or "")
+                       + f"\n[second pass: continuation {failed['case_id']!r} failed: "
+                       + json.dumps({k: v for k, v in failed.items() if k != "case_id"})
+                       + "]"}
 
         stdout = res_run.get("stdout", "") or ""
         stderr = res_run.get("stderr", "") or ""
@@ -13635,14 +13911,35 @@ class Conductor:
         # here so a misnamed/combined snapshot fails with an actionable cause rather
         # than the opaque determine_substep_status deliverable-presence fail. Read
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
+        # A continuation's absent captures are the second pass's, not a misnamed file (issue
+        # #632): each is reported with its own cause INSTEAD of the deliverable gap's generic
+        # remedy, which tells Generate to rename snapshot files; the gap is still computed over
+        # every other case.
+        cont_missing = {cid: why for cid, why in restart_causes.get("run", {}).items()}
+        cont_missing.update({cid: "the second pass did not run (the first pass failed)"
+                             for cid in cont_ids if cid not in cont_missing
+                             and "run" not in restart_files})
         snapshot_gap = self._snapshot_deliverable_gap(
-            run_tmp / "raw" / "state_snapshots", case_ids, artifacts,
+            run_tmp / "raw" / "state_snapshots",
+            [c for c in case_ids if c not in cont_missing], artifacts,
             initial_required=authors_runner,
             series_required="step_series" in artifacts)
+        if cont_missing:
+            snapshot_gap = "\n".join(
+                [f"[execute fail: continuation] continuation {cid!r} has no captures: {why}"
+                 for cid, why in sorted(cont_missing.items())]
+                + ([snapshot_gap] if snapshot_gap else []))
 
         def _captured(run_dir: Path) -> bool:
             return any(p.name != "snapshot_schema.json"
                        for p in (run_dir / "raw" / "state_snapshots").glob("*.json"))
+
+        def second_pass_failure(failed: dict[str, Any]) -> dict[str, Any]:
+            """A shape row's `run_failure` for a second-pass process that did not exit 0: the
+            same top-level fields a first-pass failure carries (`_quality_check_failure_lines`
+            reads those), and the continuation it ran under `continuation`."""
+            return {**{k: v for k, v in failed.items() if k != "case_id"},
+                    "continuation": failed["case_id"]}
 
         shape_runs = [{"shape": target.certified_shape, "dir": run_tmp, "ok": True,
                        "command_id": res_run.get("command_id")}]
@@ -13654,7 +13951,8 @@ class Conductor:
             ("the serial reference re-run", res_qc)]
         for (shape, _l), res in zip(sweep, res_sweep):
             entry: dict[str, Any] = {"shape": shape, "dir": sweep_tmp / shape.label,
-                                     "ok": bool(res and res.get("ok")),
+                                     "ok": bool(res and res.get("ok"))
+                                     and shape.label not in restart_failed,
                                      "command_id": res.get("command_id") if res else None}
             if res is None:
                 stopped_by = next((name for name, r in earlier
@@ -13665,6 +13963,8 @@ class Conductor:
                 entry["failure"] = {"return_code": res.get("return_code"),
                                     "error": res.get("error"),
                                     **_stderr_head_and_tail(res.get("stderr") or "")}
+            elif shape.label in restart_failed:
+                entry["failure"] = second_pass_failure(restart_failed[shape.label])
             earlier.append((f"shape {shape.label}", res))
             shape_runs.append(entry)
         if checked is not None:
@@ -13672,7 +13972,8 @@ class Conductor:
             # is `run_ok: false` and fails the quality check, with the runtime's diagnostic in
             # `run_failure.stderr_head`.
             entry = {"shape": checked, "dir": sweep_tmp / checked.label,
-                     "ok": bool(res_checked and res_checked.get("ok")),
+                     "ok": bool(res_checked and res_checked.get("ok"))
+                     and checked.label not in restart_failed,
                      "command_id": res_checked.get("command_id") if res_checked else None}
             if res_checked is None:
                 stopped_by = next((name for name, r in earlier
@@ -13683,6 +13984,8 @@ class Conductor:
                 entry["failure"] = {"return_code": res_checked.get("return_code"),
                                     "error": res_checked.get("error"),
                                     **_stderr_head_and_tail(res_checked.get("stderr") or "")}
+            elif checked.label in restart_failed:
+                entry["failure"] = second_pass_failure(restart_failed[checked.label])
             shape_runs.append(entry)
         qc_status = self._author_quality_check(
             node_dir, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
@@ -13725,7 +14028,10 @@ class Conductor:
             "pipeline_id": refs.pipeline_id,
             "source_source_id": refs.source_id,
             "source_binary_id": refs.source_binary_id,
-            "runner_command": shlex.join([exe, "--cases", self._rel(ir_spec), *case_ids]),
+            "runner_command": shlex.join([exe, "--cases", self._rel(ir_spec), *base_ids]),
+            # The second pass (issue #632): per shape, each continuation's command and whether
+            # it started at its restart point; absent on a node with no continuation case.
+            **({"restart_pass": restart_record} if cont_ids else {}),
             "process_trace_ref": self._rel(cmd_log),
             "source_command_ref": {
                 "run_program": {"tool_name": "run_program",
@@ -13801,6 +14107,17 @@ class Conductor:
             block = "\n[execute fail]\n" + gate.stdout + gate.stderr
             if snapshot_gap:
                 block += "\n" + snapshot_gap
+            # A continuation refused in another shape than the run's (issue #632): its captures
+            # are absent there, and that shape's comparison with the reference fails; this says
+            # why, which the comparison alone does not.
+            for label, causes in sorted(restart_causes.items()):
+                if label == "run":
+                    continue
+                where = ("the quality check's re-run (the serial reference)"
+                         if label == "qc_run" else f"shape {label}")
+                for cid, why in sorted(causes.items()):
+                    block += (f"\n[execute fail: continuation] in {where}: continuation {cid!r} "
+                              f"has no captures: {why}")
             # Actionable cause when the quality-check candidate captured nothing:
             # the control file's quality-check target must invoke the runner with `--cases`
             # (the runner requires it and aborts without it). run_program's captures being

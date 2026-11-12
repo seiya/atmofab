@@ -956,5 +956,455 @@ class DriverEvidencePromotionTests(unittest.TestCase):
             self.assertIn("missing=['series/c_beta.json']", out["stderr"])
 
 
+#: A loop driver in miniature (issue #632): the toy loop of `test_driver_render.loop_ir` (`u += dt`,
+#: `w = u`), reading each case's file as the host-rendered driver does — `restart.step` and, when
+#: it is positive, `restart.u` / `restart.w` — and writing the initial, history, series and final
+#: captures. `IGNORE_RESTART` makes it read `restart.step` as 0 (the instrument control: a
+#: continuation that re-runs its base); `FAIL_CASE` exits 3 after that case.
+_LOOP_RUNNER = textwrap.dedent('''\
+    #!/usr/bin/env python3
+    import json, os, sys
+    spec = sys.argv[sys.argv.index("--cases") + 1]
+    cases = sys.argv[sys.argv.index("--cases") + 2:]
+    steps = 0
+    def dump(name, doc):
+        os.makedirs(os.path.dirname("raw/state_snapshots/" + name) or ".", exist_ok=True)
+        json.dump(doc, open("raw/state_snapshots/" + name + ".json", "w"))
+    for c in cases:
+        d = json.load(open(os.path.join(os.path.dirname(spec), "case_inputs", c + ".json")))
+        u, w, ok = list(d["u"]), list(d["w"]), 0.0
+        n, dt, t0, every = d["inputs.n_step"], d["derived.dt"], d["inputs.t_start"], d["inputs.every"]
+        ignore = (os.environ.get("IGNORE_RESTART")
+                  or os.environ.get("IGNORE_RESTART_CASE") == c
+                  or os.environ.get("IGNORE_RESTART_THREADS") == os.environ.get("OMP_NUM_THREADS"))
+        k0 = 0 if ignore else d["restart.step"]
+        if k0 > 0:
+            u, w = list(d["restart.u"]), list(d["restart.w"])
+        cap = lambda k: {"u": u, "w": w, "ok": ok, "step": float(k), "t": t0 + k * dt}
+        dump("initial/" + c, cap(k0))
+        series = {"step": [], "u_min": [], "u_max": [], "w_min": [], "w_max": []}
+        scale = (int(os.environ.get("OMP_NUM_THREADS") or 1)
+                 if os.environ.get("STEP_BY_THREADS") else 1)
+        for k in range(k0 + 1, n + 1):
+            u = [x + dt * scale for x in u]
+            w, ok = list(u), 1.0
+            for name, col in (("step", [float(k)]), ("u_min", [min(u)]), ("u_max", [max(u)]),
+                              ("w_min", [min(w)]), ("w_max", [max(w)])):
+                series[name] += col
+            if every and k % every == 0:
+                dump("history/" + c + "__" + str(k), cap(k))
+        dump(c, cap(n))
+        dump("series/" + c, {**series, "t": t0 + n * dt})
+        steps += n - k0
+        if k0 == 0 and os.environ.get("FAIL_BASE_THREADS") == os.environ.get("OMP_NUM_THREADS"):
+            sys.exit(5)
+        if os.environ.get("FAIL_CASE") == c:
+            sys.exit(3)
+        if k0 > 0 and os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS"):
+            print("bounds error at step " + str(k0 + 1), file=sys.stderr)
+            sys.exit(4)
+    threads = os.environ.get("OMP_NUM_THREADS")
+    json.dump({"steps": steps, **({} if threads is None else
+                                  {"parallelism": {"threads_per_rank": int(threads)}})},
+              open("perf.json", "w"))
+''')
+
+
+class ContinuationAtExecuteTests(unittest.TestCase):
+    """The second pass of `Validate.execute` (issue #632), driven through `_execute_inproc` with
+    the post-execute gate answered 0: the first pass runs the base cases, then each shape runs
+    each continuation in a process of its own from that shape's own sample, the host checks
+    where it started, and only then are its captures merged."""
+
+    def _node(self, tmp: str, *, remote: bool = False) -> _Node:
+        import yaml
+
+        from tools import primary_evidence as pe
+        from tools.tests.test_driver_render import loop_ir
+        # `_Node`'s own default is the shim-reached remote site `box`
+        n = _Node(tmp) if remote else _Node(tmp, site=Site(LOCAL_SITE, ("cpu",)))
+        ir = loop_ir(0, every=1, n_step=4)
+        cont = {**{k: v for k, v in ir["case"]["test_case_set"][0].items()
+                   if k != "initial_state"}, "case_id": "m0_cont",
+                "restart": {"from": "m0", "step": 2}}
+        ir["case"]["test_case_set"].append(cont)
+        ir["io_contract"]["tests"] = [{"test_id": "t_restart", "expected_outcome": "pass",
+                                       "target_cases": ["m0", "m0_cont"],
+                                       "quantities": ["restart.u", "restart.w"]}]
+        ir["io_contract"]["predicates"] = [
+            {"test_id": "t_restart", "quantity": f"restart.{v}", "target_cases": ["m0", "m0_cont"],
+             "case": "m0_cont", "expr": pe.restart_judgment_expr(v, "m0"), "op": "le",
+             "value": 0.0} for v in ("u", "w")]
+        ir["io_contract"]["raw_requirements"]["required_evidence"] += [
+            {"artifact": "state_history", "required": True},
+            {"artifact": "step_series", "required": True,
+             "names": ["step", "u_min", "u_max", "w_min", "w_max"]}]
+        (n.repo / n.refs.ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+        for b in (n.binary, n.checked_binary):
+            b.write_text(_LOOP_RUNNER, encoding="utf-8")
+        return n
+
+    def _execute(self, n: _Node, **knobs: str) -> dict:
+        with mock.patch.object(wc.Conductor, "_conductor_authors_runner", return_value=True):
+            return n.execute(**knobs)
+
+    def _assert_continued(self, n: _Node, out: dict) -> None:
+        self.assertEqual(out["returncode"], 0, out)
+        self.assertNotIn("snapshot deliverable mismatch", out["stderr"])
+        snaps = n.node_dir / "raw" / "state_snapshots"
+        final, base = (json.loads((snaps / f"{c}.json").read_text()) for c in ("m0_cont", "m0"))
+        self.assertEqual(final, base)
+        initial = json.loads((snaps / "initial" / "m0_cont.json").read_text())
+        self.assertEqual((initial["step"], initial["t"]), (2.0, 1.5))
+        self.assertEqual(sorted(p.name for p in (snaps / "history").glob("m0_cont__*")),
+                         ["m0_cont__3.json", "m0_cont__4.json"])
+        meta = json.loads((n.node_dir / "trial_meta.json").read_text())
+        self.assertTrue(meta["runner_command"].endswith(" m0"), meta["runner_command"])
+        record = meta["restart_pass"]
+        self.assertEqual(sorted(record),
+                         sorted(["run", "qc_run", "checked", "threads_2", "threads_3"]))
+        for label, entry in record.items():
+            self.assertEqual(entry["refused"], {}, label)
+            (row,) = entry["continuations"]
+            self.assertEqual((row["case_id"], row["base"], row["step"], row["ok"]),
+                             ("m0_cont", "m0", 2, True), label)
+            self.assertNotIn("start_check", row, label)
+            self.assertIsNotNone(row["command_id"], label)
+        # each continuation is a command of its own: one case, the shape's restart IR
+        runs = [e for e in n.log_entries(n.node_dir / "command_log.jsonl")
+                if e.get("tool_name") == "run_program"]
+        conts = [e["command"] for e in runs if "m0_cont" in e["command"]]
+        self.assertEqual(len(conts), 4)   # the run's, each sweep shape's, the checked one's
+        for argv in conts:
+            self.assertEqual(argv[-1], "m0_cont")
+            self.assertTrue(argv[-2].endswith("/restart/spec.ir.yaml"), argv)
+        for e in runs:
+            if "m0_cont" not in e["command"]:
+                self.assertEqual(e["command"][-1], "m0")
+        qc = n.log_entries(n.src / "command_log.jsonl")
+        self.assertEqual(len(qc), 2)
+        # each shape's second pass ran under that shape's own environment (round 2, X4-X7)
+        tmp_root = n.repo / "workspace" / "tmp" / "arid-1"
+        threads = {"run": n.target.threads_per_rank, "qc_run": 1, "threads_2": 2,
+                   "threads_3": 3, "checked": 1}
+        dirs = {"run": tmp_root / "run", "qc_run": tmp_root / "qc_run",
+                **{k: tmp_root / "sweep" / k for k in ("threads_2", "threads_3", "checked")}}
+        for label, want in threads.items():
+            perf = json.loads((dirs[label] / "restart" / "perf.json").read_text())
+            self.assertEqual(perf["parallelism"]["threads_per_rank"], want, label)
+        # the host verdict over the promoted captures judges the continuation against its base
+        import yaml
+
+        from tools import primary_evidence as pe
+        from tools.verdict_evaluator import evaluate_verdict
+        ir = yaml.safe_load((n.repo / n.refs.ir_ref / "spec.ir.yaml").read_text())
+        verdict = evaluate_verdict(ir["io_contract"]["tests"],
+                                   pe.evaluate_primary_predicates(ir, n.node_dir))
+        self.assertEqual([(r["test_id"], r["status"]) for r in verdict["per_test"]],
+                         [("t_restart", "pass")])
+        quality = json.loads((n.node_dir / "quality_check.json").read_text())
+        self.assertEqual(quality["status"], "pass",
+                         [(s["label"], s["status"], s.get("verdict_match"),
+                           s.get("state_agreement")) for s in quality["shapes"]])
+
+    def test_a_continuation_runs_in_its_own_process_and_its_captures_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self._assert_continued(n, self._execute(n))
+            perf = json.loads((n.node_dir / "perf.json").read_text())
+            self.assertEqual(perf["steps"], 4)   # the first pass's: the base alone
+
+    def test_a_continuation_at_a_site_runs_in_a_second_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, remote=True)
+            self.assertFalse(n.conductor.site.is_local)
+            self._assert_continued(n, self._execute(n))
+            jobs = [json.loads(line) for line in n.log.read_text().splitlines()]
+            self.assertTrue(any("arid-1.restart" in " ".join(map(str, call)) for call in jobs))
+            jobs = sorted(p.name for p in n.workdir.joinpath("orch_1").iterdir()) \
+                if n.workdir.joinpath("orch_1").exists() else []
+            self.assertEqual(jobs, [])   # both jobs removed their directories
+
+    def test_a_second_job_on_another_machine_fails_the_run(self) -> None:
+        """Round 1 (axis A, M5): a continuation is compared with a base run on the first job's
+        machine, so a second job that reports another platform is refused."""
+        from tools import remote_execution
+        real = remote_execution.execute_job
+        calls: list[int] = []
+
+        machines: list[object] = []
+
+        def elsewhere(request, *, local_tmp):
+            result = real(request, local_tmp=local_tmp)
+            calls.append(1)
+            machines.append(request.machine)
+            if len(calls) == 2:
+                return result._replace(platform={**result.platform, "machine": "other"}) \
+                    if hasattr(result, "_replace") else type(result)(
+                        results=result.results,
+                        platform={**result.platform, "machine": "other"},
+                        site_record=result.site_record, collected=result.collected,
+                        toolchain_version=result.toolchain_version)
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, remote=True)
+            with mock.patch.object(remote_execution, "execute_job", elsewhere), \
+                    self.assertRaisesRegex(RuntimeError, "ran on another kind of machine"):
+                self._execute(n)
+            self.assertEqual(len(calls), 2)
+            # both jobs ask the site for the machine the binary was built on (round 2, C18)
+            self.assertEqual(machines, [platform.machine()] * 2)
+
+    def test_each_shape_continues_from_its_own_sample(self) -> None:
+        """Round 2 (axis A, X1 / C17): the state a step commits depends on the shape (here on
+        its thread count), so a shape continuing from another shape's sample would end apart
+        from its own base; each continuing from its own, every shape agrees with itself and the
+        quality check passes. Locally and at a site, whose second job brings each shape's
+        `restart/` home to that shape."""
+        for remote in (False, True):
+            with self.subTest(remote=remote), tempfile.TemporaryDirectory() as tmp:
+                n = self._node(tmp, remote=remote)
+                self._assert_continued(n, self._execute(n, STEP_BY_THREADS="1"))
+
+    def test_a_shape_whose_first_pass_failed_runs_no_second_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self._execute(n, FAIL_BASE_THREADS="2")
+            record = json.loads((n.node_dir / "trial_meta.json").read_text())["restart_pass"]
+            # the run and the reference passed their first pass; threads_2 failed it, and the
+            # shapes after it did not run at all
+            self.assertEqual(sorted(record), ["qc_run", "run"])
+            self.assertFalse((n.repo / "workspace" / "tmp" / "arid-1" / "sweep" / "threads_2"
+                              / "restart").exists())
+
+    def test_a_second_job_on_another_node_of_the_same_kind_runs(self) -> None:
+        """Round 3 (D1 F1): a batch site's second job lands on another node; only its host
+        name differs, and the run continues."""
+        from tools import remote_execution
+        real = remote_execution.execute_job
+        calls: list[int] = []
+
+        def other_node(request, *, local_tmp):
+            result = real(request, local_tmp=local_tmp)
+            calls.append(1)
+            if len(calls) == 2:
+                return type(result)(
+                    results=result.results, platform={**result.platform, "node": "compute-002"},
+                    site_record=result.site_record, collected=result.collected,
+                    toolchain_version=result.toolchain_version)
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, remote=True)
+            with mock.patch.object(remote_execution, "execute_job", other_node):
+                self._assert_continued(n, self._execute(n))
+            self.assertEqual(len(calls), 2)
+
+    def test_a_continuation_that_re_ran_its_base_has_no_captures_and_says_why(self) -> None:
+        """The instrument control: a driver that reads `restart.step` as 0 passes every equality
+        the judgment asks; the start check refuses its captures, and the run fails closed on the
+        continuation's own cause, not on a misnamed file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            out = self._execute(n, IGNORE_RESTART="1")
+            snaps = n.node_dir / "raw" / "state_snapshots"
+            self.assertFalse((snaps / "m0_cont.json").exists())
+            self.assertIn("[execute fail: continuation] continuation 'm0_cont' has no captures",
+                          out["stderr"])
+            self.assertIn("did not start at step 2", out["stderr"])
+            meta = json.loads((n.node_dir / "trial_meta.json").read_text())
+            row = meta["restart_pass"]["run"]["continuations"][0]
+            self.assertIn("did not start at step 2", row["start_check"])
+            # round 3 (D2 F2): its own cause INSTEAD of the generic rename remedy, and the
+            # same failure category (the route is unchanged)
+            self.assertNotIn("Name each snapshot exactly", out["stderr"])
+            self.assertNotIn("snapshot deliverable mismatch", out["stderr"])
+            self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
+
+    def test_of_two_continuations_only_the_one_that_started_right_counts(self) -> None:
+        """Round 1 (axis A, F1): the start check's refusal of one continuation holds while
+        another continuation of the same shape is merged — its captures stay behind."""
+        import yaml
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            ir_path = n.repo / n.refs.ir_ref / "spec.ir.yaml"
+            ir = yaml.safe_load(ir_path.read_text())
+            second = {**ir["case"]["test_case_set"][1], "case_id": "m0_cont2",
+                      "restart": {"from": "m0", "step": 3}}
+            ir["case"]["test_case_set"].append(second)
+            ir_path.write_text(yaml.safe_dump(ir))
+            out = self._execute(n, IGNORE_RESTART_CASE="m0_cont2")
+            snaps = n.node_dir / "raw" / "state_snapshots"
+            self.assertTrue((snaps / "m0_cont.json").is_file())
+            for rel in ("m0_cont2.json", "initial/m0_cont2.json", "series/m0_cont2.json"):
+                self.assertFalse((snaps / rel).exists(), rel)
+            self.assertEqual(list((snaps / "history").glob("m0_cont2__*")), [])
+            self.assertIn("continuation 'm0_cont2' has no captures", out["stderr"])
+            self.assertNotIn("continuation 'm0_cont' has no captures", out["stderr"])
+
+    def test_a_sweep_shape_s_continuation_that_re_ran_its_base_fails_that_shape(self) -> None:
+        """Round 1 (axis A, F2): the start check runs in every shape, not in the run's alone. A
+        continuation that re-ran its base under one sweep shape is not merged there, and that
+        shape's verdict then differs from the reference's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self._execute(n, IGNORE_RESTART_THREADS="2")
+            record = json.loads((n.node_dir / "trial_meta.json").read_text())["restart_pass"]
+            self.assertIn("did not start at step 2",
+                          record["threads_2"]["continuations"][0]["start_check"])
+            for label in ("run", "qc_run", "threads_3", "checked"):
+                self.assertNotIn("start_check", record[label]["continuations"][0], label)
+            shape = n.repo / "workspace" / "tmp" / "arid-1" / "sweep" / "threads_2"
+            self.assertFalse((shape / "raw" / "state_snapshots" / "m0_cont.json").exists())
+            quality = json.loads((n.node_dir / "quality_check.json").read_text())
+            rows = {s["label"]: s for s in quality["shapes"]}
+            self.assertFalse(rows["threads_2"]["verdict_match"])
+            self.assertEqual(quality["status"], "fail")
+
+    def test_a_start_check_refusal_in_any_shape_reaches_the_repair_excerpt(self) -> None:
+        """Round 2 (axis A F1): a continuation that re-ran its base in the quality check's
+        re-run, or under the checked binary, fails the quality check; the excerpt says which
+        continuation, where, and why — the comparison alone names only a verdict mismatch."""
+        for where, text in (("qc_run", "in the quality check's re-run (the serial reference)"),
+                            ("checked", "in shape checked")):
+            with self.subTest(where), tempfile.TemporaryDirectory() as tmp:
+                n = self._node(tmp)
+                for b in (n.binary, n.checked_binary):
+                    b.write_text(_LOOP_RUNNER.replace(
+                        'or os.environ.get("IGNORE_RESTART_CASE") == c',
+                        f'or "{where}" in os.getcwd()'), encoding="utf-8")
+                out = self._execute(n)
+                record = json.loads((n.node_dir / "trial_meta.json").read_text())
+                self.assertIn("did not start at step 2",
+                              record["restart_pass"][where]["continuations"][0]["start_check"])
+                self.assertIn(f"[execute fail: continuation] {text}: continuation 'm0_cont' "
+                              "has no captures: continuation 'm0_cont' did not start at step 2",
+                              out["stderr"])
+
+    def test_the_merge_moves_exactly_the_continuation_s_names(self) -> None:
+        """Round 1 (axis A): `<C>.json` and `history/<C>__<k>.json`, and not the captures of a
+        case whose id starts with `<C>__`; and a name the first pass wrote is refused, moving
+        nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            shape = Path(tmp) / "shape"
+            rdir = shape / "restart"
+            src = rdir / "raw" / "state_snapshots"
+            names = ["c.json", "initial/c.json", "series/c.json", "history/c__3.json",
+                     "c__x.json", "initial/c__x.json", "history/c__x__3.json",
+                     "history/c__3b.json"]
+            for rel in names:
+                (src / rel).parent.mkdir(parents=True, exist_ok=True)
+                (src / rel).write_text("{}")
+            self.assertIsNone(wc.Conductor._merge_continuation_captures(rdir, shape, "c"))
+            dst = shape / "raw" / "state_snapshots"
+            moved = sorted(str(p.relative_to(dst)) for p in dst.rglob("*.json"))
+            self.assertEqual(moved, sorted(names[:4]))
+            # the existing-name refusal: the next continuation's final capture collides
+            (src / "d.json").write_text("{}")
+            (src / "initial" / "d.json").write_text("{}")
+            (dst / "initial" / "d.json").write_text("{\"first\": 1}")
+            why = wc.Conductor._merge_continuation_captures(rdir, shape, "d")
+            self.assertIn("initial/d.json", why)
+            self.assertTrue((src / "d.json").exists())          # nothing moved
+            self.assertFalse((dst / "d.json").exists())
+
+    def test_a_refused_restart_point_writes_no_file_and_says_why(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            ir_path = n.repo / n.refs.ir_ref / "spec.ir.yaml"
+            import yaml
+            ir = yaml.safe_load(ir_path.read_text())
+            ir["case"]["test_case_set"][1]["restart"]["step"] = 3
+            ir["case"]["test_case_set"][0]["inputs"]["every"] = 2
+            ir["case"]["test_case_set"][1]["inputs"]["every"] = 2
+            ir_path.write_text(yaml.safe_dump(ir))
+            out = self._execute(n)
+            self.assertIn("continuation 'm0_cont' has no captures: no restart point",
+                          out["stderr"])
+            self.assertIn("a multiple of the base's history.every", out["stderr"])
+
+    def test_a_second_pass_process_that_fails_fails_the_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            out = self._execute(n, FAIL_CASE="m0_cont")
+            self.assertIn("[run_program failed: runtime_error]", out["stderr"])
+            self.assertIn("second pass: continuation 'm0_cont' failed", out["stderr"])
+            self.assertFalse((n.node_dir / "trial_meta.json").exists())
+
+    def test_a_failing_continuation_in_the_quality_check_s_re_run_fails_the_run(self) -> None:
+        """Round 1 (axis B, F2): the quality check's re-run is the reference, so its second pass
+        failing is the binary's runtime failure, named, as the run's own shape's is — the run's
+        own `run_program` having exited 0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            runner = _LOOP_RUNNER.replace(
+                'os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS")',
+                '"qc_run" in os.getcwd()')
+            n.binary.write_text(runner, encoding="utf-8")
+            out = self._execute(n)
+            self.assertIn("[run_program failed: runtime_error]", out["stderr"])
+            self.assertIn("second pass: continuation 'm0_cont' failed", out["stderr"])
+            runs = [e for e in n.log_entries(n.node_dir / "command_log.jsonl")
+                    if e.get("tool_name") == "run_program"]
+            self.assertTrue(runs and all(e["return_code"] == 0 for e in runs))
+
+    def test_the_build_control_file_s_default_lists_the_base_cases(self) -> None:
+        """Both writers of the control file (`_write_makefile`, and the inputs the bundle-derived
+        render takes) default `CASES` to the base cases: a hand-run quality check then runs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self.assertEqual(n.conductor.read_base_case_ids(n.refs), ("m0",))
+            self.assertEqual(n.conductor.read_case_ids(n.refs), ("m0", "m0_cont"))
+            _render, inputs = n.conductor._control_file_render_inputs(n.refs)
+            self.assertEqual(inputs["cases_default"], "m0")
+            with mock.patch.object(wc.Conductor, "_dependency_closure", return_value=[]):
+                n.conductor._write_makefile(n.refs)
+            lines = [line for line in (n.src / "Makefile").read_text().splitlines()
+                     if line.startswith("CASES")]
+            self.assertEqual(lines, ["CASES ?= m0"])
+
+    def test_a_sweep_shape_s_failing_continuation_fails_that_shape(self) -> None:
+        """The second pass of a sweep shape exits non-zero: that shape's row is not `ok`,
+        records the second pass's failure, and the quality check fails; the run's own shape,
+        whose continuation passed, is unaffected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            out = self._execute(n, FAIL_CONT_THREADS="2")
+            self.assertEqual(out["returncode"], 0, out)
+            quality = json.loads((n.node_dir / "quality_check.json").read_text())
+            rows = {s["label"]: s for s in quality["shapes"]}
+            self.assertFalse(rows["threads_2"]["run_ok"])
+            failure = rows["threads_2"]["run_failure"]
+            self.assertEqual((failure["continuation"], failure["return_code"]), ("m0_cont", 4))
+            self.assertTrue(rows["threads_3"]["run_ok"])
+            self.assertEqual(quality["status"], "fail")
+            # round 2 (Codex P2): the repair excerpt names the continuation and the exit status
+            line = next(ln for ln in out["stderr"].splitlines()
+                        if "shape threads_2" in ln and "[execute fail: quality_check]" in ln)
+            self.assertIn("continuation 'm0_cont'", line)
+            self.assertIn("rc=4", line)
+            self.assertIn("bounds error at step 3", out["stderr"])   # its stderr (round 3)
+
+    def test_the_checked_binary_s_failing_continuation_fails_its_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            n.checked_binary.write_text(_LOOP_RUNNER.replace(
+                'os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS")',
+                "True"), encoding="utf-8")
+            out = self._execute(n)
+            self.assertEqual(out["returncode"], 0, out)
+            quality = json.loads((n.node_dir / "quality_check.json").read_text())
+            row = {s["label"]: s for s in quality["shapes"]}["checked"]
+            self.assertFalse(row["run_ok"])
+            self.assertEqual(row["run_failure"]["continuation"], "m0_cont")
+            self.assertEqual(quality["status"], "fail")
+            line = next(ln for ln in out["stderr"].splitlines()
+                        if "the checked row" in ln and "[execute fail: quality_check]" in ln)
+            self.assertIn("continuation 'm0_cont'", line)
+            self.assertIn("rc=4", line)
+            self.assertIn("bounds error at step 3", out["stderr"])   # its stderr (round 3)
+
+
 if __name__ == "__main__":
     unittest.main()

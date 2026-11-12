@@ -129,6 +129,9 @@ _LG = "lg_"
 _IV = "iv_"
 #: The distributed driver's global copy of a spatial state it reads (issue #610).
 _GL = "gl_"
+#: A spatial restart variable's global copy on the distributed form (issue #632): read whole
+#: from its `restart.<var>` key by every rank, its block copied into the state.
+_RS = "rs_"
 
 # The distributed-state operations a RUNNER calls on a harness that drives the program as several
 # ranks (`distributed_state@2`, issues #316, #512 and #610): it starts and ends the runtime, asks
@@ -733,10 +736,10 @@ def _global_size(var: str, entry: runner_ir.EntryPlan, dist: _Dist) -> str:
         for i, dim in enumerate(layout, start=1))
 
 
-def _render_cells_total(a: Any, sizes: list[str], ind: str) -> None:
+def _render_cells_total(a: Any, sizes: list[str], ind: str, steps: str = "step_c") -> None:
     largest = ("max(" + ", ".join(sizes) + ")") if len(sizes) > 1 else (
         sizes[0] if sizes else "1_int64")
-    for line in _wrap(f"cells_total = cells_total + int(step_c, int64) * {largest}"):
+    for line in _wrap(f"cells_total = cells_total + int({steps}, int64) * {largest}"):
         a(f"{ind}{line}")
 
 
@@ -815,7 +818,7 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     if plan.list_form:
         a("  integer :: entry_no")
     if plan.loop:
-        a("  integer :: n, n_c, every_c, n_done")
+        a("  integer :: n, n_c, every_c, n_done, step0")
         a("  real(dp) :: dt_c, t_start_c")
         a("  real(dp), allocatable :: se(:, :)")
         a("  character(len=24) :: step_text")
@@ -832,6 +835,10 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
                 a(f"  real(dp), allocatable :: {_GL}{var}({_colons(plan.variables[var])})")
     for var in plan.work_vars:
         a(f"  real(dp), allocatable :: {_WK}{var}({_colons(plan.variables[var])})")
+    if dist is not None:
+        for var in plan.restart_vars:
+            if var in dist.layouts:
+                a(f"  real(dp), allocatable :: {_RS}{var}({_colons(plan.variables[var])})")
     for var in plan.logical_states:
         a(f"  logical, volatile :: {_LG}{var}")
     for var in plan.integer_states:
@@ -915,9 +922,12 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
         a("    end select")
     else:
         _render_entry(a, plan, plan.entries[0], H, "    ", dist)
-    a("    steps_total = steps_total + step_c")
+    # The steps THIS process ran (issue #632): a continuation case starts at `step0`.
+    ran = "step_c - step0" if plan.loop else "step_c"
+    a(f"    steps_total = steps_total + {ran}")
     if dist is None:
-        _render_cells_total(a, [f"size({_ST}{v}, kind=int64)" for v in plan.arrays], "    ")
+        _render_cells_total(a, [f"size({_ST}{v}, kind=int64)" for v in plan.arrays], "    ",
+                            f"({ran})" if plan.loop else ran)
     a("  end do")
     a("")
     a("  if (walltime <= 0.0_dp) walltime = 1.0e-9_dp")
@@ -955,15 +965,16 @@ def _render_program(a: Any, plan: runner_ir.DriverPlan, spec_id: str, harness_sp
     a("  end subroutine capture_state")
     if plan.loop:
         a("")
-        a("  ! `n_done` entries of one series column; the empty list is this glue's own token,")
+        a("  ! The committed steps `step0 + 1 .. n_done` of one series column; the empty list is")
+        a("  ! this glue's own token,")
         a("  ! since no emitter contract covers a zero-length array.")
         a("  function series_json(column) result(s)")
         a("    integer, intent(in) :: column")
         a("    character(len=:), allocatable :: s")
-        a("    if (n_done == 0) then")
+        a("    if (n_done == step0) then")
         a("      s = '[]'")
         a("    else")
-        a(f"      s = {H('emit_array_r1')}(se(1:n_done, column))")
+        a(f"      s = {H('emit_array_r1')}(se(step0 + 1:n_done, column))")
         a("    end if")
         a("  end function series_json")
         if dist is None:
@@ -1222,6 +1233,8 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
                     a(f"{ind}  end if")
                 a(f"{ind}end if")
             a(f"{ind}if (case_refused) n_c = 0")
+    if plan.loop:
+        _render_restart(a, plan, entry, H, ind, dist)
     write = f"{ind}if (rank == 0) " if dist is not None else ind
     a(f"{ind}! --- the initial capture (raw/state_snapshots/initial/<case_id>.json) ---")
     a(f"{ind}call capture_state(vals)")
@@ -1257,14 +1270,59 @@ def _render_entry(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan
         # The GLOBAL extents (B10), in the entry that ran the case: a sum of the ranks' blocks
         # would count a replicated case once per rank, and a rank's own block is not the case's
         # largest array.
-        _render_cells_total(a, [_global_size(v, entry, dist) for v in plan.arrays], ind)
+        _render_cells_total(a, [_global_size(v, entry, dist) for v in plan.arrays], ind,
+                            "(step_c - step0)" if plan.loop else "step_c")
+
+
+def _render_restart(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
+                    ind: str, dist: _Dist | None = None) -> None:
+    """The restart point of a loop node (issue #632), after the loop values and `init` and
+    before the initial capture: the host-owned `restart.step` (0 on an ordinary case), refused
+    below 0 and, on a case `init` did not refuse, at or past `n_step`; when positive, every
+    restart variable is read from its `restart.<var>` key into the state and the step count and
+    `t` start at the global step, so every later value is the uninterrupted run's. A refused
+    case restores nothing and starts at 0. A variable only `init` writes is `init`'s own."""
+    a(f"{ind}! --- the restart point: the global step this case starts at (0 unless a")
+    a(f"{ind}! continuation case) ---")
+    a(f"{ind}step0 = {H(runner_ir.GETTERS['integer'])}('{runner_ir.RESTART_STEP_KEY}')")
+    a(f"{ind}if (step0 < 0 .or. (.not. case_refused .and. step0 >= n_c)) then")
+    a(f"{ind}  write(error_unit, '(A)') 'error: restart.step is not in 0 .. n_step - 1 for "
+      "case '//cid")
+    a(f"{ind}  error stop 2")
+    a(f"{ind}end if")
+    a(f"{ind}if (case_refused) step0 = 0")
+    a(f"{ind}if (step0 > 0) then")
+    in1 = ind + "  "
+    for var in plan.restart_vars:
+        rank = plan.variables[var]
+        key = _flit(f"{runner_ir.RESTART_KEY_PREFIX}{var}")
+        if not rank:
+            a(f"{in1}{_ST}{var} = {H('get_real')}('{key}')")
+        elif dist is not None and var in dist.layouts:
+            # every rank reads the global copy, and its block is copied out (B3)
+            ghost = {k: hv[1].local for k, hv in enumerate(entry.axis_hosts)
+                     if hv[1] is not None}
+            a(f"{in1}call {H(f'get_array_r{rank}')}('{key}', &")
+            a(f"{in1}  {_RS}{var})")
+            a(f"{in1}if (replicated) then")
+            a(f"{in1}  {_ST}{var} = {_RS}{var}")
+            a(f"{in1}else")
+            for line in _wrap(f"{_ST}{var} = {_RS}{var}({_section(dist.layouts[var], ghost)})"):
+                a(f"{in1}  {line}")
+            a(f"{in1}end if")
+        else:
+            a(f"{in1}call {H(f'get_array_r{rank}')}('{key}', &")
+            a(f"{in1}  {_ST}{var})")
+    a(f"{in1}step_c = step0")
+    a(f"{in1}t_c = t_start_c + real(step0, dp) * dt_c")
+    a(f"{ind}end if")
 
 
 def _render_loop(a: Any, plan: runner_ir.DriverPlan, entry: runner_ir.EntryPlan, H: Any,
                  ind: str, dist: _Dist | None = None) -> None:
-    a(f"{ind}n_done = 0")
-    a(f"{ind}allocate(se(max(n_c, 0), {len(plan.series_names)}))")
-    a(f"{ind}do n = 1, n_c")
+    a(f"{ind}n_done = step0")
+    a(f"{ind}allocate(se(step0 + 1:max(n_c, step0), {len(plan.series_names)}))")
+    a(f"{ind}do n = step0 + 1, n_c")
     in1 = ind + "  "
     for var in entry.work_copy:
         a(f"{in1}{_WK}{var} = {_ST}{var}")

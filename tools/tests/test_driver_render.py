@@ -250,7 +250,9 @@ def _prepare(tmp: Path, ir: dict[str, Any], case_ids: list[str] | None) -> list[
     pe.write_case_inputs(ir, tmp / "ir")
     for sub in ("initial", "history", "series"):
         (tmp / "run" / "raw" / "state_snapshots" / sub).mkdir(parents=True)
-    return case_ids if case_ids is not None else [c["case_id"] for c in ir["case"]["test_case_set"]]
+    # the first pass: every case that is no continuation (issue #632), in declaration order
+    return case_ids if case_ids is not None else [
+        c["case_id"] for c in ir["case"]["test_case_set"] if not pe.is_continuation(c)]
 
 
 def _exec(tmp: Path, ids: list[str], env: dict[str, str] | None = None) -> Run:
@@ -757,6 +759,188 @@ class _DriverBehaviour:
             self.assertEqual(initial["stage_u1"], [0.0] * 3, cid)
             self.assertEqual(initial["stage_u2"], [0.0] * 3, cid)
 
+    # --- the continuation case (system tier Part 2, issue #632) ----------------------------------
+
+    def _continue(self, run: Run, ir: dict[str, Any]) -> tuple[list[Any], dict[str, str], Path]:
+        """The second pass over ``run``'s directory, as `Validate.execute` lays it out: the real
+        continuation writer reads the first pass's samples, and each continuation runs the same
+        binary in a process of its own under `run/restart/`, on the one case."""
+        files, refused = pe.write_continuation_inputs(ir, run.dir / "run")
+        rdir = run.dir / "run" / pe.RESTART_DIRNAME
+        for sub in ("initial", "history", "series"):
+            (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True, exist_ok=True)
+        (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+        for cf in files:
+            proc = subprocess.run([str(run.dir / "bin"), "--cases", str(rdir / "spec.ir.yaml"),
+                                   cf.case_id], cwd=rdir, capture_output=True, text=True,
+                                  timeout=300, check=False, env={**os.environ, "OMP_NUM_THREADS": "4",
+                                                    "SPEC2SCIENCE_CUDA_BLOCK": "64"})
+            self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        return files, refused, rdir
+
+    @staticmethod
+    def _with_continuation(ir: dict[str, Any], base: str, step: int) -> dict[str, Any]:
+        ir = copy.deepcopy(ir)
+        case = copy.deepcopy(next(c for c in ir["case"]["test_case_set"]
+                                  if c["case_id"] == base))
+        case.pop("initial_state", None)
+        case["case_id"] = f"{base}_cont"
+        case["restart"] = {"from": base, "step": step}
+        ir["case"]["test_case_set"].append(case)
+        return ir
+
+    def _assert_continues(self, ir: dict[str, Any], base: str, step: int, n_step: int) -> None:
+        ir = self._with_continuation(ir, base, step)
+        cid = f"{base}_cont"
+        # the first pass runs the base cases: the writer wrote no file for the continuation
+        self.assertFalse((Path(self._tmp.name) / "ir" / "case_inputs" / f"{cid}.json").exists())
+        run = type(self).build_and_run(Path(self._tmp.name), ir)
+        self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+        self.assertFalse((run.dir / "ir" / "case_inputs" / f"{cid}.json").exists())
+        files, refused, rdir = self._continue(run, ir)
+        self.assertEqual(refused, {})
+        self.assertEqual([(f.case_id, f.base, f.step) for f in files], [(cid, base, step)])
+        self.assertIsNone(pe.continuation_start_violation(ir, rdir, files[0]))
+        snaps = rdir / "raw" / "state_snapshots"
+        full = run.snapshot(base)
+        second = json.loads((snaps / f"{cid}.json").read_text())
+        self.assertEqual({k: v for k, v in second.items() if k != "case_id"},
+                         {k: v for k, v in full.items() if k != "case_id"})
+        self.assertEqual(full["step"], float(n_step))
+        initial = json.loads((snaps / "initial" / f"{cid}.json").read_text())
+        sample = run.snapshot(f"history/{base}__{step}")
+        self.assertEqual(initial["step"], float(step))
+        self.assertEqual(initial["t"], sample["t"])
+        for var in pe.restart_variables(ir):
+            self.assertEqual(initial[var], sample[var], var)
+        series = json.loads((snaps / "series" / f"{cid}.json").read_text())
+        base_series = run.snapshot(f"series/{base}")
+        self.assertEqual(series["step"], base_series["step"][step:])
+        for name, column in series.items():
+            if name != "t":
+                self.assertEqual(column, base_series[name][step:], name)
+        later = sorted(p.name for p in (snaps / "history").iterdir())
+        self.assertEqual(later, sorted(f"{cid}__{k}.json" for k in range(step + 1, n_step + 1)
+                                       if (run.dir / "run" / "raw" / "state_snapshots"
+                                           / "history" / f"{base}__{k}.json").exists()))
+        for name in later:
+            k = name.rsplit("__", 1)[1]
+            self.assertEqual(json.loads((snaps / "history" / name).read_text()),
+                             run.snapshot(f"history/{base}__{k[:-5]}"))
+        self.assertEqual(json.loads((rdir / "perf.json").read_text())["steps"], n_step - step)
+
+    def test_a_continuation_reads_its_state_after_the_case_file_s_and_equals_its_base(
+            self) -> None:
+        """A node with no `init`: the state is read from the case file (its `initial_state`)
+        and then overwritten from `restart.<v>`, in a process of its own (§4.2 step 2's first
+        run over a `from_file` state)."""
+        self._assert_continues(loop_ir(0, every=1, n_step=4), "m0", 2, 4)
+
+    def test_a_continuation_reads_its_state_after_init_and_equals_its_base(self) -> None:
+        """A node whose `init` writes the state and the loop scalars: `init` runs on the base's
+        inputs in the continuation's process, then the state is overwritten (E4's order)."""
+        ir = init_ir(0)
+        ir["case"]["test_case_set"][0]["inputs"]["every"] = 1
+        self._assert_continues(ir, "m0", 1, 3)
+
+    def test_a_restart_step_outside_the_run_stops_the_program_before_a_capture(self) -> None:
+        for step in (-1, 4, 5):
+            with self.subTest(step=step), tempfile.TemporaryDirectory() as tmp:
+                ir = loop_ir(0)
+                run = type(self).build_and_run(Path(tmp), ir)
+                self.assertEqual(run.proc.returncode, 0)
+                case_file = Path(tmp) / "ir" / "case_inputs" / "m0.json"
+                case = json.loads(case_file.read_text())
+                case_file.write_text(json.dumps({**case, "restart.step": step}))
+                shutil.rmtree(run.snapshots)
+                for sub in ("initial", "history", "series"):
+                    (run.snapshots / sub).mkdir(parents=True)
+                again = _exec(Path(tmp), ["m0"])
+                self.assertNotEqual(again.proc.returncode, 0)
+                self.assertIn("restart.step", again.proc.stderr)
+                self.assertFalse((run.snapshots / "initial" / "m0.json").exists())
+
+    def test_a_case_init_refuses_starts_at_zero_whatever_restart_step_says(self) -> None:
+        """Round 2 (axis A, D5 / D11): on a case `init` refuses, the driver restores nothing and
+        starts at 0 — it reads no `restart.<v>` (the file has none here, so a read would stop
+        the program) and its captures carry step 0."""
+        ir = init_ir(10)                       # mode 10: init refuses
+        run = self._run(ir)
+        case_file = run.dir / "ir" / "case_inputs" / "m10.json"
+        case_file.write_text(json.dumps({**json.loads(case_file.read_text()),
+                                         "restart.step": 2}))
+        for sub in ("initial", "history", "series"):
+            shutil.rmtree(run.snapshots / sub)
+            (run.snapshots / sub).mkdir()
+        again = _exec(run.dir, ["m10"], {"SPEC2SCIENCE_CUDA_BLOCK": "64"})
+        self.assertEqual(again.proc.returncode, 0, again.proc.stderr[-2000:])
+        self.assertEqual(again.snapshot("initial/m10")["step"], 0.0)
+        self.assertEqual(again.snapshot("m10")["step"], 0.0)
+
+    def test_a_case_file_without_restart_step_stops_the_program(self) -> None:
+        """The key is read on every loop case: a getter's refusal stops the program."""
+        ir = loop_ir(0)
+        run = self._run(ir)
+        case_file = run.dir / "ir" / "case_inputs" / "m0.json"
+        case = json.loads(case_file.read_text())
+        del case["restart.step"]
+        case_file.write_text(json.dumps(case))
+        self.assertNotEqual(_exec(run.dir, ["m0"]).proc.returncode, 0)
+
+    def test_the_start_check_refuses_a_continuation_that_re_ran_its_base(self) -> None:
+        """Instrument controls: a file written with `restart.step: 0`, and one whose
+        `restart.<v>` are the base's initial state, each pass every equality predicate and are
+        refused by the host's start check alone."""
+        ir = self._with_continuation(loop_ir(0, every=1), "m0", 2)
+        run = type(self).build_and_run(Path(self._tmp.name), ir)
+        self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+        files, _refused = pe.write_continuation_inputs(ir, run.dir / "run")
+        cf = files[0]
+        rdir = run.dir / "run" / pe.RESTART_DIRNAME
+        base_case = json.loads((run.dir / "ir" / "case_inputs" / "m0.json").read_text())
+        for label, edit in (
+                ("step zero", {"restart.step": 0}),
+                ("the initial state", {"restart.u": base_case["u"], "restart.w": [0.0] * 3})):
+            with self.subTest(label):
+                cf.path.write_text(json.dumps({**json.loads(cf.path.read_text()), **edit}))
+                for sub in ("initial", "history", "series"):
+                    shutil.rmtree(rdir / "raw" / "state_snapshots" / sub, ignore_errors=True)
+                    (rdir / "raw" / "state_snapshots" / sub).mkdir(parents=True)
+                (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+                proc = subprocess.run([str(run.dir / "bin"), "--cases",
+                                       str(rdir / "spec.ir.yaml"), cf.case_id], cwd=rdir,
+                                      capture_output=True, text=True, timeout=300,
+                                      check=False,
+                                      env={**os.environ, "SPEC2SCIENCE_CUDA_BLOCK": "64"})
+                self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+                why = pe.continuation_start_violation(ir, rdir, cf)
+                self.assertIsNotNone(why)
+                self.assertIn("did not start at step 2", why)
+                pe.write_continuation_inputs(ir, run.dir / "run")   # restore the file
+
+    def test_a_driver_rendered_without_the_restart_read_fails_the_start_check(self) -> None:
+        """The instrument control the plan names first: a renderer branch that omits the read
+        re-runs the base, and only the start check refuses it."""
+        cpp = type(self).build_and_run is run_cpp
+        module = cpp_runner if cpp else f_runner
+
+        def no_read(a: Any, _plan: Any, _entry: Any, _h: Any, ind: str, *_rest: Any) -> None:
+            a(f"{ind}step0 = 0{';' if cpp else ''}")   # the read omitted, the count kept
+
+        ir = self._with_continuation(loop_ir(0, every=1), "m0", 2)
+        with mock.patch.object(module, "_render_restart", no_read):
+            run = type(self).build_and_run(Path(self._tmp.name), ir)
+        self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+        files, _refused, rdir = self._continue(run, ir)
+        cf = files[0]
+        # every equality the judgment asks holds: the continuation re-ran its base ...
+        second = json.loads((rdir / "raw" / "state_snapshots" / f"{cf.case_id}.json").read_text())
+        self.assertEqual(second["u"], run.snapshot("m0")["u"])
+        # ... and the start check alone refuses it
+        why = pe.continuation_start_violation(ir, rdir, cf)
+        self.assertIsNotNone(why)
+        self.assertIn("did not start at step 2", why)
+
 
 class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_fortran)
@@ -765,6 +949,27 @@ class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
 @skip_probes.skip_unless_installed("cuda_compiler_driver")
 class CppDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_cpp)
+
+
+class RestartRenderTest(unittest.TestCase):
+    """Issue #632: only a loop node's driver reads `restart.step`; a one-call node's renders
+    with no word of it, in both languages, and the loop node's names the host's key spelling."""
+
+    def test_a_node_without_loop_renders_no_restart_read(self) -> None:
+        for ir in (call_ir(0), init_call_ir(0)):
+            for text in (f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU),
+                         cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU)):
+                self.assertNotIn("restart", text)
+                self.assertNotIn("step0", text)
+
+    def test_a_loop_node_reads_the_host_s_key(self) -> None:
+        ir = loop_ir(0)
+        for text in (f_runner.render_runner(ir, "drv_toy", "harness_fortran_cpu", target=CPU),
+                     cpp_runner.render_runner(ir, "drv_toy", "harness_cpp_gpu", target=GPU)):
+            self.assertIn(runner_ir.RESTART_STEP_KEY, text)
+            for var in ("u", "w"):
+                self.assertIn(f"{runner_ir.RESTART_KEY_PREFIX}{var}", text)
+            self.assertNotIn(f"{runner_ir.RESTART_KEY_PREFIX}ok", text)
 
 
 class ResultResetOptimisationTest(unittest.TestCase):
@@ -1978,6 +2183,48 @@ class DistributedDriverEndToEndTest(unittest.TestCase):
                 self.assertEqual(perf["parallelism"]["mpi_ranks"], grid[0] * grid[1])
                 self.assertEqual(perf["parallelism"]["process_grid"], list(grid))
                 self.assertEqual(perf["cells_updated"], serial_cells)
+
+    def test_a_continuation_equals_its_base_on_every_grid(self) -> None:
+        """Issue #632, the distributed form: a continuation case of model (2) (`init` writes the
+        partitioned state) and of model (4) (the state read from the case file, a ghosted and a
+        recorded state beside it), each from its base's sample in a process of its own under the
+        same grid, its blocks copied out of the global `restart.<v>` every rank reads. Its
+        restart variables end equal to its base's, and the host's start check holds; the call
+        records count this process's calls and are not compared."""
+        for sid, base, step in (("fx_prob", "ny8", 4), ("fx_loop", "big", 1),
+                                ("fx_loop", "nearly", 2)):
+            ir = MPI_FIXTURES[sid]()
+            case = copy.deepcopy(next(c for c in ir["case"]["test_case_set"]
+                                      if c["case_id"] == base))
+            case.pop("initial_state", None)
+            cid = f"{base}_cont"
+            case.update(case_id=cid, restart={"from": base, "step": step})
+            ir["case"]["test_case_set"].append(case)
+            names = sorted(pe.restart_variables(ir))
+            build = self._build(ir)
+            for grid in ((2, 2), (3, 1), (1, 3), SINGLETON):
+                with self.subTest(sid=sid, base=base, grid=grid):
+                    run = build.run(grid, cases=[base], timeout=60)
+                    self.assertEqual(run.rc, 0, run.stderr[-2000:])
+                    files, refused = pe.write_continuation_inputs(ir, run.dir)
+                    self.assertEqual(refused, {})
+                    rdir = run.dir / pe.RESTART_DIRNAME
+                    (rdir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+                    second = MpiBuild.__new__(MpiBuild)
+                    second.__dict__.update(build.__dict__, tmp=rdir.parent / "c")
+                    # the continuation's own process: the restart directory, its spec, one case
+                    shutil.rmtree(second.tmp, ignore_errors=True)
+                    (second.tmp / "ir").mkdir(parents=True)
+                    shutil.copy(rdir / "spec.ir.yaml", second.tmp / "ir" / "spec.ir.yaml")
+                    shutil.copytree(rdir / "case_inputs", second.tmp / "ir" / "case_inputs")
+                    (second.tmp / "bin").symlink_to(build.tmp / "bin")
+                    cont = second.run(grid, cases=[cid], timeout=60)
+                    self.assertEqual(cont.rc, 0, cont.stderr[-2000:])
+                    self.assertIsNone(pe.continuation_start_violation(ir, cont.dir, files[0]))
+                    got = cont.snapshots()[f"{cid}.json"]
+                    want = run.snapshots()[f"{base}.json"]
+                    for var in [*names, "step", "t"]:
+                        self.assertEqual(got[var], want[var], var)
 
     def test_the_fixture_irs_pass_gates_n_and_o_and_the_harness_pin(self) -> None:
         """Each fixture IR is one `Compile.static` admits (gates (a)-(n), and gate (o) against its

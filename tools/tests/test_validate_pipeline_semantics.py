@@ -21481,6 +21481,37 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
     def test_the_whole_evidence_of_a_driver_passes(self) -> None:
         self.assertEqual(self._violations(lambda _s: None), [])
 
+    def test_a_continuation_s_captures_beside_its_base_s_pass(self) -> None:
+        """Issue #632: the second pass merges a continuation's captures into the run's own
+        directory — its initial capture at its restart step, the samples above it and a series
+        over the steps after it, all shorter than its base's. The post-execute validator, run
+        whole (not stubbed, as the conductor rows stub it), refuses none of them."""
+        def change(snapshots: Path) -> None:
+            base = json.loads((snapshots / "snapshot000.json").read_text(encoding="utf-8"))
+            workspace = next(p for p in snapshots.parents if p.name == "workspace")
+            ir_path = (workspace / "ir" / "problem__shallow_water2d__0.3.0"
+                       / "shallow-water2d_20260415_001" / "spec.ir.yaml")
+            self.assertTrue(ir_path.is_file())
+            ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            cases = ir_doc["case"]["test_case_set"]
+            cases.append({**{k: v for k, v in cases[0].items() if k != "initial_state"},
+                          "case_id": "snapshot000_cont",
+                          "restart": {"from": cases[0]["case_id"], "step": 1}})
+            _write_json(ir_path, ir_doc)
+            _write_json(snapshots / "snapshot000_cont.json", base)
+            _write_json(snapshots / "initial" / "snapshot000_cont.json", {**base, "step": 1})
+            _write_json(snapshots / "series" / "snapshot000_cont.json", {
+                "t": 0.5, **{n: [1.0] for n in self._NAMES}})
+        self.assertEqual(self._violations(change), [])
+
+        # control: the validator reads them — the continuation's series dropped is named
+        def without_series(snapshots: Path) -> None:
+            change(snapshots)
+            (snapshots / "series" / "snapshot000_cont.json").unlink()
+        found = self._violations(without_series)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("series/snapshot000_cont.json: missing", found[0])
+
     def test_a_capture_missing_a_declared_variable_is_refused_per_artifact(self) -> None:
         for relative in ("snapshot000.json", "initial/snapshot000.json",
                          "history/snapshot000__1.json"):
@@ -30684,3 +30715,73 @@ class DistributeLineGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestartLineGateTests(unittest.TestCase):
+    """Gate (r) (issue #632, `_restart_line_violations`): the tests.md `restart:` line against
+    the IR's continuation cases, as a set, in both polarities."""
+
+    def _ir(self, *conts: tuple[str, str, int], loop: bool = True) -> dict:
+        from tools.tests.test_driver_render import call_ir, loop_ir
+        ir = loop_ir(0, 1) if loop else call_ir(0, 1)
+        for cid, base, step in conts:
+            ir["case"]["test_case_set"].append(
+                {"case_id": cid, "inputs": {}, "restart": {"from": base, "step": step}})
+        return ir
+
+    def _r(self, text: str, ir: dict) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tests.md"
+            path.write_text(text, encoding="utf-8")
+            return vps._restart_line_violations(path, ir)
+
+    def test_the_line_equal_to_the_ir_is_clean(self) -> None:
+        for line in ("restart: c = m0 @ 2", "- `restart`: c = m0 @ 2.",
+                     "restart: c = m0 @ 2, d = m1 @ 4"):
+            ir = self._ir(("c", "m0", 2)) if line.count("=") == 1 else self._ir(
+                ("c", "m0", 2), ("d", "m1", 4))
+            with self.subTest(line=line):
+                self.assertEqual(self._r(f"# x\n\n{line}\n", ir), [])
+        self.assertEqual(self._r("# no line\n", self._ir()), [])
+
+    def test_each_disagreement_is_refused(self) -> None:
+        ir = self._ir(("c", "m0", 2))
+        for label, text, want in (
+                ("another step", "restart: c = m0 @ 4", "states ['c = m0 @ 4']"),
+                ("another base", "restart: c = m1 @ 2", "states ['c = m1 @ 2']"),
+                ("one more", "restart: c = m0 @ 2, d = m1 @ 2", "states ['c = m0 @ 2', 'd ="),
+                ("malformed", "restart: c = m0", "is not `<case_id> = <base case_id> @ <K>`"),
+                ("two lines", "restart: c = m0 @ 2\nrestart: c = m0 @ 2", "2 `restart:` lines"),
+                ("no line", "# none\n", "carries no `restart:` line")):
+            with self.subTest(label):
+                found = self._r(text + "\n", ir)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(want, found[0])
+        # a line naming a continuation the IR does not declare
+        found = self._r("restart: c = m0 @ 2\n", self._ir())
+        self.assertIn("the IR's continuation cases are []", found[0])
+        # and the other direction: the IR declares one the line does not state (round 1, M28)
+        found = self._r("restart: c = m0 @ 2\n", self._ir(("c", "m0", 2), ("d", "m1", 2)))
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("'d = m1 @ 2'", found[0])
+
+    def test_a_malformed_restart_in_the_ir_is_named(self) -> None:
+        ir = self._ir(("c", "m0", 2))
+        ir["case"]["test_case_set"][-1]["restart"]["step"] = 0
+        found = self._r("restart: c = m0 @ 2\n", ir)
+        self.assertIn("with a malformed restart on ['c']", found[0])
+
+    def test_a_node_without_loop_carries_no_line(self) -> None:
+        found = self._r("restart: c = m0 @ 2\n", self._ir(loop=False))
+        self.assertEqual(len(found), 1)
+        self.assertIn("declares no loop", found[0])
+        self.assertEqual(self._r("# none\n", self._ir(loop=False)), [])
+
+    def test_the_gate_runs_in_the_compile_stage(self) -> None:
+        """Through `validate_compile_ir_dir` over the converted swe fixture: its `tests.md` with a
+        `restart:` line its IR does not transcribe draws the gate's own finding."""
+        tests_md = (_DRIVE_FIXTURES["swe"][1] / "tests.md").read_text(encoding="utf-8")
+        found = _drive_stage("swe", tests_md=tests_md + "\nrestart: a = b @ 2\n")
+        self.assertTrue(any("(r) tests.md line" in v and "a = b @ 2" in v for v in found),
+                        found)
+        self.assertFalse(any("(r)" in v for v in _drive_stage("swe")))

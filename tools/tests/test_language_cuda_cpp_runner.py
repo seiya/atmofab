@@ -670,8 +670,11 @@ class HostVerdictRunnerSurfaceTest(unittest.TestCase):
     def test_write_perf_is_called_once_after_the_case_loop(self) -> None:
         for _ir, _sid, text in self._each():
             self.assertEqual(1, text.count("harness_cpp_gpu__write_perf("))
-            self.assertLess(text.rindex("steps_total += step_c;"),
-                            text.index("harness_cpp_gpu__write_perf("))
+            # a loop node counts the steps this process ran (issue #632)
+            at = max(text.rfind("steps_total += step_c;"),
+                     text.rfind("steps_total += (step_c - step0);"))
+            self.assertGreaterEqual(at, 0)
+            self.assertLess(at, text.index("harness_cpp_gpu__write_perf("))
 
     def test_the_runner_reads_neither_the_tests_nor_the_predicates(self) -> None:
         for ir, sid, text in self._each():
