@@ -107,7 +107,7 @@ def certified_source(kind: str, sid: str) -> Path:
     hits = sorted(glob.glob(str(REPO / f"workspace/pipelines/{kind}__{sid}__{version}/fortran_cpu/"
                                 f"*/source/src_*/src/{sid}_model.f90")))
     if not hits:
-        raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version}")
+        raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version} (a node the catalog moved before it was certified there: pass --at <spec_id>@<version> with a certified version)")
     print(f"source {kind}/{sid}@{version}: {Path(hits[-1]).relative_to(REPO)}", flush=True)
     return Path(hits[-1])
 
@@ -123,7 +123,7 @@ def passed_pipeline(node: str) -> Path:
         agg = pipe / "runs" / str(run_id) / node / "aggregate_verdict.json"
         if agg.is_file() and json.loads(agg.read_text()).get("aggregate_verdict") == "pass":
             return pipe
-    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run")
+    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run (a node the catalog moved before it was certified there: pass --at <spec_id>@<version> with a certified version)")
 
 
 def certified_pipeline() -> Path:

@@ -68,7 +68,7 @@ def latest_pipeline(node: str) -> Path:
         agg = pipe / "runs" / str(run_id) / node / "aggregate_verdict.json"
         if agg.is_file() and json.loads(agg.read_text()).get("aggregate_verdict") == "pass":
             return pipe
-    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run")
+    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run (a node the catalog moved before it was certified there: pass --at <spec_id>@<version> with a certified version)")
 
 
 def run_of(pipe: Path, node: str, run_id: str | None = None) -> tuple[Path, Path]:

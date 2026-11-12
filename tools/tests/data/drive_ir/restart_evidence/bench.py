@@ -389,6 +389,15 @@ def main() -> int:
     a = ap.parse_args()
     t_start = time.time()
     controls = yaml.safe_load((HERE / "controls.yaml").read_text())
+    if a.rows:
+        # a row id no selected subject declares would run nothing and read green (review
+        # round 3): refuse it before anything is built
+        known = {"baseline", *controls}
+        for subj in a.subjects.split(","):
+            known |= set(yaml.safe_load((HERE / SUBJECTS[subj]["mutants"]).read_text()))
+        unknown = sorted(set(a.rows.split(",")) - known)
+        if unknown:
+            raise SystemExit(f"--rows: no selected subject declares {unknown}")
     jobs: list[dict[str, Any]] = []
     meta: dict[str, dict[str, Any]] = {}
     cache_root = Path(tempfile.mkdtemp(prefix="rst_cache_"))

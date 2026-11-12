@@ -9,11 +9,15 @@ and a certified cuda model, with no LLM. It writes a directory to copy to a GPU 
     PYTHONPATH=. python3 tools/tests/data/driver_e2e/package_cpp_gpu.py judge <out> swe|cor
 
 `go.sh` runs the base cases (`Validate.execute`'s first pass). A node whose IR carries continuation
-cases (issue #632; the swe fixture does) needs the second pass: `continue`, run here on `<out>/run`
-brought back, writes each continuation's case file from the first pass's samples and `go2.sh`, which
-runs each continuation in a process of its own under `run/restart/`. `judge` applies the host's
-start check to each continuation, merges the captures of those that hold, prints the ones that do
-not, and then every test whose status is not its `expected_outcome`.
+cases (issue #632; the swe fixture does) needs the second pass, in four steps:
+1. bring `<out>/run` back from the site, and run `continue` here: it writes each continuation's
+   case file from the first pass's samples under `<out>/run/restart/`, and `<out>/go2.sh`;
+2. ship `<out>/go2.sh` and `<out>/run/restart/` to the site (beside the `bin` and `run/` there);
+3. at the site, `bash <out>/go2.sh` runs each continuation in a process of its own;
+4. bring `<out>/run/restart/` back and run `judge`.
+`judge` applies the host's start check to each continuation, merges the captures of those that
+hold into `run/`, prints the ones that do not, and then every test whose status is not its
+`expected_outcome`. Re-running `judge` reads the merged captures again.
 """
 from __future__ import annotations
 
@@ -103,6 +107,10 @@ def judge(out: Path, node: str) -> int:
         problems += [f"{cid}: no restart point: {why}" for cid, why in sorted(refused.items())]
         rdir = out / "run" / pe.RESTART_DIRNAME
         for cf in files:
+            merged = out / "run" / "raw" / "state_snapshots" / "initial" / f"{cf.case_id}.json"
+            if merged.exists() and not (rdir / "raw" / "state_snapshots" / "initial"
+                                        / f"{cf.case_id}.json").exists():
+                continue   # an earlier `judge` checked and merged it (a re-run reads it again)
             why = (pe.continuation_start_violation(ir, rdir, cf)
                    or Conductor._merge_continuation_captures(rdir, out / "run", cf.case_id))
             if why:

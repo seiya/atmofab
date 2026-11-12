@@ -1631,6 +1631,12 @@ class CppGpuPackageSecondPassTest(unittest.TestCase):
             report = json.loads(printed.getvalue())
             self.assertEqual((rc, report["wrong"], report["continuations_not_merged"]),
                              (0, {}, []), report)
+            # a second `judge` reads the merged captures again (review round 3)
+            with mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+                rc = module.judge(pkg, "swe")
+            report = json.loads(printed.getvalue())
+            self.assertEqual((rc, report["wrong"], report["continuations_not_merged"]),
+                             (0, {}, []), report)
             self.assertTrue((pkg / "run" / "raw" / "state_snapshots" / f"{conts[0]}.json")
                             .is_file())
 
