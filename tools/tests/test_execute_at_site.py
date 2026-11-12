@@ -1213,6 +1213,23 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertIn("second pass: continuation 'm0_cont' failed", out["stderr"])
             self.assertFalse((n.node_dir / "trial_meta.json").exists())
 
+    def test_a_failing_continuation_in_the_quality_check_s_re_run_fails_the_run(self) -> None:
+        """Round 1 (axis B, F2): the quality check's re-run is the reference, so its second pass
+        failing is the binary's runtime failure, named, as the run's own shape's is — the run's
+        own `run_program` having exited 0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            runner = _LOOP_RUNNER.replace(
+                'os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS")',
+                '"qc_run" in os.getcwd()')
+            n.binary.write_text(runner, encoding="utf-8")
+            out = self._execute(n)
+            self.assertIn("[run_program failed: runtime_error]", out["stderr"])
+            self.assertIn("second pass: continuation 'm0_cont' failed", out["stderr"])
+            runs = [e for e in n.log_entries(n.node_dir / "command_log.jsonl")
+                    if e.get("tool_name") == "run_program"]
+            self.assertTrue(runs and all(e["return_code"] == 0 for e in runs))
+
     def test_the_build_control_file_s_default_lists_the_base_cases(self) -> None:
         """Both writers of the control file (`_write_makefile`, and the inputs the bundle-derived
         render takes) default `CASES` to the base cases: a hand-run quality check then runs."""
