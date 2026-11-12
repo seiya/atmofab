@@ -298,7 +298,9 @@
   note: >-
     the generated `fire` evaluates `mod(step + 1, rotation_every)` also when the process is off
     (the hand-written model returned before it), so with the process off and an interval of 0
-    the defect reaches an integer division by zero
+    the defect may reach an integer division by zero, depending on the order the compiler
+    evaluates the operands of `.and.`; under the certified flags it does not trap (the run ends
+    normally and the test on `ok` catches it, as on the hand-written model)
   patches:
   - old: "(rotation /= 0 .and. rotation /= 1) .or. rotation_every < 1"
     new: "(rotation /= 0 .and. rotation /= 1) .or. (rotation == 1 .and. rotation_every < 1)"
