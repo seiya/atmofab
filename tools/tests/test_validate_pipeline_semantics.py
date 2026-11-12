@@ -21481,6 +21481,37 @@ class DriverEvidencePerArtifactTests(unittest.TestCase):
     def test_the_whole_evidence_of_a_driver_passes(self) -> None:
         self.assertEqual(self._violations(lambda _s: None), [])
 
+    def test_a_continuation_s_captures_beside_its_base_s_pass(self) -> None:
+        """Issue #632: the second pass merges a continuation's captures into the run's own
+        directory — its initial capture at its restart step, the samples above it and a series
+        over the steps after it, all shorter than its base's. The post-execute validator, run
+        whole (not stubbed, as the conductor rows stub it), refuses none of them."""
+        def change(snapshots: Path) -> None:
+            base = json.loads((snapshots / "snapshot000.json").read_text(encoding="utf-8"))
+            workspace = next(p for p in snapshots.parents if p.name == "workspace")
+            ir_path = (workspace / "ir" / "problem__shallow_water2d__0.3.0"
+                       / "shallow-water2d_20260415_001" / "spec.ir.yaml")
+            self.assertTrue(ir_path.is_file())
+            ir_doc = json.loads(ir_path.read_text(encoding="utf-8"))
+            cases = ir_doc["case"]["test_case_set"]
+            cases.append({**{k: v for k, v in cases[0].items() if k != "initial_state"},
+                          "case_id": "snapshot000_cont",
+                          "restart": {"from": cases[0]["case_id"], "step": 1}})
+            _write_json(ir_path, ir_doc)
+            _write_json(snapshots / "snapshot000_cont.json", base)
+            _write_json(snapshots / "initial" / "snapshot000_cont.json", {**base, "step": 1})
+            _write_json(snapshots / "series" / "snapshot000_cont.json", {
+                "t": 0.5, **{n: [1.0] for n in self._NAMES}})
+        self.assertEqual(self._violations(change), [])
+
+        # control: the validator reads them — the continuation's series dropped is named
+        def without_series(snapshots: Path) -> None:
+            change(snapshots)
+            (snapshots / "series" / "snapshot000_cont.json").unlink()
+        found = self._violations(without_series)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("series/snapshot000_cont.json: missing", found[0])
+
     def test_a_capture_missing_a_declared_variable_is_refused_per_artifact(self) -> None:
         for relative in ("snapshot000.json", "initial/snapshot000.json",
                          "history/snapshot000__1.json"):
