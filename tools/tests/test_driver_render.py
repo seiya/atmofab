@@ -983,6 +983,70 @@ class _DriverBehaviour:
         self.assertIn("did not start at step 2", why)
 
 
+    def test_second_pass_reports_each_continuation_it_does_not_merge(self) -> None:
+        """`second_pass`, the helper the evidence scripts and the certified end-to-end row
+        trust (review round 1, cor-F5: dropping its start check, ignoring the exit code and
+        dropping the refused-restart-point lines each survived the suite): the unmutated run
+        merges the continuation; a driver without the restart read, a second-pass process
+        that exits non-zero after writing its captures, and a missing restart point are each a
+        problem line naming the continuation, and nothing is merged."""
+        cpp = type(self).build_and_run is run_cpp
+        module = cpp_runner if cpp else f_runner
+        env = {**os.environ, "SPEC2SCIENCE_CUDA_BLOCK": "64"}
+        ir = self._with_continuation(loop_ir(0, every=1), "m0", 2)
+
+        def no_read(a: Any, _plan: Any, _entry: Any, _h: Any, ind: str, *_rest: Any) -> None:
+            a(f"{ind}step0 = 0{';' if cpp else ''}")
+
+        def fresh(sub: str, patch: bool = False) -> Run:
+            root = Path(self._tmp.name) / sub
+            root.mkdir()
+            if patch:
+                with mock.patch.object(module, "_render_restart", no_read):
+                    run = type(self).build_and_run(root, ir)
+            else:
+                run = type(self).build_and_run(root, ir)
+            self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            return run
+
+        def merged_capture(run: Run) -> bool:
+            return (run.snapshots / "m0_cont.json").exists()
+
+        run = fresh("ok")
+        self.assertEqual(second_pass(ir, run.dir / "run", run.dir / "bin", env), (["m0_cont"], []))
+        self.assertTrue(merged_capture(run))
+
+        run = fresh("no_read", patch=True)
+        merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin", env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont", problems[0])
+        self.assertIn("did not start at step 2", problems[0])
+        self.assertFalse(merged_capture(run))
+
+        run = fresh("rc3")
+        wrapper = run.dir / "exits3.sh"
+        wrapper.write_text(f'#!/bin/sh\n"{run.dir / "bin"}" "$@"\nexit 3\n')
+        wrapper.chmod(0o755)
+        merged, problems = second_pass(ir, run.dir / "run", wrapper, env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont", problems[0])
+        self.assertIn("second-pass rc=3", problems[0])
+        # the process wrote its captures; they stay under restart/ and are not merged
+        self.assertTrue((run.dir / "run" / pe.RESTART_DIRNAME / "raw" / "state_snapshots"
+                         / "m0_cont.json").exists())
+        self.assertFalse(merged_capture(run))
+
+        run = fresh("no_point")
+        (run.snapshots / "history" / "m0__2.json").unlink()
+        merged, problems = second_pass(ir, run.dir / "run", run.dir / "bin", env)
+        self.assertEqual(merged, [])
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("m0_cont: no restart point", problems[0])
+        self.assertFalse(merged_capture(run))
+
+
 class FortranDriverTest(_DriverBehaviour, unittest.TestCase):
     build_and_run = staticmethod(run_fortran)
 
