@@ -8,6 +8,15 @@ components, Coriolis, RK4), each at the version the catalog holds. Run from the 
   PYTHONPATH=. python3 <this file> [--gate | --gate-only] [--mutant <id>]... [--keep <dir>]
       [--flags certified|bounds] [--cases <id>,...] [--show-values]
   PYTHONPATH=. python3 <this file> --all-mutants [--jobs N] [--json <file>]
+  (PR-S3 V-a) add [--ir certified] [--model generated] [--mutants <file>]
+
+`--ir certified` judges with the CERTIFIED IR of the node (the `ir_ref` of its latest
+`fortran_cpu` pipeline whose run's aggregate verdict is `pass`) in place of the hand-authored one; `--model generated` builds the
+certified generated model of that pipeline in place of the hand-written one; `--mutants` names
+the patch file (default `mutants.yaml`, written against the hand-written model;
+`mutants_generated.yaml` re-expresses the same defects on the generated text). A mutant whose
+patch does not apply is reported `NOT APPLICABLE` rather than stopping the table; it, and a
+mutant that does not build, is NOT MEASURED, and the run exits 1 when any mutant is.
 
 1. (`--gate`) `validate_compile_ir_dir` with the repository as root: Compile.static's gates,
    including the `quantities` / `expected_outcome` / `history` / `distribute` lines against the
@@ -19,12 +28,21 @@ components, Coriolis, RK4), each at the version the catalog holds. Run from the 
 `--mutant <id>` applies the patches of `mutants.yaml` entry `<id>` to the model first; the
 `--all-mutants` table prints, per mutant, which tests moved, the predicate records that failed
 with their value and threshold, or "not caught"; it exits 1 when a `must_catch` mutant is not
-caught or a `declared_unobservable` one is (a surprise to record), else 0. The default flags
+caught, a `declared_unobservable` one is (a surprise to record), or any mutant was not measured,
+else 0. "Caught" means some test's status differs from its `expected_outcome`; a run that ends
+with a non-zero code is caught the same way and its code is printed beside it. The unmutated
+model runs in the same table first; if it moves any test, the run exits 1 and no row is a
+measurement. A single `--mutant <id>` run prints the moved tests and exits 0 whatever they are. The default flags
 are the certified build's (`-std=f2008 -O2 -fopenmp`): a bounds-check abort is not a catch.
 
 The closure's sources are each node's LATEST `fortran_cpu` attempt at the catalog version under
 `workspace/pipelines/` (the lexicographically last attempt directory); the run prints the paths
-it used. That they are the certified ones is the operator's workspace state, not checked here.
+it used. That they are the certified ones is the operator's workspace state, not checked here,
+and they are not read from the composite's lineage (`member_agreement.py` reads the member's run
+that way): after a member or component is re-derived on its own, compare the printed paths with
+the `lineage.json` `resolved_dependencies` of the composite pipeline (its direct dependencies and
+the harness) and of the member pipeline it resolves (the member's components) before reading a
+V-a table.
 """
 from __future__ import annotations
 
@@ -78,6 +96,41 @@ def certified_source(kind: str, sid: str) -> Path:
         raise SystemExit(f"no certified fortran_cpu source of {kind}/{sid}@{version}")
     print(f"source {kind}/{sid}@{version}: {Path(hits[-1]).relative_to(REPO)}", flush=True)
     return Path(hits[-1])
+
+
+def passed_pipeline(node: str) -> Path:
+    """The latest `fortran_cpu` pipeline of `node` whose recorded run's aggregate verdict is
+    `pass`: a pipeline's `lineage.json` is written before its run, so the latest directory alone
+    can be an attempt that failed later."""
+    for lineage in reversed(sorted(glob.glob(str(REPO / f"workspace/pipelines/{node}/"
+                                                 f"fortran_cpu/*/lineage.json")))):
+        pipe = Path(lineage).parent
+        run_id = json.loads(Path(lineage).read_text()).get("run_id")
+        agg = pipe / "runs" / str(run_id) / node / "aggregate_verdict.json"
+        if agg.is_file() and json.loads(agg.read_text()).get("aggregate_verdict") == "pass":
+            return pipe
+    raise SystemExit(f"no fortran_cpu pipeline of {node} with a passing run")
+
+
+def certified_pipeline() -> Path:
+    cat = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())["specs"]
+    version = next(e["spec_version"] for e in cat if e["spec_id"] == build_ir.SID)
+    return passed_pipeline(f"problem__{build_ir.SID}__{version}")
+
+
+def certified_ir() -> dict[str, Any]:
+    lineage = json.loads((certified_pipeline() / "lineage.json").read_text())
+    path = REPO / lineage["ir_ref"] / "spec.ir.yaml"
+    print(f"certified IR: {path.relative_to(REPO)}", flush=True)
+    return yaml.safe_load(path.read_text())
+
+
+def generated_model() -> Path:
+    pipe = certified_pipeline()
+    lineage = json.loads((pipe / "lineage.json").read_text())
+    path = pipe / "source" / lineage["source_id"] / "src" / f"{build_ir.SID}_model.f90"
+    print(f"generated model: {path.relative_to(REPO)}", flush=True)
+    return path
 
 
 def gate(ir: dict[str, Any]) -> list[str]:
@@ -245,6 +298,8 @@ def _run_mutant(job: tuple) -> tuple[str, dict[str, Any]]:
     """One mutant in a worker process: build, run, judge; the tests it moved and the records it
     failed."""
     mid, ir, text, flags = job
+    if text is None:
+        return mid, {"not_applicable": True}
     try:
         verdict, records, note = one(ir, text, flags, None)
     except SystemExit as exc:
@@ -267,10 +322,17 @@ def main() -> int:
     ap.add_argument("--show-values", action="store_true")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--json", help="write the mutant table as JSON here")
+    ap.add_argument("--ir", choices=("hand", "certified"), default="hand")
+    ap.add_argument("--model", choices=("hand", "generated"), default="hand")
+    ap.add_argument("--mutants", default=str(MUTANTS))
     a = ap.parse_args()
-    ir = yaml.safe_load(build_ir.TRANSCRIPTION.read_text())
-    if ir != build_ir.build():
-        raise SystemExit(f"{build_ir.TRANSCRIPTION} differs from build_ir.build(): run build_ir.py")
+    if a.ir == "certified":
+        ir = certified_ir()
+    else:
+        ir = yaml.safe_load(build_ir.TRANSCRIPTION.read_text())
+        if ir != build_ir.build():
+            raise SystemExit(f"{build_ir.TRANSCRIPTION} differs from build_ir.build(): "
+                             "run build_ir.py")
     # build_ir's placeholder for a band bands.yaml lacks is +-1e300, which judges nothing
     vacuous = [(p["test_id"], p["quantity"]) for p in ir["io_contract"]["predicates"]
                if "1e+300" in repr(p["value"])]
@@ -294,10 +356,11 @@ def main() -> int:
         rc = 1 if findings else 0
         if a.gate_only:
             return rc
-    base = MODEL.read_text()
+    base = (generated_model() if a.model == "generated" else MODEL).read_text()
+    mutants_path = Path(a.mutants)
     flags = FLAGS[a.flags]
     if not a.all_mutants:
-        mutants = yaml.safe_load(MUTANTS.read_text()) if a.mutant else {}
+        mutants = yaml.safe_load(mutants_path.read_text()) if a.mutant else {}
         text = base
         for m in a.mutant:
             text = apply_patches(text, mutants[m]["patches"])
@@ -306,17 +369,41 @@ def main() -> int:
             print(note)
         moved = report(ir, verdict, records, a.show_values)
         return 0 if a.mutant else (1 if moved or rc else 0)
-    mutants = yaml.safe_load(MUTANTS.read_text())
+    mutants = yaml.safe_load(mutants_path.read_text())
     table: dict[str, Any] = {}
 
+    def patched(mid: str) -> str | None:
+        if mutants[mid].get("not_applicable"):
+            return None
+        try:
+            return apply_patches(base, mutants[mid]["patches"])
+        except SystemExit as exc:
+            print(f"   patch of {mid} does not apply: {exc}")
+            return None
+
     # processes, not threads: the judging is Python under the GIL and dominates a run
+    # The unmutated model is run in the same table: a catch means a test moved AGAINST a baseline
+    # that moved none, so a closure source that is not the certified one (a later failed attempt
+    # read as the latest) shows here instead of turning every mutant into a catch.
+    baseline_id = "__baseline__"
+    baseline_moved: list[str] | None = None
     with cf.ProcessPoolExecutor(a.jobs) as ex:
-        jobs = [(mid, ir, apply_patches(base, mutants[mid]["patches"]), flags) for mid in mutants]
+        jobs = [(baseline_id, ir, base, flags)] + [(mid, ir, patched(mid), flags) for mid in mutants]
         for mid, res in ex.map(_run_mutant, jobs):
+            if mid == baseline_id:
+                baseline_moved = res.get("moved") if "build_error" not in res else ["(build error)"]
+                print(f"== baseline (unmutated model): moved {baseline_moved or 'none'} "
+                      f"{res.get('note', '')[:200]}")
+                if "build_error" in res:
+                    print("     BUILD", res["build_error"][:300])
+                continue
             table[mid] = res
             caught = bool(res.get("moved"))
+            status = ("NOT APPLICABLE" if res.get("not_applicable")
+                      else "NOT MEASURED (build error)" if "build_error" in res
+                      else "CAUGHT" if caught else "NOT CAUGHT")
             print(f"== mutant {mid}: {mutants[mid]['title']}  ->  "
-                  f"{'CAUGHT' if caught else 'NOT CAUGHT'} {res.get('note', '')[:200]}")
+                  f"{status} {res.get('note', '')[:200]}")
             for t in res.get("moved", []):
                 print("     moved", t)
             for r in res.get("failed", [])[:12]:
@@ -326,13 +413,21 @@ def main() -> int:
             sys.stdout.flush()
     if a.json:
         Path(a.json).write_text(json.dumps(table, indent=1, default=str))
+    # A mutant that was not measured (its patch does not apply, or it does not build) is neither
+    # caught nor uncaught: it fails the run whatever its class. A must-catch mutant passes only
+    # by being run and caught, and a declared-unobservable one is shown only by being run.
+    unmeasured = [m for m in mutants if table[m].get("not_applicable")
+                  or "build_error" in table[m]]
     missed = [m for m in mutants if mutants[m]["class"] == "must_catch"
-              and not table[m].get("moved")]
+              and m not in unmeasured and not table[m].get("moved")]
     surprised = [m for m in mutants if mutants[m]["class"] != "must_catch"
                  and table[m].get("moved")]
+    print(f"not measured (not applicable or build error): {unmeasured or 'none'}")
     print(f"must_catch not caught: {missed or 'none'}; declared unobservable caught: "
           f"{surprised or 'none'}")
-    return 1 if missed or surprised else 0
+    if baseline_moved:
+        print(f"BASELINE MOVED {baseline_moved}: no mutant row above is a measurement")
+    return 1 if missed or surprised or unmeasured or baseline_moved else 0
 
 
 if __name__ == "__main__":
