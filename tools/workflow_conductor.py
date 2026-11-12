@@ -12794,19 +12794,23 @@ class Conductor:
     def _merge_continuation_captures(restart_dir: Path, shape_dir: Path,
                                      case_id: str) -> str | None:
         """Move continuation ``case_id``'s captures from its shape's `restart/` directory into
-        the shape's own capture directory (issue #632): `<C>.json` and, below `initial/`,
-        `history/` and `series/`, `<C>.json` and `<C>__<k>.json`. A name that exists there is
-        refused (None when every file moved, else the reason, and nothing is moved)."""
+        the shape's own capture directory (issue #632): exactly the names the driver writes for
+        it — `<C>.json` there and below `initial/` and `series/`, and `<C>__<k>.json` (`<k>`
+        digits) below `history/` — and no other file, so the captures of another continuation
+        that failed its start check stay behind whatever its id (`<C>__x` included). A name that
+        exists there is refused (None when every file moved, else the reason, and nothing is
+        moved)."""
         src_root = restart_dir / "raw" / "state_snapshots"
         dst_root = shape_dir / "raw" / "state_snapshots"
+        sample = re.compile(re.escape(case_id) + r"__[0-9]+\.json")
         moves: list[tuple[Path, Path]] = []
         for sub in ("", "initial", "history", "series"):
             source = src_root / sub if sub else src_root
             if not source.is_dir():
                 continue
             for f in sorted(source.glob("*.json")):
-                if f.name != f"{case_id}.json" and not (
-                        f.name.startswith(f"{case_id}__") and f.name.endswith(".json")):
+                if not (sample.fullmatch(f.name) if sub == "history"
+                        else f.name == f"{case_id}.json"):
                     continue
                 dest = (dst_root / sub if sub else dst_root) / f.name
                 if dest.exists():

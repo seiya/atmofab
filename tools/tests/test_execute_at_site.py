@@ -974,7 +974,10 @@ _LOOP_RUNNER = textwrap.dedent('''\
         d = json.load(open(os.path.join(os.path.dirname(spec), "case_inputs", c + ".json")))
         u, w, ok = list(d["u"]), list(d["w"]), 0.0
         n, dt, t0, every = d["inputs.n_step"], d["derived.dt"], d["inputs.t_start"], d["inputs.every"]
-        k0 = 0 if os.environ.get("IGNORE_RESTART") else d["restart.step"]
+        ignore = (os.environ.get("IGNORE_RESTART")
+                  or os.environ.get("IGNORE_RESTART_CASE") == c
+                  or os.environ.get("IGNORE_RESTART_THREADS") == os.environ.get("OMP_NUM_THREADS"))
+        k0 = 0 if ignore else d["restart.step"]
         if k0 > 0:
             u, w = list(d["restart.u"]), list(d["restart.w"])
         cap = lambda k: {"u": u, "w": w, "ok": ok, "step": float(k), "t": t0 + k * dt}
@@ -1120,6 +1123,73 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             row = json.loads((n.node_dir / "trial_meta.json").read_text())[
                 "restart_pass"]["run"]["continuations"][0]
             self.assertIn("did not start at step 2", row["start_check"])
+
+    def test_of_two_continuations_only_the_one_that_started_right_counts(self) -> None:
+        """Round 1 (axis A, F1): the start check's refusal of one continuation holds while
+        another continuation of the same shape is merged — its captures stay behind."""
+        import yaml
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            ir_path = n.repo / n.refs.ir_ref / "spec.ir.yaml"
+            ir = yaml.safe_load(ir_path.read_text())
+            second = {**ir["case"]["test_case_set"][1], "case_id": "m0_cont2",
+                      "restart": {"from": "m0", "step": 3}}
+            ir["case"]["test_case_set"].append(second)
+            ir_path.write_text(yaml.safe_dump(ir))
+            out = self._execute(n, IGNORE_RESTART_CASE="m0_cont2")
+            snaps = n.node_dir / "raw" / "state_snapshots"
+            self.assertTrue((snaps / "m0_cont.json").is_file())
+            for rel in ("m0_cont2.json", "initial/m0_cont2.json", "series/m0_cont2.json"):
+                self.assertFalse((snaps / rel).exists(), rel)
+            self.assertEqual(list((snaps / "history").glob("m0_cont2__*")), [])
+            self.assertIn("continuation 'm0_cont2' has no captures", out["stderr"])
+            self.assertNotIn("continuation 'm0_cont' has no captures", out["stderr"])
+
+    def test_a_sweep_shape_s_continuation_that_re_ran_its_base_fails_that_shape(self) -> None:
+        """Round 1 (axis A, F2): the start check runs in every shape, not in the run's alone. A
+        continuation that re-ran its base under one sweep shape is not merged there, and that
+        shape's verdict then differs from the reference's."""
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp)
+            self._execute(n, IGNORE_RESTART_THREADS="2")
+            record = json.loads((n.node_dir / "trial_meta.json").read_text())["restart_pass"]
+            self.assertIn("did not start at step 2",
+                          record["threads_2"]["continuations"][0]["start_check"])
+            for label in ("run", "qc_run", "threads_3", "checked"):
+                self.assertNotIn("start_check", record[label]["continuations"][0], label)
+            shape = n.repo / "workspace" / "tmp" / "arid-1" / "sweep" / "threads_2"
+            self.assertFalse((shape / "raw" / "state_snapshots" / "m0_cont.json").exists())
+            quality = json.loads((n.node_dir / "quality_check.json").read_text())
+            rows = {s["label"]: s for s in quality["shapes"]}
+            self.assertFalse(rows["threads_2"]["verdict_match"])
+            self.assertEqual(quality["status"], "fail")
+
+    def test_the_merge_moves_exactly_the_continuation_s_names(self) -> None:
+        """Round 1 (axis A): `<C>.json` and `history/<C>__<k>.json`, and not the captures of a
+        case whose id starts with `<C>__`; and a name the first pass wrote is refused, moving
+        nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            shape = Path(tmp) / "shape"
+            rdir = shape / "restart"
+            src = rdir / "raw" / "state_snapshots"
+            names = ["c.json", "initial/c.json", "series/c.json", "history/c__3.json",
+                     "c__x.json", "initial/c__x.json", "history/c__x__3.json",
+                     "history/c__3b.json"]
+            for rel in names:
+                (src / rel).parent.mkdir(parents=True, exist_ok=True)
+                (src / rel).write_text("{}")
+            self.assertIsNone(wc.Conductor._merge_continuation_captures(rdir, shape, "c"))
+            dst = shape / "raw" / "state_snapshots"
+            moved = sorted(str(p.relative_to(dst)) for p in dst.rglob("*.json"))
+            self.assertEqual(moved, sorted(names[:4]))
+            # the existing-name refusal: the next continuation's final capture collides
+            (src / "d.json").write_text("{}")
+            (src / "initial" / "d.json").write_text("{}")
+            (dst / "initial" / "d.json").write_text("{\"first\": 1}")
+            why = wc.Conductor._merge_continuation_captures(rdir, shape, "d")
+            self.assertIn("initial/d.json", why)
+            self.assertTrue((src / "d.json").exists())          # nothing moved
+            self.assertFalse((dst / "d.json").exists())
 
     def test_a_refused_restart_point_writes_no_file_and_says_why(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
