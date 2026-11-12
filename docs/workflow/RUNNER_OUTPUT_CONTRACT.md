@@ -126,8 +126,8 @@ and no step. It then writes the initial capture. On a node whose `drive` declare
 array a NaN-filled work array. A true result commits the call: the state is copied back, `step`
 advances, `t = t_start + step * dt`, a series entry is appended and a sample is written every `every`
 steps. A false result ends the loop on the last committed state. After `init` a loop node's driver
-reads `restart.step`; at `K` > 0 (a continuation case, `phase_04_validate.md` §4-1) it
-restores each `restart.<v>` and starts `step` at `K`. Without `loop` it makes ONE call on the
+reads `restart.step`; at `K` > 0 (a continuation case: another case continued from its step `K`,
+`phase_04_validate.md` §4-1) it restores each `restart.<v>` and starts `step` at `K`. Without `loop` it makes ONE call on the
 state itself, each `out` starting at its `initial_state` content, and `step` becomes 1 only on a true
 result. After every call each logical `out` is written into its state as 1 or 0. It then writes the
 final capture and, on a `loop` node, the series file; after the last case, `__write_perf`.
@@ -178,7 +178,7 @@ to this document wherever this document is seeded whole.
 - The host evaluates each case's inputs and writes the result to
   `case_inputs/<case_id>.json` beside `spec.ir.yaml`, before the program runs, for every
   case of the IR that is no continuation: at every `Validate.execute`, and in a `workshop leaf`'s
-  `run` operation beside the IR the host seeded in its tree (a continuation's: §3). The `runner` opens this file through the certified harness's `__read_case`
+  `run` operation beside the IR the host seeded in its tree (a continuation's: `phase_04_validate.md` §4-1). The `runner` opens this file through the certified harness's `__read_case`
   and reads each value through the typed getters; it parses neither the file nor
   `spec.ir.yaml` itself.
 - The file is one flat JSON object on one line of any length, with sorted keys. A key is

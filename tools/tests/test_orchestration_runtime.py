@@ -21799,7 +21799,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `history/`, `series/`), and §2 and §6 what it computes. Measured 15150.
         # Raised 15500->15600 (issue #632, P1 round 2): §3 says a continuation case runs in an
         # invocation of its own and its series covers the steps it ran, which the judge, handed
-        # §3, otherwise reads as a defect of the run. Measured 15523 with `wc -c`.
+        # §3, otherwise reads as a defect of the run. Measured 15523 with `wc -c` (15590 after
+        # review round 3).
         "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 15600,
         # New (issue #589 PR-1b): the gate guards moved here with the checks ABI bindings' deletion.
         # Measured 39235 and 30421 at this commit.
@@ -22233,7 +22234,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 111950->113800 (issue #632, system tier Part 2 P1): the `case` block states the
         # continuation case (`restart: {from, step}`), the predicate grammar the `series.*` range
         # on one, and the gate list (p) and (r), which the compile producer transcribes from the
-        # tests.md `restart:` line. Measured 113688 with `wc -c`.
+        # tests.md `restart:` line. Measured 113688 with `wc -c` (113753 after review round 3).
         "docs/workflow/phases/phase_01_compile.md": 113800,
     }
 

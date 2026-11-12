@@ -3883,8 +3883,11 @@ def _restart_point(path: Path, ir: dict[str, Any], base: str, step: int,
     absent one silently, so presence is checked here), holds a variable whose extents differ
     from the base's evaluated ones, or holds a non-numeric or non-finite value."""
     if not path.is_file():
-        raise PrimaryEvidenceError(f"no restart point: {path.name} (the history sample of "
-                                   f"{base!r} at step {step}) was not written")
+        raise PrimaryEvidenceError(
+            f"no restart point: {path.name} (the history sample of {base!r} at step {step}) was "
+            "not written — the base wrote no sample there: the step must be a multiple of the "
+            "base's history.every and below the steps it ran (the tests.md `restart:` line and "
+            "the case's restart.step state it)")
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

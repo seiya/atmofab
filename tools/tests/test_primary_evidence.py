@@ -6005,8 +6005,10 @@ class ContinuationGateTest(unittest.TestCase):
                 self.assertTrue(any(want in v for v in self._p(ir)), self._p(ir))
 
     def test_the_step_is_bounded_by_a_derived_n_step_too(self) -> None:
-        """Round 2 (axis A, P17b): four of the five real loop IRs bind `loop.n_step` to a
-        `derived` value; the bound reads the base's evaluated one."""
+        """Round 2 (axis A, P17b): three of the five loop IRs of the corpus bind `loop.n_step`
+        to a `derived` value (advdiff1d_linear, shallow_water2d, shallow_water2d_rotating;
+        round 3 recounted it); the bound reads the base's evaluated one. The channel's is a
+        state `init` writes, which no Compile gate can bound: the driver refuses it."""
         for step, refused in ((4, True), (2, False)):
             with self.subTest(step=step):
                 ir = _continuation_ir()

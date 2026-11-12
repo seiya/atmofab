@@ -862,7 +862,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # compile-docs-32 (issue #632, system tier Part 2 P1): `phase_01_compile.md` states the
     # continuation case (`restart: {from, step}` in the `case` block), the driver's restart point,
     # the `series.*` range on a continuation and gates (p) and (r).
-    "compile-docs-32": "29cc9a7b637b8b00251fe22256b213363812aa001d508f4eb06e54da394a0e42",
+    "compile-docs-32": "842a8bd6c4dee12b07f4f9ed804f7b1f702945efbceb73287e2a0349c22a8d66",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1909,7 +1909,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # and each continuation case in a process of its own from its shape's sample, checks where it
     # started and merges its captures (`Conductor._merge_continuation_captures`, a member); the case
     # file of a loop node carries `restart.step`.
-    "execute-18": "bbfc3723b3c0a6bd2fa728908d1922075c334dacbdec8008258eecd353642342",
+    "execute-18": "b8692fbd98233c001bf1aadbf2023aa372a159ebc423f7c52115378f8f0a77a2",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
@@ -2117,7 +2117,7 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-17 (issue #632, system tier Part 2 P1): `primary_evidence.py` evaluates a
     # continuation case as its base, and gains gate (p), the continuation writer and the start
     # check.
-    "verdict-17": "a7b44a40ae4b04868766f6c977bdc4c0ea398f57dec9e3c7bc13c71b8647cdbe",
+    "verdict-17": "f60f7cf2a2b27707fadf9fafd5e3131bca6aa63ddcc3a6b2d1b50f859f01ff02",
     "verdict-16@33eaeec8": "6954ae02c413dede59048692c7c58787f322e477a9938afee88fe0f12fbcbb79",
 }
 

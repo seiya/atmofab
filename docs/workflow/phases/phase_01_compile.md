@@ -83,9 +83,9 @@ case:
         # of its own from the base's history sample at committed step `step` (docs/GLOSSARY.md §4). No
         # `initial_state`; `inputs` and `derived` equal the base's. Its `init` runs, then each RESTART
         # VARIABLE (a schema variable a `step` dummy writes, neither a logical result nor a call record) is
-        # the sample's and the step count and `t` continue from `step`: `initial.*` is the sample (a logical
-        # result and a call record 0), `history.*` / `series.*` cover the steps after `step`, and a call
-        # record counts its own process's calls. Gates (p) and (r) below.
+        # the sample's and `step` / `t` continue from `step`. Its `initial.*`: restart variables, `step`,
+        # `t` the sample's; what only `init` writes `init`'s (gate (l)'s init flag holds); the step's
+        # result and a call record 0. `history.*` / `series.*` cover the steps after; a call record counts this process's calls. Gates (p), (r).
         from: "<base case_id>"
         step: <K>
   sweeps: {...}        # optional. when the test profile defines a sweep

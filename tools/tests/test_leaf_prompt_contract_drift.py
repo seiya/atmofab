@@ -1172,7 +1172,7 @@ PINNED: dict[str, str] = {
     # default is every case that is not a continuation; the generate producer is told a case may
     # start part-way from a committed state in a process of its own; the runner-output contract
     # states the host-owned `restart.step` key and the driver's restart point.
-    "leaf-97": "6fd935e365f23778abaaae8e330da190a6a943e7f40849beb2175c3ede9da581",
+    "leaf-97": "1fe417e1764e33c6aa120ff025d3013c02b6980c8f8ed9844f0dc720519c2221",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1212,7 +1212,7 @@ PINNED_READER: dict[str, str] = {
     "generate-verify-7": "180b0bf2f57d54f8d54466db66a9cb0b0a6ea949a675e8c5c4af126668efc481",
     # generate-verify-8 (issue #632): the runner-output contract the reviewer is seeded states the
     # `restart.step` key and the driver's restart point.
-    "generate-verify-8": "691c6bea8296cce11b6dc5bd672ee6aaa9703ee84bfafaae979e161464dad77b",
+    "generate-verify-8": "f1b3bde0abd70cba406b0664a55d15f1febd8a7144ef9b7b20a96a99a6e7d9f4",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
@@ -1228,7 +1228,7 @@ PINNED_READER: dict[str, str] = {
     "validate-judge-6": "7dc2fe5e397f6cd92b88f6e4a70b27f51ffa8a921775f301c9bc3ed656b9ffc0",
     # validate-judge-7 (issue #632): §1+§3 of the runner-output contract state the steps a
     # process ran and the driver's restart point.
-    "validate-judge-7": "a4535e3b91845db876c4040c0671c8abbac90c01be2f36e718bf1bba8d47ad83",
+    "validate-judge-7": "d15e1b969fb6b3ddbf5062fc9938ac6ab95907b12b58a736090eb59334cf4c7b",
 }
 _READER_CONSTANTS = {"compile": "COMPILE_VERIFY_CONTRACT_VERSION",
                      "generate": "GENERATE_VERIFY_CONTRACT_VERSION",

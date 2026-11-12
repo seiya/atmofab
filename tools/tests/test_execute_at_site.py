@@ -1001,6 +1001,7 @@ _LOOP_RUNNER = textwrap.dedent('''\
         if os.environ.get("FAIL_CASE") == c:
             sys.exit(3)
         if k0 > 0 and os.environ.get("FAIL_CONT_THREADS") == os.environ.get("OMP_NUM_THREADS"):
+            print("bounds error at step " + str(k0 + 1), file=sys.stderr)
             sys.exit(4)
     threads = os.environ.get("OMP_NUM_THREADS")
     json.dump({"steps": steps, **({} if threads is None else
@@ -1149,7 +1150,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             n = self._node(tmp, remote=True)
             with mock.patch.object(remote_execution, "execute_job", elsewhere), \
-                    self.assertRaisesRegex(RuntimeError, "ran on another machine"):
+                    self.assertRaisesRegex(RuntimeError, "ran on another kind of machine"):
                 self._execute(n)
             self.assertEqual(len(calls), 2)
             # both jobs ask the site for the machine the binary was built on (round 2, C18)
@@ -1177,6 +1178,29 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertFalse((n.repo / "workspace" / "tmp" / "arid-1" / "sweep" / "threads_2"
                               / "restart").exists())
 
+    def test_a_second_job_on_another_node_of_the_same_kind_runs(self) -> None:
+        """Round 3 (D1 F1): a batch site's second job lands on another node; only its host
+        name differs, and the run continues."""
+        from tools import remote_execution
+        real = remote_execution.execute_job
+        calls: list[int] = []
+
+        def other_node(request, *, local_tmp):
+            result = real(request, local_tmp=local_tmp)
+            calls.append(1)
+            if len(calls) == 2:
+                return type(result)(
+                    results=result.results, platform={**result.platform, "node": "compute-002"},
+                    site_record=result.site_record, collected=result.collected,
+                    toolchain_version=result.toolchain_version)
+            return result
+
+        with tempfile.TemporaryDirectory() as tmp:
+            n = self._node(tmp, remote=True)
+            with mock.patch.object(remote_execution, "execute_job", other_node):
+                self._assert_continued(n, self._execute(n))
+            self.assertEqual(len(calls), 2)
+
     def test_a_continuation_that_re_ran_its_base_has_no_captures_and_says_why(self) -> None:
         """The instrument control: a driver that reads `restart.step` as 0 passes every equality
         the judgment asks; the start check refuses its captures, and the run fails closed on the
@@ -1189,9 +1213,14 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             self.assertIn("[execute fail: continuation] continuation 'm0_cont' has no captures",
                           out["stderr"])
             self.assertIn("did not start at step 2", out["stderr"])
-            row = json.loads((n.node_dir / "trial_meta.json").read_text())[
-                "restart_pass"]["run"]["continuations"][0]
+            meta = json.loads((n.node_dir / "trial_meta.json").read_text())
+            row = meta["restart_pass"]["run"]["continuations"][0]
             self.assertIn("did not start at step 2", row["start_check"])
+            # round 3 (D2 F2): its own cause INSTEAD of the generic rename remedy, and the
+            # same failure category (the route is unchanged)
+            self.assertNotIn("Name each snapshot exactly", out["stderr"])
+            self.assertNotIn("snapshot deliverable mismatch", out["stderr"])
+            self.assertEqual(meta["failure_category"], "snapshot_deliverable_gap")
 
     def test_of_two_continuations_only_the_one_that_started_right_counts(self) -> None:
         """Round 1 (axis A, F1): the start check's refusal of one continuation holds while
@@ -1293,6 +1322,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
             out = self._execute(n)
             self.assertIn("continuation 'm0_cont' has no captures: no restart point",
                           out["stderr"])
+            self.assertIn("a multiple of the base's history.every", out["stderr"])
 
     def test_a_second_pass_process_that_fails_fails_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1354,6 +1384,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
                         if "shape threads_2" in ln and "[execute fail: quality_check]" in ln)
             self.assertIn("continuation 'm0_cont'", line)
             self.assertIn("rc=4", line)
+            self.assertIn("bounds error at step 3", out["stderr"])   # its stderr (round 3)
 
     def test_the_checked_binary_s_failing_continuation_fails_its_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1372,6 +1403,7 @@ class ContinuationAtExecuteTests(unittest.TestCase):
                         if "the checked row" in ln and "[execute fail: quality_check]" in ln)
             self.assertIn("continuation 'm0_cont'", line)
             self.assertIn("rc=4", line)
+            self.assertIn("bounds error at step 3", out["stderr"])   # its stderr (round 3)
 
 
 if __name__ == "__main__":

@@ -13174,7 +13174,7 @@ class Conductor:
                 cont = failure.get("continuation")
                 if cont is not None:
                     where += (f", in the second pass: continuation {cont!r}, run in a process of "
-                              "its own from its base's history sample (issue #632)")
+                              "its own from its base's history sample")
                 if "not_run" in failure:
                     lines.append(f"[execute fail: quality_check] {where}: did not run: "
                                  f"{failure['not_run']}")
@@ -13795,12 +13795,18 @@ class Conductor:
                         attribution=attribution,
                         machine=built_machine,
                     ), local_tmp=run_tmp.parent / "site_restart")
-                    if result2.platform != result.platform:
+                    # The machine's architecture, CPU model and device — what the binary's
+                    # arithmetic can depend on. The host name is left out: a batch site puts
+                    # two jobs on two nodes of one kind as a matter of course.
+                    kind = ("machine", "cpu_model", "gpu")
+                    first = {k: result.platform.get(k) for k in kind}
+                    second = {k: result2.platform.get(k) for k in kind}
+                    if second != first:
                         raise RuntimeError(
-                            f"the second pass's job at site {site.site_id} ran on another "
-                            f"machine than the first ({result2.platform} against "
-                            f"{result.platform}): a continuation is compared with a base run "
-                            "on the first one — --resume")
+                            f"the second pass's job at site {site.site_id} ran on another kind "
+                            f"of machine than the first ({second} against {first}): a "
+                            "continuation is compared with a base run on the first one — "
+                            "--resume, or map the target to a site whose nodes are of one kind")
                     for label in labels:
                         dest = shape_dirs[label] / RESTART_DIRNAME
                         if dest.exists():
@@ -13905,21 +13911,24 @@ class Conductor:
         # here so a misnamed/combined snapshot fails with an actionable cause rather
         # than the opaque determine_substep_status deliverable-presence fail. Read
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
-        snapshot_gap = self._snapshot_deliverable_gap(
-            run_tmp / "raw" / "state_snapshots", case_ids, artifacts,
-            initial_required=authors_runner,
-            series_required="step_series" in artifacts)
         # A continuation's absent captures are the second pass's, not a misnamed file (issue
-        # #632): its own cause first, since the generic text would send Generate to rename
-        # snapshot files.
+        # #632): each is reported with its own cause INSTEAD of the deliverable gap's generic
+        # remedy, which tells Generate to rename snapshot files; the gap is still computed over
+        # every other case.
         cont_missing = {cid: why for cid, why in restart_causes.get("run", {}).items()}
         cont_missing.update({cid: "the second pass did not run (the first pass failed)"
                              for cid in cont_ids if cid not in cont_missing
                              and "run" not in restart_files})
-        if snapshot_gap and cont_missing:
-            snapshot_gap = "".join(
-                f"[execute fail: continuation] continuation {cid!r} has no captures: {why}. "
-                for cid, why in sorted(cont_missing.items())) + "\n" + snapshot_gap
+        snapshot_gap = self._snapshot_deliverable_gap(
+            run_tmp / "raw" / "state_snapshots",
+            [c for c in case_ids if c not in cont_missing], artifacts,
+            initial_required=authors_runner,
+            series_required="step_series" in artifacts)
+        if cont_missing:
+            snapshot_gap = "\n".join(
+                [f"[execute fail: continuation] continuation {cid!r} has no captures: {why}"
+                 for cid, why in sorted(cont_missing.items())]
+                + ([snapshot_gap] if snapshot_gap else []))
 
         def _captured(run_dir: Path) -> bool:
             return any(p.name != "snapshot_schema.json"
