@@ -3372,6 +3372,13 @@ class MemberInitPlacementTest(unittest.TestCase):
                 '#include "comp2d_model.cuh"\n',
                 '#include "comp2d_model.cuh"\n#define MI mem2d_model::mem2d__init\n'),
                 "preprocessor directive"),
+            # The token count reads the directive lines too, not only the allowlist.
+            "a macro, counted": (self.BASE.replace(
+                '#include "comp2d_model.cuh"\n',
+                '#include "comp2d_model.cuh"\n#define MI mem2d_model::mem2d__init\n'),
+                "named 1 time(s) other than as a call"),
+            "no __init at all": (self.BASE.replace("void comp2d__init(", "void comp2d__setup("),
+                                 "defines no `comp2d__init`"),
             "not from __init": (self.BASE.replace(self.CALL, "  dt = 1; n_plan = 1; "
                                                              "init_ok = true; a = 0; b = 0;\n"),
                                 "does not call `mem2d__init(...)`"),

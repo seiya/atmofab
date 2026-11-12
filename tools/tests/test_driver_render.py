@@ -1689,8 +1689,13 @@ class ComposingInitEndToEndTest(unittest.TestCase):
             return found
 
         self.assertEqual(gates(text), [])
-        # The gate runs only for a member that publishes `__init`: with none named, a model
-        # that calls the member's `__init` from `__step` passes the backend's gates.
+        # The call by the local name of a module-level rename is the call (the use gate's
+        # reader), and the import statement itself is no occurrence.
+        renamed = text.replace(use, "  use cmp_mem_model, only: mi => cmp_mem__init, "
+                                    "cmp_mem__step\n").replace(call, call.replace(
+                                        "cmp_mem__init", "mi"))
+        self.assertNotIn("call cmp_mem__init", renamed)
+        self.assertEqual(gates(renamed), [])
         mutants = {
             "from __step": (text.replace(in_step, in_step + again), "is named outside"),
             "not from __init": (text.replace(call, "    u = 1.0_dp\n    dt = 0.25_dp\n"
@@ -1709,6 +1714,8 @@ class ComposingInitEndToEndTest(unittest.TestCase):
                                     "other than as the callee"),
             "an actual argument": (text.replace(call, "    call keep(cmp_mem__init)\n" + call),
                                    "other than as the callee"),
+            "no __init at all": (text.replace("cmp_sub__init", "cmp_sub__setup"),
+                                 "defines no `cmp_sub__init`"),
             "the composite's own __init from __step": (
                 text.replace(in_step, in_step + again.replace("cmp_mem__init", "cmp_sub__init")),
                 "`cmp_sub__init` is named outside its own definition"),
