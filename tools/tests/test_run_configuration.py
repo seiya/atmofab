@@ -191,6 +191,19 @@ class RunConfigurationTest(unittest.TestCase):
         self.assertEqual(rec["status"], "failed")
         self.assertIsNone(rec["exit_status"])
 
+    def test_the_run_takes_the_target_s_launch_environment(self) -> None:
+        from tools.host_execution import launch_shape
+        from tools.target_profile import load_target_profile
+        self.certify(exe_bytes=b"#!/bin/sh\nenv > env.txt\n")
+        self.assertEqual(self.run_tool({"base_case": "m0"}), 0)
+        want = launch_shape(load_target_profile(self.repo, "fortran_cpu")).env
+        self.assertTrue(want)
+        got = dict(line.split("=", 1) for line in
+                   (self.tmp / "out" / "env.txt").read_text().splitlines() if "=" in line)
+        for key, value in want.items():
+            self.assertEqual(got.get(key), value, key)
+        self.assertEqual(self.record()["launch_env"], dict(sorted(want.items())))
+
     # --- refusals ---------------------------------------------------------------------------
 
     def test_configuration_refusals(self) -> None:
@@ -203,7 +216,10 @@ class RunConfigurationTest(unittest.TestCase):
             ({"base_case": "m0", "inputs": {"n_step": 4.0}}, "type change"),
             ({"base_case": "m0", "inputs": {"t_start": 1}}, "type change"),
             ({"base_case": "m0", "inputs": {"n_step": True}}, "not an integer or a finite real"),
-            ({"base_case": "m0", "inputs": {"t_end": float("nan")}}, "finite"),
+            ({"base_case": "m0", "inputs": {"t_end": float("nan")}},
+             "not an integer or a finite real"),
+            ({"base_case": "m0", "inputs": {"unused": float("inf")}},
+             "not an integer or a finite real"),
             ({"base_case": "m0", "inputs": {"n_step": [1]}}, "not an integer or a finite real"),
             ({"base_case": "m0", "inputs": {"n_step": 8}}, "within 4 ulp"),
             ({"base_case": "m0", "inputs": {"unused": 8}}, "changes nothing the binary reads"),
