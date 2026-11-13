@@ -1775,6 +1775,58 @@ class ComposingInitEndToEndTest(unittest.TestCase):
         self.assertTrue(any("other than as the callee" in v for v in gates(prefixed)))
         self.assertEqual(gates(text.replace("end subroutine cmp_sub__init",
                                             "endsubroutine cmp_sub__init")), [])
+        # Review round 2: a `!$` conditional-compilation line is a statement to an OpenMP build;
+        # one local bound to two targets keeps both; the composite's own `__init` imported under
+        # another name; a rename written without `only:`.
+        cases = {
+            "a `!$` call from __step": (
+                text.replace(in_step, in_step + "!$  call cmp_mem__init(nx, 1, u, dts, j, ok)\n"),
+                "`cmp_mem__init` is named outside"),
+            "a `!$` call of the own __init": (
+                text.replace(in_step, in_step + "!$  call cmp_sub__init(nx, 1, u, dts, j, ok)\n"),
+                "`cmp_sub__init` is named outside its own definition"),
+            "one local, two targets": (
+                text.replace(use, "  use cmp_mem_model, only: mi => cmp_mem__step, "
+                                  "cmp_mem__init, cmp_mem__step\n").replace(
+                    in_step, in_step + "    block\n      use cmp_mem_model, only: mi => "
+                    "cmp_mem__init\n      call mi(nx, 1, u, dts, j, ok)\n    end block\n"),
+                "`mi` (a local name for `cmp_mem__init`) is named outside"),
+            "the own __init imported": (
+                text + "subroutine stray(nx, u)\n  use cmp_sub_model, only: reset => "
+                       "cmp_sub__init\n  integer, intent(in) :: nx\n  real(8) :: u(nx), d\n"
+                       "  integer :: n\n  logical :: q\n  call reset(nx, 1, u, d, n, q)\n"
+                       "end subroutine stray\n",
+                "a `use` imports `cmp_sub__init`"),
+            "a rename without only:": (
+                text.replace(use, use + "  use cmp_mem_model, go => cmp_mem__init\n").replace(
+                    in_step, in_step + "    call go(nx, 1, u, dts, j, ok)\n"),
+                "`go` (a local name for `cmp_mem__init`) is named outside"),
+        }
+        for label, (model, phrase) in cases.items():
+            with self.subTest(round2=label):
+                self.assertNotEqual(model, text)
+                found = gates(model)
+                self.assertTrue(any(phrase in v for v in found), found)
+        # Codex's form: the reused local's other target belongs to a second `__init` member and
+        # sorts first, so a one-target-per-local map kept that one and dropped `cmp_mem__init`.
+        two = text.replace(use, use + "  use aaa_mem_model, only: mi => aaa_mem__step, "
+                                      "aaa_mem__init\n").replace(
+            "    call cmp_mem__init(nx, mode, u, dt, n_plan, init_ok)\n",
+            "    call cmp_mem__init(nx, mode, u, dt, n_plan, init_ok)\n"
+            "    call aaa_mem__init(nx, mode, u, dt, n_plan, init_ok)\n").replace(
+            in_step, in_step + "    call mi(nx, u)\n    block\n      use cmp_mem_model, only: mi"
+            " => cmp_mem__init\n      call mi(nx, 1, u, dts, j, ok)\n    end block\n")
+        found: list[str] = []
+        source.validate_member_init_placement(
+            node_spec_id=CMP_SUB, model_file=Path(tempfile.gettempdir()) / "absent" / "m.f90",
+            lowered=two.lower(), init_member_ids=("aaa_mem", "cmp_mem"), violations=found)
+        self.assertTrue(any("`mi` (a local name for `cmp_mem__init`) is named outside" in v
+                            for v in found), found)
+        found = gates(text, {"helper.f90": "subroutine y()\n!$ use cmp_mem_model, only: go => "
+                                           "cmp_mem__init\n!$ call go()\nend\n"})
+        self.assertTrue(any("is named in a source other than" in v for v in found), found)
+        # an OpenMP directive is no conditional line
+        self.assertEqual(gates(text.replace(in_step, in_step + "!$omp barrier\n")), [])
         # comments and literals in another file, and the runner, are not occurrences
         self.assertEqual(gates(text, {
             "helper.f90": "! calls cmp_mem__init\nsubroutine y()\n  print *, 'cmp_sub__init'\nend\n",

@@ -2474,6 +2474,33 @@ def _callee_count(text: str, name: str) -> int:
     return len(re.findall(rf"\bcall\s+{re.escape(name)}(?![a-z0-9_])", text))
 
 
+_RENAME_PAIR_RE = re.compile(r"(?<![a-z0-9_])([a-z_][a-z0-9_]*)\s*=>\s*([a-z_][a-z0-9_]*)")
+
+
+def _init_rename_locals(view: str, targets: set[str]) -> set[str]:
+    """Every local name a `use` statement of the joined view renames to one of ``targets``,
+    directly or through renames of renames, with `only:` or without it, in any scope. Each
+    local keeps EVERY target it is bound to anywhere in the file (review round 2, Codex: a map
+    that keeps one target per local let `mi => <dep>__step` at module level hide
+    `mi => <member>__init` in a block). Over-reading only adds a name to the absence count, the
+    refused side."""
+    bound: dict[str, set[str]] = {}
+    for line in view.split("\n"):
+        if _use_only_items(line.strip()) is None:
+            continue
+        for local, target in _RENAME_PAIR_RE.findall(line):
+            bound.setdefault(local, set()).add(target)
+    out: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for local, reached in bound.items():
+            if local not in out and reached & (targets | out):
+                out.add(local)
+                changed = True
+    return out
+
+
 def _validate_init_names_outside_model(
     node_init: str, members: list[str], model_file: Path, violations: list[str],
 ) -> None:
@@ -2484,18 +2511,18 @@ def _validate_init_names_outside_model(
     bundle may carry a private file beside the model (a `helper` / `internal_module`, which the
     producer is told not to add and no gate refuses), and a submodule or helper there that calls
     the member's `__init` is reached from `__step` through a procedure whose name the model's own
-    token count never sees (review round 1 of issue #632 P3). Comments and literals are masked."""
+    token count never sees (review round 1 of issue #632 P3). Comments and literals are masked;
+    a `!$` conditional-compilation line is read as the code an OpenMP build compiles."""
     runner = model_file.with_name(model_file.name.removesuffix("_model.f90") + "_runner.f90")
     for source in sorted(model_file.parent.rglob("*")):
         if (not source.is_file() or source.is_symlink() or source == model_file
                 or source == runner or source.suffix.lower() not in MODULE_SOURCE_SUFFIXES):
             continue
-        lowered = source.read_text(encoding="utf-8", errors="ignore").lower()
+        lowered = _conditional_lines_as_code(
+            source.read_text(encoding="utf-8", errors="ignore").lower())
         masked = joined_masked_view(lowered)
-        targets = {f"{m}__init" for m in members}
-        names = set(targets) | {node_init} | {
-            local for local, target in dependency_call_locals(lowered, members).items()
-            if target in targets}
+        targets = {f"{m}__init" for m in members} | {node_init}
+        names = targets | _init_rename_locals(masked, targets)
         for name in sorted(names):
             if _identifier_count(masked, name):
                 violations.append(
@@ -2523,12 +2550,20 @@ def validate_member_init_placement(
       specification part (`dependency_renames`, the use gate's reader);
     - ABSENCE: outside `<node>__init`, and outside a `use` statement, the source holds NO token
       `<member>__init` nor any local name a `use` of the file renames it to
-      (`dependency_call_locals`, every rename of the file, renames of renames followed); inside
-      `<node>__init` each such token is the callee of a `call`;
+      (`_init_rename_locals`: every rename of the file, with `only:` or without, every target a
+      local is bound to, renames of renames followed); inside `<node>__init` each such token is
+      the callee of a `call`;
     - the composite's own `<node>__init` is named only by its own header and `end` statement and
-      by an access statement: a call of it from `__step` reaches the member's `__init` too;
+      by an access statement, and no `use` imports it under any name: a call of it from `__step`
+      reaches the member's `__init` too;
     - no OTHER Fortran source of the model's directory names either
       (`_validate_init_names_outside_model`).
+
+    Every reading takes a `!$` conditional-compilation line as the statement an OpenMP build
+    compiles (`_conditional_lines_as_code`). An `entry` statement inside `<node>__init`, called
+    from `__step`, is not read here: the lint rule set refuses `entry` (OB021), as it refuses a
+    `use` without `only:` (C121) — both measured in review round 2, and this gate's absence half
+    relies on those rules staying enabled.
 
     The two halves have OPPOSITE polarities, so they do not share a reader: a call reader that
     misses a spelling fails presence closed and absence open (`dependency_call_locals`' trap).
@@ -2537,13 +2572,18 @@ def validate_member_init_placement(
     procedure pointer (`p => <member>__init`), an actual argument, an interface body, a generic
     binding and a call from another procedure each leave a token the count refuses. What a token
     cannot show, and the continuation case judges instead: a procedure pointer or actual argument
-    naming a procedure CONTAINED in `<node>__init` that stores it beyond the call, and a
-    `bind(c, name=...)` interface whose label is the member's linker symbol (a literal, masked
-    here). Neither brings a leaf closer to a verdict: the compliant call is the cheaper edit.
+    naming a procedure CONTAINED in `<node>__init` that stores it beyond the call. That brings a
+    leaf no closer to a verdict: the compliant call is the cheaper edit. (A `bind(c, name=...)`
+    interface naming the member's linker symbol is refused by the source-isolation gate, which
+    refuses `bind(c)` in every leaf-authored source.)
 
     A source whose structure does not resolve never reaches here: `run_problem_model_gates`
     refuses it first."""
     try:
+        # A `!$` line is a comment to the statement reader and a statement to an OpenMP build
+        # (review round 2: `!$ call <member>__init(...)` in `__step` cleared this gate and ran
+        # on `fortran_cpu`); it is read as code here, as the isolation gate reads it.
+        lowered = _conditional_lines_as_code(lowered)
         view, tree, to_view = structure_reading(lowered)
     except SourceStructureError:
         return  # refused by the caller's own parse, which ran first
@@ -2569,7 +2609,23 @@ def validate_member_init_placement(
         return any(start <= at < end for start, end in spans)
 
     # The composite's own `__init`: only its header / `end` statement and an access statement.
+    # A `use` that imports it (by any local name) is an occurrence too (review round 2, Codex: an
+    # external procedure after the module did `use <node>_model, only: reset => <node>__init`
+    # and called `reset` from a procedure `__step` reaches).
+    own_locals = _init_rename_locals(view, {node_init})
+    for line in view.split("\n"):
+        if _use_only_items(line.strip()) is not None and any(
+                _identifier_count(line, name) for name in {node_init} | own_locals):
+            violations.append(
+                f"{model_file}: a `use` imports `{node_init}` (statement {line.strip()!r}): "
+                f"the model never calls or references its own `__init` — the driver calls it "
+                f"once per case.")
     for at, line in statements:
+        for local in sorted(own_locals):
+            if _identifier_count(line, local):
+                violations.append(
+                    f"{model_file}: `{local}` (a local name for `{node_init}`) is named "
+                    f"(statement {line.strip()!r}): the model never calls its own `__init`.")
         total = _identifier_count(line, node_init)
         if not total:
             continue
@@ -2587,12 +2643,9 @@ def validate_member_init_placement(
     members = sorted({m.lower() for m in init_member_ids})
     _validate_init_names_outside_model(node_init, members, model_file, violations)
     renames = dependency_renames(lowered, model_file.stem, members)
-    locals_by_target: dict[str, set[str]] = {}
-    for local, target in dependency_call_locals(lowered, members).items():
-        locals_by_target.setdefault(target, set()).add(local)
     for member in members:
         member_init = f"{member}__init"
-        names = sorted({member_init} | locals_by_target.get(member_init, set()))
+        names = sorted({member_init} | _init_rename_locals(view, {member_init}))
         if not spans:
             violations.append(
                 f"{model_file}: the member `{member}` publishes `{member_init}`, and this model "
