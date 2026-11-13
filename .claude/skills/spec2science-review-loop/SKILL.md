@@ -1653,6 +1653,22 @@ that tells you how it closed.
   time-refinement band at `substeps=1`). The anchor's resolution is then the claim: a constant
   offset of 1 s and of 30.3 s still passed, so write what the anchor measured, not "pinned".
   Episode: `references/signs-episodes.md` §"Two runs that shared the defect" (issue #632 P4)
+- **A fix makes a process die with the tool that started it** (a signal handler, a kill on
+  exit, a process group) → the fix has two windows nobody tests: between the fork and the line
+  that binds the child the kill needs, and between the child's exit and the last write of the
+  record. Issue #632 P5's round-1 handler covered neither. Round 2 forced a signal into each and
+  got an orphan recorded as "killed" in the first and a record left `running` in the second.
+  **For each window, deliver the signal there in a row (a `Popen` subclass that signals right
+  after the fork; a wrapper around the first post-exit step), and witness the fix by removing
+  it.** Episode: `references/signs-episodes.md` §"Signals in a test process" (issue #632 P5)
+- **A row signals its own process** (`os.kill(os.getpid(), …)`) → under xdist the worker has a
+  second thread, the kernel may deliver the signal to it, and a main thread blocked in a
+  system call (`waitpid`) is not interrupted. Issue #632 P5's full suite hung at 99% with low
+  load until the child was killed by hand, while every run of the file alone under `-n 12` had passed. **Signal
+  the thread the row runs on, `signal.pthread_kill(threading.get_ident(), …)`.** When a suite
+  stalls with an idle machine, list each worker's children (`ps -eo pid,ppid,args`) before
+  reading anything else. Episode: `references/signs-episodes.md` §"Signals in a test process"
+  (issue #632 P5)
 
 ## Finally
 

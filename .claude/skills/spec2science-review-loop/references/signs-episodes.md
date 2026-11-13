@@ -639,3 +639,31 @@ of it, and not a constant offset — 1 s read inside the band. Round 3 found 30.
 as well (the reading is not monotonic in the offset), after round 2's text had said "whether
 a larger offset passes is not established". Each reading is now a `mutants.yaml` row.
 
+
+## Signals in a test process (issue #632 P5)
+
+`tools/run_configuration.py` starts the certified binary in a session of its own, so that a
+timeout can kill the binary's whole process group. A session of its own also means that a
+`kill` sent to the tool does not reach the binary. Round 1 (both reviewers) found the binary
+outliving a SIGTERM or SIGHUP with the record left at `running`. The fix installed handlers
+that raise inside `_run`, whose `except` kills the group. Round 2 (fable) forced a signal into
+the two places that fix did not cover:
+- a `Popen` subclass signalling right after `super().__init__`: the exception left the
+  constructor before `proc` was bound, outside the `try`. Two pids survived, and the record
+  said the group was killed;
+- a wrapper around the first step after the binary exited: the handlers had already been
+  restored. The tool died at -15 with the record at `running`.
+
+Round 2's fix blocks SIGTERM, SIGHUP and SIGINT from before the fork until inside the `try`
+(the child unblocks them in `preexec_fn`), and keeps the handlers from the first record write
+to the last. Each window has a row, and removing the block turns its row red (1 failed).
+
+The rows themselves then hung the full suite: 99% done, load average 0.36, one xdist worker
+waiting with the row's `tail -f` child alive for 570 s. The worker had two OS threads
+(`/proc/<pid>/task`); `os.kill(os.getpid(), SIGTERM)` is process-directed, the kernel may hand
+it to either thread, and a main thread blocked in `waitpid` is interrupted only when it is the
+one that receives the signal. Killing the child let the run finish green in 620 s. The file
+alone had passed every run under `-n 12` beforehand, and the round-3 reviewer did not reproduce the
+hang in 5 tries under `-n 2`. The tool runs one thread, so the tool was right and the rows
+were not; they now use `signal.pthread_kill(threading.get_ident(), SIGTERM)`. The signal rows
+that start the tool as a subprocess were never affected: that process has one thread.
