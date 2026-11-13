@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import copy
 import json
+import os
 import shutil
 import signal
 import subprocess
@@ -41,7 +42,15 @@ def _toy_ir(kind: str) -> dict[str, Any]:
     """The loop node with host-evaluated loop scalars (`loop`), or the one whose `init` writes
     `n_step` and `dt` (`init`); each case carries an unread numeric leaf and a string leaf."""
     ir = copy.deepcopy({"loop": lambda: loop_ir(0, 1, every=1, n_step=4),
+                        "valid": lambda: loop_ir(0, 1, every=1, n_step=4),
                         "init": lambda: init_ir(0), "call": lambda: call_ir(0)}[kind]())
+    if kind == "valid":
+        # the step's result dummy `ok` bound to a state of another name
+        ir["drive"]["step"]["arguments"]["ok"] = "state.valid"
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        for var in schema["variables"]:
+            if var["name"] == "ok":
+                var["name"] = "valid"
     for case in ir["case"]["test_case_set"]:
         case["inputs"]["unused"] = 7
         case["inputs"]["profile"] = "descriptive"
@@ -503,13 +512,20 @@ class RunConfigurationTest(unittest.TestCase):
                         and time.monotonic() < deadline and proc.poll() is None:
                     time.sleep(0.05)
                 pids = [int((out / n).read_text()) for n in ("binary.pid", "grandchild.pid")]
+                self.addCleanup(_reap, pids)
                 proc.send_signal(sig)
                 proc.communicate(timeout=60)
-                self.assertNotEqual(proc.returncode, 0)
+                # SIGINT ends the tool with KeyboardInterrupt (its own status); the two
+                # signals the tool turns into `Terminated` exit 128 + n
+                if sig != signal.SIGINT:
+                    self.assertEqual(proc.returncode, 128 + int(sig))
+                else:
+                    self.assertNotEqual(proc.returncode, 0)
                 for pid in pids:
                     self.assertFalse(_alive(pid), pid)
                 rec = json.loads((out / rc.RUN_RECORD).read_text())
                 self.assertEqual(rec["status"], "interrupted")
+                self.assertEqual(rec["signal"], int(sig))
 
     def test_the_timeout_kills_a_child_the_binary_started(self) -> None:
         self.certify(exe_bytes=b"#!/bin/sh\nsleep 120 &\necho $! > grandchild.pid\nwait\n")
@@ -649,6 +665,125 @@ class RunConfigurationTest(unittest.TestCase):
         self.assertEqual(len(ir_files), 1)
         self.assertEqual((self.tmp / "cont" / "spec.ir.yaml").read_bytes(),
                          ir_files[0].read_bytes())
+
+    # --- review round 2 ---------------------------------------------------------------------
+
+    def test_a_result_bound_to_a_state_of_another_name(self) -> None:
+        """`result: ok` with `arguments.ok: state.valid`: the flag read is `valid` (Codex, round
+        2; the dummy's name was read, absent from the capture, and the refusal passed as ok)."""
+        self.certify("valid")
+        self.assertEqual(rc.result_states(_Built.get("valid")[0], "m0"), ["valid"])
+        self.assertEqual(self.run_tool({"base_case": "m0", "inputs": {"mode": 1}}),
+                         rc.EXIT_RAN_FAILED)
+        self.assertIn("valid false", self.record()["kernel"])
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "fine"), 0)
+
+    def test_a_missing_final_capture_or_result_fails_the_run(self) -> None:
+        for name, script, why in (
+                ("none", b"#!/bin/sh\nexit 0\n", "no readable final capture"),
+                ("noresult", b'#!/bin/sh\necho \'{"step": 4.0}\' > raw/state_snapshots/m0.json\n',
+                 "the final capture holds no ok"),
+                ("notobject", b"#!/bin/sh\necho '[1]' > raw/state_snapshots/m0.json\n",
+                 "not a JSON object")):
+            with self.subTest(name=name):
+                shutil.rmtree(self.repo)
+                self.repo.mkdir()
+                self.certify(exe_bytes=script)
+                self.assertEqual(self.run_tool({"base_case": "m0"}, name), rc.EXIT_RAN_FAILED)
+                rec = self.record(name)
+                self.assertEqual((rec["exit_status"], rec["status"]), (0, "failed"))
+                self.assertIn(why, rec["kernel"])
+
+    def test_a_signal_while_the_binary_is_being_started(self) -> None:
+        """SIGTERM between the fork and the binding of the process: held until the `try` that
+        kills the group, so the binary does not outlive the tool."""
+        self.certify(exe_bytes=b"#!/bin/sh\necho $$ > binary.pid\nexec tail -f /dev/null\n")
+        real = subprocess.Popen
+
+        started: list[int] = []
+
+        class Racing(real):  # type: ignore[misc, valid-type]
+            def __init__(self, *a: Any, **kw: Any) -> None:
+                super().__init__(*a, **kw)
+                started.append(self.pid)
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        with mock.patch.object(subprocess, "Popen", Racing), \
+                self.assertRaises(rc.Terminated):
+            self.run_tool({"base_case": "m0"})
+        self.assertEqual(len(started), 1)
+        self.addCleanup(_reap, started)
+        self.assertFalse(_alive(started[0]))
+        rec = self.record()
+        self.assertEqual((rec["status"], rec["signal"]), ("interrupted", int(signal.SIGTERM)))
+        self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+
+    def test_a_signal_after_the_binary_exited_leaves_no_running_record(self) -> None:
+        self.certify()
+        real = rc._kernel_outcome
+
+        def stopped(*a: Any) -> Any:
+            os.kill(os.getpid(), signal.SIGTERM)
+            return real(*a)
+
+        with mock.patch.object(rc, "_kernel_outcome", stopped), \
+                self.assertRaises(rc.Terminated):
+            self.run_tool({"base_case": "m0"})
+        rec = self.record()
+        self.assertEqual((rec["status"], rec["exit_status"]), ("interrupted", 0))
+
+    def test_read_input_paths_names_each_reader(self) -> None:
+        ir = {"io_contract": {"raw_requirements": {"required_evidence": [
+            {"artifact": "state_snapshots", "schema": {"variables": [], "coordinates": [
+                {"name": "x", "axis": 0, "placement": "center", "count": "inputs.g.n",
+                 "length": "inputs.g.len"},
+                {"name": "y", "axis": 0, "placement": "center", "count": 4, "length": 1.0}]}}]}}}
+        case = {"initial_state": {"u": "inputs.a.b * x", "w": [1.0]},
+                "derived": {"dt": "min(inputs.c, inputs.d)", "k": 0.5}}
+        self.assertEqual(rc.read_input_paths(ir, case, {"inputs.e": 1, "derived.dt": 0.1}),
+                         {"e", "a.b", "c", "d", "g.n", "g.len"})
+
+    def test_an_unreadable_source_case_file_is_refused(self) -> None:
+        self.certify()
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        (self.tmp / "full" / "case_inputs" / "m0.json").unlink()
+        self.assertIn("['case_file']", self.refused({"base_case": "m0"}, "o1",
+                                                    restart_from=self._sample("full", 2)))
+
+    def test_falsy_inputs_that_are_no_mapping_are_refused(self) -> None:
+        self.certify()
+        for i, text in enumerate(("[]", "false", "0", "''")):
+            with self.subTest(text=text):
+                self.assertIn("inputs must be a mapping",
+                              self.refused(f"base_case: m0\ninputs: {text}\n", f"o{i}"))
+        self.assertEqual(self.run_tool("base_case: m0\ninputs:\n", "null_ok"), 0)
+
+    def test_an_xfail_only_base_with_an_invalid_dt_is_a_refusal_not_a_traceback(self) -> None:
+        from tools import primary_evidence as pe
+        ir = copy.deepcopy(_Built.get("loop")[0])
+        case = ir["case"]["test_case_set"][0]
+        case["derived"]["dt"] = -0.25
+        case["inputs"]["t_end"] = 0.0
+        ir["io_contract"]["tests"] = [{"test_id": "t", "expected_outcome": "xfail",
+                                       "target_cases": ["m0"]}]
+        payload = pe.evaluate_case_inputs(ir)["m0"]
+        capture = self.tmp / "cap.json"
+        capture.write_text(json.dumps({"step": 1, "t": 0.75, "u": [1.0, 2.0, 3.0],
+                                       "w": [0.0, 0.0, 0.0]}))
+        stage = self.tmp / "stage"
+        stage.mkdir()
+        with self.assertRaises(rc.ConfigurationRefused) as ctx:
+            rc.continuation_payload(ir, "m0", payload, capture, stage)
+        self.assertIn("not > 0", str(ctx.exception))
+
+
+def _reap(pids: list[int]) -> None:
+    """Kill what a row started, whether it passed or not."""
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def _alive(pid: int) -> bool:

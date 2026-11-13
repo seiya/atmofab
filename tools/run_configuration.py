@@ -43,9 +43,11 @@ What it does, in order (each refusal exits 2 before anything runs):
    is the only bound. On the bound, on SIGINT, and on SIGTERM or SIGHUP to the tool (a `kill`,
    a closed terminal), the binary's process group is killed and the record says so; a SIGKILL
    to the tool cannot be caught, and the binary then outlives it with the record left
-   `running`. Nothing under the certified IR's `case_inputs/` is written. The run is `ok` only
-   when the binary exits 0 and its final capture exists with every result state the drive
-   names true: a kernel that refuses a configuration exits 0 and stops short of `n_step`.
+   `running`. A signal that arrives after the binary exited and before the record is final
+   leaves the record `interrupted`. Nothing under the certified IR's `case_inputs/` is
+   written. The run is `ok` only when the binary exits 0 and its final capture holds every
+   state an entry's result dummy is bound to in the case, true: a kernel that refuses a
+   configuration exits 0 and stops short of `n_step`.
 4. `--restart-from <capture.json>` continues an earlier run of this tool: the capture (a
    history sample `<prev>/raw/state_snapshots/history/<base_case>__<K>.json`, or a final
    capture `<prev>/raw/state_snapshots/<base_case>.json`) must sit in an output directory of
@@ -128,10 +130,22 @@ class Terminated(BaseException):
         self.signum = signum
 
 #: The signals that end the tool from outside (a `kill`, a closed terminal) and are turned
-#: into `Terminated` while the binary runs, so that its process group dies with the tool.
-#: SIGINT arrives as `KeyboardInterrupt`. SIGKILL cannot be caught: the binary then outlives
-#: the tool, in a session of its own, and the record stays `running`.
+#: into `Terminated` from the first record write to the last, so that the binary's process
+#: group dies with the tool and the record says so. SIGINT arrives as `KeyboardInterrupt`.
+#: SIGKILL cannot be caught: the binary then outlives the tool, in a session of its own, and
+#: the record stays `running`.
 _TERMINATING = (signal.SIGTERM, signal.SIGHUP)
+#: Held back while the binary is being started, so that none of them lands between the fork
+#: and the binding of the process the kill needs; the child unblocks them before its exec.
+_HELD = (*_TERMINATING, signal.SIGINT)
+
+
+def _raise_terminated(signum: int, _frame: Any) -> None:
+    raise Terminated(signum)
+
+
+def _unhold() -> None:
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, _HELD)
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -180,7 +194,9 @@ def read_configuration(path: Path) -> tuple[str, dict[str, Any], str]:
     base = doc["base_case"]
     if not isinstance(base, str) or not base.strip():
         raise ConfigurationRefused(f"--config {path}: base_case must be a case id")
-    overrides = doc.get("inputs") or {}
+    overrides = doc.get("inputs")
+    if overrides is None:
+        overrides = {}
     if not isinstance(overrides, dict):
         raise ConfigurationRefused(f"--config {path}: inputs must be a mapping of dotted path "
                                    "-> number")
@@ -467,6 +483,7 @@ def continuation_payload(ir2: dict[str, Any], base: str, payload: dict[str, Any]
         CASE_INPUTS_DIRNAME,
         RESTART_DIRNAME,
         STEP_CAPTURE,
+        PrimaryEvidenceError,
         _cases_by_id,
         drive_model,
         is_continuation,
@@ -518,7 +535,10 @@ def continuation_payload(ir2: dict[str, Any], base: str, payload: dict[str, Any]
     sample = stage / "raw" / "state_snapshots" / "history" / f"{base}__{k}.json"
     sample.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(capture, sample)
-    files, refused = write_continuation_inputs(ir3, stage)
+    try:
+        files, refused = write_continuation_inputs(ir3, stage)
+    except PrimaryEvidenceError as exc:
+        raise ConfigurationRefused(f"--restart-from {capture}: {exc}") from None
     if refused or [f.case_id for f in files] != [cid]:
         raise ConfigurationRefused(
             f"--restart-from {capture}: "
@@ -543,28 +563,28 @@ def _check_out(repo_root: Path, out: Path) -> Path:
 def _run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float | None
          ) -> tuple[int | None, bool]:
     """(the exit status, None when killed; whether the timeout fired). The child runs in a
-    session of its own, and its process group is killed on the timeout, on SIGINT and on the
-    signals of `_TERMINATING` (raised as `Terminated`). Raises `OSError` when the binary cannot
-    be started."""
-    def terminated(signum: int, _frame: Any) -> None:
-        raise Terminated(signum)
-
-    previous = {s: signal.signal(s, terminated) for s in _TERMINATING}
-    try:
-        with (cwd / "stdout.txt").open("wb") as out, (cwd / "stderr.txt").open("wb") as err:
+    session of its own, and its process group is killed on the timeout and on any exception
+    while it runs (`Terminated`, `KeyboardInterrupt`). The signals of `_HELD` are blocked from
+    before the fork until the process is bound, so a signal sent then is delivered inside the
+    `try` that kills it. Raises `OSError` when the binary cannot be started."""
+    with (cwd / "stdout.txt").open("wb") as out, (cwd / "stderr.txt").open("wb") as err:
+        signal.pthread_sigmask(signal.SIG_BLOCK, _HELD)
+        try:
             proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=out, stderr=err,
-                                    start_new_session=True)
-            try:
-                return proc.wait(timeout=timeout), False
-            except subprocess.TimeoutExpired:
-                _kill(proc)
-                return None, True
-            except BaseException:
-                _kill(proc)
-                raise
-    finally:
-        for s, handler in previous.items():
-            signal.signal(s, handler)
+                                    start_new_session=True,
+                                    preexec_fn=_unhold)  # noqa: PLW1509 (one thread)
+        except BaseException:
+            _unhold()
+            raise
+        try:
+            _unhold()   # a signal held since the fork is delivered here, inside the try
+            return proc.wait(timeout=timeout), False
+        except subprocess.TimeoutExpired:
+            _kill(proc)
+            return None, True
+        except BaseException:
+            _kill(proc)
+            raise
 
 
 def _kill(proc: subprocess.Popen) -> None:
@@ -595,11 +615,25 @@ def _launch(repo_root: Path, profile: Any) -> Any:
         raise ConfigurationRefused(f"target {profile.target_id}: {exc}") from None
 
 
+def result_states(ir: dict[str, Any], base: str) -> list[str]:
+    """The states the result dummies of the entries that run ``base`` are bound to (`init` and
+    the `step` entries of its case, `DriveBlock.entries_for`): `result: ok` with
+    `arguments.ok: state.status` names `status`."""
+    from tools.primary_evidence import drive_model
+    names: list[str] = []
+    for entry in drive_model(ir).block.entries_for(base):
+        binding = entry.arguments.get(entry.result)
+        if binding is not None and binding.kind == "state" and binding.ref not in names:
+            names.append(binding.ref)
+    return names
+
+
 def _kernel_outcome(ir: dict[str, Any], out: Path, base: str) -> tuple[Any, str | None]:
     """(the final capture's step, None when the run reached its end, else why not): a final
-    capture must exist, and every result state the drive names (its `init` and `step` entries'
-    `result`) must hold true in it. A kernel that refused the configuration exits 0 and leaves
-    its result false, with fewer steps than planned."""
+    capture must exist, and every state an entry's result dummy is bound to in this case
+    (`result_states`) must be in it and true. A kernel that refused the configuration exits 0
+    and leaves its result false, with fewer steps than planned. A logical `out` that is not an
+    entry's result (a convergence flag) is not read."""
     path = out / "raw" / "state_snapshots" / f"{base}.json"
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
@@ -607,15 +641,12 @@ def _kernel_outcome(ir: dict[str, Any], out: Path, base: str) -> tuple[Any, str 
         return None, f"no readable final capture ({exc})"
     if not isinstance(doc, dict):
         return None, "the final capture is not a JSON object"
-    names: list[str] = []
-    for key in ("init", "step"):
-        entry = ir["drive"].get(key)
-        for e in (entry if isinstance(entry, list) else [entry]):
-            if isinstance(e, dict) and isinstance(e.get("result"), str) \
-                    and e["result"] not in names:
-                names.append(e["result"])
-    false = [n for n in names if n in doc and doc[n] != 1]
+    names = result_states(ir, base)
     step = doc.get("step")
+    missing = [n for n in names if n not in doc]
+    if missing:
+        return step, f"the final capture holds no {', '.join(missing)}"
+    false = [n for n in names if doc[n] != 1]
     if false:
         return step, (f"the kernel refused the configuration: {', '.join(false)} false in the "
                       f"final capture, at step {step!r}")
@@ -686,31 +717,38 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         "status": "running", "exit_status": None, "timed_out": False, "start_check": None,
         "final_step": None, "kernel": None,
     }
-    _write_json(out / RUN_RECORD, record)
+    previous = {s: signal.signal(s, _raise_terminated) for s in _TERMINATING}
     try:
-        rc, timed_out = _run(cmd, out, env, timeout_sec)
-    except OSError as exc:
-        record.update(status="not_started", finished_at=_now(), error=str(exc))
         _write_json(out / RUN_RECORD, record)
-        return EXIT_REFUSED
-    except BaseException as exc:
+        try:
+            rc, timed_out = _run(cmd, out, env, timeout_sec)
+        except OSError as exc:
+            record.update(status="not_started", finished_at=_now(), error=str(exc))
+            _write_json(out / RUN_RECORD, record)
+            return EXIT_REFUSED
+        record.update(exit_status=rc, timed_out=timed_out, finished_at=_now())
+        failed = rc != 0
+        if not failed:
+            record["final_step"], why = _kernel_outcome(ir, out, base)
+            record["kernel"] = why or "reached its end"
+            failed = why is not None
+        if not failed and cont is not None:
+            why = continuation_start_violation(ir2, out, cont)
+            record["start_check"] = why or "held"
+            failed = why is not None
+        record["status"] = "failed" if failed else "ok"
+        _write_json(out / RUN_RECORD, record)
+        return EXIT_RAN_FAILED if failed else 0
+    except (Terminated, KeyboardInterrupt) as exc:
+        # Whatever was recorded before the signal is kept; the status says the tool was
+        # stopped before it finished judging the run.
         record.update(status="interrupted", finished_at=_now(),
-                      signal=exc.signum if isinstance(exc, Terminated) else "SIGINT")
+                      signal=exc.signum if isinstance(exc, Terminated) else int(signal.SIGINT))
         _write_json(out / RUN_RECORD, record)
         raise
-    record.update(exit_status=rc, timed_out=timed_out, finished_at=_now())
-    failed = rc != 0
-    if not failed:
-        record["final_step"], why = _kernel_outcome(ir, out, base)
-        record["kernel"] = why or "reached its end"
-        failed = why is not None
-    if not failed and cont is not None:
-        why = continuation_start_violation(ir2, out, cont)
-        record["start_check"] = why or "held"
-        failed = why is not None
-    record["status"] = "failed" if failed else "ok"
-    _write_json(out / RUN_RECORD, record)
-    return EXIT_RAN_FAILED if failed else 0
+    finally:
+        for s, handler in previous.items():
+            signal.signal(s, handler)
 
 
 def main(argv: list[str] | None = None) -> int:
