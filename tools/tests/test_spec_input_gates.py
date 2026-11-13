@@ -282,9 +282,13 @@ class ProblemDependencySurfaceTest(unittest.TestCase):
     def test_a_member_publishing_a_third_operation_is_refused(self) -> None:
         for extra in ("m__reset", "other__step", "M__step", "m__step "):
             with self.subTest(extra=extra):
-                self._assert_refused(self._check(
+                violation = self._check(
                     _STEP.format(name="m__step")
-                    + f"      - name: \"{extra}\"\n        args: []\n"))
+                    + f"      - name: \"{extra}\"\n        args: []\n")
+                self._assert_refused(violation)
+                # the refusal names what the member publishes, so the operator knows what to
+                # drop (review round 3: the inverted `__init` row had carried this check)
+                self.assertIn(repr(extra), violation)
         # A lone name that is not exactly `<member>__step` is refused too: the comparison is
         # exact, not a case-folded or stripped one, and the member id is the spec directory's.
         for only in ("M__step", "m__Step", "m_step", "other__step"):
