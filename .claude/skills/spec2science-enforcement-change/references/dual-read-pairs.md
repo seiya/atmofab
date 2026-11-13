@@ -32,6 +32,7 @@ A disagreement that falls to the safe side (the stricter reading) may stay, but 
 | a phase's derivation key | `Conductor.run_phase` at phase START (`_phase_derivation` over the attempt's reserved / adopted refs; stamped into the meta on pass via `write-step-result`) | `DerivationResolver.select` at every later evaluation (`phase_derivation_inputs` over the SELECTED upstream outputs; compared with the stamp) | **Deliberate, and the pair is the contract (issue #250 PR-2)**: both call `phase_derivation_inputs`, so what differs is only WHICH refs are passed — the conductor's refs must equal the selection, which `prepare_node` (cold adoption) and `_adopt_certified_refs` (skip adoption, re-reserving the roots) keep true; a conductor ref that drifted from the selection would stamp a key the next evaluation cannot reproduce, which reads as `derivation_key_mismatch:<input>` on the next run rather than as a false certification. `ConductorProducedChainCertifiesTest` drives the conductor's own derivation through the stamp and back through the predicate. **Since issue #574 the tuple carries the phase's reader contract** (`COMPILE_VERIFY_CONTRACT_VERSION`, `GENERATE_VERIFY_CONTRACT_VERSION`, `VALIDATE_JUDGE_CONTRACT_VERSION`) and no producer contract; `LEAF_PROMPT_CONTRACT_VERSION` is in no key. The diagnosis compares the tuple before the inputs: `DerivationResolver._select_into` reads a stamp under another tuple as `derivation_key_mismatch:transformation` and ranks it after every stamp under the current tuple, whose remedy is an input (`test_a_stamp_whose_tuple_differs_is_diagnosed_as_transformation_before_any_input`, `test_a_current_tuple_stamp_outranks_a_stale_tuple_stamp_in_the_diagnosis`) |
 
 | whether a `call <local>` in a Fortran model is a call of a dependency operation (a `use <dep>_model, only: <local> => <dep>__<op>` rename) | the dependency-use gate: `dependency_renames` / `DependencyRenames.target_at` (`tools/backends/language/fortran/source.py`) — the model module's specification part, shadowed per scope | the rule-4 dataflow gate: `dependency_call_locals` — every rename of the file whose target is a dependency operation, any scope, any module, chains followed, no exclusion | **Deliberately TWO readers, and the disagreement is the design** (issue #534 PR-J3-a, PR #552): an unresolved call is REFUSED by the first and NOT CHECKED by the second, so each reads in its own safe direction — the use gate over-shadows (a false refusal), the dataflow gate over-reads (a false violation). The plan had one shared reader; §"opposite polarity" below is what that cost. Do not "unify" them |
+| whether a composite's model calls a member `problem`'s `__init` only from its own `__init` (issue #632 P3) | PRESENCE: `_member_init_presence_reading` (`tools/backends/language/fortran/source.py`) — calls in live code of the source as written, a `!$` line a comment, a module-level rename followed (`dependency_renames`) | ABSENCE: identifier tokens over the masked view with `!$` lines as code, dead code included, every rename target kept (`_init_rename_locals`), and every other source of the bundle (`_validate_init_names_outside_model`); C++: `validate_member_init_placement` in `tools/backends/language/cuda_cpp/source.py` | **Deliberately two readings of one source**: a miss refuses in the first and passes in the second. A normalisation belongs inside the reading it is for (§"opposite polarity", second episode) |
 
 ## Facts with three or more readers (they do not fit the pair table)
 
@@ -118,6 +119,20 @@ second, and no exclusion list makes both right.
   non-dependency procedure a rename's local name also names), and the two readers can now
   disagree by design — record the pair in the table above so the next maintainer does not
   "unify" them.
+- **The second episode: a split undone by a normalisation (issue #632 P3, PR #636).** The
+  member-`__init` placement gate (`validate_member_init_placement`, Fortran and C++) answers
+  two questions about one name: PRESENCE (the composite's `__init` calls the member's `__init`,
+  read from calls in live code: a reader that misses a spelling refuses) and ABSENCE (no other
+  occurrence, read as identifier tokens: a reader that misses a spelling passes). It was built
+  split. Round 2 found that a `!$` conditional-compilation line (a comment to the statement
+  reader, a statement to a `-fopenmp` build) carried `call <member>__init` into `__step` past
+  the absence half, and the fix applied `_conditional_lines_as_code` to the gate's input, so to
+  both halves. A body of `<node>__init` whose only member call was on a `!$` line then
+  satisfied presence; on `fortran_cpu_mpi`, which builds without `-fopenmp`, the call is a
+  comment. The round-3 disclosure reviewer measured it (`[]` at HEAD, "does not call" at the
+  commit before the fix). What closed it: presence got its own reading of the source as
+  written (`_member_init_presence_reading`), and a row with the `!$`-only call. **The tell**: a
+  fix commit that edits the INPUT of a function holding both halves rather than one reader.
 
 ## A neighbouring shape: a cache in front of a reader (PR #627, 2026-11-11)
 

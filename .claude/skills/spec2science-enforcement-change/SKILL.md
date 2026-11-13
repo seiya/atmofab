@@ -743,7 +743,16 @@ auto-discovery side went straight through).
   other; give each gate its own reader. Issue #534 PR-J3-a planned "one reader, two callers"
   for a rename reading the dependency-use gate (unresolved = refused) and the dataflow gate
   (unresolved = unchecked) both used, and four rounds found one fail-open each in the dataflow
-  gate before the split (`references/dual-read-pairs.md` §"opposite polarity")
+  gate before the split (`references/dual-read-pairs.md` §"opposite polarity").
+  **The split does not survive a fix that NORMALISES the input upstream of both readers.** A
+  fix that closes a miss on the refusing side by reading more text as code (a sentinel line, a
+  macro, a continuation) makes the accepting side accept more by the same edit. Issue #632 P3
+  had separate presence and absence readers for the member-`__init` placement gate; round 2
+  closed an absence miss (`!$ call <member>__init` in `__step`, compiled under `-fopenmp`) by
+  converting `!$` lines to code at the top of the gate, and that let a `!$`-only call in
+  `__init` satisfy presence, which a build without `-fopenmp` never compiles. Round 3 found
+  it. **Rule: put a normalisation inside the reader of the half it is for, and give the other
+  half a row with the normalised input that must stay refused.**
 - **A cache in front of a reader a gate uses is a SECOND READER: what it hands out must be
   the document a fresh read gives, and the other readers of the same file must still see what
   the gate judged.** Three ways it is not, all from one change (PR #627's `_read_yaml`
