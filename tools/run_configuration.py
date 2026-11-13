@@ -43,7 +43,9 @@ What it does, in order (each refusal exits 2 before anything runs):
    is the only bound. On the bound, on SIGINT, and on SIGTERM or SIGHUP to the tool (a `kill`,
    a closed terminal), the binary's process group is killed and the record says so; a SIGKILL
    to the tool cannot be caught, and the binary then outlives it with the record left
-   `running`. A signal that arrives after the binary exited and before the record is final
+   `running` (the record carries the binary's process group as `binary_pgid`, and a
+   continuation from that run is refused while the group is alive). A signal that arrives
+   after the binary exited and before the record is final
    leaves the record `interrupted`. Nothing under the certified IR's `case_inputs/` is
    written. The run is `ok` only when the binary exits 0 and its final capture holds every
    state an entry's result dummy is bound to in the case, true: a kernel that refuses a
@@ -73,7 +75,8 @@ Exit status: 0 when the run is `ok` (and, on a continuation, the start check hel
 binary exited non-zero, timed out, stopped short with a false result, or failed the start
 check; 2 when the configuration or the selection was refused before anything was written,
 and when the binary could not be started (status `not_started`; `<out>` then holds the case
-file and the record); 128 + the signal number on SIGTERM or SIGHUP.
+file and the record); 128 + the signal number on SIGINT, SIGTERM or SIGHUP (130, 143,
+129), with the record `interrupted`.
 
 What it does not do (issue #632 §3): stop a run at a chosen step; extend a finished run (a
 final capture is refused by `K < n_step` where `n_step` is host data, and by the driver at run
@@ -422,6 +425,16 @@ def _source_run_dir(capture: Path, base: str) -> tuple[Path, str]:
     return snaps.parent.parent, kind
 
 
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _without_restart(payload: Any) -> Any:
     from tools.runner_ir import RESTART_KEY_PREFIX
     if not isinstance(payload, dict):
@@ -441,6 +454,12 @@ def _check_source_record(prev: Path, sel: Selection, binary_sha: str, base: str,
             f"--restart-from: {prev / RUN_RECORD} is unreadable ({exc}); a restart source is a "
             "capture an earlier run of this tool wrote") from None
     cfg = rec.get("configuration") if isinstance(rec, dict) else None
+    pgid = rec.get("binary_pgid") if isinstance(rec, dict) else None
+    if isinstance(rec, dict) and rec.get("status") == "running" and isinstance(pgid, int) \
+            and _group_alive(pgid):
+        raise ConfigurationRefused(
+            f"--restart-from: the run at {prev} is still running (its record says `running` and "
+            f"process group {pgid} is alive): kill it first (kill -KILL -{pgid})")
     try:
         their_case = json.loads((prev / "case_inputs" / f"{base}.json")
                                 .read_text(encoding="utf-8"))
@@ -560,13 +579,14 @@ def _check_out(repo_root: Path, out: Path) -> Path:
     return out
 
 
-def _run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float | None
-         ) -> tuple[int | None, bool]:
+def _run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float | None,
+         started: Any = None) -> tuple[int | None, bool]:
     """(the exit status, None when killed; whether the timeout fired). The child runs in a
     session of its own, and its process group is killed on the timeout and on any exception
     while it runs (`Terminated`, `KeyboardInterrupt`). The signals of `_HELD` are blocked from
     before the fork until the process is bound, so a signal sent then is delivered inside the
-    `try` that kills it. Raises `OSError` when the binary cannot be started."""
+    `try` that kills it. ``started(pid)`` is called with the binary's pid, which is its
+    process group's id, before the wait. Raises `OSError` when the binary cannot be started."""
     with (cwd / "stdout.txt").open("wb") as out, (cwd / "stderr.txt").open("wb") as err:
         signal.pthread_sigmask(signal.SIG_BLOCK, _HELD)
         try:
@@ -578,6 +598,8 @@ def _run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float | None
             raise
         try:
             _unhold()   # a signal held since the fork is delivered here, inside the try
+            if started is not None:
+                started(proc.pid)
             return proc.wait(timeout=timeout), False
         except subprocess.TimeoutExpired:
             _kill(proc)
@@ -710,18 +732,23 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         "target_sha256": sel.profile.sha256, "ir_ref": sel.ir_ref,
         "pipeline_ref": sel.pipeline_ref, "binary_id": sel.binary_id,
         "validate_run_id": sel.run_id, "binary": str(sel.binary), "binary_sha256": binary_sha,
-        "configuration": {"base_case": base, "inputs": overrides, "file": str(Path(config)),
+        "configuration": {"base_case": base, "inputs": overrides, "file": str(Path(config).resolve()),
                           "text": config_text},
         "restart": restart, "command": cmd, "launch_env": dict(sorted(launch.env.items())),
         "cwd": str(out), "timeout_sec": timeout_sec, "started_at": _now(),
         "status": "running", "exit_status": None, "timed_out": False, "start_check": None,
-        "final_step": None, "kernel": None,
+        "final_step": None, "kernel": None, "binary_pgid": None,
     }
     previous = {s: signal.signal(s, _raise_terminated) for s in _TERMINATING}
     try:
         _write_json(out / RUN_RECORD, record)
+
+        def started(pid: int) -> None:
+            record["binary_pgid"] = pid
+            _write_json(out / RUN_RECORD, record)
+
         try:
-            rc, timed_out = _run(cmd, out, env, timeout_sec)
+            rc, timed_out = _run(cmd, out, env, timeout_sec, started)
         except OSError as exc:
             record.update(status="not_started", finished_at=_now(), error=str(exc))
             _write_json(out / RUN_RECORD, record)
@@ -754,6 +781,8 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="run_configuration.py",
+        epilog="The refusals, the record and the exit status are stated in the module "
+               "docstring (python3 -c 'import tools.run_configuration as m; print(m.__doc__)').",
         description="Run a person-written configuration (a certified case plus overrides of "
                     "its numeric inputs) on a node's certified binary. Operator-only; the run "
                     "is not a certification. See the module docstring and docs/RUNBOOK.md.")
@@ -782,6 +811,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"terminated by signal {exc.signum}: the run's process group was killed",
               file=sys.stderr)
         return 128 + exc.signum
+    except KeyboardInterrupt:
+        print("interrupted: the run's process group was killed", file=sys.stderr)
+        return 128 + int(signal.SIGINT)
     record = json.loads((a.out.resolve() / RUN_RECORD).read_text(encoding="utf-8"))
     print(f"{record['status']}: exit {record['exit_status']}"
           + (" (timed out)" if record["timed_out"] else "")

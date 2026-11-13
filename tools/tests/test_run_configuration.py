@@ -1,11 +1,13 @@
 """`tools/run_configuration.py` (issue #632 P5): a person-written configuration run on a node's
 certified binary, outside the workflow.
 
-Each row seeds a certified chain (`orchestration_fixtures.certify_node`) whose IR is a toy loop
-node of `test_driver_render` and whose binary is that IR's driver, rendered by the real
-`render_runner` and built with the toy model. So the selection is the workflow's own resolver
+Each row seeds a certified chain (`orchestration_fixtures.certify_node`) whose IR is a toy node
+of `test_driver_render`. Most rows certify that IR's driver, rendered by the real
+`render_runner` and built with the toy model, so the selection is the workflow's own resolver
 (`DerivationResolver.select`), the evaluation is the host's evaluator, the run is the real
-binary, and a continuation is the real driver's restart read under the real start check.
+binary, and a continuation is the real driver's restart read under the real start check. The
+rows about the process (signals, timeout, a binary that cannot start, the launch environment,
+a missing final capture) certify a shell script instead, which they name.
 """
 from __future__ import annotations
 
@@ -112,7 +114,8 @@ class RunConfigurationTest(unittest.TestCase):
     def certify(self, kind: str = "loop", *, restart_read: bool = True,
                 exe_bytes: bytes | None = None, build_site: Any = "local") -> dict[str, str]:
         ir, binary = _Built.get(kind, restart_read)
-        refs = certify_node(self.repo, "orch_seed", NODE, ir_text=yaml.safe_dump(ir),
+        refs = certify_node(self.repo, "orch_seed", NODE,
+                            ir_text="# certified\n" + yaml.safe_dump(ir),
                             exe_bytes=exe_bytes if exe_bytes is not None else binary,
                             ir_id="drv-toy_20260101_001", pipeline_id="drv-toy_20260101_001")
         (self.repo / refs["exe_ref"]).chmod(0o755)
@@ -239,7 +242,7 @@ class RunConfigurationTest(unittest.TestCase):
             ({"base_case": "m0", "inputs": {"n_step": True}}, "not an integer or a finite real"),
             ({"base_case": "m0", "inputs": {"t_end": float("nan")}},
              "not an integer or a finite real"),
-            ({"base_case": "m0", "inputs": {"unused": float("inf")}},
+            ({"base_case": "m0", "inputs": {"t_start": float("inf")}},
              "not an integer or a finite real"),
             ({"base_case": "m0", "inputs": {"n_step": [1]}}, "not an integer or a finite real"),
             ({"base_case": "m0", "inputs": {"n_step": 8}}, "within 4 ulp"),
@@ -507,6 +510,9 @@ class RunConfigurationTest(unittest.TestCase):
                      SPEC_REF, "--target", "fortran_cpu", "--config", str(cfg), "--out",
                      str(out), "--repo-root", str(self.repo)],
                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                self.addCleanup(_reap_proc, proc)
+                for name in ("binary.pid", "grandchild.pid"):
+                    self.addCleanup(_reap_file, out / name)
                 deadline = time.monotonic() + 60
                 while not ((out / "grandchild.pid").is_file()
                            and (out / "binary.pid").is_file()) \
@@ -516,12 +522,7 @@ class RunConfigurationTest(unittest.TestCase):
                 self.addCleanup(_reap, pids)
                 proc.send_signal(sig)
                 proc.communicate(timeout=60)
-                # SIGINT ends the tool with KeyboardInterrupt (its own status); the two
-                # signals the tool turns into `Terminated` exit 128 + n
-                if sig != signal.SIGINT:
-                    self.assertEqual(proc.returncode, 128 + int(sig))
-                else:
-                    self.assertNotEqual(proc.returncode, 0)
+                self.assertEqual(proc.returncode, 128 + int(sig))
                 for pid in pids:
                     self.assertFalse(_alive(pid), pid)
                 rec = json.loads((out / rc.RUN_RECORD).read_text())
@@ -711,11 +712,11 @@ class RunConfigurationTest(unittest.TestCase):
                 # worker's other thread and not interrupt this one's wait (the tool has one)
                 signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
 
+        self.addCleanup(_reap, started)   # the list is filled when the binary starts
         with mock.patch.object(subprocess, "Popen", Racing), \
                 self.assertRaises(rc.Terminated):
             self.run_tool({"base_case": "m0"})
         self.assertEqual(len(started), 1)
-        self.addCleanup(_reap, started)
         self.assertFalse(_alive(started[0]))
         rec = self.record()
         self.assertEqual((rec["status"], rec["signal"]), ("interrupted", int(signal.SIGTERM)))
@@ -778,6 +779,74 @@ class RunConfigurationTest(unittest.TestCase):
         with self.assertRaises(rc.ConfigurationRefused) as ctx:
             rc.continuation_payload(ir, "m0", payload, capture, stage)
         self.assertIn("not > 0", str(ctx.exception))
+
+    # --- review round 3 ---------------------------------------------------------------------
+
+    def test_a_restart_from_a_final_capture_records_its_kind(self) -> None:
+        self.certify("init")
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        self.assertEqual(self._continue("full", 3, "cont", final=True), rc.EXIT_RAN_FAILED)
+        self.assertEqual(self.record("cont")["restart"]["source_kind"], "final")
+
+    def test_an_override_equal_to_the_base_value_of_a_read_input_runs(self) -> None:
+        """Not a no-op refusal: the input is read by name (the plan's rule)."""
+        self.certify()
+        self.assertEqual(self.run_tool({"base_case": "m0", "inputs": {"n_step": 4}}), 0)
+        self.assertEqual(self.record()["status"], "ok")
+
+    def test_the_record_carries_the_binary_s_process_group_and_the_config_path(self) -> None:
+        self.certify()
+        self.assertEqual(self.run_tool({"base_case": "m0"}), 0)
+        rec = self.record()
+        self.assertIsInstance(rec["binary_pgid"], int)
+        self.assertEqual(rec["configuration"]["file"], str((self.tmp / "config.yaml").resolve()))
+
+    def test_a_continuation_from_a_run_that_is_still_running_is_refused(self) -> None:
+        self.certify()
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        holder = subprocess.Popen(["tail", "-f", "/dev/null"], start_new_session=True)
+        self.addCleanup(_reap_proc, holder)
+        rec_path = self.tmp / "full" / rc.RUN_RECORD
+        rec = json.loads(rec_path.read_text())
+        rec_path.write_text(json.dumps({**rec, "status": "running", "binary_pgid": holder.pid}))
+        self.assertIn("is still running", self.refused({"base_case": "m0"}, "o1",
+                                                       restart_from=self._sample("full", 2)))
+        holder.kill()
+        holder.wait()
+        self.assertEqual(self._continue("full", 2, "o2"), 0)
+
+    def test_sigint_exits_130_without_a_traceback(self) -> None:
+        self.certify(exe_bytes=b"#!/bin/sh\necho $$ > binary.pid\nexec tail -f /dev/null\n")
+        out = self.tmp / "int"
+        proc = subprocess.Popen(
+            [sys.executable, str(rc.REPO_ROOT / "tools" / "run_configuration.py"), SPEC_REF,
+             "--target", "fortran_cpu", "--config", str(self.config({"base_case": "m0"})),
+             "--out", str(out), "--repo-root", str(self.repo)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(_reap_proc, proc)
+        self.addCleanup(_reap_file, out / "binary.pid")
+        deadline = time.monotonic() + 60
+        while not (out / "binary.pid").is_file() and time.monotonic() < deadline \
+                and proc.poll() is None:
+            time.sleep(0.05)
+        proc.send_signal(signal.SIGINT)
+        _, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 130)
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(_alive(int((out / "binary.pid").read_text())))
+
+
+def _reap_proc(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
+
+
+def _reap_file(path: Path) -> None:
+    try:
+        _reap([int(path.read_text())])
+    except (OSError, ValueError):
+        pass
 
 
 def _reap(pids: list[int]) -> None:

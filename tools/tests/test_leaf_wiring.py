@@ -2952,7 +2952,7 @@ class PureRenderTests(unittest.TestCase):
         """
         runbook = (Path(ort.__file__).resolve().parents[1]
                    / "docs" / "RUNBOOK.md").read_text(encoding="utf-8")
-        begin_marker, end_marker = "\n## 3-1. ", "\n## 4. "
+        begin_marker, end_marker = "\n## 3-1. ", "\n## 3-2. "
         self.assertEqual(runbook.count(begin_marker), 1,
                          f"RUNBOOK has no single {begin_marker!r} heading; the section bound "
                          f"below would read the wrong text")
@@ -2960,7 +2960,7 @@ class PureRenderTests(unittest.TestCase):
                          f"RUNBOOK has no single {end_marker!r} heading, so §3-1's end is not "
                          f"where this check thinks it is")
         begin, end = runbook.index(begin_marker), runbook.index(end_marker)
-        self.assertGreater(end, begin, "§3-1 does not precede §4 in RUNBOOK.md")
+        self.assertGreater(end, begin, "§3-1 does not precede §3-2 in RUNBOOK.md")
         section = runbook[begin:end]
         for reason in ("dev_verify_major", "dev_verify_critical"):
             self.assertIn(reason, section,
