@@ -1676,11 +1676,14 @@ class ComposingInitEndToEndTest(unittest.TestCase):
         again = "    call cmp_mem__init(nx, 1, u, dts, j, ok)\n"
         use = "  use cmp_mem_model, only: cmp_mem__init, cmp_mem__step\n"
 
-        def gates(model: str) -> list[str]:
+        def gates(model: str, others: dict[str, str] | None = None) -> list[str]:
             found: list[str] = []
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / f"{CMP_SUB}_model.f90"
                 path.write_text(model)
+                for name, body in (others or {}).items():
+                    (Path(tmp) / name).parent.mkdir(parents=True, exist_ok=True)
+                    (Path(tmp) / name).write_text(body)
                 source.model_source_gates(
                     node_key=CMP_SUB_NODE_KEY, model_file=path, text=model,
                     dep_spec_ids=[CMP_MEM], violations=found, multidim_spec_id=None,
@@ -1725,6 +1728,38 @@ class ComposingInitEndToEndTest(unittest.TestCase):
                 self.assertNotEqual(model, text)
                 found = gates(model)
                 self.assertTrue(any(phrase in v for v in found), found)
+        # Review round 1: a private file beside the model (a submodule the model's `__step`
+        # reaches through a separate module procedure) holds the member's `__init` call; the
+        # model itself names it only in `__init`. The host-rendered runner, which calls the
+        # composite's `__init`, is not such a file.
+        sub = text.replace("  public :: cmp_sub__init, cmp_sub__step\n",
+                           "  public :: cmp_sub__init, cmp_sub__step\n  interface\n"
+                           "    module subroutine cmp_sub_reinit(nx, u)\n"
+                           "      integer, intent(in) :: nx\n"
+                           "      real(dp), intent(inout) :: u(nx)\n"
+                           "    end subroutine cmp_sub_reinit\n  end interface\n").replace(
+            in_step, in_step + "    call cmp_sub_reinit(nx, u)\n")
+        impl = ("submodule (cmp_sub_model) cmp_sub_impl\n  use cmp_mem_model, only: mi => "
+                "cmp_mem__init\ncontains\n  module subroutine cmp_sub_reinit(nx, u)\n"
+                "    integer, intent(in) :: nx\n    real(dp), intent(inout) :: u(nx)\n"
+                "    real(dp) :: d\n    integer :: n\n    logical :: q\n"
+                "    call mi(nx, 1, u, d, n, q)\n  end subroutine cmp_sub_reinit\n"
+                "end submodule cmp_sub_impl\n")
+        self.assertEqual([v for v in gates(sub) if "cmp_mem__init" in v], [])
+        for name, body, phrase in (
+                ("cmp_sub_impl.f90", impl, "`mi` is named in a source other than"),
+                ("nested/x.F90", "! x\nsubroutine y()\n  call cmp_mem__init()\nend\n",
+                 "`cmp_mem__init` is named in a source other than"),
+                ("helper.f90", "subroutine y()\n  call cmp_sub__init()\nend\n",
+                 "`cmp_sub__init` is named in a source other than")):
+            with self.subTest(other=name):
+                found = gates(sub, {name: body})
+                self.assertTrue(any(phrase in v and name.rsplit("/", 1)[-1] in v
+                                    for v in found), found)
+        # comments and literals in another file, and the runner, are not occurrences
+        self.assertEqual(gates(text, {
+            "helper.f90": "! calls cmp_mem__init\nsubroutine y()\n  print *, 'cmp_sub__init'\nend\n",
+            f"{CMP_SUB}_runner.f90": "program r\n  call cmp_sub__init()\nend program r\n"}), [])
 
 
 class DelegatingInitMetricGateTest(unittest.TestCase):
@@ -1764,10 +1799,11 @@ end module c2d_model
     def _gates(self, text: str, members: tuple[str, ...]) -> list[str]:
         from tools.backends.language.fortran import source
         found: list[str] = []
-        source.model_source_gates(
-            node_key="problem/c2d@0.1.0", model_file=Path("c2d_model.f90"), text=text,
-            dep_spec_ids=["m2d"], violations=found, multidim_spec_id="c2d",
-            init_member_ids=members)
+        with tempfile.TemporaryDirectory() as tmp:
+            source.model_source_gates(
+                node_key="problem/c2d@0.1.0", model_file=Path(tmp) / "c2d_model.f90",
+                text=text, dep_spec_ids=["m2d"], violations=found, multidim_spec_id="c2d",
+                init_member_ids=members)
         return [v for v in found if "metric-only" in v or "m2d__init" in v]
 
     def test_a_delegating_init_is_exempt_only_under_an_init_member(self) -> None:

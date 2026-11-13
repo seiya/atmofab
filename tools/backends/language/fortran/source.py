@@ -2474,6 +2474,37 @@ def _callee_count(text: str, name: str) -> int:
     return len(re.findall(rf"\bcall\s+{re.escape(name)}(?![a-z0-9_])", text))
 
 
+def _validate_init_names_outside_model(
+    node_init: str, members: list[str], model_file: Path, violations: list[str],
+) -> None:
+    """The absence half of `validate_member_init_placement` over the OTHER Fortran sources of the
+    model's source directory (any depth; the host-rendered `<spec_id>_runner.f90`, which calls
+    the node's `__init`, excepted): none names `<member>__init`, a local name a `use` of that
+    file renames it to, or the composite's own `<node>__init`, a `use` statement included. A
+    bundle may carry a private file beside the model (a `helper` / `internal_module`, which the
+    producer is told not to add and no gate refuses), and a submodule or helper there that calls
+    the member's `__init` is reached from `__step` through a procedure whose name the model's own
+    token count never sees (review round 1 of issue #632 P3). Comments and literals are masked."""
+    runner = model_file.with_name(model_file.name.removesuffix("_model.f90") + "_runner.f90")
+    for source in sorted(model_file.parent.rglob("*")):
+        if (not source.is_file() or source.is_symlink() or source == model_file
+                or source == runner or source.suffix.lower() not in MODULE_SOURCE_SUFFIXES):
+            continue
+        lowered = source.read_text(encoding="utf-8", errors="ignore").lower()
+        masked = joined_masked_view(lowered)
+        targets = {f"{m}__init" for m in members}
+        names = set(targets) | {node_init} | {
+            local for local, target in dependency_call_locals(lowered, members).items()
+            if target in targets}
+        for name in sorted(names):
+            if _identifier_count(masked, name):
+                violations.append(
+                    f"{source}: `{name}` is named in a source other than {model_file.name}. A "
+                    f"member's `__init` is called from `{node_init}` in the model file and named "
+                    f"nowhere else, and no other source of the bundle names `{node_init}`: keep "
+                    f"the call in `{node_init}` and add no private file that names either.")
+
+
 def validate_member_init_placement(
     *,
     node_spec_id: str,
@@ -2495,7 +2526,9 @@ def validate_member_init_placement(
       (`dependency_call_locals`, every rename of the file, renames of renames followed); inside
       `<node>__init` each such token is the callee of a `call`;
     - the composite's own `<node>__init` is named only by its own header and `end` statement and
-      by an access statement: a call of it from `__step` reaches the member's `__init` too.
+      by an access statement: a call of it from `__step` reaches the member's `__init` too;
+    - no OTHER Fortran source of the model's directory names either
+      (`_validate_init_names_outside_model`).
 
     The two halves have OPPOSITE polarities, so they do not share a reader: a call reader that
     misses a spelling fails presence closed and absence open (`dependency_call_locals`' trap).
@@ -2551,6 +2584,7 @@ def validate_member_init_placement(
                 f"`__init` — the driver calls it once per case, and a call from `__step` or any "
                 f"other procedure reaches the member's `__init` from there.")
     members = sorted({m.lower() for m in init_member_ids})
+    _validate_init_names_outside_model(node_init, members, model_file, violations)
     renames = dependency_renames(lowered, model_file.stem, members)
     locals_by_target: dict[str, set[str]] = {}
     for local, target in dependency_call_locals(lowered, members).items():

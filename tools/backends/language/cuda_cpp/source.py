@@ -1486,6 +1486,11 @@ def validate_member_init_placement(
     - the composite's own `<node>__init` token occurs only as the name of a function declaration
       or definition: a call of it from `__step` reaches the member's `__init` from there.
 
+    Every OTHER `.cu` of the source directory (`leaf_sources`, the host-rendered runner excepted)
+    names neither `<member>__init` nor `<spec_id>__init`: a helper that calls the member's `__init`
+    is otherwise reached from `__step` through a function whose name the model's count never
+    sees (review round 1 of issue #632 P3).
+
     Absence counts TOKENS, presence reads calls, for the polarity reason the Fortran binding
     states. What a token cannot show, and the continuation case judges: a lambda written inside
     `<node>__init` whose body calls the member's `__init` and that is stored beyond the call
@@ -1502,6 +1507,18 @@ def validate_member_init_placement(
             f"occurrence(s), {declared} declaration(s)): the model never calls or references its "
             f"own `__init` — the driver calls it once per case, and a call from `__step` or any "
             f"other function reaches the member's `__init` from there.")
+    host_runner = model_file.with_name(model_file.name.removesuffix("_model.cu") + "_runner.cu")
+    for source in leaf_sources(model_file.parent):
+        if source in (model_file, host_runner):
+            continue
+        other = cpp_lines.mask(source.read_text(encoding="utf-8", errors="ignore"))
+        for name in sorted({node_init} | {f"{m}__init" for m in init_member_ids}):
+            if re.search(rf"(?<![\w]){re.escape(name)}(?!\w)", other):
+                violations.append(
+                    f"{source}: `{name}` is named in a source other than {model_file.name}. A "
+                    f"member's `__init` is called from `{node_init}` in the model file and named "
+                    f"nowhere else, and no other source names `{node_init}`: keep the call in "
+                    f"`{node_init}` and add no private file that names either.")
     for member in sorted(set(init_member_ids)):
         member_init = f"{member}__init"
         token = re.compile(rf"(?<![\w]){re.escape(member_init)}(?!\w)")

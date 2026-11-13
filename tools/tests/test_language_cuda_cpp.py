@@ -3333,11 +3333,14 @@ class MemberInitPlacementTest(unittest.TestCase):
     IN_STEP = "  double dts = dt / substeps;\n"
     CALL = "  mem2d_model::mem2d__init(nx, h, dt, n_plan, init_ok, a, b);\n"
 
-    def _gates(self, text: str, members: tuple[str, ...] = ("mem2d",)) -> list[str]:
+    def _gates(self, text: str, members: tuple[str, ...] = ("mem2d",),
+               others: dict[str, str] | None = None) -> list[str]:
         out: list[str] = []
         with tempfile.TemporaryDirectory() as tmp:
             model = Path(tmp) / "comp2d_model.cu"
             model.write_text(text)
+            for name, body in (others or {}).items():
+                (Path(tmp) / name).write_text(body)
             cpp_source.model_source_gates(
                 node_key="problem/comp2d@0.1.0", model_file=model, text=text,
                 dep_spec_ids=["mem2d"], violations=out, multidim_spec_id="comp2d",
@@ -3391,6 +3394,22 @@ class MemberInitPlacementTest(unittest.TestCase):
                 self.assertNotEqual(text, self.BASE)
                 found = self._gates(text)
                 self.assertTrue(any(phrase in v for v in found), found)
+        # Review round 1: a helper `.cu` beside the model holds the member's `__init` call, reached
+        # from `__step` through a function the model declares; the model alone is clean.
+        reach = self.BASE.replace("void comp2d__step", "void comp2d_reinit(int nx);\nvoid comp2d__step"
+                                  ).replace(self.IN_STEP, self.IN_STEP + "  comp2d_reinit(nx);\n")
+        self.assertFalse(any("mem2d__init" in v for v in self._gates(reach)))
+        helper = ('#include "mem2d_model.cuh"\nnamespace comp2d_model {\nvoid comp2d_reinit(int nx) '
+                  "{ (void)nx; mem2d_model::mem2d__init(nx); }\n}\n")
+        found = self._gates(reach, others={"comp2d_reinit.cu": helper})
+        self.assertTrue(any("comp2d_reinit.cu" in v and "`mem2d__init` is named in a source other"
+                            in v for v in found), found)
+        found = self._gates(self.BASE, others={"x.cu": "void y() { comp2d__init(); }\n"})
+        self.assertTrue(any("`comp2d__init` is named in a source other" in v for v in found), found)
+        # The host-rendered runner calls the composite's `__init`; a comment elsewhere is no name.
+        self.assertFalse(any("named in a source other" in v for v in self._gates(self.BASE, others={
+            "comp2d_runner.cu": "void r() { comp2d_model::comp2d__init(); }\n",
+            "x.cu": "// mem2d__init and comp2d__init\nconst char* s = \"mem2d__init\";\n"})))
         # A prototype of the composite's own `__init` beside its definition is a declaration.
         proto = self.BASE.replace(
             "namespace comp2d_model {\n",
