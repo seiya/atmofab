@@ -34,6 +34,23 @@ prints every path and the aggregate verdict each resolved run recorded):
   (which carries the continuation and the test), linked against the closure of the `chan_gen`
   pipeline (the same component versions that IR's `direct_deps` name).
 
+Issue #632 P6 V-a adds three subjects over what the billed run R certified on 2026-11-13, run
+with `--subjects rot_r,chan_r,chan_hand_r` (the default stays the P2 three, the pre-R record):
+
+* `rot_r` — the GENERATED `problem/shallow_water2d_rotating@0.1.1` model of R
+  (`.../problem__shallow_water2d_rotating__0.1.1/fortran_cpu/shallow-water2d-rotating_20261113_001`,
+  its lineage `source_id`) under that pipeline's CERTIFIED IR, unchanged (it carries the
+  continuation and the restart test); mutants `mutants_rot_r.yaml` (the `rot` rows re-expressed
+  on this text); the order and placement controls of `rot`.
+* `chan_r` — the GENERATED `problem/shallow_water2d_channel@0.4.1` model of R
+  (`.../problem__shallow_water2d_channel__0.4.1/fortran_cpu/shallow-water2d-channel_20261113_001`)
+  under its CERTIFIED IR, unchanged; mutants `mutants_chan_r.yaml`.
+* `chan_hand_r` — the HAND-WRITTEN model of `chan_hand` under the same certified IR, linked
+  against the `chan_r` closure; mutants `mutants_chan_hand.yaml` as they are.
+
+A must-catch row the P2 subjects caught and an R subject misses is a finding for the record (a
+`Compile` finding when only the certified IR differs), not a change to this bench.
+
 The run of one row is `Validate.execute`'s shape: the host-rendered Fortran driver
 (`render_runner`) linked with the closure at the certified flags `-std=f2008 -O2 -fopenmp`;
 pass 1 runs the base cases in sorted case-id order in ONE process (`OMP_NUM_THREADS=1`);
@@ -144,6 +161,11 @@ PIPES = {
                   "shallow-water2d-rotating_20261112_001",
     "chan": REPO / "workspace/pipelines/problem__shallow_water2d_channel__0.3.1/fortran_cpu/"
                    "shallow-water2d-channel_20261106_001",
+    # issue #632 P6 V-a: the pipelines the billed run R certified (2026-11-13)
+    "rot_r": REPO / "workspace/pipelines/problem__shallow_water2d_rotating__0.1.1/fortran_cpu/"
+                    "shallow-water2d-rotating_20261113_001",
+    "chan_r": REPO / "workspace/pipelines/problem__shallow_water2d_channel__0.4.1/fortran_cpu/"
+                     "shallow-water2d-channel_20261113_001",
 }
 RESTART_TEST = "l3_restart_equivalence"
 CHAN_BASE, CHAN_K = "chan_tc4_ref_n032_dts100", 272
@@ -222,6 +244,14 @@ def chan_gen_ir() -> dict[str, Any]:
     ir["io_contract"]["predicates"] += copy.deepcopy(
         [p for p in hand["io_contract"]["predicates"] if p["test_id"] == RESTART_TEST])
     return ir
+
+
+def certified_ir(pipe: Path) -> dict[str, Any]:
+    """The IR the pipeline's own lineage names (`ir_ref`), unchanged: the IRs R certified carry
+    the continuation and `l3_restart_equivalence` themselves (issue #632 P2's `tests.md`)."""
+    lin = _lineage(pipe)
+    print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml")
+    return yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text())
 
 
 def multiple_variant(ir: dict[str, Any], every: int = 62) -> dict[str, Any]:
@@ -376,13 +406,21 @@ SUBJECTS = {
     "rot": {"pipe": "rot", "mutants": "mutants_rot.yaml"},
     "chan_gen": {"pipe": "chan", "mutants": "mutants_chan_gen.yaml"},
     "chan_hand": {"pipe": "chan", "mutants": "mutants_chan_hand.yaml"},
+    # issue #632 P6 V-a: R's generated models under R's CERTIFIED IRs, and the hand-written
+    # channel model under the certified channel IR (Part 1 PR-S3's procedure)
+    "rot_r": {"pipe": "rot_r", "mutants": "mutants_rot_r.yaml", "orders": True},
+    "chan_r": {"pipe": "chan_r", "mutants": "mutants_chan_r.yaml"},
+    "chan_hand_r": {"pipe": "chan_r", "mutants": "mutants_chan_hand.yaml", "hand_model": True},
 }
+#: the subjects of the P2 bench (the default `--subjects`); P6 V-a runs `--subjects
+#: rot_r,chan_r,chan_hand_r`
+P2_SUBJECTS = "rot,chan_gen,chan_hand"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=24)
-    ap.add_argument("--subjects", default="rot,chan_gen,chan_hand")
+    ap.add_argument("--subjects", default=P2_SUBJECTS)
     ap.add_argument("--rows", help="comma-separated row ids to run (baseline always runs)")
     ap.add_argument("--json")
     ap.add_argument("--all-cases", action="store_true")
@@ -414,10 +452,14 @@ def main() -> int:
             elif subj == "chan_gen":
                 ir_full = chan_gen_ir()
                 model = _source(pipe)
-            else:
+            elif subj == "chan_hand":
                 ir_full = yaml.safe_load((PR3 / "ir" / "shallow_water2d_channel.yaml").read_text())
                 model = PR3 / "models" / "shallow_water2d_channel_model.f90"
                 print(f"  IR: {(PR3 / 'ir' / 'shallow_water2d_channel.yaml').relative_to(REPO)}")
+            else:
+                ir_full = certified_ir(pipe)
+                model = (PR3 / "models" / "shallow_water2d_channel_model.f90"
+                         if spec.get("hand_model") else _source(pipe))
             print(f"  model: {model.relative_to(REPO)}")
             sid = ir_full["meta"]["spec_id"]
             cache = cache_root / subj
@@ -433,12 +475,13 @@ def main() -> int:
             variants = [("suite", "cut")]
             for rid, row in rows:
                 kinds = [("suite", "cut")]
-                if subj == "rot" and rid == "baseline":
+                orders = subj == "rot" or spec.get("orders", False)
+                if orders and rid == "baseline":
                     kinds += [("base_first", "cut"), ("axis_first", "cut")]
-                elif subj == "rot":
+                elif orders:
                     kinds += [(o, "cut") for o in ("base_first", "axis_first")
                               if f"expect_{o}" in row]
-                if subj == "rot" and (rid == "baseline" or row.get("class") == "must_catch"):
+                if orders and (rid == "baseline" or row.get("class") == "must_catch"):
                     kinds.append(("suite", "multiple"))
                 for order, variant in kinds:
                     ir = multiple_variant(ir_full) if variant == "multiple" else ir_full

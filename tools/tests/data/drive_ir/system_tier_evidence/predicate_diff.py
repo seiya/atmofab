@@ -22,6 +22,10 @@ Printed, each as a count with its members:
   they compute the same quantity is what the V-a tables measure, not this script);
 - of the matched cases: the keys present on one side only.
 Exit 0 always: this is a record, not a gate.
+
+Issue #632 P6 V-a runs it on any pair of IR files with `--hand <file> --certified <file>` (the
+channel's `pr3_evidence/ir/shallow_water2d_channel.yaml` against R's certified channel IR; the
+subcycled node's `subcycle_evidence/build_ir.py` transcription against R's certified IR).
 """
 from __future__ import annotations
 
@@ -58,12 +62,23 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--at", action="append", default=[],
                     help="<spec_id>@<version>: read that node at that version (bench.AT)")
-    for item in ap.parse_args().at:
+    ap.add_argument("--hand", help="a hand-authored IR file in place of build_ir.build()")
+    ap.add_argument("--certified", help="a certified IR file in place of bench.certified_ir()")
+    args = ap.parse_args()
+    if bool(args.hand) != bool(args.certified):
+        raise SystemExit("--hand and --certified go together")
+    for item in args.at:
         sid, _, ver = item.partition("@")
         if not sid or not ver:
             raise SystemExit(f"--at {item!r}: expected <spec_id>@<version>")
         bench.AT[sid] = ver
-    hand, cert = build_ir.build(), bench.certified_ir()
+    if args.hand:
+        import yaml
+        hand = yaml.safe_load(Path(args.hand).read_text())
+        cert = yaml.safe_load(Path(args.certified).read_text())
+        print(f"hand IR: {args.hand}\ncertified IR: {args.certified}")
+    else:
+        hand, cert = build_ir.build(), bench.certified_ir()
     ht = {t["test_id"] for t in hand["io_contract"]["tests"]}
     ct = {t["test_id"] for t in cert["io_contract"]["tests"]}
     print(f"tests: hand {len(ht)}, certified {len(ct)}; hand only {sorted(ht - ct)}; "
@@ -90,7 +105,13 @@ def main() -> int:
     def ms(preds: list, f) -> list:
         return sorted(json.dumps(f(x), sort_keys=True, default=str) for x in preds)
 
-    def num(v: Any) -> Any:
+    def num(v: Any, cases: tuple = ()) -> Any:
+        # `{per_case: {<the key's one case>: x}}` and a bare `x` are one threshold spelled two
+        # ways (issue #632 P6's subcycled IRs differ only so); a `per_case` naming another case,
+        # or on a key of several cases, stays a dict and compares as one
+        if isinstance(v, dict) and set(v) == {"per_case"} and isinstance(v["per_case"], dict) \
+                and len(cases) == 1 and set(v["per_case"]) == set(cases):
+            return num(v["per_case"][cases[0]])
         if isinstance(v, dict):
             return {k: num(x) for k, x in v.items()}
         if isinstance(v, list):
@@ -101,8 +122,8 @@ def main() -> int:
 
     count = [k for k in both if len(hp[k]) != len(cp[k])]
     op = [k for k in both if ms(hp[k], lambda x: x.get("op")) != ms(cp[k], lambda x: x.get("op"))]
-    moved = [k for k in both if ms(hp[k], lambda x: (x.get("op"), num(x.get("value"))))
-             != ms(cp[k], lambda x: (x.get("op"), num(x.get("value"))))]
+    moved = [k for k in both if ms(hp[k], lambda x: (x.get("op"), num(x.get("value"), k[2])))
+             != ms(cp[k], lambda x: (x.get("op"), num(x.get("value"), k[2])))]
     spelled = [k for k in both if k not in moved
                and ms(hp[k], lambda x: x.get("value")) != ms(cp[k], lambda x: x.get("value"))]
     order = [k for k in both if ms(hp[k], lambda x: x.get("target_cases"))

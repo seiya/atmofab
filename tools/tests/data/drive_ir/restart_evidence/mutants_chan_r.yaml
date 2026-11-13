@@ -1,0 +1,119 @@
+# Issue #632 P6 V-a — the model mutants of `mutants_chan_gen.yaml` (subject `chan_gen`, P2
+# restart bench), RE-EXPRESSED as patches to the CERTIFIED generated model of run R of 2026-11-13
+# (`workspace/pipelines/problem__shallow_water2d_channel__0.4.1/fortran_cpu/
+# shallow-water2d-channel_20261113_001/source/src_20261113_001/src/
+# shallow_water2d_channel_model.f90`, its lineage's `source_id`; not committed: it is
+# `workspace/` state), certified under its lineage's IR (`workspace/ir/
+# problem__shallow_water2d_channel__0.4.1/shallow-water2d-channel_20261113_001`, which carries
+# the continuation `chan_tc4_ref_n032_dts100_cont` at step 272 and `l3_restart_equivalence`).
+# The P2 patches target the 0.3.1 model (`.../shallow-water2d-channel_20261106_001/source/
+# src_20261106_002/...`).
+# Same ids, same `class`, same defect; none of the P2 patches applies verbatim, because the
+# generated text spells the same program differently: the private state is `*_m`
+# (`rhs_ok_m`, `forcing_on_m`; was `*_s`, `rhs_ok`, `forcing_on`), `__init` takes the block's
+# offsets and clears its outputs before validation, `__step` packs and commits by loops and
+# returns before the commit on a refusal, and the rhs is `shallow_water2d_channel_rhs`, which
+# assembles the tendency last (no trailing status block) and writes the error flag as it goes.
+# Each patch here was written from the defect's title and the P2 patch before any run, and none
+# was changed after one. `note` records where the generated text makes the re-expression differ
+# from the P2 patch.
+#
+# Checked against the certified IR before any run: the case sorting before the base
+# `chan_tc4_ref_n032_dts100` is still `chan_tc3_ref_n128_dts100`, and the base's
+# `history.every` is 272. The runner calls `__init` with the case's `t_start` and sets the
+# continuation's first t to t_start + K dt after it.
+
+chan-stale-stage:
+  title: >-
+    RK4's first-stage tendency (the rhs's stage 1) is kept (module save) and the current step
+    uses the PREVIOUS step's stage-1 tendency in its place (the fresh one is computed and kept
+    for the next step); `__init` drops the kept array, so a case's first step, and a
+    continuation's first step at K, use the fresh one. The continuation's step K+1 is fresh
+    where the base's used step K's stage-1 tendency.
+  class: must_catch
+  note: >-
+    the swap is placed after the tendency's assembly loop at the end of the rhs (P2: before the
+    `step_15` status block, also after the assembly; this rhs has no such block), so an rhs
+    call that returns early on an error (dUdt = 0) does not count a stage, as in P2's text
+    where those returns also precede it; the swap uses `L_flux` (allocatable, the shape of
+    dUdt) as the temporary as P2 used `l_flux`. `__init` drops the kept array at its first
+    statements before validation (P2: the same point, the reset of `forcing_on`), and
+    `__step` sets the stage count to 0 just before the RK4 call, where it sets `rhs_ok_m`.
+  patches:
+    - old: "  logical :: rhs_ok_m = .true."
+      new: "  logical :: rhs_ok_m = .true.\n  real(dp), allocatable, save :: k1_prev(:, :, :)\n  integer, save :: stage_no = 0"
+    - old: |-
+        n_step_plan = 0
+        forcing_on_m = .false.
+      new: |-
+        n_step_plan = 0
+        forcing_on_m = .false.
+        if (allocated(k1_prev)) deallocate(k1_prev)
+    - old: |-
+        rhs_ok_m = .true.
+        call dynamics_shallow_water_time_update_2d_rk4__advance(ncomp, nx, ny, U_n, &
+      new: |-
+        rhs_ok_m = .true.
+        stage_no = 0
+        call dynamics_shallow_water_time_update_2d_rk4__advance(ncomp, nx, ny, U_n, &
+    - old: "    !$omp end parallel do\n  end subroutine shallow_water2d_channel_rhs"
+      new: "    !$omp end parallel do\n\n    stage_no = stage_no + 1\n    if (stage_no == 1) then\n      if (allocated(k1_prev)) then\n        if (all(shape(k1_prev) == shape(dUdt))) then\n          L_flux = k1_prev\n          k1_prev = dUdt\n          dUdt = L_flux\n        else\n          deallocate(k1_prev)\n          allocate(k1_prev, source=dUdt)\n        end if\n      else\n        allocate(k1_prev, source=dUdt)\n      end if\n    end if\n  end subroutine shallow_water2d_channel_rhs"
+
+chan-ref-first-call:
+  title: >-
+    a reference depth h_ref cached from the state the first step call of a process commits,
+    re-cached whenever the grid shape differs from the cached array's, and read every call in a
+    weak relaxation h += 1e-6 (h_ref - h). The case before the base in pass 1 is
+    `chan_tc3_ref_n128_dts100` (128 x 128), so the base re-caches from its own first committed
+    state (after step 1); the continuation's own process caches the base's state after step
+    K+1. Small (1e-6 per step): a banded test may not see it.
+  class: must_catch
+  note: >-
+    placed after the commit loop at the end of `__step` (P2: inside `if (ok)` after the commit
+    assignments); a refused step returns before the commit here, so it runs on committed calls
+    only, as in P2.
+  patches:
+    - old: "  logical :: rhs_ok_m = .true."
+      new: "  logical :: rhs_ok_m = .true.\n  real(dp), allocatable, save :: h_ref(:, :)"
+    - old: "    !$omp end parallel do\n  end subroutine shallow_water2d_channel__step"
+      new: "    !$omp end parallel do\n    if (.not. allocated(h_ref)) then\n      allocate(h_ref, source=h)\n    else if (size(h_ref, 1) /= nx .or. size(h_ref, 2) /= ny) then\n      deallocate(h_ref)\n      allocate(h_ref, source=h)\n    end if\n    h = h + 1.0e-6_dp * (h_ref - h)\n  end subroutine shallow_water2d_channel__step"
+
+chan-private-clock:
+  title: >-
+    the time RK4 (and so the TC4 forcing) receives is a private clock (module save) that
+    `__init` sets to t_start and each step advances by dt, in place of the `t` argument. In an
+    uncut run it differs from t only by rounding (the driver forms t_start + n dt); in a
+    continuation `__init` sets it to t_start = 0 while the first step is at t_K.
+  class: must_catch
+  note: >-
+    `__init` sets the clock at its first statements before validation (P2: the same point);
+    the RK4 call's time argument is replaced and the clock advanced right after the call
+    (whatever its result), as in P2.
+  patches:
+    - old: "  logical :: rhs_ok_m = .true."
+      new: "  logical :: rhs_ok_m = .true.\n  real(dp), save :: m_clock = 0.0_dp"
+    - old: |-
+        n_step_plan = 0
+        forcing_on_m = .false.
+      new: |-
+        n_step_plan = 0
+        forcing_on_m = .false.
+        m_clock = t_start
+    - old: "      shallow_water2d_channel_rhs, t, dt, U_np1, guard_pass)"
+      new: "      shallow_water2d_channel_rhs, m_clock, dt, U_np1, guard_pass)\n    m_clock = m_clock + dt"
+
+ctl-dead-counter:
+  title: a private counter incremented every step call and never read
+  class: control
+  note: >-
+    incremented in `__step` where it sets `rhs_ok_m`, before the RK4 call (P2: the same point).
+  patches:
+    - old: "  logical :: rhs_ok_m = .true."
+      new: "  logical :: rhs_ok_m = .true.\n  integer, save :: dead_count = 0"
+    - old: |-
+        rhs_ok_m = .true.
+        call dynamics_shallow_water_time_update_2d_rk4__advance(ncomp, nx, ny, U_n, &
+      new: |-
+        rhs_ok_m = .true.
+        dead_count = dead_count + 1
+        call dynamics_shallow_water_time_update_2d_rk4__advance(ncomp, nx, ny, U_n, &

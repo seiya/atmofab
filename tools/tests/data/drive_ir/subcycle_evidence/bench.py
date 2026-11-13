@@ -5,9 +5,20 @@
 `../pr3_evidence/models/shallow_water2d_channel_model.f90`, and the CERTIFIED sources of the
 member's components and of the harness: those the certified `fortran_cpu` pipeline of
 `problem/shallow_water2d_channel@0.3.1` resolved (`../restart_evidence/bench.py` `closure`, every
-resolved run checked `pass`). The member at `0.4.1` has no certified `fortran_cpu` pipeline, so
-the member model is the hand-written one, as in the restart bench's `chan_hand` subject. Run from
-the repository root:
+resolved run checked `pass`). When P4 ran, the member at `0.4.1` had no certified `fortran_cpu`
+pipeline, so the member model is the hand-written one, as in the restart bench's `chan_hand`
+subject; that default is kept as the pre-R record.
+
+Issue #632 P6 V-a (after the billed run R of 2026-11-13 certified this node and its member):
+`--ir certified` reads the IR of R's composite pipeline (`R_PIPE`, its lineage `ir_ref`) in
+place of the hand IR; `--model generated` runs R's GENERATED composite over R's generated member
+and R's closure (`R_PIPE`'s `resolved_dependencies`), with `--mutants
+tools/tests/data/drive_ir/subcycle_evidence/mutants_generated.yaml` (a path from the working
+directory; the rows of `mutants.yaml` re-expressed on the generated text); `--ir certified
+--model hand` runs the hand composite and the hand member over R's closure. P6 ran both with
+`--gate --all-mutants`: the hand pair exits 0; the generated pair exits 1 on one row only, whose
+recorded reason heads `mutants_generated.yaml`. `--ir hand --model generated` was not run. Run
+from the repository root:
 
   PYTHONPATH=. python3 <this file> [--gate | --gate-only] [--mutant <id>]... [--keep <dir>]
       [--cases <id>,...] [--show-values]
@@ -85,12 +96,40 @@ MUTANTS = HERE / "mutants.yaml"
 THREADS = "4"
 
 
-def sources() -> list[tuple[str, Path]]:
-    """Link order: the harness and the member's components (the certified 0.3.1 member's
-    resolved closure, its own model left out), then the hand-written member."""
-    closure = [s for s in _RST.closure(_RST.PIPES["chan"]) if not s[0].startswith("problem/")]
-    print(f"  member (hand-written): {MEMBER_MODEL.relative_to(REPO)}", flush=True)
-    return closure + [(f"problem/{B.MEMBER}", MEMBER_MODEL)]
+#: issue #632 P6 V-a: the composite's pipeline the billed run R certified (2026-11-13); its
+#: lineage resolves the generated member `shallow_water2d_channel@0.4.1` of the same run
+R_PIPE = (REPO / "workspace/pipelines/problem__shallow_water2d_channel_subcycled__0.1.0/"
+          "fortran_cpu/shallow-water2d-channel-subcycled_20261113_001")
+
+
+def sources(closure_of: str = "p4", member: str = "hand") -> list[tuple[str, Path]]:
+    """Link order: the harness and the member's components, then the member. `closure_of`
+    `p4` is the certified 0.3.1 member's resolved closure (P4's bench, before R), `r` the
+    closure R's composite pipeline resolved; `member` `hand` replaces the member's model in it
+    with the hand-written one, `generated` keeps the one that closure resolved."""
+    if closure_of == "p4":
+        closure = [s for s in _RST.closure(_RST.PIPES["chan"]) if not s[0].startswith("problem/")]
+    else:
+        closure = _RST.closure(R_PIPE)
+        if member == "hand":
+            closure = [s for s in closure if not s[0].startswith("problem/")]
+    if member == "hand":
+        print(f"  member (hand-written): {MEMBER_MODEL.relative_to(REPO)}", flush=True)
+        return closure + [(f"problem/{B.MEMBER}", MEMBER_MODEL)]
+    return closure
+
+
+def certified_ir() -> dict[str, Any]:
+    lin = json.loads((R_PIPE / "lineage.json").read_text())
+    print(f"  certified IR: {lin['ir_ref']}/spec.ir.yaml", flush=True)
+    return yaml.safe_load((REPO / lin["ir_ref"] / "spec.ir.yaml").read_text())
+
+
+def generated_model() -> Path:
+    lin = json.loads((R_PIPE / "lineage.json").read_text())
+    path = R_PIPE / "source" / lin["source_id"] / "src" / f"{B.SID}_model.f90"
+    print(f"  model (generated): {path.relative_to(REPO)}", flush=True)
+    return path
 
 
 def build_closure(cache: Path, srcs: list[tuple[str, Path]]) -> list[str]:
@@ -222,10 +261,19 @@ def main() -> int:
     ap.add_argument("--show-values", action="store_true")
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--json", help="write the mutant table as JSON here")
+    ap.add_argument("--ir", choices=("hand", "certified"), default="hand",
+                    help="certified: the IR of R's composite pipeline (P6 V-a)")
+    ap.add_argument("--model", choices=("hand", "generated"), default="hand",
+                    help="generated: R's composite and member models, R's closure (P6 V-a)")
+    ap.add_argument("--mutants", default=str(MUTANTS))
     a = ap.parse_args()
-    ir = yaml.safe_load(B.TRANSCRIPTION.read_text())
-    if ir != B.build():
-        raise SystemExit(f"{B.TRANSCRIPTION} differs from build_ir.build(): run build_ir.py")
+    mutants_path = Path(a.mutants)
+    if a.ir == "hand":
+        ir = yaml.safe_load(B.TRANSCRIPTION.read_text())
+        if ir != B.build():
+            raise SystemExit(f"{B.TRANSCRIPTION} differs from build_ir.build(): run build_ir.py")
+    else:
+        ir = certified_ir()
     if a.cases:
         keep_ids = set(a.cases.split(","))
         ir["case"]["test_case_set"] = [c for c in ir["case"]["test_case_set"]
@@ -244,13 +292,16 @@ def main() -> int:
         rc = 1 if findings else 0
         if a.gate_only:
             return rc
-    base = MODEL.read_text()
+    base = (generated_model() if a.model == "generated" else MODEL).read_text()
     root = Path(tempfile.mkdtemp(prefix="chs_closure_"))
     cache = root / "c"
     try:
-        objs = build_closure(cache, sources())
+        # the hand IR with the hand models keeps P4's closure (the pre-R record); every other
+        # combination links R's closure, with the hand-written member under the hand composite
+        objs = build_closure(cache, sources("p4" if a.ir == "hand" and a.model == "hand"
+                                            else "r", a.model))
         if not a.all_mutants:
-            mutants = yaml.safe_load(MUTANTS.read_text()) if a.mutant else {}
+            mutants = yaml.safe_load(mutants_path.read_text()) if a.mutant else {}
             text = base
             for m in a.mutant:
                 text = apply_patches(text, mutants[m]["patches"])
@@ -267,7 +318,7 @@ def main() -> int:
             if a.mutant:
                 return rc   # a --mutant run reports what moved; only a --gate finding fails it
             return 1 if moved or rc or res["gate"] or res["rc"] else 0
-        mutants = yaml.safe_load(MUTANTS.read_text())
+        mutants = yaml.safe_load(mutants_path.read_text())
 
         def patched(mid: str) -> str | None:
             try:
