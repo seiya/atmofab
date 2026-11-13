@@ -116,8 +116,14 @@ def compare_inputs(c_ir: Path, c_case: str, m_ir: Path, m_case: str) -> list[str
     return out
 
 
-def _shape(v: Any) -> tuple[int, ...]:
-    return (len(v), *_shape(v[0])) if isinstance(v, list) and v else ()
+def _shape(v: Any) -> tuple[int, ...] | None:
+    """The array's shape, or None when it is ragged (rows of different shapes)."""
+    if not (isinstance(v, list) and v):
+        return ()
+    inner = [_shape(x) for x in v]
+    if any(i is None or i != inner[0] for i in inner):
+        return None
+    return (len(v), *inner[0])
 
 
 def _broadcast_equal(x: Any, y: Any) -> bool:
@@ -130,6 +136,8 @@ def _broadcast_equal(x: Any, y: Any) -> bool:
             v = v[0 if n == 1 else i]
         return v
     sx, sy = _shape(x), _shape(y)
+    if sx is None or sy is None:
+        return False
     rank = max(len(sx), len(sy))
     px, py = (1,) * (rank - len(sx)) + sx, (1,) * (rank - len(sy)) + sy
     if any(p != q and 1 not in (p, q) for p, q in zip(px, py)):
