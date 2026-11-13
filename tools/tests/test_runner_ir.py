@@ -183,7 +183,7 @@ class DriveAgreementTest(unittest.TestCase):
                 self.assertEqual(refusals, [])
                 self.assertEqual(layouts, pe.distribute_layouts(ir))
                 with_axes += bool(layouts)
-        self.assertEqual(with_axes, 11 + 2 + 2)   # 11 bench nodes, 2 variants, coriolis, swe2d
+        self.assertEqual(with_axes, 12 + 2 + 2)   # 12 bench nodes, 2 variants, coriolis, swe2d
         for new in ("V", "stage_t"):
             variables = {v["name"]: v["shape_expr"]
                          for v in pe.snapshot_schema(irs[f"rk4_{new}"])["variables"]}
@@ -285,6 +285,7 @@ _CENSUS = {
     "shallow_water2d_channel": (35,) * 7,
     # the wave case (`ny = 4`, min_block 2) is replicated where the grid splits `y` in three or more
     "shallow_water2d_rotating": (18, 18, 17, 18, 17, 18, 18),
+    "shallow_water2d_channel_subcycled": (17,) * 7,
 }
 _C = lambda k: (k, "cell")   # noqa: E731
 _F = lambda k: (k, "face")   # noqa: E731
@@ -313,6 +314,7 @@ _LAYOUTS = {
     "shallow_water2d": {n: (_C(0), _C(1)) for n in ("h", "hu", "hv", "z_b")},
     "shallow_water2d_channel": {n: (_C(0), _C(1)) for n in ("h", "hu", "hv")},
     "shallow_water2d_rotating": {n: (_C(0), _C(1)) for n in ("h", "hu", "hv", "z_b", "f")},
+    "shallow_water2d_channel_subcycled": {n: (_C(0), _C(1)) for n in ("h", "hu", "hv")},
 }
 
 

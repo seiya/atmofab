@@ -1,0 +1,13 @@
+spec_id: shallow_water2d_channel_subcycled
+spec_kind: problem
+dependencies:
+  # An assembled model (system tier, Part 2, issue #632): it sub-cycles the member `problem`,
+  # whose own components come from the member's adopted profile and are not declared here. The
+  # member publishes `<member>__init` and `<member>__step`; a member is admitted only when its
+  # own §5.1 publishes exactly `<member>__step`, or `<member>__step` and `<member>__init`, and a
+  # composite over a member that publishes `__init` publishes `__init` itself.
+  problems:
+    - problem_id: shallow_water2d_channel
+      version_constraint: ">=0.4.1 <1.0.0"
+  components: []
+  profiles: []
