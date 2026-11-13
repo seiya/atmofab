@@ -7704,10 +7704,12 @@ class NodeAllocationTest(unittest.TestCase):
     @staticmethod
     def _composite_repo(tmp: str, *, declaring_kind: str, declared_kind: str | None = None,
                         member_procedures: tuple[str, ...] = ("m__step",),
-                        register_member: bool = True) -> Path:
+                        register_member: bool = True,
+                        composite_procedures: tuple[str, ...] | None = None) -> Path:
         """A tmp repo with `n1` (catalogued as `declaring_kind`; its deps.yaml's self-declared
         `spec_kind:` line is `declared_kind`, default the same) declaring one `problems:` entry,
-        `m`, whose §5.1 publishes `member_procedures`."""
+        `m`, whose §5.1 publishes `member_procedures`; `n1`'s own controlled_spec.md publishes
+        `composite_procedures` (None: no file)."""
         repo = Path(tmp)
         (repo / "spec" / "registry").mkdir(parents=True)
         catalog = ["specs:",
@@ -7733,10 +7735,13 @@ class NodeAllocationTest(unittest.TestCase):
         (m / "deps.yaml").write_text(
             "spec_id: m\nspec_kind: problem\ndependencies:\n  components: []\n"
             "  profiles: []\n", encoding="utf-8")
-        procs = "".join(f"  - name: {name}\n    args: []\n" for name in member_procedures)
-        (m / "controlled_spec.md").write_text(
-            "# m\n\n## 5. Interface\n\n### 5.1 Canonical interface\n\n```yaml\n"
-            f"procedures:\n{procs}```\n\n## 6. Tests\n", encoding="utf-8")
+        for spec_dir, names in ((m, member_procedures), (n1, composite_procedures)):
+            if names is None:
+                continue
+            procs = "".join(f"  - name: {name}\n    args: []\n" for name in names)
+            (spec_dir / "controlled_spec.md").write_text(
+                "# m\n\n## 5. Interface\n\n### 5.1 Canonical interface\n\n```yaml\n"
+                f"procedures:\n{procs}```\n\n## 6. Tests\n", encoding="utf-8")
         return repo
 
     def test_resolve_node_admits_a_problem_composing_a_step_only_member(self) -> None:
@@ -7757,28 +7762,44 @@ class NodeAllocationTest(unittest.TestCase):
                 self.assertIn("problem_dependency_on_non_problem", str(ctx.exception))
                 self.assertIn(f"a `{catalog_kind}`", str(ctx.exception))
 
-    def test_resolve_node_refuses_a_member_that_is_not_step_only(self) -> None:
-        """D11 of the system tier's Part 1: a member publishing anything but exactly
-        `<member>__step` is refused before any phase runs, and so is a member the catalog does
-        not resolve. The ValueError text carries the reason, which `_run_node` records."""
-        for procedures in (("m__step", "m__init"), ("m__init",), ("m__step", "m__reset")):
-            with self.subTest(procedures=procedures), tempfile.TemporaryDirectory() as tmp:
+    def test_resolve_node_admits_an_init_member_under_a_composite_with_init(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._composite_repo(tmp, declaring_kind="problem",
+                                        member_procedures=("m__step", "m__init"),
+                                        composite_procedures=("n1__step", "n1__init"))
+            self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0], "problem/n1@0.1.0")
+
+    def test_resolve_node_refuses_an_unadmitted_member(self) -> None:
+        """The system tier's member rules: a member publishing anything but `<member>__step`,
+        or `<member>__step` and `<member>__init`, is refused before any phase runs, and so is a
+        member the catalog does not resolve; an `__init` member is refused under a composite
+        whose own §5.1 does not publish `__init` (or cannot be read). The ValueError text carries
+        the reason, which `_run_node` records."""
+        for procedures, composite, reason in (
+                (("m__init",), ("n1__step", "n1__init"),
+                 "problem_dependency_surface_not_step_or_init"),
+                (("m__step", "m__reset"), None, "problem_dependency_surface_not_step_or_init"),
+                (("m__step", "m__init"), ("n1__step",), "problem_dependency_init_not_published"),
+                (("m__step", "m__init"), None, "problem_dependency_init_not_published")):
+            with self.subTest(procedures=procedures, composite=composite), \
+                    tempfile.TemporaryDirectory() as tmp:
                 repo = self._composite_repo(tmp, declaring_kind="problem",
-                                            member_procedures=procedures)
+                                            member_procedures=procedures,
+                                            composite_procedures=composite)
                 with self.assertRaises(ValueError) as ctx:
                     wc.resolve_node(repo, "spec/x/n1")
                 self.assertIn("spec-input rejected", str(ctx.exception))
-                self.assertIn("problem_dependency_surface_not_step_only", str(ctx.exception))
+                self.assertIn(reason, str(ctx.exception))
                 self.assertIn("spec/problem/m", str(ctx.exception))
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._composite_repo(tmp, declaring_kind="problem", register_member=False)
             with self.assertRaises(ValueError) as ctx:
                 wc.resolve_node(repo, "spec/x/n1")
-            self.assertIn("problem_dependency_surface_not_step_only", str(ctx.exception))
+            self.assertIn("problem_dependency_surface_not_step_or_init", str(ctx.exception))
             self.assertIn("(problem/m)", str(ctx.exception))
         # Two members, the refused one SECOND (review round 1, sec-L2): every entry is checked,
         # not the first alone, and only the refused member is named.
-        with self.subTest(members="m (step-only), m2 (publishes __init)"), \
+        with self.subTest(members="m (step-only), m2 (publishes __reset)"), \
                 tempfile.TemporaryDirectory() as tmp:
             repo = self._composite_repo(tmp, declaring_kind="problem")
             catalog = repo / "spec" / "registry" / "spec_catalog.yaml"
@@ -7792,7 +7813,7 @@ class NodeAllocationTest(unittest.TestCase):
             (m2 / "controlled_spec.md").write_text(
                 (repo / "spec" / "problem" / "m" / "controlled_spec.md").read_text(
                     encoding="utf-8").replace("m__step", "m2__step")
-                .replace("```\n", "  - name: m2__init\n    args: []\n```\n", 1),
+                .replace("```\n", "  - name: m2__reset\n    args: []\n```\n", 1),
                 encoding="utf-8")
             deps = repo / "spec" / "x" / "n1" / "deps.yaml"
             deps.write_text(deps.read_text(encoding="utf-8")
@@ -7803,7 +7824,7 @@ class NodeAllocationTest(unittest.TestCase):
             self.assertIsNotNone(problem_dependency_surface_violation(repo, "spec/problem/m2"))
             with self.assertRaises(ValueError) as ctx:
                 wc.resolve_node(repo, "spec/x/n1")
-            self.assertIn("problem_dependency_surface_not_step_only", str(ctx.exception))
+            self.assertIn("problem_dependency_surface_not_step_or_init", str(ctx.exception))
             self.assertIn("spec/problem/m2", str(ctx.exception))
             self.assertNotIn("spec/problem/m ", str(ctx.exception))
 

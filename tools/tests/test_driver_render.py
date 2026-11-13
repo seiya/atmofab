@@ -1526,7 +1526,8 @@ class ComposingModelGateTest(unittest.TestCase):
         found: list[str] = []
         source.model_source_gates(
             node_key=ROTATING_NODE_KEY, model_file=Path("m.f90"), text=text,
-            dep_spec_ids=self.DEPS, violations=found, multidim_spec_id=ROTATING)
+            dep_spec_ids=self.DEPS, violations=found, multidim_spec_id=ROTATING,
+            init_member_ids=())
         return found
 
     def _calls(self, text: str) -> list[str]:
@@ -1559,6 +1560,358 @@ class ComposingModelGateTest(unittest.TestCase):
         self.assertNotEqual(cut, self._text())
         self.assertTrue(any("coriolis_tendency does not propagate" in v
                             for v in self._gates(cut)), self._gates(cut))
+
+
+CMP_MEM, CMP_SUB = "cmp_mem", "cmp_sub"
+CMP_SUB_NODE_KEY = f"problem/{CMP_SUB}@0.1.0"
+_CMP_INIT_ARGS = [_arg("nx", "in", INT), _arg("mode", "in", INT), _arg("u", "out", REAL, ["nx"]),
+                  _arg("dt", "out", REAL), _arg("n_plan", "out", INT),
+                  _arg("init_ok", "out", LOGICAL)]
+
+
+def cmp_ir(sid: str, cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """The IR of the member (`cmp_mem`) or of the composite over it (`cmp_sub`, issue #632 P3):
+    `init` writes the state and the loop plan; the composite's `__step` takes `substeps`."""
+    step_args = [_arg("nx", "in", INT), _arg("dt", "in", REAL), _arg("t", "in", REAL)]
+    step_bind = {"nx": "inputs.grid.nx", "dt": "state.dt", "t": "time"}
+    if sid == CMP_SUB:
+        step_args.append(_arg("substeps", "in", INT))
+        step_bind["substeps"] = "inputs.substeps"
+    step_args += [_arg("u", "inout", REAL, ["nx"]), _arg("ok", "out", LOGICAL)]
+    step_bind.update({"u": "state.u", "ok": "state.ok"})
+    ops = {f"{sid}__init": _CMP_INIT_ARGS, f"{sid}__step": step_args}
+    ir = {
+        "meta": {"spec_id": sid, "spec_kind": "problem", "node_key": f"problem/{sid}@0.1.0"},
+        "public_api": {
+            "published_operations": [{"operation_id": op} for op in ops],
+            "module_parameters": [{"name": "dp", "value": "float64"}],
+            "signatures": [{"symbol": op, "signature": {"kind": "subroutine", "name": op,
+                                                        "args": args}}
+                           for op, args in ops.items()]},
+        "drive": {
+            "init": {"operation": f"{sid}__init", "result": "init_ok", "arguments": {
+                "nx": "inputs.grid.nx", "mode": "inputs.mode", "u": "state.u", "dt": "state.dt",
+                "n_plan": "state.n_plan", "init_ok": "state.init_ok"}},
+            "step": {"operation": f"{sid}__step", "result": "ok", "arguments": step_bind},
+            "loop": {"n_step": "state.n_plan", "dt": "state.dt", "t_start": "inputs.t_start",
+                     "t_end": "inputs.t_end"},
+            "history": {"every": "inputs.every"}},
+        "case": {"test_case_set": cases},
+        "io_contract": {"raw_requirements": {"required_evidence": [
+            {"artifact": "state_snapshots", "required": True,
+             "schema": {"time_variable": "t", "variables": [
+                 {"name": n, "shape_expr": s} for n, s in (
+                     ("u", "[nx]"), ("dt", "scalar"), ("n_plan", "scalar"),
+                     ("init_ok", "scalar"), ("ok", "scalar"))]}}]}},
+    }
+    if sid == CMP_SUB:
+        ir["dependency"] = {"direct_deps": [{"node_key": f"problem/{CMP_MEM}@0.1.0",
+                                             "operations": [f"{CMP_MEM}__init",
+                                                            f"{CMP_MEM}__step"]}]}
+    return ir
+
+
+def cmp_case(case_id: str, mode: int, substeps: int | None = None) -> dict[str, Any]:
+    inputs: dict[str, Any] = {"grid": {"nx": 4}, "mode": mode, "t_start": 0.0, "t_end": 1.5,
+                              "every": 1}
+    if substeps is not None:
+        inputs["substeps"] = substeps
+    return {"case_id": case_id, "inputs": inputs}
+
+
+def cmp_section_5_1(ir: dict[str, Any]) -> str:
+    """A §5.1 block equal to `ir`'s `public_api` signatures."""
+    block = {"module_parameters": ir["public_api"]["module_parameters"], "types": [],
+             "procedures": [e["signature"] for e in ir["public_api"]["signatures"]]}
+    return ("### 5.1 Canonical interface block\n\n```yaml\n"
+            + yaml.safe_dump(block, sort_keys=False) + "```\n")
+
+
+class ComposingInitEndToEndTest(unittest.TestCase):
+    """Issue #632 P3: a composite over a member that publishes `__init`, in the subcycling shape
+    (`data/driver_e2e/cmp_sub_model.f90` over `cmp_mem_model.f90`), rendered, built and run
+    through both passes by the host's own driver and second pass. The member's `__init`
+    establishes private state from the case's `mode`, so a composite that did not call it in
+    every process, for every case, would not reproduce the member's captures."""
+
+    def test_the_composite_runs_both_passes_and_agrees_with_its_member(self) -> None:
+        # a1 and c1 are the same configuration around b2, which has another mode: the repeat
+        # case of `docs/TESTS.md`. b2_cont continues b2 from its sample at step 2.
+        cases = [cmp_case("a1", 1, 1), cmp_case("b2", 2, 2), cmp_case("c1", 1, 1)]
+        cont = {**cmp_case("b2", 2, 2), "case_id": "b2_cont", "restart": {"from": "b2",
+                                                                          "step": 2}}
+        ir = cmp_ir(CMP_SUB, [*cases, cont])
+        member_ir = cmp_ir(CMP_MEM, [cmp_case("a1", 1), cmp_case("b2", 2)])
+        with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
+            composite = run_fortran(Path(a), ir, sid=CMP_SUB, deps=(CMP_MEM,))
+            member = run_fortran(Path(b), member_ir, sid=CMP_MEM)
+            for run in (composite, member):
+                self.assertEqual(run.proc.returncode, 0, run.proc.stderr[-2000:])
+            self.assertEqual(run_second_pass(composite, ir), ["b2_cont"])
+            final = {cid: composite.snapshot(cid) for cid in ("a1", "b2", "c1", "b2_cont")}
+            member_a1 = member.snapshot("a1")
+            member_b2 = member.snapshot("b2")
+        for cid in ("a1", "b2", "c1"):
+            self.assertEqual((final[cid]["ok"], final[cid]["init_ok"], final[cid]["step"]),
+                             (1.0, 1.0, 6.0), cid)
+        # substeps 1: the member's own run, bitwise, every state variable
+        for name in ("u", "dt", "n_plan"):
+            self.assertEqual(final["a1"][name], member_a1[name], name)
+        # the repeat case equals the first; the continuation equals its base
+        self.assertEqual(final["c1"]["u"], final["a1"]["u"])
+        self.assertEqual({k: v for k, v in final["b2_cont"].items() if k != "case_id"},
+                         {k: v for k, v in final["b2"].items() if k != "case_id"})
+        # substeps 2 with another mode is neither the member's b2 nor a1: the inputs reached it
+        self.assertNotEqual(final["b2"]["u"], member_b2["u"])
+        self.assertNotEqual(final["b2"]["u"], final["a1"]["u"])
+
+    def test_the_composite_passes_its_model_gates_and_each_placement_mutant_is_refused(
+            self) -> None:
+        """The backend's gates over the fixture: clean as written; each misplacement refused by
+        the placement gate (the presence half or the absence half), in its own words."""
+        from tools.backends.language.fortran import source
+        text = (DATA / f"{CMP_SUB}_model.f90").read_text()
+        call = "    call cmp_mem__init(nx, mode, u, dt, n_plan, init_ok)\n"
+        in_step = "    dts = dt / real(substeps, dp)\n"
+        again = "    call cmp_mem__init(nx, 1, u, dts, j, ok)\n"
+        use = "  use cmp_mem_model, only: cmp_mem__init, cmp_mem__step\n"
+
+        def gates(model: str, others: dict[str, str] | None = None) -> list[str]:
+            found: list[str] = []
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / f"{CMP_SUB}_model.f90"
+                path.write_text(model)
+                for name, body in (others or {}).items():
+                    (Path(tmp) / name).parent.mkdir(parents=True, exist_ok=True)
+                    (Path(tmp) / name).write_text(body)
+                source.model_source_gates(
+                    node_key=CMP_SUB_NODE_KEY, model_file=path, text=model,
+                    dep_spec_ids=[CMP_MEM], violations=found, multidim_spec_id=None,
+                    init_member_ids=(CMP_MEM,))
+                source.validate_dependency_operations([path], [CMP_MEM], found)
+            return found
+
+        self.assertEqual(gates(text), [])
+        # The call by the local name of a module-level rename is the call (the use gate's
+        # reader), and the import statement itself is no occurrence.
+        renamed = text.replace(use, "  use cmp_mem_model, only: mi => cmp_mem__init, "
+                                    "cmp_mem__step\n").replace(call, call.replace(
+                                        "cmp_mem__init", "mi"))
+        self.assertNotIn("call cmp_mem__init", renamed)
+        self.assertEqual(gates(renamed), [])
+        mutants = {
+            "from __step": (text.replace(in_step, in_step + again), "is named outside"),
+            "not from __init": (text.replace(call, "    u = 1.0_dp\n    dt = 0.25_dp\n"
+                                             "    n_plan = 6\n    init_ok = .true.\n"),
+                                "does not call `cmp_mem__init`"),
+            "a third procedure": (text.replace(in_step, in_step + "    call reinit()\n").replace(
+                "end module", "  subroutine reinit()\n    real(dp) :: v(1), d\n    integer :: n\n"
+                "    logical :: q\n" + again.replace("nx, 1, u, dts, j, ok", "1, 1, v, d, n, q")
+                + "  end subroutine reinit\nend module"), "is named outside"),
+            "a renamed import": (text.replace(use, use + "  use cmp_mem_model, only: mi => "
+                                              "cmp_mem__init\n").replace(
+                in_step, in_step + again.replace("cmp_mem__init", "mi")), "a local name for"),
+            "a procedure pointer": (text.replace("  implicit none\n", "  implicit none\n"
+                                                 "  procedure(), pointer :: pp => null()\n")
+                                    .replace(call, "    pp => cmp_mem__init\n" + call),
+                                    "other than as the callee"),
+            "an actual argument": (text.replace(call, "    call keep(cmp_mem__init)\n" + call),
+                                   "other than as the callee"),
+            "no __init at all": (text.replace("cmp_sub__init", "cmp_sub__setup"),
+                                 "defines no `cmp_sub__init`"),
+            "the composite's own __init from __step": (
+                text.replace(in_step, in_step + again.replace("cmp_mem__init", "cmp_sub__init")),
+                "`cmp_sub__init` is named outside its own definition"),
+        }
+        for label, (model, phrase) in mutants.items():
+            with self.subTest(mutant=label):
+                self.assertNotEqual(model, text)
+                found = gates(model)
+                self.assertTrue(any(phrase in v for v in found), found)
+        # Review round 1: a private file beside the model (a submodule the model's `__step`
+        # reaches through a separate module procedure) holds the member's `__init` call; the
+        # model itself names it only in `__init`. The host-rendered runner, which calls the
+        # composite's `__init`, is not such a file.
+        sub = text.replace("  public :: cmp_sub__init, cmp_sub__step\n",
+                           "  public :: cmp_sub__init, cmp_sub__step\n  interface\n"
+                           "    module subroutine cmp_sub_reinit(nx, u)\n"
+                           "      integer, intent(in) :: nx\n"
+                           "      real(dp), intent(inout) :: u(nx)\n"
+                           "    end subroutine cmp_sub_reinit\n  end interface\n").replace(
+            in_step, in_step + "    call cmp_sub_reinit(nx, u)\n")
+        impl = ("submodule (cmp_sub_model) cmp_sub_impl\n  use cmp_mem_model, only: mi => "
+                "cmp_mem__init\ncontains\n  module subroutine cmp_sub_reinit(nx, u)\n"
+                "    integer, intent(in) :: nx\n    real(dp), intent(inout) :: u(nx)\n"
+                "    real(dp) :: d\n    integer :: n\n    logical :: q\n"
+                "    call mi(nx, 1, u, d, n, q)\n  end subroutine cmp_sub_reinit\n"
+                "end submodule cmp_sub_impl\n")
+        self.assertEqual([v for v in gates(sub) if "cmp_mem__init" in v], [])
+        for name, body, phrase in (
+                ("cmp_sub_impl.f90", impl, "`mi` is named in a source other than"),
+                ("nested/x.F90", "! x\nsubroutine y()\n  call cmp_mem__init()\nend\n",
+                 "`cmp_mem__init` is named in a source other than"),
+                ("helper.f90", "subroutine y()\n  call cmp_sub__init()\nend\n",
+                 "`cmp_sub__init` is named in a source other than")):
+            with self.subTest(other=name):
+                found = gates(sub, {name: body})
+                self.assertTrue(any(phrase in v and name.rsplit("/", 1)[-1] in v
+                                    for v in found), found)
+        # Review round 1: the call held only by a contained procedure `__init` never calls is
+        # not a call (presence reads live code); the call moved from `__init` to `__step` is
+        # refused by BOTH halves; a callee whose name only starts with the member's `__init`
+        # does not count as its call; `endsubroutine <name>` is the definition's end.
+        dead = text.replace(call, "    u = 1.0_dp\n    dt = 0.25_dp\n    n_plan = 6\n"
+                                  "    init_ok = .true.\n  contains\n    subroutine never()\n"
+                                  "      real(dp) :: v(1), d\n      integer :: n\n"
+                                  "      logical :: q\n      call cmp_mem__init(1, 1, v, d, n, q)\n"
+                                  "    end subroutine never\n")
+        self.assertTrue(any("does not call `cmp_mem__init`" in v for v in gates(dead)))
+        moved = text.replace(call, "    u = 1.0_dp\n    dt = 0.25_dp\n    n_plan = 6\n"
+                                   "    init_ok = .true.\n").replace(in_step, in_step + again)
+        found = gates(moved)
+        self.assertTrue(any("does not call `cmp_mem__init`" in v for v in found), found)
+        self.assertTrue(any("`cmp_mem__init` is named outside" in v for v in found), found)
+        prefixed = text.replace(call, "    call cmp_mem__init_x(cmp_mem__init)\n" + call)
+        self.assertTrue(any("other than as the callee" in v for v in gates(prefixed)))
+        self.assertEqual(gates(text.replace("end subroutine cmp_sub__init",
+                                            "endsubroutine cmp_sub__init")), [])
+        # Review round 2: a `!$` conditional-compilation line is a statement to an OpenMP build;
+        # one local bound to two targets keeps both; the composite's own `__init` imported under
+        # another name; a rename written without `only:`.
+        cases = {
+            "a `!$` call from __step": (
+                text.replace(in_step, in_step + "!$  call cmp_mem__init(nx, 1, u, dts, j, ok)\n"),
+                "`cmp_mem__init` is named outside"),
+            "a `!$` call of the own __init": (
+                text.replace(in_step, in_step + "!$  call cmp_sub__init(nx, 1, u, dts, j, ok)\n"),
+                "`cmp_sub__init` is named outside its own definition"),
+            "one local, two targets": (
+                text.replace(use, "  use cmp_mem_model, only: mi => cmp_mem__step, "
+                                  "cmp_mem__init, cmp_mem__step\n").replace(
+                    in_step, in_step + "    block\n      use cmp_mem_model, only: mi => "
+                    "cmp_mem__init\n      call mi(nx, 1, u, dts, j, ok)\n    end block\n"),
+                "`mi` (a local name for `cmp_mem__init`) is named outside"),
+            "the own __init imported": (
+                text + "subroutine stray(nx, u)\n  use cmp_sub_model, only: reset => "
+                       "cmp_sub__init\n  integer, intent(in) :: nx\n  real(8) :: u(nx), d\n"
+                       "  integer :: n\n  logical :: q\n  call reset(nx, 1, u, d, n, q)\n"
+                       "end subroutine stray\n",
+                "a `use` imports `cmp_sub__init`"),
+            "a rename without only:": (
+                text.replace(use, use + "  use cmp_mem_model, go => cmp_mem__init\n").replace(
+                    in_step, in_step + "    call go(nx, 1, u, dts, j, ok)\n"),
+                "`go` (a local name for `cmp_mem__init`) is named outside"),
+        }
+        for label, (model, phrase) in cases.items():
+            with self.subTest(round2=label):
+                self.assertNotEqual(model, text)
+                found = gates(model)
+                self.assertTrue(any(phrase in v for v in found), found)
+        # Codex's form: the reused local's other target belongs to a second `__init` member and
+        # sorts first, so a one-target-per-local map kept that one and dropped `cmp_mem__init`.
+        two = text.replace(use, use + "  use aaa_mem_model, only: mi => aaa_mem__step, "
+                                      "aaa_mem__init\n").replace(
+            "    call cmp_mem__init(nx, mode, u, dt, n_plan, init_ok)\n",
+            "    call cmp_mem__init(nx, mode, u, dt, n_plan, init_ok)\n"
+            "    call aaa_mem__init(nx, mode, u, dt, n_plan, init_ok)\n").replace(
+            in_step, in_step + "    call mi(nx, u)\n    block\n      use cmp_mem_model, only: mi"
+            " => cmp_mem__init\n      call mi(nx, 1, u, dts, j, ok)\n    end block\n")
+        found: list[str] = []
+        source.validate_member_init_placement(
+            node_spec_id=CMP_SUB, model_file=Path(tempfile.gettempdir()) / "absent" / "m.f90",
+            lowered=two.lower(), init_member_ids=("aaa_mem", "cmp_mem"), violations=found)
+        self.assertTrue(any("`mi` (a local name for `cmp_mem__init`) is named outside" in v
+                            for v in found), found)
+        found = gates(text, {"helper.f90": "subroutine y()\n!$ use cmp_mem_model, only: go => "
+                                           "cmp_mem__init\n!$ call go()\nend\n"})
+        self.assertTrue(any("is named in a source other than" in v for v in found), found)
+        # Review round 3: a `!$` call is no call for the presence half either — a build without
+        # the OpenMP flag compiles none.
+        sentinel_only = text.replace(call, "!$  call cmp_mem__init(nx, mode, u, dt, n_plan, "
+                                           "init_ok)\n    u = 1.0_dp\n    dt = 0.25_dp\n"
+                                           "    n_plan = 6\n    init_ok = .true.\n")
+        found = gates(sentinel_only)
+        self.assertTrue(any("does not call `cmp_mem__init`" in v for v in found), found)
+        # an OpenMP directive is no conditional line
+        self.assertEqual(gates(text.replace(in_step, in_step + "!$omp barrier\n")), [])
+        # comments and literals in another file, and the runner, are not occurrences
+        self.assertEqual(gates(text, {
+            "helper.f90": "! calls cmp_mem__init\nsubroutine y()\n  print *, 'cmp_sub__init'\nend\n",
+            f"{CMP_SUB}_runner.f90": "program r\n  call cmp_sub__init()\nend program r\n"}), [])
+
+
+class DelegatingInitMetricGateTest(unittest.TestCase):
+    """Issue #632 P3: on a multi-dimensional composite, `<node>__init` that only delegates to the
+    member's `__init` writes five or more outputs with neither an array input nor a loop, which
+    the metric-only gate refused. It is exempt only where a member publishes `__init` and only
+    while its body holds a call; the placement gate then requires that call to be the member's."""
+
+    MODEL = """module c2d_model
+  use, intrinsic :: iso_fortran_env, only: real64
+  use m2d_model, only: m2d__init, m2d__step
+  implicit none
+  integer, parameter :: dp = real64
+  private
+  public :: c2d__init, c2d__step
+contains
+  subroutine c2d__init(nx, a, h, hu, hv, dt, n_plan, init_ok)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: a
+    real(dp), intent(out) :: h(nx), hu(nx), hv(nx), dt
+    integer, intent(out) :: n_plan
+    logical, intent(out) :: init_ok
+    call m2d__init(nx, a, h, hu, hv, dt, n_plan, init_ok)
+  end subroutine c2d__init
+  subroutine c2d__step(nx, dt, h, ok)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: dt
+    real(dp), intent(inout) :: h(nx)
+    logical, intent(out) :: ok
+    call m2d__step(nx, dt, h, ok)
+  end subroutine c2d__step
+end module c2d_model
+"""
+    LITERAL = ("    h = 1.0_dp\n    hu = 0.0_dp\n    hv = 0.0_dp\n    dt = 0.1_dp\n"
+               "    n_plan = 3\n    init_ok = .true.\n")
+
+    def _gates(self, text: str, members: tuple[str, ...]) -> list[str]:
+        from tools.backends.language.fortran import source
+        found: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            source.model_source_gates(
+                node_key="problem/c2d@0.1.0", model_file=Path(tmp) / "c2d_model.f90",
+                text=text, dep_spec_ids=["m2d"], violations=found, multidim_spec_id="c2d",
+                init_member_ids=members)
+        return [v for v in found if "metric-only" in v or "m2d__init" in v]
+
+    def test_a_delegating_init_is_exempt_only_under_an_init_member(self) -> None:
+        self.assertEqual(self._gates(self.MODEL, ("m2d",)), [])
+        # No member publishes `__init`: the gate reads it as before.
+        self.assertTrue(any("c2d__init is metric-only" in v
+                            for v in self._gates(self.MODEL, ())))
+        # The call replaced by literal outputs: no exemption, and the placement gate refuses.
+        literal = self.MODEL.replace(
+            "    call m2d__init(nx, a, h, hu, hv, dt, n_plan, init_ok)\n", self.LITERAL)
+        found = self._gates(literal, ("m2d",))
+        self.assertTrue(any("c2d__init is metric-only" in v for v in found), found)
+        self.assertTrue(any("does not call `m2d__init`" in v for v in found), found)
+        # Another procedure that delegates in the same way is not exempt.
+        other = self.MODEL.replace("c2d__step(nx, dt, h, ok)", "c2d__step(nx, dt, h, ok)", 1)
+        other = other.replace("end module c2d_model", """  subroutine c2d_other(nx, a, h, hu, hv, dt, n_plan, init_ok)
+    integer, intent(in) :: nx
+    real(dp), intent(in) :: a
+    real(dp), intent(out) :: h(nx), hu(nx), hv(nx), dt
+    integer, intent(out) :: n_plan
+    logical, intent(out) :: init_ok
+    call m2d__step(nx, a, h, init_ok)
+    hu = 0.0_dp
+    hv = 0.0_dp
+    dt = 0.1_dp
+    n_plan = 3
+  end subroutine c2d_other
+end module c2d_model""")
+        self.assertTrue(any("c2d_other is metric-only" in v
+                            for v in self._gates(other, ("m2d",))))
 
 
 @skip_probes.skip_unless_installed("cuda_compiler_driver")
@@ -1653,7 +2006,8 @@ class ProblemModelGateTest(unittest.TestCase):
         found: list[str] = []
         source.model_source_gates(
             node_key="problem/shallow_water2d@0.4.7", model_file=Path("m.f90"), text=text,
-            dep_spec_ids=self.DEPS, violations=found, multidim_spec_id="shallow_water2d")
+            dep_spec_ids=self.DEPS, violations=found, multidim_spec_id="shallow_water2d",
+            init_member_ids=())
         return found
 
     def test_the_step_fixture_passes(self) -> None:

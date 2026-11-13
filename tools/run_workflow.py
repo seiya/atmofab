@@ -631,7 +631,7 @@ def _refuse_non_certifiable_target(repo_root: Path, spec_ref: str) -> None:
     produce a certified artifact nothing consumes — billed work in the wrong direction.
 
     It also refuses a ``problem`` target whose ``problems:`` member is not admitted (the system
-    tier, Part 1: ``spec_input_gates.problem_dependency_surface_violation``), so that the
+    tier: ``spec_input_gates.problem_member_violation``), so that the
     refusal precedes the single-node preflight. Only a catalogued ``problem`` with a readable,
     well-formed ``deps.yaml`` is checked here; every other shape passes through to
     ``resolve_node`` and the closure walk, which hold the same rule and refuse what this cannot
@@ -684,11 +684,12 @@ def _refuse_non_certifiable_target(repo_root: Path, spec_ref: str) -> None:
 
 def _refuse_unadmitted_problem_members(repo_root: Path, spec_dir: Path) -> None:
     """Raise ``ValueError`` naming each ``problems:`` member of the ``problem`` at ``spec_dir``
-    that `spec_input_gates.problem_dependency_surface_violation` refuses. A missing, unparseable
+    that `spec_input_gates.problem_member_violation` refuses (the admitted §5.1 surface, and the
+    composite's own `__init` when the member publishes one). A missing, unparseable
     or malformed ``deps.yaml`` raises nothing here: ``resolve_node`` refuses it."""
     from tools.orchestration_runtime import (
         SpecCatalogCorruption, _parse_dep_entries, _read_deps_yaml, resolve_spec_ref_for)
-    from tools.spec_input_gates import problem_dependency_surface_violation
+    from tools.spec_input_gates import problem_member_violation
 
     deps_doc = _read_deps_yaml(repo_root, spec_dir.as_posix())
     if not isinstance(deps_doc, dict):
@@ -704,7 +705,7 @@ def _refuse_unadmitted_problem_members(repo_root: Path, spec_dir: Path) -> None:
             member_ref = resolve_spec_ref_for(repo_root, "problem", sid)
         except (SpecCatalogCorruption, OSError):
             member_ref = None
-        violation = problem_dependency_surface_violation(repo_root, member_ref)
+        violation = problem_member_violation(repo_root, spec_dir.as_posix(), member_ref)
         if violation:
             violations.append(violation if member_ref else f"{violation} (problem/{sid})")
     if violations:
@@ -4500,11 +4501,13 @@ def _resolve_dependency_closure(
         `infrastructure_dependency_declared_in_deps` (no spec declares an `infrastructure`
         dependency: the harness is the target's, issue #284). A `spec_id` the catalog
         registers under several kinds is reported as `spec_catalog_corrupt` — see
-        `_kind_for_gate`. The `problems:` entries (the system tier, Part 1) take two more:
-        `problem_dependency_on_non_problem` (only a `problem`, by the catalog, declares one) and
-        `problem_dependency_surface_not_step_only` (a member is admitted only when its §5.1
-        publishes exactly `<member>__step`), the second raised before the member is visited,
-        so its closure is not certified first.
+        `_kind_for_gate`. The `problems:` entries (the system tier) take three more:
+        `problem_dependency_on_non_problem` (only a `problem`, by the catalog, declares one),
+        `problem_dependency_surface_not_step_or_init` (a member is admitted only when its §5.1
+        publishes exactly `<member>__step`, or `<member>__step` and `<member>__init`) and
+        `problem_dependency_init_not_published` (a member that publishes `__init` needs a
+        composite that publishes `__init`), the last two raised before the member is visited, so its
+        closure is not certified first.
 
     Edges come from `<spec_ref>/deps.yaml` resolved against `spec_catalog.yaml`
     via the canonical runtime helpers (`_parse_dep_entries`,
@@ -4525,7 +4528,7 @@ def _resolve_dependency_closure(
     from tools.spec_input_gates import (
         infra_dep_declared_violation,
         problem_dep_on_non_problem_violation,
-        problem_dependency_surface_violation,
+        problem_member_violation,
         spec_id_length_violation,
     )
 
@@ -4734,15 +4737,16 @@ def _resolve_dependency_closure(
                 }
                 return
             if kind == "problem":
-                # D11 of the system tier's Part 1: a member is admitted only when its own §5.1
-                # publishes exactly `<member>__step`. Checked BEFORE `visit(dep_spec_ref)`, so a
-                # refused member's closure is not certified first.
-                _surface_violation = problem_dependency_surface_violation(
-                    repo_root, dep_spec_ref)
-                if _surface_violation:
+                # The system tier's member rules: a member is admitted only when its own §5.1
+                # publishes `<member>__step`, or `<member>__step` and `<member>__init`, and a
+                # member that publishes `__init` needs a composite that publishes `__init`.
+                # Checked BEFORE `visit(dep_spec_ref)`, so a refused member's closure is not
+                # certified first. The reason is the violation's own leading token.
+                _member_violation = problem_member_violation(repo_root, spec_ref, dep_spec_ref)
+                if _member_violation:
                     error = {
-                        "reason": "problem_dependency_surface_not_step_only",
-                        "detail": f"{spec_ref}: {_surface_violation}",
+                        "reason": _member_violation.split(":", 1)[0],
+                        "detail": f"{spec_ref}: {_member_violation}",
                     }
                     return
             prior_kindid = kindid_by_ref.get(dep_spec_ref)

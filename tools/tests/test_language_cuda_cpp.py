@@ -419,7 +419,8 @@ class RoundOneWitnessTests(unittest.TestCase):
             out: list[str] = []
             cpp_source.model_source_gates(node_key="infrastructure/h@0.1.0", model_file=model,
                                           text=model.read_text(), dep_spec_ids=[],
-                                          violations=out, multidim_spec_id=None)
+                                          violations=out, multidim_spec_id=None,
+                                          init_member_ids=())
         self.assertTrue(any("hardcoded case_id -> metrics" in v for v in out), out)
 
     def test_the_snapshot_schema_name_is_exempt(self) -> None:
@@ -1081,7 +1082,7 @@ class SourceGateTests(unittest.TestCase):
             out: list[str] = []
             cpp_source.model_source_gates(node_key="infrastructure/h@0.1.0", model_file=model,
                                           text=model.read_text(), dep_spec_ids=[], violations=out,
-                                          multidim_spec_id=None)
+                                          multidim_spec_id=None, init_member_ids=())
             joined = "\n".join(out)
             self.assertIn("many literal metric assignments", joined)
             self.assertIn("hardcoded case_id -> metrics", joined)
@@ -1096,7 +1097,7 @@ class SourceGateTests(unittest.TestCase):
             out = []
             cpp_source.model_source_gates(node_key="component/c@0.1.0", model_file=model,
                                           text="int x;\n", dep_spec_ids=[], violations=out,
-                                          multidim_spec_id=None)
+                                          multidim_spec_id=None, init_member_ids=())
             self.assertFalse([v for v in out if "h_model.cu" in v and "sub" not in v], out)
             self.assertFalse(any("not implemented" in v for v in out), out)
 
@@ -1255,7 +1256,7 @@ class PhysicsGateTests(unittest.TestCase):
         out: list[str] = []
         cpp_source.model_source_gates(node_key=node_key, model_file=model,
                                       text=model.read_text(), dep_spec_ids=deps, violations=out,
-                                      multidim_spec_id=multidim)
+                                      multidim_spec_id=multidim, init_member_ids=())
         return [v for v in out if "p_model.cu" in v]
 
     def test_dependency_use_requires_include_call_and_no_redefinition(self) -> None:
@@ -3311,6 +3312,120 @@ class RealDriverTests(unittest.TestCase):
                                    capture_output=True, text=True, check=False, timeout=600)
             self.assertEqual(0, build.returncode, build.stdout[-2000:] + build.stderr[-2000:])
             self.assertTrue((Path(tmp) / "bin" / "h_runner").is_file())
+
+class MemberInitPlacementTest(unittest.TestCase):
+    """Issue #632 P3, the C++ binding of the member `__init` placement gate
+    (`validate_member_init_placement`), driven through `model_source_gates`: clean on the
+    composite that calls the member's `__init` from its own; each misplacement refused."""
+
+    BASE = (
+        '#include "mem2d_model.cuh"\n#include "comp2d_model.cuh"\nnamespace comp2d_model {\n'
+        "void comp2d__init(int nx, spec2science::View<double,1> h, double& dt, int& n_plan, "
+        "bool& init_ok, double& a, double& b) {\n"
+        "  mem2d_model::mem2d__init(nx, h, dt, n_plan, init_ok, a, b);\n}\n"
+        "void comp2d__step(int nx, double dt, double t, int substeps, "
+        "spec2science::View<double,1> h, bool& ok) {\n"
+        "  bool member_ok = false;\n  ok = false;\n  if (substeps < 1) return;\n"
+        "  double dts = dt / substeps;\n"
+        "  for (int j = 0; j < substeps; ++j) {\n"
+        "    mem2d_model::mem2d__step(nx, dts, t + j * dts, h, member_ok);\n"
+        "    ok = member_ok;\n    if (!ok) return;\n  }\n}\n}\n")
+    IN_STEP = "  double dts = dt / substeps;\n"
+    CALL = "  mem2d_model::mem2d__init(nx, h, dt, n_plan, init_ok, a, b);\n"
+
+    def _gates(self, text: str, members: tuple[str, ...] = ("mem2d",),
+               others: dict[str, str] | None = None) -> list[str]:
+        out: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "comp2d_model.cu"
+            model.write_text(text)
+            for name, body in (others or {}).items():
+                (Path(tmp) / name).write_text(body)
+            cpp_source.model_source_gates(
+                node_key="problem/comp2d@0.1.0", model_file=model, text=text,
+                dep_spec_ids=["mem2d"], violations=out, multidim_spec_id="comp2d",
+                init_member_ids=members)
+            cpp_source.validate_dependency_operations([model], ["mem2d"], out)
+        return out
+
+    def test_the_composite_passes(self) -> None:
+        self.assertEqual(self._gates(self.BASE), [])
+        # comments and literals naming either `__init` are not occurrences (review round 1)
+        noted = self.BASE.replace(
+            self.IN_STEP, self.IN_STEP + "  // not mem2d__init(), nor comp2d__init()\n"
+            '  const char* why = "mem2d__init comp2d__init";\n  (void)why;\n')
+        self.assertNotEqual(noted, self.BASE)
+        self.assertEqual(self._gates(noted), [])
+
+    def test_each_misplacement_is_refused(self) -> None:
+        again = "  mem2d_model::mem2d__init(nx, h, dts, nx, ok, dts, dts);\n"
+        mutants = {
+            "from __step": (self.BASE.replace(self.IN_STEP, self.IN_STEP + again),
+                            "other than as a call inside `comp2d__init`"),
+            "a third function": (self.BASE.replace(
+                "void comp2d__step", "void reinit(spec2science::View<double,1> h) {\n"
+                "  double d = 0; int n = 0; bool q = false;\n"
+                "  mem2d_model::mem2d__init(1, h, d, n, q, d, d);\n}\nvoid comp2d__step"),
+                "other than as a call inside `comp2d__init`"),
+            "a reference alias": (self.BASE.replace(
+                "namespace comp2d_model {\n",
+                "namespace comp2d_model {\nauto& mi = mem2d_model::mem2d__init;\n"),
+                "other than as a call inside `comp2d__init`"),
+            "a pointer taken in __init": (self.BASE.replace(
+                self.CALL, "  auto p = &mem2d_model::mem2d__init;\n" + self.CALL),
+                "other than as a call inside `comp2d__init`"),
+            "an actual argument": (self.BASE.replace(
+                self.CALL, "  keep(mem2d_model::mem2d__init);\n" + self.CALL),
+                "other than as a call inside `comp2d__init`"),
+            "a macro": (self.BASE.replace(
+                '#include "comp2d_model.cuh"\n',
+                '#include "comp2d_model.cuh"\n#define MI mem2d_model::mem2d__init\n'),
+                "preprocessor directive"),
+            # The token count reads the directive lines too, not only the allowlist.
+            "a macro, counted": (self.BASE.replace(
+                '#include "comp2d_model.cuh"\n',
+                '#include "comp2d_model.cuh"\n#define MI mem2d_model::mem2d__init\n'),
+                "named 1 time(s) other than as a call"),
+            "no __init at all": (self.BASE.replace("void comp2d__init(", "void comp2d__setup("),
+                                 "defines no `comp2d__init`"),
+            "not from __init": (self.BASE.replace(self.CALL, "  dt = 1; n_plan = 1; "
+                                                             "init_ok = true; a = 0; b = 0;\n"),
+                                "does not call `mem2d__init(...)`"),
+            "the composite's own __init from __step": (self.BASE.replace(
+                self.IN_STEP, self.IN_STEP + "  comp2d__init(nx, h, dts, nx, ok, dts, dts);\n"),
+                "`comp2d__init` is named outside its own declaration"),
+        }
+        for label, (text, phrase) in mutants.items():
+            with self.subTest(mutant=label):
+                self.assertNotEqual(text, self.BASE)
+                found = self._gates(text)
+                self.assertTrue(any(phrase in v for v in found), found)
+        # Review round 1: a helper `.cu` beside the model holds the member's `__init` call, reached
+        # from `__step` through a function the model declares; the model alone is clean.
+        reach = self.BASE.replace("void comp2d__step", "void comp2d_reinit(int nx);\nvoid comp2d__step"
+                                  ).replace(self.IN_STEP, self.IN_STEP + "  comp2d_reinit(nx);\n")
+        self.assertFalse(any("mem2d__init" in v for v in self._gates(reach)))
+        helper = ('#include "mem2d_model.cuh"\nnamespace comp2d_model {\nvoid comp2d_reinit(int nx) '
+                  "{ (void)nx; mem2d_model::mem2d__init(nx); }\n}\n")
+        found = self._gates(reach, others={"comp2d_reinit.cu": helper})
+        self.assertTrue(any("comp2d_reinit.cu" in v and "`mem2d__init` is named in a source other"
+                            in v for v in found), found)
+        found = self._gates(self.BASE, others={"x.cu": "void y() { comp2d__init(); }\n"})
+        self.assertTrue(any("`comp2d__init` is named in a source other" in v for v in found), found)
+        # The host-rendered runner calls the composite's `__init`; a comment elsewhere is no name.
+        self.assertFalse(any("named in a source other" in v for v in self._gates(self.BASE, others={
+            "comp2d_runner.cu": "void r() { comp2d_model::comp2d__init(); }\n",
+            "x.cu": "// mem2d__init and comp2d__init\nconst char* s = \"mem2d__init\";\n"})))
+        # A prototype of the composite's own `__init` beside its definition is a declaration.
+        proto = self.BASE.replace(
+            "namespace comp2d_model {\n",
+            "namespace comp2d_model {\nvoid comp2d__init(int nx, spec2science::View<double,1> h, "
+            "double& dt, int& n_plan, bool& init_ok, double& a, double& b);\n")
+        self.assertEqual(self._gates(proto), [])
+        # With no member publishing `__init`, the placement gate does not run.
+        moved = self.BASE.replace(self.IN_STEP, self.IN_STEP + again)
+        self.assertFalse(any("mem2d__init" in v for v in self._gates(moved, ())))
+
 
 if __name__ == "__main__":
     unittest.main()

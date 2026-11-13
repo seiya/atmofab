@@ -221,7 +221,8 @@ class RenderedRunnerThroughTheModelGatesTest(unittest.TestCase):
             out: list[str] = []
             cpp_source.model_source_gates(node_key=node_key, model_file=model,
                                           text=model.read_text(), dep_spec_ids=[],
-                                          violations=out, multidim_spec_id=None)
+                                          violations=out, multidim_spec_id=None,
+                                          init_member_ids=())
             return out
 
     def test_the_rendered_runner_passes_a_physics_node_s_model_gates(self) -> None:

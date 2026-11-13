@@ -64,6 +64,11 @@ fails only at the dependent's link.
   the dataflow gate follows it through the kernel's launch (§5).
 - A `problem` node's header declares its `public_api` surface like any other node's, so its
   model defines `<spec_id>__step` (and `<spec_id>__init`) against that declaration.
+- **A member's `__init` is called from `<spec_id>__init` and named nowhere else**
+  (`phase_02_generate.md` §2-1). If a dependency `problem` publishes `<member>__init`, the
+  body of `<spec_id>__init` calls `<member>__init(...)`, live; any other token
+  `<member>__init` is refused (a call elsewhere, an alias, an argument, a declaration), and
+  `<spec_id>__init` appears only as the name of its own declaration.
 - No leaf source — the model and every helper included — includes or names the harness, or names
   a file stream or stream buffer, a file opener, renamer or deleter, a command runner, an exit
   handler registration, `asm` or a language linkage, called or not, or holds a string literal

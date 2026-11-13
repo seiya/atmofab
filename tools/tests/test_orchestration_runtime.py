@@ -22239,7 +22239,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `problem` carries, in the gate list and the `case` block, and V3 (vii), where the cut
         # is placed. Measured 114444 with `wc -c` (114488 after review round 1, 114569 after
         # review round 3).
-        "docs/workflow/phases/phase_01_compile.md": 114650,
+        # Raised 114650->115500 (issue #632 P3): the member `__init` rule's two spec-input
+        # reasons in the node-identity preconditions, and V4c-iv (a `problem` member's
+        # `operations` equal its §5.1) with its gate-list entry. Measured 115347 with `wc -c`.
+        "docs/workflow/phases/phase_01_compile.md": 115500,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

@@ -22938,6 +22938,180 @@ class RespelledDependencyKeyTests(unittest.TestCase):
                                      f"{expected[0]}/{expected[1]}")
 
 
+class ProblemDepOperationsEqualMemberSurfaceTests(unittest.TestCase):
+    """Issue #632 P3: a `problem/` direct dependency's `operations` EQUALS the member's §5.1
+    procedure set, read from the member's own spec file; what cannot be read is refused. Driven
+    through `validate_compile_ir_dir`, the Compile.static entry."""
+
+    MARK = "a `problem` member's `operations` must equal"
+    UNREAD = "procedure set cannot be read"
+
+    def _run(self, deps: list, *, member_names: tuple[str, ...] | None = ("m__step", "m__init"),
+             catalogued: bool = True) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            if catalogued:
+                cs_ref = "spec/problem/m/controlled_spec.md"
+                (root / cs_ref).parent.mkdir(parents=True)
+                if member_names is not None:
+                    procs = "".join(f"  - name: {n}\n    args: []\n" for n in member_names)
+                    (root / cs_ref).write_text(
+                        "# m\n\n## 5. Interface\n\n### 5.1 Canonical interface\n\n```yaml\n"
+                        f"procedures:\n{procs}```\n\n## 6. Tests\n", encoding="utf-8")
+                _seed_catalog(root, "problem", "m", cs_ref)
+            else:
+                _seed_catalog(root, "problem", "other")
+            ir_dir = root / "workspace" / "ir" / "problem__c__0.1.0" / "i_001"
+            ir_dir.mkdir(parents=True)
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                "meta": {"spec_id": "c", "spec_kind": "problem"},
+                "dependency": {"direct_deps": deps}}), encoding="utf-8")
+            violations: list[str] = []
+            vps._validate_problem_dep_operations_equal_member_surface(root, ir_dir, violations)
+            full = vps.validate_compile_ir_dir(root, ir_dir)
+        # the handler's own finding is among what the Compile.static entry reports
+        for v in violations:
+            self.assertIn(v, full)
+        return violations
+
+    def test_equal_sets_pass_in_any_order(self) -> None:
+        for ops in (["m__step", "m__init"], ["m__init", "m__step"],
+                    ["m__init", "m__step", "m__init"]):
+            with self.subTest(ops=ops):
+                self.assertEqual(self._run([{"node_key": "problem/m@0.1.0", "operations": ops}]),
+                                 [])
+        self.assertEqual(self._run([{"node_key": "problem/m@0.1.0", "operations": ["m__step"]}],
+                                   member_names=("m__step",)), [])
+
+    def test_a_subset_or_superset_is_refused_with_the_set(self) -> None:
+        for ops in (["m__step"], ["m__init"], ["m__step", "m__init", "m__reset"],
+                    ["m__step", "M__init"]):
+            with self.subTest(ops=ops):
+                found = self._run([{"node_key": "problem/m@0.1.0", "operations": ops}])
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(self.MARK, found[0])
+                self.assertIn("['m__init', 'm__step']", found[0])
+
+    def test_a_member_that_cannot_be_read_is_refused(self) -> None:
+        dep = [{"node_key": "problem/m@0.1.0", "operations": ["m__step"]}]
+        for kwargs in ({"member_names": None}, {"catalogued": False},
+                       {"member_names": ()}):
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
+                found = self._run(dep, **kwargs)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(self.UNREAD, found[0])
+
+    def test_components_and_malformed_entries_are_not_this_gates(self) -> None:
+        self.assertEqual(self._run([{"node_key": "component/k@0.1.0", "operations": ["k__x"]},
+                                    {"node_key": "problem/m@0.1.0", "operations": []},
+                                    {"node_key": "problem/m@0.1.0"}, "problem/m@0.1.0"]), [])
+        # the canonical spelling of the key is read, as by the consistency gate
+        found = self._run([{"node_key": " problem / m @0.1.0", "operations": ["m__step"]}])
+        self.assertEqual(len(found), 1, found)
+
+
+class ComposingInitPostGenerateTests(unittest.TestCase):
+    """Issue #632 P3: the composite over a member that publishes `__init`
+    (`data/driver_e2e/cmp_sub_model.f90`) through the production post_generate entry,
+    `_validate_generate_outputs_for_generation`, on a staged tree: the composite's IR, both specs
+    catalogued with their §5.1, the host-rendered runner and the make control file. The member's
+    published set is read from ITS spec file, so the placement gate runs only because that file
+    says `cmp_mem__init`, and a member whose spec cannot be read is refused."""
+
+    def _stage(self, root: Path, model_text: str, *, member_51: str | None) -> NodeExecution:
+        from tools.backends import registry
+        from tools.backends.build_system.make import control_file
+        from tools.tests import test_driver_render as drv
+        ir = drv.cmp_ir(drv.CMP_SUB, [drv.cmp_case("a1", 1, 1)])
+        member_ir = drv.cmp_ir(drv.CMP_MEM, [drv.cmp_case("a1", 1)])
+        for sid, spec_ir, block in ((drv.CMP_SUB, ir, drv.cmp_section_5_1(ir)),
+                                    (drv.CMP_MEM, member_ir, member_51)):
+            cs_ref = f"spec/problem/{sid}/controlled_spec.md"
+            (root / cs_ref).parent.mkdir(parents=True)
+            if block is not None:
+                (root / cs_ref).write_text(
+                    f"# Controlled Spec: {sid} (problem spec)\n\n## 5. Integration algorithm\n\n"
+                    + block + "\n## 6. Model parameters\n", encoding="utf-8")
+            _seed_catalog(root, "problem", sid, cs_ref)
+        ir["meta"]["source_refs"] = {"controlled_spec": f"spec/problem/{drv.CMP_SUB}/"
+                                                        "controlled_spec.md"}
+        pipe = _targeted_pipeline(root, f"problem__{drv.CMP_SUB}__0.1.0")
+        ir_ref = f"workspace/ir/problem__{drv.CMP_SUB}__0.1.0/c_20261113_001"
+        (root / ir_ref).mkdir(parents=True)
+        (root / ir_ref / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+        (pipe / "lineage.json").write_text(json.dumps(
+            {"node_key": drv.CMP_SUB_NODE_KEY, "ir_ref": ir_ref, "dependency_ref": ir_ref}),
+            encoding="utf-8")
+        src = pipe / "source" / "src_1" / "src"
+        src.mkdir(parents=True)
+        (src / f"{drv.CMP_SUB}_model.f90").write_text(model_text, encoding="utf-8")
+        (src / f"{drv.CMP_SUB}_runner.f90").write_text(drv.f_runner.render_runner(
+            ir, drv.CMP_SUB, "harness_fortran_cpu", target=drv.CPU), encoding="utf-8")
+        rules = registry.capability_module("language", "fortran", "control_file").rules(
+            standard="f2008", parallel_backend="openmp")
+        (src / "Makefile").write_text(control_file.render_node(
+            rules=rules, compiler="gfortran", bin_name=f"{drv.CMP_SUB}_runner",
+            cases_default="a1", model_stem=f"{drv.CMP_SUB}_model",
+            runner_stem=f"{drv.CMP_SUB}_runner", closure=["harness_fortran_cpu", drv.CMP_MEM],
+            initial_capture_dir=True), encoding="utf-8")
+        # The composite's one counted loop is the sequence of sub-steps, which carries a
+        # dependence: its plan declines OpenMP, the floor's one exemption.
+        (src.parent / "codegen_bundle.json").write_text(json.dumps({"target_lowering_plan": {
+            "precision": {}, "state_residency": "host",
+            "parallelization": {"model": "none"}}}), encoding="utf-8")
+        return vps._stub_execution(pipe, drv.CMP_SUB_NODE_KEY)
+
+    def _violations(self, model_text: str, *, member_51: str | None) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            execution = self._stage(root, model_text, member_51=member_51)
+            violations: list[str] = []
+            vps._validate_generate_outputs_for_generation(root, execution, "src_1", violations)
+        return violations
+
+    def _member_51(self, *names: str) -> str:
+        from tools.tests import test_driver_render as drv
+        member_ir = drv.cmp_ir(drv.CMP_MEM, [drv.cmp_case("a1", 1)])
+        member_ir["public_api"]["signatures"] = [
+            s for s in member_ir["public_api"]["signatures"] if s["symbol"] in names]
+        return drv.cmp_section_5_1(member_ir)
+
+    def _model(self) -> str:
+        from tools.tests import test_driver_render as drv
+        return (drv.DATA / f"{drv.CMP_SUB}_model.f90").read_text(encoding="utf-8")
+
+    def test_the_composite_passes_post_generate(self) -> None:
+        self.assertEqual(self._violations(
+            self._model(), member_51=self._member_51("cmp_mem__init", "cmp_mem__step")), [])
+
+    def test_a_call_from_step_is_refused_at_post_generate(self) -> None:
+        moved = self._model().replace(
+            "    dts = dt / real(substeps, dp)\n",
+            "    dts = dt / real(substeps, dp)\n    call cmp_mem__init(nx, 1, u, dts, j, ok)\n")
+        found = self._violations(
+            moved, member_51=self._member_51("cmp_mem__init", "cmp_mem__step"))
+        self.assertTrue(any("`cmp_mem__init` is named outside `cmp_sub__init`" in v
+                            for v in found), found)
+        # The gate is decided by the member's spec file: a member that publishes no `__init`
+        # leaves the same model to the other gates, which do not refuse it.
+        self.assertFalse(any("cmp_mem__init` is named" in v for v in self._violations(
+            moved, member_51=self._member_51("cmp_mem__step"))))
+
+    def test_a_member_whose_spec_cannot_be_read_is_refused_and_still_placed(self) -> None:
+        """Fail-closed both ways: the unreadable member is a violation, and the placement gate
+        runs for it as if it published `__init`."""
+        moved = self._model().replace(
+            "    dts = dt / real(substeps, dp)\n",
+            "    dts = dt / real(substeps, dp)\n    call cmp_mem__init(nx, 1, u, dts, j, ok)\n")
+        for member_51 in (None, "### 5.1 Canonical interface block\n\n```yaml\n[unclosed\n```\n"):
+            with self.subTest(member_51=member_51):
+                found = self._violations(moved, member_51=member_51)
+                self.assertTrue(any("problem member 'cmp_mem': its §5.1 procedure set cannot "
+                                    "be read" in v for v in found), found)
+                self.assertTrue(any("`cmp_mem__init` is named outside" in v for v in found),
+                                found)
+
+
 class ComposingFixturePostGenerateTests(unittest.TestCase):
     """The system tier, Part 1: the hand-written composing model
     (`data/driver_e2e/shallow_water2d_rotating_model.f90`, which calls the `problem` member
@@ -22963,6 +23137,16 @@ class ComposingFixturePostGenerateTests(unittest.TestCase):
             "# Controlled Spec: composing fixture (problem spec)\n\n## 5. Integration algorithm\n\n"
             + drv.rotating_section_5_1(ir) + "\n## 6. Model parameters\n", encoding="utf-8")
         _seed_catalog(root, "problem", drv.ROTATING, cs_ref)
+        # The member's own spec (the system tier, Part 2): the gates read its §5.1 to decide
+        # whether it publishes `__init`, and refuse a member they cannot read.
+        member_cs = "spec/problem/shallow_water2d/controlled_spec.md"
+        (root / member_cs).parent.mkdir(parents=True)
+        (root / member_cs).write_text(
+            "# Controlled Spec: member (problem spec)\n\n## 5. Integration algorithm\n\n"
+            "### 5.1 Canonical interface block\n\n```yaml\nprocedures:\n"
+            "  - name: shallow_water2d__step\n    args: []\n```\n\n## 6. Model parameters\n",
+            encoding="utf-8")
+        _seed_catalog(root, "problem", "shallow_water2d", member_cs)
         (pipe / "lineage.json").write_text(json.dumps(
             {"node_key": drv.ROTATING_NODE_KEY, "ir_ref": ir_ref, "dependency_ref": ir_ref}),
             encoding="utf-8")

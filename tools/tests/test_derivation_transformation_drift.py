@@ -868,6 +868,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in place before it shipped (review round 1, F4: the io_contract gate list; review
     # round 3, F7: V3 (vii) names the repeat case of an `__init` publisher).
     "compile-docs-33": "0c1e1da97b30b4aaf660eb851246fc213e513afec33409b9fa28d65de7542cf4",
+    # compile-docs-34 (issue #632 P3): the member `__init` rule — the spec-input reasons
+    # `problem_dependency_surface_not_step_or_init` / `problem_dependency_init_not_published` in
+    # the node-identity list, and V4c-iv (a `problem` member's `operations` equal its §5.1).
+    "compile-docs-34": "19eed56f9ffc4d2b301c660ac992d1ed2915cdcad070487c7560ad32328f9369",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
