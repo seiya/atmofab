@@ -1632,6 +1632,27 @@ that tells you how it closed.
   `tools/tests/data/` and the operator scripts for every reader of the version or case field you
   changed, and run each one or state in the PR that it was not run.** Episode:
   `references/signs-episodes.md` §"Scripts the suite does not run" (issue #632 P2)
+- **A seeded-defect table credits a test that moved on an ABSENT capture** → it reports a catch
+  by a test that never evaluated the defect. A mutant that stops the run, or leaves a
+  continuation without a restart point, moves every later test to "capture absent", and a
+  table that reads "the test moved" as "the test caught it" banks those as catches. Issue #632
+  P4's bench credited `l3_restart_equivalence` with two defects it had never judged. **Credit a
+  must-catch row only with a predicate that failed BY VALUE, and judge a row that must NOT be
+  caught (the baseline, a control, a declared-unobservable row) by ANY movement — an absent
+  capture, a non-zero exit, a build error.** The two polarities are one rule: the fix that made
+  credit value-only also made the baseline value-only, so a baseline that stopped cleanly read
+  "caught by nothing" until Codex found it the next round. Episode:
+  `references/signs-episodes.md` §"A catch that never evaluated" (issue #632 P4)
+- **A test compares two runs of the kernel with each other** (a sub-cycling pair, a symmetry
+  pair, a restart, a repeat) → it cannot see a defect that is the same function of what the two
+  runs share. Issue #632 P4's pairs compared `substeps=m` with `substeps=1` at `dt/m`, both runs
+  advancing the member by the same sub-step, so a sub-step time shifted by any multiple of the
+  sub-step was shifted alike in both and passed all sixteen tests. **For each relative test,
+  name the transformation the two runs share, construct the defect that commutes with it, and
+  run it; then add one test anchored to something outside the pair** (there, the member's own
+  time-refinement band at `substeps=1`). The anchor's resolution is then the claim: a constant
+  offset of 1 s and of 30.3 s still passed, so write what the anchor measured, not "pinned".
+  Episode: `references/signs-episodes.md` §"Two runs that shared the defect" (issue #632 P4)
 
 ## Finally
 

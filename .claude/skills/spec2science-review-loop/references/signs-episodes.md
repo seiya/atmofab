@@ -603,3 +603,39 @@ full suite was green. Three scripts outside it were broken:
 No row runs any of them. The grep that finds them is a grep for the field the change moved
 (`catalog_version`, `restart`, the case list).
 
+## A catch that never evaluated (issue #632 P4)
+
+The sample composite's bench (`tools/tests/data/drive_ir/subcycle_evidence/bench.py`) counted
+every test whose status moved as a catcher. Its first table showed every must-catch row caught
+by its declared test. The round-1 certification reviewer read the failed records:
+- `state-cached-first-call`, declared caught by the restart test, cached the dry case's sub-step
+  for the whole process; the restart base stopped before step 272, the continuation had no
+  restart point, and every `restart.*` record was "capture file ... is absent".
+- `init-other-args-ny`, declared caught by the rectangular test, stopped the program at that
+  case (the hand-written member computes the whole grid only), and all 30 of that test's records
+  were absent captures.
+
+The fix (`value_moved`, round 1) credited a test only when one of its failed records carried a
+number, and the two rows were re-declared to their real catchers. It applied the same rule to
+the baseline, so a baseline that stopped with exit 0 after writing some captures, or failed to
+build, now printed "caught by nothing". Codex's one pass in round 2 found that, and that
+`--gate --all-mutants` dropped the gate's exit code; round 3 found the same exit-code gap in
+`--mutant` mode and a per-row status that used the other polarity from the summary.
+
+## Two runs that shared the defect (issue #632 P4)
+
+The sub-cycling pairs judged `substeps=m, dt_scale=s` against `substeps=1, dt_scale=s/m`: the
+two runs perform the same member steps, so their final states are equal (TC2) or equal to
+round-off (TC4, whose forcing reads the time). The round-1 certification reviewer wrote
+composing models that hand the j-th sub-step `t + j·δ`, `t + (j-1/2)·δ`, `t + (j-2)·δ` and
+`t + (j+9)·δ`. Each passed all sixteen tests: the substeps-1 run of the pair shifts its single
+sub-step by the same multiple of the same δ, and the restated bands are 50% wide. A model
+right only for one and two sub-steps passed too, because the suite held no other value.
+
+Round 1 added the member's time-refinement pair at `substeps=1` (a band 0.1% wide, so a
+shift moves it by a different amount in each of its two runs) and a `substeps=4` pair. Round
+2 measured what the anchor resolves: a shift proportional to the sub-step down to about 1e-3
+of it, and not a constant offset — 1 s read inside the band. Round 3 found 30.3 s inside it
+as well (the reading is not monotonic in the offset), after round 2's text had said "whether
+a larger offset passes is not established". Each reading is now a `mutants.yaml` row.
+
