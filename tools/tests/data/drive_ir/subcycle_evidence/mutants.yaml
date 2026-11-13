@@ -79,8 +79,8 @@ step-calls-member-init:
 
 init-not-calling-member:
   title: >-
-    the composite's __init does not call the member's: it writes the outputs itself (zero
-    state, init_ok true), so the member's private data is never established
+    the composite's __init does not call the member's: it writes the outputs itself (unit
+    depth, zero momentum, init_ok true), so the member's private data is never established
   class: must_catch
   by: [gate]
   patches:
@@ -220,7 +220,7 @@ ctl-dead-counter:
       new: "    calls = calls + 1\n    ok = .false.\n    if (substeps < 1) return\n"
 
 ctl-reciprocal:
-  title: dt * (1 / substeps) in place of dt / substeps (equal for substeps 1 and 2)
+  title: dt * (1 / substeps) in place of dt / substeps (equal for substeps 1, 2 and 4)
   class: control
   patches:
     - old: "    dts = dt / real(substeps, dp)\n"
@@ -288,3 +288,36 @@ r1-time-accumulated:
       new: "    integer :: j\n    real(dp) :: ts\n"
     - old: "    do j = 1, substeps\n      call shallow_water2d_channel__step(nx, ny, dts, t + real(j - 1, dp) * dts, h, hu, hv, &\n        member_ok)\n"
       new: "    ts = t\n    do j = 1, substeps\n      call shallow_water2d_channel__step(nx, ny, dts, ts, h, hu, hv, member_ok)\n      ts = ts + dts\n"
+
+# ---- added by review round 3 (disclosure): the readings tests.md §1 quotes for a time shift,
+# so a maintainer can re-take them --------------------------------------------------------------
+
+r3-time-shift-0p001-substep:
+  title: the j-th sub-call at t + (j - 1 + 0.001) * dt / substeps (a shift of 1e-3 of the sub-step)
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + (real(j - 1, dp) + 0.001_dp) * dts, h, hu, hv, &"
+
+r3-time-offset-1s:
+  title: every sub-call 1 s late (a constant offset; inside 6-7's band, tests.md §1)
+  class: declared_unobservable
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 1, dp) * dts + 1.0_dp, h, hu, hv, &"
+
+r3-time-offset-5s:
+  title: every sub-call 5 s late (a constant offset; outside 6-7's band)
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 1, dp) * dts + 5.0_dp, h, hu, hv, &"
+
+r3-time-offset-30s:
+  title: every sub-call 30.3 s late (a constant offset; inside 6-7's band, tests.md §1)
+  class: declared_unobservable
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 1, dp) * dts + 30.3_dp, h, hu, hv, &"
