@@ -15,8 +15,8 @@
 # ---- §4.5: the member's __init and the private-state rule ---------------------------------
 
 #
-# RECORDED OUTCOME (P6 V-a, run at f925d763, unchanged since): `bench.py --ir certified --model
-# generated --mutants <this file> --all-mutants` exits 1, for one reason only: `a declared catcher
+# RECORDED OUTCOME (P6 V-a, run at f925d763, unchanged since): `bench.py --gate --ir certified
+# --model generated --mutants <this file> --all-mutants` exits 1, for one reason only: `a declared catcher
 # did not catch: ['init-other-args-ny']`. That row keeps the P4 row's `by: [run]` and title, which
 # describe the HAND-WRITTEN member (it stops the program on a block whose extents differ from the
 # case's). R's generated member does not stop: the run exits 0 and the defect is caught BY VALUE by
