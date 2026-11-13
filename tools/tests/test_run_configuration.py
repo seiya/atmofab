@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -706,7 +707,9 @@ class RunConfigurationTest(unittest.TestCase):
             def __init__(self, *a: Any, **kw: Any) -> None:
                 super().__init__(*a, **kw)
                 started.append(self.pid)
-                os.kill(os.getpid(), signal.SIGTERM)
+                # to this thread: under xdist a process-directed signal can land on the
+                # worker's other thread and not interrupt this one's wait (the tool has one)
+                signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
 
         with mock.patch.object(subprocess, "Popen", Racing), \
                 self.assertRaises(rc.Terminated):
@@ -723,7 +726,7 @@ class RunConfigurationTest(unittest.TestCase):
         real = rc._kernel_outcome
 
         def stopped(*a: Any) -> Any:
-            os.kill(os.getpid(), signal.SIGTERM)
+            signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
             return real(*a)
 
         with mock.patch.object(rc, "_kernel_outcome", stopped), \
