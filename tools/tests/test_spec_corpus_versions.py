@@ -407,11 +407,14 @@ class SpecCorpusVersionTest(unittest.TestCase):
         self.assertEqual(yaml.safe_load(build_ir.TRANSCRIPTION.read_text()), build_ir.build())
 
     def test_the_subcycled_band_rows_are_the_members(self) -> None:
-        """Issue #632 P4: every band row of tests.md 5-5 of `shallow_water2d_channel_subcycled`
-        names composite cases and carries, cell for cell, the member's row of the member case each
-        of them equals (`build_ir.CASES`). The bench reads the bands from the member's IR and the
-        Compile leaf reads them from this document: a member band moved without this table (or
-        this table edited by hand) is red here."""
+        """Issue #632 P4: every row of the two-sided error-band table of tests.md 5-5 of
+        `shallow_water2d_channel_subcycled` names composite cases and carries, cell for cell, the
+        member's row of the member case each of them equals (`build_ir.CASES`), and its order
+        table is, row for row, the member's `chan_tc4_ref` order rows. The bench reads the bands
+        from the member's IR and the Compile leaf reads them from this document: a member band or
+        order bound moved without these tables (or these tables edited by hand) is red here. The
+        scalar bounds of 5-5's bullets (the pairs, the symmetry residuals, the decay band, the
+        extrema) are not compared: nothing checks them against the IR but the bench's run."""
         build_ir = self._subcycled_build_ir()
         root = REPO / "spec/problem/dynamics/shallow_water"
 
@@ -433,6 +436,23 @@ class SpecCorpusVersionTest(unittest.TestCase):
             for cid in (c.strip(" `") for c in label.split(",")):
                 with self.subTest(case=cid):
                     self.assertEqual(body, member[f"`{build_ir.CASES[cid][0]}`"])
+
+        def orders(path: Path, prefix: str) -> list[str]:
+            out: list[str] = []
+            pair = None
+            for ln in path.read_text(encoding="utf-8").splitlines():
+                cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+                if len(cells) != 5 or "\\ge" not in ln:
+                    continue
+                pair = cells[0] or pair
+                if pair.startswith(prefix):
+                    out.append(pair.removeprefix(prefix) + " | " + " | ".join(cells[1:]))
+            return out
+
+        mine_orders = orders(root / f"{build_ir.SID}/tests.md", "")
+        self.assertEqual(len(mine_orders), 6)
+        self.assertEqual(mine_orders,
+                         orders(root / f"{build_ir.MEMBER}/tests.md", "`chan_tc4_ref`, "))
 
     def _transcription_compile_static_accepts(self, spec_id: str) -> None:
         """`Compile.static` reads the node's hand-written IR against the real `tests.md` (the
