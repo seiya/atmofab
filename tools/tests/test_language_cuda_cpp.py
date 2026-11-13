@@ -3350,6 +3350,12 @@ class MemberInitPlacementTest(unittest.TestCase):
 
     def test_the_composite_passes(self) -> None:
         self.assertEqual(self._gates(self.BASE), [])
+        # comments and literals naming either `__init` are not occurrences (review round 1)
+        noted = self.BASE.replace(
+            self.IN_STEP, self.IN_STEP + "  // not mem2d__init(), nor comp2d__init()\n"
+            '  const char* why = "mem2d__init comp2d__init";\n  (void)why;\n')
+        self.assertNotEqual(noted, self.BASE)
+        self.assertEqual(self._gates(noted), [])
 
     def test_each_misplacement_is_refused(self) -> None:
         again = "  mem2d_model::mem2d__init(nx, h, dts, nx, ok, dts, dts);\n"

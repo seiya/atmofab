@@ -2575,8 +2575,9 @@ def validate_member_init_placement(
             continue
         if re.match(r"\s*(?:public|private)\b", line):
             continue
-        headers = len(re.findall(rf"\b(?:subroutine|function)\s+{re.escape(node_init)}"
-                                 r"(?![a-z0-9_])", line))
+        # `endsubroutine <name>` has no word boundary before `subroutine` (review round 1).
+        headers = len(re.findall(rf"(?<![a-z0-9_])(?:end\s*)?(?:subroutine|function)\s+"
+                                 rf"{re.escape(node_init)}(?![a-z0-9_])", line))
         if total != headers:
             violations.append(
                 f"{model_file}: `{node_init}` is named outside its own definition "

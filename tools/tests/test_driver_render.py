@@ -1756,6 +1756,25 @@ class ComposingInitEndToEndTest(unittest.TestCase):
                 found = gates(sub, {name: body})
                 self.assertTrue(any(phrase in v and name.rsplit("/", 1)[-1] in v
                                     for v in found), found)
+        # Review round 1: the call held only by a contained procedure `__init` never calls is
+        # not a call (presence reads live code); the call moved from `__init` to `__step` is
+        # refused by BOTH halves; a callee whose name only starts with the member's `__init`
+        # does not count as its call; `endsubroutine <name>` is the definition's end.
+        dead = text.replace(call, "    u = 1.0_dp\n    dt = 0.25_dp\n    n_plan = 6\n"
+                                  "    init_ok = .true.\n  contains\n    subroutine never()\n"
+                                  "      real(dp) :: v(1), d\n      integer :: n\n"
+                                  "      logical :: q\n      call cmp_mem__init(1, 1, v, d, n, q)\n"
+                                  "    end subroutine never\n")
+        self.assertTrue(any("does not call `cmp_mem__init`" in v for v in gates(dead)))
+        moved = text.replace(call, "    u = 1.0_dp\n    dt = 0.25_dp\n    n_plan = 6\n"
+                                   "    init_ok = .true.\n").replace(in_step, in_step + again)
+        found = gates(moved)
+        self.assertTrue(any("does not call `cmp_mem__init`" in v for v in found), found)
+        self.assertTrue(any("`cmp_mem__init` is named outside" in v for v in found), found)
+        prefixed = text.replace(call, "    call cmp_mem__init_x(cmp_mem__init)\n" + call)
+        self.assertTrue(any("other than as the callee" in v for v in gates(prefixed)))
+        self.assertEqual(gates(text.replace("end subroutine cmp_sub__init",
+                                            "endsubroutine cmp_sub__init")), [])
         # comments and literals in another file, and the runner, are not occurrences
         self.assertEqual(gates(text, {
             "helper.f90": "! calls cmp_mem__init\nsubroutine y()\n  print *, 'cmp_sub__init'\nend\n",
