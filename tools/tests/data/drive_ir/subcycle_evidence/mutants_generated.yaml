@@ -14,6 +14,15 @@
 
 # ---- §4.5: the member's __init and the private-state rule ---------------------------------
 
+#
+# RECORDED OUTCOME (P6 V-a, run at f925d763, unchanged since): `bench.py --ir certified --model
+# generated --mutants <this file> --all-mutants` exits 1, for one reason only: `a declared catcher
+# did not catch: ['init-other-args-ny']`. That row keeps the P4 row's `by: [run]` and title, which
+# describe the HAND-WRITTEN member (it stops the program on a block whose extents differ from the
+# case's). R's generated member does not stop: the run exits 0 and the defect is caught BY VALUE by
+# `l1_tc4_rectangular_grid_substeps2` and `l3_axis_exchange_pair`. The row is caught; its
+# declaration is the hand member's, and it is not edited after the run. Every other row is as
+# declared (none unmeasured, no must_catch missed, no control or declared_unobservable caught).
 init-once-per-process:
   title: >-
     the member's __init called only at the first __init of a process (an "initialised" flag);

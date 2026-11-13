@@ -30,7 +30,20 @@ member `problem/shallow_water2d_channel` (`--composite`, `--member`, `--state-fi
 
   PYTHONPATH=. python3 <this file> --composite shallow_water2d_channel_subcycled
       --member shallow_water2d_channel --state-fields h,hu,hv
-      --pair chs_tc2_ref_n032_dts100_m1=chan_tc2_ref_n032_dts100 ...
+      --pair chs_tc2_ref_n032_dts100_m1=chan_tc2_ref_n032_dts100
+      --pair chs_tc3_ref_n032_dts100_m1=chan_tc3_ref_n032_dts100
+      --pair chs_tc4_ref_n032_dts100_m1=chan_tc4_ref_n032_dts100
+      --pair chs_tc4_ref_n032_dts050_m1=chan_tc4_ref_n032_dts100_half
+
+These four are every `substeps = 1` case of the certified composite with a member case equal to
+it input for input (P6 measured AGREE on all four). `chs_tc2_ref_n032_dts050_m1` and
+`chs_tc4_ref_n032_dts025_m1` have no member counterpart, and a case with `substeps` 2 or 4 is no
+member run. A shared case-file key whose values are equal once one side is broadcast to the
+other's shape (a reference one IR keeps as a profile, the other as a field) is printed and not a
+difference; keys named differently on the two sides are not compared, the captures are. The
+default invocation (Part 1's pair) reports DIFFER on R's certified IRs (2026-11-13): the two IRs
+bracket the initial `hu` expression differently and their case files differ by one ulp in 1702
+of 4096 cells; with `--at shallow_water2d_rotating@0.1.0 --at shallow_water2d@0.5.1` it AGREEs.
 
 Exit 0 when nothing is found, 1 otherwise.
 """

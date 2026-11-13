@@ -12,9 +12,13 @@ subject; that default is kept as the pre-R record.
 Issue #632 P6 V-a (after the billed run R of 2026-11-13 certified this node and its member):
 `--ir certified` reads the IR of R's composite pipeline (`R_PIPE`, its lineage `ir_ref`) in
 place of the hand IR; `--model generated` runs R's GENERATED composite over R's generated member
-and R's closure (`R_PIPE`'s `resolved_dependencies`), with `--mutants mutants_generated.yaml` (the
-rows of `mutants.yaml` re-expressed on the generated text); `--ir certified --model hand` runs
-the hand composite and the hand member over R's closure. Run from the repository root:
+and R's closure (`R_PIPE`'s `resolved_dependencies`), with `--mutants
+tools/tests/data/drive_ir/subcycle_evidence/mutants_generated.yaml` (a path from the working
+directory; the rows of `mutants.yaml` re-expressed on the generated text); `--ir certified
+--model hand` runs the hand composite and the hand member over R's closure. P6 ran both with
+`--gate --all-mutants`: the hand pair exits 0; the generated pair exits 1 on one row only, whose
+recorded reason heads `mutants_generated.yaml`. `--ir hand --model generated` was not run. Run
+from the repository root:
 
   PYTHONPATH=. python3 <this file> [--gate | --gate-only] [--mutant <id>]... [--keep <dir>]
       [--cases <id>,...] [--show-values]
