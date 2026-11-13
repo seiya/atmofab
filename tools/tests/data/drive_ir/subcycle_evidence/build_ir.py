@@ -59,9 +59,11 @@ CASES: dict[str, tuple[str, int, dict[str, Any], int]] = {
     "chs_tc2_xpert_n064_dts100_m2": ("chan_tc2_xpert_n064_dts100", 2, {}, 443),
     "chs_tc2_xpert_n064_dts100_m2_sx025": ("chan_tc2_xpert_n064_dts100_sx025", 2, {}, 443),
     "chs_tc3_ref_n032_dts100_m1": ("chan_tc3_ref_n032_dts100", 1, {}, 142),
+    "chs_tc4_ref_n032_dts025_m1": ("chan_tc4_ref_n032_dts100", 1, {"dt_rule.dt_scale": 0.25}, 1086),
     "chs_tc4_ref_n032_dts050_m1": ("chan_tc4_ref_n032_dts100", 1, {"dt_rule.dt_scale": 0.5}, 543),
     "chs_tc4_ref_n032_dts100_m1": ("chan_tc4_ref_n032_dts100", 1, {}, 272),
     "chs_tc4_ref_n032_dts100_m2": ("chan_tc4_ref_n032_dts100", 2, {}, 272),
+    "chs_tc4_ref_n032_dts100_m4": ("chan_tc4_ref_n032_dts100", 4, {}, 272),
     "chs_tc4_ref_n064_dts100_m2": ("chan_tc4_ref_n064_dts100", 2, {}, 544),
     "chs_tc4_ref_n064_dts100_m2_rect": ("chan_tc4_ref_n064_dts100_rect", 2, {}, 576),
     "chs_tc4_ref_n064_dts100_m2_rectaxis": ("chan_tc4_ref_n064_dts100_rectaxis", 2, {}, 576),
@@ -141,12 +143,25 @@ RESTATED: dict[str, tuple[str, list[str], list[tuple[str, dict[str, Any], tuple 
         ("l1_tc4_refinement_translating_low",
          {"chan_tc4_ref_n032_dts100": ["chs_tc4_ref_n032_dts050_m1",
                                        "chs_tc4_ref_n032_dts100_m2"]}, _PER_CASE)]),
+    "l3_substeps_pair_tc4_m4": ("pass", ["chs_tc4_ref_n032_dts025_m1",
+                                         "chs_tc4_ref_n032_dts100_m4"], [
+        ("l1_tc4_refinement_translating_low",
+         {"chan_tc4_ref_n032_dts100": ["chs_tc4_ref_n032_dts025_m1",
+                                       "chs_tc4_ref_n032_dts100_m4"]}, _PER_CASE)]),
+    "l3_tc4_time_refinement_pair_substeps1": ("pass", ["chs_tc4_ref_n032_dts050_m1",
+                                                       "chs_tc4_ref_n032_dts100_m1"], [
+        ("l1_tc4_refinement_translating_low",
+         {"chan_tc4_ref_n032_dts100": ["chs_tc4_ref_n032_dts050_m1",
+                                       "chs_tc4_ref_n032_dts100_m1"]}, _PER_CASE)]),
     "l1_tc4_refinement_substeps2": ("pass", ["chs_tc4_ref_n032_dts100_m2",
                                              "chs_tc4_ref_n064_dts100_m2",
                                              "chs_tc4_ref_n128_dts100_m2"], [
         ("l1_tc4_refinement_translating_low",
          {f"chan_tc4_ref_n{n:03d}_dts100": f"chs_tc4_ref_n{n:03d}_dts100_m2"
-          for n in (32, 64, 128)}, None)]),
+          for n in (32, 64, 128)}, None),
+        ("l0_tc4_initial_state_matches_analytic",
+         {"chan_tc4_ref_n064_dts100": [f"chs_tc4_ref_n{n:03d}_dts100_m2"
+                                       for n in (32, 64, 128)]}, _INITIAL)]),
     "l1_tc4_rectangular_grid_substeps2": ("pass", ["chs_tc4_ref_n064_dts100_m2_rect"], [
         ("l1_tc4_rectangular_grid",
          {"chan_tc4_ref_n064_dts100_rect": "chs_tc4_ref_n064_dts100_m2_rect"}, None)]),
@@ -190,6 +205,7 @@ RESTATED: dict[str, tuple[str, list[str], list[tuple[str, dict[str, Any], tuple 
 }
 ORDER = ["l1_tc2_substeps1_restates_member", "l1_tc3_substeps1_restates_member",
          "l1_tc4_substeps1_restates_member", "l3_substeps_pair_tc2", "l3_substeps_pair_tc4",
+         "l3_substeps_pair_tc4_m4", "l3_tc4_time_refinement_pair_substeps1",
          "l1_tc4_refinement_substeps2", "l1_tc4_rectangular_grid_substeps2",
          "l3_axis_exchange_pair", "l3_along_channel_mirror_pair", "l3_cross_channel_mirror_pair",
          "l3_x_translation_pair", "l3_restart_equivalence", "l3_case_independence_repeat",
@@ -267,15 +283,18 @@ def restate(member_ir: dict[str, Any], test_id: str, targets: list[str],
 def own(test_id: str) -> list[dict[str, Any]]:
     """The predicates of this suite's own judgments (tests.md 5-4)."""
     out: list[dict[str, Any]] = []
-    pairs = {"l3_substeps_pair_tc2": ("chs_tc2_ref_n032_dts050_m1", "chs_tc2_ref_n032_dts100_m2", None),
+    pairs = {"l3_substeps_pair_tc2": ("chs_tc2_ref_n032_dts050_m1", "chs_tc2_ref_n032_dts100_m2",
+                                      2, None),
              "l3_substeps_pair_tc4": ("chs_tc4_ref_n032_dts050_m1", "chs_tc4_ref_n032_dts100_m2",
-                                      1.0e-12)}
+                                      2, 1.0e-12),
+             "l3_substeps_pair_tc4_m4": ("chs_tc4_ref_n032_dts025_m1",
+                                         "chs_tc4_ref_n032_dts100_m4", 4, 1.0e-12)}
     if test_id in pairs:
-        b, a, rel = pairs[test_id]
+        b, a, m, rel = pairs[test_id]
         targets = [b, a]
         out.append({"test_id": test_id, "quantity": "pair.n_step_premise", "target_cases": targets,
                     "case": a,
-                    "expr": f"abs(at('{b}').initial.n_step_plan - 2 * initial.n_step_plan)",
+                    "expr": f"abs(at('{b}').initial.n_step_plan - {m} * initial.n_step_plan)",
                     "op": "le", "value": 0.5})
         for v in ("h", "hu", "hv"):
             diff = f"maxabs(final.{v} - at('{b}').final.{v})"
@@ -283,6 +302,15 @@ def own(test_id: str) -> list[dict[str, Any]]:
                         "case": a,
                         "expr": diff if rel is None else f"{diff} / maxabs(at('{b}').final.{v})",
                         "op": "le", "value": 0.0 if rel is None else rel})
+    if test_id == "l3_tc4_time_refinement_pair_substeps1":
+        # the member's time-refinement pair (its tests.md 2-8, 5-5), carried by the case that
+        # sorts last, `_dts100_m1`, and normalised by that case's (the coarser run's) depth
+        half, base = "chs_tc4_ref_n032_dts050_m1", "chs_tc4_ref_n032_dts100_m1"
+        expr = f"norm2(at('{half}').final.h - final.h) / norm2(final.h)"
+        for q, op, v in (("lower", "ge", 2.482e-8), ("upper", "le", 2.488e-8)):
+            out.append({"test_id": test_id, "quantity": f"errors.time_pair.h_l2_rel.{q}",
+                        "target_cases": [half, base], "case": base, "expr": expr,
+                        "op": op, "value": v})
     if test_id == "l3_x_translation_pair":
         base, shifted = "chs_tc2_xpert_n064_dts100_m2", "chs_tc2_xpert_n064_dts100_m2_sx025"
         norm = f"max(norm2(at('{base}').final.hu), norm2(at('{base}').final.hv))"

@@ -285,7 +285,7 @@ _CENSUS = {
     "shallow_water2d_channel": (35,) * 7,
     # the wave case (`ny = 4`, min_block 2) is replicated where the grid splits `y` in three or more
     "shallow_water2d_rotating": (18, 18, 17, 18, 17, 18, 18),
-    "shallow_water2d_channel_subcycled": (17,) * 7,
+    "shallow_water2d_channel_subcycled": (19,) * 7,
 }
 _C = lambda k: (k, "cell")   # noqa: E731
 _F = lambda k: (k, "face")   # noqa: E731

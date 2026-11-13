@@ -53,9 +53,12 @@ state-carried-counter:
 state-cached-first-call:
   title: >-
     the sub-step dt / substeps cached at the first __step call of a process and read by every
-    later call
+    later call. The first case of the process is the dry case, so every later case runs with its
+    sub-step and fails by value; the restart test does not judge it: the base stops before step
+    272 and the continuation has no restart point (review round 1 corrected the declared
+    catcher, which was the restart test)
   class: must_catch
-  by: [l3_restart_equivalence]
+  by: [l3_substeps_pair_tc2, l3_substeps_pair_tc4]
   patches:
     - old: "    real(dp) :: dts\n"
       new: "    real(dp), save :: dts = -1.0_dp\n"
@@ -105,9 +108,12 @@ init-twice:
 
 init-other-args-ny:
   title: >-
-    the member's __init handed nx_g in place of ny_g (a square grid hides it)
+    the member's __init handed nx_g in place of ny_g (a square grid hides it). The hand-written
+    member computes the whole grid only and stops the program on a block whose extents differ
+    from the case's, so the run ends at the rectangular case and no predicate judges it by value
+    (review round 1 corrected the declared catcher, which was the rectangular test)
   class: must_catch
-  by: [l1_tc4_rectangular_grid_substeps2]
+  by: [run]
   patches:
     - old: "    call shallow_water2d_channel__init(nx, ny, nx_g, ny_g, L_x, L_y, ng, i0, j0, t_start, &\n"
       new: "    call shallow_water2d_channel__init(nx, ny, nx_g, nx_g, L_x, L_y, ng, i0, j0, t_start, &\n"
@@ -219,3 +225,66 @@ ctl-reciprocal:
   patches:
     - old: "    dts = dt / real(substeps, dp)\n"
       new: "    dts = dt * (1.0_dp / real(substeps, dp))\n"
+
+# ---- added by review round 1 (the certification-soundness axis's survivors at c357dd5c), each
+# declared before the suite gained the two tests it is expected to be caught by ---------------
+
+r1-time-end-of-substep:
+  title: the j-th sub-call at t + j * dt / substeps (the sub-step's end time)
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j, dp) * dts, h, hu, hv, &"
+
+r1-time-midpoint:
+  title: the j-th sub-call at t + (j - 1/2) * dt / substeps
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + (real(j, dp) - 0.5_dp) * dts, h, hu, hv, &"
+
+r1-time-one-early:
+  title: the j-th sub-call at t + (j - 2) * dt / substeps
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 2, dp) * dts, h, hu, hv, &"
+
+r1-time-ten-late:
+  title: the j-th sub-call at t + (j + 9) * dt / substeps
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j + 9, dp) * dts, h, hu, hv, &"
+
+r1-substeps-capped-at-2:
+  title: at most two sub-calls of dt / min(substeps, 2) per step
+  class: must_catch
+  by: [l3_substeps_pair_tc4_m4]
+  patches:
+    - old: "    dts = dt / real(substeps, dp)\n    do j = 1, substeps\n"
+      new: "    dts = dt / real(min(substeps, 2), dp)\n    do j = 1, min(substeps, 2)\n"
+
+r1-time-from-third-substep:
+  title: the j-th sub-call at t + min(j - 1, 1) * dt / substeps (wrong from the third on)
+  class: must_catch
+  by: [l3_substeps_pair_tc4_m4]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(min(j - 1, 1), dp) * dts, h, hu, hv, &"
+
+r1-time-accumulated:
+  title: >-
+    the sub-step time accumulated (ts = ts + dts) in place of t + (j - 1) * dts: a rounding
+    difference of the time alone, which no forcing-time judgment can resolve (Controlled Spec §5
+    forbids it; tests.md §1)
+  class: declared_unobservable
+  patches:
+    - old: "    integer :: j\n"
+      new: "    integer :: j\n    real(dp) :: ts\n"
+    - old: "    do j = 1, substeps\n      call shallow_water2d_channel__step(nx, ny, dts, t + real(j - 1, dp) * dts, h, hu, hv, &\n        member_ok)\n"
+      new: "    ts = t\n    do j = 1, substeps\n      call shallow_water2d_channel__step(nx, ny, dts, ts, h, hu, hv, member_ok)\n      ts = ts + dts\n"

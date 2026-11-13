@@ -440,6 +440,49 @@ case:
     derived:
       nx_g: inputs.grid.nx
       ny_g: inputs.grid.ny
+  - case_id: chs_tc4_ref_n032_dts025_m1
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 8000000.0
+        L_y: 8000000.0
+        ng: 2
+      time:
+        t_start: 0.0
+        t_end: 86400.0
+      dt_rule:
+        kind: cfl_ceil
+        cfl_target: 0.45
+        dt_scale: 0.25
+      constants:
+        g: 9.80616
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+      boundary:
+        kind: channel_periodic_along_mirror_wall_across
+        channel_axis: x
+        along_axis: 1
+      coriolis:
+        coriolis_profile: beta_plane
+      initial:
+        flow_profile: tc4_translating_low
+        zonal_sign: 1
+        gh0: 100000.0
+        u_jet: 40.0
+        flow_profile_id: 4
+        eta0: 0.0
+        shift_x_fraction: 0.0
+      test_profile_id: shallow_water2d_channel_subcycled_baseline
+      test_profile_version: 0.1.0
+      history:
+        every: 1086
+      subcycle:
+        substeps: 1
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chs_tc4_ref_n032_dts050_m1
     inputs:
       grid:
@@ -615,6 +658,49 @@ case:
     restart:
       from: chs_tc4_ref_n032_dts100_m2
       step: 272
+  - case_id: chs_tc4_ref_n032_dts100_m4
+    inputs:
+      grid:
+        nx: 32
+        ny: 32
+        L_x: 8000000.0
+        L_y: 8000000.0
+        ng: 2
+      time:
+        t_start: 0.0
+        t_end: 86400.0
+      dt_rule:
+        kind: cfl_ceil
+        cfl_target: 0.45
+        dt_scale: 1.0
+      constants:
+        g: 9.80616
+        Omega: 7.292e-05
+        a: 6371220.0
+        theta0: 0.7853981633974483
+      boundary:
+        kind: channel_periodic_along_mirror_wall_across
+        channel_axis: x
+        along_axis: 1
+      coriolis:
+        coriolis_profile: beta_plane
+      initial:
+        flow_profile: tc4_translating_low
+        zonal_sign: 1
+        gh0: 100000.0
+        u_jet: 40.0
+        flow_profile_id: 4
+        eta0: 0.0
+        shift_x_fraction: 0.0
+      test_profile_id: shallow_water2d_channel_subcycled_baseline
+      test_profile_version: 0.1.0
+      history:
+        every: 272
+      subcycle:
+        substeps: 4
+    derived:
+      nx_g: inputs.grid.nx
+      ny_g: inputs.grid.ny
   - case_id: chs_tc4_ref_n064_dts100_m2
     inputs:
       grid:
@@ -1904,6 +1990,38 @@ io_contract:
     - pair.hv
     - pair.n_step_premise
     - run.n_step
+  - test_id: l3_substeps_pair_tc4_m4
+    expected_outcome: pass
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    quantities:
+    - cfl.max
+    - extrema.h.min
+    - init.dt
+    - init.n_step_plan
+    - init_ok
+    - metrics.mass_drift_rel
+    - pair.h
+    - pair.hu
+    - pair.hv
+    - pair.n_step_premise
+    - run.n_step
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    expected_outcome: pass
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    quantities:
+    - cfl.max
+    - errors.time_pair.h_l2_rel.lower
+    - errors.time_pair.h_l2_rel.upper
+    - extrema.h.min
+    - init.dt
+    - init.n_step_plan
+    - init_ok
+    - metrics.mass_drift_rel
+    - run.n_step
   - test_id: l1_tc4_refinement_substeps2
     expected_outcome: pass
     target_cases:
@@ -1930,6 +2048,9 @@ io_contract:
     - convergence.n064_to_n128.l1_order
     - convergence.n064_to_n128.l2_order
     - convergence.n064_to_n128.linf_order
+    - errors.initial_h.linf_rel
+    - errors.initial_u.linf_rel
+    - errors.initial_v.linf_rel
     - errors.mms_h.l1_rel_tend.lower
     - errors.mms_h.l1_rel_tend.upper
     - errors.mms_h.l2_rel_tend.lower
@@ -4868,6 +4989,342 @@ io_contract:
     expr: maxabs(final.hv - at('chs_tc4_ref_n032_dts050_m1').final.hv) / maxabs(at('chs_tc4_ref_n032_dts050_m1').final.hv)
     op: le
     value: 1.0e-12
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: cfl.max
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    bind:
+      g: inputs.constants.g
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(g * initial.h)) / dx + (abs(initial.hv / initial.h)
+        + sqrt(g * initial.h)) / dy)
+      lam1: max((abs(final.hu / final.h) + sqrt(g * final.h)) / dx + (abs(final.hv / final.h) + sqrt(g
+        * final.h)) / dy)
+    expr: (initial.dt / inputs.subcycle.substeps) * max(lam0, lam1)
+    op: le
+    value: 1.0
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: cfl.max
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    expr: (initial.dt / inputs.subcycle.substeps) * max(smax((abs(history.hu / history.h) + sqrt(g * history.h))
+      / dx + (abs(history.hv / history.h) + sqrt(g * history.h)) / dy))
+    op: le
+    value: 1.0
+    bind:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      g: inputs.constants.g
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: extrema.h.min
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    expr: min(min(initial.h), min(final.h))
+    op: ge
+    value: 9000.0
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: extrema.h.min
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    expr: min(series.h_min)
+    op: ge
+    value: 9000.0
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: run.n_step
+    expr: final.step - initial.n_step_plan
+    op: eq
+    value: 0
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: init_ok
+    expr: initial.init_ok
+    op: eq
+    value: 1
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: init.n_step_plan
+    bind:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      g: inputs.constants.g
+      lam0: max((abs(initial.hu / initial.h) + sqrt(g * initial.h)) / dx + (abs(initial.hv / initial.h)
+        + sqrt(g * initial.h)) / dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / lam0
+      nst: ceil((inputs.time.t_end - inputs.time.t_start) / dt_raw)
+    expr: abs(initial.n_step_plan - nst)
+    op: le
+    value: 0.5
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: init.dt
+    bind:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      g: inputs.constants.g
+      lam0: max((abs(initial.hu / initial.h) + sqrt(g * initial.h)) / dx + (abs(initial.hv / initial.h)
+        + sqrt(g * initial.h)) / dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / lam0
+      nst: ceil((inputs.time.t_end - inputs.time.t_start) / dt_raw)
+      dt_rule: (inputs.time.t_end - inputs.time.t_start) / nst
+    expr: abs(initial.dt - dt_rule) / dt_rule
+    op: le
+    value: 1.0e-12
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: metrics.mass_drift_rel
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    bind:
+      dA: (inputs.grid.L_x / inputs.grid.nx) * (inputs.grid.L_y / inputs.grid.ny)
+      M0: sum(initial.h) * dA
+      M1: sum(final.h) * dA
+    expr: abs(M1 - M0) / max(abs(M0), 1e-14)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(final.hv), maxabs(comparand.final.hu),
+      maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hu), maxabs(final.hv), maxabs(comparand.final.hu),
+      maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: pair.n_step_premise
+    target_cases: &id003
+    - chs_tc4_ref_n032_dts025_m1
+    - chs_tc4_ref_n032_dts100_m4
+    case: chs_tc4_ref_n032_dts100_m4
+    expr: abs(at('chs_tc4_ref_n032_dts025_m1').initial.n_step_plan - 4 * initial.n_step_plan)
+    op: le
+    value: 0.5
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: pair.h
+    target_cases: *id003
+    case: chs_tc4_ref_n032_dts100_m4
+    expr: maxabs(final.h - at('chs_tc4_ref_n032_dts025_m1').final.h) / maxabs(at('chs_tc4_ref_n032_dts025_m1').final.h)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: pair.hu
+    target_cases: *id003
+    case: chs_tc4_ref_n032_dts100_m4
+    expr: maxabs(final.hu - at('chs_tc4_ref_n032_dts025_m1').final.hu) / maxabs(at('chs_tc4_ref_n032_dts025_m1').final.hu)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_substeps_pair_tc4_m4
+    quantity: pair.hv
+    target_cases: *id003
+    case: chs_tc4_ref_n032_dts100_m4
+    expr: maxabs(final.hv - at('chs_tc4_ref_n032_dts025_m1').final.hv) / maxabs(at('chs_tc4_ref_n032_dts025_m1').final.hv)
+    op: le
+    value: 1.0e-12
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: cfl.max
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    bind:
+      g: inputs.constants.g
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      lam0: max((abs(initial.hu / initial.h) + sqrt(g * initial.h)) / dx + (abs(initial.hv / initial.h)
+        + sqrt(g * initial.h)) / dy)
+      lam1: max((abs(final.hu / final.h) + sqrt(g * final.h)) / dx + (abs(final.hv / final.h) + sqrt(g
+        * final.h)) / dy)
+    expr: (initial.dt / inputs.subcycle.substeps) * max(lam0, lam1)
+    op: le
+    value: 1.0
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: cfl.max
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    expr: (initial.dt / inputs.subcycle.substeps) * max(smax((abs(history.hu / history.h) + sqrt(g * history.h))
+      / dx + (abs(history.hv / history.h) + sqrt(g * history.h)) / dy))
+    op: le
+    value: 1.0
+    bind:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      g: inputs.constants.g
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: extrema.h.min
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    expr: min(min(initial.h), min(final.h))
+    op: ge
+    value: 9000.0
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: extrema.h.min
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    expr: min(series.h_min)
+    op: ge
+    value: 9000.0
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: run.n_step
+    expr: final.step - initial.n_step_plan
+    op: eq
+    value: 0
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: init_ok
+    expr: initial.init_ok
+    op: eq
+    value: 1
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: init.n_step_plan
+    bind:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      g: inputs.constants.g
+      lam0: max((abs(initial.hu / initial.h) + sqrt(g * initial.h)) / dx + (abs(initial.hv / initial.h)
+        + sqrt(g * initial.h)) / dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / lam0
+      nst: ceil((inputs.time.t_end - inputs.time.t_start) / dt_raw)
+    expr: abs(initial.n_step_plan - nst)
+    op: le
+    value: 0.5
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: init.dt
+    bind:
+      dx: inputs.grid.L_x / inputs.grid.nx
+      dy: inputs.grid.L_y / inputs.grid.ny
+      g: inputs.constants.g
+      lam0: max((abs(initial.hu / initial.h) + sqrt(g * initial.h)) / dx + (abs(initial.hv / initial.h)
+        + sqrt(g * initial.h)) / dy)
+      dt_raw: inputs.dt_rule.dt_scale * inputs.dt_rule.cfl_target / lam0
+      nst: ceil((inputs.time.t_end - inputs.time.t_start) / dt_raw)
+      dt_rule: (inputs.time.t_end - inputs.time.t_start) / nst
+    expr: abs(initial.dt - dt_rule) / dt_rule
+    op: le
+    value: 1.0e-12
+    per_case: true
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: metrics.mass_drift_rel
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    bind:
+      dA: (inputs.grid.L_x / inputs.grid.nx) * (inputs.grid.L_y / inputs.grid.ny)
+      M0: sum(initial.h) * dA
+      M1: sum(final.h) * dA
+    expr: abs(M1 - M0) / max(abs(M0), 1e-14)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    expr: maxabs(final.h - comparand.final.h) / max(maxabs(final.h), maxabs(comparand.final.h), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    expr: maxabs(final.hu - comparand.final.hu) / max(maxabs(final.hu), maxabs(final.hv), maxabs(comparand.final.hu),
+      maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: cross_target_state_agreement
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    per_case: true
+    expr: maxabs(final.hv - comparand.final.hv) / max(maxabs(final.hu), maxabs(final.hv), maxabs(comparand.final.hu),
+      maxabs(comparand.final.hv), 1.0)
+    op: le
+    value: 1.0e-10
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: errors.time_pair.h_l2_rel.lower
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    case: chs_tc4_ref_n032_dts100_m1
+    expr: norm2(at('chs_tc4_ref_n032_dts050_m1').final.h - final.h) / norm2(final.h)
+    op: ge
+    value: 2.482e-08
+  - test_id: l3_tc4_time_refinement_pair_substeps1
+    quantity: errors.time_pair.h_l2_rel.upper
+    target_cases:
+    - chs_tc4_ref_n032_dts050_m1
+    - chs_tc4_ref_n032_dts100_m1
+    case: chs_tc4_ref_n032_dts100_m1
+    expr: norm2(at('chs_tc4_ref_n032_dts050_m1').final.h - final.h) / norm2(final.h)
+    op: le
+    value: 2.488e-08
   - test_id: l1_tc4_refinement_substeps2
     quantity: cfl.max
     target_cases:
@@ -7076,6 +7533,120 @@ io_contract:
       maxabs(comparand.final.hv), 1.0)
     op: le
     value: 1.0e-10
+  - test_id: l1_tc4_refinement_substeps2
+    quantity: errors.initial_h.linf_rel
+    target_cases:
+    - chs_tc4_ref_n032_dts100_m2
+    - chs_tc4_ref_n064_dts100_m2
+    - chs_tc4_ref_n128_dts100_m2
+    per_case: true
+    bind:
+      g: inputs.constants.g
+      f0: 2 * inputs.constants.Omega * sin(inputs.constants.theta0)
+      beta: 2 * inputs.constants.Omega * cos(inputs.constants.theta0) / inputs.constants.a
+      h0: inputs.initial.gh0 / g
+      Uj: inputs.initial.zonal_sign * inputs.initial.u_jet
+      Lr: inputs.grid.L_y
+      Ls: inputs.grid.L_x
+      k: pi / Lr
+      rc: Lr / 2
+      Fr: f0 * (y / 2 - sin(2 * k * y) / (4 * k)) + beta * (y ** 2 / 4 - Lr * y / 4 - (y - Lr / 2) * sin(2
+        * k * y) / (4 * k) - (cos(2 * k * y) - 1) / (8 * k ** 2))
+      Fc: f0 * (rc / 2 - sin(2 * k * rc) / (4 * k)) + beta * (rc ** 2 / 4 - Lr * rc / 4 - (rc - Lr / 2)
+        * sin(2 * k * rc) / (4 * k) - (cos(2 * k * rc) - 1) / (8 * k ** 2))
+      hbar: h0 - (Uj / g) * (Fr - Fc)
+      ubar: Uj * sin(k * y) ** 2
+      fr: f0 + beta * (y - Lr / 2)
+      psi0: -0.03 * inputs.initial.gh0 / f0
+      Rl: 2 * inputs.constants.a / 12.74244
+      ctr: Uj * cos(inputs.constants.theta0)
+      tt: '0.0'
+      xi: pi * (x - Ls / 2 - ctr * tt) / Ls
+      psi: psi0 * exp(-((Ls / pi) ** 2 * sin(xi) ** 2 + (y - rc) ** 2) / Rl ** 2)
+      ps: -(Ls / (pi * Rl ** 2)) * sin(2 * xi) * psi
+      pr: -(2 * (y - rc) / Rl ** 2) * psi
+      hr: hbar + fr * psi / g
+      ur: ubar - pr
+      vr: ps
+    expr: maxabs(initial.h - hr) / maxabs(hr)
+    op: le
+    value: 1.0e-09
+  - test_id: l1_tc4_refinement_substeps2
+    quantity: errors.initial_u.linf_rel
+    target_cases:
+    - chs_tc4_ref_n032_dts100_m2
+    - chs_tc4_ref_n064_dts100_m2
+    - chs_tc4_ref_n128_dts100_m2
+    per_case: true
+    bind:
+      g: inputs.constants.g
+      f0: 2 * inputs.constants.Omega * sin(inputs.constants.theta0)
+      beta: 2 * inputs.constants.Omega * cos(inputs.constants.theta0) / inputs.constants.a
+      h0: inputs.initial.gh0 / g
+      Uj: inputs.initial.zonal_sign * inputs.initial.u_jet
+      Lr: inputs.grid.L_y
+      Ls: inputs.grid.L_x
+      k: pi / Lr
+      rc: Lr / 2
+      Fr: f0 * (y / 2 - sin(2 * k * y) / (4 * k)) + beta * (y ** 2 / 4 - Lr * y / 4 - (y - Lr / 2) * sin(2
+        * k * y) / (4 * k) - (cos(2 * k * y) - 1) / (8 * k ** 2))
+      Fc: f0 * (rc / 2 - sin(2 * k * rc) / (4 * k)) + beta * (rc ** 2 / 4 - Lr * rc / 4 - (rc - Lr / 2)
+        * sin(2 * k * rc) / (4 * k) - (cos(2 * k * rc) - 1) / (8 * k ** 2))
+      hbar: h0 - (Uj / g) * (Fr - Fc)
+      ubar: Uj * sin(k * y) ** 2
+      fr: f0 + beta * (y - Lr / 2)
+      psi0: -0.03 * inputs.initial.gh0 / f0
+      Rl: 2 * inputs.constants.a / 12.74244
+      ctr: Uj * cos(inputs.constants.theta0)
+      tt: '0.0'
+      xi: pi * (x - Ls / 2 - ctr * tt) / Ls
+      psi: psi0 * exp(-((Ls / pi) ** 2 * sin(xi) ** 2 + (y - rc) ** 2) / Rl ** 2)
+      ps: -(Ls / (pi * Rl ** 2)) * sin(2 * xi) * psi
+      pr: -(2 * (y - rc) / Rl ** 2) * psi
+      hr: hbar + fr * psi / g
+      ur: ubar - pr
+      vr: ps
+    expr: maxabs(initial.hu / initial.h - ur) / inputs.initial.u_jet
+    op: le
+    value: 1.0e-09
+  - test_id: l1_tc4_refinement_substeps2
+    quantity: errors.initial_v.linf_rel
+    target_cases:
+    - chs_tc4_ref_n032_dts100_m2
+    - chs_tc4_ref_n064_dts100_m2
+    - chs_tc4_ref_n128_dts100_m2
+    per_case: true
+    bind:
+      g: inputs.constants.g
+      f0: 2 * inputs.constants.Omega * sin(inputs.constants.theta0)
+      beta: 2 * inputs.constants.Omega * cos(inputs.constants.theta0) / inputs.constants.a
+      h0: inputs.initial.gh0 / g
+      Uj: inputs.initial.zonal_sign * inputs.initial.u_jet
+      Lr: inputs.grid.L_y
+      Ls: inputs.grid.L_x
+      k: pi / Lr
+      rc: Lr / 2
+      Fr: f0 * (y / 2 - sin(2 * k * y) / (4 * k)) + beta * (y ** 2 / 4 - Lr * y / 4 - (y - Lr / 2) * sin(2
+        * k * y) / (4 * k) - (cos(2 * k * y) - 1) / (8 * k ** 2))
+      Fc: f0 * (rc / 2 - sin(2 * k * rc) / (4 * k)) + beta * (rc ** 2 / 4 - Lr * rc / 4 - (rc - Lr / 2)
+        * sin(2 * k * rc) / (4 * k) - (cos(2 * k * rc) - 1) / (8 * k ** 2))
+      hbar: h0 - (Uj / g) * (Fr - Fc)
+      ubar: Uj * sin(k * y) ** 2
+      fr: f0 + beta * (y - Lr / 2)
+      psi0: -0.03 * inputs.initial.gh0 / f0
+      Rl: 2 * inputs.constants.a / 12.74244
+      ctr: Uj * cos(inputs.constants.theta0)
+      tt: '0.0'
+      xi: pi * (x - Ls / 2 - ctr * tt) / Ls
+      psi: psi0 * exp(-((Ls / pi) ** 2 * sin(xi) ** 2 + (y - rc) ** 2) / Rl ** 2)
+      ps: -(Ls / (pi * Rl ** 2)) * sin(2 * xi) * psi
+      pr: -(2 * (y - rc) / Rl ** 2) * psi
+      hr: hbar + fr * psi / g
+      ur: ubar - pr
+      vr: ps
+    expr: maxabs(initial.hv / initial.h - vr) / inputs.initial.u_jet
+    op: le
+    value: 1.0e-09
   - test_id: l1_tc4_rectangular_grid_substeps2
     quantity: cfl.max
     target_cases:
@@ -9422,7 +9993,7 @@ io_contract:
     - chs_zrepeat_n032_dts100_m2
   - test_id: l0_substeps_refusal_xfail
     quantity: ok
-    target_cases: &id003
+    target_cases: &id004
     - chs_guard_n032_dts100_m0
     - chs_guard_n032_dts100_mneg1
     per_case: true
@@ -9431,7 +10002,7 @@ io_contract:
     value: 0
   - test_id: l0_substeps_refusal_xfail
     quantity: run.first_call_refused
-    target_cases: *id003
+    target_cases: *id004
     per_case: true
     expr: final.step + max(maxabs(final.h - initial.h), maxabs(final.hu - initial.hu), maxabs(final.hv
       - initial.hv))
@@ -9473,6 +10044,8 @@ public_api:
     - l1_tc4_substeps1_restates_member
     - l3_substeps_pair_tc2
     - l3_substeps_pair_tc4
+    - l3_substeps_pair_tc4_m4
+    - l3_tc4_time_refinement_pair_substeps1
     - l1_tc4_refinement_substeps2
     - l1_tc4_rectangular_grid_substeps2
     - l3_axis_exchange_pair
@@ -9490,6 +10063,8 @@ public_api:
     - l1_tc4_substeps1_restates_member
     - l3_substeps_pair_tc2
     - l3_substeps_pair_tc4
+    - l3_substeps_pair_tc4_m4
+    - l3_tc4_time_refinement_pair_substeps1
     - l1_tc4_refinement_substeps2
     - l1_tc4_rectangular_grid_substeps2
     - l3_axis_exchange_pair

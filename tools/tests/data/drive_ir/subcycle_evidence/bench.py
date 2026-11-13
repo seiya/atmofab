@@ -26,9 +26,11 @@ the repository root:
 
 `mutants.yaml` declares, per row, its class (`must_catch`, `declared_unobservable`, `control`)
 and what is expected to catch it (`by`: test ids, `gate` — the model gates of 2 — or `run` — a
-non-zero exit of the run); a `gate` row is run through both the gates and the cases. The table
-prints, per row, the gate findings, the tests that moved, the failed predicate records and the
-run's exit code. Exit 1 when: a `must_catch` row is caught by nothing; a `control` row or the
+non-zero exit of the run); a `gate` row is run through both the gates and the cases. A test
+counts as a catcher only when one of its predicates failed BY VALUE: a test that moved only
+because a capture is absent (the run stopped, a continuation had no restart point) is printed
+apart and caught nothing (`value_moved`). The table prints, per row, the gate findings, the
+tests that moved, the failed predicate records and the run's exit code. Exit 1 when: a `must_catch` row is caught by nothing; a `control` row or the
 unmutated model is caught (the baseline moving makes no row a measurement); a
 `declared_unobservable` row is caught (a surprise to record); a row's declared catchers did not
 all catch it (recorded as `UNEXPECTED CATCHER`); or a row was not measured. The flags are the
@@ -174,8 +176,16 @@ def one(job: tuple) -> tuple[str, dict[str, Any]]:
             shutil.rmtree(work, ignore_errors=True)
 
 
+def value_moved(res: dict[str, Any]) -> set[str]:
+    """The moved tests that a predicate failed BY VALUE: some failed record of the test carries a
+    number. A test moved only by records with no value (a capture absent because the run stopped,
+    a case with no restart point) did not judge the defect; `run` is what caught it."""
+    return {r["test_id"] for r in res.get("failed", [])
+            if isinstance(r.get("value"), (int, float)) and r["test_id"] in res.get("moved", [])}
+
+
 def catchers(res: dict[str, Any]) -> set[str]:
-    out = set(res.get("moved", []))
+    out = value_moved(res)
     if res.get("gate"):
         out.add("gate")
     if res.get("rc"):
@@ -268,8 +278,11 @@ def main() -> int:
                 declared = set(row.get("by", []))
                 if status == "CAUGHT" and declared and not declared <= caught:
                     status += f" (UNEXPECTED CATCHER: declared {sorted(declared)})"
+                absent = sorted(set(res.get("moved", [])) - value_moved(res))
                 print(f"== {mid} [{row['class']}]: {row['title']}  ->  {status} "
                       f"by {sorted(caught)} {res.get('note', '')[:200]}")
+                if absent:
+                    print(f"     moved without a value (absent capture): {absent}")
                 for g in res.get("gate", [])[:4]:
                     print("     gate", g[:300])
                 for r in res.get("failed", [])[:10]:
