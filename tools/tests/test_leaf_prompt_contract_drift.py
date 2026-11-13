@@ -1175,8 +1175,10 @@ PINNED: dict[str, str] = {
     "leaf-97": "1fe417e1764e33c6aa120ff025d3013c02b6980c8f8ed9844f0dc720519c2221",
     # leaf-98 (issue #632 P3, review round 1): each language's generate producer fragment, rule
     # (4), states the member-`__init` placement gate; the generate verify template's G4 states
-    # the private-state rule a composite and its members keep.
-    "leaf-98": "6f0c6719f5bcd9ee57b2885a382280bb1acf3e7b01a17f6a775c607736c90b0a",
+    # the private-state rule a composite and its members keep. Re-pinned in place before it
+    # shipped (review round 2: the producer template states the private-state rule, G4 exempts
+    # storage kept only for reuse, the Fortran fragment's `use` and `!$` clause).
+    "leaf-98": "1aaadcc256f0eef57948967780e84af0cb28debe21d6641ba099bfc993fe8de1",
 }
 
 # sha256 of each phase's reader subset (`_reader_tuples`), by reader contract version; the same
@@ -1218,8 +1220,9 @@ PINNED_READER: dict[str, str] = {
     # `restart.step` key and the driver's restart point.
     "generate-verify-8": "f1b3bde0abd70cba406b0664a55d15f1febd8a7144ef9b7b20a96a99a6e7d9f4",
     # generate-verify-9 (issue #632 P3): G4 of the verify template fails a model whose state
-    # outside the schema depends on an earlier call, an earlier case, or step 0.
-    "generate-verify-9": "2b6c5d027735a1b800a983c6d4ab654351abc597dc6315c1089171d23612b6b4",
+    # outside the schema depends on an earlier call, an earlier case, or step 0. Re-pinned in place
+    # before it shipped (review round 2: storage kept only for reuse is not such state).
+    "generate-verify-9": "46680740182d49d32081253a0516da8d488f8d885199a86255c0600e68986e61",
     "validate-judge-1": "c7b6763cfe867af4459f55a00daeefd55c94bca24cfab63f0b060f6627fa0817",
     "validate-judge-2": "425bf0c573d74cd9a32f1812789c9a77aacb3e2f7d11c9a08a22b461b59cf886",
     "validate-judge-3": "de6921595156313f0f5f71153de79a8b6a13fcc323fa0f2cecdc4a88d6936d3e",
