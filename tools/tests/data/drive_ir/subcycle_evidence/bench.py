@@ -264,7 +264,9 @@ def main() -> int:
             if res["note"]:
                 print(res["note"])
             moved = report(ir, res["verdict"], res["records"], a.show_values)
-            return 0 if a.mutant else (1 if moved or rc or res["gate"] or res["rc"] else 0)
+            if a.mutant:
+                return rc   # a --mutant run reports what moved; only a --gate finding fails it
+            return 1 if moved or rc or res["gate"] or res["rc"] else 0
         mutants = yaml.safe_load(MUTANTS.read_text())
 
         def patched(mid: str) -> str | None:
@@ -291,6 +293,8 @@ def main() -> int:
                         print("     gate", g[:300])
                     continue
                 row = mutants[mid]
+                if row["class"] != "must_catch":
+                    caught = moved_any(res)   # the strict reading the summary uses
                 status = ("NOT APPLICABLE" if res.get("not_applicable")
                           else "NOT MEASURED (build error)" if "build_error" in res
                           else "CAUGHT" if caught else "NOT CAUGHT")
