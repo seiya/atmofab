@@ -33,7 +33,10 @@ apart and caught nothing (`value_moved`). The table prints, per row, the gate fi
 tests that moved, the failed predicate records and the run's exit code. Exit 1 when: a `must_catch` row is caught by nothing; a `control` row or the
 unmutated model is caught (the baseline moving makes no row a measurement); a
 `declared_unobservable` row is caught (a surprise to record); a row's declared catchers did not
-all catch it (recorded as `UNEXPECTED CATCHER`); or a row was not measured. The flags are the
+all catch it (recorded as `UNEXPECTED CATCHER`); a row was not measured; or `--gate` found a
+Compile.static violation. The baseline, a control and a declared_unobservable row count as
+caught on ANY movement (a test moved by an absent capture, a non-zero exit, a build error:
+`moved_any`); a must_catch row is credited only by value (`catchers`). The flags are the
 certified build's (`-std=f2008 -O2 -fopenmp`): a bounds-check abort is not a catch.
 """
 from __future__ import annotations
@@ -184,6 +187,21 @@ def value_moved(res: dict[str, Any]) -> set[str]:
             if isinstance(r.get("value"), (int, float)) and r["test_id"] in res.get("moved", [])}
 
 
+def moved_any(res: dict[str, Any]) -> set[str]:
+    """Everything that moved, by value or not: the tests that moved (an absent capture
+    included), `gate`, `run` and `build`. A row that must NOT be caught — the baseline, a control,
+    a declared_unobservable row — is judged by this, the strict reading; a must_catch row is
+    credited only by `catchers` (by value)."""
+    out = set(res.get("moved", []))
+    if res.get("gate"):
+        out.add("gate")
+    if res.get("rc"):
+        out.add("run")
+    if "build_error" in res:
+        out.add("build")
+    return out
+
+
 def catchers(res: dict[str, Any]) -> set[str]:
     out = value_moved(res)
     if res.get("gate"):
@@ -266,6 +284,7 @@ def main() -> int:
                 table[mid] = res
                 caught = catchers(res)
                 if mid == "__baseline__":
+                    caught = moved_any(res)
                     print(f"== baseline (unmutated model): caught by {sorted(caught) or 'nothing'}"
                           f" {res.get('note', '')}")
                     for g in res.get("gate", []):
@@ -294,14 +313,14 @@ def main() -> int:
         shutil.rmtree(root, ignore_errors=True)
     if a.json:
         Path(a.json).write_text(json.dumps(table, indent=1, default=str))
-    baseline = catchers(table.pop("__baseline__"))
+    baseline = moved_any(table.pop("__baseline__"))
     unmeasured = [m for m in mutants if table[m].get("not_applicable")
                   or "build_error" in table[m]]
     measured = [m for m in mutants if m not in unmeasured]
     missed = [m for m in measured if mutants[m]["class"] == "must_catch"
               and not catchers(table[m])]
     surprised = [m for m in measured if mutants[m]["class"] != "must_catch"
-                 and catchers(table[m])]
+                 and moved_any(table[m])]
     wrong = [m for m in measured if mutants[m]["class"] == "must_catch" and catchers(table[m])
              and not set(mutants[m].get("by", [])) <= catchers(table[m])]
     print(f"not measured: {unmeasured or 'none'}")
@@ -310,7 +329,9 @@ def main() -> int:
     print(f"a declared catcher did not catch: {wrong or 'none'}")
     if baseline:
         print(f"BASELINE CAUGHT by {sorted(baseline)}: no row above is a measurement")
-    return 1 if missed or surprised or unmeasured or wrong or baseline else 0
+    if rc:
+        print("GATE FINDINGS above: the IR is refused, so no row is a measurement of it")
+    return 1 if missed or surprised or unmeasured or wrong or baseline or rc else 0
 
 
 if __name__ == "__main__":
