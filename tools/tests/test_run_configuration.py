@@ -9,9 +9,15 @@ binary, and a continuation is the real driver's restart read under the real star
 """
 from __future__ import annotations
 
+import atexit
+import copy
 import json
 import shutil
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar
@@ -22,16 +28,20 @@ import yaml
 from tools import run_configuration as rc
 from tools.backends.language.fortran import runner as f_runner
 from tools.tests.orchestration_fixtures import certify_node
-from tools.tests.test_driver_render import init_ir, loop_ir, run_fortran
+from tools.tests.test_driver_render import call_ir, init_ir, loop_ir, run_fortran
 
 NODE = "component/drv_toy@0.1.0"
+#: The tail of a script binary that "reaches its end": a final capture with its results true.
+FINAL = (b'echo \'{"case_id": "m0", "step": 4.0, "ok": 1.0}\' '
+         b'> raw/state_snapshots/m0.json\n')
 SPEC_REF = "spec/component/drv_toy"
 
 
 def _toy_ir(kind: str) -> dict[str, Any]:
     """The loop node with host-evaluated loop scalars (`loop`), or the one whose `init` writes
     `n_step` and `dt` (`init`); each case carries an unread numeric leaf and a string leaf."""
-    ir = loop_ir(0, 1, every=1, n_step=4) if kind == "loop" else init_ir(0)
+    ir = copy.deepcopy({"loop": lambda: loop_ir(0, 1, every=1, n_step=4),
+                        "init": lambda: init_ir(0), "call": lambda: call_ir(0)}[kind]())
     for case in ir["case"]["test_case_set"]:
         case["inputs"]["unused"] = 7
         case["inputs"]["profile"] = "descriptive"
@@ -52,6 +62,7 @@ class _Built:
         if key not in cls._cache:
             if cls._dir is None:
                 cls._dir = Path(tempfile.mkdtemp(prefix="run-configuration-bin-"))
+                atexit.register(shutil.rmtree, cls._dir, True)
             tmp = cls._dir / f"{kind}_{int(restart_read)}"
             tmp.mkdir()
             ir = _toy_ir(kind)
@@ -194,7 +205,7 @@ class RunConfigurationTest(unittest.TestCase):
     def test_the_run_takes_the_target_s_launch_environment(self) -> None:
         from tools.host_execution import launch_shape
         from tools.target_profile import load_target_profile
-        self.certify(exe_bytes=b"#!/bin/sh\nenv > env.txt\n")
+        self.certify(exe_bytes=b"#!/bin/sh\nenv > env.txt\n" + FINAL)
         self.assertEqual(self.run_tool({"base_case": "m0"}), 0)
         want = launch_shape(load_target_profile(self.repo, "fortran_cpu")).env
         self.assertTrue(want)
@@ -223,7 +234,6 @@ class RunConfigurationTest(unittest.TestCase):
             ({"base_case": "m0", "inputs": {"n_step": [1]}}, "not an integer or a finite real"),
             ({"base_case": "m0", "inputs": {"n_step": 8}}, "within 4 ulp"),
             ({"base_case": "m0", "inputs": {"unused": 8}}, "changes nothing the binary reads"),
-            ({"base_case": "m0", "inputs": {"n_step": 4}}, "changes nothing the binary reads"),
             ({"base_case": "m0", "inputs": {"n_step": 8, "t_end": 3.0, "unused": 1}},
              "inputs.unused"),
             ({"base_case": "m0", "extra": 1}, "a mapping of `base_case`"),
@@ -231,9 +241,9 @@ class RunConfigurationTest(unittest.TestCase):
             ("[1, 2]", "a mapping of `base_case`"),
             ({"base_case": "m0", "inputs": {"a..b": 1}}, "not a dotted path"),
         ]
-        for doc, why in rows:
+        for i, (doc, why) in enumerate(rows):
             with self.subTest(doc=doc):
-                self.assertIn(why, self.refused(doc))
+                self.assertIn(why, self.refused(doc, f"out{i}"))
 
     def test_a_continuation_case_is_no_base(self) -> None:
         ir, binary = _Built.get("loop")
@@ -344,7 +354,7 @@ class RunConfigurationTest(unittest.TestCase):
         # another configuration than the source's
         why = self.refused({"base_case": "m0", "inputs": {"n_step": 8, "t_end": 3.0}},
                            "x1", restart_from=hist / "m0__2.json")
-        self.assertIn("differs from this one in ['inputs']", why)
+        self.assertIn("differs from this one in ['case_file', 'inputs']", why)
         # a final capture: K = n_step
         with self.assertRaises(rc.ConfigurationRefused) as ctx:
             self._continue("full", 4, "x2", final=True)
@@ -404,6 +414,256 @@ class RunConfigurationTest(unittest.TestCase):
         self.assertEqual(rec["status"], "failed")
         self.assertIn("did not start at step 2", rec["start_check"])
         self.assertEqual(self.snap("cont", "m0"), self.snap("full", "m0"))
+
+
+    # --- review round 1 ---------------------------------------------------------------------
+
+    def _certify_ir(self, ir: dict[str, Any], binary: bytes) -> None:
+        refs = certify_node(self.repo, "orch_seed", NODE, ir_text=yaml.safe_dump(ir),
+                            exe_bytes=binary, ir_id="drv-toy_20260101_001",
+                            pipeline_id="drv-toy_20260101_001")
+        (self.repo / refs["exe_ref"]).chmod(0o755)
+        meta = self.repo / refs["binary_meta"]
+        doc = json.loads(meta.read_text())
+        doc["environment"] = {"build_site": {"site": "local", "host": None}}
+        meta.write_text(json.dumps(doc))
+
+    def _sample(self, run: str, k: int) -> Path:
+        return self.tmp / run / "raw" / "state_snapshots" / "history" / f"m0__{k}.json"
+
+    def _refused_at(self, out: Path) -> str:
+        with self.assertRaises(rc.ConfigurationRefused) as ctx:
+            rc.run_configuration(self.repo, SPEC_REF, "fortran_cpu",
+                                 self.config({"base_case": "m0"}), out)
+        return str(ctx.exception)
+
+    def test_a_restart_on_an_ir_that_declares_its_own_continuation(self) -> None:
+        """The certified restart nodes each carry a continuation case; its own restart point is
+        not this run's, at its K or at another."""
+        ir, binary = _Built.get("loop")
+        ir = copy.deepcopy(ir)
+        ir["case"]["test_case_set"].append(
+            {"case_id": "m0_cont",
+             "inputs": copy.deepcopy(ir["case"]["test_case_set"][0]["inputs"]),
+             "derived": {"dt": 0.25}, "restart": {"from": "m0", "step": 2}})
+        self._certify_ir(ir, binary)
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        for k in (1, 2, 3):
+            with self.subTest(k=k):
+                self.assertEqual(self._continue("full", k, f"cont{k}"), 0)
+                self._assert_equal_runs("full", f"cont{k}", k, 4)
+
+    def test_a_restart_source_of_another_node_target_ir_binary_or_case_file(self) -> None:
+        self.certify()
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        rec_path = self.tmp / "full" / rc.RUN_RECORD
+        good = rec_path.read_text()
+        case_path = self.tmp / "full" / "case_inputs" / "m0.json"
+        case = case_path.read_text()
+        rows = [("node_key", "component/other@0.1.0"), ("target_id", "fortran_cpu_t2"),
+                ("ir_ref", "workspace/ir/x/y"), ("binary_sha256", "0" * 64)]
+        for key, value in rows:
+            with self.subTest(key=key):
+                rec_path.write_text(json.dumps({**json.loads(good), key: value}))
+                self.assertIn(f"differs from this one in ['{key}']",
+                              self.refused({"base_case": "m0"}, f"r_{key}",
+                                           restart_from=self._sample("full", 2)))
+        rec_path.write_text(json.dumps({**json.loads(good), "configuration": {
+            **json.loads(good)["configuration"], "base_case": "m1"}}))
+        self.assertIn("['base_case']", self.refused({"base_case": "m0"}, "r_base",
+                                                    restart_from=self._sample("full", 2)))
+        # the same configuration under an IR whose base case evaluates otherwise
+        rec_path.write_text(good)
+        case_path.write_text(json.dumps({**json.loads(case), "inputs.mode": 1}))
+        self.assertIn("['case_file']", self.refused({"base_case": "m0"}, "r_case",
+                                                    restart_from=self._sample("full", 2)))
+        # a chain: the source's own restart.* keys are not compared
+        case_path.write_text(json.dumps({**json.loads(case), "restart.step": 2,
+                                         "restart.u": [0.0, 0.0, 0.0]}))
+        self.assertEqual(self._continue("full", 2, "chain_ok"), 0)
+
+    def test_signals_kill_the_binary_s_process_group_and_the_record_says_so(self) -> None:
+        """A `kill` or a closed terminal ends the tool; the binary and a child it started die
+        with it, and the record is not left `running`."""
+        script = (b"#!/bin/sh\n" b"sleep 120 &\n" b"echo $! > grandchild.pid\n"
+                  b"echo $$ > binary.pid\n" b"wait\n")
+        self.certify(exe_bytes=script)
+        cfg = self.config({"base_case": "m0"})
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            with self.subTest(sig=sig):
+                out = self.tmp / f"sig{int(sig)}"
+                proc = subprocess.Popen(
+                    [sys.executable, str(rc.REPO_ROOT / "tools" / "run_configuration.py"),
+                     SPEC_REF, "--target", "fortran_cpu", "--config", str(cfg), "--out",
+                     str(out), "--repo-root", str(self.repo)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                deadline = time.monotonic() + 60
+                while not ((out / "grandchild.pid").is_file()
+                           and (out / "binary.pid").is_file()) \
+                        and time.monotonic() < deadline and proc.poll() is None:
+                    time.sleep(0.05)
+                pids = [int((out / n).read_text()) for n in ("binary.pid", "grandchild.pid")]
+                proc.send_signal(sig)
+                proc.communicate(timeout=60)
+                self.assertNotEqual(proc.returncode, 0)
+                for pid in pids:
+                    self.assertFalse(_alive(pid), pid)
+                rec = json.loads((out / rc.RUN_RECORD).read_text())
+                self.assertEqual(rec["status"], "interrupted")
+
+    def test_the_timeout_kills_a_child_the_binary_started(self) -> None:
+        self.certify(exe_bytes=b"#!/bin/sh\nsleep 120 &\necho $! > grandchild.pid\nwait\n")
+        self.assertEqual(self.run_tool({"base_case": "m0"}, timeout_sec=1.0),
+                         rc.EXIT_RAN_FAILED)
+        self.assertFalse(_alive(int((self.tmp / "out" / "grandchild.pid").read_text())))
+
+    def test_a_binary_that_cannot_start_is_recorded_as_not_started(self) -> None:
+        self.certify(exe_bytes=b"\x00\x01not an executable")
+        self.assertEqual(self.run_tool({"base_case": "m0"}), rc.EXIT_REFUSED)
+        rec = self.record()
+        self.assertEqual(rec["status"], "not_started")
+        self.assertIn("Exec format error", rec["error"])
+
+    def test_a_kernel_that_refuses_the_configuration_fails_the_run(self) -> None:
+        """The toy kernel refuses mode 1 before its last step and exits 0: the run did not reach
+        its end, so it is not `ok`."""
+        self.certify()
+        self.assertEqual(self.run_tool({"base_case": "m0", "inputs": {"mode": 1}}),
+                         rc.EXIT_RAN_FAILED)
+        rec = self.record()
+        self.assertEqual(rec["exit_status"], 0)
+        self.assertEqual(rec["status"], "failed")
+        self.assertIn("the kernel refused the configuration: ok false", rec["kernel"])
+        self.assertLess(rec["final_step"], 4)
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "fine"), 0)
+        self.assertEqual(self.record("fine")["kernel"], "reached its end")
+        self.assertEqual(self.record("fine")["final_step"], 4.0)
+
+    def test_an_override_a_min_reads_is_not_a_no_op(self) -> None:
+        """A derived `min()` whose other branch binds still reads both inputs; overriding one or
+        both is a configuration, not a no-op."""
+        ir, binary = _Built.get("loop")
+        ir = copy.deepcopy(ir)
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["cfl"] = {"a": 0.25, "b": 0.5}
+            case["derived"]["dt"] = "min(inputs.cfl.a, inputs.cfl.b)"
+        self._certify_ir(ir, binary)
+        for i, inputs in enumerate(({"cfl.b": 0.75},
+                                    {"cfl.a": 0.125, "cfl.b": 0.125, "n_step": 8,
+                                     "t_end": 2.0})):
+            with self.subTest(inputs=inputs):
+                self.assertEqual(self.run_tool({"base_case": "m0", "inputs": inputs},
+                                               f"o{i}"), 0)
+        self.assertIn("changes nothing the binary reads",
+                      self.refused({"base_case": "m0", "inputs": {"unused": 8}}, "o_unused"))
+
+    def test_more_refusals(self) -> None:
+        self.certify()
+        self.assertIn("1.0e-3", self.refused("base_case: m0\ninputs:\n  t_start: 1e-3\n"))
+        self.assertIn("inputs must be a mapping",
+                      self.refused({"base_case": "m0", "inputs": [1]}, "o1"))
+        (self.tmp / "afile").write_text("x")
+        self.assertIn("not an empty directory", self._refused_at(self.tmp / "afile"))
+        self.assertEqual((self.tmp / "afile").read_text(), "x")
+        self.assertIn("under", self._refused_at(self.repo / "workspace"))
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        path = self._sample("full", 2)
+        path.write_text(json.dumps({**json.loads(path.read_text()), "step": 1.5}))
+        self.assertIn("not an integer >= 1",
+                      self.refused({"base_case": "m0"}, "o2", restart_from=path))
+
+    def test_a_node_without_drive_or_without_loop(self) -> None:
+        self.certify("call")
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        self.assertIn("declares no loop", self.refused(
+            {"base_case": "m0"}, "o1",
+            restart_from=self.tmp / "full" / "raw" / "state_snapshots" / "m0.json"))
+        shutil.rmtree(self.repo)
+        self.repo.mkdir()
+        ir, binary = _Built.get("loop")
+        ir = copy.deepcopy(ir)
+        del ir["drive"]
+        self._certify_ir(ir, binary)
+        self.assertIn("declares no drive", self.refused({"base_case": "m0"}, "o2"))
+
+    def test_the_site_is_the_one_sites_yaml_maps_the_target_to(self) -> None:
+        self.certify(exe_bytes=b"#!/bin/sh\n" + FINAL)
+        (self.repo / "sites.yaml").write_text(yaml.safe_dump({
+            "sites_version": 1,
+            "sites": {"far": {"host": "far.example", "workdir": "/w", "executes": ["cpu"],
+                              "scheduler": "none"}},
+            "targets": {"fortran_cpu": "far"}}))
+        self.assertIn("runs at site far", self.refused({"base_case": "m0"}))
+        (self.repo / "sites.yaml").write_text("sites: [")
+        self.assertIn("sites.yaml", self.refused({"base_case": "m0"}, "o2"))
+        (self.repo / "sites.yaml").unlink()
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "o3"), 0)
+
+    def test_a_device_target_at_a_local_site_that_executes_it(self) -> None:
+        """The launch shape is the one at the site `sites.yaml` maps the target to: a local
+        site that executes the device class runs a device target (the default local site
+        does not)."""
+        from tools.target_profile import load_target_profile
+        gpu = load_target_profile(rc.REPO_ROOT, "cpp_gpu")
+        ir, _ = _Built.get("loop")
+        refs = certify_node(self.repo, "orch_seed", NODE, ir_text=yaml.safe_dump(ir),
+                            exe_bytes=b"#!/bin/sh\n" + FINAL, ir_id="drv-toy_20260101_001",
+                            pipeline_id="drv-toy_20260101_001", target=gpu)
+        (self.repo / refs["exe_ref"]).chmod(0o755)
+        meta = self.repo / refs["binary_meta"]
+        doc = json.loads(meta.read_text())
+        doc["environment"] = {"build_site": {"site": "local", "host": None}}
+        meta.write_text(json.dumps(doc))
+
+        def run(out: str) -> int:
+            return rc.run_configuration(self.repo, SPEC_REF, "cpp_gpu",
+                                        self.config({"base_case": "m0"}), self.tmp / out)
+        with self.assertRaises(rc.ConfigurationRefused) as ctx:
+            run("o1")
+        self.assertIn("not executed at site local", str(ctx.exception))
+        (self.repo / "sites.yaml").write_text(yaml.safe_dump({
+            "sites_version": 1, "sites": {"local": {"executes": ["cpu", "gpu"]}}}))
+        self.assertEqual(run("o2"), 0)
+        self.assertEqual(self.record("o2")["command"][0], str(self.repo / refs["exe_ref"]))
+
+    def test_the_selection_refusal_names_the_resolver_s_reason(self) -> None:
+        from tools.tests.orchestration_fixtures import ensure_spec_entry
+        from tools.tests.target_fixtures import install_target_profile
+        ensure_spec_entry(self.repo, NODE)
+        install_target_profile(self.repo)
+        why = self.refused({"base_case": "m0"})
+        self.assertRegex(why, r"on target fortran_cpu: \S+")
+
+    def test_the_record_carries_the_restart_source_s_hash_and_kind(self) -> None:
+        import hashlib
+        self.certify("init")
+        self.assertEqual(self.run_tool({"base_case": "m0"}, "full"), 0)
+        sample = self._sample("full", 1)
+        self.assertEqual(self._continue("full", 1, "cont"), 0)
+        rec = self.record("cont")["restart"]
+        self.assertEqual(rec["sha256"], hashlib.sha256(sample.read_bytes()).hexdigest())
+        self.assertEqual((rec["source_kind"], rec["step"]), ("history", 1))
+        self.assertEqual(rec["source_run"], str((self.tmp / "full").resolve()))
+        ir_files = list((self.repo / "workspace" / "ir" / "component__drv_toy__0.1.0")
+                        .rglob("spec.ir.yaml"))
+        self.assertEqual(len(ir_files), 1)
+        self.assertEqual((self.tmp / "cont" / "spec.ir.yaml").read_bytes(),
+                         ir_files[0].read_bytes())
+
+
+def _alive(pid: int) -> bool:
+    """Whether ``pid`` names a live process that is no zombie, after a bounded settle (a kill
+    is delivered asynchronously)."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (OSError, IndexError):
+            return False
+        if state == "Z":
+            return False
+        time.sleep(0.05)
+    return True
 
 
 if __name__ == "__main__":

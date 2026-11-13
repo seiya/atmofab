@@ -21,27 +21,37 @@ What it does, in order (each refusal exits 2 before anything runs):
    resolver (`DerivationResolver.select(node_key, "validate")`) and refuses when there is none,
    naming the resolver's reason. It does not fall back to "the latest passed pipeline". The
    binary must have been built at the local site (`binary_meta.json#environment.build_site`),
-   and a target whose parallel backend starts its binary under a launcher is refused: this
-   version runs at the local site, one process.
+   `sites.yaml` must map the target to the local site (as a run reads it), the launch shape is
+   the one at that site (`host_execution.launch_shape`, whose refusals are refusals here), and
+   a target whose parallel backend starts its binary under a launcher is refused: this version
+   runs at the local site, one process.
 2. Applies the overrides to the base case and evaluates it with the host's evaluator
    (`primary_evidence.evaluate_case_inputs`), so every refusal a certified case meets (`n_step`,
    `dt`, the 4-ulp `t_end` rule, `history.every`, the extents) applies here too. Refused: a
    `base_case` that is no case of the IR or is a continuation; an override of a path that is
    not a numeric leaf of the base's `inputs`; a type change (an integer leaf given a real, a
-   real given an integer, anything given a boolean); an override that changes nothing the
-   binary reads (the case file with every other override applied is the same with and without
-   it — a descriptive string's neighbour, a leaf no expression reads, the base's own value).
+   real given an integer, anything given a boolean); an override of an input the case reads
+   by no name (no key of its case file, no `initial_state` or `derived` expression, no
+   coordinate's `count` or `length`) and whose removal leaves the case file the same. An input
+   read by name is never refused as a no-op, even where the evaluated case file does not move
+   with it (a `min()` whose other branch binds).
 3. Writes `<out>/case_inputs/<base_case>.json` — the BASE's id, because a driver rendered in
    the list form stops on an id it does not know — and a copy of the certified IR as
    `<out>/spec.ir.yaml`, then runs the certified binary with `--cases <out>/spec.ir.yaml
    <base_case>` in `<out>`, under the target's launch environment over this process's own. It
    starts the process itself (no 3600 s bound of the build-runtime library); `--timeout-sec`
-   is the only bound, and on it or on an interrupt the process group is killed. Nothing under
-   the certified IR's `case_inputs/` is written.
+   is the only bound. On the bound, on SIGINT, and on SIGTERM or SIGHUP to the tool (a `kill`,
+   a closed terminal), the binary's process group is killed and the record says so; a SIGKILL
+   to the tool cannot be caught, and the binary then outlives it with the record left
+   `running`. Nothing under the certified IR's `case_inputs/` is written. The run is `ok` only
+   when the binary exits 0 and its final capture exists with every result state the drive
+   names true: a kernel that refuses a configuration exits 0 and stops short of `n_step`.
 4. `--restart-from <capture.json>` continues an earlier run of this tool: the capture (a
    history sample `<prev>/raw/state_snapshots/history/<base_case>__<K>.json`, or a final
    capture `<prev>/raw/state_snapshots/<base_case>.json`) must sit in an output directory of
-   this tool whose `run_record.json` names the same node, target, binary and configuration.
+   this tool whose `run_record.json` names the same node, target, IR, binary and
+   configuration, and whose case file, its `restart.*` keys aside, is this run's evaluated case
+   file. The IR's own continuation cases play no part.
    The capture is refused by the continuation writer's own refusals (`write_continuation_
    inputs`: its `step`, every restart variable present with the evaluated extents and finite,
    a finite time); `K` must be at least 1 and, where `n_step` is host data, below it; where
@@ -52,16 +62,20 @@ What it does, in order (each refusal exits 2 before anything runs):
 5. `<out>` must be new or empty and outside `workspace/`. `<out>/run_record.json` is written
    before the run (status `running`) and again after it: the node key, the target, the
    selected ids, the binary's sha256, the configuration verbatim, the restart source with its
-   sha256 and step, the command and environment, the exit status, the start check, and the
+   sha256 and step, the command, the launch environment the tool set over its own, the exit
+   status, the final capture's step and the kernel's outcome, the start check, and the
    statement that the run certifies nothing. stdout and stderr go to `<out>/stdout.txt` and
    `<out>/stderr.txt`.
 
-Exit status: 0 when the binary exited 0 (and, on a continuation, the start check held); 1 when
-it did not, timed out, or the start check failed; 2 when the configuration or the selection
-was refused before anything ran.
+Exit status: 0 when the run is `ok` (and, on a continuation, the start check held); 1 when the
+binary exited non-zero, timed out, stopped short with a false result, or failed the start
+check; 2 when the configuration or the selection was refused before anything was written,
+and when the binary could not be started (status `not_started`; `<out>` then holds the case
+file and the record); 128 + the signal number on SIGTERM or SIGHUP.
 
 What it does not do (issue #632 §3): stop a run at a chosen step; extend a finished run (a
-final capture is refused by `K < n_step` under the same configuration); continue with another
+final capture is refused by `K < n_step` where `n_step` is host data, and by the driver at run
+time, exit 1, where `init` writes it); continue with another
 configuration or `dt`; run at a remote site or under a launcher; keep the series of a killed
 segment (the driver writes the series at the end of a case). `docs/RUNBOOK.md` §"Running a
 person-written configuration" is the operator's procedure.
@@ -103,6 +117,21 @@ EXIT_REFUSED = 2
 
 class ConfigurationRefused(Exception):
     """A refusal before anything ran; the message names what and why."""
+
+
+class Terminated(BaseException):
+    """The tool received SIGTERM or SIGHUP while the binary ran (`_run`): the binary's process
+    group was killed and the record says so."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(signum)
+        self.signum = signum
+
+#: The signals that end the tool from outside (a `kill`, a closed terminal) and are turned
+#: into `Terminated` while the binary runs, so that its process group dies with the tool.
+#: SIGINT arrives as `KeyboardInterrupt`. SIGKILL cannot be caught: the binary then outlives
+#: the tool, in a session of its own, and the record stays `running`.
+_TERMINATING = (signal.SIGTERM, signal.SIGHUP)
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -160,8 +189,17 @@ def read_configuration(path: Path) -> tuple[str, dict[str, Any], str]:
             raise ConfigurationRefused(f"--config {path}: inputs key {key!r} is not a dotted "
                                        "path")
         if not (_is_int(value) or (_is_real(value) and math.isfinite(value))):
+            hint = ""
+            if isinstance(value, str):
+                try:
+                    float(value)
+                    hint = (" (YAML reads an exponent without a sign or a decimal point, such "
+                            "as 1e-3, as a string: write 1.0e-3)")
+                except ValueError:
+                    pass
             raise ConfigurationRefused(
-                f"--config {path}: inputs.{key} is {value!r}, not an integer or a finite real")
+                f"--config {path}: inputs.{key} is {value!r}, not an integer or a finite real"
+                + hint)
     return base.strip(), dict(overrides), text
 
 
@@ -242,7 +280,12 @@ def evaluate_configuration(ir: dict[str, Any], base: str, overrides: dict[str, A
         evaluated = payload(overrides)
     except PrimaryEvidenceError as exc:
         raise ConfigurationRefused(f"the evaluator refuses the configuration: {exc}") from None
+    read = read_input_paths(ir, original, evaluated)
     for path in sorted(overrides):
+        if path in read:
+            continue
+        # A reader `read_input_paths` does not know is still caught here: the override counts
+        # when the case file moves with it.
         rest = {k: v for k, v in overrides.items() if k != path}
         try:
             without = payload(rest)
@@ -250,10 +293,35 @@ def evaluate_configuration(ir: dict[str, Any], base: str, overrides: dict[str, A
             continue   # the configuration is valid only with it: it changes what is read
         if without == evaluated:
             raise ConfigurationRefused(
-                f"inputs.{path}: the override changes nothing the binary reads (the case file "
-                "is the same with and without it): no expression of the case reads that leaf, "
-                "or it is the value the case already has")
+                f"inputs.{path}: no key of the case file is that input, no initial_state or "
+                "derived expression and no coordinate of the case reads it, and the case file "
+                "is the same with and without it: the override changes nothing the binary "
+                "reads")
     return _with_case(ir, apply_overrides(original, overrides)), evaluated
+
+
+def read_input_paths(ir: dict[str, Any], case: dict[str, Any], payload: dict[str, Any]
+                     ) -> frozenset[str]:
+    """The `inputs.*` paths the base case's evaluation reads by name: each `inputs.<path>` key
+    of its case file (what the drive binds, `history.every`, a procedure's inputs), each
+    `inputs` name of its `initial_state` and `derived` expressions, and each coordinate's
+    `count` / `length` given as `inputs.<path>`. An override of one of them is never refused
+    as a no-op, whatever the evaluated values (a `min()` whose other branch binds still reads
+    it)."""
+    from tools.primary_evidence import expr_names, parse_expr, snapshot_schema
+    out = {key[len("inputs."):] for key in payload if key.startswith("inputs.")}
+    for block in ("initial_state", "derived"):
+        entries = case.get(block)
+        for text in (entries.values() if isinstance(entries, dict) else ()):
+            if isinstance(text, str):
+                out.update(r.name for r in expr_names(parse_expr(text)) if r.kind == "inputs")
+    coords = (snapshot_schema(ir) or {}).get("coordinates")
+    for spec in (coords if isinstance(coords, list) else ()):
+        for key in ("count", "length"):
+            raw = spec.get(key) if isinstance(spec, dict) else None
+            if isinstance(raw, str) and raw.startswith("inputs."):
+                out.add(raw[len("inputs."):])
+    return frozenset(out)
 
 
 # ----------------------------------------------------------------------------- selection
@@ -338,10 +406,18 @@ def _source_run_dir(capture: Path, base: str) -> tuple[Path, str]:
     return snaps.parent.parent, kind
 
 
+def _without_restart(payload: Any) -> Any:
+    from tools.runner_ir import RESTART_KEY_PREFIX
+    if not isinstance(payload, dict):
+        return payload
+    return {k: v for k, v in payload.items() if not k.startswith(RESTART_KEY_PREFIX)}
+
+
 def _check_source_record(prev: Path, sel: Selection, binary_sha: str, base: str,
-                         overrides: dict[str, Any]) -> None:
-    """The restart source is an earlier run of this tool on the same node, target, binary and
-    configuration (a continuation admits no other `dt`, and this version no other input)."""
+                         overrides: dict[str, Any], payload: dict[str, Any]) -> None:
+    """The restart source is an earlier run of this tool on the same node, target, IR, binary
+    and configuration, and its case file, its `restart.*` keys aside, is this run's evaluated
+    case file (a continuation admits no other `dt`, and this version no other input)."""
     try:
         rec = json.loads((prev / RUN_RECORD).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -349,17 +425,24 @@ def _check_source_record(prev: Path, sel: Selection, binary_sha: str, base: str,
             f"--restart-from: {prev / RUN_RECORD} is unreadable ({exc}); a restart source is a "
             "capture an earlier run of this tool wrote") from None
     cfg = rec.get("configuration") if isinstance(rec, dict) else None
+    try:
+        their_case = json.loads((prev / "case_inputs" / f"{base}.json")
+                                .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        their_case = None
     mine = {"node_key": sel.node_key, "target_id": sel.profile.target_id,
-            "binary_sha256": binary_sha, "base_case": base, "inputs": overrides}
+            "ir_ref": sel.ir_ref, "binary_sha256": binary_sha, "base_case": base,
+            "inputs": overrides, "case_file": _without_restart(payload)}
     theirs = {"node_key": rec.get("node_key"), "target_id": rec.get("target_id"),
-              "binary_sha256": rec.get("binary_sha256"),
+              "ir_ref": rec.get("ir_ref"), "binary_sha256": rec.get("binary_sha256"),
               "base_case": cfg.get("base_case") if isinstance(cfg, dict) else None,
-              "inputs": cfg.get("inputs") if isinstance(cfg, dict) else None}
+              "inputs": cfg.get("inputs") if isinstance(cfg, dict) else None,
+              "case_file": _without_restart(their_case)}
     differ = sorted(k for k in mine if mine[k] != theirs[k])
     if differ:
         raise ConfigurationRefused(
             f"--restart-from: the run at {prev} differs from this one in {differ}: a "
-            "continuation runs the same node, target, binary and configuration")
+            "continuation runs the same node, target, IR, binary and configuration")
 
 
 def _host_scalar(payload: dict[str, Any], binding: Any) -> float | None:
@@ -386,6 +469,7 @@ def continuation_payload(ir2: dict[str, Any], base: str, payload: dict[str, Any]
         STEP_CAPTURE,
         _cases_by_id,
         drive_model,
+        is_continuation,
         snapshot_schema,
         write_continuation_inputs,
     )
@@ -425,15 +509,20 @@ def continuation_payload(ir2: dict[str, Any], base: str, payload: dict[str, Any]
     cases = _cases_by_id(ir2)
     cid = next(f"c{i}" for i in range(len(cases) + 1) if f"c{i}" not in cases)
     assert CASE_ID_TOKEN_RE.match(cid)
+    # The IR's own continuation cases are dropped: the writer would ask each of them for a
+    # restart point of its own, and only this run's is staged.
     ir3 = copy.deepcopy(ir2)
+    ir3["case"]["test_case_set"] = [
+        c for c in ir3["case"]["test_case_set"] if not is_continuation(c)]
     ir3["case"]["test_case_set"].append({"case_id": cid, "restart": {"from": base, "step": k}})
     sample = stage / "raw" / "state_snapshots" / "history" / f"{base}__{k}.json"
     sample.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(capture, sample)
     files, refused = write_continuation_inputs(ir3, stage)
-    if refused or len(files) != 1:
+    if refused or [f.case_id for f in files] != [cid]:
         raise ConfigurationRefused(
-            f"--restart-from {capture}: {refused.get(cid, 'no continuation file was written')}")
+            f"--restart-from {capture}: "
+            f"{refused.get(cid) or f'the continuation writer wrote {[f.case_id for f in files]}'}")
     written = stage / RESTART_DIRNAME / CASE_INPUTS_DIRNAME / f"{cid}.json"
     return json.loads(written.read_text(encoding="utf-8")), k
 
@@ -454,18 +543,28 @@ def _check_out(repo_root: Path, out: Path) -> Path:
 def _run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float | None
          ) -> tuple[int | None, bool]:
     """(the exit status, None when killed; whether the timeout fired). The child runs in a
-    session of its own, and its process group is killed on the timeout or an interrupt."""
-    with (cwd / "stdout.txt").open("wb") as out, (cwd / "stderr.txt").open("wb") as err:
-        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=out, stderr=err,
-                                start_new_session=True)
-        try:
-            return proc.wait(timeout=timeout), False
-        except subprocess.TimeoutExpired:
-            _kill(proc)
-            return None, True
-        except BaseException:
-            _kill(proc)
-            raise
+    session of its own, and its process group is killed on the timeout, on SIGINT and on the
+    signals of `_TERMINATING` (raised as `Terminated`). Raises `OSError` when the binary cannot
+    be started."""
+    def terminated(signum: int, _frame: Any) -> None:
+        raise Terminated(signum)
+
+    previous = {s: signal.signal(s, terminated) for s in _TERMINATING}
+    try:
+        with (cwd / "stdout.txt").open("wb") as out, (cwd / "stderr.txt").open("wb") as err:
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=out, stderr=err,
+                                    start_new_session=True)
+            try:
+                return proc.wait(timeout=timeout), False
+            except subprocess.TimeoutExpired:
+                _kill(proc)
+                return None, True
+            except BaseException:
+                _kill(proc)
+                raise
+    finally:
+        for s, handler in previous.items():
+            signal.signal(s, handler)
 
 
 def _kill(proc: subprocess.Popen) -> None:
@@ -476,11 +575,57 @@ def _kill(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
+def _launch(repo_root: Path, profile: Any) -> Any:
+    """The launch shape of the target at the site `sites.yaml` maps it to, as a run's; refused
+    when that site is not the local one or cannot run the target."""
+    from tools.execution_sites import SitesConfigError, load_sites
+    from tools.host_execution import LaunchUnavailable, launch_shape
+    from tools.target_profile import TargetProfileError
+    try:
+        site = load_sites(repo_root).site_for(profile.target_id)
+    except (SitesConfigError, TargetProfileError) as exc:
+        raise ConfigurationRefused(f"sites.yaml: {exc}") from None
+    if not site.is_local:
+        raise ConfigurationRefused(
+            f"target {profile.target_id} runs at site {site.site_id} (sites.yaml): this version "
+            "runs at the local site only")
+    try:
+        return launch_shape(profile, site)
+    except LaunchUnavailable as exc:
+        raise ConfigurationRefused(f"target {profile.target_id}: {exc}") from None
+
+
+def _kernel_outcome(ir: dict[str, Any], out: Path, base: str) -> tuple[Any, str | None]:
+    """(the final capture's step, None when the run reached its end, else why not): a final
+    capture must exist, and every result state the drive names (its `init` and `step` entries'
+    `result`) must hold true in it. A kernel that refused the configuration exits 0 and leaves
+    its result false, with fewer steps than planned."""
+    path = out / "raw" / "state_snapshots" / f"{base}.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"no readable final capture ({exc})"
+    if not isinstance(doc, dict):
+        return None, "the final capture is not a JSON object"
+    names: list[str] = []
+    for key in ("init", "step"):
+        entry = ir["drive"].get(key)
+        for e in (entry if isinstance(entry, list) else [entry]):
+            if isinstance(e, dict) and isinstance(e.get("result"), str) \
+                    and e["result"] not in names:
+                names.append(e["result"])
+    false = [n for n in names if n in doc and doc[n] != 1]
+    step = doc.get("step")
+    if false:
+        return step, (f"the kernel refused the configuration: {', '.join(false)} false in the "
+                      f"final capture, at step {step!r}")
+    return step, None
+
+
 def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Path, out: Path,
                       restart_from: Path | None = None, timeout_sec: float | None = None
                       ) -> int:
     """The tool (module docstring). Raises `ConfigurationRefused` before anything runs."""
-    from tools.host_execution import launch_shape
     from tools.primary_evidence import (
         CASE_INPUTS_DIRNAME,
         ContinuationFile,
@@ -502,14 +647,14 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
             "inputs of a driven node's case")
     ir2, payload = evaluate_configuration(ir, base, overrides)
     binary_sha = _sha256(sel.binary)
-    launch = launch_shape(sel.profile)
+    launch = _launch(repo_root, sel.profile)
 
     restart: dict[str, Any] | None = None
     cont: ContinuationFile | None = None
     if restart_from is not None:
         capture = Path(restart_from).resolve()
         prev, kind = _source_run_dir(capture, base)
-        _check_source_record(prev, sel, binary_sha, base, overrides)
+        _check_source_record(prev, sel, binary_sha, base, overrides, payload)
         with tempfile.TemporaryDirectory(prefix="run_configuration_") as stage:
             payload, k = continuation_payload(ir2, base, payload, capture, Path(stage))
         restart = {"source": str(capture), "source_kind": kind, "sha256": _sha256(capture),
@@ -539,16 +684,26 @@ def run_configuration(repo_root: Path, spec_ref: str, target_id: str, config: Pa
         "restart": restart, "command": cmd, "launch_env": dict(sorted(launch.env.items())),
         "cwd": str(out), "timeout_sec": timeout_sec, "started_at": _now(),
         "status": "running", "exit_status": None, "timed_out": False, "start_check": None,
+        "final_step": None, "kernel": None,
     }
     _write_json(out / RUN_RECORD, record)
     try:
         rc, timed_out = _run(cmd, out, env, timeout_sec)
-    except BaseException:
-        record.update(status="interrupted", finished_at=_now())
+    except OSError as exc:
+        record.update(status="not_started", finished_at=_now(), error=str(exc))
+        _write_json(out / RUN_RECORD, record)
+        return EXIT_REFUSED
+    except BaseException as exc:
+        record.update(status="interrupted", finished_at=_now(),
+                      signal=exc.signum if isinstance(exc, Terminated) else "SIGINT")
         _write_json(out / RUN_RECORD, record)
         raise
     record.update(exit_status=rc, timed_out=timed_out, finished_at=_now())
     failed = rc != 0
+    if not failed:
+        record["final_step"], why = _kernel_outcome(ir, out, base)
+        record["kernel"] = why or "reached its end"
+        failed = why is not None
     if not failed and cont is not None:
         why = continuation_start_violation(ir2, out, cont)
         record["start_check"] = why or "held"
@@ -585,9 +740,15 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigurationRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
+    except Terminated as exc:
+        print(f"terminated by signal {exc.signum}: the run's process group was killed",
+              file=sys.stderr)
+        return 128 + exc.signum
     record = json.loads((a.out.resolve() / RUN_RECORD).read_text(encoding="utf-8"))
     print(f"{record['status']}: exit {record['exit_status']}"
           + (" (timed out)" if record["timed_out"] else "")
+          + (f"; {record['error']}" if record.get("error") else "")
+          + (f"; kernel: {record['kernel']}" if record.get("kernel") else "")
           + (f"; start check: {record['start_check']}" if record["start_check"] else "")
           + f"; record {a.out.resolve() / RUN_RECORD}")
     return rc
