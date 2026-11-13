@@ -11,14 +11,16 @@ Per subject, every run goes through the tool's command line (`python3 tools/run_
 1. `control`: the base case with no override. Every capture it writes (initial, each history
    sample, final, series) must equal the CERTIFIED run's capture of that case, field by field, as
    the text the binary wrote (`json` with `parse_float=str`). The certified run is the one the
-   pipeline's `lineage.json` names, the pipeline the one the tool's own `run_record.json` says it
-   selected.
+   tool's own `run_record.json` says it selected (`pipeline_ref`, `validate_run_id`). Both sides
+   must hold every required capture (`REQUIRED`: initial, final, series, at least one history
+   sample), so a capture absent on both sides is a finding, not an agreement.
 2. `override`: one input changed (`OVERRIDE` below). The run must be `ok` and its final state must
    differ from the control's in at least one of the state fields: the override reached the run.
 3. the chain: `U`, the configuration `CHAIN` run uninterrupted; `A`, the same configuration
    continued (`--restart-from`) from U's history sample at `K1`; `B`, continued from A's OWN
    history sample at `K2 > K1`. Each of A and B must be `ok` with the tool's start check held,
-   and every capture it writes must equal U's: the final capture; each history sample (A and B
+   (the record's `status`, `start_check` and `restart.step` are asserted, not only printed), and
+   every capture it writes must equal U's: the final capture; each history sample (A and B
    write the samples after their start; the sample at the start step is the restored state,
    which the start check compares); and the series, which covers only the continuation's own
    steps, against the tail of U's series (every per-step field; the scalar `t` field of a
@@ -45,6 +47,14 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[4]
 
 STATE_FIELDS = ("h", "hu", "hv")
+REQUIRED = ("initial", "final", "series")
+
+
+def missing_required(cap: dict[str, Path]) -> list[str]:
+    out = [k for k in REQUIRED if k not in cap]
+    if not any(k.startswith("history/") for k in cap):
+        out.append("history/<step>")
+    return out
 
 #: subject -> spec_ref, base case, an override, the chain's configuration and its two cuts.
 SUBJECTS: dict[str, dict[str, Any]] = {
@@ -142,6 +152,9 @@ def run_subject(key: str, cfg: dict[str, Any], root: Path) -> list[str]:
     print(f"    status {rec.get('status')}, final step {rec.get('final_step')}")
     cert = captures(certified_snaps(rec), base)
     mine = captures(out / "raw" / "state_snapshots", base)
+    for side, cap in (("tool", mine), ("certified", cert)):
+        if missing_required(cap):
+            findings.append(f"{key} control: {side} lacks {missing_required(cap)}")
     if set(cert) != set(mine):
         findings.append(f"{key} control: capture sets differ: tool {sorted(mine)} "
                         f"certified {sorted(cert)}")
@@ -175,10 +188,17 @@ def run_subject(key: str, cfg: dict[str, Any], root: Path) -> list[str]:
     if tool(spec_ref, conf, b, a / "raw" / "state_snapshots" / "history" / f"{base}__{k2}.json"):
         return findings + [f"{key}: B failed"]
     ucap = captures(u / "raw" / "state_snapshots", base)
+    if missing_required(ucap) or len([n for n in ucap if n.startswith("history/")]) < 2:
+        findings.append(f"{key} U: lacks {missing_required(ucap)} or the two cuts' samples")
     for label, seg, start in (("A", a, k1), ("B", b, k2)):
         rec = record(seg)
+        rstep = (rec.get("restart") or {}).get("step")
         print(f"    {label}: status {rec.get('status')}, start check "
-              f"{rec.get('start_check')}, restart step {(rec.get('restart') or {}).get('step')}")
+              f"{rec.get('start_check')}, restart step {rstep}")
+        if rec.get("status") != "ok" or rec.get("start_check") != "held" or rstep != start:
+            findings.append(f"{key} {label}: record status {rec.get('status')}, start check "
+                            f"{rec.get('start_check')}, restart step {rstep} (expected ok, "
+                            f"held, {start})")
         scap = captures(seg / "raw" / "state_snapshots", base)
         expect = {n for n in ucap if n in ("final", "series")
                   or (n.startswith("history/") and int(n.split("/")[1]) > start)}
