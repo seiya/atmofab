@@ -105,12 +105,13 @@ def main() -> int:
     def ms(preds: list, f) -> list:
         return sorted(json.dumps(f(x), sort_keys=True, default=str) for x in preds)
 
-    def num(v: Any) -> Any:
-        # `{per_case: {<the one case>: x}}` and a bare `x` are one threshold spelled two ways
-        # (a single-case predicate; issue #632 P6's subcycled IRs differ only so)
+    def num(v: Any, cases: tuple = ()) -> Any:
+        # `{per_case: {<the key's one case>: x}}` and a bare `x` are one threshold spelled two
+        # ways (issue #632 P6's subcycled IRs differ only so); a `per_case` naming another case,
+        # or on a key of several cases, stays a dict and compares as one
         if isinstance(v, dict) and set(v) == {"per_case"} and isinstance(v["per_case"], dict) \
-                and len(v["per_case"]) == 1:
-            return num(next(iter(v["per_case"].values())))
+                and len(cases) == 1 and set(v["per_case"]) == set(cases):
+            return num(v["per_case"][cases[0]])
         if isinstance(v, dict):
             return {k: num(x) for k, x in v.items()}
         if isinstance(v, list):
@@ -121,8 +122,8 @@ def main() -> int:
 
     count = [k for k in both if len(hp[k]) != len(cp[k])]
     op = [k for k in both if ms(hp[k], lambda x: x.get("op")) != ms(cp[k], lambda x: x.get("op"))]
-    moved = [k for k in both if ms(hp[k], lambda x: (x.get("op"), num(x.get("value"))))
-             != ms(cp[k], lambda x: (x.get("op"), num(x.get("value"))))]
+    moved = [k for k in both if ms(hp[k], lambda x: (x.get("op"), num(x.get("value"), k[2])))
+             != ms(cp[k], lambda x: (x.get("op"), num(x.get("value"), k[2])))]
     spelled = [k for k in both if k not in moved
                and ms(hp[k], lambda x: x.get("value")) != ms(cp[k], lambda x: x.get("value"))]
     order = [k for k in both if ms(hp[k], lambda x: x.get("target_cases"))
