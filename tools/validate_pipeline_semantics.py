@@ -3035,8 +3035,8 @@ def _validate_component_generated_surface(
     # accepts any `<member>__*` call. An extra procedure the member's generated source defines
     # beyond §5.1 is therefore callable by a composite. What refuses a call of a procedure the
     # member does NOT define is the Generate syntax check, which compiles the composite against
-    # the member's certified source. Not closed in Part 1 (review round 3, disc-L2) nor in Part 2
-    # (the system tier's TODO item for the member `__init` rule carries it).
+    # the member's certified source. Not closed in Part 1 (review round 3, disc-L2) nor by Part 2's
+    # member `__init` rule (the system tier's TODO item for that rule carries it).
     key_spec_id = _spec_id_from_node_key(str(execution.node_key))
     kind_by_key = str(execution.node_key).split("/", 1)[0].strip()
     catalog_kind, catalog_reason = (_catalog_spec_kind(repo_root, key_spec_id) if key_spec_id

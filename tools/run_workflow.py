@@ -4501,12 +4501,12 @@ def _resolve_dependency_closure(
         `infrastructure_dependency_declared_in_deps` (no spec declares an `infrastructure`
         dependency: the harness is the target's, issue #284). A `spec_id` the catalog
         registers under several kinds is reported as `spec_catalog_corrupt` — see
-        `_kind_for_gate`. The `problems:` entries (the system tier, Part 1) take two more:
-        `problem_dependency_on_non_problem` (only a `problem`, by the catalog, declares one) and
+        `_kind_for_gate`. The `problems:` entries (the system tier) take three more:
+        `problem_dependency_on_non_problem` (only a `problem`, by the catalog, declares one),
         `problem_dependency_surface_not_step_or_init` (a member is admitted only when its §5.1
         publishes exactly `<member>__step`, or `<member>__step` and `<member>__init`) and
         `problem_dependency_init_not_published` (a member that publishes `__init` needs a
-        composite that publishes `__init`), both raised before the member is visited, so its
+        composite that publishes `__init`), the last two raised before the member is visited, so its
         closure is not certified first.
 
     Edges come from `<spec_ref>/deps.yaml` resolved against `spec_catalog.yaml`

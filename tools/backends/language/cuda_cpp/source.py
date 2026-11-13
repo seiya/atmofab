@@ -1494,8 +1494,9 @@ def validate_member_init_placement(
     Absence counts TOKENS, presence reads calls, for the polarity reason the Fortran binding
     states. What a token cannot show, and the continuation case judges: a lambda written inside
     `<node>__init` whose body calls the member's `__init` and that is stored beyond the call
-    (`g = [&]{ <member>__init(...); };`). A leaf gains no verdict from it: the plain call is the
-    cheaper edit."""
+    (`g = [&]{ <member>__init(...); };`), and a declaration whose `__asm__` label names the
+    member's linker symbol (`TODO.md`: the isolation gate refuses `asm` and not `__asm__`). A leaf
+    gains no verdict from either: the plain call is the cheaper edit."""
     code = cpp_lines.mask(text)
     node_init = f"{node_spec_id}__init"
     inits = [fn for fn in functions if fn.name == node_init]
