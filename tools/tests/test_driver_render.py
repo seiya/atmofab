@@ -1825,6 +1825,13 @@ class ComposingInitEndToEndTest(unittest.TestCase):
         found = gates(text, {"helper.f90": "subroutine y()\n!$ use cmp_mem_model, only: go => "
                                            "cmp_mem__init\n!$ call go()\nend\n"})
         self.assertTrue(any("is named in a source other than" in v for v in found), found)
+        # Review round 3: a `!$` call is no call for the presence half either — a build without
+        # the OpenMP flag compiles none.
+        sentinel_only = text.replace(call, "!$  call cmp_mem__init(nx, mode, u, dt, n_plan, "
+                                           "init_ok)\n    u = 1.0_dp\n    dt = 0.25_dp\n"
+                                           "    n_plan = 6\n    init_ok = .true.\n")
+        found = gates(sentinel_only)
+        self.assertTrue(any("does not call `cmp_mem__init`" in v for v in found), found)
         # an OpenMP directive is no conditional line
         self.assertEqual(gates(text.replace(in_step, in_step + "!$omp barrier\n")), [])
         # comments and literals in another file, and the runner, are not occurrences

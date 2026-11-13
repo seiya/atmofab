@@ -2501,6 +2501,32 @@ def _init_rename_locals(view: str, targets: set[str]) -> set[str]:
     return out
 
 
+def _member_init_presence_reading(lowered: str, stem: str) -> Callable[[str, str, list[str]], bool]:
+    """The presence half of `validate_member_init_placement`, over the source AS WRITTEN (a `!$`
+    line a comment, dead contained procedures blanked): a function answering whether the body of
+    `node_init` holds a call of `member_init`, by that name or by the local of a module-level
+    rename (`dependency_renames`). Raises `SourceStructureError` when the source does not read,
+    which the caller's own parse has already refused."""
+    view, tree, to_view = structure_reading(lowered)
+    live = _without_dead_contained_procedures(lowered) or view
+
+    def answer(node_init: str, member_init: str, members: list[str]) -> bool:
+        spans = []
+        for procedure in tree.procedures:
+            if procedure.name.strip().lower() == node_init:
+                end_line = view.find("\n", to_view(procedure.body_end))
+                spans.append((to_view(procedure.header_start),
+                              len(view) if end_line < 0 else end_line + 1))
+        renames = dependency_renames(lowered, stem, members)
+        return any(
+            any(start <= match.start() < end for start, end in spans) and (
+                match.group(1) == member_init
+                or renames.target_at(match.group(1), match.start()) == member_init)
+            for match in _DEPENDENCY_CALL_RE.finditer(live))
+
+    return answer
+
+
 def _validate_init_names_outside_model(
     node_init: str, members: list[str], model_file: Path, violations: list[str],
 ) -> None:
@@ -2559,11 +2585,11 @@ def validate_member_init_placement(
     - no OTHER Fortran source of the model's directory names either
       (`_validate_init_names_outside_model`).
 
-    Every reading takes a `!$` conditional-compilation line as the statement an OpenMP build
-    compiles (`_conditional_lines_as_code`). An `entry` statement inside `<node>__init`, called
-    from `__step`, is not read here: the lint rule set refuses `entry` (OB021), as it refuses a
-    `use` without `only:` (C121) — both measured in review round 2, and this gate's absence half
-    relies on those rules staying enabled.
+    The absence readings take a `!$` conditional-compilation line as the statement an OpenMP build
+    compiles (`_conditional_lines_as_code`); the presence reading takes it as the comment a build
+    without that flag sees, so a call there counts for neither half. An `entry` statement inside
+    `<node>__init`, called from `__step`, is not read here: the lint rule set refuses `entry`
+    (OB021, measured in review round 2), and this gate relies on that rule staying enabled.
 
     The two halves have OPPOSITE polarities, so they do not share a reader: a call reader that
     misses a spelling fails presence closed and absence open (`dependency_call_locals`' trap).
@@ -2583,11 +2609,14 @@ def validate_member_init_placement(
         # A `!$` line is a comment to the statement reader and a statement to an OpenMP build
         # (review round 2: `!$ call <member>__init(...)` in `__step` cleared this gate and ran
         # on `fortran_cpu`); it is read as code here, as the isolation gate reads it.
+        # The PRESENCE half reads the source as written, where a `!$` line is a comment: a build
+        # without the OpenMP flag (`fortran_cpu_mpi`) compiles no such call, so it cannot be the
+        # call `__init` owes (review round 3 — the round-2 conversion fed presence as well).
+        presence_reading = _member_init_presence_reading(lowered, model_file.stem)
         lowered = _conditional_lines_as_code(lowered)
         view, tree, to_view = structure_reading(lowered)
     except SourceStructureError:
         return  # refused by the caller's own parse, which ran first
-    live = _without_dead_contained_procedures(lowered) or view
     node_init = f"{node_spec_id.lower()}__init"
     spans = []
     for procedure in tree.procedures:
@@ -2642,7 +2671,6 @@ def validate_member_init_placement(
                 f"other procedure reaches the member's `__init` from there.")
     members = sorted({m.lower() for m in init_member_ids})
     _validate_init_names_outside_model(node_init, members, model_file, violations)
-    renames = dependency_renames(lowered, model_file.stem, members)
     for member in members:
         member_init = f"{member}__init"
         names = sorted({member_init} | _init_rename_locals(view, {member_init}))
@@ -2652,11 +2680,7 @@ def validate_member_init_placement(
                 f"defines no `{node_init}`: a composite whose member publishes `__init` defines "
                 f"`{node_init}` (its §5.1 publishes it) and calls `{member_init}` there.")
             continue
-        called = any(
-            in_init(match.start()) and (
-                match.group(1) == member_init
-                or renames.target_at(match.group(1), match.start()) == member_init)
-            for match in _DEPENDENCY_CALL_RE.finditer(live))
+        called = presence_reading(node_init, member_init, members)
         if not called:
             violations.append(
                 f"{model_file}: `{node_init}` does not call `{member_init}`: the composite's "
