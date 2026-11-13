@@ -45,6 +45,17 @@ specs:
     deps_path: spec/problem/dynamics/shallow_water/shallow_water2d_rotating/deps.yaml
     official_releases: []
 
+  - spec_kind: problem
+    spec_id: shallow_water2d_channel_subcycled
+    spec_version: 0.1.0
+    status: controlled_draft
+    domain: dynamics
+    family: shallow_water
+    controlled_spec_path: spec/problem/dynamics/shallow_water/shallow_water2d_channel_subcycled/controlled_spec.md
+    tests_path: spec/problem/dynamics/shallow_water/shallow_water2d_channel_subcycled/tests.md
+    deps_path: spec/problem/dynamics/shallow_water/shallow_water2d_channel_subcycled/deps.yaml
+    official_releases: []
+
   - spec_kind: component
     spec_id: dynamics_advdiff_flux_1d_upwind_center2
     spec_version: 0.5.0

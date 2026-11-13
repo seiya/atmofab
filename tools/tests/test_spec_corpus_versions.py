@@ -348,9 +348,9 @@ class SpecCorpusVersionTest(unittest.TestCase):
 
     def test_every_suite_is_migrated(self) -> None:
         entries = self._entries()
-        # a tests.md of every kind that has one: the three harnesses and the 18 physics nodes
+        # a tests.md of every kind that has one: the three harnesses and the 19 physics nodes
         self.assertEqual(sum(e.get("spec_kind") == "infrastructure" for e in entries), 3)
-        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 21)
+        self.assertEqual(sum(bool(e.get("tests_path")) for e in entries), 22)
         self.assertEqual(suites_unmigrated(entries, REPO), [])
 
     def test_each_physics_node_has_a_transcription(self) -> None:
@@ -387,6 +387,72 @@ class SpecCorpusVersionTest(unittest.TestCase):
         lines = [ln for ln in build_ir.band_tables(build_ir.load_bands()) if ln]
         self.assertGreater(len(lines), 20)
         self.assertEqual([ln for ln in lines if ln not in tests_md], [])
+
+    @staticmethod
+    def _subcycled_build_ir():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "chs_build_ir", Path(__file__).parent / "data/drive_ir/subcycle_evidence/build_ir.py")
+        build_ir = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(build_ir)
+        return build_ir
+
+    def test_the_subcycled_transcription_is_its_builder_output(self) -> None:
+        """Issue #632 P4: the hand IR of `shallow_water2d_channel_subcycled` is `build_ir.build()`
+        over the member's hand IR. The transcription row reads the file and the bench refuses a
+        file that differs from `build()`, but the bench reads `workspace/` and runs outside the
+        suite: a member IR edit that moves a restated predicate without the file rebuilt is red
+        here instead."""
+        build_ir = self._subcycled_build_ir()
+        self.assertEqual(yaml.safe_load(build_ir.TRANSCRIPTION.read_text()), build_ir.build())
+
+    def test_the_subcycled_band_rows_are_the_members(self) -> None:
+        """Issue #632 P4: every row of the two-sided error-band table of tests.md 5-5 of
+        `shallow_water2d_channel_subcycled` names composite cases and carries, cell for cell, the
+        member's row of the member case each of them equals (`build_ir.CASES`), and its order
+        table is, row for row, the member's `chan_tc4_ref` order rows. The bench reads the bands
+        from the member's IR and the Compile leaf reads them from this document: a member band or
+        order bound moved without these tables (or these tables edited by hand) is red here. The
+        scalar bounds of 5-5's bullets (the pairs, the symmetry residuals, the decay band, the
+        extrema) are not compared: nothing checks them against the IR but the bench's run."""
+        build_ir = self._subcycled_build_ir()
+        root = REPO / "spec/problem/dynamics/shallow_water"
+
+        def rows(path: Path) -> dict[str, list[str]]:
+            out: dict[str, list[str]] = {}
+            case = None
+            for ln in path.read_text(encoding="utf-8").splitlines():
+                cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+                if len(cells) != 5 or cells[1] not in ("`h`", "`hu`", "`hv`") or "[" not in ln:
+                    continue
+                case = cells[0] or case
+                out.setdefault(case, []).append(" | ".join(cells[1:]))
+            return out
+
+        mine = rows(root / f"{build_ir.SID}/tests.md")
+        member = rows(root / f"{build_ir.MEMBER}/tests.md")
+        self.assertGreaterEqual(len(mine), 6)
+        for label, body in mine.items():
+            for cid in (c.strip(" `") for c in label.split(",")):
+                with self.subTest(case=cid):
+                    self.assertEqual(body, member[f"`{build_ir.CASES[cid][0]}`"])
+
+        def orders(path: Path, prefix: str) -> list[str]:
+            out: list[str] = []
+            pair = None
+            for ln in path.read_text(encoding="utf-8").splitlines():
+                cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+                if len(cells) != 5 or "\\ge" not in ln:
+                    continue
+                pair = cells[0] or pair
+                if pair.startswith(prefix):
+                    out.append(pair.removeprefix(prefix) + " | " + " | ".join(cells[1:]))
+            return out
+
+        mine_orders = orders(root / f"{build_ir.SID}/tests.md", "")
+        self.assertEqual(len(mine_orders), 6)
+        self.assertEqual(mine_orders,
+                         orders(root / f"{build_ir.MEMBER}/tests.md", "`chan_tc4_ref`, "))
 
     def _transcription_compile_static_accepts(self, spec_id: str) -> None:
         """`Compile.static` reads the node's hand-written IR against the real `tests.md` (the
@@ -455,7 +521,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
                         f"no `pass` case of {path.stem} is distributed on {grid}: the line's "
                         "min_block (or the cases' extents) leave the target's certification "
                         "vacuous")
-        self.assertEqual(with_axes, 11)
+        self.assertEqual(with_axes, 12)
 
     def test_the_flag_rule_is_driven_both_ways(self) -> None:
         """Synthetic: a `pass` test missing its operation's result, a time-marching one missing

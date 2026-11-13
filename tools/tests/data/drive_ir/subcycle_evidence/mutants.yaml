@@ -1,0 +1,323 @@
+# Issue #632 P4 bench: the seeded defects of the composing model, as patches to
+# models/shallow_water2d_channel_subcycled_model.f90 (each `old` must occur exactly once;
+# `bench.py` uses Part 1's `apply_patches`). Declared before the bench first ran over them,
+# each with what is expected to catch it (`by`: test ids, `gate` = the model gates of
+# Generate.gate, `run` = a non-zero exit of the run). `class`: `must_catch`,
+# `declared_unobservable` (run anyway; a catch is a surprise to record) or `control` (must not
+# be caught). The rows are the plan's list for P4: every row of the plan's §4.5 table, then the
+# sub-cycling defects.
+
+# ---- §4.5: the member's __init and the private-state rule ---------------------------------
+
+init-once-per-process:
+  title: >-
+    the member's __init called only at the first __init of a process (an "initialised" flag);
+    later cases keep the outputs the driver zeroed and the member's private fields of the first
+    case
+  class: must_catch
+  by: [l3_case_independence_repeat]
+  patches:
+    - old: "    logical, intent(out) :: init_ok\n    call shallow_water2d_channel__init("
+      new: "    logical, intent(out) :: init_ok\n    logical, save :: done = .false.\n    if (done) return\n    done = .true.\n    call shallow_water2d_channel__init("
+
+state-carried-clock:
+  title: >-
+    a private clock: __init records t_start, each sub-call runs at the clock, which __step
+    advances by dt / substeps (the `t` argument unread); the continuation's __init restarts it
+  class: must_catch
+  by: [l3_restart_equivalence]
+  patches:
+    - old: "  public :: shallow_water2d_channel_subcycled__init, shallow_water2d_channel_subcycled__step\n"
+      new: "  public :: shallow_water2d_channel_subcycled__init, shallow_water2d_channel_subcycled__step\n  real(dp), save :: clock = 0.0_dp\n"
+    - old: "    logical, intent(out) :: init_ok\n    call shallow_water2d_channel__init("
+      new: "    logical, intent(out) :: init_ok\n    clock = t_start\n    call shallow_water2d_channel__init("
+    - old: "      call shallow_water2d_channel__step(nx, ny, dts, t + real(j - 1, dp) * dts, h, hu, hv, &\n        member_ok)\n"
+      new: "      call shallow_water2d_channel__step(nx, ny, dts, clock, h, hu, hv, member_ok)\n      clock = clock + dts\n"
+
+state-carried-counter:
+  title: >-
+    a private step counter reset by __init: the sub-call time is t_start + (counter * substeps
+    + j - 1) * dts, the `t` argument unread
+  class: must_catch
+  by: [l3_restart_equivalence]
+  patches:
+    - old: "  public :: shallow_water2d_channel_subcycled__init, shallow_water2d_channel_subcycled__step\n"
+      new: "  public :: shallow_water2d_channel_subcycled__init, shallow_water2d_channel_subcycled__step\n  integer, save :: counter = 0\n  real(dp), save :: t0 = 0.0_dp\n"
+    - old: "    logical, intent(out) :: init_ok\n    call shallow_water2d_channel__init("
+      new: "    logical, intent(out) :: init_ok\n    counter = 0\n    t0 = t_start\n    call shallow_water2d_channel__init("
+    - old: "      call shallow_water2d_channel__step(nx, ny, dts, t + real(j - 1, dp) * dts, h, hu, hv, &\n        member_ok)\n"
+      new: "      call shallow_water2d_channel__step(nx, ny, dts, t0 + real(counter * substeps + j - 1, dp) * dts, &\n        h, hu, hv, member_ok)\n"
+    - old: "      if (.not. ok) return\n    end do\n"
+      new: "      if (.not. ok) return\n    end do\n    counter = counter + 1\n"
+
+state-cached-first-call:
+  title: >-
+    the sub-step dt / substeps cached at the first __step call of a process and read by every
+    later call. The first case of the process is the dry case, so every later case runs with its
+    sub-step and fails by value; the restart test does not judge it: the base stops before step
+    272 and the continuation has no restart point (review round 1 corrected the declared
+    catcher, which was the restart test)
+  class: must_catch
+  by: [l3_substeps_pair_tc2, l3_substeps_pair_tc4]
+  patches:
+    - old: "    real(dp) :: dts\n"
+      new: "    real(dp), save :: dts = -1.0_dp\n"
+    - old: "    dts = dt / real(substeps, dp)\n"
+      new: "    if (dts < 0.0_dp) dts = dt / real(substeps, dp)\n"
+
+step-calls-member-init:
+  title: >-
+    the member's __init named inside __step (behind a branch never taken): no run differs, the
+    placement gate's absence half refuses it
+  class: must_catch
+  by: [gate]
+  patches:
+    - old: "    dts = dt / real(substeps, dp)\n"
+      new: "    dts = dt / real(substeps, dp)\n    if (substeps < 0) call reinit_member(nx, ny, h, hu, hv)\n"
+    - old: "end module shallow_water2d_channel_subcycled_model\n"
+      new: "  subroutine reinit_member(nx, ny, h, hu, hv)\n    integer, intent(in) :: nx, ny\n    real(dp), intent(inout) :: h(nx, ny), hu(nx, ny), hv(nx, ny)\n    real(dp) :: d\n    integer :: n\n    logical :: q\n    call shallow_water2d_channel__init(nx, ny, nx, ny, 1.0_dp, 1.0_dp, 2, 1, 1, 0.0_dp, &\n      1.0_dp, 0.45_dp, 1.0_dp, 9.8_dp, 1.0_dp, 1.0_dp, 0.5_dp, 1, 1, 1, 1.0_dp, 0.0_dp, &\n      0.0_dp, 0.0_dp, h, hu, hv, d, n, q)\n  end subroutine reinit_member\nend module shallow_water2d_channel_subcycled_model\n"
+
+init-not-calling-member:
+  title: >-
+    the composite's __init does not call the member's: it writes the outputs itself (unit
+    depth, zero momentum, init_ok true), so the member's private data is never established
+  class: must_catch
+  by: [gate]
+  patches:
+    - old: "    call shallow_water2d_channel__init(nx, ny, nx_g, ny_g, L_x, L_y, ng, i0, j0, t_start, &\n      t_end, cfl_target, dt_scale, g, Omega, a, theta0, along_axis, flow_profile_id, &\n      zonal_sign, gh0, eta0, shift_x_fraction, u_jet, h, hu, hv, dt, n_step_plan, init_ok)\n"
+      new: "    h = 1.0_dp\n    hu = 0.0_dp\n    hv = 0.0_dp\n    dt = (t_end - t_start) / 10.0_dp\n    n_step_plan = 10\n    init_ok = .true.\n"
+
+init-conditional:
+  title: >-
+    the member's __init called only when the flow profile is not tc2_zonal_perturbed (id 3);
+    on such a case the outputs stay as the driver zeroed them
+  class: must_catch
+  by: [l3_x_translation_pair]
+  patches:
+    - old: "    call shallow_water2d_channel__init(nx, ny, nx_g, ny_g, L_x, L_y, ng, i0, j0, t_start, &\n"
+      new: "    if (flow_profile_id == 3) return\n    call shallow_water2d_channel__init(nx, ny, nx_g, ny_g, L_x, L_y, ng, i0, j0, t_start, &\n"
+
+init-twice:
+  title: >-
+    the member's __init called twice in a row with the same arguments: the second call
+    re-establishes what the first did ("exactly once" is not judged, plan §4.5)
+  class: declared_unobservable
+  patches:
+    - old: "      zonal_sign, gh0, eta0, shift_x_fraction, u_jet, h, hu, hv, dt, n_step_plan, init_ok)\n  end subroutine shallow_water2d_channel_subcycled__init\n"
+      new: "      zonal_sign, gh0, eta0, shift_x_fraction, u_jet, h, hu, hv, dt, n_step_plan, init_ok)\n    call shallow_water2d_channel__init(nx, ny, nx_g, ny_g, L_x, L_y, ng, i0, j0, t_start, &\n      t_end, cfl_target, dt_scale, g, Omega, a, theta0, along_axis, flow_profile_id, &\n      zonal_sign, gh0, eta0, shift_x_fraction, u_jet, h, hu, hv, dt, n_step_plan, init_ok)\n  end subroutine shallow_water2d_channel_subcycled__init\n"
+
+init-other-args-ny:
+  title: >-
+    the member's __init handed nx_g in place of ny_g (a square grid hides it). The hand-written
+    member computes the whole grid only and stops the program on a block whose extents differ
+    from the case's, so the run ends at the rectangular case and no predicate judges it by value
+    (review round 1 corrected the declared catcher, which was the rectangular test)
+  class: must_catch
+  by: [run]
+  patches:
+    - old: "    call shallow_water2d_channel__init(nx, ny, nx_g, ny_g, L_x, L_y, ng, i0, j0, t_start, &\n"
+      new: "    call shallow_water2d_channel__init(nx, ny, nx_g, nx_g, L_x, L_y, ng, i0, j0, t_start, &\n"
+
+init-other-args-axis:
+  title: >-
+    the member's __init handed along_axis 1 whatever the case's (the channel always along x)
+  class: must_catch
+  by: [l3_axis_exchange_pair]
+  patches:
+    - old: "      t_end, cfl_target, dt_scale, g, Omega, a, theta0, along_axis, flow_profile_id, &\n"
+      new: "      t_end, cfl_target, dt_scale, g, Omega, a, theta0, 1, flow_profile_id, &\n"
+
+init-ignores-member-false:
+  title: >-
+    the composite's __init writes init_ok true whatever the member returned: a refused case
+    plans 0 steps of dt 0 and the driver stops on it (`error stop 2`)
+  class: must_catch
+  by: [run]
+  patches:
+    - old: "      zonal_sign, gh0, eta0, shift_x_fraction, u_jet, h, hu, hv, dt, n_step_plan, init_ok)\n  end subroutine shallow_water2d_channel_subcycled__init\n"
+      new: "      zonal_sign, gh0, eta0, shift_x_fraction, u_jet, h, hu, hv, dt, n_step_plan, init_ok)\n    init_ok = .true.\n  end subroutine shallow_water2d_channel_subcycled__init\n"
+
+# ---- the sub-cycling (Controlled Spec §5) ---------------------------------------------------
+
+substeps-ignored:
+  title: one member call of length dt per step, whatever substeps
+  class: must_catch
+  by: [l3_substeps_pair_tc2, l3_substeps_pair_tc4]
+  patches:
+    - old: "    dts = dt / real(substeps, dp)\n    do j = 1, substeps\n"
+      new: "    dts = dt\n    do j = 1, 1\n"
+
+dt-not-divided:
+  title: the member called substeps times with dt (the step advances substeps * dt)
+  class: must_catch
+  by: [l3_substeps_pair_tc2, l3_substeps_pair_tc4]
+  patches:
+    - old: "    dts = dt / real(substeps, dp)\n"
+      new: "    dts = dt\n"
+
+t-not-advanced:
+  title: every sub-call at the step's start time t (the forcing of tc4 reads it)
+  class: must_catch
+  by: [l3_substeps_pair_tc4]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t, h, hu, hv, &"
+
+t-advanced-by-dt:
+  title: the j-th sub-call at t + (j - 1) * dt (the full step, not the sub-step)
+  class: must_catch
+  by: [l3_substeps_pair_tc4]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 1, dp) * dt, h, hu, hv, &"
+
+member-false-ignored:
+  title: the step's result true whatever the member returned
+  class: must_catch
+  by: [l0_wet_domain_refusal_xfail]
+  patches:
+    - old: "      ok = member_ok\n      if (.not. ok) return\n    end do\n"
+      new: "    end do\n    ok = .true.\n"
+
+member-false-overwritten:
+  title: >-
+    the member's false result overwritten by a later sub-call (no early return; the step's
+    result is the last sub-call's). On the wet-domain case the member refuses at the step's
+    last sub-call, and a member that refuses from the state it refused refuses again, so no
+    case of this suite separates it (tests.md §1)
+  class: declared_unobservable
+  patches:
+    - old: "      ok = member_ok\n      if (.not. ok) return\n    end do\n"
+      new: "      ok = member_ok\n    end do\n"
+
+substeps-cached:
+  title: substeps read at the first __step call of a process and kept
+  class: must_catch
+  by: [l0_substeps_refusal_xfail, l3_substeps_pair_tc2, l3_substeps_pair_tc4]
+  patches:
+    - old: "    integer :: j\n"
+      new: "    integer :: j\n    integer, save :: m = -huge(1)\n"
+    - old: "    if (substeps < 1) return\n    dts = dt / real(substeps, dp)\n    do j = 1, substeps\n"
+      new: "    if (m == -huge(1)) m = substeps\n    if (m < 1) return\n    dts = dt / real(m, dp)\n    do j = 1, m\n"
+
+substeps-guard-zero-only:
+  title: the guard refuses substeps == 0 only (a negative count runs no sub-call and returns true)
+  class: must_catch
+  by: [l0_substeps_refusal_xfail]
+  patches:
+    - old: "    ok = .false.\n    if (substeps < 1) return\n"
+      new: "    ok = .false.\n    if (substeps == 0) return\n    ok = .true.\n"
+
+# ---- controls -------------------------------------------------------------------------------
+
+ctl-dead-counter:
+  title: a private counter incremented at every __step call and never read
+  class: control
+  patches:
+    - old: "    integer :: j\n"
+      new: "    integer :: j\n    integer, save :: calls = 0\n"
+    - old: "    ok = .false.\n    if (substeps < 1) return\n"
+      new: "    calls = calls + 1\n    ok = .false.\n    if (substeps < 1) return\n"
+
+ctl-reciprocal:
+  title: dt * (1 / substeps) in place of dt / substeps (equal for substeps 1, 2 and 4)
+  class: control
+  patches:
+    - old: "    dts = dt / real(substeps, dp)\n"
+      new: "    dts = dt * (1.0_dp / real(substeps, dp))\n"
+
+# ---- added by review round 1 (the certification-soundness axis's survivors at c357dd5c), each
+# declared before the suite gained the two tests it is expected to be caught by ---------------
+
+r1-time-end-of-substep:
+  title: the j-th sub-call at t + j * dt / substeps (the sub-step's end time)
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j, dp) * dts, h, hu, hv, &"
+
+r1-time-midpoint:
+  title: the j-th sub-call at t + (j - 1/2) * dt / substeps
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + (real(j, dp) - 0.5_dp) * dts, h, hu, hv, &"
+
+r1-time-one-early:
+  title: the j-th sub-call at t + (j - 2) * dt / substeps
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 2, dp) * dts, h, hu, hv, &"
+
+r1-time-ten-late:
+  title: the j-th sub-call at t + (j + 9) * dt / substeps
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j + 9, dp) * dts, h, hu, hv, &"
+
+r1-substeps-capped-at-2:
+  title: at most two sub-calls of dt / min(substeps, 2) per step
+  class: must_catch
+  by: [l3_substeps_pair_tc4_m4]
+  patches:
+    - old: "    dts = dt / real(substeps, dp)\n    do j = 1, substeps\n"
+      new: "    dts = dt / real(min(substeps, 2), dp)\n    do j = 1, min(substeps, 2)\n"
+
+r1-time-from-third-substep:
+  title: the j-th sub-call at t + min(j - 1, 1) * dt / substeps (wrong from the third on)
+  class: must_catch
+  by: [l3_substeps_pair_tc4_m4]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(min(j - 1, 1), dp) * dts, h, hu, hv, &"
+
+r1-time-accumulated:
+  title: >-
+    the sub-step time accumulated (ts = ts + dts) in place of t + (j - 1) * dts: a rounding
+    difference of the time alone, which no forcing-time judgment can resolve (Controlled Spec §5
+    forbids it; tests.md §1)
+  class: declared_unobservable
+  patches:
+    - old: "    integer :: j\n"
+      new: "    integer :: j\n    real(dp) :: ts\n"
+    - old: "    do j = 1, substeps\n      call shallow_water2d_channel__step(nx, ny, dts, t + real(j - 1, dp) * dts, h, hu, hv, &\n        member_ok)\n"
+      new: "    ts = t\n    do j = 1, substeps\n      call shallow_water2d_channel__step(nx, ny, dts, ts, h, hu, hv, member_ok)\n      ts = ts + dts\n"
+
+# ---- added by review round 3 (disclosure): the readings tests.md §1 quotes for a time shift,
+# so a maintainer can re-take them --------------------------------------------------------------
+
+r3-time-shift-0p001-substep:
+  title: the j-th sub-call at t + (j - 1 + 0.001) * dt / substeps (a shift of 1e-3 of the sub-step)
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + (real(j - 1, dp) + 0.001_dp) * dts, h, hu, hv, &"
+
+r3-time-offset-1s:
+  title: every sub-call 1 s late (a constant offset; inside 6-7's band, tests.md §1)
+  class: declared_unobservable
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 1, dp) * dts + 1.0_dp, h, hu, hv, &"
+
+r3-time-offset-5s:
+  title: every sub-call 5 s late (a constant offset; outside 6-7's band)
+  class: must_catch
+  by: [l3_tc4_time_refinement_pair_substeps1]
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 1, dp) * dts + 5.0_dp, h, hu, hv, &"
+
+r3-time-offset-30s:
+  title: every sub-call 30.3 s late (a constant offset; inside 6-7's band, tests.md §1)
+  class: declared_unobservable
+  patches:
+    - old: "dts, t + real(j - 1, dp) * dts, h, hu, hv, &"
+      new: "dts, t + real(j - 1, dp) * dts + 30.3_dp, h, hu, hv, &"
