@@ -685,6 +685,34 @@ python3 tools/run_workflow.py --resume build
 
 - Because a `Build` failure is a deterministic process, do not internally retry Build but go back to `Generate` (this table §3). Build's artifact is revoked with Generate's (`revoke-artifact`), so it is not `certified` and is re-derived from Generate on the next run, resumed or cold.
 
+## 3-2. Running a person-written configuration (`tools/run_configuration.py`) {#run-configuration}
+
+A person-written configuration is a certified case of a node's IR with some of its numeric `inputs` overridden, run on the node's certified binary outside the workflow ([issue #632](https://github.com/seiya/spec2science/issues/632)). The tool is operator-only: no leaf runs, no predicate is evaluated, and a run is not a certification of its configuration. `python3 tools/run_configuration.py --help` is canonical for the arguments, and the module docstring for the refusals, the record and the exit status.
+
+```bash
+# config.yaml
+#   base_case: <case_id of the node's certified IR>
+#   inputs:
+#     <dotted path under the case's inputs>: <number>
+python3 tools/run_configuration.py <spec_ref> --target <target_id> --config config.yaml \
+  --out <dir>
+
+# the run was killed from outside: continue it from its last history sample, to the same end
+python3 tools/run_configuration.py <spec_ref> --target <target_id> --config config.yaml \
+  --out <dir2> --restart-from <dir>/raw/state_snapshots/history/<base_case>__<K>.json
+```
+
+Operations rules:
+- The node must have a certified `Validate` output on the target, as the workflow's own resolver selects it. A node whose certification moved (a `spec_version` bump, a contract change that moved a derivation key) is refused until it is re-certified; the tool never falls back to an older pipeline.
+- The evaluator that writes a certified case's file evaluates the configuration, so a configuration whose `n_step`, `dt` and `t_end` disagree is refused as a certified case is. An override of an input the case reads by no name, and whose removal leaves the case file the same, is refused. YAML reads `1e-3` as a string: write `1.0e-3`.
+- `--out` is a new or empty directory outside `workspace/`. It receives `case_inputs/<base_case>.json`, a copy of the IR, what the binary writes (the captures under `raw/`, `perf.json`), `stdout.txt`, `stderr.txt` and `run_record.json`, the record of what ran (node, target, selected ids, the binary's sha256, the configuration verbatim, the restart source, the command and the launch environment the tool set, the exit status, the final step and the kernel's outcome, the start check). Nothing under the certified IR's `case_inputs/` is written.
+- A run is `ok` only when the binary exits 0 and its final capture holds, true, every state the drive binds an operation's result to in the case. A kernel that refuses the configuration exits 0 and stops before `n_step`; the record then says `failed`, with the step it stopped at.
+- No time bound applies unless `--timeout-sec` is given. On the bound, on Ctrl-C, and on `kill` (SIGTERM) or a closed terminal (SIGHUP) to the tool, the binary's process group is killed and the record says `interrupted` or `failed`. `kill -9` to the tool leaves the binary running and the record at `running` for good: kill the binary's process group (`kill -KILL -<binary_pgid>`, the group id the record carries) before continuing the run. A continuation from a run whose record says `running` is refused while that group is alive.
+- `--restart-from` continues an earlier run of this tool, under the same node, target, IR, binary and configuration, from a history sample of it; the earlier run's case file must be this run's evaluated one. Every later capture equals the uninterrupted run's; the host checks after the run that the continuation started at the sample's step, time and state. A run is continued only to its own `n_step`: a finished run is not extended, a run is not stopped on purpose at a chosen step, and a continuation with another configuration is refused. The series of a killed segment is lost, because the driver writes the series at the end of a case; the continuation's series covers its own steps.
+- A run can be continued only from a history sample, so a base case whose `history.every` is `0` writes none: set it in the configuration before a long run, since a continuation admits no other configuration. A sample cut short by the kill is refused as unreadable; continue from the sample before it.
+- `failed` (a non-zero exit, a timeout, a kernel that stopped short, a failed start check) and `interrupted` keep the captures written so far; a timed-out or interrupted run is continued like a killed one. `not_started` means the binary could not be executed (the record's `error`); `--out` is then not empty, so a retry names a new directory.
+- Local site only: `sites.yaml` must map the target to the local site, and the launch shape is that site's. A target whose parallel backend starts the binary under a launcher, and a binary built at another site, are refused.
+
 ## 4. Minimal operational checklist
 - The `Controlled Spec` has no undefined items.
 - `spec.ir.yaml` holds the 4 sections `case` / `algorithm` / `io_contract` / `dependency` (plus `public_api` on a `component` or `infrastructure` node), carries no `impl_defaults` section, and satisfies the V1–V4, V8 and V9 invariants of `Compile.verify`.
