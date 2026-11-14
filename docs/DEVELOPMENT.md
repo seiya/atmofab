@@ -35,7 +35,10 @@ pip install -r requirements-dev.txt        # the two pip-installable linters, pl
                                            # runtime dependencies the suite imports
 sudo apt-get install cppcheck              # tools/tests/test_linter_cppcheck.py
 sudo apt-get install libopenmpi-dev openmpi-bin   # tools/tests/test_parallel_mpi.py, the distributed runner rows
+sudo apt-get install liblapack-dev         # tools/tests/test_dense_solve_lu_sample.py
 ```
+
+The last line installs an `external library` (`docs/GLOSSARY.md`) for the suite alone: the rows of the `dense_solve_lu` sample link it where the compiler's own search finds it and fail without it. A workflow run locates a library through the operator's `sites.yaml` (`docs/ORCHESTRATION.md` §Execution sites), which the suite does not read.
 
 The distributed runner rows launch four ranks where the host reports at least four CPUs; Open MPI counts physical cores, and where it refuses with "not enough slots available" set `OMPI_MCA_rmaps_base_oversubscribe=1`, as `.github/workflows/tests.yml` does for the runner.
 

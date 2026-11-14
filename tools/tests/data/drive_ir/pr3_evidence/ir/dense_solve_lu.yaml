@@ -1,0 +1,552 @@
+schema_version: '1.0'
+meta:
+  node_key: component/dense_solve_lu@0.1.0
+  spec_kind: component
+  spec_id: dense_solve_lu
+  spec_version: 0.1.0
+  source_refs:
+    controlled_spec: spec/component/numerics/linear_algebra/dense_solve_lu/controlled_spec.md
+    tests: spec/component/numerics/linear_algebra/dense_solve_lu/tests.md
+    deps: spec/component/numerics/linear_algebra/dense_solve_lu/deps.yaml
+case:
+  test_case_set:
+  - case_id: l0_n1
+    inputs:
+      system:
+        n: 1
+      expected:
+        x:
+        - 0.5
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a:
+      - - 4.0
+      b:
+      - 2.0
+      x: -999.0
+  - case_id: l0_base3
+    inputs:
+      system:
+        n: 3
+      expected:
+        x:
+        - 1.0
+        - -2.0
+        - 3.0
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a:
+      - - 4.0
+        - 1.0
+        - 2.0
+      - - 0.0
+        - 5.0
+        - 3.0
+      - - 2.0
+        - 1.0
+        - 6.0
+      b:
+      - 8.0
+      - -1.0
+      - 18.0
+      x: -999.0
+  - case_id: l0_base3_rowperm
+    inputs:
+      system:
+        n: 3
+      expected:
+        x:
+        - 1.0
+        - -2.0
+        - 3.0
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a:
+      - - 0.0
+        - 5.0
+        - 3.0
+      - - 2.0
+        - 1.0
+        - 6.0
+      - - 4.0
+        - 1.0
+        - 2.0
+      b:
+      - -1.0
+      - 18.0
+      - 8.0
+      x: -999.0
+  - case_id: l0_circulant_n8
+    inputs:
+      system:
+        n: 8
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a: inputs.system.n * max(0, 1 - abs(r - c)) + ((c - r) - inputs.system.n * floor((c - r) / inputs.system.n))
+        / inputs.system.n
+      b: inputs.system.n + (inputs.system.n - 1) / 2
+      x: -999.0
+  - case_id: l0_circulant_n32
+    inputs:
+      system:
+        n: 32
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a: inputs.system.n * max(0, 1 - abs(r - c)) + ((c - r) - inputs.system.n * floor((c - r) / inputs.system.n))
+        / inputs.system.n
+      b: inputs.system.n + (inputs.system.n - 1) / 2
+      x: -999.0
+  - case_id: l0_circulant_n128
+    inputs:
+      system:
+        n: 128
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a: inputs.system.n * max(0, 1 - abs(r - c)) + ((c - r) - inputs.system.n * floor((c - r) / inputs.system.n))
+        / inputs.system.n
+      b: inputs.system.n + (inputs.system.n - 1) / 2
+      x: -999.0
+  - case_id: l0_n0
+    inputs:
+      system:
+        n: 0
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a: 0.0
+      b: 0.0
+      x: -999.0
+  - case_id: l0_singular_n2
+    inputs:
+      system:
+        n: 2
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a:
+      - - 1.0
+        - 2.0
+      - - 2.0
+        - 4.0
+      b:
+      - 1.0
+      - 2.0
+      x: -999.0
+  - case_id: l0_singular_n3
+    inputs:
+      system:
+        n: 3
+      test_profile_id: dense_solve_lu_l0
+      test_profile_version: 0.1.0
+    initial_state:
+      a:
+      - - 1.0
+        - 0.0
+        - 1.0
+      - - 0.0
+        - 1.0
+        - 1.0
+      - - 1.0
+        - 1.0
+        - 2.0
+      b:
+      - 1.0
+      - 1.0
+      - 2.0
+      x: -999.0
+algorithm:
+  algorithm_id: dense_lu_solve_by_library_driver
+  description: 'One call of the published operation dense_solve_lu__solve(n, a, b, x, solved). a is the n by n matrix
+    with a(i, j) the coefficient of unknown j in equation i (first index the row), b the right-hand side, x the
+    solution. The factorization P A = L U with partial pivoting and the two triangular solves are performed by the
+    procedure dgesv of the external library lapack (deps.yaml dependencies.libraries); the operation owns the refusal
+    of an invalid order, the copies that keep a and b unmodified, the call and the reading of the returned status.
+    dgesv takes, in this order: the order n; the number of right-hand sides (1); the matrix stored by columns in
+    an array whose first extent is the next argument; that first extent (the leading dimension, >= n); an integer
+    array of length n receiving the row interchanges; the right-hand sides, one per column, in an array whose first
+    extent is the next argument; that first extent (>= n); an integer status. Status 0: the right-hand-side array
+    holds the solution. Status i > 0: U(i, i) is exactly zero and no solution is computed. A negative status is
+    an illegal argument, on which the library''s own error handler may end the program before returning. It runs
+    once per call and keeps nothing between two calls.'
+  execution_mode: conditional
+  steps:
+  - step_id: step_01_order_guard
+    step_kind: diagnostic
+    operation_ref: order_guard
+    inputs:
+    - n
+    outputs:
+    - solved
+    description: 'n < 1 is invalid input (controlled spec section 4): solved is set .false. and the operation returns
+      without calling the library (its error handler may end the program on an illegal argument) and without performing
+      steps 02 to 04; x is then not defined. l0_n0: n = 0 -> refused, solved false; l0_n1: n = 1 -> valid.'
+  - step_id: step_02_copy
+    step_kind: pointwise_process
+    operation_ref: copy_system
+    inputs:
+    - n
+    - a
+    - b
+    outputs:
+    - lu
+    - rhs
+    description: 'Copy a into the work matrix lu and b into the single column of the work right-hand side rhs. The
+      first extent of lu and of rhs is exactly the leading dimension passed to the library in step 03 (n): storage
+      with any other first extent addresses other elements. a and b are intent(in) and are never modified; the library
+      overwrites what it is handed, hence the copies. The system is copied as supplied: no reordering, scaling or
+      transposition of the equations or the unknowns.'
+  - step_id: step_03_library_solve
+    step_kind: column_process
+    operation_ref: lapack_dgesv
+    inputs:
+    - n
+    - lu
+    - rhs
+    outputs:
+    - lu
+    - rhs
+    - ipiv
+    - info
+    description: Call dgesv(n, 1, lu, n, ipiv, rhs, n, info) of the external library lapack. The library factorizes
+      lu by Gaussian elimination with partial pivoting (at each column the row with the element of largest magnitude
+      at or below the diagonal is brought to the diagonal; P A = L U, L unit lower triangular, U upper triangular),
+      records the interchanges in ipiv, and solves L y = P b, U x = y in rhs. The factorization and the solves are
+      never performed by the component's own source.
+  - step_id: step_04_status
+    step_kind: diagnostic
+    operation_ref: read_status
+    inputs:
+    - info
+    - rhs
+    outputs:
+    - solved
+    - x
+    description: 'solved = (info == 0). When solved is true, x = rhs(:, 1), every element written. When info > 0
+      (an exactly zero diagonal element of U: l0_singular_n2, l0_singular_n3) solved is false and x is not defined;
+      no other method, regularization or least-squares solution replaces the refused solve. The operation never
+      ends the program.'
+  ordering:
+  - step_01_order_guard
+  - step_02_copy
+  - step_03_library_solve
+  - step_04_status
+  control_condition:
+  - step_01_order_guard always runs
+  - step_02_copy, step_03_library_solve and step_04_status run only when n >= 1
+  - when n < 1 the operation returns immediately after step_01 with solved = false
+  - x is assigned in step_04 only when info == 0
+  iteration_contract: {}
+  update_semantics:
+    target_variables:
+    - x
+    - solved
+    update_order: sequential
+    notes: x is written from the library's solution; a and b are intent(in) and never modified.
+  temporaries:
+  - name: lu
+    shape_expr: '[n, n]'
+  - name: rhs
+    shape_expr: '[n, nrhs]'
+  - name: ipiv
+    shape_expr: '[n]'
+  - name: info
+    shape_expr: scalar
+  derived_field_rules:
+  - name: nrhs
+    expression: nrhs = 1
+    description: 'The number of right-hand sides handed to the library: the second extent of rhs.'
+  invariants:
+  - solved is .true. iff n >= 1 and the library returned status 0
+  - the library is not called when n < 1
+  - when solved is true every element of x is written with the library's solution of the system as supplied
+  - the first extent of the storage handed to the library equals the leading dimension passed with it
+  - a and b are never modified
+  - the factorization and the triangular solves are the library's dgesv; no module, library or library procedure
+    other than dgesv of lapack is reached
+  - the equations and the unknowns are never reordered, scaled or transposed before the call, nor the solution after
+    it
+  - the operation never ends the program
+  - the published procedure header carries no prefix section 5.1 does not declare
+  splitting_policy:
+    kind: none
+  diagnostics_from_state: false
+  fallback_policy: fail_closed
+io_contract:
+  inputs:
+  - name: n
+    shape_expr: scalar
+    evidence_ref: spec.ir.yaml
+    description: Order of the system (case system.n); fixes every extent and is the guard's operand.
+  - name: a
+    shape_expr: '[n, n]'
+    evidence_ref: raw/state_snapshots
+    description: The matrix, the case's initial_state.a; first index the row. Consumed by step 02.
+  - name: b
+    shape_expr: '[n]'
+    evidence_ref: raw/state_snapshots
+    description: The right-hand side, the case's initial_state.b. Consumed by step 02.
+  outputs:
+  - name: x
+    shape_expr: '[n]'
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - x
+    description: The solution, captured after the run; pre-call content -999.
+  - name: solved
+    shape_expr: scalar
+    evidence_ref: raw/state_snapshots
+    raw_variables:
+    - solved
+    description: The operation's logical result, written by the driver as 1 / 0 after the call (0 before it).
+  raw_requirements:
+    required_evidence:
+    - artifact: state_snapshots
+      required: true
+      schema:
+        variables:
+        - name: a
+          shape_expr: '[n, n]'
+        - name: b
+          shape_expr: '[n]'
+        - name: x
+          shape_expr: '[n]'
+        - name: solved
+          shape_expr: scalar
+        time_variable: t
+        time_shape_expr: scalar
+        coordinates:
+        - name: r
+          axis: 0
+          count: inputs.system.n
+          length: inputs.system.n
+          placement: cell_center
+        - name: c
+          axis: 1
+          count: inputs.system.n
+          length: inputs.system.n
+          placement: cell_center
+  semantic_dependency:
+    required_sources:
+    - n
+    - a
+    - b
+  tests:
+  - test_id: l0_declared_solution_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_n1
+    - l0_base3
+    - l0_base3_rowperm
+    quantities:
+    - solved
+    - solution_error
+  - test_id: l0_row_exchange_pair_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_base3
+    - l0_base3_rowperm
+    quantities:
+    - solved
+    - pair_residual
+  - test_id: l0_circulant_family_pass
+    expected_outcome: pass
+    target_cases:
+    - l0_circulant_n8
+    - l0_circulant_n32
+    - l0_circulant_n128
+    quantities:
+    - solved
+    - family_error
+  - test_id: l0_invalid_n_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_n0
+    quantities:
+    - solved
+  - test_id: l0_singular_xfail
+    expected_outcome: xfail
+    target_cases:
+    - l0_singular_n2
+    - l0_singular_n3
+    quantities:
+    - solved
+  predicates:
+  - test_id: l0_declared_solution_pass
+    quantity: solved
+    target_cases:
+    - l0_n1
+    - l0_base3
+    - l0_base3_rowperm
+    per_case: true
+    expr: final.solved
+    op: eq
+    value: 1.0
+  - test_id: l0_declared_solution_pass
+    quantity: solution_error
+    target_cases:
+    - l0_n1
+    - l0_base3
+    - l0_base3_rowperm
+    per_case: true
+    expr: maxabs(final.x - inputs.expected.x) / maxabs(inputs.expected.x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_declared_solution_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_n1
+    - l0_base3
+    - l0_base3_rowperm
+    per_case: true
+    expr: maxabs(final.x - comparand.final.x) / max(maxabs(final.x), maxabs(comparand.final.x), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_row_exchange_pair_pass
+    quantity: solved
+    target_cases:
+    - l0_base3
+    - l0_base3_rowperm
+    per_case: true
+    expr: final.solved
+    op: eq
+    value: 1.0
+  - test_id: l0_row_exchange_pair_pass
+    quantity: pair_residual
+    target_cases:
+    - l0_base3
+    - l0_base3_rowperm
+    case: l0_base3_rowperm
+    expr: norm2(final.x - at('l0_base3').final.x) / norm2(at('l0_base3').final.x)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_row_exchange_pair_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_base3
+    - l0_base3_rowperm
+    per_case: true
+    expr: maxabs(final.x - comparand.final.x) / max(maxabs(final.x), maxabs(comparand.final.x), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_circulant_family_pass
+    quantity: solved
+    target_cases:
+    - l0_circulant_n8
+    - l0_circulant_n32
+    - l0_circulant_n128
+    per_case: true
+    expr: final.solved
+    op: eq
+    value: 1.0
+  - test_id: l0_circulant_family_pass
+    quantity: family_error
+    target_cases:
+    - l0_circulant_n8
+    - l0_circulant_n32
+    - l0_circulant_n128
+    per_case: true
+    expr: maxabs(final.x - 1)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_circulant_family_pass
+    quantity: cross_target_state_agreement
+    target_cases:
+    - l0_circulant_n8
+    - l0_circulant_n32
+    - l0_circulant_n128
+    per_case: true
+    expr: maxabs(final.x - comparand.final.x) / max(maxabs(final.x), maxabs(comparand.final.x), 1.0)
+    op: le
+    value: 1.0e-12
+  - test_id: l0_invalid_n_xfail
+    quantity: solved
+    target_cases:
+    - l0_n0
+    per_case: true
+    expr: final.solved
+    op: eq
+    value: 0.0
+  - test_id: l0_singular_xfail
+    quantity: solved
+    target_cases:
+    - l0_singular_n2
+    - l0_singular_n3
+    per_case: true
+    expr: final.solved
+    op: eq
+    value: 0.0
+dependency:
+  node_key: component/dense_solve_lu@0.1.0
+  direct_deps: []
+public_api:
+  published_operations:
+  - operation_id: dense_solve_lu__solve
+    exercised_by:
+    - l0_declared_solution_pass
+    - l0_row_exchange_pair_pass
+    - l0_circulant_family_pass
+    - l0_invalid_n_xfail
+    - l0_singular_xfail
+  published_types: []
+  module_parameters:
+  - name: dp
+    value: float64
+  signatures:
+  - symbol: dense_solve_lu__solve
+    signature:
+      kind: subroutine
+      name: dense_solve_lu__solve
+      args:
+      - name: n
+        rank: 0
+        intent: in
+        spec:
+          type: integer
+      - name: a
+        rank: 2
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - n
+        - n
+      - name: b
+        rank: 1
+        intent: in
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - n
+      - name: x
+        rank: 1
+        intent: out
+        spec:
+          type: real
+          kind: dp
+        dims:
+        - n
+      - name: solved
+        rank: 0
+        intent: out
+        spec:
+          type: logical
+drive:
+  distribute:
+    axes: []
+  step:
+    operation: dense_solve_lu__solve
+    result: solved
+    arguments:
+      n: inputs.system.n
+      a: state.a
+      b: state.b
+      x: state.x
+      solved: state.solved

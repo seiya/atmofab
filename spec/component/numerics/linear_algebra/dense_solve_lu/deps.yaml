@@ -1,0 +1,7 @@
+spec_id: dense_solve_lu
+spec_kind: component
+dependencies:
+  components: []
+  profiles: []
+  libraries:
+    - library_id: lapack
