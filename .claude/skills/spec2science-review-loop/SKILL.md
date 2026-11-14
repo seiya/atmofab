@@ -745,6 +745,9 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   path only the operator can reach, and a construct occurring zero times in the real corpus."
   **Both halves are load-bearing**: without the first, the review skips the machinery that makes a
   verdict mean anything; without the second, it fills with escapes that gain a leaf nothing
+- **Hand over the complexity bullet too** (`AGENTS.md` §"Development premises", "No excessive
+  defenses, no needless complexity"): a finding that asks for more checking names its leaf gain or
+  its breakage, and a finding that a check defends nothing is a wanted finding
 - **Make each finding carry its own gain sentence** — "a leaf taking this gets ⟨what⟩ toward
   reporting its task done". **A finding that cannot carry one is not a finding**, it is a mechanism
   description, and the sentence is what you triage against afterwards. It also states the
