@@ -386,7 +386,9 @@ io_contract:
     - l0_base3
     - l0_base3_rowperm
     per_case: true
-    expr: maxabs(final.x - inputs.expected.x) / maxabs(inputs.expected.x)
+    bind:
+      input_change: maxabs(final.a - initial.a) + maxabs(final.b - initial.b)
+    expr: maxabs(final.x - inputs.expected.x) / maxabs(inputs.expected.x) + input_change
     op: le
     value: 1.0e-12
   - test_id: l0_declared_solution_pass
@@ -416,7 +418,9 @@ io_contract:
     - l0_circulant_n32
     - l0_circulant_n128
     per_case: true
-    expr: maxabs(final.x - 1)
+    bind:
+      input_change: maxabs(final.a - initial.a) + maxabs(final.b - initial.b)
+    expr: maxabs(final.x - 1) + input_change
     op: le
     value: 1.0e-12
   - test_id: l0_circulant_family_pass

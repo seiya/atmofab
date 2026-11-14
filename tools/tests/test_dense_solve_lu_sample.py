@@ -179,7 +179,7 @@ class DefectRowsTest(unittest.TestCase):
         rows = {name.removeprefix(_DEFECT_ROW) for name in dir(DenseSolveLuSampleTest)
                 if name.startswith(_DEFECT_ROW)}
         self.assertEqual(rows, {"transposed_matrix", "ignored_status", "status_compared_with_order",
-                                "wrong_leading_dimension"})
+                                "wrong_leading_dimension", "inputs_overwritten"})
         self.assertEqual({m for m, row in MUTANTS.items() if not row["by"]},
                          {"library-never-reached"})
 

@@ -44,6 +44,21 @@ wrong-leading-dimension:
     - old: "    allocate (lu(n, n), rhs(n, 1), ipiv(n))\n    lu = a\n"
       new: "    allocate (lu(n + 1, n), rhs(n, 1), ipiv(n))\n    lu = 0.0_dp\n    lu(1:n, :) = a\n"
 
+inputs-overwritten:
+  title: >-
+    `a` and `b` are handed to the library in place of copies, through an interface block that
+    declares them inputs only; the library leaves its factors in `a` and the solution in `b`
+  by: [l0_declared_solution_pass, l0_circulant_family_pass]
+  patches:
+    - old: "      real(dp), intent(inout) :: a(lda, n)\n"
+      new: "      real(dp), intent(in) :: a(lda, n)\n"
+    - old: "      real(dp), intent(inout) :: b(ldb, nrhs)\n"
+      new: "      real(dp), intent(in) :: b(ldb, nrhs)\n"
+    - old: "    call dgesv(n, 1, lu, n, ipiv, rhs, n, info)\n"
+      new: "    call dgesv(n, 1, a, n, ipiv, b, n, info)\n"
+    - old: "    if (solved) x = rhs(:, 1)\n"
+      new: "    if (solved) x = b\n"
+
 library-never-reached:
   title: >-
     the model factorizes and solves in its own source, by the elimination with partial pivoting
