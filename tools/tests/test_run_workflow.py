@@ -5944,6 +5944,68 @@ class DependencyClosureTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         return captured
 
+    def test_the_closure_walk_gates_each_spec_s_library_declarations(self) -> None:
+        """Issue #644: every visited spec's `libraries` names a usable declaration under
+        `spec/libraries/`, a dependency's included; a malformed list is a malformed deps.yaml."""
+        def closure(libraries_yaml: str, declare: bool):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_diamond(repo_root)
+                deps = repo_root / "spec/component/b/deps.yaml"
+                deps.write_text(deps.read_text() + libraries_yaml, encoding="utf-8")
+                if declare:
+                    (repo_root / "spec/libraries").mkdir(parents=True)
+                    (repo_root / "spec/libraries/vend.yaml").write_text(
+                        "library_version: 1\nlibrary_id: vend\nlanguage: fortran\n"
+                        "modules: []\nprocedures: [v]\nlink: [vend]\n", encoding="utf-8")
+                return run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/problem/a", _TP_RW)
+        entry = "  libraries:\n    - library_id: vend\n"
+        ordered, err = closure(entry, declare=True)
+        self.assertIsNone(err)
+        ordered, err = closure(entry, declare=False)
+        self.assertEqual((ordered, err["reason"]), ([], "library_declaration_invalid"))
+        self.assertIn("spec/component/b", err["detail"])
+        ordered, err = closure("  libraries: [vend]\n", declare=True)
+        self.assertEqual((ordered, err["reason"]), ([], "dependency_deps_malformed"))
+
+    def _drive_with_verdicts(self, verdicts: dict):
+        def fake_verdict(repo_root, spec_ref, target_profile, until_phase):
+            return verdicts.get(spec_ref)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            with mock.patch.object(run_workflow, "_library_verdict", fake_verdict):
+                return self._drive_closure_raw(repo_root, resume=False,
+                                               prior_orch_by_spec=None)
+
+    def test_an_unavailable_member_is_recorded_never_run_and_the_target_ends_unavailable(
+            self) -> None:
+        """Issue #644: a member whose library cannot be used here is recorded
+        `library_unavailable` (never `skipped`, which means ready) and not run; the members
+        that can run do; the target, whose closure holds the member, ends the run with
+        `LIBRARY_UNAVAILABLE_EXIT`."""
+        unavailable = {"status": "library_unavailable", "reason": "library_not_at_site",
+                       "library_id": "vend", "site": "local", "detail": "d"}
+        rc, captured, stdout = self._drive_with_verdicts({
+            "spec/component/c": unavailable, "spec/problem/a": unavailable})
+        self.assertEqual(rc, run_workflow.LIBRARY_UNAVAILABLE_EXIT)
+        self.assertEqual([c["spec_ref"] for c in captured], ["spec/component/b"])
+        final = json.loads(stdout.strip().splitlines()[-1])
+        self.assertEqual(final["status"], "library_unavailable")
+        (record,) = [r for r in final["dependency_runs"] if r["spec_ref"] == "spec/component/c"]
+        self.assertEqual((record["status"], record["skipped"], record["library_id"]),
+                         ("library_unavailable", False, "vend"))
+
+    def test_a_library_configuration_refusal_stops_the_closure_before_any_member(
+            self) -> None:
+        rc, captured, stdout = self._drive_with_verdicts({"spec/component/b": {
+            "status": "fail", "reason": "site_library_unresolved", "detail": "d"}})
+        self.assertEqual((rc, captured), (2, []))
+        self.assertEqual(json.loads(stdout.strip().splitlines()[-1])["reason"],
+                         "site_library_unresolved")
+
     def test_fresh_closure_records_closure_id_on_every_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

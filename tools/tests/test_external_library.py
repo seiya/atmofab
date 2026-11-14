@@ -469,6 +469,54 @@ class BuildAndRunTests(_Fixture):
             self.assertNotEqual(proc.returncode, 0)
 
 
+class ControlFileAndSyntaxTests(_Fixture):
+    """The graph-rendered control file (the one a bundle's Build reads) and the syntax stage
+    reach the libraries through the same values."""
+
+    def test_the_graph_rendered_control_file_carries_both_variables(self) -> None:
+        from tools.backends.language.fortran import control_file as fortran_rules
+        text = make_control_file.render_from_graph(
+            rules=fortran_rules.rules(standard="f2008", parallel_backend="openmp"),
+            compiler="gfortran", bin_name="x", cases_default="c",
+            graph={"compile_units": [{"source": "bundle:m.f90", "object": "m.o"}],
+                   "link": {"objects": ["m.o"]}})
+        lines = text.splitlines()
+        self.assertIn("LIBINC  ?=", lines)
+        self.assertIn("LIBS    ?=", lines)
+        self.assertIn("\t$(FC) $(FFLAGS) $(OBJDIR)/m.o -o $(BINDIR)/$(BIN) $(LIBS)", lines)
+        self.assertIn("$(LIBINC)", next(l for l in lines if l.startswith("FFLAGS")))
+        node = make_control_file.render_node(
+            rules=fortran_rules.rules(standard="f2008", parallel_backend="openmp"),
+            compiler="gfortran", bin_name="x", cases_default="c", model_stem="m",
+            runner_stem="r", closure=[]).splitlines()
+        self.assertIn("LIBINC  ?=", node)
+        self.assertIn("LIBS    ?=", node)
+
+    def test_the_syntax_stage_finds_a_library_module_through_include_dirs(self) -> None:
+        from tools.build_runtime import tool_run_syntax_check
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "m_model.f90").write_text(_MODEL_BOTH)
+
+            def check(include_dirs: list[str] | None) -> dict:
+                args = {"compiler": "gfortran", "std": "f2008", "project_dir": td,
+                        "command_log_path": str(Path(td) / "log.jsonl")}
+                if include_dirs is not None:
+                    args["include_dirs"] = include_dirs
+                return tool_run_syntax_check(args)
+
+            self.assertFalse(check(None)["ok"])
+            ok = check([str(self.dirs["include"])])
+            self.assertTrue(ok["ok"], ok.get("stderr"))
+            for bad in ("a", [1]):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    check(bad)  # type: ignore[arg-type]
+        from tools.backends.compiler.nvcc import syntax as nvcc_syntax
+        with self.assertRaises(ValueError):
+            nvcc_syntax.argv(standard="c++17", scratch_dir=".s", parallel_backend=None,
+                             promotions=(), architecture=None, sources=["a.cu"],
+                             include_dirs=("/x",))
+
+
 class SymbolCheckTests(_Fixture):
     """The post-build checks over the objects a node's leaf authored."""
 

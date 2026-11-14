@@ -262,6 +262,35 @@ def checked_build_members() -> dict[str, str]:
     return members
 
 
+def library_members() -> dict[str, str]:
+    """External libraries (issue #644, Part 3 P1): the neutral seam that resolves a closure's
+    declarations at the site, composes the build's library words and the run's loader path, and
+    runs the post-build symbol checks; and — per compiler record — whether it declares
+    `library_flags` / `library_binary`, the attribute row each dispatch resolves by, and the
+    package and module files `capability_module` returns. Build links and checks with them and
+    Validate.execute runs the binary under the loader path they compose, so they are members of
+    both tuples."""
+    from tools.backends import registry
+
+    members: dict[str, str] = {
+        "tools/external_library.py": _file_digest("tools/external_library.py")}
+    for capability in ("library_flags", "library_binary"):
+        members[f"registry {capability} attr"] = registry_attr(capability)
+        for (axis, backend_id), record in sorted(registry._BACKENDS.items()):
+            if axis != "compiler":
+                continue
+            declared = capability in record.backend_provides
+            members[f"compiler/{backend_id} {capability} declared"] = json.dumps(declared)
+            if declared:
+                package = registry.load(axis, backend_id)
+                module = registry.capability_module(axis, backend_id, capability)
+                for label, loaded in (("package", package), ("module", module)):
+                    rel = Path(loaded.__file__).resolve().relative_to(_REPO).as_posix()
+                    members[f"compiler/{backend_id} {capability} {label} {rel}"] = \
+                        _file_digest(rel)
+    return members
+
+
 def build_tuple() -> dict[str, str]:
     """The in-process build: the library's `compile_project` and its command runner, the
     conductor's build body and its dependency staging, the bundle build-graph derivation."""
@@ -333,6 +362,11 @@ def build_tuple() -> dict[str, str]:
         **{f"checked build: {k}": v for k, v in checked_build_members().items()},
         "Conductor._control_file_rules": _source_digest(wc.Conductor._control_file_rules),
         "Conductor._builds_checked": _source_digest(wc.Conductor._builds_checked),
+        # The closure's external libraries (issue #644): which ones the build links, the words
+        # make is handed, and the symbol checks over the node's own objects.
+        **{f"libraries: {k}": v for k, v in library_members().items()},
+        "Conductor._closure_libraries": _source_digest(wc.Conductor._closure_libraries),
+        "Conductor._library_build_args": _source_digest(wc.Conductor._library_build_args),
     }
 
 
@@ -451,6 +485,9 @@ def execute_tuple() -> dict[str, str]:
         "workflow_conductor._stderr_head_and_tail": _source_digest(wc._stderr_head_and_tail),
         # The bounds-checked binary's row (issue #589 PR-0): which targets run it and its shape.
         **{f"checked build: {k}": v for k, v in checked_build_members().items()},
+        # The loader path every run of a binary linking external libraries is given (issue
+        # #644), composed from the Build's recorded directories.
+        **{f"libraries: {k}": v for k, v in library_members().items()},
         "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
         "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
         **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
