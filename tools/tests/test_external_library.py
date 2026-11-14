@@ -1155,6 +1155,25 @@ class LibraryVerdictTests(_Fixture):
             self.assertIsNone(run_workflow._library_verdict(
                 self.repo, "spec/component/n", FORTRAN_CPU, "Validate"))
 
+    def test_a_closure_member_s_library_decides_the_node(self) -> None:
+        """The plan's main shape: the target's harness declares the library and the node
+        none (round 2, axis A F2)."""
+        from tools import run_workflow
+        node = self.repo / "spec/component/n2"
+        node.mkdir(parents=True, exist_ok=True)
+        (node / "deps.yaml").write_text("dependencies:\n  components: []\n  profiles: []\n")
+        harness = self.repo / "spec/infrastructure/h"
+        harness.mkdir(parents=True, exist_ok=True)
+        (harness / "deps.yaml").write_text("dependencies:\n  components: []\n  profiles: []\n"
+                                           "  libraries:\n    - {library_id: foo}\n")
+        write_sites(self.repo, self.dirs, libraries="      vend:\n")
+        with mock.patch.object(run_workflow, "_resolve_dependency_closure",
+                               return_value=([{"spec_ref": "spec/infrastructure/h"}], None)):
+            verdict = run_workflow._library_verdict(self.repo, "spec/component/n2",
+                                                    FORTRAN_CPU, "Validate")
+        self.assertEqual((verdict["status"], verdict["library_id"]),
+                         ("library_unavailable", "foo"))
+
     def test_a_usable_library_and_a_compile_only_run_say_nothing(self) -> None:
         self.assertIsNone(self._verdict())
         write_sites(self.repo, self.dirs, libraries="      vend:\n")

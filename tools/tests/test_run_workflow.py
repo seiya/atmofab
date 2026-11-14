@@ -1033,6 +1033,24 @@ class RunWorkflowTests(unittest.TestCase):
             wc.run_conductor = orig_rc  # type: ignore[assignment]
         return code, captured
 
+    def test_a_single_node_run_whose_library_is_unavailable_runs_nothing(self) -> None:
+        """Issue #644 (round 2, axis A F1): the single-node verdict is asked before anything
+        of the run is written; `library_unavailable` exits `LIBRARY_UNAVAILABLE_EXIT`, a
+        configuration refusal exits 2, and the conductor is not reached."""
+        for status, want in (("library_unavailable", run_workflow.LIBRARY_UNAVAILABLE_EXIT),
+                             ("fail", 2)):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_spec_tree(repo_root)
+                verdict = {"status": status, "reason": "r", "detail": "d"}
+                with mock.patch.object(run_workflow, "_library_verdict",
+                                       lambda *a, **k: verdict):
+                    code, kw = self._main_with_conductor_spy(repo_root, [
+                        "spec/problem/test.md", "build", "--orchestration-id", "orch_lu",
+                        "--mode", "dev"])
+                self.assertEqual((code, kw), (want, {}))
+                self.assertFalse((repo_root / "workspace/orchestrations/orch_lu").exists())
+
     def test_rederive_threads_into_run_conductor_on_a_cold_run_and_on_a_resume(self) -> None:
         """`--rederive` reaches the conductor on BOTH driver paths (cold single node, resume),
         parsed to the phase set; omitted, the conductor gets the empty set. The closure path
