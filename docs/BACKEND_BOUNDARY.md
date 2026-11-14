@@ -82,6 +82,9 @@ Out of scope, each for a stated reason:
   through the one backend that exists. The refusal names the axis, the value, the implemented set,
   and the registry; `registry.unsupported_reason` / `registry.unavailable_reason` produce that
   clause, and a gate that refuses on this ground carries it verbatim rather than spelling its own.
+  A value that is declared but does not declare a capability the gate needs is refused with the
+  clause of `registry.missing_capability_reason` (the refusal clause of `provides`, below), on the
+  same terms.
   An **absent** value is a separate case: only an optional field can be absent (a target
   profile's `toolchain.compiler` / `toolchain.linker` pin), and it takes the default
   `docs/IMPL_PLAN_SPEC.md` §3 documents, which this rule does not change.
@@ -93,7 +96,7 @@ Out of scope, each for a stated reason:
   | --- | --- | --- |
   | `unsupported_reason` | the value is a declared member | naming, and building a refusal message |
   | `unimplemented_reason` | it is declared **and** something implements it, in its package or in the neutral core | a gate deciding whether a run may carry the value at all |
-  | `provides(axis, value, capability)` | **this repository** does that named job for the value, wherever the code lives | a host-authorship dispatch, deciding whether the job is the host's or a leaf's |
+  | `provides(axis, value, capability)` | **this repository** does that named job for the value, wherever the code lives | a host-authorship dispatch, deciding whether the job is the host's or a leaf's; its refusal clause is `missing_capability_reason` |
   | `unavailable_reason` | it is declared **and** extracted | code about to call into the backend package |
 
   A member registered with no module and no capability — implemented nowhere — is a declaration,
@@ -236,6 +239,17 @@ together with the bundle's `target_lowering_plan.parallelization`.
     `public_api` and writes them beside the bundle's files (`Conductor._write_interface_header`),
     names the file among those it authors, and the lint attribution treats it as context on both
     sides when the linter is handed files by name.
+  - **An `external library` is reached through the target compiler** (issue #644): `library_flags`
+    (the words a build adds to reach the library, and the files a link name and a module resolve
+    to) and `library_binary` (the loader variable a run is prefixed with, a shared object's load
+    name, and the symbol tables the post-build checks read) are capabilities of the `compiler`
+    axis, not of a new axis, because the compiler driver chooses the linker and, through it, the
+    dynamic loader's input. A closure that declares a library on a target whose compiler lacks
+    either is refused before any phase with `missing_capability_reason`'s clause
+    (`library_capability_missing`, `docs/RUNBOOK.md` §0-1). The declaration
+    (`spec/libraries/<library_id>.yaml`) and the site's directories are data the neutral core
+    carries as opaque tokens (`tools/external_library.py`); the binding is
+    `docs/backends/compiler/<compiler>/TOOLCHAIN.md`.
   - Whether a language's quality check runs through the build system's test target, and whether
     `compile_project` holds it to a dependency-aware build tool, is asked of the language
     backend's `bundle_facts.COMPILED` (`registry.is_compiled_language`); the two token sets that

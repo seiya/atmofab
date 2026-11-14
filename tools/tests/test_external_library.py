@@ -746,6 +746,22 @@ class LibraryVerdictTests(_Fixture):
             return run_workflow._library_verdict(self.repo, "spec/component/n", FORTRAN_CPU,
                                                  until)
 
+    def test_a_bad_declaration_is_refused_on_every_run_a_compile_only_one_included(
+            self) -> None:
+        from tools import run_workflow
+        with mock.patch.object(run_workflow, "_resolve_dependency_closure", return_value=(
+                [], {"reason": "library_declaration_invalid", "detail": "d"})):
+            for until in ("Compile", "Validate"):
+                with self.subTest(until=until):
+                    verdict = run_workflow._library_verdict(
+                        self.repo, "spec/component/n", FORTRAN_CPU, until)
+                    self.assertEqual((verdict["status"], verdict["reason"]),
+                                     ("fail", "library_declaration_invalid"))
+        with mock.patch.object(run_workflow, "_resolve_dependency_closure", return_value=(
+                [], {"reason": "dependency_cycle", "detail": "d"})):
+            self.assertIsNone(run_workflow._library_verdict(
+                self.repo, "spec/component/n", FORTRAN_CPU, "Validate"))
+
     def test_a_usable_library_and_a_compile_only_run_say_nothing(self) -> None:
         self.assertIsNone(self._verdict())
         write_sites(self.repo, self.dirs, libraries="      vend:\n")

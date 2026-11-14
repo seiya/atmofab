@@ -4690,7 +4690,7 @@ def _resolve_dependency_closure(
         _library_ids, _libraries_well_formed = _parse_library_entries(deps_doc)
         if not _libraries_well_formed:
             error = {
-                "reason": "dependency_deps_malformed",
+                "reason": "library_declaration_invalid",
                 "detail": f"{spec_ref}/deps.yaml has a malformed `libraries` list",
             }
             return
@@ -4847,7 +4847,9 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
 
     Otherwise an event: `status: "library_unavailable"` (the library is for another language,
     `library_language_mismatch`, or the site does not list it, `library_not_at_site`), or
-    `status: "fail"` for an operator configuration defect the run is refused on (exit 2): a
+    `status: "fail"` for a spec-input or configuration defect the run is refused on (exit 2):
+    a declaration that is missing or malformed (`library_declaration_invalid`, on every run,
+    a Compile-only one included), a
     remote site (`library_at_remote_site`), a compiler without the library capabilities
     (`library_capability_missing`), a site entry whose files do not resolve
     (`site_library_unresolved`), an unreadable `sites.yaml`, or a host without the programs
@@ -4855,10 +4857,14 @@ def _library_verdict(repo_root: Path, spec_ref: str, target_profile: TargetProfi
     is left to the gates that report it."""
     from tools import external_library as xl
     from tools.execution_sites import SitesConfigError
-    if target_profile is None or _normalize_phase(until_phase).lower() == "compile":
-        return None
     ordered, error = _resolve_dependency_closure(repo_root, spec_ref, target_profile)
     if error is not None:
+        # The declarations are a spec-input bound, refused on every run, a Compile-only one
+        # included; any other closure defect is left to the gates that report it.
+        if error.get("reason") == "library_declaration_invalid":
+            return {"status": "fail", **error, "spec_ref": spec_ref}
+        return None
+    if target_profile is None or _normalize_phase(until_phase).lower() == "compile":
         return None
     try:
         ids = xl.closure_library_ids(repo_root, spec_ref, [n["spec_ref"] for n in ordered])

@@ -5967,7 +5967,8 @@ class DependencyClosureTests(unittest.TestCase):
         self.assertEqual((ordered, err["reason"]), ([], "library_declaration_invalid"))
         self.assertIn("spec/component/b", err["detail"])
         ordered, err = closure("  libraries: [vend]\n", declare=True)
-        self.assertEqual((ordered, err["reason"]), ([], "dependency_deps_malformed"))
+        self.assertEqual((ordered, err["reason"]), ([], "library_declaration_invalid"))
+        self.assertIn("malformed", err["detail"])
 
     def _drive_with_verdicts(self, verdicts: dict):
         def fake_verdict(repo_root, spec_ref, target_profile, until_phase):

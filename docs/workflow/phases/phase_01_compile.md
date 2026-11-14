@@ -600,7 +600,9 @@ cross-checks the IR's `direct_deps` against it (see below). The remaining `opera
   is a deterministic input: the conductor resolves it host-side into the
   `<ir_ref>/dependency_surface.json` sidecar (per `component` or `problem` direct dep: `published_operations` + a
   `source` tag of `ir_public_api` / `unresolved`; an `ir_public_api` entry also carries `public_api`,
-  the dep IR's `module_parameters` / `interfaces` / `signatures` verbatim, issue #486) at
+  the dep IR's `module_parameters` / `interfaces` / `signatures` verbatim, issue #486; and, when
+  the node's own `deps.yaml` declares an `external library`, a top-level `libraries` list of
+  `library_id`, `modules` and `procedures` per library, issue #644, which no Compile gate reads) at
   Compile-phase start, and
   `_validate_component_dep_operations_membership` checks the authored `operations` against that ONE
   snapshot (the source of the `Compile.generate` leaf's `DEPENDENCIES.md`). A fabricated

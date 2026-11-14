@@ -79,6 +79,7 @@ each role below is derived:
 | the `static lint` tool the `Generate.gate` lint check runs through the build-runtime library's `run_linter` | the profile's `toolchain.language` (`registry.linter_for_language`) | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
 | the compiler — both the mandatory `Generate.gate` syntax-only stage and the compiler the build control file pins | the language backend's `bundle_facts.MANDATORY_SYNTAX_COMPILER`; the build control file pins the same program unless the parallel backend declares a compiler wrapper or the profile pins another `toolchain.compiler` (`workflow_conductor.build_compiler`) | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
 | the build system `Build` drives through the build-runtime library's `compile_project` | the profile's `toolchain.build_system` | `Build` — one phase later still |
+| the programs the post-build library checks run over a build's objects, asked only of a run that goes past `Compile` and whose closure declares an `external library` (below, "Refused at startup — external libraries") | the target compiler's `library_binary` `EXECUTABLES`, which its `docs/backends/compiler/<compiler>/TOOLCHAIN.md` names | `Build` |
 | the programs the parallel backend adds: a compiler wrapper, which takes the compiler's place in the build control file and in the syntax-only stage; a launcher and a device trace, which the binary runs under at `Validate.execute` and which are asked only of a run that executes the binary — of the site below, and of this host only when the local site executes the run | the profile's `parallel.backend` | `Validate.execute`, after the build (the wrapper: `Generate.gate`) |
 
 A program that serves several roles is listed once, under its first. Which program each role
@@ -229,6 +230,47 @@ removal included — and prints the probe's answers, the job id, the platform re
 command's output. `--ship FILE` sends a local file into the job directory (`$JOB` in `--cmd`),
 where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writes nothing under
 `workspace/`.
+
+### Refused at startup — external libraries
+
+A run that goes past `Compile` and whose closure declares an `external library` (`docs/GLOSSARY.md`;
+the declaration is `docs/SPEC.md` requirement 16, the site's `libraries:` entry
+`docs/ORCHESTRATION.md` §Execution sites) is decided by `tools/run_workflow.py` after the checks
+above and before anything of the run is written. A run that stops at `Compile` is not asked:
+Compile is target-free. The questions are asked in this order, and the first that answers ends the run:
+
+| outcome | exit | what it means |
+|---|---|---|
+| `library_at_remote_site` (`status: fail`) | 2 | the target maps to a remote site; a closure that declares a library is built and run at `local` only, because the host hashes the files it links |
+| `library_unavailable` (`status: library_unavailable`, `reason` `library_language_mismatch` or `library_not_at_site`) | 5 | `library unavailable`: the library is for another language than the target's, or the site does not list it. Nothing is written under `workspace/pipelines/`. Install the library and list it under the site's `libraries:`, or run another target |
+| `library_capability_missing` (`status: fail`) | 2 | the target's compiler declares no `library_flags` or `library_binary` (`docs/BACKEND_BOUNDARY.md`) |
+| `site_library_unresolved` (`status: fail`) | 2 | the site lists the library and its files do not resolve: a link name with no file, a shared object whose load-name file is not beside it, a declared module with no module file under `include` |
+| `missing_required_host_tools` (`status: fail`) | 2 | this host lacks a program the post-build library checks run (the role row in the table above) |
+
+Exit code 5 is `tools/run_workflow.py`'s own (`LIBRARY_UNAVAILABLE_EXIT`); it is unrelated to the
+static validator's rc 5 of §3-1. Under `--with-deps` every member is asked before any member runs:
+a member that is `library unavailable` is recorded in `dependency_runs` with
+`status: library_unavailable`, its reason, `library_id` and `site`, never as `skipped`, and is not
+run; the other members run; the target, whose closure holds that member, then ends
+`library_unavailable` with exit code 5 when no member failed (a failed member's own exit code
+otherwise). A member that hits a `status: fail` row refuses the whole run with exit code 2 before
+any member runs. A missing or malformed declaration, or a malformed `libraries` list, of any
+`spec` of the closure is refused as `library_declaration_invalid` (exit code 2) on every run, a
+Compile-only one included (`docs/SPEC.md` requirement 16).
+
+What the build and validate keys hold of a library is the content of its declared files at the
+site — the file the linker takes for each link name, the file the loader takes for it, and each
+declared module file — and not what those files load in turn: replacing a library the declared
+files load (a C library under a binding of another language, a lower-level numerical library
+under a higher-level one) moves no key. The run trusts that the loader takes the files
+the key hashed, and nothing checks it: a library installed under any directory the operator
+chooses is usable, and the operator is responsible for what the loader resolves there. Every
+run of the binary is given the library directories ahead of its inherited loader path
+(`docs/ORCHESTRATION.md` §Execution sites); a parallel backend's launcher may change that value
+on the ranks it starts — Open MPI's launcher can prepend its own directories, while Intel MPI
+2021.10's passes the value through. A declared library's own shared dependencies must sit in its `lib:`
+directory or in a system directory: one found only through the operator's inherited loader path
+links on the host and fails in the `workshop leaf`'s sandbox, whose environment holds none.
 
 ### Refused at `preflight`, still before the first leaf
 
