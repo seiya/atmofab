@@ -1616,6 +1616,14 @@ class DerivationResolver:
                     against = {**inputs, "toolchain": {
                         **inputs["toolchain"],
                         **{leaf: stamped[leaf] for leaf in leaves if leaf in stamped}}}
+                    if "libraries" in inputs:
+                        # The libraries' files, off the same stamp (issue #644).
+                        files = _stamped_library_files(recorded, inputs["libraries"])
+                        if files is None:
+                            missing.append("libraries")
+                        else:
+                            against["libraries"] = [{**entry, "files": f} for entry, f
+                                                    in zip(inputs["libraries"], files)]
                 diff = missing + differing_inputs(recorded, against)
             rank = (stale_tuple, len(diff) if diff is not None else sys.maxsize)
             if closest is None or rank < closest[0] or (rank == closest[0]
@@ -2554,8 +2562,69 @@ def _comparand_substituted_inputs(doc: Mapping[str, Any], inputs: Mapping[str, A
     leaves = _host_probed_leaves(target)
     if not isinstance(stamped, Mapping) or any(leaf not in stamped for leaf in leaves):
         return None
-    return {**inputs, "toolchain": {**inputs["toolchain"],
-                                    **{leaf: stamped[leaf] for leaf in leaves}}}
+    out = {**inputs, "toolchain": {**inputs["toolchain"],
+                                   **{leaf: stamped[leaf] for leaf in leaves}}}
+    if "libraries" in inputs:
+        files = _stamped_library_files(recorded, inputs["libraries"])
+        if files is None:
+            return None
+        out["libraries"] = [{**entry, "files": f} for entry, f in zip(inputs["libraries"], files)]
+    return out
+
+
+def _stamped_library_files(recorded: Any, computed: Sequence[Mapping[str, Any]]
+                           ) -> list[Any] | None:
+    """The `files` of each library a stamp's `derivation_inputs.libraries` records, for a key
+    computed without probing (issue #644): only when the stamp names the same libraries with
+    the same declarations, in the same order; None otherwise, and when it records none."""
+    stamped = recorded.get("libraries") if isinstance(recorded, Mapping) else None
+    if not isinstance(stamped, list) or len(stamped) != len(computed):
+        return None
+    files: list[Any] = []
+    for entry, mine in zip(stamped, computed):
+        if not (isinstance(entry, Mapping) and "files" in entry
+                and entry.get("library_id") == mine.get("library_id")
+                and entry.get("declaration_sha256") == mine.get("declaration_sha256")):
+            return None
+        files.append(entry["files"])
+    return files
+
+
+def _closure_libraries_member(repo_root: Path, node_key: str, closure_nodes: Sequence[str],
+                              resolver: DerivationResolver, *, probe: bool
+                              ) -> list[dict[str, Any]] | None:
+    """The build key's `libraries` member (issue #644): None when the node and its pipeline
+    closure declare no external library (the member is then absent, so no such key moves);
+    else, per library in closure order, its id, its declaration's hash and the content hash of
+    every declared file at the site the target runs at (`external_library.identity`). A
+    comparand resolver probes nothing and records ids and declaration hashes alone
+    (`external_library.declared_identity`); `_comparand_substituted_inputs` fills the files off
+    each candidate's stamp; `probe=False` asks for that form too. The site is read here, from the operator's `sites.yaml`
+    (`external_library.site_for_target`), the one resolution the conductor's Build uses too;
+    an unreadable one, a remote site and a library the site cannot serve are unresolvable:
+    the driver decides each before any phase (`library unavailable`)."""
+    from tools import external_library as xl
+    from tools.execution_sites import SitesConfigError
+    from tools.target_profile import TargetProfileError
+    spec = resolver.spec_ref(node_key)
+    if spec is None:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: {node_key} resolves to no spec directory, so "
+            f"its libraries cannot be read")
+    try:
+        declarations = xl.closure_declarations(repo_root, spec, closure_nodes)
+    except xl.LibraryDeclarationError as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: libraries of {node_key}: {exc}") from exc
+    if not declarations:
+        return None
+    if not probe or resolver.comparand:
+        return xl.declared_identity(declarations)
+    try:
+        return xl.identity(xl.resolve_closure(repo_root, resolver.target, declarations))
+    except (xl.LibraryUnusable, SitesConfigError, TargetProfileError, OSError) as exc:
+        raise DerivationInputsUnresolvable(
+            f"derivation_inputs_unresolvable: libraries of {node_key}: {exc}") from exc
 
 
 def _target_toolchain_identity(target: TargetProfile, *, probe: bool = True) -> dict[str, Any]:
@@ -3146,7 +3215,7 @@ def phase_derivation_inputs(
 
     if step_token == "build":
         source = need("source_ref", source_ref)
-        return {
+        build_inputs: dict[str, Any] = {
             "source": _certified_output_hash(
                 repo_root, repo_root / source / "source_meta.json",
                 what=f"{node_key} generate"),
@@ -3158,6 +3227,13 @@ def phase_derivation_inputs(
             # never passes one, so a stamp always carries the probed identity.
             "toolchain": _target_toolchain_identity(target, probe=not resolver.comparand),
         }
+        # The external libraries the build links (issue #644): present only when the closure
+        # declares one, so no other key moves.
+        libraries = _closure_libraries_member(repo_root, node_key, closure_nodes, resolver,
+                                              probe=True)
+        if libraries is not None:
+            build_inputs["libraries"] = libraries
+        return build_inputs
 
     spec = need("spec_ref", spec_ref)
     binary = need("binary_ref", binary_ref)
@@ -3179,6 +3255,23 @@ def phase_derivation_inputs(
                 "build_execute").QUALITY_CHECK_PRESET,
         },
     }
+    # The external libraries the binary loads (issue #644): the Build stamp's own record,
+    # copied rather than probed. A library swapped under an unchanged binary leaves the
+    # binary's bytes — the `binary` member — identical, so without this a Validate never run on
+    # the new library would be reused. Present only when the closure declares one.
+    declares = _closure_libraries_member(repo_root, node_key, closure_nodes, resolver,
+                                         probe=False)
+    if declares is not None:
+        build_meta = _read_json_or_none(repo_root / binary / "binary_meta.json")
+        stamped = (build_meta or {}).get("derivation_inputs") if isinstance(
+            build_meta, dict) else None
+        recorded = stamped.get("libraries") if isinstance(stamped, dict) else None
+        if not isinstance(recorded, list) or _stamped_library_files(stamped, declares) is None:
+            raise DerivationInputsUnresolvable(
+                f"derivation_inputs_unresolvable: validate derivation of {node_key}: the "
+                f"closure declares libraries and the Build stamp at {binary} records none "
+                f"that match")
+        inputs["libraries"] = recorded
     return inputs
 
 
