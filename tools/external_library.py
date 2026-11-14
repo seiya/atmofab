@@ -304,8 +304,10 @@ def resolve_closure(repo_root: str | Path, target: Any,
                     declarations: Sequence[LibraryDeclaration]) -> list[ResolvedLibrary]:
     """Each declaration located at the site `target` runs at, in order; `[]` for none.
     `LibraryUnusable` when the site is remote (Part 3 serves the local site only: the host
-    hashes the files it links), the target's compiler lacks `library_flags` or
-    `library_binary`, a library is unavailable (`unavailable_reason`) or does not resolve."""
+    hashes the files it links), a library is unavailable (`unavailable_reason`, asked first:
+    a library of another language is unavailable on a target whatever its compiler), the
+    target's compiler lacks `library_flags` or `library_binary`, or a library does not
+    resolve."""
     if not declarations:
         return []
     from tools.checked_build import target_compiler
@@ -316,11 +318,6 @@ def resolve_closure(repo_root: str | Path, target: Any,
             f"target {target.target_id} runs at site {site.site_id!r}, and a closure that "
             f"declares a library is built at the local site only (the host hashes the files it "
             f"links)")
-    compiler = target_compiler(target)
-    for capability in ("library_flags", "library_binary"):
-        reason = registry.missing_capability_reason("compiler", compiler, capability)
-        if reason is not None:
-            raise LibraryUnusable(CAPABILITY_MISSING, None, f"toolchain compiler {compiler}: {reason}")
     language = str(target.toolchain["language"])
     for declaration in declarations:
         reason = unavailable_reason(declaration, language, site)
@@ -328,6 +325,12 @@ def resolve_closure(repo_root: str | Path, target: Any,
             raise LibraryUnusable(reason, declaration.library_id,
                                   f"target {target.target_id} (language {language}) at site "
                                   f"{site.site_id!r}")
+    compiler = target_compiler(target)
+    for capability in ("library_flags", "library_binary"):
+        reason = registry.missing_capability_reason("compiler", compiler, capability)
+        if reason is not None:
+            raise LibraryUnusable(CAPABILITY_MISSING, None,
+                                  f"toolchain compiler {compiler}: {reason}")
     return [resolve(d, site, compiler) for d in declarations]
 
 
