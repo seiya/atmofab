@@ -66,12 +66,15 @@ def soname(link_file: str | Path) -> str | None:
 
 
 def _symbols(argv: list[str]) -> set[str]:
-    """The names of `nm -P` output, skipping an archive's member headers (`lib.a[x.o]:`)."""
+    """The names of `nm -P` output, skipping an archive's member headers (`lib.a[x.o]:`). A
+    shared object built with symbol versions prints a dynamic symbol as `name@@VERSION` (or
+    `name@VERSION`), while an object importing it prints the bare `name`; the version is
+    dropped so the two compare."""
     names: set[str] = set()
     for line in _run(argv).splitlines():
         words = line.split()
         if len(words) >= 2 and not words[0].endswith(":"):
-            names.add(words[0])
+            names.add(words[0].split("@", 1)[0])
     return names
 
 

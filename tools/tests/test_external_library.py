@@ -565,6 +565,24 @@ class SymbolCheckTests(_Fixture):
             self.assertIn("__vend_MOD_vend_scale", violation or "")
             self.assertNotIn("library_declared_unused", violation or "")
 
+    def test_a_library_built_with_symbol_versions_is_read_by_its_bare_names(self) -> None:
+        """`nm -D` prints a versioned export as `name@@VERSION`; an importing object names it
+        bare. Measured on this host's HDF5 Fortran library (round 1)."""
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            (work / "v.map").write_text("V_1 { global: foo_add_; local: *; };\n")
+            (work / "foo.f90").write_text(_FOO.format(offset="1d0").replace(
+                "real(8), external :: bar_twice\n", "").replace("bar_twice(x)", "x"))
+            _run(["gfortran", "-shared", "-fPIC", "foo.f90", "-Wl,--version-script=v.map",
+                  "-o", "libfoo.so"], work)
+            binary = registry.capability_module("compiler", "gfortran", "library_binary")
+            raw = subprocess.run(["nm", "-P", "-D", "--defined-only", str(work / "libfoo.so")],
+                                 capture_output=True, text=True, check=True).stdout
+            self.assertIn("foo_add_@@V_1", raw)   # the fixture really is versioned
+            self.assertIn("foo_add_", binary.exports(work / "libfoo.so"))
+            obj = self._object(work, "m_model", _MODEL_BOTH)
+            self.assertIn("foo_add_", binary.imports(obj) & binary.exports(work / "libfoo.so"))
+
     def test_a_declared_library_no_object_references_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             obj = self._object(Path(td), "plain", "subroutine plain()\nend subroutine plain\n")
