@@ -271,7 +271,9 @@ chooses is usable, and the operator is responsible for what the loader resolves 
 run of the binary is given the library directories ahead of its inherited loader path
 (`docs/ORCHESTRATION.md` §Execution sites); a parallel backend's launcher may change that value
 on the ranks it starts — Open MPI's launcher can prepend its own directories, while Intel MPI
-2021.10's passes the value through. A declared library's own shared dependencies must sit in its `lib:`
+2021.10's passes the value through. A site's `include:` must be the directory of the module files the target compiler itself
+wrote: one written by another compiler's build resolves, and then fails the leaf's
+`Generate.gate` syntax stage, which no leaf can repair. A declared library's own shared dependencies must sit in its `lib:`
 directory or in a system directory: one found only through the operator's inherited loader path
 links on the host and fails in the `workshop leaf`'s sandbox, whose environment holds none.
 
