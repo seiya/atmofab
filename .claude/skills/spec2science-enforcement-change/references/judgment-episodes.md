@@ -761,3 +761,17 @@ certification and stopped every zero-extent case of a physics node, because the 
 tell the two apart. The fix did both: the fixture follows the contract, and `rc_empty2 = [[], []]`
 joins the self-test of all three harnesses. The case was new and the clause was old, so nothing in
 the diff pointed at the clause. Only a run on the second target did.
+
+## Rule 4: a mocked subprocess silenced the check (issue #644 P1 / PR #646, 2026-11-14)
+
+`tools/tests/test_checked_build.py`'s Build fixture patches `subprocess.run` to return 0, so the
+post-build validator subprocess `_build_inproc` starts is not run. P1 added symbol checks to the
+same method, which run `nm` and `objdump` through `subprocess.run`, and its first Build row was
+built on that fixture: the fake build compiled the node's model with `gfortran` through
+`subprocess.run` (mocked: no object), and the check read the empty object directory and the
+mocked `nm` (no symbols). The row reported `library_declared_unused` for a node that called both
+libraries, which was how it surfaced; a row asserting only that the build failed would have
+stayed green while the check read nothing. The fix passes every call through to the saved `subprocess.run` except an argv
+naming the validator (`run_but_the_post_build_validator` in
+`tools/tests/test_external_library.py`), and the rows assert the `library_check.objects` list.
+
